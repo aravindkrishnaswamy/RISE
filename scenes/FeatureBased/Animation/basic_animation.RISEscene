@@ -1,0 +1,158 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			basic_animation.RISEscene																#
+#   Description:	Demonstrates a very basic animation														#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 26, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/basic_animation/frame
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	multiple			TRUE
+}
+*/
+
+animation_options
+{
+	time_start			0
+	time_end			1
+	num_frames			30
+#	do_fields			TRUE
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name			boxgeom
+	width			0.06
+	height			0.06
+	depth			0.06
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	position			-0.1 0 0.0
+	orientation			45 45 0
+	material			gold
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0 -0.1 0
+	orientation			-90 0 0
+	material			white
+}
+
+omni_light
+{
+	name		lightA
+	power		3.14159
+	color		1.0 1.0 1.0
+	position	0.0 0.065 0.065
+}
+
+##################################################
+# Keyframes
+##################################################
+
+timeline
+{
+	element		box
+	param		position
+	
+	time		0.0
+	value		-0.1 0 0.0
+	
+	time		1.0
+	value		0.1 0 0.0
+}
+
+timeline
+{
+	element		box
+	param		orientation
+	
+	time		0.0
+	value		0 0 0
+
+	time		1.0
+	value		180 180 0
+}
+
+

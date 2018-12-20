@@ -1,0 +1,134 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sss_colorvariation.RISEscene															#
+#   Description:	Applying a checker painter to the translucence											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 23, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	DefaultDirectLighting
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			10000
+	irrad_scale			1000
+	geometric_scale			1
+	multiplybsdf		true
+
+	extinction			0.005 0.005 0.005
+
+	shader				sss_irrad
+
+	cache				true
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.001
+	samples				4
+	lum_samples			1
+
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss_colorvariation
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 10
+	lookat				0 0 0
+	up					0 1 0
+	width				500
+	height				375
+	fov					25.0
+	theta				25.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+checker_painter
+{
+	name				pnt_cnt
+	colora				color_red
+	colorb				color_blue
+	size				0.1
+}
+
+##################################################
+# Materials
+##################################################
+
+translucent_material
+{
+	name				trans
+	ref					pnt_cnt
+	tau					pnt_cnt
+	ext					color_black
+	N					1.0
+	scattering			0.8
+}
+
+
+##################################################
+# Objects
+##################################################
+
+risemesh_geometry
+{
+	name				tkgeom
+	file				models/risemesh/torusknot.risemesh
+}
+
+standard_object
+{
+	name				tk
+	geometry			tkgeom
+	position			0 0 0
+	orientation			-90 0 0
+	scale				0.035 0.035 0.035
+	material			trans
+	receives_shadows	FALSE
+}
+
+omni_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	position	0 0 0
+}
+
+

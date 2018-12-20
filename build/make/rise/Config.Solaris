@@ -1,0 +1,39 @@
+##################################################################################################
+#
+#  Config for Realistic Image Synthesis Engine (R.I.S.E) for Solaris
+#  Author: Aravind Krishnaswamy
+#  Date: May 12, 2002
+#
+#  Notes:  I recommend using GNU make 
+#  
+##################################################################################################
+
+#echo "Using Solaris configuration"
+
+# name of the CC compiler
+CXX = g++
+
+# options for the linker
+CPPFLAGS = -I$(PATHLIBRARY) 
+
+# This set of flags is for Solaris g++ 3.0, removes the schedule-insns flag.  
+CXXFLAGS = -O3 -ffast-math -fcse-skip-blocks -frerun-loop-opt -funroll-loops
+
+# For debugging information
+# CXXFLAGS = -ggdb
+
+# Turn this on, if you don't have a proper libpng library installed
+DEF_PNG = -DNO_PNG_SUPPORT
+
+# Turn this on if you don't have a proper libpthreads library installed
+#DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
+
+# This makes the library use the drand48 function to generate random numbers
+# otherwise it uses rand.  Note that by default the MERSENNE is set in the Config.common file
+# DEF_RAND = -DDRAND48
+
+DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
+
+# libraries to link with
+LDLIBS =  -L/usr/lib32 -lpthread
+

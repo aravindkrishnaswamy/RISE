@@ -1,0 +1,113 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			realistic.RISEScene																		#
+#   Description:	Demonstrates use of the realistic camera with settings for 35mm equivalent				#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 5, 2006																				#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+adaptivepixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	min_samples			32
+	max_samples			200
+	num_steps			46
+	lum_samples			1
+	threshold			0.0005
+#	show_samples		true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/realisic
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+
+##################################################
+# Cameras
+##################################################
+
+realistic_camera
+{
+	location			0 0 30
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	film_size			36				# 35mm film
+	fstop				4				# f/4
+	focal_length		24				# 24mm lens
+	focus_distance		28.0			# focus distance
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_texture
+	file				textures/paradise.png
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				texture
+	reflectance			pnt_texture
+}
+
+##################################################
+# Objects - 
+##################################################
+
+box_geometry
+{
+	name				boxgeom
+	width				15.0
+	height				15.0
+	depth				15.0
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	orientation			45 45 0
+	material			texture
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.0 1.0
+}
+

@@ -1,0 +1,320 @@
+##################################################################################################
+#
+#  Filelist for Realistic Image Synthesis Engine (R.I.S.E)
+#  Author: Aravind Krishnaswamy
+#  Date: September 6, 2002
+#
+#  Notes:  This file is included from the main Makefile
+#  
+##################################################################################################
+
+#
+# DRISE source list
+#
+SRCDRISE =\
+	$(PATHLIBRARY)Utilities/Communications/ClientSocketCommunicator.cpp		\
+	$(PATHLIBRARY)Utilities/Communications/ServerSocketCommunicator.cpp			\
+	$(PATHLIBRARY)Utilities/Communications/SocketCommunications.cpp			\
+	$(PATHLIBRARY)Utilities/Communications/SocketCommunicator.cpp			\
+	$(PATHSRCSDRISE)AnimationTask.cpp							\
+	$(PATHSRCSDRISE)ClientConnection.cpp						\
+	$(PATHSRCSDRISE)Connection.cpp								\
+	$(PATHSRCSDRISE)JobEngine.cpp								\
+	$(PATHSRCSDRISE)MCPClientConnection.cpp						\
+	$(PATHSRCSDRISE)ServerConnection.cpp						\
+	$(PATHSRCSDRISE)SubmitterClientConnection.cpp				\
+	$(PATHSRCSDRISE)SubmitterServerConnection.cpp				\
+	$(PATHSRCSDRISE)Task.cpp									\
+	$(PATHSRCSDRISE)WorkerClientConnection.cpp					\
+	$(PATHSRCSDRISE)WorkerServerConnection.cpp
+
+#
+# The library source list is seperated into the categories of the library
+# These categories are then assembled as a final step
+#
+
+# Utilities
+SRCLIBUTILITIES =\
+	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
+	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
+	$(PATHLIBRARY)Utilities/Log/Log.cpp							\
+	$(PATHLIBRARY)Utilities/Log/MemoryTracker.cpp				\
+	$(PATHLIBRARY)Utilities/Log/StreamPrinter.cpp				\
+	$(PATHLIBRARY)Utilities/Threads/ThreadsPTHREADs.cpp			\
+	$(PATHLIBRARY)Utilities/CPU_Count.cpp					\
+	$(PATHLIBRARY)Utilities/DiskBuffer.cpp						\
+	$(PATHLIBRARY)Utilities/DiskFileReadBuffer.cpp				\
+	$(PATHLIBRARY)Utilities/DiskFileWriteBuffer.cpp				\
+	$(PATHLIBRARY)Utilities/DynamicProperties.cpp				\
+	$(PATHLIBRARY)Utilities/GeometricUtilities.cpp				\
+	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
+	$(PATHLIBRARY)Utilities/MemoryBuffer.cpp					\
+	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
+	$(PATHLIBRARY)Utilities/Optics.cpp							\
+	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
+	$(PATHLIBRARY)Utilities/Primes.cpp				\
+	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
+	$(PATHLIBRARY)Utilities/Reference.cpp						\
+	$(PATHLIBRARY)Utilities/RTime.cpp							\
+	$(PATHLIBRARY)Utilities/Transformable.cpp					\
+	$(PATHLIBRARY)Functions/BezierRootFinder.cpp				\
+	$(PATHLIBRARY)Functions/Polynomial.cpp					\
+	$(PATHLIBRARY)Functions/PolynomialGCD.cpp				\
+	$(PATHLIBRARY)Functions/Resultant.cpp
+
+# Noise
+SRCLIBNOISE =\
+	$(PATHLIBRARY)Noise/InterpolatedNoise.cpp					\
+	$(PATHLIBRARY)Noise/PerlinNoise1D.cpp						\
+	$(PATHLIBRARY)Noise/PerlinNoise2D.cpp						\
+	$(PATHLIBRARY)Noise/PerlinNoise3D.cpp
+
+
+# Painters
+SRCLIBPAINTERS =\
+	$(PATHLIBRARY)Painters/BlackBodyPainter.cpp					\
+	$(PATHLIBRARY)Painters/CheckerPainter.cpp					\
+	$(PATHLIBRARY)Painters/IridescentPainter.cpp				\
+	$(PATHLIBRARY)Painters/LinesPainter.cpp						\
+	$(PATHLIBRARY)Painters/MandelbrotPainter.cpp				\
+	$(PATHLIBRARY)Painters/Painter.cpp							\
+	$(PATHLIBRARY)Painters/Perlin2DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/SpectralColorPainter.cpp				\
+	$(PATHLIBRARY)Painters/TexturePainter.cpp					\
+	$(PATHLIBRARY)Painters/Voronoi2DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Voronoi3DPainter.cpp
+
+# Materials
+SRCLIBMATERIALS =\
+	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongBRDF.cpp			\
+	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
+	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
+	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
+	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\
+	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\
+	$(PATHLIBRARY)Materials/CookTorranceSPF.cpp								\
+	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
+	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
+	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
+	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
+	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
+	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\
+	$(PATHLIBRARY)Materials/LambertianSPF.cpp								\
+	$(PATHLIBRARY)Materials/LambertianEmitter.cpp							\
+	$(PATHLIBRARY)Materials/OrenNayarBRDF.cpp								\
+	$(PATHLIBRARY)Materials/OrenNayarSPF.cpp								\
+	$(PATHLIBRARY)Materials/PerfectReflectorSPF.cpp							\
+	$(PATHLIBRARY)Materials/PerfectRefractorSPF.cpp							\
+	$(PATHLIBRARY)Materials/PhongEmitter.cpp								\
+	$(PATHLIBRARY)Materials/PolishedSPF.cpp									\
+	$(PATHLIBRARY)Materials/ScatteredRayContainer.cpp						\
+	$(PATHLIBRARY)Materials/SchlickBRDF.cpp									\
+	$(PATHLIBRARY)Materials/SchlickSPF.cpp									\
+	$(PATHLIBRARY)Materials/TranslucentBSDF.cpp								\
+	$(PATHLIBRARY)Materials/TranslucentSPF.cpp								\
+	$(PATHLIBRARY)Materials/WardIsotropicGaussianBRDF.cpp					\
+	$(PATHLIBRARY)Materials/WardIsotropicGaussianSPF.cpp					\
+	$(PATHLIBRARY)Materials/WardAnisotropicEllipticalGaussianBRDF.cpp		\
+	$(PATHLIBRARY)Materials/WardAnisotropicEllipticalGaussianSPF.cpp
+
+
+# Geometry
+SRCLIBGEOMETRY = \
+	$(PATHLIBRARY)Geometry/BezierPatchGeometry.cpp				\
+	$(PATHLIBRARY)Geometry/BezierTesselation.cpp				\
+	$(PATHLIBRARY)Geometry/BilinearPatchGeometry.cpp			\
+	$(PATHLIBRARY)Geometry/BoxGeometry.cpp						\
+	$(PATHLIBRARY)Geometry/BoxUVGenerator.cpp					\
+	$(PATHLIBRARY)Geometry/CircularDiskGeometry.cpp				\
+	$(PATHLIBRARY)Geometry/ClippedPlaneGeometry.cpp				\
+	$(PATHLIBRARY)Geometry/CylinderGeometry.cpp					\
+	$(PATHLIBRARY)Geometry/CylindricalUVGenerator.cpp			\
+	$(PATHLIBRARY)Geometry/EllipsoidGeometry.cpp				\
+	$(PATHLIBRARY)Geometry/Geometry.cpp							\
+	$(PATHLIBRARY)Geometry/GeometryUtilities.cpp				\
+	$(PATHLIBRARY)Geometry/InfinitePlaneGeometry.cpp			\
+	$(PATHLIBRARY)Geometry/SphereGeometry.cpp					\
+	$(PATHLIBRARY)Geometry/SphericalUVGenerator.cpp				\
+	$(PATHLIBRARY)Geometry/TorusGeometry.cpp					\
+	$(PATHLIBRARY)Geometry/TriangleMeshGeometry.cpp				\
+	$(PATHLIBRARY)Geometry/TriangleMeshGeometryIndexed.cpp		\
+	$(PATHLIBRARY)Geometry/TriangleMeshLoader3DS.cpp			\
+	$(PATHLIBRARY)Geometry/TriangleMeshLoaderBezier.cpp			\
+	$(PATHLIBRARY)Geometry/TriangleMeshLoaderPLY.cpp			\
+	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW.cpp			\
+	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW2.cpp
+
+# Objects
+SRCLIBOBJECT = \
+	$(PATHLIBRARY)Objects/CSGObject.cpp							\
+	$(PATHLIBRARY)Objects/Object.cpp
+
+
+# Ray primitive intersections
+SRCLIBINTERSECTION =\
+	$(PATHLIBRARY)Intersection/RayBezierPatchIntersection.cpp	\
+	$(PATHLIBRARY)Intersection/RayBilinearPatchIntersection.cpp	\
+	$(PATHLIBRARY)Intersection/RayBoxIntersection.cpp			\
+	$(PATHLIBRARY)Intersection/RayCylinderIntersection.cpp		\
+	$(PATHLIBRARY)Intersection/RaySphereIntersection.cpp		\
+	$(PATHLIBRARY)Intersection/RayPlaneIntersection.cpp			\
+	$(PATHLIBRARY)Intersection/RayTorusIntersection.cpp			\
+	$(PATHLIBRARY)Intersection/RayTriangleIntersection.cpp		\
+	$(PATHLIBRARY)Intersection/RayQuadricIntersection.cpp
+
+
+
+# Sampling and filtering
+SRCLIBSAMPLINGFILTERING =\
+	$(PATHLIBRARY)Sampling/HaltonPointsSampling2D.cpp				\
+	$(PATHLIBRARY)Sampling/JitteredSampling1D.cpp				\
+	$(PATHLIBRARY)Sampling/MultiJitteredSampling2D.cpp			\
+	$(PATHLIBRARY)Sampling/NRooksSampling2D.cpp					\
+	$(PATHLIBRARY)Sampling/PoissonDiskSampling2D.cpp			\
+	$(PATHLIBRARY)Sampling/RandomSampling2D.cpp					\
+	$(PATHLIBRARY)Sampling/SincPixelFilter.cpp					\
+	$(PATHLIBRARY)Sampling/StratifiedSampling2D.cpp				\
+	$(PATHLIBRARY)Sampling/UniformSampling1D.cpp				\
+	$(PATHLIBRARY)Sampling/UniformSampling2D.cpp
+
+# Photon mapping
+SRCLIBPHOTONMAPPING =\
+	$(PATHLIBRARY)PhotonMapping/CausticPelPhotonMap.cpp			\
+	$(PATHLIBRARY)PhotonMapping/CausticPelPhotonTracer.cpp		\
+	$(PATHLIBRARY)PhotonMapping/CausticSpectralPhotonMap.cpp	\
+	$(PATHLIBRARY)PhotonMapping/CausticSpectralPhotonTracer.cpp	\
+	$(PATHLIBRARY)PhotonMapping/GlobalPelPhotonMap.cpp			\
+	$(PATHLIBRARY)PhotonMapping/GlobalPelPhotonTracer.cpp		\
+	$(PATHLIBRARY)PhotonMapping/GlobalSpectralPhotonMap.cpp		\
+	$(PATHLIBRARY)PhotonMapping/GlobalSpectralPhotonTracer.cpp	\
+	$(PATHLIBRARY)PhotonMapping/IrradianceCache.cpp				\
+	$(PATHLIBRARY)PhotonMapping/ShadowPhotonMap.cpp				\
+	$(PATHLIBRARY)PhotonMapping/ShadowPhotonTracer.cpp			\
+	$(PATHLIBRARY)PhotonMapping/TranslucentPelPhotonMap.cpp		\
+	$(PATHLIBRARY)PhotonMapping/TranslucentPelPhotonTracer.cpp
+
+# Camera
+SRCLIBCAMERA =\
+	$(PATHLIBRARY)Cameras/CameraCommon.cpp						\
+	$(PATHLIBRARY)Cameras/FisheyeCamera.cpp						\
+	$(PATHLIBRARY)Cameras/OrthographicCamera.cpp				\
+	$(PATHLIBRARY)Cameras/PinholeCamera.cpp						\
+	$(PATHLIBRARY)Cameras/ThinLensCamera.cpp
+
+# Rendering
+SRCLIBRENDERING =\
+	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
+	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizerAdaptiveSampling.cpp		\
+	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizerContrastAA.cpp			\
+	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
+	$(PATHLIBRARY)Rendering/PixelBasedSpectralIntegratingRasterizer.cpp		\
+	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
+	$(PATHLIBRARY)Rendering/RayCaster.cpp
+
+# ShaderOps
+SRCLIBSHADEROPS =\
+	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
+	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
+	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
+	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
+	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\
+	$(PATHLIBRARY)Shaders/CausticSpectralPhotonMapShaderOp.cpp				\
+	$(PATHLIBRARY)Shaders/DirectLightingShaderOp.cpp						\
+	$(PATHLIBRARY)Shaders/DistributionTracingShaderOp.cpp					\
+	$(PATHLIBRARY)Shaders/EmissionShaderOp.cpp								\
+	$(PATHLIBRARY)Shaders/FinalGatherShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/GlobalPelPhotonMapShaderOp.cpp					\
+	$(PATHLIBRARY)Shaders/GlobalSpectralPhotonMapShaderOp.cpp				\
+	$(PATHLIBRARY)Shaders/PathTracingShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/ReflectionShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\
+	$(PATHLIBRARY)Shaders/TransparencyShaderOp.cpp						\
+	$(PATHLIBRARY)Shaders/TranslucentPelPhotonMapShaderOp.cpp
+
+# Shaders
+SRCLIBSHADERS =\
+	$(PATHLIBRARY)Shaders/AdvancedShader.cpp							\
+	$(PATHLIBRARY)Shaders/DirectVolumeRenderingShader.cpp				\
+	$(PATHLIBRARY)Shaders/StandardShader.cpp							\
+
+# Scene Management
+SRCLIBSCENEMANAGEMENT =\
+	$(PATHLIBRARY)Managers/ObjectManager.cpp					\
+	$(PATHLIBRARY)Managers/LightManager.cpp						\
+	$(PATHLIBRARY)Rendering/LuminaryManager.cpp					\
+	$(PATHLIBRARY)Scene.cpp										\
+	$(PATHLIBRARY)Job.cpp										\
+	$(PATHLIBRARY)RISE_API.cpp
+
+# Intersection modifiers
+SRCLIBMODIFIERS =\
+	$(PATHLIBRARY)Modifiers/BumpMap.cpp
+
+# Raster Images
+SRCLIBRASTERIMAGES =\
+	$(PATHLIBRARY)RasterImages/EXRReader.cpp					\
+	$(PATHLIBRARY)RasterImages/EXRWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/HDRReader.cpp					\
+	$(PATHLIBRARY)RasterImages/HDRWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/PPMWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/PNGReader.cpp					\
+	$(PATHLIBRARY)RasterImages/PNGWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/RGBEAWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/TGAReader.cpp					\
+	$(PATHLIBRARY)RasterImages/TGAWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/TIFFReader.cpp					\
+	$(PATHLIBRARY)RasterImages/TIFFWriter.cpp
+
+# Lights 
+SRCLIBLIGHTS =\
+	$(PATHLIBRARY)Lights/DirectionalLight.cpp					\
+	$(PATHLIBRARY)Lights/PointLight.cpp							\
+	$(PATHLIBRARY)Lights/SpotLight.cpp
+
+# Animation
+SRCLIBANIMATION =\
+	$(PATHLIBRARY)Animation/Animator.cpp						\
+	$(PATHLIBRARY)Animation/ElementTimeline.cpp					\
+	$(PATHLIBRARY)Animation/KeyframableHelper.cpp					\
+	$(PATHLIBRARY)Animation/Timeline.cpp
+
+# Parsers
+SRCLIBPARSERS =\
+	$(PATHLIBRARY)Parsers/AsciiCommandParser.cpp				\
+	$(PATHLIBRARY)Parsers/AsciiSceneParser.cpp					\
+	$(PATHLIBRARY)Parsers/AsciiScriptParser.cpp					\
+	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\
+	$(PATHLIBRARY)Options.cpp
+
+# Miscellaneous stuff
+SRCLIBMISC =\
+	$(PATHLIBRARY)DetectorSpheres/DetectorSphere.cpp				\
+	$(PATHLIBRARY)DetectorSpheres/IsotropicRGBDetectorSphere.cpp
+
+# We assemble the final list of sources here
+SRCLIB =\
+	$(SRCLIBUTILITIES)				\
+	$(SRCLIBNOISE)					\
+	$(SRCLIBPAINTERS)				\
+	$(SRCLIBMATERIALS)				\
+	$(SRCLIBGEOMETRY)				\
+	$(SRCLIBOBJECT)					\
+	$(SRCLIBINTERSECTION)			\
+	$(SRCLIBSAMPLINGFILTERING)		\
+	$(SRCLIBPHOTONMAPPING)			\
+	$(SRCLIBCAMERA)					\
+	$(SRCLIBRENDERING)				\
+	$(SRCLIBSHADEROPS)				\
+	$(SRCLIBSHADERS)				\
+	$(SRCLIBMODIFIERS)				\
+	$(SRCLIBRASTERIMAGES)			\
+	$(SRCLIBLIGHTS)					\
+	$(SRCLIBANIMATION)				\
+	$(SRCLIBPARSERS)				\
+	$(SRCLIBMISC)					\
+	$(SRCLIBSCENEMANAGEMENT)
+
+

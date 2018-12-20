@@ -1,0 +1,144 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			ellipsoid.RISEscene																		#
+#   Description:	An ellipsoid, with animation keyframes													#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 8, 2004																				#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/ellipsoid
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+*/
+DEFINE FRAMES 120
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			@FRAMES
+#	do_fields			TRUE
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.7
+	lookat				0 0 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+##################################################
+# Objects
+##################################################
+
+ellipsoid_geometry
+{
+	name				ellipsoidgeom
+	radii				0.15 0.25 0.15
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.5
+}
+
+box_geometry
+{
+	name				boxgeom
+	width				1.0
+	height				1.0
+	depth				1.0
+}
+
+standard_object
+{
+	name				ellipsoid
+	geometry			spheregeom
+	material			gold
+	orientation			0 0 0
+	receives_shadows	FALSE
+	casts_shadows		FALSE
+}
+
+omni_light
+{
+	name		lightA
+	power		3.0
+	color		1.0 1.0 1.0
+	position	0.0 0.0 100.0
+}
+
+##################################################
+# Animation
+##################################################
+
+timeline
+{
+	element_type	object
+	element			ellipsoid
+	param			scale
+	
+	interpolator	hermite
+	
+	time		0.0
+	value		0.15 0.25 0.15
+
+	time		0.333
+	value		0.15 0.05 0.35
+
+	time		0.6666
+	value		0.35 0.25 0.05
+
+	time		1.0
+	value		0.15 0.25 0.15
+}
+

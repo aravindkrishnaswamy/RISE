@@ -1,0 +1,38 @@
+##################################################################################################
+#
+#  Config for Realistic Image Synthesis Engine (R.I.S.E) for SGI MIPSPro CC compiler on Irix
+#  Author: Aravind Krishnaswamy
+#  Date: September 27, 2002
+#
+#  Notes:  I recommend using GNU make 
+#  
+##################################################################################################
+
+#echo "Using SGI MIPSPro Irix configuration"
+
+# name of the CC compiler
+CXX = CC
+
+# options for the linker
+CPPFLAGS = -I$(PATHLIBRARY)  
+
+# This set of flags works on Irix 6.5 SGI MIPSPro CC 7.3.1.3m
+CXXFLAGS = -O3 -LANG:std -inline -OPT:Olimit=0 -mips4 -64 -r14k
+
+# Turn this on, if you don't have a proper libpng library installed
+DEF_PNG = -DNO_PNG_SUPPORT
+
+# Turn this on if you don't have a proper libpthreads library installed
+#DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
+
+# This makes the library use the drand48 function to generate random numbers
+# otherwise it uses rand
+#DEF_RAND = -DDRAND48
+
+DEFS = -DRISE_BIG_ENDIAN $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
+
+# For debugging information
+#CXXFLAGS = -g
+
+# libraries to link with
+LDLIBS =  -LANG:std -lm -lpthread

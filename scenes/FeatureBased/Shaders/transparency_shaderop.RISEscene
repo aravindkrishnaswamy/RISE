@@ -1,0 +1,176 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			transparency_shaderop.RISEScene															#
+#   Description:	Demonstrates using the transparency shaderop											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 28, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+> run scenes/colors.RISEscript
+
+transparency_shaderop
+{
+	name			trans
+	transparency	color_50pgrey
+	one_sided		true
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+advanced_shader
+{
+	name			trans
+	shaderop		DefaultDirectLighting		0 100	+
+	shaderop		trans						0 100	=
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				10
+	lum_samples			1
+	pixel_sampler		halton
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/transparency_shaderop
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				300
+	fov					20.0
+	theta				30
+}
+
+##################################################
+# Painters
+##################################################
+
+checker_painter
+{
+	name				pnt_checker
+	colora				color_white
+	colorb				color_black
+	size				0.05
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				red
+	reflectance			color_red
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_green
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			color_blue
+}
+
+lambertian_material
+{
+	name				checker
+	reflectance			pnt_checker
+}
+
+##################################################
+# Objects - plane
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				2
+	ytile				2
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.0 -0.3 0.0
+	orientation			-90.0 0.0 0.0
+	material			checker
+}
+
+##################################################
+# Objects - boxes
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeom
+	position			-0.8 0.0 0.0
+	material			red
+	shader				trans
+	casts_shadows		false
+}
+
+standard_object
+{
+	name				sphereB
+	geometry			spheregeom
+	position			0 0.0 0.0
+	material			green
+	shader				trans
+	casts_shadows		false
+}
+
+standard_object
+{
+	name				sphereC
+	geometry			spheregeom
+	position			0.8 0.0 0.0
+	material			blue
+	shader				trans
+	casts_shadows		false
+}
+
+omni_light
+{
+	name				amb
+	position			0 3.5 3.5
+	color				1 1 1
+	power				3.14
+}

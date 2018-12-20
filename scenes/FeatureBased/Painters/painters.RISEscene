@@ -1,0 +1,324 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			painters.RISEscene																		#
+#   Description:	Some of the procedural painters available												#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 23, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/painters
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 40
+	lookat				0 0 0
+	up					0 1 0
+	width				900
+	height				800
+	fov					20.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+mandelbrot_painter
+{
+	name				pnt_mandelbrot
+	colora				color_orange
+	colorb				color_black
+	xstart				-1.75
+	xend				0.75
+	ystart				-1.25
+	yend				1.25
+	exponent			1.0
+}
+
+perlin2d_painter
+{
+	name				pnt_perlin2d
+	colora				color_white
+	colorb				color_black
+	persistence			0.5
+	scale				25 25
+	shift				0 0
+	octaves				4
+}
+
+voronoi3d_painter
+{
+	name				pnt_voronoi3d
+	border				color_white
+	bordersize			0.02
+
+#	gen					0.15 0.15 0.0 color_red
+#	gen					0.01 0.0 0.1 color_blue
+#	gen					-0.2 0.1 -0.15 color_green
+#	gen					0.3 0.3 0.0 color_gold
+#	gen					-0.2 -0.1 0.1 color_coral
+
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_indianred
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_cadetblue
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_forestgreen
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_gold
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_coral
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_aquamarine
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_lightsteelblue
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_limegreen
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_firebrick
+	gen					$(hal(0)*2.0)	$(hal(1)*2.0)	$(hal(2)*2.0)	color_maroon
+}
+
+checker_painter
+{
+	name				pnt_checker
+	colora				color_brown
+	colorb				color_indianred
+	size				0.05
+}
+
+png_painter
+{
+	name				pnt_tex
+	file				textures/paradise.png
+}
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_darkpurple
+	colorb				color_slateblue
+	bias				-0.5
+}
+
+blend_painter
+{
+	name				pnt_blend
+	colora				pnt_voronoi3d
+	colorb				pnt_tex
+	mask				pnt_perlin2d
+}
+
+lines_painter
+{
+	name				pnt_lines
+	colora				color_maroon
+	colorb				color_orange
+	size				0.1
+}
+
+blackbody_painter
+{
+	name				pnt_blackbody
+	temperature			3500
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				red
+	reflectance			color_red
+}
+
+lambertian_material
+{
+	name				fractal
+	reflectance			pnt_mandelbrot
+}
+
+lambertian_material
+{
+	name				perlin
+	reflectance			pnt_perlin2d
+}
+
+lambertian_material
+{
+	name				voronoi
+	reflectance			pnt_voronoi3d
+}
+
+lambertian_material
+{
+	name				checker
+	reflectance			pnt_checker
+}
+
+lambertian_material
+{
+	name				texture
+	reflectance			pnt_tex
+}
+
+lambertian_material
+{
+	name				iridescent
+	reflectance			pnt_iri
+}
+
+lambertian_material
+{
+	name				blended
+	reflectance			pnt_blend
+}
+
+lambertian_material
+{
+	name				lines
+	reflectance			pnt_lines
+}
+
+lambertian_material
+{
+	name				blackbody
+	reflectance			pnt_blackbody
+}
+
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name				boxgeom
+	width				3
+	height				3
+	depth				3
+}
+
+standard_object
+{
+	name				box3
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			-4.5 4 0
+	material			checker
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box4
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			0 4 0
+	material			texture
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box7
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			4.5 4 0
+	material			lines
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			-4.5 0 0
+	material			fractal
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box2
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			0 0 0
+	material			perlin
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box8
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			4.5 0 0
+	material			blackbody
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box5
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			-4.5 -4 0
+	material			voronoi
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box6
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			0 -4 0
+	material			iridescent
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				box9
+	geometry			boxgeom
+	orientation			10 -20 0
+	position			4.5 -4 0
+	material			blended
+	receives_shadows 	false
+}
+
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}
+

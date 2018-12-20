@@ -1,0 +1,114 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			dof.RISEScene																			#
+#   Description:	Demonstrates depth of field effects via the thin lens camera.  Note the thin lens 		#
+#                   camera can be difficult to use.  Consider the realistic camera instead.					#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		December 11, 2003																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+adaptivepixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	min_samples			32
+	max_samples			200
+	num_steps			46
+	lum_samples			1
+	threshold			0.0005
+#	show_samples		true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/thinlens
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+
+##################################################
+# Cameras
+##################################################
+
+thinlens_camera
+{
+	location			0 0 30
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				256
+	fov					20
+	aperture_size		5				# f/2.8
+	focal_length		14				# 14mm
+	focus_distance		28.0			# focus distance
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_texture
+	file				textures/paradise.png
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				texture
+	reflectance			pnt_texture
+}
+
+##################################################
+# Objects - 
+##################################################
+
+box_geometry
+{
+	name				boxgeom
+	width				5.0
+	height				5.0
+	depth				5.0
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	orientation			45 45 0
+	material			texture
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.0 1.0
+}
+

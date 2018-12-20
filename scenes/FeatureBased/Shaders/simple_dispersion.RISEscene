@@ -1,0 +1,156 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			simple_dispersion.RISEscene																#
+#   Description:	Tests the ior stack																		#
+#	Author: 		Really simple dispersion																#
+#	Birthdate:		March 2, 2005																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+advanced_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting		1		100			+
+	shaderop			DefaultRefraction			1		100			+
+#	shaderop			DefaultReflection			1		1			+
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	min_importance		0.01
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/simpledispersion
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.45
+	lookat				0 0 0
+	up					0 1 0
+	width				500
+	height				500
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+checker_painter
+{
+	name				pnt_checker
+	colora				color_black
+	colorb				color_cream
+	size				0.05
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				checker
+	reflectance			pnt_checker
+}
+
+uniformcolor_painter
+{
+	name				pnt_ior
+	color				1.33 1.57 2.57
+	colorspace			RISERGB		
+}
+
+perfectrefractor_material
+{
+	name				dispersive
+	refractance			color_white
+	ior					pnt_ior
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.1
+}
+
+cylinder_geometry
+{
+	name				cylgeom
+	axis				y
+	radius				0.005
+	height				0.24
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.4
+	ytile				0.4
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	material			dispersive
+	orientation			0 0 0
+}
+
+standard_object
+{
+	name				cylinder
+	geometry			cylgeom
+	material			white
+	orientation			0 0 15
+	receives_shadows	FALSE
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.2 0.2 -0.3
+	material			checker
+	receives_shadows	FALSE
+}
+
+omni_light
+{
+	name		lightA
+	power		3.14
+	color		1.0 1.0 1.0
+	position	0.0 0.0 0.65
+}
+

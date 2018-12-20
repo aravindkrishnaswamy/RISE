@@ -1,0 +1,141 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			visiblehuman.RISEscene																	#
+#   Description:	Demonstrates volume rendering for medical imaging capabilities							#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 20, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	samples					1
+	max_recursion			10
+	min_importance			0.01
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/visiblehuman
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 6000
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					30.0
+	theta				90
+}
+
+##################################################
+# Painters
+##################################################
+
+
+##################################################
+# Materials
+##################################################
+
+
+##################################################
+# Objects
+##################################################
+
+piecewise_linear_function
+{
+	name			tr
+	cp				0		 0
+	cp				0.5702   0
+	cp				0.570313 0.738281
+	cp				1.000000 1.200000
+}
+
+piecewise_linear_function
+{
+	name			tg
+	cp				0		 0
+	cp				0.3885   0
+	cp				0.388672 0.015625
+	cp				0.466797 1.243750
+	cp				0.541016 0.027344
+}
+
+piecewise_linear_function
+{
+	name			tb
+	cp				0.000000 0.000000
+	cp				0.593750 1.217969
+}
+
+piecewise_linear_function
+{
+	name			ta
+	cp				0.390625 0.011719
+	cp				0.468750 0.078125
+	cp				0.537109 0.019531
+	cp				0.595703 0.035156
+	cp				0.748047 0.953125
+	cp				0.988281 0.964844
+}
+
+directvolumerendering_shader
+{
+	name			volume
+	file_pattern		volume/visHuman/vhmHeadCTFro256-%.3d.raw
+	width			256
+	height			256
+	startz			1
+	endz			219
+	accessor		catmull
+	gradient		sobel
+	composite		s
+	sampler			jittered
+	samples			300
+	transfer_red 	tr
+	transfer_green 	tg
+	transfer_blue 	tb
+	transfer_alpha	ta
+}
+
+box_geometry
+{
+	name			boxgeom
+	width			256
+	height			256
+	depth			219
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	position			0.0 0.0 0.0
+	orientation			0 0 -90 
+	scale				10 10 10
+	shader				volume
+	casts_shadows		FALSE
+	receives_shadows	FALSE
+}
+

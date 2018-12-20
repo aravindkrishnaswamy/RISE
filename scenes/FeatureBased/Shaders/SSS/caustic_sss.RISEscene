@@ -1,0 +1,200 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			caustic_sss.RISEscene																	#
+#   Description:	Sub-surface scattering getting light from a caustic in a translucent box				#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 23, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	DefaultCausticPelPhotonMap
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			10000
+	irrad_scale			30
+	geometric_scale			0.45
+	extinction			0.01 0.01 0.01
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+	shaderop			DefaultRefraction
+	shaderop			DefaultReflection
+	shaderop			DefaultCausticPelPhotonMap
+}
+
+standard_shader
+{
+	name				sss
+	shaderop			sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.001
+	samples				9
+	lum_samples			1
+	pixel_filter		tent
+	pixel_filter_width	1.5
+	pixel_filter_height	1.5
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/caustic_sss
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/caustic_sss
+	type				EXR
+	color_space			ROMMRGB_Linear
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 10
+	lookat				0 0 0
+	up					0 1 0
+	width				500
+	height				400
+	fov					25.0
+	theta				15.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_cnt
+	color				0.65 0.15 0.02
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				reddish
+	reflectance			color_white
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_white
+}
+
+translucent_material
+{
+	name				trans
+	ref					pnt_cnt
+	tau					pnt_cnt
+	ext					color_black
+	N					1.0
+	scattering			0.8
+}
+
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name				boxgeom
+	width				4.0
+	height				3.0
+	depth				4.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			boxgeom
+	position			0 -1.5 0
+	material			trans
+	shader				sss
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.5
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			1.0 0.75 0
+	material			glass
+}
+
+spot_light
+{
+	name				light
+	power				3.14
+	position			3.0 3.5 -5.0
+	target				1.0 0.0 0.5
+	inner				20.0
+	outer				25.0
+	color				1.0 1.0 1.0
+}
+
+##################################################
+# Photon mapping settings
+##################################################
+
+caustic_pel_photonmap
+{
+	num					20000
+	max_recursion		5
+	min_importance		0.001
+	power_scale			300.0
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+	nonmeshlights		TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons			150
+}
+
+ambient_light
+{
+	name				ambient
+	color				1 1 1
+	power				0.5
+}

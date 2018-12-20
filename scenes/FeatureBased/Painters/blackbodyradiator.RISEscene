@@ -1,0 +1,109 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			blackbodyradiator.RISEscene																#
+#   Description:	Shows different blackbody radiator values												#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 23, 2005																		#
+#																											#
+#############################################################################################################
+
+# Be sure to set the object manager for BSP
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/blackbodyradiator
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.3
+	lookat				0 0 0
+	up					0 1 0
+	width				700
+	height				500
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			spheregeom
+	radius			0.0095
+}
+
+FOR I 0 9 1 
+	FOR J 0 6 1
+		
+		blackbody_painter
+		{
+			name				bb!I!J
+			temperature			$((@J*1000+2000)+(@I*100))
+		}
+
+		lambertian_material
+		{
+			name				bb!I!J
+			reflectance			bb!I!J
+		}
+
+		standard_object
+		{
+			name			sphere!I!J
+			geometry		spheregeom
+			position		$(@I*0.02-0.09) $(@J*-0.02+0.06) 0
+			material		bb!I!J
+			receives_shadows false
+		}
+
+	ENDFOR
+ENDFOR
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.0 1.0
+}
+

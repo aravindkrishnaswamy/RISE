@@ -1,0 +1,226 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sss_gi_dragon.RISEscene																		#
+#   Description:	Combines a subsurface scattering object into a scene with global illumination			#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 23, 2006																		#
+#																											#
+#############################################################################################################
+
+> echo warning Warning! This scene is quite CPU intensive and may take considerable time to render, particularily on slower machines.
+
+##################################################
+# Setup a renderer
+##################################################
+
+finalgather_shaderop
+{
+	name				fg
+	samples			1000
+}
+
+standard_shader
+{
+	name				sss_irrad
+	shaderop			DefaultDirectLighting
+	shaderop			DefaultGlobalPelPhotonMap
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			10000
+	irrad_scale			130
+	geometric_scale 		0.2
+	extinction			0.09 0.02 0.03
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+	shaderop			fg
+	shaderop			DefaultEmission
+}
+
+standard_shader
+{
+	name				sss
+	shaderop			sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				9
+	lum_samples			9
+	pixel_filter		tent
+	pixel_filter_width	1.7
+	pixel_filter_height	1.7
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss_gi_dragon
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0.2 0 19.5
+	lookat				0.2 0 0
+	up					0 1 0
+	width				480
+	height				360
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				lum
+	exitance			color_white
+	scale				10.0
+	material			none
+}
+
+##################################################
+# Objects
+##################################################
+
+risemesh_geometry
+{
+	name			meshgeom
+	file			models/risemesh/dragon_small.risemesh
+}
+
+standard_object
+{
+	name				mesh
+	geometry			meshgeom
+	orientation			0 30 0
+	position			1 -5.6 0
+	scale				40 40 40
+	material			white
+	shader				sss
+}
+
+clippedplane_geometry
+{
+	name				wallgeom
+	pta					-14.1 -14.1 0
+	ptb					14.1 -14.1 0
+	ptc					14.1 14.1 0
+	ptd					-14.1 14.1 0
+}
+
+standard_object
+{
+	name				rwall
+	geometry			wallgeom
+	position			5.5 0 0
+	orientation			0 -90 0
+	material			white
+}
+
+
+standard_object
+{
+	name				bwall
+	geometry			wallgeom
+	position			0 0 -10.5
+	orientation			0 0 0
+	material			white
+}
+
+standard_object
+{
+	name				twall
+	geometry			wallgeom
+	position			0 3.5 0
+	orientation			90 0 0
+	material			white
+}
+
+standard_object
+{
+	name				botwall
+	geometry			wallgeom
+	position			0 -3.5 0
+	orientation			-90 0 0
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			wallgeom
+	position			-6 0 0
+	orientation			0 90 0
+	material			white
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-2.1 -2.1 0
+	ptb					2.1 -2.1 0
+	ptc					2.1 2.1 0
+	ptd					-2.1 2.1 0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			lum
+	position			-5.5 0 0
+	orientation			0 90 0
+}
+
+global_pel_photonmap
+{
+	num					100000
+	max_recursion		5
+	min_importance		0.01
+}
+
+global_pel_gather
+{
+	max_photons		200
+	ellipse_ratio		0.0005
+}
+
+irradiance_cache
+{
+	size				100
+	tolerance			0.3
+	min_spacing			0.1
+}
+

@@ -1,0 +1,242 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			fractal.RISEscene																		#
+#   Description:	Mandelbrot fractal animation															#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		June 28, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.01
+	samples				1
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/fractal
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+*/
+
+DEFINE FRAMES 60
+
+animation_options
+{
+	time_start			0.0
+	time_end			3.0
+	num_frames			@FRAMES
+}
+
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+mandelbrot_painter
+{
+	name				pnt_mandelbrot
+	colora				color_orange
+	colorb				color_black
+	xstart				-1.75
+	xend				0.75
+	ystart				-1.25
+	yend				1.25
+	exponent			1.0
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				fractal
+	reflectance			pnt_mandelbrot
+}
+
+##################################################
+# Objects
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.4
+	ytile				0.4
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.2 0.2 -0.24
+	material			fractal
+}
+
+ambient_light
+{
+	name		amb
+	color		1.0 1.0 1.0
+	power		3.14
+}
+
+
+timeline 
+{
+	element_type	painter
+	element		pnt_mandelbrot
+
+	param		xstart
+
+	interpolator	cosine
+
+	time		0
+	value		-1.75
+
+	time		0.5
+	value		-0.75
+
+	time		1
+	value		-0.701
+
+	time		1.5
+	value		-0.7001
+
+	time		2.0
+	value		-0.70001
+
+	time		2.5
+	value		-0.700001
+
+	time		3.0
+	value		-0.7000001
+}
+
+timeline 
+{
+	element_type	painter
+	element		pnt_mandelbrot
+
+	param		xend
+
+	interpolator	cosine
+
+	time		0
+	value		0.75
+
+	time		0.5
+	value		-0.65
+	
+	time		1
+	value		-0.699
+
+	time		1.5
+	value		-0.6999
+
+	time		2.0
+	value		-0.69999
+
+	time		2.5
+	value		-0.699999
+
+	time		3.0
+	value		-0.6999999
+}
+
+timeline 
+{
+	element_type	painter
+	element		pnt_mandelbrot
+
+	param		ystart
+
+	interpolator	cosine
+
+	time		0
+	value		-1.25
+
+	time		0.5
+	value		-0.31
+
+	time		1
+	value		-0.261
+
+	time		1.5
+	value		-0.2601
+
+	time		2.0
+	value		-0.26001
+
+	time		2.5
+	value		-0.260001
+
+	time		3.0
+	value		-0.2600001
+}
+
+timeline 
+{
+	element_type	painter
+	element		pnt_mandelbrot
+
+	param		yend
+
+	interpolator	cosine
+
+	time		0
+	value		1.25
+
+	time		0.5
+	value		-0.21
+
+	time		1
+	value		-0.259
+
+	time		1.5
+	value		-0.2599
+	
+	time		2.0
+	value		-0.25999
+
+	time		2.5
+	value		-0.259999
+
+	time		3.0
+	value		-0.2599999
+}

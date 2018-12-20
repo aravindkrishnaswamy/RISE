@@ -1,0 +1,154 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sss.RISEscene																			#
+#   Description:	A simple demonstration of the subsurface scattering shaderop							#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 18, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	DefaultDirectLighting
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			3000
+	irrad_scale			30
+	geometric_scale		2
+
+	shader				sss_irrad
+}
+
+diffusion_approximation_sss_shaderop
+{
+	name				sss2
+	numpoints			1000
+	irrad_scale			1500
+	geometric_scale		0.1
+
+	scattering			0.18 0.07 0.03
+	absorption			0.061 0.97 1.45
+	ior					1.3
+	g					0.8
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name		global
+	shaderop	sss
+}
+
+standard_shader
+{
+	name		sss2
+	shaderop	sss2
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.45
+	lookat				0 0 0
+	up					0 1 0
+	width				450
+	height				250
+	fov					20.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+translucent_material
+{
+	name				trans
+	ref					color_white
+	tau					color_white
+	ext					color_black
+	N					1.0
+	scattering			0.8
+}
+
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			spheregeom
+	radius			0.05
+}
+
+box_geometry
+{
+	name			boxgeom
+	width			0.10
+	height			0.10
+	depth			0.10
+}
+
+standard_object
+{
+	name				mesh
+	geometry			boxgeom
+	orientation			45 0 0
+	position			-0.06 0 0
+	material			trans
+}
+
+standard_object
+{
+	name				mesh2
+	geometry			boxgeom
+	orientation			45 0 0
+	position			0.06 0 0
+	material			trans
+	shader				sss2
+}
+
+omni_light
+{
+	name				light
+	power				1.5
+	position			0 10 0
+	color				1.0 1.0 1.0
+}
+

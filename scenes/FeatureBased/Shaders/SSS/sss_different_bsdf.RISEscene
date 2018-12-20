@@ -1,0 +1,134 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sss_different_bsdf.RISEscene															#
+#   Description:	Demonstrates how you can have a different BSDF for the regular direct lighting shader   #
+#                     while still having subsurface scattering effects										#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		March 1, 2005																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name				white
+	reflectance			color_cream
+}
+
+directlighting_shaderop
+{
+	name		sss_dl
+	bsdf		white
+}
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	sss_dl
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			10000
+	irrad_scale			1200
+	geometric_scale 	7
+	extinction			0.02 0.03 0.09
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				9
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss_different_bsdf
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss_different_bsdf
+	type				EXR
+	color_space			ROMMRGB_Linear
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.4
+	lookat				0 0 0
+	up					0 1 0
+	width				500
+	height				400
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+##################################################
+# Materials
+##################################################
+
+ward_anisotropic_material
+{
+	name				wa
+	rd					color_orange
+	rs					color_cream
+	alphax				0.9
+	alphay				0.1
+}
+
+##################################################
+# Objects
+##################################################
+
+risemesh_geometry
+{
+	name			meshgeom
+	file			models/risemesh/dragon_small.risemesh
+}
+
+standard_object
+{
+	name				mesh
+	geometry			meshgeom
+	position			0.0 -0.12 0.0
+	orientation			10.0 20.0 0
+	material			wa
+}
+
+omni_light
+{
+	name				light
+	power				2.0
+	position			0 100 0
+	color				1.0 1.0 1.0
+}

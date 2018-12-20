@@ -1,0 +1,221 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			translucent_bunny.RISEscene																#
+#   Description:	
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 19, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+directlighting_shaderop
+{
+	name		sss_dl
+	bsdf		white
+}
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	sss_dl
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			5000
+	irrad_scale			120
+	geometric_scale 	10
+	extinction			0.01 0.01 0.01	
+	multiplybsdf		TRUE
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/translucent_bunny/frame
+	type				PNG
+	bpp				8
+	color_space			sRGB
+	multiple			TRUE
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.4
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					30.0
+}
+
+DEFINE FRAMES 60
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			@FRAMES
+}
+
+##################################################
+# Painters
+##################################################
+
+
+##################################################
+# Materials
+##################################################
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_darkpurple
+	colorb				color_slateblue
+	bias				-0.5
+}
+
+translucent_material
+{
+	name				trans
+	ref					pnt_iri
+	tau					pnt_iri
+	ext					color_black
+}
+/*
+lambertian_luminaire_material
+{
+	name				lum
+	exitance			color_white
+	scale				100.0
+	material			none
+}
+*/
+##################################################
+# Objects
+##################################################
+
+risemesh_geometry
+{
+	name			meshgeom
+	file			models/risemesh/bunny.risemesh
+}
+
+standard_object
+{
+	name				mesh
+	geometry			meshgeom
+	position			0.02 -0.1 0.0
+	material			trans
+}
+/*
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-0.1 -0.1 0
+	ptb					0.1 -0.1 0
+	ptc					0.1 0.1 0
+	ptd					-0.1 0.1 0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			lum
+	position			0 0.5 0
+	orientation			90 0 0
+}
+*/
+
+omni_light
+{
+	name				light
+	power				2.0
+	position			0 0.5 0
+	color				1.0 1.0 1.0
+}
+
+/*
+directional_light
+{
+	name		light
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0 1 0
+}
+*/
+
+timeline
+{
+	element_type light
+	element		light
+	param		position
+
+	interpolator hermite
+	
+	time		0.0
+	value		0 0.5 0
+
+	time        0.25
+	value       0 0 0.5
+
+	time        0.5
+	value       0 -0.5 0
+
+	time        0.75
+	value       0 0 -0.5
+
+	time		1.0
+	value		0 0.5 0
+}
+
+timeline
+{
+	element_type	camera
+	element			camera
+	param			target_orientation
+	
+	interpolator	hermite
+	
+	time		0.0
+	value		0.0 20
+
+	time		1.0
+	value		0 -20
+}
+

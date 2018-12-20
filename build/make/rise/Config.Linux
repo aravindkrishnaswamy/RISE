@@ -1,0 +1,63 @@
+##################################################################################################
+#
+#  Config for Realistic Image Synthesis Engine (R.I.S.E) for Linux
+#  Author: Aravind Krishnaswamy
+#  Date: September 6, 2002
+#
+#  Notes:  I recommend using GNU make 
+#  
+##################################################################################################
+
+#echo "Using LINUX configuration"
+
+# name of the CC compiler
+CXX = ccache g++
+
+# options for the linker
+CPPFLAGS = -I$(PATHLIBRARY) 
+
+CXXFLAGS_COMMON = -O3 -Wall -pedantic
+
+# These are architexture specific flags
+
+# Pentium 4 specific
+#CXXFLAGS_ARCH = -march=pentium4 -msse2 -mfpmath=sse
+
+# Pentium 3 specific
+CXXFLAGS_ARCH = -march=pentium3 -msse -mfpmath=sse
+
+# Pentium 2 specific
+#CXXFLAGS_ARCH = -march=pentium2 -mmmx
+
+# Athlon XP specific
+#CXXFLAGS_ARCH = -m3dnow -march=athlon-xp -mfpmath=sse
+
+# This set of flags is for Linux g++ 3.3, removes flags that cause problems (fast math).  
+CXXFLAGS = $(CXXFLAGS_COMMON) $(CXXFLAGS_ARCH) -malign-double -fexpensive-optimizations 
+
+# This set of generic flags is for Linux g++ 3.0, 3.1 & 3.2
+#CXXFLAGS = $(CXXFLAGS_COMMON) $(CXXFLAGS_ARCH) -ffast-math -malign-double -fexpensive-optimizations -DINLINE_TEMPLATE_SPECIALIZATIONS
+
+#######################################################################################
+# These are Intel Compiler 7.1 specific flags
+
+#CPPFLAGS = -I$(PATHLIBRARY) -I/opt/intel/compiler71/ia32/include 
+#CXXFLAGS = -O3 -i_dynamic -xK -ip -march=pentiumiii -mcpu=pentiumpro 
+#######################################################################################
+
+# Turn this on, if you don't have a proper libpng library installed
+#DEF_PNG = -DNO_PNG_SUPPORT
+
+# Turn this on if you don't have a proper libpthreads library installed
+#DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
+
+# This makes the library use the drand48 function to generate random numbers
+# otherwise it uses rand.  Note that by default the MERSENNE is set in the Config.common file
+# DEF_RAND = -DDRAND48
+
+#DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) -D_DEBUG
+DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
+
+# libraries to link with
+LDLIBS =  -L/usr/lib32 -lpthread -lpng -lz
+

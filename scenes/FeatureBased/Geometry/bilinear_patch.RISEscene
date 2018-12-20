@@ -1,0 +1,123 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			teapot.scn																				#
+#   Description:	A simple Utah teapot																	#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 23, 2002																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/bilinear_test
+	type				PNG
+	color_space			sRGB
+	bpp					8
+}
+*/
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 10
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+
+##################################################
+# Objects
+##################################################
+
+bilinearpatch_geometry
+{
+	name				bilineargeom
+	file				models/raw/test.bilinear
+	maxpolygons			1000
+	maxdepth			1
+	bsp					TRUE
+}
+
+/*
+clippedplane_geometry
+{
+	name				planegeom
+	pta					-0.1 0.1 0.0
+	ptb					-0.1 -0.1 0.0
+	ptc					0.1 -0.1 0.0
+	ptd					0.1 0.1 0.0
+}
+*/
+standard_object
+{
+	name				test
+	geometry			bilineargeom
+	position			-1.5 0 0
+	material			white
+	casts_shadows		FALSE
+	receives_shadows	FALSE
+}
+
+omni_light
+{
+	name		light
+	power		3.1
+	color		1.0 1.0 1.0
+	position	0.0 0.0 100.0
+}
+
+
+timeline
+{
+	element_type	object
+	element			test
+
+	param			orientation
+
+	time			0.0
+	value			0.0 0.0 0.0
+
+	time			1.0
+	value			0.0 -360 0
+}

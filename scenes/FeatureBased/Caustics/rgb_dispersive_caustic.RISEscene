@@ -1,0 +1,180 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			rgb_dispersive_caustic.scn																#
+#   Description:	Renders RGB dispersion using a standard RGB renderer and photon map						#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		March 3, 2005																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+advanced_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting		1		100			+
+	shaderop			DefaultRefraction			1		100			+
+	shaderop			DefaultReflection			1		2			+
+	shaderop			DefaultCausticPelPhotonMap  1		100			+
+	shaderop			DefaultEmission				1		100			+
+}
+
+pixelpel_rasterizer
+{
+	samples					1
+	lum_samples				16
+	max_recursion			10
+	min_importance			0.01
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rgb_dispersive_caustic
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0.278 0.273 -0.800
+	lookat				0.278 0.273 0
+	up					0 1 0
+	width				300
+	height				300
+	fov					37.0
+}
+
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				linear_ior
+	color				1.3 1.5 2.0
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				60.0
+	material			none
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_white
+	ior					linear_ior
+}
+
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					0.5528 0 0
+	ptb					0 0 0
+	ptc					0 0 0.5592
+	ptd					0.5496 0 0.5592
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					0.5496 0 0.5592
+	ptb					0 0 0.5592
+	ptc					0 0.5488 0.5592
+	ptd					0.556 0.5488 0.5592
+}
+
+# I am pulling the light out of the ceiling a bit to help us out! I was getting errors because of the coplanar surfaces
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					0.3430 0.5487999 0.2270
+	ptb					0.3430 0.5487999 0.3320
+	ptc					0.2130 0.5487999 0.3320
+	ptd					0.2130 0.5487999 0.2270
+}
+
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Objects - One sphere
+##################################################
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.12
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0.273 0.23	0.2
+	material			glass
+}
+
+caustic_pel_photonmap
+{
+	num					500000
+	max_recursion		5
+	min_importance		0.001
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons			300
+}

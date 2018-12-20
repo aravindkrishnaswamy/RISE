@@ -1,0 +1,197 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			shapes.RISEscene																		#
+#   Description:	Various shapes																			#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 22, 2005																		#
+#																											#
+#############################################################################################################
+
+# Be sure to set the object manager for BSP
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/shapes
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 20
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				800
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				orange
+	reflectance			color_orange
+}
+
+lambertian_material
+{
+	name				lightsteelblue
+	reflectance			color_lightsteelblue
+}
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+lambertian_material
+{
+	name				aquamarine
+	reflectance			color_aquamarine
+}
+
+lambertian_material
+{
+	name				yellow
+	reflectance			color_yellow
+}
+
+
+
+##################################################
+# Objects
+##################################################
+
+ellipsoid_geometry
+{
+	name				ellipsoidgeom
+	radii				1.2 0.3 0.6
+}
+
+box_geometry
+{
+	name			boxgeom
+	width			1
+	height			1
+	depth			1
+}
+
+torus_geometry
+{
+	name			torusgeom
+	majorradius		1
+	minorratio		0.15
+}
+
+cylinder_geometry
+{
+	name			cylindergeom
+	axis			y
+	radius			0.7
+	height			1.3
+}
+
+clippedplane_geometry
+{
+	name			cpgeom
+	pta				-0.6 0.5 0
+	ptb				-0.55 -0.6 0
+	ptc				0.65 -0.3 0
+	ptd				0.45 0.7 0
+}
+
+FOR I 0 4 1
+
+	standard_object
+	{
+		name			box!I
+		geometry		boxgeom
+		position		$(@I*2-4) 4 0
+		orientation		$(@I*35) $(@I*60) 0
+		material		aquamarine
+	}
+
+	standard_object
+	{
+		name			torus!I
+		geometry		torusgeom
+		position		$(@I*2-4) 2 0
+		orientation		$(@I*25) 0 $(@I*60)
+		material		gold
+	}
+
+	standard_object
+	{
+		name			ellipsoid!I
+		geometry		ellipsoidgeom
+		position		$(@I*2-4) 0 0
+		orientation		$(@I*60) 0 $(@I*35)
+		material		orange
+	}
+
+	standard_object
+	{
+		name			cylinder!I
+		geometry		cylindergeom
+		position		$(@I*2-4) -2 0
+		orientation		$(@I*20) $(@I*60) 0
+		material		lightsteelblue
+	}
+
+	standard_object
+	{
+		name			cp!I
+		geometry		cpgeom
+		position		$(@I*2-4) -4 0
+		orientation		0 $(@I*15) $(@I*25)
+		material		yellow
+	}
+
+
+ENDFOR
+
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}
+

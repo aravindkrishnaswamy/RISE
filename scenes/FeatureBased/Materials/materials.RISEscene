@@ -1,0 +1,238 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			materials.RISEscnee																		#
+#   Description:	Some of the materials available															#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 23, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/materials
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 40
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				800
+	fov					20.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				50pgrey
+	color				0.5 0.5 0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				lamb
+	reflectance			50pgrey
+}
+
+uniformcolor_painter
+{
+	name				NV
+	colorspace			RISERGB
+	color				100 200 400
+}
+
+ashikminshirley_anisotropicphong_material
+{
+	name				aniso
+	rd					50pgrey
+	rs					color_white
+	nu					1.0
+	nv					NV
+}
+
+uniformcolor_painter
+{
+	name				facets
+	colorspace			RISERGB
+	color				0.1 0.15 0.3
+}
+
+cooktorrance_material
+{
+	name				ct
+	rd					50pgrey
+	rs					color_white
+	facets				facets
+	ior					1.8
+	extinction			0
+}
+
+uniformcolor_painter
+{
+	name				alphay
+	colorspace			RISERGB
+	color				0.1 0.2 0.3
+}
+
+ward_anisotropic_material
+{
+	name				wa
+	rd					50pgrey
+	rs					color_white
+	alphax				0.9
+	alphay				alphay
+}
+
+uniformcolor_painter
+{
+	name				isotropy
+	colorspace			RISERGB
+	color				0.01 0.2 0.1
+}
+
+schlick_material
+{
+	name				sc
+	rd					50pgrey
+	rs					color_white
+	roughness			0.01
+	isotropy			isotropy
+}
+
+uniformcolor_painter
+{
+	name				alpha
+	colorspace			RISERGB
+	color				0.1 0.2 0.3
+}
+
+ward_isotropic_material
+{
+	name				wi
+	rd					50pgrey
+	rs					color_white	
+	alpha				alpha
+}
+
+##################################################
+# Objects
+##################################################
+
+beziermesh_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	detail				40
+	maxdepth			24
+	maxpolygons			10
+	bsp					TRUE
+	combine_shared		TRUE
+	center_object		TRUE
+}
+
+standard_object
+{
+	name				teapot3
+	geometry			teapotgeom
+	orientation			10 -20 0
+	position			-3.5 4 0
+	material			lamb
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				teapot4
+	geometry			teapotgeom
+	orientation			10 -20 0
+	position			3.5 4 0
+	material			wi
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				teapot
+	geometry			teapotgeom
+	orientation			10 -20 0
+	position			-3.5 0 0
+	material			ct
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				teapot2
+	geometry			teapotgeom
+	orientation			10 -20 0
+	position			3.5 0 0
+	material			sc
+	receives_shadows 	false
+}
+
+
+standard_object
+{
+	name				teapot5
+	geometry			teapotgeom
+	orientation			10 -20 0
+	position			-3.5 -4 0
+	material			aniso
+	receives_shadows 	false
+}
+
+standard_object
+{
+	name				teapot6
+	geometry			teapotgeom
+	orientation			10 -20 0
+	position			3.5 -4 0
+	material			wa
+	receives_shadows 	false
+}
+
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}

@@ -1,0 +1,318 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			spectral_skin.RISEscene																	#
+#   Description:	A test of the BioSpec biophysically-based spectral skin model							#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 23, 2004																		#
+#																											#
+#############################################################################################################
+
+> echo warning Warning! This scene is very CPU intensive and will take several minutes on even the fastest computers.
+
+##################################################
+# Setup a renderer
+##################################################
+
+spectral_painter
+{
+	name				speclum
+	nmbegin				380
+	nmend				720
+	cp					380		2.0
+	cp					720		2.0
+}
+
+uniformcolor_painter
+{
+	name				white
+	color				1.0 1.0 1.0
+}
+
+blackbody_painter
+{
+	name				speclum2
+	temperature			6500
+	scale				3.0
+}
+
+pathtracing_shaderop
+{
+	name	pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+	shaderop	DefaultEmission
+}
+
+pixelintegratingspectral_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+#	samples				4000
+	samples				1000
+	nmbegin				380
+	nmend				720
+	num_wavelengths		8
+	lum_samples			0
+#	radiance_map		speclum2
+	integrate_rgb		FALSE
+	show_luminaires		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/skinmodel/frame
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			120
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 50.0
+	lookat				0 0 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+
+
+# Camera to focus in on the the ears
+/*
+pinhole_camera
+{
+	location			-6 -1.5 12.0
+	lookat				-6 -1.5 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+*/
+
+/*
+# Camera to subtlely focus on ears
+pinhole_camera
+{
+	location			-1 -0.4 45.0
+	lookat				-1 -0.4 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+*/
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+spectral_painter
+{
+	name				specwhite
+	nmbegin				380
+	nmend				720
+	cp					380		1.0
+	cp					720		1.0
+}
+
+spectral_painter
+{
+	name				specblack
+	nmbegin				380
+	nmend				720
+	cp					380		0.0
+	cp					720		0.0
+}
+
+##################################################
+# Materials
+##################################################
+
+biospec_skin_material
+{
+	name							skin
+	melanosomes_in_epidermis		0.019
+#	melanosomes_in_epidermis		0.052
+#	melanosomes_in_epidermis		0.12
+#	melanosomes_in_epidermis		0.42
+	folds_aspect_ratio				0.75
+#	whole_blood_in_papillary_dermis	0.009
+#	whole_blood_in_reticular_dermis 0.001
+}
+
+biospec_skin_material
+{
+	name							ears
+	melanosomes_in_epidermis		0.019
+#	melanosomes_in_epidermis		0.052
+#	melanosomes_in_epidermis		0.12
+#	melanosomes_in_epidermis		0.42
+	subdermal_layer					FALSE
+	folds_aspect_ratio				0.75
+#	whole_blood_in_papillary_dermis	0.0225
+#	whole_blood_in_reticular_dermis 0.0025
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+#	exitance			color_white
+#	scale				9.0
+	exitance			speclum2
+	scale				4.0
+	material			none
+}
+
+##################################################
+# Objects - spheres
+##################################################
+
+risemesh_geometry
+{
+	name				headgeom
+	file				models/risemesh/she_head.risemesh
+}
+
+risemesh_geometry
+{
+	name				earsgeom
+	file				models/risemesh/she_ears.risemesh
+}
+
+risemesh_geometry
+{
+	name				lipsgeom
+	file				models/risemesh/she_lips.risemesh
+}
+
+risemesh_geometry
+{
+	name				eyeswhitegeom
+	file				models/risemesh/she_eyes_white.risemesh
+}
+
+risemesh_geometry
+{
+	name				eyespupilgeom
+	file				models/risemesh/she_eyes_pupil.risemesh
+}
+
+standard_object
+{
+	name				head
+	geometry			headgeom
+	orientation			-90.0 0.0 20.0
+	material			skin
+}
+
+standard_object
+{
+	name				ears
+	geometry			earsgeom
+	orientation			-90.0 0.0 20.0
+	material			ears
+}
+
+standard_object
+{
+	name				lips
+	geometry			lipsgeom
+	orientation			-90.0 0.0 20.0
+	material			skin
+}
+
+standard_object
+{
+	name				eyeswhite
+	geometry			eyeswhitegeom
+	orientation			-90.0 0.0 20.0
+	material			skin
+}
+
+standard_object
+{
+	name				eyespupil
+	geometry			eyespupilgeom
+	orientation			-90.0 0.0 20.0
+	material			skin
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-100.5 0.0 100.5
+	ptb					-100.5 0.0 -100.5
+	ptc					100.5 0.0 -100.5
+	ptd					100.5 0.0 100.5
+}
+
+/*
+clippedplane_geometry
+{
+	name				lightgeom2
+	pta					-20.5 0.0 20.5
+	ptb					-20.5 0.0 -20.5
+	ptc					20.5 0.0 -20.5
+	ptd					20.5 0.0 20.5
+}
+*/
+infiniteplane_geometry
+{
+	name				lightgeom2
+}
+
+/*
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	position			0 0.0 70.0
+	orientation			90 0 0
+	material			white_lum
+}
+*/
+
+
+standard_object
+{
+	name				light2
+	geometry			lightgeom2
+	position			0 0.0 -70.0
+	orientation			0 0 0
+	material			white_lum
+}
+
+timeline
+{
+	element_type	camera
+	element			camera
+	param			target_orientation
+	
+	interpolator	linear
+	
+	time		0.0
+	value		0.0 0.0
+
+	time		1.0
+	value		0 360
+}

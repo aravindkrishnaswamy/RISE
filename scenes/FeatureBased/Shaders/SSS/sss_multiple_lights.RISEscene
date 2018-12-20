@@ -1,0 +1,179 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sss_multiple_lights.RISEscene															#
+#   Description:	Demonstrates subsurface scattering with multiple area light sources						#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		March 8, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultEmission
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			4
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss_multiple_lights
+	type				EXR
+	color_space			ROMMRGB_Linear
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 17.0
+	lookat				0 0 0
+	up					0 1 0
+	width				384
+	height				512
+	fov					45.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+		
+##################################################
+# Materials
+##################################################
+			
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				lumA
+	exitance			color_red
+	scale				90.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				lumB
+	exitance			color_green
+	scale				90.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				lumC
+	exitance			color_blue
+	scale				90.0
+	material			none
+}
+
+translucent_material
+{
+	name				translucent
+	ref					color_white
+	tau					color_white
+	ext					color_black
+	N					0.0
+	scattering			0.0
+}
+
+##################################################
+# Objects
+##################################################
+
+rawmesh_geometry
+{
+	name				venusgeom
+	file				models/raw/venus.rawmesh
+	maxpolygons			10
+	maxdepth			8
+}
+
+standard_shader
+{
+	name				sss_irrad
+	shaderop			DefaultDirectLighting
+}
+
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			10000
+	irrad_scale			3000
+	geometric_scale 		3.5
+	extinction			0.001 0.001 0.001
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name		sss
+	shaderop	sss
+}
+
+standard_object
+{
+	name				venus
+	geometry			venusgeom
+	material			translucent
+	orientation			-90 0 0
+	shader				sss
+}
+
+# Luminaries
+
+clippedplane_geometry
+{
+	name				lightAgeom
+	pta					-4 -1 -4
+	ptb					4 -1 -4
+	ptc					4 1 -4
+	ptd					-4 1 -4
+}
+
+standard_object
+{
+	name				lightA
+	geometry			lightAgeom
+	material			lumA
+	position			0 -5 0
+}
+
+standard_object
+{
+	name				lightB
+	geometry			lightAgeom
+	material			lumB
+	position			0 5 0
+}
+
+standard_object
+{
+	name				lightC
+	geometry			lightAgeom
+	material			lumC
+	position			0 0 0
+}
+

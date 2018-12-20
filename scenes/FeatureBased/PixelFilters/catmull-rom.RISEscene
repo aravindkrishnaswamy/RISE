@@ -1,0 +1,161 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			catmull-rom.RISEscene																	#
+#   Description:	A simple test scene with two spheres													#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 8, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	DefaultEmission
+	shaderop	DefaultReflection
+	shaderop	DefaultRefraction
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				256
+	lum_samples			1
+	pixel_filter		catmull-rom
+}
+
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/catmull-rom
+	type				EXR
+	color_space			ROMMRGB_Linear
+}
+*/
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0.4 3.5
+	lookat				0 0 0
+	up				0 1 0
+	width				600
+	height				300
+	fov				14.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_cel
+	file				textures/cel.png
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				25.0
+	material			none
+}
+
+lambertian_material
+{
+	name				cel
+	reflectance			pnt_cel
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_white
+	ior				1.33
+}
+
+perfectreflector_material
+{
+	name				mirror
+	reflectance			color_white
+}
+
+##################################################
+# Objects - plane
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.2
+	ytile				0.2
+}
+
+standard_object
+{
+	name				planeA
+	geometry			planegeom
+	position			0.0 -0.3 0.0
+	orientation			-90.0 0.0 45.0
+	material			cel
+}
+
+##################################################
+# Objects - spheres
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeom
+	position			0.4 0.0 0.0
+	material			glass
+}
+
+standard_object
+{
+	name				sphereC
+	geometry			spheregeom
+	position			-0.4 0.0 0.0
+	material			mirror
+}
+
+##################################################
+# Lights
+##################################################
+
+ambient_light
+{
+	name				ambientlight
+	color				1 1 1
+	power				3.14
+}

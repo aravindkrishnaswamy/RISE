@@ -1,0 +1,241 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			cornellbox_pathtracer.RISEscene															#
+#   Description:	The famous cornell box rendered with the path tracer									#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 22, 2004																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	min_importance		0.001
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cornellbox_pathtracer
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				256
+	height				256
+	fov					37.0
+}
+
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.9 0.7
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				100.0
+	material			none
+}
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0	
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+sphere_geometry
+{
+	name				ballgeom
+	radius				50
+}
+
+# I am pulling the light out of the ceiling a bit to help us out! I was getting errors because of the coplanar surfaces
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343.0 548.7999 227.0
+	ptb					343.0 548.7999 332.0
+	ptc					213.0 548.7999 332.0
+	ptd					213.0 548.7999 227.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+
+##################################################
+# Objects - blocks
+##################################################
+
+rawmesh_geometry
+{
+	name				tallblockgeom
+	file				models/raw/cornellbox_tallblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+}
+
+rawmesh_geometry
+{
+	name				shortblockgeom
+	file				models/raw/cornellbox_shortblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+}
+
+standard_object
+{
+	name				tallblock
+	geometry			tallblockgeom
+	material			white
+}
+
+standard_object
+{
+	name				shortblock
+	geometry			shortblockgeom
+	material			white
+}
+

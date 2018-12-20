@@ -1,0 +1,221 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			csg.RISEscene																			#
+#   Description:	A test scene that tests the different CSG operations									#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 23, 2002																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/csg
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 1.5
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				green
+	reflectance			color_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_red
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			color_blue
+}
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+##################################################
+# Objects - 
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.6
+	ytile				0.6
+}
+
+sphere_geometry
+{
+	name				spheregeomA
+	radius				0.165
+}
+
+box_geometry
+{
+	name				boxgeomA
+	width				0.25
+	height				0.25
+	depth				0.25
+}
+
+sphere_geometry
+{
+	name				spheregeomB
+	radius				0.25
+}
+
+box_geometry
+{
+	name				boxgeomB
+	width				0.38
+	height				0.38
+	depth				0.38
+}
+
+standard_object
+{
+	name				planeA
+	geometry			planegeom
+	position			0.0 -0.5 0.0
+	orientation			-90.0 0.0 0.0
+	material			gold
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeomA
+	material			red
+}
+
+standard_object
+{
+	name				boxA
+	geometry			boxgeomA
+	material			blue
+}
+
+standard_object
+{
+	name				sphereB
+	geometry			spheregeomB
+	material			red
+}
+
+standard_object
+{
+	name				boxB
+	geometry			boxgeomB
+	material			blue
+}
+
+csg_object
+{
+	name				csgA
+	obja				boxB
+	objb				sphereB
+	operation			union
+	position			-0.35 0.25 -1.0
+	orientation			30 30 0
+}
+
+csg_object
+{
+	name				csgB
+	obja				boxB
+	objb				sphereB
+	operation			intersection
+	position			0.35 0.25 -1.0
+	orientation			30 30 0
+}
+
+csg_object
+{
+	name				csgC
+	obja				boxA
+	objb				sphereA
+	operation			subtraction
+	position			-0.25 -0.25 0
+	orientation			30 30 0
+}
+
+csg_object
+{
+	name				csgD
+	obja				sphereA
+	objb				boxA
+	operation			subtraction
+	position			0.25 -0.25 0
+	orientation			30 30 0
+}
+
+##################################################
+# Lights
+##################################################
+
+omni_light
+{
+	name		lightA
+	power		0.65
+	color		1.0 1.0 1.0
+	position	0 0 10
+}
+
+omni_light
+{
+	name		lightB
+	power		0.65
+	color		1.0 1.0 1.0
+	position	0 10 0
+}
+

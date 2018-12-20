@@ -1,0 +1,163 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			creature.RISEscene																		#
+#   Description:	A creature imported from 3DS Max, rendered with a path tracer.							#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 22, 2004																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+> echo warning Warning! This scene is quite CPU intensive and may take several minutes even on high end machines.
+
+hdr_painter
+{
+	name				pnt_rad
+	file				lightprobes/grace_probe.hdr
+}
+
+ambientocclusion_shaderop
+{
+	name			ambocc
+	multiplybrdf		true
+	numphi			16 
+	numtheta		5
+	irradiance_cache	false
+}
+
+standard_shader
+{
+	name			global
+	shaderop		ambocc
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples			9
+	pixel_filter		tent
+	pixel_filter_width	2
+	pixel_filter_height	2
+	radiance_map		pnt_rad
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/creature
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 -50 1000
+	lookat				0 -50 0
+	up					0 1 0
+	width				180
+	height				240
+	fov					60.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				silver
+	reflectance			color_silver
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				75pgrey
+	reflectance			color_75pgrey
+}
+
+perfectreflector_material
+{
+	name				mirror
+	reflectance			color_silver
+}
+
+##################################################
+# Objects - 
+##################################################
+
+clippedplane_geometry
+{
+	name				planegeom
+	pta					-350.0 400.0 0.0
+	ptb					-350 -400 0.0
+	ptc					350 -400 0.0
+	ptd					350 400 0.0
+}
+
+risemesh_geometry
+{
+	name				meshgeom
+	file				models/risemesh/creature.risemesh
+}
+								
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.0 -420.0 0.0
+	orientation			-90.0 0.0 0.0
+	material			75pgrey
+}
+
+standard_object
+{
+	name				mesh
+	geometry			meshgeom
+	position			150.0 150.0 200.0
+	orientation			-90.0 0.0 -45.0
+	material			75pgrey
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				75
+}
+
+standard_shader
+{
+	name				ref
+	shaderop			DefaultReflection
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			160 -345.0 250
+	material			mirror
+	shader				ref
+}

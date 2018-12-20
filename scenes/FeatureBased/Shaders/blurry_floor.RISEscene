@@ -1,0 +1,180 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			blurry_floor.RISEscene																	#
+#   Description:	A polished floor																		#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 22, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+distributiontracing_shaderop
+{
+	name				dt
+	samples				32
+	diffuse				false
+}
+
+standard_shader
+{
+	name				dt
+	shaderop			dt
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		2
+	min_importance		0.0001
+	samples				9
+	pixel_filter			tent
+	pixel_filter_width		1.7
+	pixel_filter_height		1.7
+	lum_samples			1
+
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/blurry_floor
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 1 10
+	lookat				0 1 7
+	up					0 1 0
+	width				500
+	height				375
+	fov					25.0
+	theta				15.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				myyel
+	color				1.0 0.8 0
+}
+
+uniformcolor_painter
+{
+	name				pnt_gray
+	color				0.6 0.6 0.6
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				yellow
+	reflectance			myyel
+}
+
+polished_material
+{
+	name				polished
+	reflectance			color_white
+	tau					color_white
+	ior					10000
+	scattering			1000.0
+}
+
+isotropic_phong_material
+{
+	name				glossy
+	rd					pnt_gray
+	rs					color_white
+	N					128.0
+}
+
+perfectreflector_material
+{
+	name				ref
+	reflectance			color_white
+}
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name				boxgeom
+	width				6.0
+	height				0.01
+	depth				8.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			boxgeom
+	position			0 -0.001 4
+	material			glossy
+	shader				dt
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeom
+	position			-0.75 0.306 3.5
+	material			yellow
+}
+
+standard_object
+{
+	name				sphereB
+	geometry			spheregeom
+	position			0.75 0.306 3.5
+	material			yellow
+}
+
+directional_light
+{
+	name		light
+	power		3
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}
+
+directional_light
+{
+	name		light2
+	power		3
+	color		1.0 1.0 1.0
+	direction	0 1 0
+}
+

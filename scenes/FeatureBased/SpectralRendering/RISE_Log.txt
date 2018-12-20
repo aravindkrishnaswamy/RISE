@@ -1,0 +1,15 @@
+Global Options file not specified with the 'RISE_OPTIONS_FILE' environment variable, looking for global.options file
+MediaPathLocator:: Remapped 'global.options' to '/Users/akrishnaswamy/Desktop/Code/RISE/global.options'
+ObjectManager is not configured for any type of spatial acceleration
+AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead
+MediaPathLocator:: Remapped 'colors/cornellbox_green.spectra' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/cornellbox_green.spectra'
+MediaPathLocator:: Remapped 'colors/cornellbox_red.spectra' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/cornellbox_red.spectra'
+MediaPathLocator:: Remapped 'colors/cornellbox_white.spectra' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/cornellbox_white.spectra'
+MediaPathLocator:: Remapped 'colors/cornellbox_light.spectra' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/cornellbox_light.spectra'
+MediaPathLocator:: Remapped 'colors/nikon_sb16_xenon_flash.spectra' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/nikon_sb16_xenon_flash.spectra'
+MediaPathLocator:: Remapped 'colors/flat_1.spectra' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/flat_1.spectra'
+MediaPathLocator:: Remapped 'colors/linear.ior' to '/Users/akrishnaswamy/Desktop/Code/RISE/colors/linear.ior'
+TracePhotons:: Trying to capture 1000000 photons
+TracePhotons:: Balancing KD-Tree
+AsciiSceneParser: Successfully loaded 'spectral_dispersive_caustic.RISEscene'
+riseCreateThread:: NO PTHREAD support was compiled, simply executing code

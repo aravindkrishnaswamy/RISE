@@ -1,0 +1,101 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			standard_colors.RISEscene																#
+#   Description:	Contains some standard colors															#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 22, 2004																			#
+#																											#
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_black
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_white
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		color_red
+	color		1.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_green
+	color		0.0 1.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_blue
+	color		0.0 0.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		color_cyan
+	color		0.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		color_yellow
+	color		1.0 1.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_magenta
+	color		1.0 0.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		color_cornellgreen
+	color		0.15 0.5 0.15
+}
+
+uniformcolor_painter
+{
+	name		color_cornellred
+	color		0.64 0.15 0.1
+}
+
+uniformcolor_painter
+{
+	name		color_cream
+	color		0.7 0.7 0.7
+}
+
+uniformcolor_painter
+{
+	name		color_dullyellow
+	color		0.8 0.8 0.184314
+}
+
+uniformcolor_painter
+{
+	name		color_25pgrey
+	color		0.25 0.25 0.25
+}
+
+uniformcolor_painter
+{
+	name		color_50pgrey
+	color		0.50 0.50 0.50
+}
+
+uniformcolor_painter
+{
+	name		color_75pgrey
+	color		0.75 0.75 0.75
+}
+

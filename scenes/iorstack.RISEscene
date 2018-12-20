@@ -1,0 +1,185 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			iorstack.RISEscene																		#
+#   Description:	Tests the ior stack																		#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 11, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+	shaderop			DefaultRefraction
+	shaderop			DefaultReflection
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.01
+	samples				4
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/iorstack
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.45
+	lookat				0 0 0
+	up					0 1 0
+	width				500
+	height				500
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				flower
+	file				textures/paradise.png
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+lambertian_material
+{
+	name				flower
+	reflectance			flower
+}
+
+perfectrefractor_material
+{
+	name				water
+	refractance			color_white
+	ior					1.33
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_white
+	ior					1.57
+}
+
+perfectrefractor_material
+{
+	name				air
+	refractance			color_white
+	ior					1.00027
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				40.0
+	material			none
+}
+
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.1
+}
+
+sphere_geometry
+{
+	name				spheregeom2
+	radius				0.05
+}
+
+cylinder_geometry
+{
+	name				cylgeom
+	axis				y
+	radius				0.005
+	height				0.24
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.4
+	ytile				0.4
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	material			water
+	orientation			0 0 0
+}
+
+standard_object
+{
+	name				sphere2
+	geometry			spheregeom2
+	material			air
+	orientation			0 0 0
+}
+
+standard_object
+{
+	name				cylinder
+	geometry			cylgeom
+	material			gold
+	orientation			0 0 15
+	receives_shadows	FALSE
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.2 0.2 -0.3
+	material			flower
+	receives_shadows	FALSE
+}
+
+omni_light
+{
+	name		lightA
+	power		3.14
+	color		1.0 1.0 1.0
+	position	0.0 0.0 0.65
+}
+

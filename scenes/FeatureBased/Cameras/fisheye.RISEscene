@@ -1,0 +1,126 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			fisheye.RISEscene																		#
+#   Description:	Demonstrates the use of the fisheye camera												#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 25, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+hdr_painter
+{
+	name				pnt_rad
+	file				lightprobes/uffizi_probe.hdr
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultReflection
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples			16
+	pixel_filter		tent
+	pixel_filter_width	2
+	pixel_filter_height	2
+	radiance_map		pnt_rad
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/fisheye
+	type				PNG
+	bpp				16	
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+fisheye_camera
+{
+	location			0 -55 650
+	lookat				0 -55 0
+	up					0 1 0
+	width				500
+	height				500
+	scale				1.6
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_light_purple
+	colorb				color_slateblue
+}
+
+##################################################
+# Materials
+##################################################
+
+perfectreflector_material
+{
+	name				iridescent_mirror
+	reflectance			pnt_iri
+}
+
+perfectreflector_material
+{
+	name				mirror
+	reflectance			color_orangered
+}
+
+##################################################
+# Objects - 
+##################################################
+
+clippedplane_geometry
+{
+	name				planegeom
+	pta					-350.0 400.0 0.0
+	ptb					-350 -400 0.0
+	ptc					350 -400 0.0
+	ptd					350 400 0.0
+}
+
+risemesh_geometry
+{
+	name				meshgeom
+	file				models/risemesh/creature.risemesh
+}
+								
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.0 -420.0 0.0
+	orientation			-90.0 0.0 0.0
+	material			mirror
+}
+
+standard_object
+{
+	name				mesh
+	geometry			meshgeom
+	position			150.0 150.0 200.0
+	orientation			-90.0 0.0 -45.0
+	material			iridescent_mirror
+}

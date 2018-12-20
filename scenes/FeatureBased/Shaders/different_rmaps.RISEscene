@@ -1,0 +1,212 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			different_rmaps.RISEscene																#
+#   Description:	A simple test scene with objects with different radiance maps and different shaders		#
+#                     The spheres each have their own radiance map while there is also a global radiance    #
+#                     map.  In addition the floor uses path tracing as a shader while the spheres use a     #
+#                     simpler ray tracing function for just reflections and refractions.                    #
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 17, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+# Load all the radiance maps
+hdr_painter
+{
+	name				pnt_rad
+	file				lightprobes/stpeters_probe.hdr
+}
+
+hdr_painter
+{
+	name				pnt_rad2
+	file				lightprobes/grace_probe.hdr
+}
+
+hdr_painter
+{
+	name				pnt_rad3
+	file				lightprobes/rnl_probe.hdr
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+	shaderop		DefaultReflection
+	shaderop		DefaultRefraction
+	shaderop		DefaultEmission
+}
+
+distributiontracing_shaderop
+{
+	name		pt
+	samples		16
+}
+
+# We use an advanced shader to make sure that distribution tracing is only
+# used for the couple of bounces
+
+advanced_shader
+{
+	name			pt							
+	shaderop		pt							0	2			+
+	shaderop		DefaultDirectLighting		2   10			+
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+	show_luminaires		FALSE
+	pixel_filter		catmull-rom
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/different_rmaps
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0.4 3.5
+	lookat				0 0 0
+	up					0 1 0
+	width				600
+	height				300
+	fov					14.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				25.0
+	material			white
+}
+
+polished_material
+{
+	name				polished
+	reflectance			color_steelblue
+	tau					color_white
+	ior					1.57
+	scattering			10000
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_white
+	ior					1.57
+}
+
+perfectreflector_material
+{
+	name				mirror
+	reflectance			color_white
+}
+
+##################################################
+# Objects - plane
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.2
+	ytile				0.2
+}
+
+standard_object
+{
+	name				planeA
+	geometry			planegeom
+	position			0.0 -0.3 0.0
+	orientation			-90.0 0.0 45.0
+	material			polished
+	shader				pt
+	radiance_map		pnt_rad3
+}
+
+##################################################
+# Objects - spheres
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeom
+	position			0.4 0.0 0.0
+	material			mirror
+	radiance_map		pnt_rad
+}
+
+standard_object
+{
+	name				sphereC
+	geometry			spheregeom
+	position			-0.4 0.0 0.0
+	material			glass
+	radiance_map		pnt_rad2
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-40.0 0.0 40.0
+	ptb					-40.0 0.0 -40.0
+	ptc					40.0 0.0 -40.0
+	ptd					40.0 0.0 40.0
+}
+
+##################################################
+# Lights
+##################################################
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	position			0 150.0 0.0
+	orientation			0 0 0
+	material			white_lum
+}
+

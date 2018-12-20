@@ -1,0 +1,171 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			motion_blurred_caustic.RISEscene														#
+#   Description:	Tests animations with caustics															#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 27, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+#	shaderop	DefaultDirectLighting
+	shaderop	DefaultReflection
+	shaderop	DefaultRefraction
+	shaderop	DefaultCausticPelPhotonMap
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	min_importance		0.0001
+	samples				16
+	lum_samples			9
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/motion_blurred_caustic
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	multiple			TRUE
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					30.0
+	exposure			0.5
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_gold
+	ior					1.45
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				30.0
+	material			none
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			spheregeom
+	radius			0.05
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			-0.1 0 0.0
+	material			glass
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0 -0.1 0
+	orientation			-90 0 0
+	material			white
+}
+
+clippedplane_geometry
+{
+	name				lightgeom2
+	pta					-0.1 0.1 0.0
+	ptb					-0.1 -0.1 0.0
+	ptc					0.1 -0.1 0.0
+	ptd					0.1 0.1 0.0
+}
+
+standard_object
+{
+	name				light2
+	geometry			lightgeom2
+	position			0 0.5 0.0
+	orientation			90 0 0
+	material			white_lum
+}
+
+##################################################
+# Keyframes
+##################################################
+
+timeline
+{
+	element		sphere
+	param		position
+	
+	time		0.0
+	value		-0.1 0 0.0
+	
+	time		1.0
+	value		0.1 0 0.0
+}
+
+caustic_pel_photonmap
+{
+	num					50000
+	max_recursion		5
+	min_importance		0.001
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+	power_scale			40.0	
+}
+
+caustic_pel_gather
+{
+	max_photons			150
+}
+

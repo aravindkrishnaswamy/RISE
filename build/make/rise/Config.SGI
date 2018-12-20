@@ -1,0 +1,38 @@
+##################################################################################################
+#
+#  Config for Realistic Image Synthesis Engine (R.I.S.E) for Irix on an SGI
+#  Author: Aravind Krishnaswamy
+#  Date: September 6, 2002
+#
+#  Notes:  I recommend using GNU make 
+#  
+##################################################################################################
+
+#echo "Using SGI Irix configuration"
+
+# name of the CC compiler
+CXX = g++
+
+# options for the linker
+CPPFLAGS = -I$(PATHLIBRARY) 
+
+# This set of flags works on Irix 6.5 g++ 2.95.4
+CXXFLAGS = -O3 -ffast-math -fcse-skip-blocks -frerun-loop-opt -fgcse -fschedule-insns -funroll-loops
+
+# Turn this on, if you don't have a proper libpng library installed
+DEF_PNG = -DNO_PNG_SUPPORT
+
+# Turn this on if you don't have a proper libpthreads library installed
+#DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
+
+# This makes the library use the drand48 function to generate random numbers
+# otherwise it uses rand
+#DEF_RAND = -DDRAND48
+
+DEFS = -DRISE_BIG_ENDIAN $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
+
+# For debugging information
+# CXXFLAGS = -ggdb
+
+# libraries to link with
+LDLIBS = -lpthread

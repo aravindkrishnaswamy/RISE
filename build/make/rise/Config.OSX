@@ -1,0 +1,33 @@
+##################################################################################################
+#
+#  Config for Realistic Image Synthesis Engine (R.I.S.E) for Macintosh OSX (not yet tested!)
+#  Author: Aravind Krishnaswamy
+#  Date: September 16, 2002
+#
+#  Notes:  I recommend using GNU make
+#
+##################################################################################################
+
+#echo "Using Mac/OSX configuration"
+
+# name of the CC compiler
+CXX = c++
+
+# options for the linker
+CPPFLAGS = -I$(PATHLIBRARY)
+
+CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic
+
+# For debugging information
+# CXXFLAGS = -ggdb
+
+# Turn this on, if you don't have a proper libpng library installed
+DEF_PNG = -DNO_PNG_SUPPORT
+
+# Turn this on if you don't have a proper libpthreads library installed
+DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
+
+DEFS = -DRISE_BIG_ENDIAN $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
+
+# libraries to link with
+LDLIBS =

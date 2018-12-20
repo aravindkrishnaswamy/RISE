@@ -1,0 +1,131 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sss_ibl.scn																				#
+#   Description:	Translucent teapot lit with HDR image based lighting									#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 23, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+hdr_painter
+{
+	name				pnt_rad
+	file				lightprobes/rnl_probe.hdr
+}
+
+# We do the incident lighting calculation using ambient occlusion, which is smart enough
+# to also figure out that there is a radiance map.  We use ambient occlusion because it has
+# an optimized path in the rendering system
+ambientocclusion_shaderop
+{
+	name		ambocc
+	numtheta	5
+	numphi		12
+}
+
+# Shader by which we compute incident illuminatin
+standard_shader
+{
+	name		sss_irrad
+	shaderop	ambocc
+}
+
+# Note: You may have to increase the number of points to get adequate results
+simple_sss_shaderop
+{
+	name				sss
+	numpoints			100000
+	irrad_scale			100
+	geometric_scale 	0.35
+	error				0.01
+
+	shader				sss_irrad
+}
+
+# Now setup the default 'global' shader for the object itself
+standard_shader
+{
+	name		global
+	shaderop	sss
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+	radiance_map		pnt_rad
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sss_ibl
+	type				HDR
+	bpp					8
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 7.5
+	lookat				0 0 0
+	up					0 1 0
+	width				680
+	height				480
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Materials
+##################################################
+
+##################################################
+# Objects
+##################################################
+
+beziermesh_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	detail				15
+	maxdepth			24
+	maxpolygons			10
+	bsp					TRUE
+	combine_shared		TRUE
+	center_object		TRUE
+}
+
+standard_object
+{
+	name				teapot
+	geometry			teapotgeom
+	orientation			20 -20 0
+	material			white
+	casts_shadows		FALSE
+	receives_shadows	FALSE
+	shader				global
+}
+

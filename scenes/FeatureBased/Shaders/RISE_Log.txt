@@ -1,0 +1,14 @@
+Global Options file not specified with the 'RISE_OPTIONS_FILE' environment variable, looking for global.options file
+MediaPathLocator:: Remapped 'global.options' to '/Users/akrishnaswamy/Desktop/Code/RISE/global.options'
+ObjectManager is not configured for any type of spatial acceleration
+MediaPathLocator:: Remapped 'scenes/colors.RISEscript' to '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/colors.RISEscript'
+MediaPathLocator:: Remapped 'scenes/standard_colors.RISEscene' to '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/standard_colors.RISEscene'
+AsciiSceneParser: Successfully loaded '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/standard_colors.RISEscene'
+MediaPathLocator:: Remapped 'scenes/povray_colors.RISEscene' to '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/povray_colors.RISEscene'
+AsciiSceneParser: Successfully loaded '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/povray_colors.RISEscene'
+AsciiScriptParser: Successfully loaded '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/colors.RISEscript'
+AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead
+AsciiSceneParser: Successfully loaded 'transparency_shaderop.RISEscene'
+FileRasterizerOutput:: Written to '/Users/akrishnaswamy/Desktop/Code/RISE/rendered/transparency_shaderop.tga'
+Total Rasterization Time: 2 seconds 525 ms
+

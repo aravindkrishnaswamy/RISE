@@ -1,0 +1,295 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			teapot.scn																				#
+#   Description:	A simple Utah teapot																	#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 23, 2002																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+hdr_painter
+{
+	name				pnt_rad
+	file				lightprobes/rnl_probe.hdr
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultReflection
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+	radiance_map		pnt_rad
+	radiance_background	TRUE
+}
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/teapot/frame
+	type				PNG
+	bpp					8
+	multiple			TRUE
+	color_space			sRGB
+}
+*/
+
+file_rasterizeroutput
+{
+	pattern				rendered/teapot
+	type				HDR
+	bpp					8
+}
+
+DEFINE FRAMES 120
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			@FRAMES
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 7.5
+	lookat				0 0 0
+	up					0 1 0
+	width				680
+	height				480
+	fov					39.0
+#	exposure			$((1.0/@FRAMES)*0.5)	
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+perlin2d_painter
+{
+	name				pnt_perlin
+	colora				color_darkpurple
+	colorb				color_slateblue
+	persistence			0.5
+	scale				5 5
+	shift				0 0
+	octaves				4
+}
+
+perlin3d_painter
+{
+	name				pnt_perlin3d
+	colora				color_white
+	colorb				color_black
+	persistence			0.5
+	scale				5 5 5
+	shift				0 0 0
+	octaves				4
+}
+
+png_painter
+{
+	name				pnt_disp
+	file				textures/waterbump.png
+}
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_darkpurple
+	colorb				color_slateblue
+	bias				-0.5
+}
+
+mandelbrot_painter
+{
+	name				pnt_mandelbrot
+	colora				color_black
+	colorb				color_white
+	xstart				-1.75
+	xend				0.75
+	ystart				-1.25
+	yend				1.25
+	exponent			12.0
+}
+
+cooktorrance_material
+{
+	name				ct
+	rd					color_black
+	rs					color_gold
+	facets				0.1
+	ior					1.8
+	extinction			0
+}
+
+##################################################
+# Materials
+##################################################
+
+polished_material
+{
+	name				polished
+	reflectance			pnt_iri
+	tau					color_silver
+	scattering			256.0
+	ior					10000	
+}
+
+perfectreflector_material
+{
+	name				perf_ref
+	reflectance			pnt_iri
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Objects
+##################################################
+/*
+bezierpatch_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	detail				7
+	maxpatches			2
+	maxdepth			7
+	maxpolygons			10
+	maxpolydepth		24
+	bsp					TRUE
+	poly_bsp			TRUE
+#	face_normals		TRUE
+	cache_size			30
+}
+*/
+
+beziermesh_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+#	detail				40
+	detail				15
+	maxdepth			24
+	maxpolygons			10
+	bsp					TRUE
+	combine_shared		TRUE
+	center_object		TRUE
+#	face_normals		TRUE
+	displacement		pnt_disp
+	disp_scale			0.1
+}
+
+standard_object
+{
+	name				teapot
+	geometry			teapotgeom
+	orientation			20 -20 0
+	material			perf_ref
+	casts_shadows		FALSE
+	receives_shadows	FALSE
+}
+/*
+directional_light
+{
+	name		light
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}
+*/
+omni_light
+{
+	name		light
+	power		1.0
+	color		1.0 1.0 1.0
+	position	0 0 8.5
+}
+/*
+timeline
+{
+	element_type		object
+	element				teapot
+	param				orientation
+
+	time 0
+	value 0 0 0
+
+	time 0.5
+	value 90 270 0
+
+	time 1
+	value 360 360 0
+}
+*/
+
+timeline
+{
+	element_type		camera
+	element				camera
+	param				target_orientation
+
+	interpolator		hermite
+
+	time 0
+	value 0 0
+
+	time 0.25
+	value 90 90
+
+	time 0.50
+	value 0 180
+
+	time 0.75
+	value -10 270
+
+	time 1
+	value 0 360
+}
+
+timeline
+{
+	element_type		light
+	element				light
+	param				position
+
+	interpolator		hermite
+
+	time 0
+	value 0 0 800
+
+	time 0.25
+	value 800 800 0
+
+	time 0.50
+	value 0 0 -800
+
+	time 0.75
+	value -800 -1.5 0
+
+	time 1
+	value 0 0 800
+}
+
+

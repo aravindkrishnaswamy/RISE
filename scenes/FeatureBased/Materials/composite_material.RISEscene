@@ -1,0 +1,195 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			composite_mateiral.RISEscene															#
+#   Description:	A demonstration of the composite material, which sandwiches two materials together      #
+#                     to create a variety of other materials												#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 25, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_rad
+	color				1 1 1
+}
+
+pathtracing_shaderop
+{
+	name				pt
+}
+
+standard_shader
+{
+	name				global
+	shaderop			pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples			9
+	lum_samples		1
+	radiance_map		pnt_rad
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/composite_material
+	type				PNG
+	bpp					8
+	color_space			sRGB
+#	multiple			TRUE
+}
+
+DEFINE FRAMES 30
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			@FRAMES
+}
+
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 17
+	lookat				0 0 0
+	up					0 1 0
+	width				350
+	height				250
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_red
+	colorb				color_blue
+}
+
+##################################################
+# Materials
+##################################################
+
+dielectric_material
+{
+	name				dielectricA
+	tau					color_magenta
+	ior					1.25
+	scattering			10000
+}
+
+dielectric_material
+{
+	name				dielectricB
+	tau					pnt_iri
+	ior					1.15
+	scattering			10000
+}
+
+# at the very bottom we will have a lambertian white material
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+ward_anisotropic_material
+{
+	name				wa
+	rd					color_black
+	rs					color_white
+	alphax				0.9
+	alphay				0.1
+}
+
+composite_material
+{
+	name				top
+	top					dielectricA
+	bottom				dielectricB
+	thickness			1
+
+	max_reflection_recursion 1
+	max_refraction_recursion 10
+	max_diffuse_recursion	 10
+}
+
+composite_material
+{
+	name				composite
+	top					top
+	bottom				white
+	thickness			1
+
+	max_reflection_recursion 1
+	max_refraction_recursion 10
+	max_diffuse_recursion	 10
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				10
+}
+
+
+##################################################
+# Objects
+##################################################
+
+beziermesh_geometry
+{
+	name				bezgeom
+	file				models/bezier/f16.bezier
+	detail				6
+	maxdepth			24
+	maxpolygons			10
+	bsp					TRUE
+	face_normals		FALSE
+	double_sided		TRUE
+}
+
+standard_object
+{
+	name				bez
+	geometry			bezgeom
+	orientation			20 150 0
+	material			composite
+}
+
+
+timeline
+{
+	element_type		camera
+	element				camera
+	param				target_orientation
+
+	interpolator		linear
+
+	time 0
+	value 0 0
+
+	time 1
+	value 0 360
+}

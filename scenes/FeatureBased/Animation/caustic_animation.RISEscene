@@ -1,0 +1,180 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			caustic_animation.RISEscene																#
+#   Description:	Demonstrates animations with caustics													#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 26, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+	shaderop		DefaultCausticPelPhotonMap
+	shaderop		DefaultReflection
+	shaderop		DefaultRefraction
+}
+
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/caustic_animation-frame
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	multiple			TRUE
+}
+
+DEFINE FRAMES 120
+
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			@FRAMES
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				300
+	height				300
+	fov					30.0
+	exposure			$((1.0/@FRAMES)*0.8)
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+perfectrefractor_material
+{
+	name				glass
+	refractance			color_gold
+	ior					1.45
+}
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name			boxgeom
+	width			0.06
+	height			0.06
+	depth			0.06
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	position			-0.1 0 0.0
+	orientation			45 45 0
+	material			glass
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0 -0.1 0
+	orientation			-90 0 0
+	material			white
+}
+
+spot_light
+{
+	name		lightA
+	power		1.0
+	color		1.0 1.0 1.0
+	position	0.0 0.465 0
+	target		0 0 0
+	outer		40
+	inner		0
+}
+
+##################################################
+# Keyframes
+##################################################
+
+timeline
+{
+	element		box
+	param		position
+	
+	time		0.0
+	value		-0.1 0 0.0
+	
+	time		1.0
+	value		0.1 0 0.0
+}
+
+timeline
+{
+	element		box
+	param		orientation
+	
+	time		0.0
+	value		0 0 0
+
+	time		1.0
+	value		180 180 0
+}
+
+caustic_pel_photonmap
+{
+	num					10000
+	max_recursion		5
+	min_importance		0.001
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+	nonmeshlights		TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons			150
+}

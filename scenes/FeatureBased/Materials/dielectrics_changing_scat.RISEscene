@@ -1,0 +1,242 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			dielectrics_changing_scat.RISEscene														#
+#   Description:	Dielectrics with different values for the scattering parameter which determines how     #
+#                     coherent the scattered light is.  We keep the index of refraction constant            #
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		August 7, 2002																			#
+#																											#
+#############################################################################################################
+
+> echo warning Warning! This scene is CPU intensive and may take a few minutes to render on slower machines.
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name			pathtracer_noreflections
+	refractions		true
+	diffuse			false
+}
+
+pathtracing_shaderop
+{
+	name			pathtracer
+}
+
+# We want to setup an advanced shader to only do reflections on the first couple of bounces
+# so that we can avoid total internal reflection.  The flexibility of the advanced shader
+# lets us do this
+advanced_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting		0 10		+
+	shaderop		DefaultEmission			0 10		+
+	shaderop		pathtracer			0 1		+
+	shaderop		pathtracer_noreflections	1 10		+
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.01
+	samples				128
+	lum_samples			1
+	pixel_filter		tent
+	pixel_filter_width	1.7
+	pixel_filter_height	1.7
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/dielectrics_changing_scat
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 -0.2 3.2
+	lookat				0 -0.2 1.0
+	up					0 1 0
+	width				450
+	height				160
+	fov					30.0
+	theta				15
+}
+
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+checker_painter
+{
+	name				pnt_check
+	size				0.5
+	colora				color_white
+	colorb				color_black
+}
+
+##################################################
+# Materials
+##################################################
+
+dielectric_material
+{
+	name				dieA
+	tau					color_white
+	ior					1.33
+	scattering				1
+}
+
+dielectric_material
+{
+	name				dieB
+	tau					color_white
+	ior					1.33
+	scattering				16
+}
+
+dielectric_material
+{
+	name				dieC
+	tau					color_white
+	ior					1.33
+	scattering				100
+}
+
+dielectric_material
+{
+	name				dieD
+	tau					color_white
+	ior					1.33
+	scattering				1000
+}
+
+dielectric_material
+{
+	name				dieE
+	tau					color_white
+	ior					1.33
+	scattering				100000
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				40.0
+	material			white
+}
+
+lambertian_material
+{
+	name				checker
+	reflectance			pnt_check
+}
+
+##################################################
+# Objects
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.1
+	ytile				0.1
+}
+
+standard_object
+{
+	name				planeA
+	geometry			planegeom
+	position			0.0 -0.3 0.0
+	orientation			-90.0 0.0 45.0
+	material			checker
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-1.0 0.0 1.0
+	ptb					-1.0 0.0 -1.0
+	ptc					1.0 0.0 -1.0
+	ptd					1.0 0.0 1.0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	position			0 4.0 0.0
+	material			white_lum
+}
+
+
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.2
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeom
+	position			-1.0 0 1.2
+	material			dieA
+}
+
+standard_object
+{
+	name				sphereB
+	geometry			spheregeom
+	position			-0.5 0 1.2
+	material			dieB
+}
+
+
+standard_object
+{
+	name				sphereC
+	geometry			spheregeom
+	position			0.0 0 1.2
+	material			dieC
+}
+
+
+standard_object
+{
+	name				sphereD
+	geometry			spheregeom
+	position			0.5 0 1.2
+	material			dieD
+}
+
+
+standard_object
+{
+	name				sphereE
+	geometry			spheregeom
+	position			1.0 0 1.2
+	material			dieE
+}

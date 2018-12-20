@@ -1,0 +1,33 @@
+##################################################################################################
+#
+#  Config.common for Realistic Image Synthesis Engine (R.I.S.E).  Common configuration 
+#  parameters (common to all platforms that is)
+#  Author: Aravind Krishnaswamy
+#  Date: September 6, 2002
+#
+#  Notes:  I recommend using GNU make 
+#  
+##################################################################################################
+
+# Path to the sources for this project, namely the entry point
+PATHSRCS = ../../../src/RISE/
+
+# Path to the sources for DRISE
+PATHSRCSDRISE = ../../../src/DRISE/
+
+# Path to the library's folder
+PATHLIBRARY = ../../../src/Library/
+
+# Path to the destination executable
+PATHDEST = ../../../bin/
+
+# Don't delete the blank line after these files
+# Additional include folders
+HDRS = \
+
+# These are required library settings
+# From here we can decide what color space that is used.
+# We can also select the random number generator we want to use.
+# By default we use the very spiffy Mersenne
+# twister, specifically the one with 53bit resolution
+CXXLIBSETTINGS = -DCOLORS_RGB -DMERSENNE53 -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT

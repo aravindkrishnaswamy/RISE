@@ -1,0 +1,132 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			f16.scn																					#
+#   Description:	F-16 bezier model
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		May 20, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/f16
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 17.5
+	lookat				0 0 0
+	up					0 1 0
+	width				700
+	height				500
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+iridescent_painter
+{
+	name				pnt_iri
+	colora				color_darkpurple
+	colorb				color_slateblue
+	bias				-0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+perfectreflector_material
+{
+	name				perf_ref
+	reflectance			pnt_iri
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Objects
+##################################################
+/*
+bezierpatch_geometry
+{
+	name				bezgeom
+	file				models/bezier/f16.bezier
+	detail				7
+	maxpatches			10
+	maxdepth			24
+	maxpolygons			10
+	maxpolydepth		24
+	bsp					TRUE
+	poly_bsp			TRUE
+	face_normals		FALSE
+	double_sided		TRUE
+	cache_size			5000
+}
+*/
+
+beziermesh_geometry
+{
+	name				bezgeom
+	file				models/bezier/f16.bezier
+	detail				6
+	maxdepth			24
+	maxpolygons			10
+	bsp					TRUE
+	face_normals		FALSE
+	double_sided		TRUE
+}
+
+standard_object
+{
+	name				bez
+	geometry			bezgeom
+	orientation			20 150 0
+	material			white
+#	casts_shadows		FALSE
+#	receives_shadows	FALSE
+}
+
+directional_light
+{
+	name		light
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}

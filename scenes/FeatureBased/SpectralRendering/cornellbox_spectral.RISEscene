@@ -1,0 +1,284 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			cornellbox_spectral.RISEscene															#
+#   Description:	The famous cornell box, rendered spectrally with the path tracer						#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 22, 2004																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name	pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+	shaderop	DefaultDirectLighting
+}
+
+
+pixelintegratingspectral_rasterizer
+{
+	samples					64
+	lum_samples				1
+	nmbegin					405
+	nmend					705
+	num_wavelengths			8
+	max_recursion			5
+	min_importance			0.01
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cornellbox_spectral
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					37.0
+}
+
+##################################################
+# Painters
+##################################################
+
+spectral_painter
+{
+	name				pnt_green
+	file				colors/cornellbox_green.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_red
+	file				colors/cornellbox_red.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_white
+	file				colors/cornellbox_white.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_light
+	file				colors/cornellbox_light.spectra
+	nmbegin				386
+	nmend				711
+	scale				4	
+}
+
+spectral_painter
+{
+	name				pnt_light_xenon_flash
+	file				colors/nikon_sb16_xenon_flash.spectra
+	nmbegin				386
+	nmend				711
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}					
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				10.0
+	material			none
+}
+
+#
+# Black body radiator values for some things 
+# From "Introduction to Classical and Modern Optics" Meyer-Ardent, Jurgen R.
+#
+# Sun - 5600K, 
+# 200-W Tungsten-filament lamp - 3200K
+# Solidification of platinum (new Candela defn.) - 1772C + 273 = 2045K
+# Peak luminous photopic efficiency (eye) (using Wien's displacement law) - 5221K 
+#
+
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0	
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+# I am pulling the light out of the ceiling a bit to help us out! I was getting errors because of the coplanar surfaces
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343.0 548.7999 227.0
+	ptb					343.0 548.7999 332.0
+	ptc					213.0 548.7999 332.0
+	ptd					213.0 548.7999 227.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Objects - blocks
+##################################################
+
+rawmesh_geometry
+{
+	name				tallblockgeom
+	file				models/raw/cornellbox_tallblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+}
+
+rawmesh_geometry
+{
+	name				shortblockgeom
+	file				models/raw/cornellbox_shortblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+}
+
+standard_object
+{
+	name				tallblock
+	geometry			tallblockgeom
+	material			white
+}
+
+standard_object
+{
+	name				shortblock
+	geometry			shortblockgeom
+	material			white
+}

@@ -1,0 +1,232 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#							  	  R.I.S.E Ascii Scene File													#
+#																											#
+#	File: 			triplecaustic.RISEscene																	#
+#   Description:	A scene with 3 sphere, 3 caustic in primary colors, adding to make a white caustic		#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		October 16, 2002																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	DefaultCausticPelPhotonMap
+	shaderop	DefaultEmission
+	shaderop	DefaultReflection
+	shaderop	DefaultRefraction
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.00001
+	samples				1
+	lum_samples			9
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/triplecaustic
+	type				EXR
+	color_space			ROMMRGB_Linear
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0.0 3.0
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+perfectrefractor_material
+{
+	name				red_glass
+	refractance			color_red
+	ior					1.47
+}
+
+perfectrefractor_material
+{
+	name				green_glass
+	refractance			color_green
+	ior					1.47
+}
+
+perfectrefractor_material
+{
+	name				blue_glass
+	refractance			color_blue
+	ior					1.47
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			color_white
+	scale				90.0
+	material			white
+}
+
+##################################################
+# Objects
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.5
+	ytile				0.5
+}
+
+standard_object
+{
+	name				planeA
+	geometry			planegeom
+	position			0.0 -0.5 0.0
+	orientation			-90.0 0.0 0.0
+	material			white
+}
+
+standard_object
+{
+	name				planeB
+	geometry			planegeom
+	position			0.0	 0.0 -0.8
+	orientation			0.0 0.0 0.0
+	material			white
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.2
+}
+
+standard_object
+{
+	name				sphereA
+	geometry			spheregeom
+	position			-0.4 -0.3 0.1
+	material			red_glass
+}
+
+standard_object
+{
+	name				sphereB
+	geometry			spheregeom
+	position			0 -0.3 -0.3	
+	material			green_glass
+}
+
+standard_object
+{
+	name				sphereC
+	geometry			spheregeom
+	position			0.4 -0.3 0.1
+	material			blue_glass
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					0.0 0.1 -0.1
+	ptb					0.0 -0.1 -0.1
+	ptc					0.0 -0.1 0.1
+	ptd					0.0 0.1 0.1
+}
+
+clippedplane_geometry
+{
+	name				light2geom
+	pta					0.0 0.1 -0.1
+	ptb					0.0 -0.1 -0.1
+	ptc					0.0 -0.1 0.1
+	ptd					0.0 0.1 0.1
+}
+
+clippedplane_geometry
+{
+	name				light3geom
+	pta					-0.1 0.1 0.0
+	ptb					-0.1 -0.1 0.0 
+	ptc					0.1 -0.1 0.0
+	ptd					0.1 0.1	0.0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	position			0.8 0.0 0.1
+	orientation			0 0 25
+	material			white_lum
+}
+
+standard_object
+{
+	name				light2
+	geometry			light2geom
+	position			-0.8 0.0 0.1
+	orientation			0 180 25
+	material			white_lum
+}
+
+standard_object
+{
+	name				light3
+	geometry			light3geom
+	position			0 0 -0.7
+	orientation			25 0 0
+	material			white_lum
+}
+
+##################################################
+# Photon map settings
+##################################################
+
+caustic_pel_photonmap
+{
+	num					300000
+	max_recursion		10
+	min_importance		0.001
+	power_scale			7
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons			150
+}
+

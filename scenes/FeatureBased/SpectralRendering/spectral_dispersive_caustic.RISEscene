@@ -1,0 +1,247 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			spectral_dispersive_caustic.scn															#
+#   Description:	Renders spectral dispersion using the spectral renderer and spectral photon map			#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 19, 2002																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+	shaderop		DefaultReflection
+	shaderop		DefaultRefraction
+	shaderop		DefaultCausticSpectralPhotonMap
+	shaderop		DefaultEmission
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples					256
+	lum_samples				1
+	nmbegin					405
+	nmend					705
+	num_wavelengths			8
+	max_recursion			3
+	min_importance			0.01
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/spectral_dispersive_caustic
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0.278 0.273 -0.800
+	lookat				0.278 0.273 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					37.0
+}
+
+
+##################################################
+# Painters
+##################################################
+
+spectral_painter
+{
+	name				pnt_green
+	file				colors/cornellbox_green.spectra
+	nmbegin				400
+	nmend				700
+	scale				3
+}
+
+spectral_painter
+{
+	name				pnt_red
+	file				colors/cornellbox_red.spectra
+	nmbegin				400
+	nmend				700
+	scale				3
+}
+
+spectral_painter
+{
+	name				pnt_white
+	file				colors/cornellbox_white.spectra
+	nmbegin				400
+	nmend				700
+	scale				3
+}
+
+spectral_painter
+{
+	name				pnt_light
+	file				colors/cornellbox_light.spectra
+	nmbegin				386
+	nmend				711
+	scale				3
+}
+
+spectral_painter
+{
+	name				pnt_light_xenon_flash
+	file				colors/nikon_sb16_xenon_flash.spectra
+	nmbegin				386
+	nmend				711
+}
+
+spectral_painter
+{
+	name				pnt_trans
+	file				colors/flat_1.spectra
+	nmbegin				380
+	nmend				720
+}
+
+spectral_painter
+{
+	name				linear_ior
+	file				colors/linear.ior
+	nmbegin				380
+	nmend				720
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light_xenon_flash
+	scale				6.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					pnt_trans
+	ior					linear_ior
+	scattering			1000000
+}
+
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					0.5528 0 0
+	ptb					0 0 0
+	ptc					0 0 0.5592
+	ptd					0.5496 0 0.5592
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					0.5496 0 0.5592
+	ptb					0 0 0.5592
+	ptc					0 0.5488 0.5592
+	ptd					0.556 0.5488 0.5592
+}
+
+# I am pulling the light out of the ceiling a bit to help us out! I was getting errors because of the coplanar surfaces
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					0.3430 0.5487999 0.2270
+	ptb					0.3430 0.5487999 0.3320
+	ptc					0.2130 0.5487999 0.3320
+	ptd					0.2130 0.5487999 0.2270
+}
+
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Objects - One sphere
+##################################################
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.12
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0.273 0.23	0.2
+	material			glass
+}
+
+caustic_spectral_photonmap
+{
+	num					100000
+	nmbegin				405
+	nmend				705
+	num_wavelengths		8
+}
+
+caustic_spectral_gather
+{
+	max_photons			450
+	radius				0.01
+}

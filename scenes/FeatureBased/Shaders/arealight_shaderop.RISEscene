@@ -1,0 +1,124 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			arealight_shaderop.RISEScene															#
+#   Description:	Demonstrates using the area light shaderop												#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		February 28, 2005																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+uniformcolor_painter
+{
+	name			color_emm
+	color			1 1 1
+}
+
+arealight_shaderop
+{
+	name			arealight
+	emission		color_emm
+	location		-5 5 2
+	make_dir		0 0 0
+	samples			16
+	width			3.0
+	height			3.0
+	power			50
+	cache			false
+}
+
+standard_shader
+{
+	name			global
+	shaderop		arealight
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				9
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/arealight_shaderop
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0.25 0 3.5
+	lookat				0.25 0 0
+	up					0 1 0
+	width				400
+	height				300
+	fov					20.0
+	theta				30
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Objects - plane
+##################################################
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				0.5
+	ytile				0.5
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0.0 -0.3 0.0
+	orientation			-90.0 0.0 0.0
+	material			white
+}
+
+##################################################
+# Objects - boxes
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0.0 0.0
+	material			white
+}

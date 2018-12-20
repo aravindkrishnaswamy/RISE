@@ -1,0 +1,179 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#							  	  R.I.S.E Ascii Scene File													#
+#																											#
+#	File: 			diacaustic.scn																			#
+#   Description:	Scene with a diacaustic (caustic caused by reflection).                                 #
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 26, 2003																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+#	shaderop		DefaultDirectLighting
+	shaderop		DefaultCausticPelPhotonMap
+	shaderop		DefaultReflection
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/diacaustic
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 200
+	lookat				0 0 0
+	up					0 1 0
+	width				640
+	height				480
+	fov					45.0
+	theta				60
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_tex
+	file				textures/wood.png
+	color_space			sRGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_refl
+	color				1.0 0.625 0.29
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+
+lambertian_material
+{
+	name				wood
+	reflectance			pnt_tex
+}
+
+perfectreflector_material
+{
+	name				metal
+	reflectance			pnt_refl
+}
+
+lambertian_luminaire_material
+{
+	name				light
+	exitance			color_white
+	scale				5000
+	material			white
+}
+
+##################################################
+# Geometry
+##################################################
+
+rawmesh2_geometry
+{
+	name				geom_box
+	file				models/raw/ring-caustic01_box.rawmesh2
+	maxpolygons			10
+	maxdepth			6
+}
+
+rawmesh2_geometry
+{
+	name				geom_tube
+	file				models/raw/ring-caustic01_tube.rawmesh2
+	maxpolygons			10
+	maxdepth			6
+}
+
+clippedplane_geometry
+{
+	name				geom_light
+	pta					-10 -120 100
+	ptb					10 -120 100
+	ptc					10 -130 100
+	ptd					-10 -130 100
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				box
+	geometry			geom_box
+	material			wood
+	orientation			-90 0 0
+}
+
+standard_object
+{
+	name				tube
+	geometry			geom_tube
+	material			metal
+	orientation			-90 0 0
+}
+
+standard_object
+{
+	name				light
+	geometry			geom_light
+	material			light
+	orientation			-90 0 0
+}
+
+##################################################
+# Photon mapping settings
+##################################################
+caustic_pel_photonmap
+{
+	num					50000
+	max_recursion		10
+	min_importance		0.001
+	branch				TRUE
+	reflect				TRUE
+	refract				FALSE
+	regenerate			FALSE
+}
+
+caustic_pel_gather
+{
+	max_photons			150
+}

@@ -1,0 +1,497 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#							    	RISE Ascii Scene File													#
+#																											#
+#	File: 			cornellbox_chair.RISEscene																#
+#   Description:	cornell box with a chair, a table and lamp on it...										#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		January 23, 2004																		#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+	shaderop		DefaultReflection
+	shaderop		DefaultEmission
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.01
+	samples				4
+	lum_samples			9
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cornellbox_chair
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			350 163 -350
+	lookat				350 163 0
+	up					0 1 0
+	width				800
+	height				450
+	fov					37.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run ../scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.9 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_aniso_Rd
+	color				0.3 0.3 0.3
+	colorspace			RISERGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_aniso_Rs
+	color				0.7 0.75 0.7
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+
+dielectric_material
+{
+	name				glass
+	tau					color_white
+	ior					1.45
+	scattering			100000
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_red
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			color_blue
+}
+
+lambertian_material
+{
+	name				black
+	reflectance			color_black
+}
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+ashikminshirley_anisotropicphong_material
+{
+	name				psilver
+	nu					4000
+	nv					100
+	rd					pnt_aniso_Rd
+	rs					pnt_aniso_Rs
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	material			white
+	exitance			pnt_light
+	scale				110.0
+}
+
+lambertian_luminaire_material
+{
+	name				blue_lum
+	material			blue
+	exitance			color_blue
+	scale				150.0
+}
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					700 0 0
+	ptb					0 0 0
+	ptc					0 0 550	
+	ptd					700 0 550
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					700 350 0.0
+	ptb					700 350 550
+	ptc					0 350 550	
+	ptd					0.0 350 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					700 0 550
+	ptb					0 0 550
+	ptc					0 350 550	
+	ptd					700 350 550
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 550
+	ptb					0 0 0
+	ptc					0 350 0.0	
+	ptd					0 350 550
+}
+
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					700 0 0
+	ptb					700 0 550
+	ptc					700 350 550
+	ptd					700 350 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+standard_object
+{
+	name				rwall
+	geometry			floorgeom
+	material			white
+}
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			white
+}
+
+##################################################
+# Objects - the chair stuff
+##################################################
+
+rawmesh_geometry
+{
+	name				chairgeom
+	file				../models/raw/chair.rawmesh
+	maxpolygons			10
+	maxdepth			8
+}
+
+rawmesh_geometry
+{
+	name				cushiongeom
+	file				../models/raw/cushion.rawmesh
+	maxpolygons			10
+	maxdepth			8
+	double_sided		TRUE
+}
+
+rawmesh_geometry
+{
+	name				tablegeom
+	file				../models/raw/table.rawmesh
+	maxpolygons			10
+	maxdepth			8
+}
+
+rawmesh_geometry
+{
+	name				tabletopgeom
+	file				../models/raw/table_top.rawmesh
+	maxpolygons			10
+	maxdepth			8
+}
+
+standard_object
+{
+	name				chairB
+	geometry			chairgeom
+	position			230 150 180
+	orientation			-90 0 180
+	scale				30.0 30.0 30.0
+	material			red
+}
+
+standard_object
+{
+	name				cushionB
+	geometry			cushiongeom
+	position			230 150 180
+	orientation			-90 0 180
+	scale				30.0 30.0 30.0
+	material			green
+}
+
+standard_object
+{
+	name				chairA
+	geometry			chairgeom
+	position			460 150 180
+	orientation			-90 0 270
+	scale				30.0 30.0 30.0
+	material			green
+}
+
+standard_object
+{
+	name				cushionA
+	geometry			cushiongeom
+	position			460 150 180
+	orientation			-90 0 270
+	scale				30.0 30.0 30.0
+	material			red
+}
+
+standard_object
+{
+	name				table
+	geometry			tablegeom
+	position			280 150 180
+	orientation			-90 0 180
+	scale				30.0 30.0 30.0
+	material			psilver
+}
+
+standard_object
+{
+	name				tabletop
+	geometry			tabletopgeom
+	position			280 150 180
+	orientation			-90 0 180
+	scale				30.0 30.0 30.0
+	material			glass
+}
+
+##################################################
+# Objects - Pillars
+##################################################
+
+cylinder_geometry
+{
+	name				pillargeom
+	axis				y
+	radius				30.0
+	height				550.0
+}
+
+standard_object
+{
+	name				pillarA
+	geometry			pillargeom
+	orientation			695 225 545
+	material			glass
+}
+
+standard_object
+{
+	name				pillarB
+	geometry			pillargeom
+	orientation			5 225 545
+	material			glass
+}
+
+standard_object
+{
+	name				pillarC
+	geometry			pillargeom
+	orientation			695 225 200
+	material			glass
+}
+
+standard_object
+{
+	name				pillarD
+	geometry			pillargeom
+	orientation			5 225 200
+	material			glass
+}
+
+##################################################
+# Objects - Lamps
+##################################################
+
+cylinder_geometry
+{
+	name				lamppostgeom
+	axis				y
+	radius				10.0
+	height				50.0
+}
+
+sphere_geometry
+{
+	name				lampbulbgeom
+	radius				20.0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					415 349 225
+	ptb					415 349 330	
+	ptc					285 349 330
+	ptd					285 349 225
+}
+
+standard_object
+{
+	name				lamppostA
+	geometry			lamppostgeom
+	position			650 50 470
+	material			black
+}
+
+standard_object
+{
+	name				lamppostB
+	geometry			lamppostgeom
+	position			150 50 470
+	material			black
+}
+
+standard_object
+{
+	name				lampbulbA
+	geometry			lampbulbgeom
+	position			650 65 470
+	material			blue_lum
+}
+
+standard_object
+{
+	name				lambbulbB
+	geometry			lampbulbgeom
+	position			50 65 470
+	material			blue_lum
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+
+# Torii on the wall
+
+torus_geometry
+{
+	name				torusgeom
+	majorradius			120
+	minorratio			0.15
+}
+
+standard_object
+{
+	name				torusA
+	geometry			torusgeom
+	position			350 225 550
+	orientation			90 0 0
+	material			gold
+}
+
+standard_object
+{
+	name				torusB
+	geometry			torusgeom
+	position			450 225 550	
+	orientation			90 0 0
+	material			gold
+}
+
+standard_object
+{
+	name				torusC
+	geometry			torusgeom
+	position			250 225 550	
+	orientation			90 0 0
+	material			gold
+}
+
+# Box in front
+box_geometry
+{
+	name				boxgeom
+	width				200
+	height				30
+	depth				30
+}
+
+standard_object
+{
+	name				boxA
+	geometry			boxgeom
+	position			350 0 150
+	material			blue
+}
+
+

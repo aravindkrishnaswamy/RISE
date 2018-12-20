@@ -1,0 +1,58 @@
+################################
+# Multi-CPU/Threading options
+################################
+
+# Set this value to put a limit on the number of threads to spawn, (one set it to 1 to disable MP)
+#maximum_thread_count						10000
+
+# Set this to 'false' if you don't want hyperthreading support (i.e. threads only for each physical processor)
+support_hyperthreading						TRUE
+
+# Uncomment this setting if you want to force the renderer to use a specific number of threads (regardless of any other settings)
+force_number_of_threads						4
+
+# Forces all threads that are created to be low priority so that it doesn't choke systems
+force_all_threads_low_priority				TRUE
+
+
+################################
+# Rendering output options
+################################
+
+# Windows specific: set this to 'true' if you don't want to see windowed output of the renderer
+# as it renders your scene.  This is a good idea if you are rendering to a very large output
+no_windowed_rasterizer_output				FALSE
+
+# Set this to 'true' if you want to render using the media folder as a base path
+rendered_output_in_rise_media_folder		TRUE
+
+# If you set the above option to 'false', then set your rendered output folder here
+# The path must exist however
+rendered_output_folder						str		C:\Program Files\RISE Rendered\
+
+################################
+# Raster sequence options
+################################
+
+# Set this for the type of raster sequence
+#  0 = One scanline at a time
+#  1 = Blocks
+#  2 = Hilbert space filling curve
+#  3 = Randomly pick one
+raster_sequence_type						3
+
+# These are options for the raster sequence type you picked
+# Only valid for block and hilbert
+# For block, they are the width of the block, height of the block and block order where block order is:
+#    0 = From center out in a flowering pattern
+#    1 = Random shuffle (disabled in the code, so only does left to right, top to bottom)
+#    2 = From top left to bottom right in flowering pattern
+#    3 = From bottom right to top left in flowering pattern
+#    4 = From top left to bottom right in order
+#    5 = From left to right in vertical order
+#    6 = From top to bottom in horizontal order
+#    7 = From right to left in vertical order
+#    8 = From bottom to top in horizontal order
+#
+# For hilbert, it is the recursive depth of the curve only, 4 is a good number
+#raster_sequence_options						str			24 24 0

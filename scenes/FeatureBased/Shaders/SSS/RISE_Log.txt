@@ -1,0 +1,21 @@
+Global Options file not specified with the 'RISE_OPTIONS_FILE' environment variable, looking for global.options file
+MediaPathLocator:: Remapped 'global.options' to '/Users/akrishnaswamy/Desktop/Code/RISE/global.options'
+ObjectManager is not configured for any type of spatial acceleration
+AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead
+AsciiCommandParser::ParseAddRasterizeroutput::File: NO EXR SUPPORT was compiled, reverting to TGA instead
+FileRasterizerOutput:: Linear colorspace chosen but bpp is 8-bit
+MediaPathLocator:: Remapped 'scenes/colors.RISEscript' to '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/colors.RISEscript'
+MediaPathLocator:: Remapped 'scenes/standard_colors.RISEscene' to '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/standard_colors.RISEscene'
+AsciiSceneParser: Successfully loaded '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/standard_colors.RISEscene'
+MediaPathLocator:: Remapped 'scenes/povray_colors.RISEscene' to '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/povray_colors.RISEscene'
+AsciiSceneParser: Successfully loaded '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/povray_colors.RISEscene'
+AsciiScriptParser: Successfully loaded '/Users/akrishnaswamy/Desktop/Code/RISE/scenes/colors.RISEscript'
+TracePhotons:: Trying to capture 20000 photons
+TracePhotons:: Balancing KD-Tree
+PhotonMap::ScalePhotonPower:: Changed gather radius to new max radius: 1.630438
+AsciiSceneParser: Successfully loaded 'caustic_sss.RISEscene'
+SubSurfaceScatteringShaderOp:: Generating point sample set for object
+FileRasterizerOutput:: Written to '/Users/akrishnaswamy/Desktop/Code/RISE/rendered/caustic_sss.tga'
+FileRasterizerOutput:: Written to '/Users/akrishnaswamy/Desktop/Code/RISE/rendered/caustic_sss.tga'
+Total Rasterization Time: 13 seconds 312 ms
+

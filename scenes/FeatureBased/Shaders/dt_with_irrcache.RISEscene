@@ -1,0 +1,147 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			dt_with_irrcache.RISEscene																#
+#   Description:	Demonstrating combining distribution ray tracing with irradiance cache.  You can judge  #
+#                     for yourself if its worth it.  You should also be careful to not use irradiance       #
+#                     caching with distribution tracing on surfaces with quickly changin brdfs (lots of     #
+#                     texture).
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 22, 2004																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name			pt
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pt
+	shaderop		DefaultEmission
+}
+
+distributiontracing_shaderop
+{
+	name				dist
+	samples				10000
+	force_check_emitters	TRUE
+	irradiance_caching	TRUE
+}
+
+standard_shader
+{
+	name			dist
+	shaderop		dist
+	shaderop		DefaultEmission
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/dt_with_irrcache
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.4
+	lookat				0 0 0
+	up					0 1 0
+	width				300
+	height				500
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				3.14159 3.14159 3.14159
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_luminaire_material
+{
+	name				lum
+	exitance			color_white
+	scale				3.14159
+	material			none
+}
+
+##################################################
+# Objects
+##################################################
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-0.5 0.0 0.5
+	ptb					-0.5 0.0 -0.5
+	ptc					0.5 0.0 -0.5
+	ptd					0.5 0.0 0.5
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.05
+}
+
+standard_object
+{
+	name				lightsphere
+	geometry			spheregeom
+	position			0 0.05 0
+	material			lum
+}
+
+standard_object
+{
+	name				refsphere
+	geometry			spheregeom
+	position			0 -0.05 0
+	material			white
+	shader				dist
+}
+
+irradiance_cache
+{
+	size				1
+	tolerance			0.04
+	min_spacing			0.02
+}

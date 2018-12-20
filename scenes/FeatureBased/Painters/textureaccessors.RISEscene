@@ -1,0 +1,174 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			textureaccessors.scn																	#
+#   Description:	Test of different texture accessors														#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 2, 2003																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/textureacessors
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 55
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				800
+	fov					20.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_nnb
+	file				textures/paradise_small.png
+	filter_type			NNB
+}
+
+png_painter
+{
+	name				pnt_bilin
+	file				textures/paradise_small.png
+	filter_type			Bilinear
+}
+
+png_painter
+{
+	name				pnt_cr
+	file				textures/paradise_small.png
+	filter_type			CatmullRom
+}
+
+png_painter
+{
+	name				pnt_ubsp
+	file				textures/paradise_small.png
+	filter_type			UniformBSpline
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				nnb
+	reflectance			pnt_nnb
+}
+
+lambertian_material
+{
+	name				bilin
+	reflectance			pnt_bilin
+}
+
+lambertian_material
+{
+	name				cr
+	reflectance			pnt_cr
+}
+
+lambertian_material
+{
+	name				ubsp
+	reflectance			pnt_ubsp
+}
+
+##################################################
+# Objects - 
+##################################################
+
+box_geometry
+{
+	name				boxgeom
+	width				5.0
+	height				5.0
+	depth				5.0
+}
+
+standard_object
+{
+	name				boxA
+	geometry			boxgeom
+	position			-4 -4.5 0
+	orientation			45 45 0
+	material			ubsp
+}
+
+standard_object
+{
+	name				boxB
+	geometry			boxgeom
+	position			-4 4.5 0
+	orientation			45 45 0
+	material			nnb
+}
+
+standard_object
+{
+	name				boxC
+	geometry			boxgeom
+	position			4 4.5 0
+	orientation			45 45 0
+	material			bilin
+}
+
+standard_object
+{
+	name				boxD
+	geometry			boxgeom
+	position			4 -4.5 0
+	orientation			45 45 0
+	material			cr
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.0 1.0
+}
+

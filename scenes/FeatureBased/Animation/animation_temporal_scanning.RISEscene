@@ -1,0 +1,170 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			animation_temporal_scanning.RISEscene													#
+#   Description:	Demonstrates the temporal scanning abilities of cameras 								#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		March 8, 2005																			#
+#																											#
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				16
+	lum_samples			1
+}
+
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/animation_temporal_scanning
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	multiple			TRUE
+}
+*/
+
+DEFINE FRAMES 	30
+
+animation_options
+{
+	time_start			0
+	time_end			1
+	num_frames			@FRAMES
+	do_fields			TRUE
+}
+
+##################################################
+# Cameras
+##################################################
+
+# Shutter time is amount of time per frame the entire shutter isopen
+DEFINE SHUTTER_TIME			0.8
+
+# Frame exposure gives the total amount of time a frame is exposed
+DEFINE FRAME_EXPOSURE		$((1.0/@FRAMES)*@SHUTTER_TIME)
+
+# Total number of scanlines
+DEFINE TOTAL_SCANLINES		200
+
+# Each scanline is scanned individually and all pixels in a scanline
+# are recorded instantaneously
+DEFINE SCANLINE_RATE		$(@FRAME_EXPOSURE/@TOTAL_SCANLINES)
+DEFINE EXPOSURE				$(@SCANLINE_RATE)
+
+UNDEF EXPOSURE
+UNDEF SCANLINE_RATE
+
+# This is just arbritary non-physically based settings, but they look cool
+DEFINE EXPOSURE 			0.05
+DEFINE SCANLINE_RATE 		0.001
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				600
+	height				@TOTAL_SCANLINES
+	fov					20.0
+	exposure			@EXPOSURE
+	scanning_rate		@SCANLINE_RATE
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name			boxgeom
+	width			0.06
+	height			0.06
+	depth			0.00000001
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	position			0 0 0.0
+	orientation			0 0 0
+	material			gold
+}
+
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0 -0.1 0
+	orientation			-90 0 0
+	material			white
+}
+
+omni_light
+{
+	name		lightA
+	power		3.14159
+	color		1.0 1.0 1.0
+	position	0.0 0.1 0.1
+}
+
+##################################################
+# Keyframes
+##################################################
+
+timeline
+{
+	element		box
+	param		position
+	
+	time		0.0
+	value		-0.2 0 0.0
+	
+	time		1.0
+	value		0.2 0 0.0
+}
+

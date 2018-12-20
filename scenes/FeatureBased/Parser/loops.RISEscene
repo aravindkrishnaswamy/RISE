@@ -1,0 +1,108 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			loops.RISEscene																			#
+#   Description:	Tests the looping, macro substitution and math expression evaluation features			#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 23, 2004																			#
+#																											#
+#############################################################################################################
+
+# Be sure to set the object manager for BSP
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/loops
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				500
+	height				500
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			spheregeom
+	radius			0.01
+}
+
+FOR I 0 10 1 
+	FOR J 0 10 1
+
+		standard_object
+		{
+			name			sphere!I!J
+			geometry		spheregeom
+			position		$(@I*0.02-0.1) $(@J*0.02-0.1) 0
+			material		gold
+		}
+
+	ENDFOR
+ENDFOR
+
+DEFINE LZ 0.1
+DEFINE POWER 2.3
+
+omni_light
+{
+	name		lightA
+	power		@POWER
+	color		1.0 1.0 1.0
+	position	0.0 0.0 @LZ
+}
+
+UNDEF LZ
+

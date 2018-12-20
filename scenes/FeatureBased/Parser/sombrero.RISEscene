@@ -1,0 +1,127 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#								       RISE Ascii Scene File												#
+#																											#
+#	File: 			sombrero.RISEscene																		#
+#   Description:	Generates a neat looking shape using just spheres, idea from POVRay and Pos				#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		June 25, 2004																			#
+#																											#
+#############################################################################################################
+
+# Be sure to set the object manager for BSP
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.0001
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sombrero
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	width				550
+	height				500
+	fov					30.0
+	theta				-30
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			spheregeom
+	radius			0.005
+}
+
+> echo event Generating sombrero elements using the parser.  This could take several seconds on slower machines.
+
+DEFINE FPI $(4*@PI)
+
+FOR I -30 30 1 
+	FOR J -30 30 1
+
+		DEFINE X $(@I*0.0035)
+		DEFINE Y $(@J*0.0035)
+		DEFINE XT $(@X*@X*128)
+		DEFINE YT $(@Y*@Y*128)
+		DEFINE SQ $(sqrt(@XT+@YT))
+
+		DEFINE Z $(sin(@SQ*@FPI)*0.05)
+
+		DEFINE R $(0.5+sin(@I/30*@PI)*0.5)
+		DEFINE G $(0.5+sin(@J/30*@PI)*0.5)
+		DEFINE B $(@Z*20)
+
+		uniformcolor_painter
+		{
+			name			pnt!I!J
+			color			@R @G @B
+		}
+
+		UNDEF R
+		UNDEF G
+		UNDEF B
+
+		lambertian_material
+		{
+			name			lamb!I!J
+			reflectance		pnt!I!J
+		}
+
+		standard_object
+		{
+			name			sphere!I!J
+			geometry		spheregeom
+			position		@X @Y @Z
+			material		lamb!I!J
+		}
+
+		UNDEF X
+		UNDEF Y
+		UNDEF Z
+		UNDEF XT
+		UNDEF YT
+		UNDEF SQ
+
+	ENDFOR
+ENDFOR
+
+omni_light
+{
+	name		lightA
+	power		3.14
+	color		1.0 1.0 1.0
+	position	0.0 -0.5 1.0
+}
+
+

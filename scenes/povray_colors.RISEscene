@@ -1,0 +1,571 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			povray_colors.RISEscene																	#
+#   Description:	Contains colors taken from POV-Ray														#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		April 22, 2004																			#
+#																											#
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		color_aquamarine
+	color		0.439216 0.858824 0.576471
+}
+
+uniformcolor_painter
+{
+	name		color_blueviolet
+	color		0.62352 0.372549 0.623529 
+}
+
+uniformcolor_painter
+{
+	name		color_brown
+	color		0.647059 0.164706 0.164706 
+}
+
+uniformcolor_painter
+{
+	name		color_cadetblue
+	color		0.372549 0.623529 0.623529 
+}
+
+uniformcolor_painter
+{
+	name		color_coral
+	color		1.0 0.498039 0.0 
+}
+
+uniformcolor_painter
+{
+	name		color_cornflowerblue
+	color		0.258824 0.258824 0.435294 
+}
+
+uniformcolor_painter
+{
+	name		color_darkgreen
+	color		0.184314 0.309804 0.184314 
+}
+
+uniformcolor_painter
+{
+	name		color_darkolivegreen
+	color		0.309804 0.309804 0.184314 
+}
+
+uniformcolor_painter
+{
+	name		color_darkorchid
+	color		0.6 0.196078 0.8 
+}
+
+uniformcolor_painter
+{
+	name		color_darkslateblue
+	color		0.119608 0.137255 0.556863 
+}
+
+uniformcolor_painter
+{
+	name		color_darkslategray
+	color		0.184314 0.309804 0.309804 
+}
+
+uniformcolor_painter
+{
+	name		color_darkslategrey
+	color		0.184314 0.309804 0.309804 
+}
+
+uniformcolor_painter
+{
+	name		color_darkturquoise
+	color		0.439216 0.576471 0.858824 
+}
+
+uniformcolor_painter
+{
+	name		color_firebrick
+	color		0.556863 0.137255 0.137255 
+}
+
+uniformcolor_painter
+{
+	name		color_forestgreen
+	color		0.137255 0.556863 0.137255 
+}
+
+uniformcolor_painter
+{
+	name		color_gold
+	color		0.8 0.498039 0.196078 
+}
+
+uniformcolor_painter
+{
+	name		color_goldenrod
+	color		0.858824 0.858824 0.439216 
+}
+
+uniformcolor_painter
+{
+	name		color_greenyellow
+	color		0.576471 0.858824 0.439216 
+}
+
+uniformcolor_painter
+{
+	name		color_indianred
+	color		0.309804 0.184314 0.184314 
+}
+
+uniformcolor_painter
+{
+	name		color_khaki
+	color		0.623529 0.623529 0.372549 
+}
+
+uniformcolor_painter
+{
+	name		color_lightblue
+	color		0.74902 0.847059 0.847059 
+}
+
+uniformcolor_painter
+{
+	name		color_lightsteelblue
+	color		0.560784 0.560784 0.737255 
+}
+	
+uniformcolor_painter
+{
+	name		color_limegreen
+	color		0.196078 0.8 0.196078 
+}
+	
+uniformcolor_painter
+{
+	name		color_maroon
+	color		0.556863 0.137255 0.419608 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumaquamarine
+	color		0.196078 0.8 0.6 
+}
+	
+uniformcolor_painter
+{
+	name		color_mediumblue
+	color		0.196078 0.196078 0.8 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumforestgreen
+	color		0.419608 0.556863 0.137255 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumgoldenrod
+	color		0.917647 0.917647 0.678431 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumorchid
+	color		0.576471 0.439216 0.858824 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumseagreen
+	color		0.258824 0.435294 0.258824 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumslateblue
+	color		0.498039 1.0 0.0 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumspringgreen
+	color		0.498039 1.0 0.0 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumturquoise
+	color		0.439216 0.858824 0.858824 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumvioletred
+	color		0.858824 0.439216 0.576471 
+}
+
+uniformcolor_painter
+{
+	name		color_midnightblue
+	color		0.184314 0.184314 0.309804 
+}
+
+uniformcolor_painter
+{
+	name		color_navy
+	color		0.137255 0.137255 0.556863 
+}
+
+uniformcolor_painter
+{
+	name		color_navyblue
+	color		0.137255 0.137255 0.556863 
+}
+
+uniformcolor_painter
+{
+	name		color_orange
+	color		1.0 0.5 0.0 
+}
+
+uniformcolor_painter
+{
+	name		color_orangered
+	color		1.0 0.25 0.0 
+}
+
+uniformcolor_painter
+{
+	name		color_orchid
+	color		0.858824 0.439216 0.858824 
+}		
+
+uniformcolor_painter
+{
+	name		color_palegreen
+	color		0.560784 0.737255 0.560784 
+}
+
+uniformcolor_painter
+{
+	name		color_pink
+	color		0.937255 0.660784 0.660784 
+}
+
+uniformcolor_painter
+{
+	name		color_plum
+	color		0.917647 0.678431 0.917647 
+}
+
+uniformcolor_painter
+{
+	name		color_salmon
+	color		0.435294 0.258824 0.258824 
+}
+
+uniformcolor_painter
+{
+	name		color_seagreen
+	color		0.137255 0.556863 0.419608 
+}
+
+uniformcolor_painter
+{
+	name		color_sienna
+	color		0.556863 0.419608 0.137255 
+}
+
+uniformcolor_painter
+{
+	name		color_skyblue
+	color		0.196078 0.6 0.8 
+}
+
+uniformcolor_painter
+{
+	name		color_slateblue
+	color		0.0 0.498039 1.0 
+}
+
+uniformcolor_painter
+{
+	name		color_springgreen
+	color		0.0 1.0 0.498039 
+}
+
+uniformcolor_painter
+{
+	name		color_steelblue
+	color		0.137255 0.419608 0.556863 
+}
+
+uniformcolor_painter
+{
+	name		color_tan
+	color		0.858824 0.576471 0.439216 
+}
+
+uniformcolor_painter
+{
+	name		color_thistle
+	color		0.847059 0.74902 0.847059 
+}
+
+uniformcolor_painter
+{
+	name		color_turquoise
+	color		0.678431 0.917647 0.917647 
+}
+
+uniformcolor_painter
+{
+	name		color_violet
+	color		0.309804 0.184314 0.309804 
+}
+
+uniformcolor_painter
+{
+	name		color_violetred
+	color		0.8 0.196078 0.6 
+}
+
+uniformcolor_painter
+{
+	name		color_wheat
+	color		0.847059 0.847059 0.74902 
+}
+
+uniformcolor_painter
+{
+	name		color_yellowgreen
+	color		0.6 0.8 0.196078 
+}
+
+uniformcolor_painter
+{
+	name		color_summersky
+	color		0.22 0.69 0.87 
+}
+
+uniformcolor_painter
+{
+	name		color_richblue
+	color		0.35 0.35 0.67 
+}
+
+uniformcolor_painter
+{
+	name		color_brass
+	color		0.71 0.65 0.26 
+}
+
+uniformcolor_painter
+{
+	name		color_copper
+	color		0.72 0.45 0.20 
+}
+
+uniformcolor_painter
+{
+	name		color_bronze
+	color		0.55 0.47 0.14 
+}
+
+uniformcolor_painter
+{
+	name		color_bronze2
+	color		0.65 0.49 0.24 
+}			
+
+uniformcolor_painter
+{
+	name		color_silver
+	color		0.90 0.91 0.98 
+}
+
+uniformcolor_painter
+{
+	name		color_brightgold
+	color		0.85 0.85 0.10 
+}
+
+uniformcolor_painter
+{
+	name		color_oldgold
+	color		0.81 0.71 0.23 
+}
+
+uniformcolor_painter
+{
+	name		color_feldspar
+	color		0.82 0.57 0.46 
+}
+
+uniformcolor_painter
+{
+	name		color_quartz
+	color		0.85 0.85 0.95 
+}
+
+uniformcolor_painter
+{
+	name		color_neonpink
+	color		1.00 0.43 0.78 
+}
+
+uniformcolor_painter
+{
+	name		color_darkpurple
+	color		0.53 0.12 0.47 
+}
+
+uniformcolor_painter
+{
+	name		color_neonblue
+	color		0.30 0.30 1.00 
+}		
+
+uniformcolor_painter
+{
+	name		color_coolcopper
+	color		0.85 0.53 0.10 
+}
+
+uniformcolor_painter
+{
+	name		color_mandarinorange
+	color		0.89 0.47 0.20 
+}
+
+uniformcolor_painter
+{
+	name		color_lightwood
+	color		0.91 0.76 0.65 
+}
+
+uniformcolor_painter
+{
+	name		color_mediumwood
+	color		0.65 0.50 0.39 
+}
+
+uniformcolor_painter
+{
+	name		color_darkwood
+	color		0.52 0.37 0.26 
+}
+
+uniformcolor_painter
+{
+	name		color_spicypink
+	color		1.00 0.11 0.68 
+}
+
+uniformcolor_painter
+{
+	name		color_semisweetchoc
+	color		0.42 0.26 0.15 
+}
+
+uniformcolor_painter
+{
+	name		color_bakerschoc
+	color		0.36 0.20 0.09 
+}
+
+uniformcolor_painter
+{
+	name		color_flesh
+	color		0.96 0.80 0.69 
+}
+
+uniformcolor_painter
+{
+	name		color_newtan
+	color		0.92 0.78 0.62 
+}
+
+uniformcolor_painter
+{
+	name		color_newmidnightblue
+	color		0.00 0.00 0.61 
+}
+
+uniformcolor_painter
+{
+	name		color_verydarkbrown
+	color		0.35 0.16 0.14 
+}
+
+uniformcolor_painter
+{
+	name		color_darkbrown
+	color		0.36 0.25 0.20 
+}
+
+uniformcolor_painter
+{
+	name		color_darktan
+	color		0.59 0.41 0.31 
+}
+
+uniformcolor_painter
+{
+	name		color_greencopper
+	color		0.32 0.49 0.46 
+}
+
+uniformcolor_painter
+{
+	name		color_dkgreencopper
+	color		0.29 0.46 0.43 
+}
+
+uniformcolor_painter
+{
+	name		color_dustyrose
+	color		0.52 0.39 0.39 
+}				
+
+uniformcolor_painter
+{
+	name		color_huntersgreen
+	color		0.13 0.37 0.31 
+}
+
+uniformcolor_painter
+{
+	name		color_scarlet
+	color		0.55 0.09 0.09
+}
+
+uniformcolor_painter
+{
+	name		color_med_purple
+	color		0.73 0.16 0.96
+}
+
+uniformcolor_painter
+{
+	name		color_light_purple
+	color		0.87 0.58 0.98 
+}
+
+uniformcolor_painter
+{
+	name		color_very_light_purple
+	color		0.94 0.81 0.99 
+}
+
+
+
