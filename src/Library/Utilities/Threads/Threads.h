@@ -22,7 +22,7 @@
 
 namespace RISE
 {
-	typedef unsigned int RISETHREADID;
+	typedef unsigned long long RISETHREADID;
 	typedef void* RISEMUTEX;
 	typedef void* RISESLEEP;
 	typedef void* RISESEMAPHORE;

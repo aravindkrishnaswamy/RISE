@@ -16,7 +16,7 @@ CXX = c++
 # options for the linker
 CPPFLAGS = -I$(PATHLIBRARY)
 
-CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic
+CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 
 # For debugging information
 # CXXFLAGS = -ggdb
@@ -25,7 +25,7 @@ CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic
 DEF_PNG = -DNO_PNG_SUPPORT
 
 # Turn this on if you don't have a proper libpthreads library installed
-DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
+#DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
 
 DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
 

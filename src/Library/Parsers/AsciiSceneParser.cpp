@@ -149,8 +149,9 @@ inline char evaluate_first_function_in_expression( String& token )
 	}
 
 	// assemble together
-	char evaluated[64] = {0};
-	sprintf( evaluated, "%.12f", val );
+	static const unsigned int MAX_CHARS = 64;
+	char evaluated[MAX_CHARS] = {0};
+	snprintf( evaluated, MAX_CHARS, "%.12f", val );
 
 	processed.append( evaluated );
 	processed.append( str.substr( y+1, str.length()-1 ) );
@@ -211,8 +212,9 @@ inline bool evaluate_expression( String& token )
 		return false;
 	}
 
-	char evaluated[64] = {0};
-	sprintf( evaluated, "%.12f", expr.eval() );
+	static const unsigned int MAX_CHARS = 64;
+	char evaluated[MAX_CHARS] = {0};
+	snprintf( evaluated, MAX_CHARS, "%.12f", expr.eval() );
 
 	token = String(evaluated);
 	return true;
@@ -6359,11 +6361,12 @@ char AsciiSceneParser::substitute_macro( String& token )
 		}
 
 		// Re-assemble the string
-		char buf[64] = {0};
+		static const int MAX_BUF_SIZE = 64;
+		char buf[MAX_BUF_SIZE] = {0};
 		if( macro_char == '@' ) {
-			sprintf( buf, "%.12f", it->second );
+			snprintf( buf, MAX_BUF_SIZE, "%.12f", it->second );
 		} else {
-			sprintf( buf, "%.4d", (int)it->second );
+			snprintf( buf, MAX_BUF_SIZE, "%.4d", (int)it->second );
 		}
 		processed.append( buf );
 

@@ -9,7 +9,7 @@
 support_hyperthreading						TRUE
 
 # Uncomment this setting if you want to force the renderer to use a specific number of threads (regardless of any other settings)
-force_number_of_threads						4
+force_number_of_threads						8
 
 # Forces all threads that are created to be low priority so that it doesn't choke systems
 force_all_threads_low_priority				TRUE
