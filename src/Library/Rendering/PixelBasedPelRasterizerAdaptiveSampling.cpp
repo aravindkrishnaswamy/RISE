@@ -156,7 +156,7 @@ void PixelBasedPelRasterizerAdaptiveSampling::IntegratePixel(
 			ISampling2D* pSamp = pAdaptiveKernels[adaptiveKernelToUse];
 
 			ISampling2D::SamplesList2D	thissamps;
-			pSampling->GenerateSamplePoints( rc.random, thissamps );
+			pSamp->GenerateSamplePoints( rc.random, thissamps );
 
 			ISampling2D::SamplesList2D::const_iterator		q, r;
 			for( q = thissamps.begin(), r = thissamps.end(); q!=r; q++ )

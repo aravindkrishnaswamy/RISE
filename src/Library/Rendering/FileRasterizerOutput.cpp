@@ -94,12 +94,13 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 {
 	IRasterImageWriter*		pWriter = 0;
 
-	char	buf[2048];
+	static const int MAX_BUFFER_SIZE = 2048;
+	char	buf[MAX_BUFFER_SIZE];
 
 	if( bMultiple ) {
-		sprintf( buf, "%s%.4d.%s", szPattern, frame, extensions[type] );
+		snprintf( buf, MAX_BUFFER_SIZE, "%s%.4d.%s", szPattern, frame, extensions[type] );
 	} else {
-		sprintf( buf, "%s.%s", szPattern, extensions[type] );
+		snprintf( buf, MAX_BUFFER_SIZE, "%s.%s", szPattern, extensions[type] );
 	}
 
 	DiskFileWriteBuffer*		mb = new DiskFileWriteBuffer( buf );
@@ -113,9 +114,9 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 
 		const FileRasterizerOutput* pMe = this;
 		if( bMultiple ) {
-			sprintf( buf, "fro_temp_%d_%.4d.%s", VoidPtrToUInt((void*)pMe), frame, extensions[type] );
+			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d_%.4d.%s", VoidPtrToUInt((void*)pMe), frame, extensions[type] );
 		} else {
-			sprintf( buf, "fro_temp_%d.%s", VoidPtrToUInt((void*)pMe), extensions[type] );
+			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d.%s", VoidPtrToUInt((void*)pMe), extensions[type] );
 		}
 
 		mb = new DiskFileWriteBuffer( buf );

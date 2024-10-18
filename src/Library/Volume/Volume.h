@@ -78,9 +78,10 @@ namespace RISE
 
 			for( unsigned int i=zstart, cnt=0; i<=zend; i++, cnt++ )
 			{
-				char buffer[1024] = {0};
+				static const int MAX_BUFFER_SIZE = 1024;
+				char buffer[MAX_BUFFER_SIZE] = {0};
 
-				sprintf( buffer, szFilePattern, i );
+				snprintf( buffer, MAX_BUFFER_SIZE, szFilePattern, i );
 				FILE* f = fopen( GlobalMediaPathLocator().Find(buffer).c_str(), "rb" );
 
 				if( f ) {

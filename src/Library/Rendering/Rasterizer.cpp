@@ -37,7 +37,7 @@ int Rasterizer::HowManyThreadsToSpawn() const
 	// Lets have some fun with the options file
 	IOptions& options = GlobalOptions();
 
-	const bool bHyperthreading = options.ReadBool( "support_hyperthreading", true );
+	const bool bHyperthreading = options.ReadBool( "support_hyperthreading", true ) && (eHTStatus == HT_ENABLED);
 	const int maxThreads = options.ReadInt( "maximum_thread_count", 0xFFFFFFF );
 	const int force_number_of_threads = options.ReadInt( "force_number_of_threads", 0 );
 

@@ -488,18 +488,21 @@ bool AsciiCommandParser::ParsePredictRasterizationTime( String*, unsigned int, I
 		unsigned int		secs = duration/1000;
 		unsigned int		ms = duration % 1000;
 
-		char buf[1024] = {0};
+		static const int MAX_BUFFER_SIZE = 1024;
+		char buf[MAX_BUFFER_SIZE] = {0};
 		strcat( buf, "Predicted Rasterization Time: " );
-		char daybuf[32] = {0};
-		sprintf( daybuf, "%d days ", days );
-		char hourbuf[32] = {0};
-		sprintf( hourbuf, "%d hours ", hours );
-		char minbuf[32] = {0};
-		sprintf( minbuf, "%d minutes ", mins );
-		char secbuf[32] = {0};
-		sprintf( secbuf, "%d seconds ", secs );
-		char msbuf[32] = {0};
-		sprintf( msbuf, "%d ms", ms );
+
+		static const int MAX_BUFFER_SIZE_SMALL = 32;
+		char daybuf[MAX_BUFFER_SIZE_SMALL] = {0};
+		snprintf( daybuf, MAX_BUFFER_SIZE_SMALL, "%d days ", days );
+		char hourbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+		snprintf( hourbuf, MAX_BUFFER_SIZE_SMALL, "%d hours ", hours );
+		char minbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+		snprintf( minbuf, MAX_BUFFER_SIZE_SMALL, "%d minutes ", mins );
+		char secbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+		snprintf( secbuf, MAX_BUFFER_SIZE_SMALL, "%d seconds ", secs );
+		char msbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+		snprintf( msbuf, MAX_BUFFER_SIZE_SMALL, "%d ms", ms );
 
 		if( days ) {
 			strcat( buf, daybuf );
@@ -567,18 +570,21 @@ bool AsciiCommandParser::ParseRasterize( String* tokens, unsigned int num_tokens
 	unsigned int		secs = duration/1000;
 	unsigned int		ms = duration % 1000;
 
-	char buf[1024] = {0};
+	static const int MAX_BUFFER_SIZE = 1024;
+	char buf[MAX_BUFFER_SIZE] = {0};
 	strcat( buf, "Total Rasterization Time: " );
-	char daybuf[32] = {0};
-	sprintf( daybuf, "%d days ", days );
-	char hourbuf[32] = {0};
-	sprintf( hourbuf, "%d hours ", hours );
-	char minbuf[32] = {0};
-	sprintf( minbuf, "%d minutes ", mins );
-	char secbuf[32] = {0};
-	sprintf( secbuf, "%d seconds ", secs );
-	char msbuf[32] = {0};
-	sprintf( msbuf, "%d ms", ms );
+
+	static const int MAX_BUFFER_SIZE_SMALL = 32;
+	char daybuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( daybuf, MAX_BUFFER_SIZE_SMALL, "%d days ", days );
+	char hourbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( hourbuf, MAX_BUFFER_SIZE_SMALL, "%d hours ", hours );
+	char minbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( minbuf, MAX_BUFFER_SIZE_SMALL, "%d minutes ", mins );
+	char secbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( secbuf, MAX_BUFFER_SIZE_SMALL, "%d seconds ", secs );
+	char msbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( msbuf, MAX_BUFFER_SIZE_SMALL, "%d ms", ms );
 
 	if( days ) {
 		strcat( buf, daybuf );
@@ -652,19 +658,22 @@ bool AsciiCommandParser::ParseRasterizeAnimation( String* tokens, unsigned int n
 	unsigned int		secs = duration/1000;
 	unsigned int		ms = duration % 1000;
 
-	char buf[1024] = {0};
+	static const int MAX_BUFFER_SIZE = 1024;
+	char buf[MAX_BUFFER_SIZE] = {0};
 	strcat( buf, "Total Rasterization Time: " );
-	char daybuf[32] = {0};
-	sprintf( daybuf, "%d days ", days );
-	char hourbuf[32] = {0};
-	sprintf( hourbuf, "%d hours ", hours );
-	char minbuf[32] = {0};
-	sprintf( minbuf, "%d minutes ", mins );
-	char secbuf[32] = {0};
-	sprintf( secbuf, "%d seconds ", secs );
-	char msbuf[32] = {0};
-	sprintf( msbuf, "%d ms", ms );
 
+	static const int MAX_BUFFER_SIZE_SMALL = 32;
+	char daybuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( daybuf, MAX_BUFFER_SIZE_SMALL, "%d days ", days );
+	char hourbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( hourbuf, MAX_BUFFER_SIZE_SMALL, "%d hours ", hours );
+	char minbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( minbuf, MAX_BUFFER_SIZE_SMALL, "%d minutes ", mins );
+	char secbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( secbuf, MAX_BUFFER_SIZE_SMALL, "%d seconds ", secs );
+	char msbuf[MAX_BUFFER_SIZE_SMALL] = {0};
+	snprintf( msbuf, MAX_BUFFER_SIZE_SMALL, "%d ms", ms );
+	
 	if( days ) {
 		strcat( buf, daybuf );
 	}

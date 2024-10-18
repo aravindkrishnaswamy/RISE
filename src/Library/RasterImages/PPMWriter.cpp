@@ -46,8 +46,9 @@ void PPMWriter::BeginWrite( const unsigned int width, const unsigned int height 
 {
 	// Write the header
 	// Get a string with the header
-	char	header[256] = {0};
-	sprintf( header, "P6\n%d %d\n255\n", width, height );
+	static const int MAX_BUFFER_SIZE = 256;
+	char	header[MAX_BUFFER_SIZE] = {0};
+	snprintf( header, MAX_BUFFER_SIZE, "P6\n%d %d\n255\n", width, height );
 
 	// Make sure the buffer is the correct size
 	pWriteBuffer.Resize( strlen( header ) + width*height*3 );
