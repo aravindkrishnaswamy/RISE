@@ -11,10 +11,10 @@
 #echo "Using Mac ARM64 configuration"
 
 # name of the CC compiler
-CXX = c++ -arch x86_64
+CXX = c++ -arch arm64
 
 # options for the linker
-CPPFLAGS = -I$(PATHLIBRARY)
+CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include
 
 CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 
@@ -30,4 +30,4 @@ CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
 
 # libraries to link with
-LDLIBS = -lpng -lz
+LDLIBS = -L/opt/homebrew/lib -lpng -lz

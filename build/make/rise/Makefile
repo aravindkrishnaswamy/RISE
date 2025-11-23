@@ -102,7 +102,7 @@ clean:
 	@echo Removing all objects and build targets
 	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise $(OBJS) $(OBJMPI) $(OBJLIB) 
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
-	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o
+	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
 	@rm -rf $(PATHSRCS)ii_files
 	@rm -rf $(PATHLIBRARY)Animation/ii_files
 	@rm -rf $(PATHLIBRARY)Cameras/ii_files
