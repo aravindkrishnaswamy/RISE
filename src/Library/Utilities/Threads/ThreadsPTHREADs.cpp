@@ -146,6 +146,14 @@ namespace RISE {
 		pthread_cond_t* cond;
 		pthread_mutex_t* mutex;
 	};
+
+	// Use a condition variable and a mutex to simulate a semaphore
+	struct PTHREAD_SEMAPHORE
+	{
+		pthread_cond_t cond;
+		pthread_mutex_t mutex;
+		int value;
+	};
 }
 #endif
 
@@ -195,8 +203,10 @@ RISESEMAPHORE Threading::riseCreateSemaphore(
 	)
 {
 #ifndef NO_PTHREAD_SUPPORT
-	sem_t* sem = new sem_t;
-	sem_init( sem, 0, value );
+	PTHREAD_SEMAPHORE* sem = new PTHREAD_SEMAPHORE;
+	pthread_mutex_init( &sem->mutex, 0 );
+	pthread_cond_init( &sem->cond, 0 );
+	sem->value = value;
 	return (void*)sem;
 #endif
 	return 0;
@@ -207,8 +217,9 @@ void Threading::riseDestroySemaphore(
 	)
 {
 #ifndef NO_PTHREAD_SUPPORT
-	sem_t* pSem = (sem_t*)sem;
-	sem_destroy( pSem );
+	PTHREAD_SEMAPHORE* pSem = (PTHREAD_SEMAPHORE*)sem;
+	pthread_mutex_destroy( &pSem->mutex );
+	pthread_cond_destroy( &pSem->cond );
 	delete pSem;
 #endif
 }
@@ -218,8 +229,13 @@ void Threading::riseSemaphoreAcquire(
 	)
 {
 #ifndef NO_PTHREAD_SUPPORT
-	sem_t* pSem = (sem_t*)sem;
-	sem_wait( pSem );
+	PTHREAD_SEMAPHORE* pSem = (PTHREAD_SEMAPHORE*)sem;
+	pthread_mutex_lock( &pSem->mutex );
+	while( pSem->value <= 0 ) {
+		pthread_cond_wait( &pSem->cond, &pSem->mutex );
+	}
+	pSem->value--;
+	pthread_mutex_unlock( &pSem->mutex );
 #endif
 }
 
@@ -229,8 +245,11 @@ void Threading::riseSemaphoreRelease(
 	)
 {
 #ifndef NO_PTHREAD_SUPPORT
-	sem_t* pSem = (sem_t*)sem;
-	sem_post( pSem );
+	PTHREAD_SEMAPHORE* pSem = (PTHREAD_SEMAPHORE*)sem;
+	pthread_mutex_lock( &pSem->mutex );
+	pSem->value += count;
+	pthread_cond_broadcast( &pSem->cond );
+	pthread_mutex_unlock( &pSem->mutex );
 #endif
 }
 
