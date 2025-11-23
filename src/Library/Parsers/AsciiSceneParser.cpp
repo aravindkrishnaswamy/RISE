@@ -2943,7 +2943,7 @@ namespace RISE
 					String file = "none";
 					unsigned int maxPoly = 10;
 					unsigned int maxRecur = 8;
-					unsigned int objid = 0;
+				//	unsigned int objid = 0;
 					bool double_sided = false;
 					bool bsp = false;
 					bool face_normals = false;
@@ -2966,9 +2966,9 @@ namespace RISE
 							maxPoly = pvalue.toUInt();
 						} else if( pname == "maxdepth" ) {
 							maxRecur = pvalue.toUInt();
-						} else if( pname == "objectid" ) {
+						} /*else if( pname == "objectid" ) {
 							objid = pvalue.toUInt();
-						} else if( pname == "double_sided" ) {
+						}*/ else if( pname == "double_sided" ) {
 							double_sided = pvalue.toBoolean();
 						} else if( pname == "bsp" ) {
 							bsp = pvalue.toBoolean();
