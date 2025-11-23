@@ -17,6 +17,7 @@
 #include "../Interfaces/ILog.h"
 #ifndef NO_PNG_SUPPORT
 	#include <png.h>
+	#include <zlib.h>
 #endif
 
 using namespace RISE;
@@ -158,7 +159,7 @@ void PNGWriter::EndWrite( )
 static void
 png_write_data(png_structp png_ptr, png_bytep data, png_size_t length)
 {
-	IWriteBuffer*	pBuffer = (IWriteBuffer*)(png_ptr->io_ptr);
+	IWriteBuffer*	pBuffer = (IWriteBuffer*)png_get_io_ptr(png_ptr);
 
 	if( pBuffer ) {
 		pBuffer->setBytes( data, length );

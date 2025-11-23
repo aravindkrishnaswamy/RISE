@@ -11,7 +11,7 @@
 #echo "Using Mac ARM64 configuration"
 
 # name of the CC compiler
-CXX = c++
+CXX = c++ -arch x86_64
 
 # options for the linker
 CPPFLAGS = -I$(PATHLIBRARY)
@@ -22,7 +22,7 @@ CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 # CXXFLAGS = -ggdb
 
 # Turn this on, if you don't have a proper libpng library installed
-DEF_PNG = -DNO_PNG_SUPPORT
+#DEF_PNG = -DNO_PNG_SUPPORT
 
 # Turn this on if you don't have a proper libpthreads library installed
 #DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
@@ -30,4 +30,4 @@ DEF_PNG = -DNO_PNG_SUPPORT
 DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND)
 
 # libraries to link with
-LDLIBS =
+LDLIBS = -lpng -lz
