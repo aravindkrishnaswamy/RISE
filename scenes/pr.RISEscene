@@ -55,7 +55,7 @@ pinhole_camera
 # Painters
 ##################################################
 
-> run ../scenes/colors.RISEscript
+> run scenes/colors.RISEscript
 
 uniformcolor_painter
 {
