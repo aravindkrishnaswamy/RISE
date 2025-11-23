@@ -195,9 +195,6 @@ int main( int argc, char** argv )
 	std::cout << "                                               " << std::endl;
 	std::cout << "===============================================" << std::endl;
 	
-	// We should initialize the options file
-	IOptions& options = GlobalOptions();
-
 	// Lets get this job rolling
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );
@@ -239,7 +236,7 @@ int main( int argc, char** argv )
 				if( pCamera ) {
 
 					// Don't do this if it is disabled in the options file
-					if( !options.ReadBool( "no_windowed_rasterizer_output", false ) ) {
+					if( !GlobalOptions().ReadBool( "no_windowed_rasterizer_output", false ) ) {
 						IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
 							pCamera->GetWidth(), pCamera->GetHeight(),
 							50, 50, "R.I.S.E. Render Window" );

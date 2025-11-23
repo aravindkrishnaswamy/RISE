@@ -118,7 +118,7 @@ int main( int argc, char** argv )
 	
 	for( unsigned int i=0; i<numPositions; i++ ) {
 		char buf[256] = {0};
-		sprintf( buf, "Performing measurement %.2d of %.2d: ", i+1, numPositions );
+		snprintf( buf, 256, "Performing measurement %.2d of %.2d: ", i+1, numPositions );
 		StdOutProgress	progress( buf );
 
 		const Scalar dEmitterTheta = (PI_OV_TWO/(numPositions-1))*(i);
