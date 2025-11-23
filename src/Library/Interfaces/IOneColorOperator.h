@@ -38,7 +38,7 @@ namespace RISE
 
 	};
 
-	static void Apply1ColorOperator( IRasterImage& pImage, const IOneColorOperator& pOp )
+	inline void Apply1ColorOperator( IRasterImage& pImage, const IOneColorOperator& pOp )
 	{
 		unsigned int	nWidth = pImage.GetWidth();
 		unsigned int	nHeight = pImage.GetHeight();

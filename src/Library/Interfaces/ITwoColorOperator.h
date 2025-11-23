@@ -44,7 +44,7 @@ namespace RISE
 
 	};
 
-	static void Apply2ColorOperator( IRasterImage& pDest, const IRasterImage& pSrc, const ITwoColorOperator& pOp )
+	inline void Apply2ColorOperator( IRasterImage& pDest, const IRasterImage& pSrc, const ITwoColorOperator& pOp )
 	{
 		// The area of the operation is the minimum size between the two
 		unsigned int	nWidth = std::min<unsigned int>( pSrc.GetWidth(), pDest.GetWidth() );

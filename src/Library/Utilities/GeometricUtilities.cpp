@@ -507,15 +507,11 @@ void GeometricUtilities::PointOnTriangle(
 	}
 }
 
-//! Generates the bounding box of the given bezier patch
+//! Generates axis aligned bounding box of the given bezier patch
 BoundingBox GeometricUtilities::BezierPatchBoundingBox(
 	const BezierPatch& patch						///< [in] The bezier patch
 	)
 {
-	// @ TODO, better test is to see if the convex hull of the bounds intersects the box, 
-	// we however are going to do the cheesy thing and intersect the bounding box of the points
-	// with this bounding box
-
 	Point3 ll = Point3( INFINITY, INFINITY, INFINITY );
 	Point3 ur = Point3( -INFINITY, -INFINITY, -INFINITY );
 
@@ -534,15 +530,11 @@ BoundingBox GeometricUtilities::BezierPatchBoundingBox(
 	return BoundingBox( ll, ur );
 }
 
-//! Generates the bounding box of the given bezier patch
+//! Generates axis aligned bounding box of the given bilinear patch
 BoundingBox GeometricUtilities::BilinearPatchBoundingBox(
 	const BilinearPatch& patch						///< [in] The bilinear patch
 	)
 {
-	// @ TODO, better test is to see if the convex hull of the bounds intersects the box, 
-	// we however are going to do the cheesy thing and intersect the bounding box of the points
-	// with this bounding box
-
 	Point3 ll = Point3( INFINITY, INFINITY, INFINITY );
 	Point3 ur = Point3( -INFINITY, -INFINITY, -INFINITY );
 

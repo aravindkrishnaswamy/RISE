@@ -25,9 +25,13 @@ namespace RISE
 	/// \sa IFunction1D
 	/// \sa IFunction3D
 	class IFunction2D : 
-		public virtual IReference, 
-		public std::binary_function<const Scalar,const Scalar,Scalar>
+		public virtual IReference
 	{
+	public:
+		using first_argument_type = const Scalar;
+		using second_argument_type = const Scalar;
+		using result_type = Scalar;
+
 	protected:
 		IFunction2D( ){};
 		virtual ~IFunction2D( ){};
