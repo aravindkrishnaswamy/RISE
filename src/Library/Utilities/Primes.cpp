@@ -20,7 +20,7 @@ void RISE::Primes::GeneratePrimes( unsigned int n, std::vector<unsigned int>& pr
 {
 	primes_array.reserve( n );
 
-	int prev_index, next_index = 2; 
+	int prev_index; 
 	bool is_prime = true;
 
 	primes_array.push_back( 2 );	// first prime number is defined
@@ -42,7 +42,7 @@ void RISE::Primes::GeneratePrimes( unsigned int n, std::vector<unsigned int>& pr
 
 		if( is_prime ) { 
 			primes_array.push_back( possibly_prime );
-			next_index++;
+
 			i++;
 		}
 	}
