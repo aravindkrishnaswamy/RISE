@@ -91,9 +91,9 @@ void TriangleMeshGeometryIndexed::UniformRandomPoint( Point3* point, Vector3* no
 	// Find the desired triangle where the CDF is greater than the rand value
 	TriangleAreasList::const_iterator it = std::lower_bound( areasCDF.begin(), areasCDF.end(), prand.z );
 
-	int idx = areasCDF.size()-1;
+	int idx = static_cast<int>(areasCDF.size())-1;
 	if( it != areasCDF.end() ) {
-		idx = std::distance( areasCDF.begin(), it );
+		idx = static_cast<int>(std::distance( areasCDF.begin(), it ));
 	}
 
 	GeometricUtilities::PointOnTriangle( point, normal, coord, ptr_polygons[idx], prand.x, prand.y );
@@ -356,9 +356,9 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 	
 	// List of points 
 	{
-		buffer.ResizeForMore( sizeof(Vertex)*pPoints.size() + sizeof( unsigned int ) );
+		buffer.ResizeForMore( static_cast<unsigned int>(sizeof(Vertex)*pPoints.size() + sizeof( unsigned int )) );
 
-		buffer.setUInt( pPoints.size() );
+		buffer.setUInt( static_cast<unsigned int>(pPoints.size()) );
 
 		MyPointsList::const_iterator	it;
 		for( it=pPoints.begin(); it!=pPoints.end(); it++ ) {
@@ -371,9 +371,9 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 
 	// List of normals
 	{
-		buffer.ResizeForMore( sizeof(Normal)*pNormals.size() + sizeof( unsigned int ) );
+		buffer.ResizeForMore( static_cast<unsigned int>(sizeof(Normal)*pNormals.size() + sizeof( unsigned int )) );
 
-		buffer.setUInt( pNormals.size() );
+		buffer.setUInt( static_cast<unsigned int>(pNormals.size()) );
 
 		MyNormalsList::const_iterator	it;
 		for( it=pNormals.begin(); it!=pNormals.end(); it++ ) {
@@ -386,9 +386,9 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 
 	// List of texture co-ordinates
 	{
-		buffer.ResizeForMore( sizeof(Normal)*pCoords.size() + sizeof( unsigned int ) );
+		buffer.ResizeForMore( static_cast<unsigned int>(sizeof(Normal)*pCoords.size() + sizeof( unsigned int )) );
 
-		buffer.setUInt( pCoords.size() );
+		buffer.setUInt( static_cast<unsigned int>(pCoords.size()) );
 
 		MyCoordsList::const_iterator	it;
 		for( it=pCoords.begin(); it!=pCoords.end(); it++ ) {
@@ -400,9 +400,9 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 
 	// List of pointer polygons (convert them to indexed polygons!)
 	{
-		buffer.ResizeForMore( sizeof( IndexedTriangle ) * ptr_polygons.size() + sizeof( unsigned int ) );
+		buffer.ResizeForMore( static_cast<unsigned int>(sizeof( IndexedTriangle ) * ptr_polygons.size() + sizeof( unsigned int )) );
 
-		buffer.setUInt( ptr_polygons.size() );
+		buffer.setUInt( static_cast<unsigned int>(ptr_polygons.size()) );
 
 		// Do pointer arithmetic to do the conversion
 		// NOTE: this only works if the points, normals and coords list

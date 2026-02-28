@@ -172,7 +172,7 @@ namespace RISE
 				int progress_rate=0
 				);
 
-			virtual unsigned int numPatches() const{ return m_vTopPatches.size(); };
+			virtual unsigned int numPatches() const{ return static_cast<unsigned int>(m_vTopPatches.size()); };
 
 			virtual void DumpToCSVFileForExcel( const char * szFile, const Scalar phi_begin, const Scalar phi_end, const Scalar theta_begin, const Scalar theta_end ) const;
 			virtual void DumpForMatlab( const char* szFile, const Scalar phi_begin, const Scalar phi_end, const Scalar theta_begin, const Scalar theta_end ) const;

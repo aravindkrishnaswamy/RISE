@@ -652,8 +652,8 @@ public:
 		
 		// If we have elements, then write out the elements
 		if( pElements ) {
-			buffer.ResizeForMore( sizeof(Element)*pElements->size() + sizeof( unsigned int ) );
-			buffer.setUInt( pElements->size() );
+			buffer.ResizeForMore( static_cast<unsigned int>(sizeof(Element)*pElements->size() + sizeof( unsigned int )) );
+			buffer.setUInt( static_cast<unsigned int>(pElements->size()) );
 
 			typename ElementListType::const_iterator		it;
 			for( it=pElements->begin(); it!=pElements->end(); it++ ) {

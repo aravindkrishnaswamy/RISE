@@ -91,9 +91,9 @@ void TriangleMeshGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 	// Find the desired triangle where the CDF is greater than the rand value
 	TriangleAreasList::const_iterator it = std::lower_bound( areasCDF.begin(), areasCDF.end(), prand.z );
 
-	int idx = areasCDF.size()-1;
+	int idx = static_cast<int>(areasCDF.size())-1;
 	if( it != areasCDF.end() ) {
-		idx = std::distance( areasCDF.begin(), it );
+		idx = static_cast<int>(std::distance( areasCDF.begin(), it ));
 	}
 
 	GeometricUtilities::PointOnTriangle( point, normal, coord, polygons[idx], prand.x, prand.y );
@@ -263,9 +263,9 @@ void TriangleMeshGeometry::Serialize( IWriteBuffer& buffer ) const
 
 	// Now put geometry data
 	{
-		buffer.ResizeForMore( sizeof( Triangle ) * polygons.size() + sizeof( unsigned int ) );
+		buffer.ResizeForMore( static_cast<unsigned int>(sizeof( Triangle ) * polygons.size() + sizeof( unsigned int )) );
 
-		buffer.setUInt( polygons.size() );
+		buffer.setUInt( static_cast<unsigned int>(polygons.size()) );
 
 		MyTriangleList::const_iterator		it;
 		for( it=polygons.begin(); it!=polygons.end(); it++ ) {

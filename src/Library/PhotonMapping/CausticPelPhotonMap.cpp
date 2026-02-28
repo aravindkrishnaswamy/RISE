@@ -64,8 +64,8 @@ void CausticPelPhotonMap::Serialize(
 	bbox.Serialize( buffer );
 
 	// Serialize number of stored photons
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( Photon ) * vphotons.size() );
-	buffer.setUInt( vphotons.size() );
+	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( Photon ) * vphotons.size()) );
+	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
 
 	for( unsigned int i=0; i<vphotons.size(); i++ ) {
 		const Photon& p = vphotons[i];

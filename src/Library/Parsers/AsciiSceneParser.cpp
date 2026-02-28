@@ -41,7 +41,7 @@ using namespace RISE::Implementation;
 #define MAX_CHARS_PER_LINE		8192
 #define CURRENT_SCENE_VERSION	5
 
-static const unsigned int std_string_npos = (unsigned int)(std::string::npos);
+// std_string_npos no longer needed - using std::string::npos directly
 static MultiHalton mh;
 
 inline bool string_split( const String& s, String& first, String& second, const char ch )
@@ -79,9 +79,9 @@ inline char evaluate_first_function_in_expression( String& token )
 	std::string str( token.c_str() );
 	std::string processed;
 
-	unsigned int x = str.find_first_of( "scth" );
+	std::string::size_type x = str.find_first_of( "scth" );
 
-	if( x == std_string_npos ) {
+	if( x == std::string::npos ) {
 		return 0;
 	}
 
@@ -91,12 +91,12 @@ inline char evaluate_first_function_in_expression( String& token )
 	}
 
 	x = str.find_first_of( "(" );
-	if( x == std_string_npos ) {
+	if( x == std::string::npos ) {
 		return 2;
 	}
 
-	unsigned int y = str.find_first_of( ")" );
-	if( y == std_string_npos ) {
+	std::string::size_type y = str.find_first_of( ")" );
+	if( y == std::string::npos ) {
 		return 2;
 	}
 
@@ -415,7 +415,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, amplitudes.size(), scale );
+					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
 				}
 			};
 
@@ -970,7 +970,7 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = painters.size();
+					const unsigned int num = static_cast<unsigned int>(painters.size());
 					char* pntrmem = new char[num*256];
 					memset( pntrmem, 0, num*256 );
 					char** pntrs = new char*[num];
@@ -1052,7 +1052,7 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = painters.size();
+					const unsigned int num = static_cast<unsigned int>(painters.size());
 					char* pntrmem = new char[num*256];
 					memset( pntrmem, 0, num*256 );
 					char** pntrs = new char*[num];
@@ -1257,7 +1257,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], cp_x.size(), bUseLUTs, lutsize );
+					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], static_cast<unsigned int>(cp_x.size()), bUseLUTs, lutsize );
 				}
 			};
 
@@ -1301,7 +1301,7 @@ namespace RISE
 						func[i] = (char*)(&(*(cp_y[i].begin())));
 					}
 
-					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), &cp_x[0], func, cp_x.size() );
+					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
 
 					safe_delete( func );
 
@@ -4242,7 +4242,7 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = shaderops.size();
+					const unsigned int num = static_cast<unsigned int>(shaderops.size());
 					char* shmem = new char[num*256];
 					memset( shmem, 0, num*256 );
 					char** shops = new char*[num];
@@ -4299,7 +4299,7 @@ namespace RISE
 						}
 					}
 
-					const unsigned int num = shaderops.size();
+					const unsigned int num = static_cast<unsigned int>(shaderops.size());
 					char* shmem = new char[num*256];
 					memset( shmem, 0, num*256 );
 					char** shops = new char*[num];
@@ -4775,7 +4775,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						integrateRGB, spd_wavelengths.size(), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0
+						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0
 						);
 				}
 			};
@@ -6000,7 +6000,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	// Open up the file and start parsing!
 	struct stat file_stats = {0};
 	stat( szFilename, &file_stats );
-	unsigned int nSize = file_stats.st_size;
+	unsigned int nSize = static_cast<unsigned int>(file_stats.st_size);
 
 	// I realize this is ugly, but it is necessary for proper
 	// clean up after breaking part way
@@ -6331,11 +6331,11 @@ char AsciiSceneParser::substitute_macro( String& token )
 {
 	// A macro can be any part of a token
 	std::string str( token.c_str() );
-	unsigned int x = str.find_first_of( "@!" );
+	std::string::size_type x = str.find_first_of( "@!" );
 
 	std::string processed;
 
-	if( x != std_string_npos ) {
+	if( x != std::string::npos ) {
 		char macro_char = str[x];		// remember this, depending on whether its an @ or % we do different operations
 
 		// We have a macro!
@@ -6348,7 +6348,7 @@ char AsciiSceneParser::substitute_macro( String& token )
 		x = str.find_first_not_of( "ABCDEFGHIJKLMNOPQRSTUVWXYZ_" );
 
 		std::string macro;
-		if( x == std_string_npos ) {
+		if( x == std::string::npos ) {
 			macro = str;
 		} else {
 			macro = str.substr( 0, x );

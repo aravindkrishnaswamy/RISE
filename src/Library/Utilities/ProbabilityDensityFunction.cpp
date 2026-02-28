@@ -76,7 +76,7 @@ ProbabilityDensityFunction::~ProbabilityDensityFunction()
 
 void ProbabilityDensityFunction::Normalize( const Scalar total )
 {
-	int size = values.size();
+	int size = static_cast<int>(values.size());
 
 	if( size > 0 && total > 0 ) {
 		DensityList::iterator i, e;

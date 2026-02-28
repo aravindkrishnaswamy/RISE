@@ -67,32 +67,31 @@ AsciiCommandParser::~AsciiCommandParser( )
 
 unsigned int AsciiCommandParser::TokenizeString( const char* szStr, String* tokens, unsigned int max_tokens )
 {
-	static const int std_string_npos = int(std::string::npos);
 	std::string		st( szStr );
 	unsigned int	cur_token = 0;
 
-	int	x = 0;
+	std::string::size_type	x = 0;
 	std::string			mine = st;
 
 	for(;;)
 	{
 		x = mine.find_first_not_of( " \t\r" );
 
-		if( x == std_string_npos ) {
+		if( x == std::string::npos ) {
 			break;
 		}
 
 		mine = mine.substr( x, mine.size() );
 		x = mine.find_first_of( " \t\r" );
 
-		if( x == std_string_npos ) {
+		if( x == std::string::npos ) {
 			x = mine.size();
 		}
 
 		tokens[cur_token] = String( mine.substr( 0, x ).c_str() );
 		cur_token++;
 
-		if( x == int(mine.size()) ) {
+		if( x == mine.size() ) {
 			break;
 		}
 

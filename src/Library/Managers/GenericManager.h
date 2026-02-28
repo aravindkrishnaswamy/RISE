@@ -200,7 +200,7 @@ namespace RISE
 			items.clear();
 		}
 
-		unsigned int	getItemCount( ) const{ return items.size(); }
+		unsigned int	getItemCount( ) const{ return static_cast<unsigned int>(items.size()); }
 
 		void			EnumerateItemNames( IEnumCallback<const char*>& pFunc ) const
 		{

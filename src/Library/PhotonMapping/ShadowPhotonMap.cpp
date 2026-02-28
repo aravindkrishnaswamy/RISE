@@ -139,7 +139,7 @@ void ShadowPhotonMap::ShadowEstimate(
 	bool shadow_found = false;
 	bool lit_found = false;
 
-	LocateShadowPhotons( pos, dGatherRadius, 0, vphotons.size()-1, lit_found, shadow_found );
+	LocateShadowPhotons( pos, dGatherRadius, 0, static_cast<int>(vphotons.size())-1, lit_found, shadow_found );
 
 	shadow = 1;
 
@@ -171,8 +171,8 @@ void ShadowPhotonMap::Serialize(
 	bbox.Serialize( buffer );
 
 	// Serialize number of stored photons
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( ShadowPhoton ) * vphotons.size() );
-	buffer.setUInt( vphotons.size() );
+	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( ShadowPhoton ) * vphotons.size()) );
+	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
 
 	for( unsigned int i=0; i<vphotons.size(); i++ ) {
 		const ShadowPhoton& p = vphotons[i];

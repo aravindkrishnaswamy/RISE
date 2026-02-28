@@ -250,7 +250,7 @@ void DirectVolumeRenderingShader::Shade(
 		const Point3 ptStart = Point3Ops::Transform( ri.pObject->GetFinalInverseTransformMatrix(), ri.geometric.ray.origin );
 		const Vector3 vDir = Vector3Ops::mkVector3( ri.geometric.ptObjIntersec, ptStart );
 
-		pComposite->BeginOperation( samples.size(), pVolume );
+		pComposite->BeginOperation( static_cast<unsigned int>(samples.size()), pVolume );
 
 		RISEColor	cPel;
 
@@ -392,7 +392,7 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 		const Point3 ptStart = Point3Ops::Transform( ri.pObject->GetFinalInverseTransformMatrix(), ri.geometric.ray.origin );
 		const Vector3 vDir = Vector3Ops::mkVector3( ri.geometric.ptObjIntersec, ptStart );
 
-		pComposite->BeginOperation( samples.size(), pVolume );
+		pComposite->BeginOperation( static_cast<unsigned int>(samples.size()), pVolume );
 
 		IVolumeOperation::SpectralColor	cPel;
 

@@ -45,7 +45,7 @@ bool HDRReader::BeginRead( unsigned int& width, unsigned int& height )
 	char szSigFromBuf[11] = {0};
 
 	pReadBuffer.seek( IBuffer::START, 0 );
-	pReadBuffer.getBytes( szSigFromBuf, strlen(szSignature) );
+	pReadBuffer.getBytes( szSigFromBuf, static_cast<unsigned int>(strlen(szSignature)) );
 
 	if( strcmp(szSignature, szSigFromBuf) != 0 ) {
 		GlobalLog()->PrintSourceError( "HDRReader::BeginRead:: RADIANCE signature not found!", __FILE__, __LINE__ );

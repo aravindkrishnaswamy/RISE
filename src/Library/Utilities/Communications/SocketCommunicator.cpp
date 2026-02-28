@@ -38,7 +38,7 @@ int SocketCommunicator::ReadData( char *buf, int n )
 	int br = 0;     // bytes read this pass
 
 	while( bcount < n ) {
-		br = recv( conn, buf, n-bcount, 0 );
+		br = static_cast<int>(recv( conn, buf, n-bcount, 0 ));
 		if( br > 0 ) {
 			bcount += br;
 			buf += br;
@@ -74,7 +74,7 @@ bool SocketCommunicator::CommSendMessage( const MESSAGE_TYPE type, const IMemory
 	safe_release( buf );
 
 	// Send the header
-	int nBytesSent = send( conn, (const char*)&header, sizeof( MESSAGE_HEADER ), 0 );
+	int nBytesSent = static_cast<int>(send( conn, (const char*)&header, sizeof( MESSAGE_HEADER ), 0 ));
 
 	if( nBytesSent == -1 ) {
 		// Connection broken
@@ -89,7 +89,7 @@ bool SocketCommunicator::CommSendMessage( const MESSAGE_TYPE type, const IMemory
 
 	if( buffer ) {
 		// Send the buffer
-		nBytesSent = send( conn, buffer->Pointer(), buffer->Size(), 0 );
+		nBytesSent = static_cast<int>(send( conn, buffer->Pointer(), buffer->Size(), 0 ));
 
 		if( nBytesSent != int(buffer->Size()) ) {
 			GlobalLog()->PrintEx( eLog_Error, "MessageBuffer sent %d bytes rather than %d", nBytesSent, buffer->Size() );

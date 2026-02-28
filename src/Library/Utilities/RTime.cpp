@@ -34,7 +34,7 @@ namespace RISE
 	#else
 		timeval		v;
 		gettimeofday( &v, 0 );
-		return v.tv_sec*1000 + v.tv_usec/1000;
+		return static_cast<unsigned int>(v.tv_sec*1000 + v.tv_usec/1000);
 	#endif
 	}
 }

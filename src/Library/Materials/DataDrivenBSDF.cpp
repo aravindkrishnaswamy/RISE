@@ -156,12 +156,12 @@ RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 					// Otherwise interpolate
 					const Scalar xtheta = (nr_theta-m->dTheta)/((m+1)->dTheta-m->dTheta);
 
-					const RISEPel tp = ComputeValueForPatchSet( it, cnt, it->values.size(), xtheta );
+					const RISEPel tp = ComputeValueForPatchSet( it, cnt, static_cast<int>(it->values.size()), xtheta );
 					if( it==brdf.begin() ) {
 						return tp;
 					}
 
-					const RISEPel pp = ComputeValueForPatchSet( (it-1), cnt, (it-1)->values.size(), xtheta );
+					const RISEPel pp = ComputeValueForPatchSet( (it-1), cnt, static_cast<int>((it-1)->values.size()), xtheta );
 					return ((1.0-xemm)*tp + (xemm*pp));
 				}
 			}

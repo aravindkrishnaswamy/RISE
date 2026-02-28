@@ -275,7 +275,7 @@ bool TriangleMeshLoader3DS::GetVertices( VerticesListType& vec, unsigned int n )
 		return false;
 	}
 
-	pBuffer->seek( IBuffer::START, objptrs[n] );		// seek to the object's position
+	pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[n]) );		// seek to the object's position
 
 	unsigned int id = pBuffer->getUWord();
 	
@@ -325,7 +325,7 @@ bool TriangleMeshLoader3DS::GetCoords( TexCoordsListType& vec, unsigned int n )
 		return false;
 	}
 
-	pBuffer->seek( IBuffer::START, objptrs[n] );		// seek to the object's position
+	pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[n]) );		// seek to the object's position
 
 	unsigned short id = pBuffer->getUWord();
 	
@@ -405,7 +405,7 @@ bool TriangleMeshLoader3DS::GetFaces( IndexTriangleListType& vec, unsigned int n
 		return false;
 	}
 
-	pBuffer->seek( IBuffer::START, objptrs[n] );		// seek to the object's position
+	pBuffer->seek( IBuffer::START, static_cast<int>(objptrs[n]) );		// seek to the object's position
 
 	unsigned short id = pBuffer->getUWord();
 	

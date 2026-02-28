@@ -38,12 +38,12 @@ unsigned int DiskBuffer::Size( ) const
 {	
 	struct stat file_stats = {0};
 	stat( szFileName, &file_stats );
-	return file_stats.st_size;
+	return static_cast<unsigned int>(file_stats.st_size);
 }
 
 unsigned int DiskBuffer::getCurPos( ) const
 {
-	return ftell( hFile );
+	return static_cast<unsigned int>(ftell( hFile ));
 }
 
 bool DiskBuffer::EndOfBuffer( ) const

@@ -115,7 +115,7 @@ void MersenneTwister::init_by_array(unsigned long  init_key[], unsigned long key
     unsigned int i, j, k;
     init_genrand(19650218UL);
     i=1; j=0;
-    k = (state_vector_size>key_length ? state_vector_size : key_length);
+    k = static_cast<unsigned int>(state_vector_size>key_length ? state_vector_size : key_length);
     for (; k; k--) {
         state[i] = (state[i] ^ ((state[i-1] ^ (state[i-1] >> 30)) * 1664525UL))
           + init_key[j] + j; /* non linear */

@@ -116,7 +116,7 @@ void PixelBasedPelRasterizerAdaptiveSampling::IntegratePixel(
 		// Now we have the value of the pixel with the minimum amount of sampling, 
 		// now we adaptively continue
 		Scalar			weightsSum = weights;
-		unsigned int	numSamplesTaken = samples.size();
+		unsigned int	numSamplesTaken = static_cast<unsigned int>(samples.size());
 		unsigned int	adaptiveKernelToUse = 0;
 
 		// Compute the variance before we process this kernel, so that we have something to compare it to later

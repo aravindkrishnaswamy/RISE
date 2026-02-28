@@ -116,7 +116,7 @@ namespace RISE
 	void GeneratePolygonsFromBezierPatches( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, BezierPatchesListType& patches, const unsigned int nDetail )
 	{
 		// First generate all the points from all the patches
-		unsigned int		nNumPatches = patches.size();
+		unsigned int		nNumPatches = static_cast<unsigned int>(patches.size());
 		unsigned int		m, i, j;
 
 		for( m = 0; m < nNumPatches; m++ )

@@ -29,7 +29,7 @@ namespace RISE
 	{
 		// Now comes the really fun part of calculating vertex normals!
 		// Lets setup a funky data structure for this...
-		int			nNumVerts = vVertices.size();
+		int			nNumVerts = static_cast<int>(vVertices.size());
 
 		Vector3	*sum = new Vector3[nNumVerts];
 		GlobalLog()->PrintNew( sum, __FILE__, __LINE__, "sum list" );

@@ -61,10 +61,10 @@ void HDRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 
 	// Write the header
 	// Make sure there's enough room in the buffer first
-	pWriteBuffer.Resize( width*height*4 + strlen(szHeader) );
+	pWriteBuffer.Resize( static_cast<unsigned int>(width*height*4 + strlen(szHeader)) );
 
 	// Write out the header
-	pWriteBuffer.setBytes( szHeader, strlen(szHeader) );
+	pWriteBuffer.setBytes( szHeader, static_cast<unsigned int>(strlen(szHeader)) );
 
 	// Setup the buffer
 	bufW = width;

@@ -235,7 +235,7 @@ namespace RISE
 
 			virtual int  NumRegions()
 			{
-				return blocks.size();
+				return static_cast<int>(blocks.size());
 			}
 
 			Rect GetNextRegion()

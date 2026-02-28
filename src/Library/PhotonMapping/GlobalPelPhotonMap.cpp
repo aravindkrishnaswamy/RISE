@@ -45,7 +45,7 @@ void GlobalPelPhotonMap::PrecomputeIrradiance(
 
 	bbox = BoundingBox( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
 
-	const unsigned int total = vphotons.size();
+	const unsigned int total = static_cast<unsigned int>(vphotons.size());
 
 	if( pFunc ) {
 		pFunc->SetTitle( "Precomputing global photonmap irradiances: " );
@@ -154,8 +154,8 @@ void GlobalPelPhotonMap::Serialize(
 	bbox.Serialize( buffer );
 
 	// Serialize number of stored photons
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( IrradPhoton ) * vphotons.size() );
-	buffer.setUInt( vphotons.size() );
+	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( IrradPhoton ) * vphotons.size()) );
+	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
 
 	for( unsigned int i=0; i<vphotons.size(); i++ ) {
 		const IrradPhoton& p = vphotons[i];

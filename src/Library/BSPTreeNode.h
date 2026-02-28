@@ -186,7 +186,7 @@ public:
 		const Vector3 vBoxSize = my_bb.GetExtents();
 
 		// If we have reached the maximum recursion level, then stop and don't try to create any more children
-		const unsigned int total_count = my_elements.size()+shared_elements.size();
+		const unsigned int total_count = static_cast<unsigned int>(my_elements.size()+shared_elements.size());
 		if( vBoxSize.x <= bsp_error_delta_box_size ||
 			vBoxSize.y <= bsp_error_delta_box_size || 
 			vBoxSize.z <= bsp_error_delta_box_size ||
@@ -588,8 +588,8 @@ public:
 		
 		// If we have elements, then write out the elements
 		if( pElements ) {
-			buffer.ResizeForMore( sizeof(Element)*pElements->size() + sizeof( unsigned int ) );
-			buffer.setUInt( pElements->size() );
+			buffer.ResizeForMore( static_cast<unsigned int>(sizeof(Element)*pElements->size() + sizeof( unsigned int )) );
+			buffer.setUInt( static_cast<unsigned int>(pElements->size()) );
 
 			typename ElementListType::const_iterator		it;
 			for( it=pElements->begin(); it!=pElements->end(); it++ ) {

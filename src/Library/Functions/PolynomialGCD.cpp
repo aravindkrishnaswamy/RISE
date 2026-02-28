@@ -29,8 +29,8 @@ void Polynomial::PolynomialDivRem(
 		std::vector<Scalar> & coeffRem			///< [out] COefficients of Remainder
 		) {
 	coeffRem = coeff1;
-	unsigned int len1 = coeffRem.size();
-	const unsigned int len2 = coeff2.size();
+	unsigned int len1 = static_cast<unsigned int>(coeffRem.size());
+	const unsigned int len2 = static_cast<unsigned int>(coeff2.size());
 
 	coeffDiv.clear();
 	coeffDiv.resize(len1-len2+1, 0);
@@ -42,7 +42,7 @@ void Polynomial::PolynomialDivRem(
 		for (unsigned int i = 0; i < len2-1; i++) {
 			coeffRem[len1-len2+i] -= d*coeff2[i];
 		}
-		len1 = coeffRem.size();
+		len1 = static_cast<unsigned int>(coeffRem.size());
 	}
 }
 

@@ -105,9 +105,9 @@ namespace RISE
 			void AddTexCoords( const TexCoordsListType& coords );
 			void AddIndexedTriangle( const IndexedTriangle& tri );
 			void AddIndexedTriangles( const IndexTriangleListType& tris );
-			unsigned int numPoints( ) const		{ return pPoints.size(); }
-			unsigned int numNormals( ) const	{ return pNormals.size(); }
-			unsigned int numCoords( ) const		{ return pCoords.size(); }
+			unsigned int numPoints( ) const		{ return static_cast<unsigned int>(pPoints.size()); }
+			unsigned int numNormals( ) const	{ return static_cast<unsigned int>(pNormals.size()); }
+			unsigned int numCoords( ) const		{ return static_cast<unsigned int>(pCoords.size()); }
 			MyPointsList const& getVertices() const { return pPoints; }
 			MyNormalsList const& getNormals() const { return pNormals; }
 			MyCoordsList const& getCoords() const { return pCoords; }

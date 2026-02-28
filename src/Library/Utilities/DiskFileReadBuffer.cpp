@@ -31,7 +31,7 @@ DiskFileReadBuffer::DiskFileReadBuffer( const char * file_name ) : nSize( 0 )
 	if( stat( szFileName, &file_stats ) == -1 ) {
 		GlobalLog()->PrintEx( eLog_Warning, "DiskFileReadBuffer:: Could not stat file \'%s\'", file_name );
 	} else {
-		nSize = file_stats.st_size;
+		nSize = static_cast<unsigned int>(file_stats.st_size);
 
 		hFile = fopen( szFileName, "rb" );
 

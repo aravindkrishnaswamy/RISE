@@ -141,7 +141,7 @@ static void subdivide(
 	std::vector<Scalar> & coeff2
 	)
 {
-	int size = coeff.size();
+	int size = static_cast<int>(coeff.size());
 	int scale = 1;
 	for (int i = 0; i < size; i++) {
 		coeff1[i] = 0;
@@ -157,7 +157,7 @@ static void subdivide(
 }
 
 static bool noRoot(const std::vector<Scalar> & coeff) {
-	const int size = coeff.size();
+	const int size = static_cast<int>(coeff.size());
 	for (int i = 1; (i < size); i++) {
 		if (coeff[i] >= 0 && coeff[0] <= 0) return false;
 		if (coeff[i] <= 0 && coeff[0] >= 0) return false;
@@ -186,7 +186,7 @@ static bool SlowSolveBernsteinBasisPolynomialWithinRange(
 	}
 
 	{
-		const int size = coeff.size();				/// degree+1;
+		const int size = static_cast<int>(coeff.size());				/// degree+1;
 		std::vector<Scalar> coeff1(size);
 		std::vector<Scalar> coeff2(size);
 
@@ -208,7 +208,7 @@ static int SlowSolveBernsteinBasisPolynomialWithinRange(
 {
 	if (noRoot(coeff)) return 0;
 
-	const int size = coeff.size();				/// degree+1;
+	const int size = static_cast<int>(coeff.size());				/// degree+1;
     const Scalar mid = (a+b)/2.0;
 
 	if ((b-a < epsilon) ||
@@ -247,7 +247,7 @@ static void ConvertToBernsteinBasis(
 	std::vector<Scalar> & bernsteinbasis
 	)
 {
-	int size = stdbasis.size();
+	int size = static_cast<int>(stdbasis.size());
 	int degree = size-1;
 	for (int i = 0; i < size; i++) {
 		bernsteinbasis[i] = 0;
@@ -267,7 +267,7 @@ static void ConvertToBernsteinBasis(
 {
 	// Find the polynomial p((t-a)/(b-a)) in the standard basis
 	std::vector<Scalar> adjustedbasis = stdbasis;
-	int size = stdbasis.size();
+	int size = static_cast<int>(stdbasis.size());
 	const Scalar length = b-a;
 
 	for (int i = 0; i < size; i++) {
@@ -306,7 +306,7 @@ int Polynomial::SolvePolynomialWithinRange(
 	const Scalar epsilon
 	)
 {
-	int size = coeff.size();
+	int size = static_cast<int>(coeff.size());
 	//int oldsolutions = solutions.size();
 	std::vector<Scalar> newcoeff(size);
 

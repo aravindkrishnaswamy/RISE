@@ -69,7 +69,7 @@ void TranslucentPelPhotonMap::RadianceEstimate(
 
 	// locate the nearest photons
 	PhotonDistListType heap;
-	LocatePhotons( ri.ptIntersection, dGatherRadius, nMaxPhotonsOnGather, heap, 0, vphotons.size()-1 );
+	LocatePhotons( ri.ptIntersection, dGatherRadius, nMaxPhotonsOnGather, heap, 0, static_cast<int>(vphotons.size())-1 );
 
 	if( heap.size() > nMinPhotonsOnGather )
 	{
@@ -109,8 +109,8 @@ void TranslucentPelPhotonMap::Serialize(
 	bbox.Serialize( buffer );
 
 	// Serialize number of stored photons
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( TranslucentPhoton ) * vphotons.size() );
-	buffer.setUInt( vphotons.size() );
+	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( TranslucentPhoton ) * vphotons.size()) );
+	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
 
 	for( unsigned int i=0; i<vphotons.size(); i++ ) {
 		const TranslucentPhoton& p = vphotons[i];
@@ -152,7 +152,7 @@ void TranslucentPelPhotonMap::ScalePhotonPower( const Scalar scale )
 		vphotons[i].power = vphotons[i].power * scale;
 	}
 
-	nPrevScale = vphotons.size();
+	nPrevScale = static_cast<unsigned int>(vphotons.size());
 
 	PhotonMapCore<TranslucentPhoton>::ScalePhotonPower( scale );
 }

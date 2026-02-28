@@ -92,7 +92,7 @@ void DAGObjectManager::SeperateNames( std::vector<String>& names, const char * s
 {
 	std::string		st( szName );
 
-	unsigned int	x = 0;
+	std::string::size_type	x = 0;
 	std::string			mine = st;
 
 	for(;;)

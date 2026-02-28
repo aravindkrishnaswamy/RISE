@@ -107,7 +107,7 @@ MemoryBuffer::MemoryBuffer( const char * szFileName ) :
 
 		struct stat file_stats = {0};
 		stat( s.c_str(), &file_stats );
-		nSize = file_stats.st_size;
+		nSize = static_cast<unsigned int>(file_stats.st_size);
 		pBuffer = new char[ nSize ];
 		GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 		

@@ -104,7 +104,7 @@ namespace RISE
 				unsigned int&			cnt									// count so far
 				) const
 			{
-				CountPhotonsAt( loc, maxDist, max, 0, vphotons.size()-1, cnt );
+				CountPhotonsAt( loc, maxDist, max, 0, static_cast<int>(vphotons.size())-1, cnt );
 			}
 
 			// Counts the number of photons at the particular location
@@ -392,7 +392,7 @@ namespace RISE
 			// This is called before the photon map is used for rasterization
 			void Balance()
 			{
-				BalanceSegment( 0, vphotons.size()-1 );
+				BalanceSegment( 0, static_cast<int>(vphotons.size())-1 );
 			}
 
 			BoundingBox GetBoundingBox()
@@ -425,7 +425,7 @@ namespace RISE
 				nmaxphotons = nMaxPhotonsOnGather;
 			}
 
-			unsigned int NumStored( ){ return vphotons.size(); }
+			unsigned int NumStored( ){ return static_cast<unsigned int>(vphotons.size()); }
 			unsigned int MaxPhotons( ){ return nMaxPhotons; }
 
 			// scale = 1/number of emmitted photons
@@ -488,7 +488,7 @@ namespace RISE
 				distance_container<PhotType>&		nearest					// the nearest photon
 				) const
 			{
-				LocateNearestPhotonRecursive( loc, normal, maxDist, 0, this->vphotons.size()-1, nearest );
+				LocateNearestPhotonRecursive( loc, normal, maxDist, 0, static_cast<int>(this->vphotons.size())-1, nearest );
 			}
 
 			// Locate nearest photon recursive algorithm
@@ -567,7 +567,7 @@ namespace RISE
 					this->vphotons[i].power = this->vphotons[i].power * scale;
 				}
 
-				this->nPrevScale = this->vphotons.size();
+				this->nPrevScale = static_cast<unsigned int>(this->vphotons.size());
 
 				PhotonMapCore<PhotType>::ScalePhotonPower( scale );
 			}
@@ -606,7 +606,7 @@ namespace RISE
 
 				// locate the nearest photons
 				PhotonDistListType heap;
-				this->LocatePhotons( point, this->dGatherRadius, this->nMaxPhotonsOnGather, heap, 0, this->vphotons.size()-1 );
+				this->LocatePhotons( point, this->dGatherRadius, this->nMaxPhotonsOnGather, heap, 0, static_cast<int>(this->vphotons.size())-1 );
 
 				if( heap.size() > this->nMinPhotonsOnGather )
 				{
@@ -650,7 +650,7 @@ namespace RISE
 
 				// locate the nearest photons
 				PhotonDistListType heap;
-				this->LocatePhotons( ri.ptIntersection, this->dGatherRadius, this->nMaxPhotonsOnGather, heap, 0, this->vphotons.size()-1 );
+				this->LocatePhotons( ri.ptIntersection, this->dGatherRadius, this->nMaxPhotonsOnGather, heap, 0, static_cast<int>(this->vphotons.size())-1 );
 
 				if( heap.size() > this->nMinPhotonsOnGather )
 				{

@@ -44,7 +44,7 @@ void GlobalSpectralPhotonMap::RadianceEstimate(
 
 	// locate the nearest photons
 	PhotonDistListType heap;
-	LocatePhotons( ri.ptIntersection, dGatherRadius, nMaxPhotonsOnGather, heap, 0, vphotons.size()-1 );
+	LocatePhotons( ri.ptIntersection, dGatherRadius, nMaxPhotonsOnGather, heap, 0, static_cast<int>(vphotons.size())-1 );
 
 	if( heap.size() > nMinPhotonsOnGather )
 	{
@@ -98,7 +98,7 @@ void GlobalSpectralPhotonMap::RadianceEstimateNM(
 
 	// locate the nearest photons
 	PhotonDistListType heap;
-	LocatePhotons( ri.ptIntersection, dGatherRadius, nMaxPhotonsOnGather, heap, 0, vphotons.size()-1 );
+	LocatePhotons( ri.ptIntersection, dGatherRadius, nMaxPhotonsOnGather, heap, 0, static_cast<int>(vphotons.size())-1 );
 
 	if( heap.size() > nMinPhotonsOnGather )
 	{
@@ -184,8 +184,8 @@ void GlobalSpectralPhotonMap::Serialize(
 	bbox.Serialize( buffer );
 
 	// Serialize number of stored photons
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( SpectralPhoton ) * vphotons.size() );
-	buffer.setUInt( vphotons.size() );
+	buffer.ResizeForMore( static_cast<unsigned int>(sizeof( unsigned int ) + sizeof( SpectralPhoton ) * vphotons.size()) );
+	buffer.setUInt( static_cast<unsigned int>(vphotons.size()) );
 
 	for( unsigned int i=0; i<vphotons.size(); i++ ) {
 		const SpectralPhoton& p = vphotons[i];
