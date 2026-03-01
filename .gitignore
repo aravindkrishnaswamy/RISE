@@ -1,5 +1,8 @@
-*.RISEscene
-scenes/FeatureBased/Materials/.DS_Store
-scenes/FeatureBased/SpectralRendering/.DS_Store
-scenes/FeatureBased/Shaders/SSS/.DS_Store
-scenes/FeatureBased/Shaders/.DS_Store
+/rendered
+/bin
+.DS_Store
+/.vscode
+RISELog.txt
+build_log.txt
+Config.specific
+Xcuserdata/
