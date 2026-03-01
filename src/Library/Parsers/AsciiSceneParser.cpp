@@ -6005,9 +6005,9 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	// I realize this is ugly, but it is necessary for proper
 	// clean up after breaking part way
 	String strBuffer;
-	strBuffer.resize( nSize );
+	strBuffer.resize( nSize + 1 );
 	char* pBuffer = (char*)strBuffer.c_str();
-	memset( pBuffer, 0, nSize );
+	memset( pBuffer, 0, nSize + 1 );
 
 	FILE* f = fopen( szFilename, "rb" );
 	if( f ) {
