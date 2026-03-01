@@ -4591,6 +4591,8 @@
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -4608,12 +4610,16 @@
 					"-DCOLORSPACE_RGB",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
-					"-DNO_EXR_SUPPORT",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -4693,6 +4699,8 @@
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -4710,12 +4718,16 @@
 					"-DCOLORSPACE_RGB",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
-					"-DNO_EXR_SUPPORT",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -4795,6 +4807,8 @@
 				HEADER_SEARCH_PATHS = (
 					/opt/homebrew/include,
 					"$(SRCROOT)/../../../src/Library/**",
+					/opt/homebrew/include/OpenEXR,
+					/opt/homebrew/include/Imath,
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -4812,12 +4826,16 @@
 					"-DCOLORSPACE_RGB",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
-					"-DNO_EXR_SUPPORT",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
 					"-lz",
 					"-ltiff",
+					"-lOpenEXR",
+					"-lOpenEXRCore",
+					"-lImath",
+					"-lIex",
+					"-lIlmThread",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";

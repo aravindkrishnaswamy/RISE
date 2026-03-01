@@ -47,12 +47,12 @@ namespace RISE
 				return pBuffer.getBytes( c, n );
 			}
 
-			Imf::Int64 tellg()
+			uint64_t tellg()
 			{
 				return pBuffer.getCurPos();
 			}
 
-			void seekg( Imf::Int64 pos )
+			void seekg( uint64_t pos )
 			{
 				pBuffer.seek( IBuffer::START, static_cast<int>(pos) );
 			}

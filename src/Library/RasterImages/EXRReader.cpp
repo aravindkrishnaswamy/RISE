@@ -52,7 +52,7 @@ bool EXRReader::BeginRead( unsigned int& width, unsigned int& height )
 
 	// Read the file
 	Imath::Box2i dw = in.dataWindow();
-	float a = in.pixelAspectRatio();
+//	float a = in.pixelAspectRatio();
 	int w = dw.max.x - dw.min.x + 1;
 	int h = dw.max.y - dw.min.y + 1;
 
