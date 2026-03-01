@@ -18,6 +18,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "GeometryUtilities.h"
 #include "../Utilities/stl_utils.h"
+#include <cmath>
 
 inline unsigned int VoidPtrToUInt( const void* v )
 {
@@ -583,6 +584,10 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	char bsp = buffer.getChar();
 	bUseBSP = !!bsp;
 		
+	// Try to deserialize the spatial acceleration structure, but validate 
+	// the bounding box afterwards. If it's corrupted, rebuild from scratch.
+	bool bTreeValid = false;
+
 	if( bUseBSP ) {
 		// Deserialize the bsp trees
 		const bool bptrbsptree = !!buffer.getChar();
@@ -593,6 +598,20 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 
 			// Deserialize
 			pPtrBSPtree->Deserialize( buffer );
+
+			// Validate the deserialized bounding box
+			BoundingBox treeBBox = pPtrBSPtree->GetBBox();
+			Vector3 extents = treeBBox.GetExtents();
+			if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
+				std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
+				std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
+			{
+				bTreeValid = true;
+			} else {
+				GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Deserialized BSP tree has invalid bounding box, will rebuild" );
+				safe_release( pPtrBSPtree );
+				pPtrBSPtree = 0;
+			}
 		}
 	} else {
 		// Deserialize the octrees
@@ -604,7 +623,52 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 
 			// Deserialize
 			pPtrOctree->Deserialize( buffer );
+
+			// Validate the deserialized bounding box
+			BoundingBox treeBBox = pPtrOctree->GetBBox();
+			Vector3 extents = treeBBox.GetExtents();
+			if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
+				std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
+				std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
+			{
+				bTreeValid = true;
+			} else {
+				GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Deserialized Octree has invalid bounding box, will rebuild" );
+				safe_release( pPtrOctree );
+				pPtrOctree = 0;
+			}
 		}
+	}
+
+	// If the deserialized tree was invalid, rebuild from the loaded polygon data
+	if( !bTreeValid && ptr_polygons.size() > 0 ) {
+		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Rebuilding spatial structure from %u polygons", ptr_polygons.size() );
+
+		// Compute bounding box from vertex data
+		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+		std::vector<const PointerTriangle*> temp;
+
+		MyPointerTriangleList::iterator pi, pe;
+		for( pi=ptr_polygons.begin(), pe=ptr_polygons.end(); pi!=pe; pi++ ) {
+			temp.push_back( &(*pi) );
+		}
+
+		MyPointsList::const_iterator mi, mn;
+		for( mi=pPoints.begin(), mn=pPoints.end(); mi!=mn; mi++ ) {
+			bbox.Include( *mi );
+		}
+
+		if( bUseBSP ) {
+			pPtrBSPtree = new BSPTree<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
+			GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree (rebuilt)" );
+			pPtrBSPtree->AddElements( temp, nMaxRecursionLevel );
+		} else {
+			pPtrOctree = new Octree<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
+			GlobalLog()->PrintNew( pPtrOctree, __FILE__, __LINE__, "pointers octree (rebuilt)" );
+			pPtrOctree->AddElements( temp, nMaxRecursionLevel );
+		}
+
+		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Spatial structure rebuilt successfully" );
 	}
 
 	ComputeAreas();
