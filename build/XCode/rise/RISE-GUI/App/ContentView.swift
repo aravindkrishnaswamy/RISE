@@ -1,0 +1,295 @@
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject var viewModel: RenderViewModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Editor sidebar (slides in from left)
+            if viewModel.isEditorVisible {
+                SceneEditorPanel()
+                    .frame(width: sceneEditorPanelWidth)
+                    .transition(.move(edge: .leading))
+
+                Divider()
+            }
+
+            // Main content
+            VStack(spacing: 0) {
+                // Top area: rendered output
+                RenderImageView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Divider()
+
+                // Bottom area: controls (left) + log output (right)
+                HStack(spacing: 0) {
+                    // Bottom-left: Controls panel
+                    controlsPanel
+                        .frame(width: 260)
+
+                    Divider()
+
+                    // Bottom-right: Log output
+                    LogOutputView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(height: 220)
+
+                Divider()
+
+                // Status bar
+                statusBar
+            }
+        }
+        .navigationTitle(windowTitle)
+        .navigationSubtitle("RISE \(viewModel.versionString)")
+        .frame(minWidth: 900, minHeight: 600)
+        .onChange(of: viewModel.sceneSize) { _, newSize in
+            guard let size = newSize else { return }
+            resizeWindowToFitScene(size)
+        }
+        .onChange(of: viewModel.isEditorVisible) { _, isVisible in
+            adjustWindowForEditor(visible: isVisible)
+        }
+    }
+
+    // MARK: - Controls Panel
+
+    private var controlsPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Controls")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color(nsColor: .windowBackgroundColor))
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                // Scene actions
+                HStack(spacing: 8) {
+                    Button {
+                        viewModel.openScene()
+                    } label: {
+                        Label("Open Scene", systemImage: "doc.badge.plus")
+                    }
+                    .disabled(viewModel.renderState == .rendering
+                              || viewModel.renderState == .cancelling
+                              || viewModel.renderState == .loading)
+                    .help("Open a .RISEscene file")
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            viewModel.editSceneFile()
+                        }
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .disabled(viewModel.loadedFilePath == nil)
+                    .help(viewModel.isEditorVisible ? "Close the scene editor" : "Edit the scene file")
+
+                    Button {
+                        viewModel.clearScene()
+                    } label: {
+                        Label("Clear", systemImage: "trash")
+                    }
+                    .disabled(viewModel.renderState == .rendering
+                              || viewModel.renderState == .cancelling
+                              || viewModel.renderState == .idle)
+                    .help("Clear the current scene")
+                }
+
+                Divider()
+
+                // Render actions
+                HStack(spacing: 8) {
+                    Button {
+                        viewModel.startRender()
+                    } label: {
+                        Label("Render", systemImage: "play.fill")
+                    }
+                    .disabled(!canRender)
+                    .help("Start rendering the loaded scene")
+
+                    Button {
+                        viewModel.cancelRender()
+                    } label: {
+                        Label("Cancel", systemImage: "stop.fill")
+                    }
+                    .disabled(viewModel.renderState != .rendering)
+                    .help("Cancel the current render")
+                }
+
+                // Cancelling indicator
+                if viewModel.renderState == .cancelling {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Cancelling — waiting for active block to finish…")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                }
+
+                // Progress
+                if viewModel.renderState == .rendering || viewModel.renderState == .cancelling {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: viewModel.progress)
+                            .progressViewStyle(.linear)
+
+                        HStack {
+                            Text(String(format: "%.1f%%", viewModel.progress * 100))
+                                .font(.caption)
+                                .monospacedDigit()
+
+                            if !viewModel.progressTitle.isEmpty {
+                                Text(viewModel.progressTitle)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+
+                            Text(viewModel.formattedElapsedTime)
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(10)
+        }
+    }
+
+    // MARK: - Status Bar
+
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            Text(statusText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Spacer()
+
+            if viewModel.renderState == .completed {
+                Text(viewModel.formattedElapsedTime)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    // MARK: - Window Sizing
+
+    /// Resizes the key window so the content area fits the scene plus the bottom panels.
+    private func resizeWindowToFitScene(_ sceneSize: CGSize) {
+        guard let window = NSApplication.shared.keyWindow else { return }
+        guard let screen = window.screen else { return }
+
+        let chromeHeight = window.frame.height - window.contentLayoutRect.height
+        let bottomPanelHeight: CGFloat = 220
+        let statusBarHeight: CGFloat = 30
+
+        let editorWidth: CGFloat = viewModel.isEditorVisible ? Self.editorPanelWidth : 0
+        let desiredContentWidth = max(sceneSize.width, 900) + editorWidth
+        let desiredContentHeight = sceneSize.height + bottomPanelHeight + statusBarHeight
+        let desiredFrameWidth = desiredContentWidth
+        let desiredFrameHeight = desiredContentHeight + chromeHeight
+
+        let maxWidth = screen.visibleFrame.width
+        let maxHeight = screen.visibleFrame.height
+        let frameWidth = min(desiredFrameWidth, maxWidth)
+        let frameHeight = min(desiredFrameHeight, maxHeight)
+
+        let originX = screen.visibleFrame.midX - frameWidth / 2
+        let originY = screen.visibleFrame.midY - frameHeight / 2
+        let newFrame = NSRect(x: originX, y: originY, width: frameWidth, height: frameHeight)
+
+        window.setFrame(newFrame, display: true, animate: true)
+    }
+
+    private static let editorPanelWidth: CGFloat = sceneEditorPanelWidth + 1 // panel + divider
+
+    /// Grows or shrinks the window to accommodate the editor sidebar,
+    /// keeping the right edge anchored so the render area stays in place.
+    private func adjustWindowForEditor(visible: Bool) {
+        guard let window = NSApplication.shared.keyWindow else { return }
+        guard let screen = window.screen else { return }
+
+        let delta = Self.editorPanelWidth
+        var frame = window.frame
+
+        if visible {
+            frame.size.width += delta
+            frame.origin.x -= delta
+        } else {
+            frame.size.width -= delta
+            frame.origin.x += delta
+        }
+
+        // Clamp to screen bounds
+        let visibleFrame = screen.visibleFrame
+        if frame.origin.x < visibleFrame.minX {
+            frame.origin.x = visibleFrame.minX
+        }
+        if frame.maxX > visibleFrame.maxX {
+            frame.size.width = visibleFrame.maxX - frame.origin.x
+        }
+        frame.size.width = max(frame.size.width, 900)
+
+        window.setFrame(frame, display: true, animate: true)
+    }
+
+    // MARK: - Computed Properties
+
+    private var canRender: Bool {
+        switch viewModel.renderState {
+        case .sceneLoaded, .completed, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var statusText: String {
+        switch viewModel.renderState {
+        case .idle:
+            return "Ready"
+        case .loading:
+            return "Loading scene..."
+        case .sceneLoaded:
+            return "Scene loaded. Press Render to begin."
+        case .rendering:
+            return "Rendering..."
+        case .cancelling:
+            return "Cancelling — waiting for active block to finish…"
+        case .completed:
+            return "Render complete"
+        case .cancelled:
+            return "Render cancelled"
+        case .error(let msg):
+            return "Error: \(msg)"
+        }
+    }
+
+    private var windowTitle: String {
+        if let path = viewModel.loadedFilePath {
+            return (path as NSString).lastPathComponent
+        }
+        return "RISE"
+    }
+}
