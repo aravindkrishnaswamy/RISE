@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			sombrero.RISEscene																		#
-#   Description:	Generates a neat looking shape using just spheres, idea from POVRay and Pos				#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		June 25, 2004																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sombrero.RISEscene                                                                      #
+#   Description:    Generates a neat looking shape using just spheres, idea from POVRay and Pos             #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      June 25, 2004                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 # Be sure to set the object manager for BSP

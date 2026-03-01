@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			spectral_skin.RISEscene																	#
-#   Description:	A test of the BioSpec biophysically-based spectral skin model							#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		January 23, 2004																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           spectral_skin.RISEscene                                                                 #
+#   Description:    A test of the BioSpec biophysically-based spectral skin model                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      January 23, 2004                                                                        #
+#                                                                                                           #
 #############################################################################################################
 
 > echo warning Warning! This scene is very CPU intensive and will take several minutes on even the fastest computers.
@@ -53,8 +53,8 @@ pixelintegratingspectral_rasterizer
 {
 	max_recursion		10
 	min_importance		0.0001
-#	samples				4000
-	samples				1000
+	samples				4000
+#	samples				1000
 	nmbegin				380
 	nmend				720
 	num_wavelengths		8
@@ -66,7 +66,7 @@ pixelintegratingspectral_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/skinmodel/frame
+	pattern				rendered/skinmodel
 	type				PNG
 	bpp				16
 	color_space			ProPhotoRGB
@@ -88,8 +88,8 @@ pinhole_camera
 	location			0 0 50.0
 	lookat				0 0 0
 	up					0 1 0
-	width				200
-	height				200
+	width				500
+	height				500
 	fov					30.0
 }
 

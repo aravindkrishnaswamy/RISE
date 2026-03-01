@@ -1,13 +1,13 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			dof.RISEScene																			#
-#   Description:	Demonstrates depth of field effects via the thin lens camera.  Note the thin lens 		#
-#                   camera can be difficult to use.  Consider the realistic camera instead.					#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		December 11, 2003																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           dof.RISEScene                                                                           #
+#   Description:    Demonstrates depth of field effects via the thin lens camera.  Note the thin lens       #
+#                   camera can be difficult to use.  Consider the realistic camera instead.                 #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      December 11, 2003                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################
@@ -24,8 +24,8 @@ adaptivepixelpel_rasterizer
 {
 	max_recursion		10
 	min_importance		0.0001
-	min_samples			32
-	max_samples			200
+	min_samples			64
+	max_samples			500
 	num_steps			46
 	lum_samples			1
 	threshold			0.0005
@@ -50,8 +50,8 @@ thinlens_camera
 	location			0 0 30
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				256
+	width				1024
+	height				512
 	fov					20
 	aperture_size		5				# f/2.8
 	focal_length		14				# 14mm

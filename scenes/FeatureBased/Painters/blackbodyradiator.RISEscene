@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			blackbodyradiator.RISEscene																#
-#   Description:	Shows different blackbody radiator values												#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		February 23, 2005																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           blackbodyradiator.RISEscene                                                             #
+#   Description:    Shows different blackbody radiator values                                               #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 23, 2005                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 # Be sure to set the object manager for BSP
@@ -47,8 +47,8 @@ pinhole_camera
 	location			0 0 0.3
 	lookat				0 0 0
 	up					0 1 0
-	width				700
-	height				500
+	width				1400
+	height				100
 	fov					30.0
 }
 

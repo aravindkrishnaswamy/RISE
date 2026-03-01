@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			sss_multiple_lights.RISEscene															#
-#   Description:	Demonstrates subsurface scattering with multiple area light sources						#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		March 8, 2004																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sss_multiple_lights.RISEscene                                                           #
+#   Description:    Demonstrates subsurface scattering with multiple area light sources                     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 8, 2004                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

@@ -1,13 +1,13 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			composite_mateiral.RISEscene															#
-#   Description:	A demonstration of the composite material, which sandwiches two materials together      #
-#                     to create a variety of other materials												#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		February 25, 2005																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           composite_mateiral.RISEscene                                                            #
+#   Description:    A demonstration of the composite material, which sandwiches two materials together      #
+#                     to create a variety of other materials                                                #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 25, 2005                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

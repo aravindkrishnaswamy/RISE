@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			shapes.RISEscene																		#
-#   Description:	Various shapes																			#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		February 22, 2005																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           shapes.RISEscene                                                                        #
+#   Description:    Various shapes                                                                          #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 22, 2005                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 # Be sure to set the object manager for BSP

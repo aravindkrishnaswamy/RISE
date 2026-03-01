@@ -1,13 +1,13 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			sss_different_bsdf.RISEscene															#
-#   Description:	Demonstrates how you can have a different BSDF for the regular direct lighting shader   #
-#                     while still having subsurface scattering effects										#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		March 1, 2005																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sss_different_bsdf.RISEscene                                                            #
+#   Description:    Demonstrates how you can have a different BSDF for the regular direct lighting shader   #
+#                     while still having subsurface scattering effects                                      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 1, 2005                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

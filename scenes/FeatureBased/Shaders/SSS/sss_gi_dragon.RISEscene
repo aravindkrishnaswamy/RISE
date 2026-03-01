@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			sss_gi_dragon.RISEscene																		#
-#   Description:	Combines a subsurface scattering object into a scene with global illumination			#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		February 23, 2006																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sss_gi_dragon.RISEscene                                                                     #
+#   Description:    Combines a subsurface scattering object into a scene with global illumination           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 23, 2006                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 > echo warning Warning! This scene is quite CPU intensive and may take considerable time to render, particularily on slower machines.

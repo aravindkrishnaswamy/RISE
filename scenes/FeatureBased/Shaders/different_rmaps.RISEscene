@@ -1,15 +1,15 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			different_rmaps.RISEscene																#
-#   Description:	A simple test scene with objects with different radiance maps and different shaders		#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           different_rmaps.RISEscene                                                               #
+#   Description:    A simple test scene with objects with different radiance maps and different shaders     #
 #                     The spheres each have their own radiance map while there is also a global radiance    #
 #                     map.  In addition the floor uses path tracing as a shader while the spheres use a     #
 #                     simpler ray tracing function for just reflections and refractions.                    #
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		May 17, 2004																			#
-#																											#
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 17, 2004                                                                            #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

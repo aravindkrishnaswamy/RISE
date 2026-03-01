@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			simple_dispersion.RISEscene																#
-#   Description:	Tests the ior stack																		#
-#	Author: 		Really simple dispersion																#
-#	Birthdate:		March 2, 2005																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           simple_dispersion.RISEscene                                                             #
+#   Description:    Tests the ior stack                                                                     #
+#   Author:         Really simple dispersion                                                                #
+#   Birthdate:      March 2, 2005                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

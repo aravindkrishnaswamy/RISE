@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			spectral_dispersive_caustic.scn															#
-#   Description:	Renders spectral dispersion using the spectral renderer and spectral photon map			#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		April 19, 2002																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           spectral_dispersive_caustic.scn                                                         #
+#   Description:    Renders spectral dispersion using the spectral renderer and spectral photon map         #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 19, 2002                                                                          #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

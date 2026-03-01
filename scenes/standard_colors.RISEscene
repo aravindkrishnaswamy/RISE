@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#									RISE Ascii Scene File													#
-#																											#
-#	File: 			standard_colors.RISEscene																#
-#   Description:	Contains some standard colors															#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		April 22, 2004																			#
-#																											#
+#                                   RISE Ascii Scene File                                                   #
+#                                                                                                           #
+#   File:           standard_colors.RISEscene                                                               #
+#   Description:    Contains some standard colors                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
 #############################################################################################################
 
 uniformcolor_painter

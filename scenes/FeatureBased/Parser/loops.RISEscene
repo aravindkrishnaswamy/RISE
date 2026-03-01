@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			loops.RISEscene																			#
-#   Description:	Tests the looping, macro substitution and math expression evaluation features			#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		April 23, 2004																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           loops.RISEscene                                                                         #
+#   Description:    Tests the looping, macro substitution and math expression evaluation features           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 23, 2004                                                                          #
+#                                                                                                           #
 #############################################################################################################
 
 # Be sure to set the object manager for BSP

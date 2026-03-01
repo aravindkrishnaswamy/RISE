@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			realistic.RISEScene																		#
-#   Description:	Demonstrates use of the realistic camera with settings for 35mm equivalent				#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		May 5, 2006																				#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           realistic.RISEScene                                                                     #
+#   Description:    Demonstrates use of the realistic camera with settings for 35mm equivalent              #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 5, 2006                                                                             #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################
@@ -24,7 +24,7 @@ adaptivepixelpel_rasterizer
 	max_recursion		10
 	min_importance		0.0001
 	min_samples			32
-	max_samples			200
+	max_samples			2000
 	num_steps			46
 	lum_samples			1
 	threshold			0.0005

@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			fisheye.RISEscene																		#
-#   Description:	Demonstrates the use of the fisheye camera												#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		February 25, 2005																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           fisheye.RISEscene                                                                       #
+#   Description:    Demonstrates the use of the fisheye camera                                              #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 25, 2005                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################
@@ -29,7 +29,7 @@ pixelpel_rasterizer
 {
 	max_recursion		10
 	min_importance		0.0001
-	samples			16
+	samples			64
 	pixel_filter		tent
 	pixel_filter_width	2
 	pixel_filter_height	2

@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			fractal.RISEscene																		#
-#   Description:	Mandelbrot fractal animation															#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		June 28, 2004																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           fractal.RISEscene                                                                       #
+#   Description:    Mandelbrot fractal animation                                                            #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      June 28, 2004                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################
@@ -28,7 +28,6 @@ pixelpel_rasterizer
 	ior_stack			TRUE
 }
 
-/*
 file_rasterizeroutput
 {
 	pattern				rendered/fractal
@@ -36,7 +35,6 @@ file_rasterizeroutput
 	bpp					8
 	color_space			sRGB
 }
-*/
 
 DEFINE FRAMES 60
 

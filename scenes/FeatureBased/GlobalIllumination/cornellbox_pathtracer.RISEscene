@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			cornellbox_pathtracer.RISEscene															#
-#   Description:	The famous cornell box rendered with the path tracer									#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		January 22, 2004																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           cornellbox_pathtracer.RISEscene                                                         #
+#   Description:    The famous cornell box rendered with the path tracer                                    #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      January 22, 2004                                                                        #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

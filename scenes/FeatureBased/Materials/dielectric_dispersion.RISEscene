@@ -1,13 +1,13 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			dielectric_dispersion.RISEscene															#
-#   Description:	Demonstrates RGB dispersion with a dielectric, as well as R,G,B independent scattering  #
-#                     values for incoherent scattering 														#
-#	Author: 		Really simple dispersion																#
-#	Birthdate:		March 2, 2005																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           dielectric_dispersion.RISEscene                                                         #
+#   Description:    Demonstrates RGB dispersion with a dielectric, as well as R,G,B independent scattering  #
+#                     values for incoherent scattering                                                      #
+#   Author:         Really simple dispersion                                                                #
+#   Birthdate:      March 2, 2005                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

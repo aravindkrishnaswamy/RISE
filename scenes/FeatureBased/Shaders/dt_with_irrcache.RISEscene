@@ -1,15 +1,15 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			dt_with_irrcache.RISEscene																#
-#   Description:	Demonstrating combining distribution ray tracing with irradiance cache.  You can judge  #
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           dt_with_irrcache.RISEscene                                                              #
+#   Description:    Demonstrating combining distribution ray tracing with irradiance cache.  You can judge  #
 #                     for yourself if its worth it.  You should also be careful to not use irradiance       #
 #                     caching with distribution tracing on surfaces with quickly changin brdfs (lots of     #
 #                     texture).
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		April 22, 2004																			#
-#																											#
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 22, 2004                                                                          #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

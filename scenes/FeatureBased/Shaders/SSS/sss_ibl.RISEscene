@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			sss_ibl.scn																				#
-#   Description:	Translucent teapot lit with HDR image based lighting									#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		February 23, 2005																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sss_ibl.scn                                                                             #
+#   Description:    Translucent teapot lit with HDR image based lighting                                    #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      February 23, 2005                                                                       #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

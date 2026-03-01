@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			textureaccessors.scn																	#
-#   Description:	Test of different texture accessors														#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		April 2, 2003																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           textureaccessors.scn                                                                    #
+#   Description:    Test of different texture accessors                                                     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 2, 2003                                                                           #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################
@@ -45,8 +45,8 @@ pinhole_camera
 	location			0 0 55
 	lookat				0 0 0
 	up					0 1 0
-	width				800
-	height				800
+	width				1600
+	height				1600
 	fov					20.0
 }
 

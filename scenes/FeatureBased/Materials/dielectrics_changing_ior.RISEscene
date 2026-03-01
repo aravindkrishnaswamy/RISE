@@ -1,13 +1,13 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			dielectrics_changing_ior.RISEscene														#
-#   Description:	Shows the dielectric material with changing index of refraction values.  The scattering	#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           dielectrics_changing_ior.RISEscene                                                      #
+#   Description:    Shows the dielectric material with changing index of refraction values.  The scattering #
 #                   is left entirely coherent by setting it to 10000, which is effectively infinity.        #
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		August 7, 2002																			#
-#																											#
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      August 7, 2002                                                                          #
+#                                                                                                           #
 #############################################################################################################
 
 > echo warning Warning! This scene is CPU intensive and may take a few minutes to render on slower machines.

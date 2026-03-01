@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			csg.RISEscene																			#
-#   Description:	A test scene that tests the different CSG operations									#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		January 23, 2002																		#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           csg.RISEscene                                                                           #
+#   Description:    A test scene that tests the different CSG operations                                    #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      January 23, 2002                                                                        #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################

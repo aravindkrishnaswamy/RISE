@@ -1,0 +1,5 @@
+*.RISEscene
+scenes/FeatureBased/Materials/.DS_Store
+scenes/FeatureBased/SpectralRendering/.DS_Store
+scenes/FeatureBased/Shaders/SSS/.DS_Store
+scenes/FeatureBased/Shaders/.DS_Store

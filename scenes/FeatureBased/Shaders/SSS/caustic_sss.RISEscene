@@ -1,12 +1,12 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#								       RISE Ascii Scene File												#
-#																											#
-#	File: 			caustic_sss.RISEscene																	#
-#   Description:	Sub-surface scattering getting light from a caustic in a translucent box				#
-#	Author: 		Aravind Krishnaswamy																	#
-#	Birthdate:		May 23, 2004																			#
-#																											#
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           caustic_sss.RISEscene                                                                   #
+#   Description:    Sub-surface scattering getting light from a caustic in a translucent box                #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 23, 2004                                                                            #
+#                                                                                                           #
 #############################################################################################################
 
 ##################################################
