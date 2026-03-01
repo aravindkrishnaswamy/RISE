@@ -13,35 +13,101 @@
 
 #include "pch.h"
 #include "Optics.h"
+#include "../Interfaces/ILog.h"
 
 using namespace RISE;
 
 Vector3 Optics::CalculateReflectedRay( const Vector3& vIn, const Vector3& vNormal )
 {
+	Scalar normalMag = Vector3Ops::Magnitude( vNormal );
+	if( normalMag < NEARZERO ) {
+		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateReflectedRay: Invalid normal magnitude (%e)", normalMag );
+		return vIn;
+	}
+
+	Vector3 useNormal = vNormal;
+	if( fabs(normalMag - 1.0) > 1e-6 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateReflectedRay: Non-unit normal passed in (|n|=%f), normalizing", normalMag );
+		useNormal = Vector3Ops::Normalize( useNormal );
+	}
+
 	// By Snell's law
-	Scalar	d = 2.0 * Vector3Ops::Dot(vNormal, vIn);
-	return Vector3( vIn.x - d * vNormal.x, vIn.y - d * vNormal.y, vIn.z - d * vNormal.z );
+	Scalar	d = 2.0 * Vector3Ops::Dot(useNormal, vIn);
+	return Vector3( vIn.x - d * useNormal.x, vIn.y - d * useNormal.y, vIn.z - d * useNormal.z );
 }
 
 bool Optics::CalculateRefractedRay( const Vector3& vNormal, const Scalar Ni, const Scalar Nt, Vector3& vIn )
 {
+	if( Ni <= NEARZERO || Nt <= NEARZERO ) {
+		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateRefractedRay: Invalid IOR (Ni=%f, Nt=%f). IOR must be > 0", Ni, Nt );
+		return false;
+	}
+
+	Scalar normalMag = Vector3Ops::Magnitude( vNormal );
+	Scalar inputMag = Vector3Ops::Magnitude( vIn );
+	if( normalMag < NEARZERO || inputMag < NEARZERO ) {
+		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateRefractedRay: Degenerate vectors (|n|=%e, |vIn|=%e)", normalMag, inputMag );
+		return false;
+	}
+
+	Vector3	useNormal = vNormal;
+	Vector3 useIn = vIn;
+
+	if( fabs(normalMag - 1.0) > 1e-6 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateRefractedRay: Non-unit normal passed in (|n|=%f), normalizing", normalMag );
+		useNormal = Vector3Ops::Normalize( useNormal );
+	}
+	if( fabs(inputMag - 1.0) > 1e-6 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateRefractedRay: Non-unit incident vector passed in (|vIn|=%f), normalizing", inputMag );
+		useIn = Vector3Ops::Normalize( useIn );
+	}
+
 	// Use Snell's law
-	Scalar		k = Vector3Ops::Dot( vNormal, vIn );
-	Vector3	s = (Ni/Nt) * (vIn-k*vNormal);
+	Scalar		k = Vector3Ops::Dot( useNormal, useIn );
+	Vector3	s = (Ni/Nt) * (useIn-k*useNormal);
 	k = 1.0 - Vector3Ops::SquaredModulus(s);
 
 	if( k < NEARZERO ) {
 		return false;
 	} else {
-		vIn = s - sqrt(k) * vNormal;
+		vIn = s - sqrt(k) * useNormal;
 		return true;
 	}
 }
 
 Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& tv, const Vector3& n, const Scalar Ni, const Scalar Nt )
 {
-	const Scalar cosAi = fabs(Vector3Ops::Dot(v, n));
-	const Scalar cosAt = fabs(Vector3Ops::Dot(tv, n));
+	if( Ni <= NEARZERO || Nt <= NEARZERO ) {
+		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateDielectricReflectance: Invalid IOR (Ni=%f, Nt=%f). IOR must be > 0", Ni, Nt );
+		return 1.0;
+	}
+
+	Scalar normalMag = Vector3Ops::Magnitude( n );
+	Scalar inMag = Vector3Ops::Magnitude( v );
+	Scalar transMag = Vector3Ops::Magnitude( tv );
+	if( normalMag < NEARZERO || inMag < NEARZERO || transMag < NEARZERO ) {
+		GlobalLog()->PrintEx( eLog_Error, "Optics::CalculateDielectricReflectance: Degenerate vectors (|n|=%e, |v|=%e, |tv|=%e)", normalMag, inMag, transMag );
+		return 1.0;
+	}
+
+	Vector3 useN = n;
+	Vector3 useV = v;
+	Vector3 useTv = tv;
+	if( fabs(normalMag - 1.0) > 1e-6 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateDielectricReflectance: Non-unit normal passed in (|n|=%f), normalizing", normalMag );
+		useN = Vector3Ops::Normalize( useN );
+	}
+	if( fabs(inMag - 1.0) > 1e-6 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateDielectricReflectance: Non-unit incident vector passed in (|v|=%f), normalizing", inMag );
+		useV = Vector3Ops::Normalize( useV );
+	}
+	if( fabs(transMag - 1.0) > 1e-6 ) {
+		GlobalLog()->PrintEx( eLog_Warning, "Optics::CalculateDielectricReflectance: Non-unit transmitted vector passed in (|tv|=%f), normalizing", transMag );
+		useTv = Vector3Ops::Normalize( useTv );
+	}
+
+	const Scalar cosAi = fabs(Vector3Ops::Dot(useV, useN));
+	const Scalar cosAt = fabs(Vector3Ops::Dot(useTv, useN));
 	const Scalar nn = Ni * Nt;
 	const Scalar cc = cosAt * cosAi;
 	const Scalar Ni2 = Ni * Ni;
@@ -68,5 +134,4 @@ Scalar Optics::CalculateDielectricReflectance( const Vector3& v, const Vector3& 
 		return 1.00;
 	}
 }
-
 

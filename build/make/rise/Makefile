@@ -31,6 +31,12 @@ OBJLIB = $(SRCLIB:.cpp=.o)
 # Make the object list for DRISE
 OBJDRISE = $(SRCDRISE:.cpp=.o)
 
+# Test source and output lists
+PATHTESTS = ../../../tests/
+PATHTESTDEST = $(PATHDEST)tests/
+SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
+OBJTESTS = $(SRCTESTS:.cpp=.o)
+
 # Rules section
 # Normally you would define target upstairs and build it here, but 
 # in our case we're going to explicitly build the test programs
@@ -75,6 +81,22 @@ drise_submitter : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_submitter.o
 	@echo Linking $(PATHDEST)drise_submitter
 	@$(CXX) $(CPPFLAGS) -o $(PATHDEST)drise_submitter $(PATHSRCSDRISE)drise_submitter.o $(OBJLIB) $(OBJDRISE) $(LDLIBS) 
 
+# Build all tests
+tests : $(OBJLIB)
+	@mkdir -p $(PATHTESTDEST)
+	@set -e; for test_src in $(SRCTESTS); do \
+		test_name=`basename $$test_src .cpp`; \
+		echo Compiling: $$test_src; \
+		$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $$test_src -o $(PATHTESTS)$$test_name.o; \
+		echo Linking $(PATHTESTDEST)$$test_name; \
+		$(CXX) $(CPPFLAGS) -o $(PATHTESTDEST)$$test_name $(PATHTESTS)$$test_name.o $(OBJLIB) $(LDLIBS); \
+	done
+
+# Build and run all tests
+test : tests
+	@echo Running all tests
+	@sh ../../../run_all_tests.sh
+
 .SUFFIXES:
 .SUFFIXES: .cpp .o
 
@@ -103,6 +125,7 @@ clean:
 	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise $(OBJS) $(OBJMPI) $(OBJLIB) 
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
+	@rm -rf $(OBJTESTS) $(PATHTESTDEST)
 	@rm -rf $(PATHSRCS)ii_files
 	@rm -rf $(PATHLIBRARY)Animation/ii_files
 	@rm -rf $(PATHLIBRARY)Cameras/ii_files

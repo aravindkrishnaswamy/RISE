@@ -15,6 +15,16 @@ bool IsVectorClose(const Vector3& a, const Vector3& b, Scalar epsilon = 1e-5) {
     return IsClose(a.x, b.x, epsilon) && IsClose(a.y, b.y, epsilon) && IsClose(a.z, b.z, epsilon);
 }
 
+Scalar Pi() {
+    return std::acos(-1.0);
+}
+
+Scalar Clamp(Scalar v, Scalar lo, Scalar hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
 void TestCalculateReflectedRay() {
     std::cout << "Testing CalculateReflectedRay..." << std::endl;
 
@@ -37,12 +47,12 @@ void TestCalculateReflectedRay() {
     // Let's normalize inputs.
     {
         Vector3 vIn(1, -1, 0);
-        Vector3Ops::Normalize(vIn);
+        Vector3Ops::NormalizeMag(vIn);
         Vector3 vNormal(0, 1, 0);
         Vector3 vReflected = Optics::CalculateReflectedRay(vIn, vNormal);
         
         Vector3 expected(1, 1, 0);
-        Vector3Ops::Normalize(expected);
+        Vector3Ops::NormalizeMag(expected);
         
         assert(IsVectorClose(vReflected, expected));
     }
@@ -51,12 +61,12 @@ void TestCalculateReflectedRay() {
     // Incoming (1, -0.1, 0)
     {
         Vector3 vIn(1, -0.1, 0);
-        Vector3Ops::Normalize(vIn);
+        Vector3Ops::NormalizeMag(vIn);
         Vector3 vNormal(0, 1, 0);
         Vector3 vReflected = Optics::CalculateReflectedRay(vIn, vNormal);
         
         Vector3 expected(1, 0.1, 0);
-        Vector3Ops::Normalize(expected);
+        Vector3Ops::NormalizeMag(expected);
         
         assert(IsVectorClose(vReflected, expected));
     }
@@ -97,7 +107,7 @@ void TestCalculateRefractedRay() {
     // Incident at 45 degrees (greater than critical).
     {
         Vector3 vIn(1, -1, 0);
-        Vector3Ops::Normalize(vIn); // 45 degrees from normal
+        Vector3Ops::NormalizeMag(vIn); // 45 degrees from normal
         Vector3 vNormal(0, 1, 0);
         Vector3 vRefracted = vIn;
         bool result = Optics::CalculateRefractedRay(vNormal, 1.5, 1.0, vRefracted);
@@ -125,6 +135,50 @@ void TestCalculateRefractedRay() {
     }
 
     std::cout << "CalculateRefractedRay Passed!" << std::endl;
+}
+
+void TestCalculateRefractedRayBoundariesAndInvariants() {
+    std::cout << "Testing CalculateRefractedRay boundaries/invariants..." << std::endl;
+
+    // Case 1: Equal IOR should preserve direction for arbitrary incidence.
+    {
+        Vector3 vIn(0.3, -0.9539392014, 0.0); // normalized
+        Vector3 vNormal(0, 1, 0);
+        Vector3 vRefracted = vIn;
+        bool result = Optics::CalculateRefractedRay(vNormal, 1.0, 1.0, vRefracted);
+        assert(result == true);
+        assert(IsVectorClose(vRefracted, vIn));
+    }
+
+    // Case 2: At critical angle (dense -> rare), behavior should be TIR due to NEARZERO tolerance.
+    {
+        Scalar n1 = 1.5;
+        Scalar n2 = 1.0;
+        Scalar thetaC = std::asin(n2 / n1);
+        Vector3 vIn(std::sin(thetaC), -std::cos(thetaC), 0);
+        Vector3 vNormal(0, 1, 0);
+        Vector3 original = vIn;
+        bool result = Optics::CalculateRefractedRay(vNormal, n1, n2, vIn);
+        assert(result == false);
+        // On failure, API should not mutate input direction.
+        assert(IsVectorClose(vIn, original));
+    }
+
+    // Case 3: Slightly below critical angle should refract and remain unit length.
+    {
+        Scalar n1 = 1.5;
+        Scalar n2 = 1.0;
+        Scalar theta = std::asin(n2 / n1) - 1e-4;
+        Vector3 vIn(std::sin(theta), -std::cos(theta), 0);
+        Vector3 vNormal(0, 1, 0);
+        bool result = Optics::CalculateRefractedRay(vNormal, n1, n2, vIn);
+        assert(result == true);
+        assert(IsClose(Vector3Ops::Magnitude(vIn), 1.0, 1e-5));
+        // Refracted ray should continue away from the interface normal direction (into second medium).
+        assert(Vector3Ops::Dot(vIn, vNormal) <= 0.0);
+    }
+
+    std::cout << "CalculateRefractedRay boundaries/invariants Passed!" << std::endl;
 }
 
 void TestCalculateDielectricReflectance() {
@@ -204,9 +258,142 @@ void TestCalculateDielectricReflectance() {
     std::cout << "CalculateDielectricReflectance Passed!" << std::endl;
 }
 
+void TestCalculateDielectricReflectanceBoundariesAndRange() {
+    std::cout << "Testing CalculateDielectricReflectance boundaries/range..." << std::endl;
+
+    // Case 1: Matched IOR should yield zero reflectance at any incidence.
+    {
+        Scalar n = 1.33;
+        Vector3 normal(0, 1, 0);
+        for (int i = 0; i <= 80; i += 10) {
+            Scalar theta = (Scalar(i) * Pi()) / 180.0;
+            Vector3 v(std::sin(theta), -std::cos(theta), 0);
+            Vector3 tv = v;
+            Scalar R = Optics::CalculateDielectricReflectance(v, tv, normal, n, n);
+            assert(IsClose(R, 0.0, 1e-6));
+        }
+    }
+
+    // Case 2: Reflectance should stay in [0, 1] for typical air->glass cases.
+    {
+        Scalar n1 = 1.0;
+        Scalar n2 = 1.5;
+        Vector3 normal(0, 1, 0);
+        for (int i = 0; i <= 85; i += 5) {
+            Scalar thetaI = (Scalar(i) * Pi()) / 180.0;
+            Scalar sinT = (n1 / n2) * std::sin(thetaI);
+            sinT = Clamp(sinT, -1.0, 1.0);
+            Scalar thetaT = std::asin(sinT);
+            Vector3 v(std::sin(thetaI), -std::cos(thetaI), 0);
+            Vector3 tv(std::sin(thetaT), -std::cos(thetaT), 0);
+            Scalar R = Optics::CalculateDielectricReflectance(v, tv, normal, n1, n2);
+            assert(R >= 0.0);
+            assert(R <= 1.0);
+        }
+    }
+
+    // Case 3: Grazing incidence should have higher reflectance than normal incidence.
+    {
+        Scalar n1 = 1.0;
+        Scalar n2 = 1.5;
+        Vector3 normal(0, 1, 0);
+        Vector3 vNormalInc(0, -1, 0);
+        Vector3 tvNormalInc(0, -1, 0);
+        Scalar Rnormal = Optics::CalculateDielectricReflectance(vNormalInc, tvNormalInc, normal, n1, n2);
+
+        Scalar thetaI = Scalar(85.0 * Pi() / 180.0);
+        Scalar thetaT = std::asin((n1 / n2) * std::sin(thetaI));
+        Vector3 vGrazing(std::sin(thetaI), -std::cos(thetaI), 0);
+        Vector3 tvGrazing(std::sin(thetaT), -std::cos(thetaT), 0);
+        Scalar Rgrazing = Optics::CalculateDielectricReflectance(vGrazing, tvGrazing, normal, n1, n2);
+        assert(Rgrazing > Rnormal);
+    }
+
+    std::cout << "CalculateDielectricReflectance boundaries/range Passed!" << std::endl;
+}
+
+void TestCalculateConductorReflectanceAndSchlick() {
+    std::cout << "Testing CalculateConductorReflectance and Schlick..." << std::endl;
+
+    // Case 1: Conductor reflectance normal incidence closed form.
+    {
+        Scalar n1 = 1.0;
+        Scalar n2 = 0.2;
+        Scalar k = 3.0;
+        Vector3 v(0, -1, 0);
+        Vector3 n(0, 1, 0);
+        Scalar R = Optics::CalculateConductorReflectance(v, n, n1, n2, k);
+        Scalar expected = ((n2 - n1) * (n2 - n1) + k * k) / ((n2 + n1) * (n2 + n1) + k * k);
+        assert(IsClose(R, expected, 1e-6));
+        assert(R >= 0.0 && R <= 1.0);
+    }
+
+    // Case 2: Near grazing incidence should remain in [0,1] and high.
+    {
+        Scalar n1 = 1.0;
+        Scalar n2 = 0.2;
+        Scalar k = 3.0;
+        Scalar theta = Scalar(89.9 * Pi() / 180.0);
+        Vector3 v(std::sin(theta), -std::cos(theta), 0);
+        Vector3 n(0, 1, 0);
+        Scalar R = Optics::CalculateConductorReflectance(v, n, n1, n2, k);
+        assert(R >= 0.0 && R <= 1.0);
+        assert(R > 0.9);
+    }
+
+    // Case 3: Schlick helper sanity checks.
+    {
+        Scalar r = 0.04;
+        Scalar atNormal = Optics::CalculateFresnelReflectanceSchlick(r, 1.0);
+        Scalar atGrazing = Optics::CalculateFresnelReflectanceSchlick(r, 0.0);
+        Scalar mid = Optics::CalculateFresnelReflectanceSchlick(r, 0.5);
+        assert(IsClose(atNormal, r));
+        assert(IsClose(atGrazing, 1.0));
+        assert(mid > atNormal && mid < atGrazing);
+    }
+
+    std::cout << "CalculateConductorReflectance and Schlick Passed!" << std::endl;
+}
+
+void TestInvalidPhysicalInputs() {
+    std::cout << "Testing invalid physical inputs..." << std::endl;
+
+    // Refraction should fail with invalid IORs.
+    {
+        Vector3 vIn(0, -1, 0);
+        Vector3 n(0, 1, 0);
+        assert(Optics::CalculateRefractedRay(n, 0.0, 1.5, vIn) == false);
+        assert(Optics::CalculateRefractedRay(n, 1.0, 0.0, vIn) == false);
+    }
+
+    // Refraction should fail with degenerate vectors.
+    {
+        Vector3 zero(0, 0, 0);
+        Vector3 vIn(0, -1, 0);
+        assert(Optics::CalculateRefractedRay(zero, 1.0, 1.5, vIn) == false);
+        assert(Optics::CalculateRefractedRay(Vector3(0, 1, 0), 1.0, 1.5, zero) == false);
+    }
+
+    // Dielectric reflectance should clamp to 1.0 for invalid physical inputs.
+    {
+        Vector3 v(0, -1, 0);
+        Vector3 tv(0, -1, 0);
+        Vector3 n(0, 1, 0);
+        assert(IsClose(Optics::CalculateDielectricReflectance(v, tv, n, 0.0, 1.5), 1.0));
+        assert(IsClose(Optics::CalculateDielectricReflectance(v, tv, n, 1.0, 0.0), 1.0));
+        assert(IsClose(Optics::CalculateDielectricReflectance(v, tv, Vector3(0, 0, 0), 1.0, 1.5), 1.0));
+    }
+
+    std::cout << "Invalid physical inputs Passed!" << std::endl;
+}
+
 int main() {
     TestCalculateReflectedRay();
     TestCalculateRefractedRay();
+    TestCalculateRefractedRayBoundariesAndInvariants();
     TestCalculateDielectricReflectance();
+    TestCalculateDielectricReflectanceBoundariesAndRange();
+    TestCalculateConductorReflectanceAndSchlick();
+    TestInvalidPhysicalInputs();
     return 0;
 }

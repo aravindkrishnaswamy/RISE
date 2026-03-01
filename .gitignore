@@ -1,6 +1,7 @@
 /rendered
 /bin
 .DS_Store
+*.o
 /.vscode
 RISELog.txt
 build_log.txt
