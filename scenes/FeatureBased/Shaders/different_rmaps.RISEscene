@@ -47,7 +47,7 @@ standard_shader
 distributiontracing_shaderop
 {
 	name		pt
-	samples		16
+	samples		128
 }
 
 # We use an advanced shader to make sure that distribution tracing is only
@@ -56,8 +56,8 @@ distributiontracing_shaderop
 advanced_shader
 {
 	name			pt							
-	shaderop		pt							0	2			+
-	shaderop		DefaultDirectLighting		2   10			+
+	shaderop		pt	0	2 	+
+	shaderop		DefaultDirectLighting	2   10	+
 }
 
 pixelpel_rasterizer
@@ -65,7 +65,7 @@ pixelpel_rasterizer
 	max_recursion		10
 	min_importance		0.0001
 	samples				1
-	lum_samples			1
+	lum_samples			4
 	show_luminaires		FALSE
 	pixel_filter		catmull-rom
 }

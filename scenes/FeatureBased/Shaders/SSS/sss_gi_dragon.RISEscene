@@ -68,8 +68,8 @@ file_rasterizeroutput
 {
 	pattern				rendered/sss_gi_dragon
 	type				PNG
-	bpp				16
-	color_space			ProPhotoRGB
+#	bpp				16
+#	color_space			ProPhotoRGB
 }
 
 ##################################################
@@ -206,7 +206,7 @@ standard_object
 
 global_pel_photonmap
 {
-	num					100000
+	num					10000
 	max_recursion		5
 	min_importance		0.01
 }

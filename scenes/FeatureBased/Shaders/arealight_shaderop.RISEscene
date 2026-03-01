@@ -25,7 +25,7 @@ arealight_shaderop
 	emission		color_emm
 	location		-5 5 2
 	make_dir		0 0 0
-	samples			16
+	samples			64
 	width			3.0
 	height			3.0
 	power			50
@@ -42,7 +42,7 @@ pixelpel_rasterizer
 {
 	max_recursion		10
 	min_importance		0.0001
-	samples				9
+	samples				4
 	lum_samples			1
 }
 

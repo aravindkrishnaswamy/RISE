@@ -64,16 +64,18 @@ file_rasterizeroutput
 {
 	pattern				rendered/sss_different_bsdf
 	type				PNG
-	bpp				16
-	color_space			ProPhotoRGB
+	bpp				8
+	#color_space			ProPhotoRGB
 }
 
+/*
 file_rasterizeroutput
 {
 	pattern				rendered/sss_different_bsdf
 	type				EXR
 	color_space			ROMMRGB_Linear
 }
+*/
 
 ##################################################
 # Cameras
