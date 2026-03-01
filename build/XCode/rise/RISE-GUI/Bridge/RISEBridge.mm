@@ -6,12 +6,14 @@
 //////////////////////////////////////////////////////////////////////
 
 #import "RISEBridge.h"
+#import "MovieRasterizerOutput.h"
 
 // C++ RISE engine includes
 #include "RISE_API.h"
 #include "Interfaces/IJobPriv.h"
 #include "Interfaces/IProgressCallback.h"
 #include "Interfaces/IJobRasterizerOutput.h"
+#include "Interfaces/IRasterizer.h"
 #include "Interfaces/ILogPriv.h"
 #include "Utilities/RTime.h"
 #include "Utilities/MediaPathLocator.h"
@@ -105,6 +107,7 @@ public:
     RISEProgressBlock _progressBlock;
     RISEImageOutputBlock _imageOutputBlock;
     RISELogBlock _logBlock;
+    NSString* _videoOutputPath;
 }
 
 - (instancetype)init {
@@ -239,6 +242,11 @@ public:
     }
 }
 
+- (BOOL)hasAnimatedObjects {
+    if (!_job) return NO;
+    return _job->AreThereAnyKeyframedObjects() ? YES : NO;
+}
+
 - (BOOL)rasterize {
     if (!_job) return NO;
 
@@ -249,6 +257,39 @@ public:
     }
 
     BOOL result = _job->Rasterize() ? YES : NO;
+    return result;
+}
+
+- (void)setAnimationVideoOutputPath:(NSString *)path {
+    _videoOutputPath = [path copy];
+}
+
+- (BOOL)rasterizeAnimation {
+    if (!_job) return NO;
+
+    if (_rasterizerOutput) {
+        _job->AddCallbackRasterizerOutput(_rasterizerOutput);
+    }
+
+    // Create and attach video output if a path was configured
+    MovieRasterizerOutput* movieOutput = nullptr;
+    if (_videoOutputPath) {
+        movieOutput = new MovieRasterizerOutput(_videoOutputPath);
+        movieOutput->addref();
+        IRasterizer* rasterizer = _job->GetRasterizer();
+        if (rasterizer) {
+            rasterizer->AddRasterizerOutput(movieOutput);
+        }
+    }
+
+    BOOL result = _job->RasterizeAnimationUsingOptions() ? YES : NO;
+
+    // Finalize the video file after rendering completes
+    if (movieOutput) {
+        movieOutput->finalize();
+        movieOutput->release();
+    }
+
     return result;
 }
 

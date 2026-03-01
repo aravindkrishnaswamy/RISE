@@ -67,19 +67,11 @@ struct SceneTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        let coordinator = context.coordinator
-        // Skip updates that originate from the user typing (the coordinator
-        // already wrote the binding). Only apply external binding changes.
-        guard !coordinator.isUpdatingFromTextView else { return }
-
-        let newText = text
-        DispatchQueue.main.async {
-            guard let textView = coordinator.textView,
-                  textView.string != newText else { return }
-            let selectedRanges = textView.selectedRanges
-            textView.string = newText
-            textView.selectedRanges = selectedRanges
-        }
+        guard let textView = context.coordinator.textView,
+              textView.string != text else { return }
+        let selectedRanges = textView.selectedRanges
+        textView.string = text
+        textView.selectedRanges = selectedRanges
     }
 
     func makeCoordinator() -> Coordinator {
@@ -89,7 +81,6 @@ struct SceneTextEditor: NSViewRepresentable {
     class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
         weak var textView: NSTextView?
-        var isUpdatingFromTextView = false
         /// Strong reference to keep the syntax highlighter alive.
         var highlighter: RISESceneSyntaxHighlighter?
 
@@ -99,9 +90,7 @@ struct SceneTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            isUpdatingFromTextView = true
             text.wrappedValue = textView.string
-            isUpdatingFromTextView = false
 
             // Reset typing attributes so new keystrokes use default styling
             // rather than inheriting the color of the character at the cursor.

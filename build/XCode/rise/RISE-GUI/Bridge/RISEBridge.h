@@ -65,8 +65,18 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// The block may be called from any thread.
 - (void)setLogBlock:(nullable RISELogBlock)block;
 
+/// Returns YES if the loaded scene has any keyframed (animated) objects.
+- (BOOL)hasAnimatedObjects;
+
 /// Rasterizes the entire scene. This is BLOCKING -- call from a background thread.
 - (BOOL)rasterize;
+
+/// Sets the output path for animation video (.mov). Pass nil to disable video output.
+- (void)setAnimationVideoOutputPath:(nullable NSString *)path;
+
+/// Rasterizes the full animation using options from the scene file.
+/// This is BLOCKING -- call from a background thread.
+- (BOOL)rasterizeAnimation;
 
 /// Rasterizes a specific region. This is BLOCKING -- call from a background thread.
 - (BOOL)rasterizeRegionLeft:(uint32_t)left

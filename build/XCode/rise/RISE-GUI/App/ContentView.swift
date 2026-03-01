@@ -1,5 +1,47 @@
 import SwiftUI
 
+/// A layout that arranges subviews horizontally, wrapping to the next line when needed.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        return arrangeSubviews(sizes: sizes, containerWidth: proposal.width ?? .infinity).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let offsets = arrangeSubviews(sizes: sizes, containerWidth: bounds.width).offsets
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + offsets[index].x,
+                                      y: bounds.minY + offsets[index].y),
+                          proposal: .unspecified)
+        }
+    }
+
+    private func arrangeSubviews(sizes: [CGSize], containerWidth: CGFloat) -> (offsets: [CGPoint], size: CGSize) {
+        var offsets: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxWidth: CGFloat = 0
+
+        for size in sizes {
+            if x + size.width > containerWidth && x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            offsets.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+            maxWidth = max(maxWidth, x - spacing)
+        }
+
+        return (offsets, CGSize(width: maxWidth, height: y + rowHeight))
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var viewModel: RenderViewModel
 
@@ -73,7 +115,7 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 // Scene actions
-                HStack(spacing: 8) {
+                FlowLayout(spacing: 8) {
                     Button {
                         viewModel.openScene()
                     } label: {
@@ -108,7 +150,7 @@ struct ContentView: View {
                 Divider()
 
                 // Render actions
-                HStack(spacing: 8) {
+                FlowLayout(spacing: 8) {
                     Button {
                         viewModel.startRender()
                     } label: {
@@ -116,6 +158,14 @@ struct ContentView: View {
                     }
                     .disabled(!canRender)
                     .help("Start rendering the loaded scene")
+
+                    Button {
+                        viewModel.startAnimationRender()
+                    } label: {
+                        Label("Render Animation", systemImage: "film")
+                    }
+                    .disabled(!canRender || !viewModel.hasAnimation)
+                    .help("Render all animation frames")
 
                     Button {
                         viewModel.cancelRender()

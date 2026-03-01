@@ -694,6 +694,9 @@
 		F24B745F2F52A632008304C4 /* VolumeOp_LMIP.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A57069C42900069C9E5 /* VolumeOp_LMIP.h */; };
 		F24B74602F52A632008304C4 /* VolumeOp_MIP.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A58069C42900069C9E5 /* VolumeOp_MIP.h */; };
 		F24B74612F52A632008304C4 /* ZuckerHummelOperator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */; };
+		F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E032F54FB56005DA46B /* AVFoundation.framework */; };
+		F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E052F54FB5E005DA46B /* CoreMedia.framework */; };
+		F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E072F54FB64005DA46B /* CoreVideo.framework */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1354,6 +1357,9 @@
 		6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRWriter.h; sourceTree = "<group>"; };
 		8DD76F6C0486A84900D96B5E /* rise */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rise; sourceTree = BUILT_PRODUCTS_DIR; };
 		F24B71C62F52A211008304C4 /* RISE-GUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RISE-GUI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		F24C3E032F54FB56005DA46B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		F24C3E052F54FB5E005DA46B /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
+		F24C3E072F54FB64005DA46B /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -1970,6 +1976,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */,
+				F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */,
+				F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1990,6 +1999,7 @@
 				0249A662FF388D9811CA2CEA /* External Frameworks and Libraries */,
 				F24B71C72F52A211008304C4 /* RISE-GUI */,
 				1AB674ADFE9D54B511CA2CBB /* Products */,
+				F24C3E022F54FB56005DA46B /* Frameworks */,
 			);
 			name = rise;
 			sourceTree = "<group>";
@@ -2023,6 +2033,16 @@
 				6DBFAA5009C4D2A20048A09D /* SubSurfaceScatteringShaderOp.h */,
 			);
 			path = SSS;
+			sourceTree = "<group>";
+		};
+		F24C3E022F54FB56005DA46B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				F24C3E072F54FB64005DA46B /* CoreVideo.framework */,
+				F24C3E052F54FB5E005DA46B /* CoreMedia.framework */,
+				F24C3E032F54FB56005DA46B /* AVFoundation.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		F277342507ECCC1600C0B600 /* Detector Spheres */ = {

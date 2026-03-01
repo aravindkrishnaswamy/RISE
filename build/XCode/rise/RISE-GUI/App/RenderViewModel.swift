@@ -128,6 +128,7 @@ final class RenderViewModel: ObservableObject {
     @Published var isEditorVisible: Bool = false
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
+    @Published var hasAnimation: Bool = false
 
     private let bridge = RISEBridge()
     private let cancelFlag = AtomicBool(false)
@@ -256,6 +257,7 @@ final class RenderViewModel: ObservableObject {
                     self.loadedFilePath = path
                     self.renderState = .sceneLoaded
                     self.progressTitle = ""
+                    self.hasAnimation = bridgeRef.hasAnimatedObjects()
                     // Refresh the editor contents if it's open
                     if self.isEditorVisible {
                         self.refreshEditorContents()
@@ -346,6 +348,97 @@ final class RenderViewModel: ObservableObject {
                     self.renderState = .completed
                 } else {
                     self.renderState = .error("Rasterization failed")
+                }
+            }
+        }
+    }
+
+    func startAnimationRender() {
+        guard hasAnimation else { return }
+        guard renderState == .sceneLoaded || renderState == .completed
+              || renderState == .cancelled else { return }
+
+        renderState = .rendering
+        progress = 0.0
+        cancelFlag.value = false
+        renderedImage = nil
+        imageBuffer.reset()
+        elapsedTime = 0
+        renderStartTime = Date()
+
+        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, let start = self.renderStartTime else { return }
+                self.elapsedTime = Date().timeIntervalSince(start)
+            }
+        }
+
+        let cancelRef = cancelFlag
+        bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                self.progress = total > 0 ? prog / total : 0
+                self.progressTitle = title
+            }
+            return !cancelRef.value
+        }
+
+        let buffer = imageBuffer
+        let sceneSizeReported = AtomicBool(false)
+        bridge.setImageOutputBlock { [weak self]
+            (pImageData: UnsafePointer<UInt16>?,
+             width: UInt32, height: UInt32,
+             rcTop: UInt32, rcLeft: UInt32,
+             rcBottom: UInt32, rcRight: UInt32) in
+            guard let pImageData = pImageData else { return }
+
+            if !sceneSizeReported.value {
+                sceneSizeReported.value = true
+                let w = CGFloat(width)
+                let h = CGFloat(height)
+                Task { @MainActor [weak self] in
+                    self?.sceneSize = CGSize(width: w, height: h)
+                }
+            }
+
+            guard let nsImage = buffer.handleOutput(
+                pImageData: pImageData,
+                width: width, height: height,
+                rcTop: rcTop, rcLeft: rcLeft,
+                rcBottom: rcBottom, rcRight: rcRight
+            ) else { return }
+
+            Task { @MainActor [weak self] in
+                self?.renderedImage = nsImage
+            }
+        }
+
+        // Derive video output path from scene file path
+        if let scenePath = loadedFilePath {
+            let basePath = (scenePath as NSString).deletingPathExtension
+            let videoPath = basePath + ".mov"
+            bridge.setAnimationVideoOutputPath(videoPath)
+        }
+
+        let bridgeRef = bridge
+        Task.detached { [weak self] in
+            let success = bridgeRef.rasterizeAnimation()
+
+            await MainActor.run { [weak self] in
+                guard let self = self else { return }
+                self.displayTimer?.invalidate()
+                self.displayTimer = nil
+                if let start = self.renderStartTime {
+                    self.elapsedTime = Date().timeIntervalSince(start)
+                }
+                self.renderStartTime = nil
+
+                if cancelRef.value {
+                    self.renderState = .cancelled
+                } else if success {
+                    self.renderState = .completed
+                } else {
+                    self.renderState = .error("Animation rasterization failed")
                 }
             }
         }
@@ -444,6 +537,7 @@ final class RenderViewModel: ObservableObject {
         sceneSize = nil
         imageBuffer.reset()
         logMessages.removeAll()
+        hasAnimation = false
         isEditorVisible = false
         editorText = ""
         editorOriginalText = ""

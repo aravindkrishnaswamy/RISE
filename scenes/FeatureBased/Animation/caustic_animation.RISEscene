@@ -58,8 +58,8 @@ pinhole_camera
 	location			0 0 0.5
 	lookat				0 0 0
 	up					0 1 0
-	width				300
-	height				300
+	width				600
+	height				600
 	fov					30.0
 	exposure			$((1.0/@FRAMES)*0.8)
 }
