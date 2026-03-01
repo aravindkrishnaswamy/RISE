@@ -25,9 +25,11 @@ ambientocclusion_shaderop
 {
 	name			ambocc
 	multiplybrdf		true
-	numphi			16 
-	numtheta		5
-	irradiance_cache	false
+#	numphi			16 
+#	numtheta		5
+	numphi			256 
+	numtheta		64
+	irradiance_cache	true
 }
 
 standard_shader
@@ -51,9 +53,9 @@ pixelpel_rasterizer
 file_rasterizeroutput
 {
 	pattern				rendered/creature
-	type				PNG
-	bpp					8
-	color_space			sRGB
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
 }
 
 ##################################################
@@ -160,4 +162,12 @@ standard_object
 	position			160 -345.0 250
 	material			mirror
 	shader				ref
+}
+
+irradiance_cache
+{
+	size				2000
+	tolerance			0.1
+	min_spacing			8
+	max_spacing    		100
 }
