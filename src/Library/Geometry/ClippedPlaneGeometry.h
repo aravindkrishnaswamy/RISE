@@ -28,6 +28,8 @@ namespace RISE
 
 			Point3	vP[4];
 			Vector3	vNormal;
+			Vector3	vNormalA;
+			Vector3	vNormalB;
 			Vector3	vEdgesA[2];
 			Vector3	vEdgesB[2];
 			bool	bDoubleSided;

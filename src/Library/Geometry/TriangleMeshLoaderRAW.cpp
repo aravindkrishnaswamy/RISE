@@ -89,11 +89,16 @@ bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 			triB.vertices[1] = Point3( vCx, vCy, vCz );
 			triB.vertices[2] = Point3( vDx, vDy, vDz );
 
-			Vector3 vNormal = Vector3Ops::Normalize(Vector3Ops::Cross( 
+			Vector3 vNormalA = Vector3Ops::Normalize(Vector3Ops::Cross( 
 				Vector3Ops::mkVector3(triA.vertices[1], triA.vertices[0]),
 				Vector3Ops::mkVector3(triA.vertices[2], triA.vertices[0]) ));
 
-			triA.normals[0] = triA.normals[1] = triA.normals[2] = triB.normals[0] = triB.normals[1] = triB.normals[2] = vNormal;
+			Vector3 vNormalB = Vector3Ops::Normalize(Vector3Ops::Cross( 
+				Vector3Ops::mkVector3(triB.vertices[1], triB.vertices[0]),
+				Vector3Ops::mkVector3(triB.vertices[2], triB.vertices[0]) ));
+
+			triA.normals[0] = triA.normals[1] = triA.normals[2] = vNormalA;
+			triB.normals[0] = triB.normals[1] = triB.normals[2] = vNormalB;
 
 			// Texture co-ordinates
 			triA.coords[0] = Point2( 1.0, 0.0 );
@@ -115,4 +120,3 @@ bool TriangleMeshLoaderRAW::LoadTriangleMesh( ITriangleMeshGeometry* pGeom )
 	
 	return true;
 }
-

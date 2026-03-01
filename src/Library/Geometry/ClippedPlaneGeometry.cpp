@@ -46,33 +46,38 @@ void ClippedPlaneGeometry::GenerateMesh( )
 
 void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
-	TRIANGLE_HIT	h;
+	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ri.ray.dir );
+	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ri.ray.dir );
 
-	// Early rejection is based on whether we are to consider front facing triangles or 
-	// back facing triangles and so on...
+	const bool bAllowTriA = (bHitFrontFaces || dDotA >= 0) && ((bHitBackFaces && bDoubleSided) || dDotA <= 0);
+	const bool bAllowTriB = (bHitFrontFaces || dDotB >= 0) && ((bHitBackFaces && bDoubleSided) || dDotB <= 0);
 
-	// If we are not to hit front faces and we are front facing, then beat it!
-	if( !bHitFrontFaces  ) {
-		if( Vector3Ops::Dot(vNormal, ri.ray.dir) < 0 ) {
-			return;
-		}
+	TRIANGLE_HIT hTriA;
+	TRIANGLE_HIT hTriB;
+	hTriA.bHit = false;
+	hTriB.bHit = false;
+
+	if( bAllowTriA ) {
+		RayTriangleIntersection( ri.ray, hTriA, vP[0], vEdgesA[0], vEdgesA[1] );
 	}
 
-	// If we are not to hit back faces and we are back facing, then also beat it
-	if( !bHitBackFaces || !bDoubleSided ) {
-		if( Vector3Ops::Dot(vNormal, ri.ray.dir) > 0 ) {
-			return;
-		}
+	if( bAllowTriB ) {
+		RayTriangleIntersection( ri.ray, hTriB, vP[0], vEdgesB[0], vEdgesB[1] );
 	}
-	
-	bool	bTriA = false;
-	// Check against the two triangles
-	RayTriangleIntersection( ri.ray, h, vP[0], vEdgesA[0], vEdgesA[1] );
 
-	if( h.bHit ) {
+	TRIANGLE_HIT h;
+	h.bHit = false;
+	bool bTriA = false;
+
+	if( hTriA.bHit && hTriB.bHit ) {
+		bTriA = hTriA.dRange <= hTriB.dRange;
+		h = bTriA ? hTriA : hTriB;
+	} else if( hTriA.bHit ) {
 		bTriA = true;
-	} else {
-		RayTriangleIntersection( ri.ray, h, vP[0], vEdgesB[0], vEdgesB[1] );
+		h = hTriA;
+	} else if( hTriB.bHit ) {
+		bTriA = false;
+		h = hTriB;
 	}
 
 	ri.bHit = h.bHit;
@@ -82,10 +87,11 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	// Now compute the normal and texture mapping co-ordinates
 	if( ri.bHit )
 	{
-		ri.vNormal = vNormal;
+		const Vector3& vHitNormal = bTriA ? vNormalA : vNormalB;
+		ri.vNormal = vHitNormal;
 
 		if( bComputeExitInfo ) {
-			ri.vNormal2 = -vNormal;
+			ri.vNormal2 = -vHitNormal;
 		}
 
 		Point2		uv[3];
@@ -113,37 +119,38 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 
 bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
-	TRIANGLE_HIT	h;
+	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ray.dir );
+	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ray.dir );
 
-	// If we are not to hit front faces and we are front facing, then beat it!
-	if( !bHitFrontFaces  ) {
-		if( Vector3Ops::Dot(vNormal, ray.dir) < 0 ) {
-			return false;
+	const bool bAllowTriA = (bHitFrontFaces || dDotA >= 0) && ((bHitBackFaces && bDoubleSided) || dDotA <= 0);
+	const bool bAllowTriB = (bHitFrontFaces || dDotB >= 0) && ((bHitBackFaces && bDoubleSided) || dDotB <= 0);
+
+	bool bHit = false;
+	Scalar dClosest = dHowFar;
+
+	if( bAllowTriA ) {
+		TRIANGLE_HIT hTriA;
+		hTriA.bHit = false;
+		RayTriangleIntersection( ray, hTriA, vP[0], vEdgesA[0], vEdgesA[1] );
+
+		if( hTriA.bHit && hTriA.dRange >= NEARZERO && hTriA.dRange <= dClosest ) {
+			bHit = true;
+			dClosest = hTriA.dRange;
 		}
 	}
 
-	// If we are not to hit back faces and we are back facing, then also beat it
-	if( !bHitBackFaces || !bDoubleSided ) {
-		if( Vector3Ops::Dot(vNormal, ray.dir) > 0 ) {
-			return false;
+	if( bAllowTriB ) {
+		TRIANGLE_HIT hTriB;
+		hTriB.bHit = false;
+		RayTriangleIntersection( ray, hTriB, vP[0], vEdgesB[0], vEdgesB[1] );
+
+		if( hTriB.bHit && hTriB.dRange >= NEARZERO && hTriB.dRange <= dClosest ) {
+			bHit = true;
+			dClosest = hTriB.dRange;
 		}
 	}
 
-	{
-		h.bHit = false;
-		// Check against the two triangles
-		RayTriangleIntersection( ray, h, vP[0], vEdgesA[0], vEdgesA[1] );
-
-		if( !h.bHit ) {
-			RayTriangleIntersection( ray, h, vP[0], vEdgesB[0], vEdgesB[1] );
-		}
-	}
-
-	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
-		h.bHit = false;
-	}
-
-	return h.bHit;
+	return bHit;
 }
 
 void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
@@ -317,6 +324,7 @@ void ClippedPlaneGeometry::RegenerateData( )
 	vEdgesB[0] = Vector3Ops::mkVector3( vP[2], vP[0] );
 	vEdgesB[1] = Vector3Ops::mkVector3( vP[3], vP[0] );
 
-	vNormal = Vector3Ops::Normalize(Vector3Ops::Cross( vEdgesA[0], vEdgesA[1] ));
+	vNormalA = Vector3Ops::Normalize(Vector3Ops::Cross( vEdgesA[0], vEdgesA[1] ));
+	vNormalB = Vector3Ops::Normalize(Vector3Ops::Cross( vEdgesB[0], vEdgesB[1] ));
+	vNormal = Vector3Ops::Normalize(Vector3Ops::WeightedAverage2(vNormalA, vNormalB, 0.5, 0.5));
 }
-
