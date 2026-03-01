@@ -34,11 +34,19 @@ struct SceneTextEditor: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isRichText = false
+        textView.isRichText = true
 
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.font = font
-        textView.typingAttributes = [.font: font]
+        textView.typingAttributes = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor,
+        ]
+
+        // Install the syntax highlighter as the text storage delegate.
+        let highlighter = RISESceneSyntaxHighlighter()
+        textView.textStorage?.delegate = highlighter
+        context.coordinator.highlighter = highlighter
 
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.isHorizontallyResizable = false
@@ -82,6 +90,8 @@ struct SceneTextEditor: NSViewRepresentable {
         var text: Binding<String>
         weak var textView: NSTextView?
         var isUpdatingFromTextView = false
+        /// Strong reference to keep the syntax highlighter alive.
+        var highlighter: RISESceneSyntaxHighlighter?
 
         init(text: Binding<String>) {
             self.text = text
@@ -92,6 +102,14 @@ struct SceneTextEditor: NSViewRepresentable {
             isUpdatingFromTextView = true
             text.wrappedValue = textView.string
             isUpdatingFromTextView = false
+
+            // Reset typing attributes so new keystrokes use default styling
+            // rather than inheriting the color of the character at the cursor.
+            let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            textView.typingAttributes = [
+                .font: font,
+                .foregroundColor: NSColor.labelColor,
+            ]
         }
     }
 }
