@@ -130,7 +130,7 @@ void BezierPatchGeometry::Prepare()
 	BezierPatchPtrList		patchptrs;
 	patchptrs.reserve( patches.size() );		// Points to all the bezier patches
 
-	BoundingBox overall( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+	BoundingBox overall( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 	for( unsigned int i=0; i<patches.size(); i++ ) {
 		BezierPatch* b = &patches[i];
 		MYBEZIERPATCH m;
@@ -192,8 +192,8 @@ bool BezierPatchGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const S
 
 void BezierPatchGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
-	Point3	ptMin( INFINITY, INFINITY, INFINITY );
-	Point3	ptMax( -INFINITY, -INFINITY, -INFINITY ) ;
+	Point3	ptMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3	ptMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) ;
 
 	// Go through all the points and calculate the minimum and maximum values from the
 	// entire set.

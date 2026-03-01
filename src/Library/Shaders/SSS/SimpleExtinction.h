@@ -51,7 +51,7 @@ namespace RISE
 					return -log(error) / (ColorMath::MinValue(extinction)*geometric_scale) / 1000.0;
 				}
 
-				return INFINITY;
+				return RISE_INFINITY;
 			}
 
 			RISEPel ComputeTotalExtinction(

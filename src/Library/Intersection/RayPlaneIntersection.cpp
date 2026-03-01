@@ -20,7 +20,7 @@ namespace RISE
 	void RayPlaneIntersection( const Ray& ray, HIT& hit, const Vector3& vPlaneNormal )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		const Scalar		Vd = Vector3Ops::Dot( ray.dir, vPlaneNormal );
 

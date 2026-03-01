@@ -25,7 +25,7 @@ namespace RISE
 										const Scalar xMax, const Scalar yCenter, const Scalar zCenter, const Scalar radius, bool& bHitFarSide )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		const Vector3& v = ray.dir;
 		Scalar a = v.y * v.y + v.z * v.z;
@@ -75,7 +75,7 @@ namespace RISE
 										const Scalar radius, bool& bHitFarSide )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		const Vector3& v = ray.dir;
 		Scalar a = v.z * v.z + v.x * v.x;
@@ -126,7 +126,7 @@ namespace RISE
 										const Scalar radius, bool& bHitFarSide )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		const Vector3& v = ray.dir;
 		Scalar a = v.x * v.x + v.y * v.y;

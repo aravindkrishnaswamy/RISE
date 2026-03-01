@@ -76,14 +76,16 @@ namespace RISE
 					const Point3& ptPosition,
 					const Vector3& vNormal,
 					std::vector<CacheElement>& results,
-					const Scalar invTolerance
+					const Scalar invTolerance,
+					const Scalar maxSpacing
 					) const;
 
 				//! Asks the cache is a sample is need at the current position
 				bool IsSampleNeeded(
 					const Point3& ptPosition,
 					const Vector3& vNormal,
-					const Scalar invTolerance
+					const Scalar invTolerance,
+					const Scalar maxSpacing
 					) const;
 
 				void Clear();
@@ -138,13 +140,13 @@ namespace RISE
 				#ifdef _DEBUG
 				assert( bPreComputed );
 				#endif
-				return root.Query( ptPosition, vNormal, results, invTolerance );
+				return root.Query( ptPosition, vNormal, results, invTolerance, max_spacing );
 			}
 
 			bool IsSampleNeeded( const Point3& ptPosition, const Vector3& vNormal ) const
 			{
 				mutex.read_lock();
-				bool bSampleNeeded = root.IsSampleNeeded( ptPosition, vNormal, invTolerance );
+				bool bSampleNeeded = root.IsSampleNeeded( ptPosition, vNormal, invTolerance, max_spacing );
 				mutex.read_unlock();
 
 				return bSampleNeeded;

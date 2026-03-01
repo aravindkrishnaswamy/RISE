@@ -23,7 +23,7 @@ namespace RISE
 	void RayTorusIntersection( const Ray& ray, HIT& hit, const Scalar majorRadius, const Scalar minorRadius, const Scalar sqrP0 )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		const Vector3& rayDirNorm = ray.dir;
 

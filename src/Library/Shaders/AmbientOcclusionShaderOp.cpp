@@ -138,11 +138,11 @@ void AmbientOcclusionShaderOp::PerformOperation(
 								accum = accum + (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
 							}
 						} else {
-							rsum += 1.0/ri.geometric.range;
+							rsum += 1.0/newri.geometric.range;
 							hits++;
 						}
 					} else {
-						if( !caster.CastShadowRay( ray, INFINITY ) ) {
+						if( !caster.CastShadowRay( ray, RISE_INFINITY ) ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
 								accum = accum + pBRDF->value( dir, ri.geometric ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
@@ -234,7 +234,7 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 					);
 
 				Ray const ray(ri.geometric.ptIntersection, dir);
-				if( !caster.CastShadowRay( ray, INFINITY ) ) {
+				if( !caster.CastShadowRay( ray, RISE_INFINITY ) ) {
 					// Accumulate
 					if( pBRDF && bMultiplyBRDF ) {
 						accum += pBRDF->valueNM( dir, ri.geometric, nm ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);

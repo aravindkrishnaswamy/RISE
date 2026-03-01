@@ -182,7 +182,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	Scalar dHowFar2 = dHowFar; 
 
 	// We can't go farther than infinity, so in this case only reduce thelength, never extend
-	if( (dHowFar != INFINITY) || (factor < 1.0) ) {
+	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
 		dHowFar2 = factor*dHowFar;
 	}
 
@@ -260,7 +260,7 @@ bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar
 	Scalar dHowFar2 = dHowFar; 
 
 	// We can't go farther than infinity, so in this case only reduce thelength, never extend
-	if( (dHowFar != INFINITY) || (factor < 1.0) ) {
+	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
 		dHowFar2 = factor*dHowFar;
 	}
 	

@@ -130,7 +130,7 @@ void BilinearPatchGeometry::Prepare()
 	// We're done so stuff all the bilinear patches into the bsp-tree
 
 	// Compute the bounding box
-	BoundingBox overall( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+	BoundingBox overall( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 	BilinearPatchList::const_iterator		m, n;
 	for( m=patches.begin(), n=patches.end(); m!=n; m++ ) {
 		overall.Include( GeometricUtilities::BilinearPatchBoundingBox( *m ) );
@@ -179,8 +179,8 @@ bool BilinearPatchGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const
 
 void BilinearPatchGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
-	Point3	ptMin( INFINITY, INFINITY, INFINITY );
-	Point3	ptMax( -INFINITY, -INFINITY, -INFINITY ) ;
+	Point3	ptMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3	ptMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) ;
 
 	// Go through all the points and calculate the minimum and maximum values from the
 	// entire set.

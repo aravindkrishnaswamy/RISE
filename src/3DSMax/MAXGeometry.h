@@ -48,7 +48,7 @@ public:
 	  m_dArea( 0 ),
 	  pBSPTree( 0 )
 	{
-		bbox = RISE::BoundingBox( RISE::Point3( RISE::INFINITY, RISE::INFINITY, RISE::INFINITY ), RISE::Point3( -RISE::INFINITY, -RISE::INFINITY, -RISE::INFINITY ) );
+		bbox = RISE::BoundingBox( RISE::Point3( RISE::RISE_INFINITY, RISE::RISE_INFINITY, RISE::RISE_INFINITY ), RISE::Point3( -RISE::RISE_INFINITY, -RISE::RISE_INFINITY, -RISE::RISE_INFINITY ) );
 
 		mesh = instance->GetMesh();
 
@@ -179,7 +179,7 @@ public:
 
 		RISE::TRIANGLE_HIT	h;
 		h.bHit = false;
-		h.dRange = RISE::INFINITY;
+		h.dRange = RISE::RISE_INFINITY;
 
 		// We have to intersect against every triangle and find the closest intersection
 		// We can omit triangles that aren't facing us (dot product is > 0) since they 
@@ -387,7 +387,7 @@ public:
 		//
 
 		// Cheat and use two BBs
-		RISE::BoundingBox bbTri( RISE::Point3(RISE::INFINITY,RISE::INFINITY,RISE::INFINITY), RISE::Point3(-RISE::INFINITY,-RISE::INFINITY,-RISE::INFINITY));
+		RISE::BoundingBox bbTri( RISE::Point3(RISE::RISE_INFINITY,RISE::RISE_INFINITY,RISE::RISE_INFINITY), RISE::Point3(-RISE::RISE_INFINITY,-RISE::RISE_INFINITY,-RISE::RISE_INFINITY));
 		for( int j=0; j<3; j++ ) {
 			bbTri.Include( v[j] );
 		}

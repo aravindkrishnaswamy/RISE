@@ -57,7 +57,7 @@ void DirectionalLight::ComputeDirectLighting(
 		rayToLight.origin = ri.ptIntersection;
 		rayToLight.dir = vDirection;
 
-		if( pCaster.CastShadowRay( rayToLight, INFINITY ) ) {
+		if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
 			return;
 		}
 	}

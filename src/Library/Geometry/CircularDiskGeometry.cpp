@@ -168,7 +168,7 @@ bool CircularDiskGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const 
 void CircularDiskGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
 	ptCenter = Point3( 0, 0, 0 );
-	radius = INFINITY;
+	radius = RISE_INFINITY;
 }
 
 BoundingBox CircularDiskGeometry::GenerateBoundingBox() const

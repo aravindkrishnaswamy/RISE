@@ -28,8 +28,8 @@ namespace RISE
 	public:
 		BoundingBox()
 		{
-			ll.x = ll.y = ll.z = -INFINITY;
-			ur.x = ur.y = ur.z = INFINITY;
+			ll.x = ll.y = ll.z = -RISE_INFINITY;
+			ur.x = ur.y = ur.z = RISE_INFINITY;
 		}
 
 		BoundingBox( const Point3& ll_, const Point3& ur_ ) : 

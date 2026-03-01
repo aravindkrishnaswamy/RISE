@@ -35,7 +35,7 @@ namespace RISE
 		)
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		// Initialization phase:
 		// First check to see if the ray intersects the volume of the displaced triangle
@@ -92,7 +92,7 @@ namespace RISE
 
 		// See if either of the end-caps are an entry point,
 		char in=-1, out=-1;							// describes which side the ray comes in and which side it goes out
-		Scalar inDist=INFINITY, outDist=0;			// in and out distances
+		Scalar inDist=RISE_INFINITY, outDist=0;			// in and out distances
 
 		if( topcap.bHit ) {
 			in = 0; 

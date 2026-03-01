@@ -68,8 +68,8 @@ inline const IPainter& Voronoi3DPainter::ComputeWhich( const RayIntersectionGeom
 	*/
 
 	const IPainter* pRet = 0;
-	Scalar distance1 = INFINITY;
-	Scalar distance2 = INFINITY;
+	Scalar distance1 = RISE_INFINITY;
+	Scalar distance2 = RISE_INFINITY;
 
 	GeneratorsList::const_iterator i, e;
 

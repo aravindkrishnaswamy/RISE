@@ -157,8 +157,8 @@ void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& rad
 {
 	int			i;
 
-	Point3		ptMin( INFINITY, INFINITY, INFINITY );
-	Point3		ptMax( -INFINITY, -INFINITY, -INFINITY );
+	Point3		ptMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3		ptMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
 	// Go through all the points and calculate the minimum and maximum values from the
 	// entire set.
@@ -204,8 +204,8 @@ void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& rad
 BoundingBox ClippedPlaneGeometry::GenerateBoundingBox() const
 {
 	// The Bbox is basically the four points
-	Point3 ll = Point3( INFINITY, INFINITY, INFINITY );
-	Point3 ur = Point3( -INFINITY, -INFINITY, -INFINITY );
+	Point3 ll = Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3 ur = Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
 	for( unsigned int i=0; i<4; i++ )
 	{

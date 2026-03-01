@@ -75,7 +75,7 @@ namespace RISE
 			{
 				vphotons.reserve( max_photons );
 
-				bbox = BoundingBox( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+				bbox = BoundingBox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 
 				if( pTracer ) {
 					pTracer->addref();

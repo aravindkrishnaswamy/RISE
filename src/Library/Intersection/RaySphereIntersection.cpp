@@ -23,7 +23,7 @@ namespace RISE
 	void RaySphereIntersection( const Ray& ray, HIT& hit, const Scalar radius, const Point3& center )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		Vector3 vTemp = Vector3Ops::mkVector3( ray.origin, center );
 
@@ -88,7 +88,7 @@ namespace RISE
 	extern void RaySphereIntersection( const Ray& ray, HIT& hit, const Scalar radius )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		Scalar		fSqrRadius = radius*radius;
 		Scalar		coeffs[3] = {0};

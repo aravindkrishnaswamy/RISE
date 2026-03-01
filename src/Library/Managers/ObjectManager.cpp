@@ -38,7 +38,7 @@ char ObjectManager::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& pl
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	if( elem->IsWorldVisible() ) {
-		elem->IntersectRay( ri, INFINITY, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+		elem->IntersectRay( ri, RISE_INFINITY, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	}
 }
 
@@ -112,7 +112,7 @@ void ObjectManager::CreateBSPTree() const
 	}
 
 	// Construct the overall bounding box
-	BoundingBox bbox( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+	BoundingBox bbox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 
 	std::vector<MYOBJ> elements;
 
@@ -143,7 +143,7 @@ void ObjectManager::CreateOctree() const
 	}
 
 	// Construct the overall bounding box
-	BoundingBox bbox( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+	BoundingBox bbox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 
 	std::vector<MYOBJ> elements;
 
@@ -171,7 +171,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 
 		ri.geometric.bHit = false;
-		ri.geometric.range = INFINITY;
+		ri.geometric.range = RISE_INFINITY;
 
 		pBSPtree->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
@@ -180,7 +180,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		}
 
 		ri.geometric.bHit = false;
-		ri.geometric.range = INFINITY;
+		ri.geometric.range = RISE_INFINITY;
 
 		pOctree->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	} else {

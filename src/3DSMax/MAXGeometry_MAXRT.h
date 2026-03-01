@@ -33,7 +33,7 @@ public:
 	  mesh( pMAXObject_ ), 
 	  m_dArea( 0 )
 	{
-		bbox = RISE::BoundingBox( RISE::Point3( RISE::INFINITY, RISE::INFINITY, RISE::INFINITY ), RISE::Point3( -RISE::INFINITY, -RISE::INFINITY, -RISE::INFINITY ) );
+		bbox = RISE::BoundingBox( RISE::Point3( RISE::RISE_INFINITY, RISE::RISE_INFINITY, RISE::RISE_INFINITY ), RISE::Point3( -RISE::RISE_INFINITY, -RISE::RISE_INFINITY, -RISE::RISE_INFINITY ) );
 
 		// Compute the bounding box
 		int i = 0;

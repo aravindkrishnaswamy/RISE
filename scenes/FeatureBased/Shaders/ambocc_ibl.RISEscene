@@ -62,11 +62,11 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 -50 1000
-	lookat				0 -50 0
+	location			0 -100 1000
+	lookat				0 -200 0
 	up					0 1 0
-	width				180
-	height				240
+	width				1024
+	height				768
 	fov					60.0
 }
 

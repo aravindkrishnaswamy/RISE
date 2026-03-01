@@ -189,7 +189,7 @@ bool RayCaster::CastRay(
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
 
 		if( distance && bConsiderRMapAsBackground ) {
-			*distance = INFINITY;
+			*distance = RISE_INFINITY;
 		}
 
 		bReturn = bConsiderRMapAsBackground;
@@ -313,7 +313,7 @@ bool RayCaster::CastRayNM(
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
 		if( distance && bConsiderRMapAsBackground ) {
-			*distance = INFINITY;
+			*distance = RISE_INFINITY;
 		}
 
 		bReturn = bConsiderRMapAsBackground;

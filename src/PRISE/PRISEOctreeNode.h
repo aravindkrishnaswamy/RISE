@@ -278,7 +278,7 @@ public:
 		// will not hit, or is behind existing nodes
 
 		ri.bHit = false;
-		ri.range = INFINITY;
+		ri.range = RISE_INFINITY;
 
 		Point3D	my_ll;
 		Point3D my_ur;
@@ -366,7 +366,7 @@ public:
 		// will not hit, or is behind existing nodes
 
 		ri.bHit = false;
-		ri.range = INFINITY;
+		ri.range = RISE_INFINITY;
 
 		Point3D	my_ll;
 		Point3D my_ur;

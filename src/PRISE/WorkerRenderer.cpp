@@ -207,7 +207,7 @@ void WorkerRenderer::Render( const Ray& ray, const unsigned int x, const unsigne
 void WorkerRenderer::IntersectObjectsFinishIncomplete( RayIntersection& ri, IMemoryBuffer* mb )
 {
 	ri.geometric.custom = (void*)mb;
-	pMesh->IntersectRay( ri, INFINITY, true, false, false );
+	pMesh->IntersectRay( ri, RISE_INFINITY, true, false, false );
 
 	if( !ri.geometric.bHit && (MemoryBuffer*)ri.geometric.custom != 0 ) {
 		return;

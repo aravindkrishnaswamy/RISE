@@ -241,7 +241,7 @@ public:
 		// will not hit, or is behind existing nodes
 
 		ri.bHit = false;
-		ri.range = INFINITY;
+		ri.range = RISE_INFINITY;
 
 		BoundingBox my_bb;
 			
@@ -418,7 +418,7 @@ public:
 		// will not hit, or is behind existing nodes
 
 		ri.geometric.bHit = false;
-		ri.geometric.range = INFINITY;
+		ri.geometric.range = RISE_INFINITY;
 
 		BoundingBox my_bb;
 			

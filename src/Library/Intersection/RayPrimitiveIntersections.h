@@ -29,7 +29,7 @@ namespace RISE
 		Scalar		dRange;
 		Scalar		dRange2;
 
-		HIT( ) : bHit( false ), dRange( INFINITY ), dRange2( INFINITY ) {}
+		HIT( ) : bHit( false ), dRange( RISE_INFINITY ), dRange2( RISE_INFINITY ) {}
 	};
 
 	struct BOX_HIT : public HIT

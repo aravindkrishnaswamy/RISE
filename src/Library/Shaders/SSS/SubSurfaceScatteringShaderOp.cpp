@@ -112,7 +112,7 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 			GlobalLog()->PrintEasyInfo( "SubSurfaceScatteringShaderOp:: Generating point sample set for object" );
 			
 			PointSetOctree::PointSet points;
-			BoundingBox bbox( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+			BoundingBox bbox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 
 			// Since we are uniformly sampling, we just divide the overall surface area by the number of sample points
 	//		const Scalar sample_area = ri.pObject->GetArea() / Scalar(numPoints);

@@ -19,6 +19,7 @@
 #include "../Utilities/Reference.h"
 #include <vector>
 #include <algorithm>
+#include <random>
 
 namespace RISE
 {
@@ -206,7 +207,7 @@ namespace RISE
 					std::sort( blocks.begin(), blocks.end(), CompDistanceCenter );
 					break;
 				case 1:
-//					std::random_shuffle( blocks.begin(), blocks.end() );
+					{ std::mt19937 rng{std::random_device{}()}; std::shuffle( blocks.begin(), blocks.end(), rng ); }
 					break;
 				case 2:
 					std::sort( blocks.begin(), blocks.end(), CompDistanceTopLeft );

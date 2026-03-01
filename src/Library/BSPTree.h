@@ -67,14 +67,14 @@ namespace RISE
 		void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 		{
 			ri.bHit = false;
-			ri.range = INFINITY;
+			ri.range = RISE_INFINITY;
 			root.IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bbox, 10 );
 		}
 
 		void IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 		{
 			ri.geometric.bHit = false;
-			ri.geometric.range = INFINITY;
+			ri.geometric.range = RISE_INFINITY;
 			root.IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bbox, 10 );
 		}
 

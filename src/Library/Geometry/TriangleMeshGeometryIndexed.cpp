@@ -248,7 +248,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 	// We're done with all the triangles so stuff it all into an octree
 	// First compute the bounds of the octree
-	BoundingBox bbox( Point3( INFINITY, INFINITY, INFINITY ), Point3( -INFINITY, -INFINITY, -INFINITY ) );
+	BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
 
 	std::vector<const PointerTriangle*>	temp;
 
@@ -290,8 +290,8 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 void TriangleMeshGeometryIndexed::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
-	Point3	ptMin( INFINITY, INFINITY, INFINITY );
-	Point3	ptMax( -INFINITY, -INFINITY, -INFINITY ) ;
+	Point3	ptMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3	ptMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) ;
 
 	// Go through all the points and calculate the minimum and maximum values from the
 	// entire set.

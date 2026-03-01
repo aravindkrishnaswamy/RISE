@@ -22,7 +22,7 @@ namespace RISE
 	void RayQuadricIntersection( const Ray& ray, HIT& hit, const Point3& center, const Matrix4& Q )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		const Scalar qa = Q._00;
 		const Scalar qb = Q._01 + Q._10;

@@ -27,7 +27,7 @@ void RayBezierPatchIntersection(
 	)
 {
 	hit.bHit = false;
-	hit.dRange = INFINITY;
+	hit.dRange = RISE_INFINITY;
 
 	Plane plane1, plane2; //Two planes whose intersection is the ray
 	MakePlanes(plane1, plane2, ray);

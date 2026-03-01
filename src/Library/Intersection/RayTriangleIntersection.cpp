@@ -26,7 +26,7 @@ namespace RISE
 		)
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
+		hit.dRange = RISE_INFINITY;
 
 		// Here is my intersection test.  
 		// You can find this in Real-time Rendering 10.5.2

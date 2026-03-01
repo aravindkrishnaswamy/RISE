@@ -13,10 +13,14 @@
 
 #include "pch.h"
 #include "FinalGatherShaderOp.h"
+#include "FinalGatherInterpolation.h"
 #include "../Utilities/GeometricUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+#define FG_RAY_BIAS Scalar(1e-4)
+#define FG_MIN_HIT_DISTANCE Scalar(1e-6)
 
 FinalGatherShaderOp::FinalGatherShaderOp(
 	const unsigned int numTheta_,
@@ -104,52 +108,41 @@ void FinalGatherShaderOp::PerformOperation(
 
 			// If we are in normal rendering pass, look it up in the cache
 			IIrradianceCache* pCache = pScene->GetIrradianceCache();
-			if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
-				// Look it up
-				std::vector<IIrradianceCache::CacheElement> results;
-				const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
+				if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
+					// Look it up
+					std::vector<IIrradianceCache::CacheElement> results;
+					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
 
-				if( results.size() > 0 ) {
-					// There were some results, so accrue
-					std::vector<IIrradianceCache::CacheElement>::const_iterator i;
-					for( i=results.begin(); i!=results.end(); i++ ) {
-						const IIrradianceCache::CacheElement& elem = *i;
-						RISEPel temp = (elem.cIRad * r_min(1e10,elem.dWeight));
-
-						if( bComputeCacheGradients ) {
-							// Apply translational gradient
-							temp = temp + (ri.geometric.ptIntersection.x-elem.ptPosition.x)*elem.translationalGradient[0];
-							temp = temp + (ri.geometric.ptIntersection.y-elem.ptPosition.y)*elem.translationalGradient[1];
-							temp = temp + (ri.geometric.ptIntersection.z-elem.ptPosition.z)*elem.translationalGradient[2];
-
-							// Apply the rotational gradient
-							const Vector3 cp = Vector3Ops::Cross( ri.geometric.vNormal, elem.vNormal );
-
-							temp = temp + cp.x*elem.rotationalGradient[0];
-							temp = temp + cp.y*elem.rotationalGradient[1];
-							temp = temp + cp.z*elem.rotationalGradient[2];
-						}
-
-						c = c + temp;
+					const Scalar minEffectiveContributors = 2.0;
+					if( FinalGatherInterpolation::TryInterpolate(
+						ri.geometric.ptIntersection,
+						ri.geometric.vNormal,
+						results,
+						weights,
+						bComputeCacheGradients,
+						minEffectiveContributors,
+						c,
+						0
+						) )
+					{
+						bComputeIrradiance = false;
 					}
-
-					c = c * (1.0/weights);
-
-					bComputeIrradiance = false;
 				}
-			}
 
-			// We are in compute irradiance pass...
-			if( rc.pass == RuntimeContext::PASS_IRRADIANCE_CACHE && pCache && pCache->GetTolerance() > 0 ) {
+				// We are in compute irradiance pass...
+				if( rc.pass == RuntimeContext::PASS_IRRADIANCE_CACHE && pCache && pCache->GetTolerance() > 0 ) {
 				// Ask the cache if we should generate a sample
 				bComputeIrradiance = pCache->IsSampleNeeded( ri.geometric.ptIntersection, ri.geometric.vNormal );
 			}
 
-			if( bComputeIrradiance && pSPF ) {
-				// We need to initiate a final gather
-				const unsigned int irrM = numTheta;
-				const unsigned int irrN = numPhi;
-				const unsigned int final_gather_count = irrM*irrN;
+				if( bComputeIrradiance && pSPF ) {
+					// We need to initiate a final gather
+					const unsigned int irrM = numTheta;
+					const unsigned int irrN = numPhi;
+					const unsigned int final_gather_count = irrM*irrN;
+					if( final_gather_count == 0 ) {
+						return;
+					}
 
 				IRayCaster::RAY_STATE rs2;
 				rs2.depth = rs.depth + 1;
@@ -165,26 +158,35 @@ void FinalGatherShaderOp::PerformOperation(
 				// This code is taken almost directly from the SunFlow renderer, LightServer.java
 				//  available here: http://sunflow.sourceforge.net
 
-				RISEPel	rotGradient[3];						// The rotational gradient as we go along sampling
-				RISEPel transGradient1[3];					// The first part of the translational gradient
+					RISEPel	rotGradient[3];						// The rotational gradient as we go along sampling
+					RISEPel transGradient1[3];					// The first part of the translational gradient
+					rotGradient[0] = rotGradient[1] = rotGradient[2] = RISEPel(0,0,0);
+					transGradient1[0] = transGradient1[1] = transGradient1[2] = RISEPel(0,0,0);
 
-				if( pCache && bComputeCacheGradients )
-				{
-					RISEPel transGradient2[3];				// The second part of the translational gradient
+					if( pCache && bComputeCacheGradients )
+					{
+						RISEPel transGradient2[3];				// The second part of the translational gradient
+						transGradient2[0] = transGradient2[1] = transGradient2[2] = RISEPel(0,0,0);
 
 					const Scalar fN = Scalar(irrN);
 					const Scalar fM = Scalar(irrM);
 
-					// Irradiance gradients temporary variables
-					Vector3 vim;
-					RISEPel lijm;							// L_{i,j-1}
+						// Irradiance gradients temporary variables
+						Vector3 vim;
+						RISEPel lijm(0,0,0);						// L_{i,j-1}
 
-					RISEPel* lim = new RISEPel[irrM];		// L_{i-1,j}
-					RISEPel* l0 = new RISEPel[irrM];		// L_{0,j}
+						RISEPel* lim = new RISEPel[irrM];		// L_{i-1,j}
+						RISEPel* l0 = new RISEPel[irrM];		// L_{0,j}
 
-					Scalar rijm = 0;						// R_{i,j-1}
-					Scalar* rim = new Scalar[irrM];			// R_{i-1,j}
-					Scalar* r0 = new Scalar[irrM];			// R_{0,j}
+						Scalar rijm = 0;						// R_{i,j-1}
+						Scalar* rim = new Scalar[irrM];			// R_{i-1,j}
+						Scalar* r0 = new Scalar[irrM];			// R_{0,j}
+						for( unsigned int j=0; j<irrM; j++ ) {
+							lim[j] = RISEPel(0,0,0);
+							l0[j] = RISEPel(0,0,0);
+							rim[j] = 0;
+							r0[j] = 0;
+						}
 
 					for( unsigned int i=0; i<irrN; i++ ) {
 						const Scalar xi = (Scalar(i) + rc.random.CanonicalRandom()) / fN;
@@ -201,10 +203,12 @@ void FinalGatherShaderOp::PerformOperation(
 							Vector3(cos( phim + PI_OV_TWO ), sin( phim + PI_OV_TWO ), 0.0)
 							);
 
-						RISEPel transGradient1Temp = RISEPel(0,0,0);
-						RISEPel transGradient2Temp = RISEPel(0,0,0);
+							RISEPel transGradient1Temp = RISEPel(0,0,0);
+							RISEPel transGradient2Temp = RISEPel(0,0,0);
+							lijm = RISEPel(0,0,0);
+							rijm = 0;
 
-						for( unsigned int j=0; j<irrM; j++ ) {
+							for( unsigned int j=0; j<irrM; j++ ) {
 							const Scalar xj = (Scalar(j) + rc.random.CanonicalRandom()) / fM;
 							const Scalar sinTheta = sqrt( xj );
 							const Scalar cosTheta = sqrt( 1.0 - xj );
@@ -213,11 +217,13 @@ void FinalGatherShaderOp::PerformOperation(
 								Vector3(cosPhi * sinTheta,sinPhi * sinTheta,cosTheta)
 								);
 
-							RISEPel lij;
+								RISEPel lij(0,0,0);
 
-							Scalar t = 0;
-							if( caster.CastRay( rc, ri.geometric.rast, Ray(ri.geometric.ptIntersection,w), lij, rs2, &t, ri.pRadianceMap, ior_stack ) ) {
-								if (t>0) {
+								Scalar t = 0;
+								Ray fgRay(ri.geometric.ptIntersection, w);
+								fgRay.Advance( FG_RAY_BIAS );
+								if( caster.CastRay( rc, ri.geometric.rast, fgRay, lij, rs2, &t, ri.pRadianceMap, ior_stack ) ) {
+								if (t > FG_MIN_HIT_DISTANCE) {
 									rsum += 1.0/t;
 									hits++;
 									c = c + lij * ri.pMaterial->GetBSDF()->value( w, ri.geometric );
@@ -228,21 +234,27 @@ void FinalGatherShaderOp::PerformOperation(
 							}
 
 							// Increment translational gradient
-							const Scalar rij = t;
-							const Scalar sinThetam = sqrt( Scalar(j) / fM );
+								const Scalar rij = (t > FG_MIN_HIT_DISTANCE ? t : 0);
+								const Scalar sinThetam = sqrt( Scalar(j) / fM );
 
-							if( j > 0 ) {
-								const Scalar k = (sinThetam * (1.0 - (Scalar(j)/fM))) / (r_min(rij,rijm));
-								transGradient1Temp = (transGradient1Temp + (lij - lijm)) * k;
-							}
+								if( j > 0 ) {
+									const Scalar denom = r_min(rij,rijm);
+									if( denom > NEARZERO ) {
+										const Scalar k = (sinThetam * (1.0 - (Scalar(j)/fM))) / denom;
+										transGradient1Temp = transGradient1Temp + (lij - lijm) * k;
+									}
+								}
 
-							if( i > 0 ) {
-								const Scalar sinThetap = sqrt( Scalar(j+1) / fM );
-								const Scalar k = (sinThetap - sinThetam) / (r_min(rij,rim[j]));
-								transGradient2Temp = (transGradient2Temp + (lij - lim[j])) * k;
-							} else {
-								r0[j] = rij;
-								l0[j] = lij;
+								if( i > 0 ) {
+									const Scalar sinThetap = sqrt( Scalar(j+1) / fM );
+									const Scalar denom = r_min(rij,rim[j]);
+									if( denom > NEARZERO ) {
+										const Scalar k = (sinThetap - sinThetam) / denom;
+										transGradient2Temp = transGradient2Temp + (lij - lim[j]) * k;
+									}
+								} else {
+									r0[j] = rij;
+									l0[j] = lij;
 							}
 
 							// Set previous
@@ -275,8 +287,11 @@ void FinalGatherShaderOp::PerformOperation(
 					for( unsigned int j=0; j<irrM; j++ ) {
 						const Scalar sinThetam = sqrt( Scalar(j) / fM );
 						const Scalar sinThetap = sqrt( Scalar(j+1) / fM );
-						const Scalar k = (sinThetap - sinThetam) / r_min(r0[j],rim[j]);
-						transGradient2Temp = transGradient2Temp + (l0[j] - lim[j]) * k;
+						const Scalar denom = r_min(r0[j],rim[j]);
+						if( denom > NEARZERO ) {
+							const Scalar k = (sinThetap - sinThetam) / denom;
+							transGradient2Temp = transGradient2Temp + (l0[j] - lim[j]) * k;
+						}
 					}
 
 					transGradient2[0] = transGradient2[0] + (vim.x * transGradient2Temp);
@@ -302,6 +317,13 @@ void FinalGatherShaderOp::PerformOperation(
 					rotGradient[1] = rotGradient[1] * scale;
 					rotGradient[2] = rotGradient[2] * scale;
 
+					// Translational gradient must be normalized with the same Monte Carlo
+					// factor as irradiance/rotational gradients. Without this, corrections are
+					// vastly over-amplified and create dark/bright rings around cache records.
+					transGradient1[0] = transGradient1[0] * scale;
+					transGradient1[1] = transGradient1[1] * scale;
+					transGradient1[2] = transGradient1[2] * scale;
+
 					delete [] rim;
 					delete [] r0;
 
@@ -322,10 +344,10 @@ void FinalGatherShaderOp::PerformOperation(
 						if( scat ) {
 							RISEPel cthis;
 							Scalar t = 0;
-							scat->ray.Advance( 1e-8 );
+							scat->ray.Advance( FG_RAY_BIAS );
 
 							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack?scat->ior_stack:ior_stack ) ) {
-								if (t>0) {
+								if (t > FG_MIN_HIT_DISTANCE) {
 									rsum += 1.0/t;
 									hits++;
 									c = c + (cthis * scat->kray);
@@ -334,11 +356,14 @@ void FinalGatherShaderOp::PerformOperation(
 						}
 					}
 
-					c = c * (1.0/Scalar(final_gather_count));
-				}
+						c = c * (1.0/Scalar(final_gather_count));
+					}
 
-				// Insert into cache if we are in irradiance cache pass
-				if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_IRRADIANCE_CACHE ) {
+					// Irradiance is physically non-negative.
+					ColorMath::EnsurePositve( c );
+
+					// Insert into cache if we are in irradiance cache pass
+					if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_IRRADIANCE_CACHE ) {
 					if( rsum ) {
 						// Add the indirect value to the cache
 						rsum = (rsum!=0 ? Scalar(hits)/rsum : 0);

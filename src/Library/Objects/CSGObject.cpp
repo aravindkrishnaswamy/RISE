@@ -127,12 +127,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	pObjectB->IntersectRay( riObjB, dHowFar, true, true, true );
 
 	/* Not necessary, should never happen!
-	if( riObjA.geometric.bHit && riObjA.geometric.range2 == INFINITY ) {
+	if( riObjA.geometric.bHit && riObjA.geometric.range2 == RISE_INFINITY ) {
 		riObjA.geometric.range2 = 0;
 		_asm int 3h;
 	}
 
-	if( riObjB.geometric.bHit && riObjB.geometric.range2 == INFINITY ) {
+	if( riObjB.geometric.bHit && riObjB.geometric.range2 == RISE_INFINITY ) {
 		riObjB.geometric.range2 = 0;
 		_asm int 3h;
 	}
@@ -318,10 +318,10 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	orig.dir = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, ray.dir ));
 
 	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
-	Scalar dHowFar2 = INFINITY; 
+	Scalar dHowFar2 = RISE_INFINITY; 
 
 	// We can't go farther than infinity, so in this case only reduce thelength, never extend
-	if( (dHowFar != INFINITY) || (factor < 1.0) ) {
+	if( (dHowFar != RISE_INFINITY) || (factor < 1.0) ) {
 		dHowFar2 = factor*dHowFar;
 	}
 

@@ -69,8 +69,8 @@ namespace RISE
 		)
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
-		hit.dRange2 = INFINITY;
+		hit.dRange = RISE_INFINITY;
+		hit.dRange2 = RISE_INFINITY;
 
 		//
 		// Equation of the patch

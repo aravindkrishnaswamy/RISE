@@ -127,8 +127,8 @@ bool GeometricUtilities::GetSphericalFromPoint3( const Point3& pt, Scalar& phi, 
 {
 	if( pt.x == 0 && pt.y == 0 )
 	{
-		theta = INFINITY;
-		phi = INFINITY;
+		theta = RISE_INFINITY;
+		phi = RISE_INFINITY;
 		return false;
 	}
 
@@ -512,8 +512,8 @@ BoundingBox GeometricUtilities::BezierPatchBoundingBox(
 	const BezierPatch& patch						///< [in] The bezier patch
 	)
 {
-	Point3 ll = Point3( INFINITY, INFINITY, INFINITY );
-	Point3 ur = Point3( -INFINITY, -INFINITY, -INFINITY );
+	Point3 ll = Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3 ur = Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
 	for( int j=0; j<4; j++ ) {
 		for( int k=0; k<4; k++ ) {
@@ -535,8 +535,8 @@ BoundingBox GeometricUtilities::BilinearPatchBoundingBox(
 	const BilinearPatch& patch						///< [in] The bilinear patch
 	)
 {
-	Point3 ll = Point3( INFINITY, INFINITY, INFINITY );
-	Point3 ur = Point3( -INFINITY, -INFINITY, -INFINITY );
+	Point3 ll = Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Point3 ur = Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
 	for( int j=0; j<4; j++ ) {
 		const Point3& pt = patch.pts[j];

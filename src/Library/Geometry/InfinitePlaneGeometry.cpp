@@ -107,7 +107,7 @@ bool InfinitePlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const
 void InfinitePlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
 {
 	ptCenter = Point3( 0, 0, 0 );
-	radius = INFINITY;
+	radius = RISE_INFINITY;
 }
 
 BoundingBox InfinitePlaneGeometry::GenerateBoundingBox() const
@@ -117,7 +117,7 @@ BoundingBox InfinitePlaneGeometry::GenerateBoundingBox() const
 
 void InfinitePlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	Point2 pt = Point2( -INFINITY/2 + prand.x*INFINITY, -INFINITY/2 + prand.y*INFINITY );
+	Point2 pt = Point2( -RISE_INFINITY/2 + prand.x*RISE_INFINITY, -RISE_INFINITY/2 + prand.y*RISE_INFINITY );
 
 	if( point ) {
 		*point = Point3( pt.x, pt.y, 0 );
@@ -143,7 +143,7 @@ void InfinitePlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, 
 
 Scalar InfinitePlaneGeometry::GetArea( ) const
 {
-	return INFINITY;
+	return RISE_INFINITY;
 }
 
 static const unsigned int XTILE_ID = 100;

@@ -43,7 +43,7 @@ void GlobalPelPhotonMap::PrecomputeIrradiance(
 	PhotonListType	irradphotons;
 	irradphotons.reserve( vphotons.size() / apart );
 
-	bbox = BoundingBox( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY) );
+	bbox = BoundingBox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
 
 	const unsigned int total = static_cast<unsigned int>(vphotons.size());
 
@@ -89,10 +89,10 @@ void GlobalPelPhotonMap::RadianceEstimate(
 	if( bPrecomputedIrrad ) {
 		// We have precomputed irradiance, so just find the nearest one
 		IrradPhoton irrad; // have to do this because of a bug in the GCC compiler
-		distance_container<IrradPhoton> nearest( irrad, INFINITY);
+		distance_container<IrradPhoton> nearest( irrad, RISE_INFINITY);
 		LocateNearestPhoton( ri.ptIntersection, ri.vNormal, dGatherRadius, nearest );
 
-		if( nearest.distance < INFINITY ) {
+		if( nearest.distance < RISE_INFINITY ) {
 			rad = nearest.element.irrad * brdf.value( ri.vNormal, ri );
 			return;
 		} 

@@ -15,10 +15,6 @@
 #ifndef MATH_CONSTANTS_
 #define MATH_CONSTANTS_
 
-#ifdef INFINITY
-#undef INFINITY
-#endif
-
 namespace RISE
 {
 	static const Scalar		PI			=			Scalar(3.1415926535897932384626433832795028841971);
@@ -34,7 +30,7 @@ namespace RISE
 	static const Scalar		THREE_PI_OV_TWO =		Scalar(3.0 * PI_OV_TWO);
 	static const Scalar		THREE_OV_TWO_PI =		Scalar(1.5 / PI);
 
-	static const Scalar		INFINITY	=			Scalar(1.7976931348623158e+308);
+	static const Scalar		RISE_INFINITY	=		Scalar(1.7976931348623158e+308);
 	static const Scalar		NEARZERO	=			Scalar(1e-12);
 
 	static const Scalar		DEG_TO_RAD	=			Scalar(PI / 180.0);

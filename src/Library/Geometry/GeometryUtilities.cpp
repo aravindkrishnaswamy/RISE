@@ -273,8 +273,8 @@ namespace RISE
 		VerticesListType& vVertices 
 		)
 	{
-		Vertex	vMin( INFINITY, INFINITY, INFINITY );
-		Vertex	vMax( -INFINITY, -INFINITY, -INFINITY );
+		Vertex	vMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+		Vertex	vMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
 		VerticesListType::const_iterator	i, e;
 

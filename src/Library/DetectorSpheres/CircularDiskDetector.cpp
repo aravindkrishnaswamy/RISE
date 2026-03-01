@@ -134,7 +134,7 @@ int CircularDiskDetector::FindDepositedDetector( const Ray& ray_from_mat )
 
 	// Patches better not overlap!  We assume they don't
 	for( unsigned int i=0; i<m_numThetaPatches; i++ ) {
-		if( m_pPatches[i].pGeometry->IntersectRay_IntersectionOnly( ray_from_mat, INFINITY, true, true ) ) {
+		if( m_pPatches[i].pGeometry->IntersectRay_IntersectionOnly( ray_from_mat, RISE_INFINITY, true, true ) ) {
 			return i;
 		}
 	}

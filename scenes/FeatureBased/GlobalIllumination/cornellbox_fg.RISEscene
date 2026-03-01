@@ -31,8 +31,8 @@ pixelpel_rasterizer
 {
 	max_recursion		3
 	min_importance		0.0001
-	samples				4
-	lum_samples			9
+	samples				10
+	lum_samples			16
 }
 
 file_rasterizeroutput
@@ -52,8 +52,8 @@ pinhole_camera
 	location			278 273 -800
 	lookat				278 273 200
 	up					0 1 0
-	width				1024
-	height				1024
+	width				512
+	height				512
 	fov					37.0
 }
 
@@ -267,7 +267,7 @@ standard_object
 
 global_pel_photonmap
 {
-	num					1000000
+	num					10000
 	max_recursion		5
 	min_importance		0.01
 	branch				FALSE
@@ -275,15 +275,15 @@ global_pel_photonmap
 
 global_pel_gather
 {
-	max_photons			200
-	radius				5
-	ellipse_ratio		0.0005
+	max_photons			100
+	radius				10
+	ellipse_ratio		0.05
 }
 
 irradiance_cache
 {
 	size				2000
-	tolerance			0.3
-	min_spacing		1
-	max_spacing    20
+	tolerance			0.1
+	min_spacing		4
+	max_spacing    100
 }

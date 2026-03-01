@@ -267,8 +267,8 @@ void PRISEMeshGeometry::DoneTriangles( )
 {
 	// We're done with all the triangles so stuff it all into an octree
 	// First compute the bounds of the octree
-	Vector3D vRootLowerLeft = Vector3D( INFINITY, INFINITY, INFINITY );
-	Vector3D vRootUpperRight = Vector3D( -INFINITY, -INFINITY, -INFINITY );
+	Vector3D vRootLowerLeft = Vector3D( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
+	Vector3D vRootUpperRight = Vector3D( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
 
 	MyTriangleList::iterator i, e;

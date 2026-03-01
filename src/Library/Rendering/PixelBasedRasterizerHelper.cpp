@@ -365,14 +365,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// If there is no raster sequence, create a default one
 	BlockRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new BlockRasterizeSequence( 32, 24, 2 );
+		blocks = new BlockRasterizeSequence( 64, 64, 2 );
 		pRasterSequence = blocks;
 	}
 
 	// We should do the irradiance pass to populate the cache
 	IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
-		BlockRasterizeSequence* irrad_seq = new BlockRasterizeSequence( 32, 24, 6 );
+		BlockRasterizeSequence* irrad_seq = new BlockRasterizeSequence( 64, 64, 6 );
 		if( pProgressFunc ) {
 			pProgressFunc->SetTitle( "Irradiance Pass: " );
 		}
@@ -380,7 +380,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		pIrradianceCache->FinishedPrecomputation();
 		safe_release( irrad_seq );
 
-FlushToOutputs( *pImage, pRect, 0 );
+        FlushToOutputs( *pImage, pRect, 0 );
 
 		if( pProgressFunc ) {
 			pProgressFunc->SetTitle( "Rasterizing Scene: " );

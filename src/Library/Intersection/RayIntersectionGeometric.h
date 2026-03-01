@@ -69,8 +69,8 @@ namespace RISE
 		  ray( ray_ ),
 		  rast( rast_ ),
 		  bHit( false ),
-		  range( INFINITY ),
-		  range2( INFINITY ),
+		  range( RISE_INFINITY ),
+		  range2( RISE_INFINITY ),
 		  pCustom( 0 )
 		{}
 

@@ -175,7 +175,7 @@ namespace RISE
 			const double target_orientation[2],						///< [in] Orientation relative to a target
 			const double aperture,									///< [in] Size of the aperture
 			const double focalLength,								///< [in] Focal length
-			const double focusDistance								///< [in] Focus distance default is INFINITY
+			const double focusDistance								///< [in] Focus distance default is RISE_INFINITY
 			);
 
 		//! Sets a fisheye camera

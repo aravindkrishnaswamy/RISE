@@ -81,7 +81,7 @@ namespace RISE
 		//
 
 		// Cheat and use two BBs
-		BoundingBox bbTri( Point3(INFINITY,INFINITY,INFINITY), Point3(-INFINITY,-INFINITY,-INFINITY));
+		BoundingBox bbTri( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY));
 		for( int j=0; j<3; j++ ) {
 			bbTri.Include( *p.pVertices[j] );
 		}
@@ -98,7 +98,7 @@ namespace RISE
 	{
 		TRIANGLE_HIT	h;
 		h.bHit = false;
-		h.dRange = INFINITY;
+		h.dRange = RISE_INFINITY;
 
 		// We have to intersect against every triangle and find the closest intersection
 		// We can omit triangles that aren't facing us (dot product is > 0) since they 

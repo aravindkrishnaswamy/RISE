@@ -20,8 +20,8 @@ namespace RISE
 	void RayBoxIntersection( const Ray& ray, BOX_HIT& hit, const Point3& ll, const Point3& ur )
 	{
 		hit.bHit = false;
-		hit.dRange = INFINITY;
-		hit.dRange2 = INFINITY;
+		hit.dRange = RISE_INFINITY;
+		hit.dRange2 = RISE_INFINITY;
 
 	#define SIDE_X0 0
 	#define SIDE_X1 1
@@ -30,7 +30,7 @@ namespace RISE
 	#define SIDE_Z0 4
 	#define SIDE_Z1 5
 
-		Scalar		fTMin=0, fTMax=INFINITY;
+		Scalar		fTMin=0, fTMax=RISE_INFINITY;
 		int			nSideMin=SIDE_X0, nSideMax=SIDE_X1;
 
 		Scalar		t;
