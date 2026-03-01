@@ -4522,7 +4522,7 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 		if( GlobalRNG().CanonicalRandom() < 0.1 ) {
 			RISE_API_CreateHilbertRasterizeSequence( &pSeq, 4 );
 		} else {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 24, 24, (char)floor(GlobalRNG().CanonicalRandom()*8.999999) );
+			RISE_API_CreateBlockRasterizeSequence( &pSeq, 64, 64, (char)floor(GlobalRNG().CanonicalRandom()*8.999999) );
 		}
 		break;
 
