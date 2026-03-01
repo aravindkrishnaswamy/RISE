@@ -57,7 +57,7 @@ png_read_data(png_structp png_ptr, png_bytep data, png_size_t length)
 	IReadBuffer*	pBuffer = (IReadBuffer*)png_get_io_ptr(png_ptr);
 
 	if( pBuffer ) {
-		pBuffer->getBytes( (char*)data, length );
+		pBuffer->getBytes( (char*)data, static_cast<unsigned int>(length) );
 	} else {
 		GlobalLog()->PrintSourceError( "png_read_data (callback func):: bad MemoryBuffer", __FILE__, __LINE__ );
 	}

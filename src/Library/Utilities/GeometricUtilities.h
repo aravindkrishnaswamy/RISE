@@ -210,8 +210,7 @@ namespace RISE
 					);
 
 		//! Generates a point in a triangle
-		/// \return The point in the triangle
-		extern void PointOnTriangle( 
+		extern void PointOnTriangle(
 					Vertex* point,										///< [out] Resultant point on triangle
 					Normal* normal,										///< [out] Resultant normal on triangle
 					TexCoord* coord,									///< [out] Resultant texture coord on triangle

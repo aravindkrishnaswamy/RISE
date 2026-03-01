@@ -21,22 +21,25 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		__attribute__((unused))
 		static tsize_t TIFFReadDummy( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			return 0;
 		}
 
+		__attribute__((unused))
 		static tsize_t TIFFRead( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			IReadBuffer* pBuffer = (IReadBuffer*)v;
 
-			if( pBuffer && pBuffer->getBytes( ptr, amount ) ) {
+			if( pBuffer && pBuffer->getBytes( ptr, static_cast<unsigned int>(amount) ) ) {
 				return amount;
 			}
 
 			return 0;
 		}
 
+		__attribute__((unused))
 		static toff_t TIFFSeekReader( thandle_t v, toff_t off, int whence )
 		{
 			// libtiff uses this as a special code, so avoid accepting it
@@ -63,13 +66,14 @@ namespace RISE
 				break;
 			}
 
-			if( pBuffer && pBuffer->seek( sk, off ) ) {
+			if( pBuffer && pBuffer->seek( sk, static_cast<int>(off) ) ) {
 				return off;
 			}
 
 			return 0;
 		}
 
+		__attribute__((unused))
 		static toff_t TIFFSeekWriter( thandle_t v, toff_t off, int whence )
 		{
 			// libtiff uses this as a special code, so avoid accepting it
@@ -96,61 +100,68 @@ namespace RISE
 				break;
 			}
 
-			if( pBuffer && pBuffer->seek( sk, off ) ) {
+			if( pBuffer && pBuffer->seek( sk, static_cast<int>(off) ) ) {
 				return off;
 			}
 
 			return 0;
 		}
 
+		__attribute__((unused))
 		static tsize_t TIFFWrite( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			IWriteBuffer* pBuffer = (IWriteBuffer*)v;
 
-			if( pBuffer && pBuffer->setBytes( ptr, amount ) ) {
+			if( pBuffer && pBuffer->setBytes( ptr, static_cast<unsigned int>(amount) ) ) {
 				return amount;
 			}
 
 			return 0;
 		}
 
+		__attribute__((unused))
 		static tsize_t TIFFWriteDummy( thandle_t v, tdata_t ptr, tsize_t amount )
 		{
 			return 0;
 		}
 
+		__attribute__((unused))
 		static int TIFFClose( thandle_t v )
 		{
 			return 0;
 		}
 
+		__attribute__((unused))
 		static toff_t TIFFSizeReader( thandle_t v )
 		{
 			IReadBuffer* pBuffer = (IReadBuffer*)v;
 
 			if( pBuffer ) {
 				return pBuffer->Size();
-			} 
+			}
 
 			return 0;
 		}
 
+		__attribute__((unused))
 		static toff_t TIFFSizeWriter( thandle_t v )
 		{
 			IWriteBuffer* pBuffer = (IWriteBuffer*)v;
 
 			if( pBuffer ) {
 				return pBuffer->Size();
-			} 
+			}
 
 			return 0;
 		}
 
+		__attribute__((unused))
 		static int TIFFMapFile( thandle_t, tdata_t*, toff_t* )
 		{
 			return 0;
 		}
 
+		__attribute__((unused))
 		static void TIFFUnmapFile( thandle_t, tdata_t, toff_t )
 		{
 		}

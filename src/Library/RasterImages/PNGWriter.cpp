@@ -162,7 +162,7 @@ png_write_data(png_structp png_ptr, png_bytep data, png_size_t length)
 	IWriteBuffer*	pBuffer = (IWriteBuffer*)png_get_io_ptr(png_ptr);
 
 	if( pBuffer ) {
-		pBuffer->setBytes( data, length );
+		pBuffer->setBytes( data, static_cast<unsigned int>(length) );
 	} else {
 		GlobalLog()->PrintSourceError( "png_write_data (callback func):: bad MemoryBuffer", __FILE__, __LINE__ );
 	}

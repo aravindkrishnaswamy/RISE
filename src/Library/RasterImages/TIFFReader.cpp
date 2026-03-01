@@ -68,7 +68,7 @@ bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
 	}
 
 	{
-		uint32 w, h;
+		uint32_t w, h;
 		TIFFGetField( tiff, TIFFTAG_IMAGEWIDTH, &w );
 		TIFFGetField( tiff, TIFFTAG_IMAGELENGTH, &h );
 
@@ -82,7 +82,7 @@ bool TIFFReader::BeginRead( unsigned int& width, unsigned int& height )
 	GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 	memset( pBuffer, 0, width*height*4 );
 
-	TIFFReadRGBAImage( tiff, width, height, (uint32*)pBuffer, 0 );
+	TIFFReadRGBAImage( tiff, width, height, (uint32_t*)pBuffer, 0 );
 	TIFFClose( tiff );
 
 	return true;

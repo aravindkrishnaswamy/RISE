@@ -363,8 +363,7 @@ void ColorUtils::SerializeXYZPel(
 }
 
 //! Gets a Pel from a buffer
-/// \return The deserialized pel
-void ColorUtils::DeserializeXYZPel( 
+void ColorUtils::DeserializeXYZPel(
 	XYZPel& xyz,							///< [out] The deserialized pel
 	IReadBuffer& buffer						///< [in] Buffer to read from
 	)
