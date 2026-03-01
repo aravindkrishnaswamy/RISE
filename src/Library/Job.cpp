@@ -2197,24 +2197,55 @@ bool Job::AddRISEMeshTriangleMeshGeometry(
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
 	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, 0, 0, false, true, face_normals );
 
+	bool bLoaded = false;
+
 	if( load_into_memory ) {
 		IMemoryBuffer* pBuffer = 0;
 		RISE_API_CreateMemoryBufferFromFile( &pBuffer, szFileName );
 
-		pGeometry->Deserialize( *pBuffer );
+		if( pBuffer && pBuffer->Size() > 0 ) {
+			pGeometry->Deserialize( *pBuffer );
+			bLoaded = pGeometry->numPoints() > 0;
+
+			if( !bLoaded ) {
+				GlobalLog()->PrintEx( eLog_Error, "Job::AddRISEMeshTriangleMeshGeometry:: Failed to deserialize valid geometry from `%s`", szFileName );
+			}
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddRISEMeshTriangleMeshGeometry:: Failed to open or read `%s`", szFileName );
+		}
+
 		safe_release( pBuffer );
 	} else {
 		IReadBuffer* pBuffer = 0;
 		RISE_API_CreateDiskFileReadBuffer( &pBuffer, szFileName );
 
-		pGeometry->Deserialize( *pBuffer );
+		if( pBuffer && pBuffer->Size() > 0 ) {
+			pGeometry->Deserialize( *pBuffer );
+			bLoaded = pGeometry->numPoints() > 0;
+
+			if( !bLoaded ) {
+				GlobalLog()->PrintEx( eLog_Error, "Job::AddRISEMeshTriangleMeshGeometry:: Failed to deserialize valid geometry from `%s`", szFileName );
+			}
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddRISEMeshTriangleMeshGeometry:: Failed to open or read `%s`", szFileName );
+		}
+
 		safe_release( pBuffer );
 	}
 
-	pGeomManager->AddItem( pGeometry, name );
+	if( !bLoaded ) {
+		safe_release( pGeometry );
+		return false;
+	}
+
+	const bool bRet = pGeomManager->AddItem( pGeometry, name );
+	if( !bRet ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddRISEMeshTriangleMeshGeometry:: Failed to add geometry `%s`", name );
+	}
+
 	safe_release( pGeometry );
 
-	return true;
+	return bRet;
 }
 
 //! Creates a bezier patch geometry
