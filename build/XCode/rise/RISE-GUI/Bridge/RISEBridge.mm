@@ -37,8 +37,10 @@ public:
 
     bool Progress(const double progress, const double total) override {
         if (_block) {
-            NSString *title = [NSString stringWithUTF8String:_currentTitle.c_str()];
-            return (bool)_block(progress, total, title);
+            @autoreleasepool {
+                NSString *title = [NSString stringWithUTF8String:_currentTitle.c_str()];
+                return (bool)_block(progress, total, title);
+            }
         }
         return true;
     }
@@ -70,7 +72,9 @@ public:
         const unsigned int rc_right) override
     {
         if (_block) {
-            _block(pImageData, width, height, rc_top, rc_left, rc_bottom, rc_right);
+            @autoreleasepool {
+                _block(pImageData, width, height, rc_top, rc_left, rc_bottom, rc_right);
+            }
         }
     }
 };
@@ -87,9 +91,11 @@ public:
 
     void Print(const LogEvent& event) override {
         if (_block && (event.eType & (eLog_Warning | eLog_Error | eLog_Fatal | eLog_Event))) {
-            NSString *msg = [NSString stringWithUTF8String:event.szMessage];
-            RISELogLevel level = static_cast<RISELogLevel>(event.eType);
-            _block(level, msg);
+            @autoreleasepool {
+                NSString *msg = [NSString stringWithUTF8String:event.szMessage];
+                RISELogLevel level = static_cast<RISELogLevel>(event.eType);
+                _block(level, msg);
+            }
         }
     }
 
@@ -267,28 +273,40 @@ public:
 - (BOOL)rasterizeAnimation {
     if (!_job) return NO;
 
+    IRasterizer* rasterizer = _job->GetRasterizer();
+    if (!rasterizer) return NO;
+
+    // Clear outputs from previous renders to prevent accumulation of
+    // callback dispatchers and old movie outputs.
+    rasterizer->FreeRasterizerOutputs();
+
     if (_rasterizerOutput) {
         _job->AddCallbackRasterizerOutput(_rasterizerOutput);
     }
 
-    // Create and attach video output if a path was configured
+    // Create and attach video output if a path was configured.
+    // Reference starts at refcount=1 (from Reference ctor).
+    // AddRasterizerOutput calls addref(), bringing it to 2.
+    // We release our creation reference immediately, leaving the
+    // rasterizer as sole owner (refcount=1).
     MovieRasterizerOutput* movieOutput = nullptr;
     if (_videoOutputPath) {
         movieOutput = new MovieRasterizerOutput(_videoOutputPath);
-        movieOutput->addref();
-        IRasterizer* rasterizer = _job->GetRasterizer();
-        if (rasterizer) {
-            rasterizer->AddRasterizerOutput(movieOutput);
-        }
+        rasterizer->AddRasterizerOutput(movieOutput);
+        movieOutput->release();  // rasterizer now owns it (refcount=1)
     }
 
     BOOL result = _job->RasterizeAnimationUsingOptions() ? YES : NO;
 
-    // Finalize the video file after rendering completes
+    // Finalize the video file after rendering completes.
+    // The movieOutput pointer is still valid because the rasterizer holds a reference.
     if (movieOutput) {
         movieOutput->finalize();
-        movieOutput->release();
     }
+
+    // Now free all outputs, which will release the rasterizer's reference
+    // and destroy the movie output (refcount drops to 0).
+    rasterizer->FreeRasterizerOutputs();
 
     return result;
 }

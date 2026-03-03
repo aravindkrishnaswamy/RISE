@@ -57,6 +57,7 @@ private:
     bool _finalized;
     int _width;
     int _height;
+    unsigned int _framesReceived;
 
     /// Lazily configure the AVAssetWriter on first frame (when we know the dimensions).
     bool setupWriter(int width, int height);

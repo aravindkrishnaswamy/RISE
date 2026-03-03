@@ -136,6 +136,8 @@ final class RenderViewModel: ObservableObject {
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
 
+    private static let maxLogMessages = 10000
+
     init() {
         versionString = RISEBridge.versionString()
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
@@ -143,6 +145,10 @@ final class RenderViewModel: ObservableObject {
                 guard let self = self else { return }
                 let entry = LogMessage(level: level, text: message, timestamp: Date())
                 self.logMessages.append(entry)
+                // Trim oldest entries to prevent unbounded growth during long renders
+                if self.logMessages.count > Self.maxLogMessages {
+                    self.logMessages.removeFirst(self.logMessages.count - Self.maxLogMessages)
+                }
             }
         }
     }
@@ -366,7 +372,7 @@ final class RenderViewModel: ObservableObject {
         elapsedTime = 0
         renderStartTime = Date()
 
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        displayTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
                 self.elapsedTime = Date().timeIntervalSince(start)

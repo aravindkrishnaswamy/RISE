@@ -28,6 +28,7 @@ MovieRasterizerOutput::MovieRasterizerOutput(NSString* outputPath, int fps)
     , _finalized(false)
     , _width(0)
     , _height(0)
+    , _framesReceived(0)
 {
 }
 
@@ -124,6 +125,8 @@ void MovieRasterizerOutput::OutputImage(
 {
     if (_finalized) return;
 
+    @autoreleasepool {
+
     int imgW = (int)pImage.GetWidth();
     int imgH = (int)pImage.GetHeight();
 
@@ -212,6 +215,9 @@ void MovieRasterizerOutput::OutputImage(
     }
 
     CVPixelBufferRelease(pixelBuffer);
+    _framesReceived++;
+
+    } // @autoreleasepool
 }
 
 void MovieRasterizerOutput::finalize()
@@ -219,7 +225,15 @@ void MovieRasterizerOutput::finalize()
     if (_finalized) return;
     _finalized = true;
 
-    if (!_started || !_writer) return;
+    if (!_started || !_writer) {
+        RISE::GlobalLog()->PrintEx(RISE::eLog_Warning,
+            "MovieRasterizerOutput:: finalize called but no frames were written (received %u frames)",
+            _framesReceived);
+        return;
+    }
+
+    RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
+        "MovieRasterizerOutput:: Finalizing video with %u frames...", _framesReceived);
 
     [_input markAsFinished];
 
@@ -232,11 +246,12 @@ void MovieRasterizerOutput::finalize()
 
     if (_writer.status == AVAssetWriterStatusCompleted) {
         RISE::GlobalLog()->PrintEx(RISE::eLog_Event,
-            "MovieRasterizerOutput:: Video written successfully to '%s'",
-            [_outputPath UTF8String]);
+            "MovieRasterizerOutput:: Video written successfully (%u frames) to '%s'",
+            _framesReceived, [_outputPath UTF8String]);
     } else {
         RISE::GlobalLog()->PrintEx(RISE::eLog_Error,
-            "MovieRasterizerOutput:: Video writing failed: %s",
+            "MovieRasterizerOutput:: Video writing failed after %u frames: %s",
+            _framesReceived,
             [[_writer.error localizedDescription] UTF8String]);
     }
 
