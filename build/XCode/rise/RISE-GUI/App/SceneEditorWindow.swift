@@ -49,9 +49,13 @@ struct SceneTextEditor: NSViewRepresentable {
         context.coordinator.highlighter = highlighter
 
         textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.isHorizontallyResizable = false
+        textView.isHorizontallyResizable = true
         textView.isVerticallyResizable = true
-        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+        scrollView.hasHorizontalScroller = true
 
         textView.delegate = context.coordinator
         context.coordinator.textView = textView

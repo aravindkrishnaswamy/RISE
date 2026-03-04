@@ -44,16 +44,42 @@ struct FlowLayout: Layout {
 
 struct ContentView: View {
     @EnvironmentObject var viewModel: RenderViewModel
+    @State private var editorWidth: CGFloat = sceneEditorPanelWidth
+    @GestureState private var dragStartWidth: CGFloat? = nil
 
     var body: some View {
         HStack(spacing: 0) {
             // Editor sidebar (slides in from left)
             if viewModel.isEditorVisible {
                 SceneEditorPanel()
-                    .frame(width: sceneEditorPanelWidth)
+                    .frame(width: editorWidth)
                     .transition(.move(edge: .leading))
 
-                Divider()
+                // Draggable resize handle
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor))
+                    .frame(width: 5)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .updating($dragStartWidth) { _, startWidth, _ in
+                                if startWidth == nil {
+                                    startWidth = editorWidth
+                                }
+                            }
+                            .onChanged { value in
+                                let start = dragStartWidth ?? editorWidth
+                                let newWidth = start + value.translation.width
+                                editorWidth = max(200, min(newWidth, 1200))
+                            }
+                    )
             }
 
             // Main content
@@ -254,8 +280,8 @@ struct ContentView: View {
         let bottomPanelHeight: CGFloat = 220
         let statusBarHeight: CGFloat = 30
 
-        let editorWidth: CGFloat = viewModel.isEditorVisible ? Self.editorPanelWidth : 0
-        let desiredContentWidth = max(sceneSize.width, 900) + editorWidth
+        let editorPanelTotal: CGFloat = viewModel.isEditorVisible ? editorWidth + 5 : 0
+        let desiredContentWidth = max(sceneSize.width, 900) + editorPanelTotal
         let desiredContentHeight = sceneSize.height + bottomPanelHeight + statusBarHeight
         let desiredFrameWidth = desiredContentWidth
         let desiredFrameHeight = desiredContentHeight + chromeHeight
@@ -272,15 +298,13 @@ struct ContentView: View {
         window.setFrame(newFrame, display: true, animate: true)
     }
 
-    private static let editorPanelWidth: CGFloat = sceneEditorPanelWidth + 1 // panel + divider
-
     /// Grows or shrinks the window to accommodate the editor sidebar,
     /// keeping the right edge anchored so the render area stays in place.
     private func adjustWindowForEditor(visible: Bool) {
         guard let window = NSApplication.shared.keyWindow else { return }
         guard let screen = window.screen else { return }
 
-        let delta = Self.editorPanelWidth
+        let delta = editorWidth + 5 // panel + resize handle
         var frame = window.frame
 
         if visible {
