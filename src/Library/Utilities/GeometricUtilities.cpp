@@ -450,7 +450,7 @@ void GeometricUtilities::CylinderNormal( const Point3 point, const int chAxis, V
 		break;
 	};
 
-	Vector3Ops::Normalize(normal);
+	normal = Vector3Ops::Normalize(normal);
 }
 
 void GeometricUtilities::PointOnTriangle( 
