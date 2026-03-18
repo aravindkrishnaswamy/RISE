@@ -1,0 +1,10 @@
+addons/rise_renderer/__pycache__/
+addons/rise_renderer/*.py[cod]
+native/*.o
+native/*.obj
+native/*.so
+native/*.dll
+native/*.dylib
+native/*.lib
+native/*.exp
+native/*.pdb
