@@ -2869,11 +2869,12 @@ bool Job::AddFinalGatherShaderOp(
 	const unsigned int numtheta,							///< [in] Number of samples in the theta direction
 	const unsigned int numphi,								///< [in] Number of samples in the phi direction
 	const bool cachegradients,								///< [in] Should cache gradients be used in the irradiance cache?
+	const unsigned int min_effective_contributors,			///< [in] Minimum effective contributors required for interpolation
 	const bool cache										///< [in] Should the rasterizer state cache be used?
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateFinalGatherShaderOp( &pShaderOp, numtheta, numphi, cachegradients, cache );
+	RISE_API_CreateFinalGatherShaderOp( &pShaderOp, numtheta, numphi, cachegradients, min_effective_contributors, cache );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
@@ -4046,11 +4047,13 @@ bool Job::SetIrradianceCacheParameters(
 	const unsigned int size,			///< [in] Size of the cache
 	const double tolerance,				///< [in] Tolerance of the cache
 	const double min_spacing,			///< [in] Minimum seperation
-	const double max_spacing			///< [in] Maximum seperation
+	const double max_spacing,			///< [in] Maximum seperation
+	const double query_threshold_scale,	///< [in] Scale for the query acceptance threshold
+	const double neighbor_spacing_scale	///< [in] Scale for capping reuse radius by local neighbor spacing
 	)
 {
 	IIrradianceCache* pCache = 0;
-	RISE_API_CreateIrradianceCache( &pCache, size, tolerance, min_spacing, max_spacing );
+	RISE_API_CreateIrradianceCache( &pCache, size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
 
     pScene->SetIrradianceCache( pCache );
 

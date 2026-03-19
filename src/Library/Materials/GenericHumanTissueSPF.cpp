@@ -123,7 +123,9 @@ void GenericHumanTissueSPF::Scatter(
 
 	const Scalar cos_alpha = Vector3Ops::Dot(-ri.onb.w(), ri.ray.dir );
 
-	if( cos_alpha < NEARZERO ) {
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available (see DielectricSPF for detailed rationale)
+	if( ior_stack ? ior_stack->containsCurrent() : (cos_alpha < NEARZERO) ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 
@@ -186,7 +188,9 @@ void GenericHumanTissueSPF::ScatterNM(
 
 	const Scalar cos_alpha = Vector3Ops::Dot(ri.onb.w(), ri.ray.dir );
 
-	if( cos_alpha > NEARZERO ) {
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available (see DielectricSPF for detailed rationale)
+	if( ior_stack ? ior_stack->containsCurrent() : (cos_alpha > NEARZERO) ) {
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 
 		// Check if it gets absorbed

@@ -25,23 +25,44 @@ namespace RISE
 	{
 		struct FinalGatherInterpolation
 		{
-			static inline Scalar ComputeEffectiveContributors(
-				const std::vector<IIrradianceCache::CacheElement>& results,
-				const Scalar weights
+			static inline Scalar ContributorWeightForCount(
+				const Scalar weight,
+				const Scalar minAcceptedWeight
 				)
 			{
-				if( results.empty() || weights <= NEARZERO ) {
+				const Scalar dominanceClampMultiplier = 2.0;
+				const Scalar contributorWeightCap = r_max( minAcceptedWeight * dominanceClampMultiplier, Scalar(NEARZERO) );
+				return r_min( weight, contributorWeightCap );
+			}
+
+			static inline Scalar ComputeEffectiveContributors(
+				const std::vector<IIrradianceCache::CacheElement>& results
+				)
+			{
+				if( results.empty() ) {
 					return 0.0;
 				}
 
-				Scalar sumW2 = 0;
+				Scalar minAcceptedWeight = 1e10;
 				std::vector<IIrradianceCache::CacheElement>::const_iterator i;
 				for( i=results.begin(); i!=results.end(); i++ ) {
 					const Scalar w = r_min( 1e10, i->dWeight );
+					minAcceptedWeight = r_min( minAcceptedWeight, w );
+				}
+
+				Scalar sumW2 = 0;
+				Scalar sumWeights = 0;
+				for( i=results.begin(); i!=results.end(); i++ ) {
+					const Scalar w = ContributorWeightForCount( r_min( 1e10, i->dWeight ), minAcceptedWeight );
+					sumWeights += w;
 					sumW2 += w*w;
 				}
 
-				return (weights*weights) / r_max( sumW2, Scalar(NEARZERO) );
+				if( sumWeights <= NEARZERO ) {
+					return 0.0;
+				}
+
+				return (sumWeights*sumWeights) / r_max( sumW2, Scalar(NEARZERO) );
 			}
 
 			static inline RISEPel EvaluateElement(
@@ -65,10 +86,11 @@ namespace RISE
 					temp = temp + cp.y*elem.rotationalGradient[1];
 					temp = temp + cp.z*elem.rotationalGradient[2];
 
-					// Gradient extrapolation can become non-physical. Fall back to the
-					// base irradiance in that case.
+					// Gradient extrapolation can produce negative values for individual
+					// channels.  Rather than snapping back to the base irradiance
+					// (which creates hard discontinuities / blotches), let the
+					// per-channel clamp below (EnsurePositve) handle it smoothly.
 					if( ColorMath::MinValue( temp ) < 0.0 ) {
-						temp = elem.cIRad;
 						bUsedFallback = true;
 					}
 				}
@@ -88,7 +110,7 @@ namespace RISE
 				const std::vector<IIrradianceCache::CacheElement>& results,
 				const Scalar weights,
 				const bool bComputeCacheGradients,
-				const Scalar minEffectiveContributors,
+				const unsigned int minEffectiveContributors,
 				RISEPel& c,
 				unsigned int* pGradientFallbacks
 				)
@@ -101,8 +123,8 @@ namespace RISE
 					return false;
 				}
 
-				const Scalar effectiveContributors = ComputeEffectiveContributors( results, weights );
-				if( effectiveContributors < minEffectiveContributors ) {
+				const Scalar effectiveContributors = ComputeEffectiveContributors( results );
+				if( effectiveContributors < Scalar(minEffectiveContributors) ) {
 					c = RISEPel(0.0);
 					if( pGradientFallbacks ) {
 						*pGradientFallbacks = 0;

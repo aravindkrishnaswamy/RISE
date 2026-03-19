@@ -17,6 +17,7 @@ finalgather_shaderop
 {
 	name			fg
 	cachegradients TRUE
+	min_effective_contributors 2
 	samples 1024
 }
 
@@ -286,4 +287,6 @@ irradiance_cache
 	tolerance			0.1
 	min_spacing		4
 	max_spacing    100
+	query_threshold_scale 0.5
+	neighbor_spacing_scale 2.0
 }

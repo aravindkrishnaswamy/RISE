@@ -378,8 +378,8 @@ irradiance_cache
 {
 	size				50
 	tolerance			0.04
-	min_spacing			0.5
-	max_spacing			1
+	min_spacing			0.1
+	max_spacing			0.8
 	query_threshold_scale	1.0
 	neighbor_spacing_scale	5.0
 }

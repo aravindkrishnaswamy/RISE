@@ -3839,6 +3839,7 @@ namespace RISE
 					unsigned int thetasamples = 15;
 					unsigned int phisamples = (unsigned int)(Scalar(thetasamples)*PI);
 					bool cachegradients = true;
+					unsigned int min_effective_contributors = 2;
 					bool cache = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -3864,6 +3865,8 @@ namespace RISE
 							phisamples = static_cast<unsigned int>( PI*base );
 						} else if( pname == "cachegradients" ) {
 							cachegradients = pvalue.toBoolean();
+						} else if( pname == "min_effective_contributors" ) {
+							min_effective_contributors = pvalue.toUInt();
 						} else if( pname == "cache" ) {
 							cache = pvalue.toBoolean();
 						} else {
@@ -3872,7 +3875,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, cache );
+					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, min_effective_contributors, cache );
 				}
 			};
 
@@ -5686,6 +5689,8 @@ namespace RISE
 					unsigned int size = 100000;
 					double min_spacing = 0.05;
 					double max_spacing = min_spacing * 100;
+					double query_threshold_scale = 0.5;
+					double neighbor_spacing_scale = 2.0;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5705,13 +5710,17 @@ namespace RISE
 							min_spacing = pvalue.toDouble();
 						} else if( pname == "max_spacing" ) {
 							max_spacing = pvalue.toDouble();
+						} else if( pname == "query_threshold_scale" ) {
+							query_threshold_scale = pvalue.toDouble();
+						} else if( pname == "neighbor_spacing_scale" ) {
+							neighbor_spacing_scale = pvalue.toDouble();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.SetIrradianceCacheParameters( size, tolerance, min_spacing, max_spacing );
+					return pJob.SetIrradianceCacheParameters( size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
 				}
 			};
 

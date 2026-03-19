@@ -68,7 +68,18 @@ namespace RISE
 
 				return false;
 			}
-		};	
+
+			bool containsObject( const IObject* r ) const
+			{
+				std::vector<IORDATA>::const_reverse_iterator i, e;
+				for( i=c.rbegin(), e=c.rend(); i!=e; i++ ) {
+					if( i->pObj == r ) {
+						return true;
+					}
+				}
+				return false;
+			}
+		};
 
 		MyIORStack iorstack;
 		mutable const IObject* pCurrentObject;
@@ -121,6 +132,18 @@ namespace RISE
 		inline Scalar top() const
 		{
 			return iorstack.top().ior;
+		}
+
+		// Checks if the current object is already in the IOR stack
+		// This is used to authoritatively determine if a ray is inside
+		// an object, rather than relying on surface normal direction
+		// which can be unreliable at grazing angles due to numerical precision
+		inline bool containsCurrent() const
+		{
+			if( !pCurrentObject ) {
+				return false;
+			}
+			return iorstack.containsObject( pCurrentObject );
 		}
 
 		// Sets the current object

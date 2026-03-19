@@ -2835,19 +2835,21 @@ namespace RISE
 
 	//! Creates an irradiance cache
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateIrradianceCache(
+bool RISE_API_CreateIrradianceCache(
 								IIrradianceCache** ppi,				///< [out] Pointer to recieve the caustic photon tracer
 								const unsigned int size,			///< [in] Size of the cache
 								const Scalar tolerance,				///< [in] Tolerance of the cache
 								const Scalar min_spacing,			///< [in] Minimum seperation
-								const double max_spacing			///< [in] Maximum seperation
+								const double max_spacing,			///< [in] Maximum seperation
+								const Scalar query_threshold_scale,	///< [in] Scale for the query acceptance threshold
+								const Scalar neighbor_spacing_scale	///< [in] Scale for capping reuse radius by local neighbor spacing
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new IrradianceCache( size, tolerance, min_spacing, max_spacing );
+		(*ppi) = new IrradianceCache( size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "irradiance cache" );
 		return true;
 	}
@@ -3626,11 +3628,12 @@ namespace RISE
 
 	//! Creates a final gather shaderop
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateFinalGatherShaderOp(
+bool RISE_API_CreateFinalGatherShaderOp(
 								IShaderOp** ppi,					///< [out] Pointer to recieve the shaderop
 								const unsigned int numThetaSamples, ///< [in] Number of samples in the theta direction
 								const unsigned int numPhiSamples,	///< [in] Number of samples in the phi direction
 								const bool cachegradients,			///< [in] Should cache gradients be used in the irradiance cache?
+								const unsigned int min_effective_contributors,	///< [in] Minimum effective contributors required for interpolation
 								const bool cache					///< [in] Should the rasterizer state cache be used?
 								)
 	{
@@ -3638,7 +3641,7 @@ namespace RISE
 			return false;
 		}
 
-		FinalGatherShaderOp* pShaderOp = new FinalGatherShaderOp( numThetaSamples, numPhiSamples, cachegradients, cache );
+		FinalGatherShaderOp* pShaderOp = new FinalGatherShaderOp( numThetaSamples, numPhiSamples, cachegradients, min_effective_contributors, cache );
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "final gather shaderop" );

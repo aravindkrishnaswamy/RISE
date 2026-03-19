@@ -60,6 +60,11 @@ namespace RISE
 
 		virtual Scalar Query( const Point3& ptPosition, const Vector3& vNormal, std::vector<CacheElement>& results ) const = 0;
 		virtual bool IsSampleNeeded( const Point3& ptPosition, const Vector3& vNormal ) const = 0;
+		virtual bool WouldInterpolate(
+			const Point3& ptPosition,
+			const Vector3& vNormal,
+			const unsigned int minEffectiveContributors
+			) const = 0;
 		virtual Scalar GetTolerance() = 0;
 		virtual void Clear() = 0;
 		virtual bool Precomputed() = 0;

@@ -53,10 +53,17 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 
 	Vector3	vRefracted = ri.ray.dir;
 
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available. If the object is NOT in the stack,
+	// we are entering (push). If it IS in the stack, we are exiting (pop).
+	// Note: cosine convention here is opposite to DielectricSPF:
+	//   cosine = dot(normal, ray_dir), so cosine < NEARZERO means entering.
+	const bool bEntering = ior_stack ? !ior_stack->containsCurrent() : (cosine < NEARZERO);
+
 	Scalar ref = 0;
-	if( cosine < NEARZERO )
+	if( bEntering )
 	{
-		// Going in 
+		// Going in
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
 			if( ior_stack ) {
@@ -98,7 +105,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, -ri.onb.w() ) );
 		}
 	}
- 
+
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
 		if( oneofthree ) {
@@ -116,7 +123,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		} else {
 			fresnel.kray = RISEPel(ref,ref,ref);
 		}
-		
+
 		scattered.AddScatteredRay( fresnel );
 	}
 }
@@ -164,11 +171,15 @@ void PerfectRefractorSPF::ScatterNM(
 
 	Scalar newIOR = Nt.GetColorNM(ri,nm);
 
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available (see DoSingleRGBComponent for details)
+	const bool bEntering = ior_stack ? !ior_stack->containsCurrent() : (cosine < NEARZERO);
+
 	Scalar ref = 0;
-	if( cosine < NEARZERO )
+	if( bEntering )
 	{
-		// Going in 
-		if( Optics::CalculateRefractedRay(ri. onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
+		// Going in
+		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
 			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
 			if( ior_stack ) {
 				specular.ior_stack = new IORStack( *ior_stack );
@@ -209,7 +220,7 @@ void PerfectRefractorSPF::ScatterNM(
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, -ri.onb.w() ) );
 		}
 	}
- 
+
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
 		specular.krayNM = refractivity.GetColorNM(ri,nm) * (1.0-ref);

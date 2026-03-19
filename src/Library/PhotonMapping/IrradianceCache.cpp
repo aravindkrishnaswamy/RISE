@@ -17,6 +17,84 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+	namespace
+	{
+		inline bool IsCompatibleWithQuery(
+			const Point3& ptPosition,
+			const Vector3& vNormal,
+			const RISE::IIrradianceCache::CacheElement& elem,
+			const Scalar maxSpacing
+			)
+		{
+			if( Vector3Ops::Dot( vNormal, elem.vNormal ) < 0 ) {
+				const Scalar plane_epsilon = r_max( NEARZERO, maxSpacing * 1e-6 );
+				const Scalar behind_test_criteria = Vector3Ops::Dot(
+					Vector3Ops::mkVector3( elem.ptPosition, ptPosition ),
+					elem.vNormal
+					);
+
+				if( behind_test_criteria < -plane_epsilon ) {
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		inline Scalar MinDistanceToNodeBounds(
+			const Point3& ptPosition,
+			const Point3& ptCenter,
+			const Scalar dHalfSize
+			)
+		{
+			const Scalar dx = r_max( Scalar(0), fabs(ptPosition.x-ptCenter.x) - dHalfSize );
+			const Scalar dy = r_max( Scalar(0), fabs(ptPosition.y-ptCenter.y) - dHalfSize );
+			const Scalar dz = r_max( Scalar(0), fabs(ptPosition.z-ptCenter.z) - dHalfSize );
+			return sqrt( dx*dx + dy*dy + dz*dz );
+		}
+
+		inline Scalar ContributorWeightForCount(
+			const Scalar weight,
+			const Scalar minAcceptedWeight
+			)
+		{
+			const Scalar dominanceClampMultiplier = 2.0;
+			const Scalar contributorWeightCap = r_max( minAcceptedWeight * dominanceClampMultiplier, Scalar(NEARZERO) );
+			return r_min( weight, contributorWeightCap );
+		}
+
+		inline Scalar ComputeEffectiveContributors(
+			const std::vector<RISE::IIrradianceCache::CacheElement>& results
+			)
+		{
+			if( results.empty() ) {
+				return 0;
+			}
+
+			Scalar minAcceptedWeight = 1e10;
+			std::vector<RISE::IIrradianceCache::CacheElement>::const_iterator i;
+			for( i=results.begin(); i!=results.end(); i++ ) {
+				const Scalar w = r_min( 1e10, i->dWeight );
+				minAcceptedWeight = r_min( minAcceptedWeight, w );
+			}
+
+			Scalar sumW2 = 0;
+			Scalar sumWeights = 0;
+			for( i=results.begin(); i!=results.end(); i++ ) {
+				const Scalar w = ContributorWeightForCount( r_min( 1e10, i->dWeight ), minAcceptedWeight );
+				sumWeights += w;
+				sumW2 += w*w;
+			}
+
+			if( sumWeights <= NEARZERO ) {
+				return 0;
+			}
+
+			return (sumWeights*sumWeights) / r_max( sumW2, Scalar(NEARZERO) );
+		}
+
+	}
+
 /////////////////////////////////////////////////////////////////
 // CacheElement implementations
 /////////////////////////////////////////////////////////////////
@@ -199,7 +277,7 @@ void IrradianceCache::CacheNode::InsertElement(
 	)
 {
 	static const Scalar size_error = NEARZERO;
-	const Scalar insert_threshold = elem.r0/tolerance*4.0;
+	const Scalar insert_threshold = elem.r0 * tolerance * 4.0;
 
 	//
 	// If the radiant energy is big enough for this node, then insert, otherwise
@@ -259,7 +337,8 @@ Scalar IrradianceCache::CacheNode::Query(
 	const Vector3& vNormal,
 	std::vector<CacheElement>& results,
 	const Scalar invTolerance,
-	const Scalar maxSpacing
+	const Scalar maxSpacing,
+	const Scalar query_threshold_scale
 	) const
 {
 	std::vector<CacheElement>::const_iterator		i, e;
@@ -272,22 +351,14 @@ Scalar IrradianceCache::CacheNode::Query(
 		// Only enforce the side-of-plane rejection when normals are opposing.
 		// For similarly-oriented records, this can incorrectly reject valid same-surface
 		// cache points due to tiny geometric offsets and create interpolation holes.
-		if( Vector3Ops::Dot( vNormal, elem.vNormal ) < 0 ) {
-			const Scalar plane_epsilon = r_max( NEARZERO, maxSpacing * 1e-6 );
-			const Scalar behind_test_criteria = Vector3Ops::Dot(
-				Vector3Ops::mkVector3( elem.ptPosition, ptPosition ),
-				elem.vNormal
-				);
-
-			if( behind_test_criteria < -plane_epsilon ) {
-				continue;
-			}
+		if( !IsCompatibleWithQuery( ptPosition, vNormal, elem, maxSpacing ) ) {
+			continue;
 		}
 
 		Scalar	thisWeight = r_min( 1e10, elem.ComputeWeight( ptPosition, vNormal ) );
-		// Use a softer acceptance threshold for interpolation queries to avoid
-		// visible hard rings at the strict tolerance boundary.
-		const Scalar query_min_weight = r_max( Scalar(NEARZERO), invTolerance * Scalar(0.5) );
+			// Use the configured query threshold scale so scene files can tune how
+			// aggressively interpolation reuses nearby cache records.
+			const Scalar query_min_weight = r_max( Scalar(NEARZERO), invTolerance * query_threshold_scale );
 
 		if( thisWeight > query_min_weight ) {
 			CacheElement newelem( elem, thisWeight );
@@ -303,7 +374,7 @@ Scalar IrradianceCache::CacheNode::Query(
 			(pChildren[x]->ptCenter.y - pChildren[x]->dHalfSize - maxSpacing <= ptPosition.y && ptPosition.y <= pChildren[x]->ptCenter.y + pChildren[x]->dHalfSize + maxSpacing ) &&
 			(pChildren[x]->ptCenter.z - pChildren[x]->dHalfSize - maxSpacing <= ptPosition.z && ptPosition.z <= pChildren[x]->ptCenter.z + pChildren[x]->dHalfSize + maxSpacing ) )
 		{
-			accruedWeights += pChildren[x]->Query( ptPosition, vNormal, results, invTolerance, maxSpacing );
+				accruedWeights += pChildren[x]->Query( ptPosition, vNormal, results, invTolerance, maxSpacing, query_threshold_scale );
 		}
 	}
 
@@ -324,15 +395,8 @@ bool IrradianceCache::CacheNode::IsSampleNeeded(
 	for( i=values.begin(), e=values.end(); i!=e; i++ ) {
 		const CacheElement& elem = *i;
 
-		if( Vector3Ops::Dot( vNormal, elem.vNormal ) < 0 ) {
-			const Scalar plane_epsilon = r_max( NEARZERO, maxSpacing * 1e-6 );
-			const Scalar behind_test_criteria = Vector3Ops::Dot(
-				Vector3Ops::mkVector3( elem.ptPosition, ptPosition ),
-				elem.vNormal
-				);
-			if( behind_test_criteria < -plane_epsilon ) {
-				continue;
-			}
+		if( !IsCompatibleWithQuery( ptPosition, vNormal, elem, maxSpacing ) ) {
+			continue;
 		}
 
 		Scalar	thisWeight = r_min( 1e10, elem.ComputeWeight( ptPosition, vNormal ) );
@@ -360,6 +424,59 @@ bool IrradianceCache::CacheNode::IsSampleNeeded(
 	return true;
 }
 
+void IrradianceCache::CacheNode::FindNearestCompatibleDistance(
+	const Point3& ptPosition,
+	const Vector3& vNormal,
+	const Scalar maxSpacing,
+	Scalar& nearestDistance
+	) const
+{
+	std::vector<CacheElement>::const_iterator i, e;
+
+	for( i=values.begin(), e=values.end(); i!=e; i++ ) {
+		const CacheElement& elem = *i;
+
+		if( !IsCompatibleWithQuery( ptPosition, vNormal, elem, maxSpacing ) ) {
+			continue;
+		}
+
+		const Scalar distance = Point3Ops::Distance( ptPosition, elem.ptPosition );
+		if( distance > NEARZERO && distance < nearestDistance ) {
+			nearestDistance = distance;
+		}
+	}
+
+	for( int x = 0; x<8; x++ ) {
+		if( pChildren[x] ) {
+			const Scalar minNodeDistance = MinDistanceToNodeBounds(
+				ptPosition,
+				pChildren[x]->ptCenter,
+				pChildren[x]->dHalfSize
+				);
+
+			if( minNodeDistance <= nearestDistance ) {
+				pChildren[x]->FindNearestCompatibleDistance( ptPosition, vNormal, maxSpacing, nearestDistance );
+			}
+		}
+	}
+}
+
+bool IrradianceCache::WouldInterpolate(
+	const Point3& ptPosition,
+	const Vector3& vNormal,
+	const unsigned int minEffectiveContributors
+	) const
+{
+	std::vector<CacheElement> results;
+
+	mutex.read_lock();
+	root.Query( ptPosition, vNormal, results, invTolerance, max_spacing, query_threshold_scale );
+	mutex.read_unlock();
+
+	const Scalar effectiveContributors = ComputeEffectiveContributors( results );
+	return effectiveContributors >= Scalar(minEffectiveContributors);
+}
+
 /////////////////////////////////////////////////////////////////
 // IrradianceCache implementations
 /////////////////////////////////////////////////////////////////
@@ -368,16 +485,20 @@ IrradianceCache::IrradianceCache(
 	const Scalar size,
 	const Scalar tol,
 	const Scalar min,
-	const Scalar max
+	const Scalar max,
+	const Scalar query_threshold_scale_,
+	const Scalar neighbor_spacing_scale_
 	) :
   root( CacheNode( size, Point3( 0, 0, 0 ) ) ),
   tolerance( tol ),
   invTolerance( 1.0/tol ),
-  min_spacing( min ),
+	min_spacing( min ),
 	max_spacing (max ),
+	query_threshold_scale( query_threshold_scale_ ),
+	neighbor_spacing_scale( neighbor_spacing_scale_ ),
   bPreComputed( false )
 {
-	if (max_spacing <= min_spacing) {
+	if (max_spacing < min_spacing) {
 		// Hack in case the input got screwed up
 		max_spacing = min_spacing * 100.0;
 	}
@@ -385,4 +506,13 @@ IrradianceCache::IrradianceCache(
 
 IrradianceCache::~IrradianceCache( )
 {
+}
+
+void IrradianceCache::FinishedPrecomputation()
+{
+	#ifdef _DEBUG
+	assert( !bPreComputed );
+	#endif
+
+	bPreComputed = true;
 }

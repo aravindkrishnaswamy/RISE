@@ -957,6 +957,7 @@ namespace RISE
 			const unsigned int numtheta,							///< [in] Number of samples in the theta direction
 			const unsigned int numphi,								///< [in] Number of samples in the phi direction
 			const bool cachegradients,								///< [in] Should cache gradients be used in the irradiance cache?
+			const unsigned int min_effective_contributors,			///< [in] Minimum effective contributors required for interpolation
 			const bool cache										///< [in] Should the rasterizer state cache be used?
 			) = 0;
 
@@ -1306,7 +1307,9 @@ namespace RISE
 			const unsigned int size,						///< [in] Size of the cache
 			const double tolerance,							///< [in] Tolerance of the cache
 			const double min_spacing,						///< [in] Minimum seperation
-			const double max_spacing						///< [in] Maximum seperation
+			const double max_spacing,						///< [in] Maximum seperation
+			const double query_threshold_scale,				///< [in] Scale for the query acceptance threshold
+			const double neighbor_spacing_scale				///< [in] Scale for capping reuse radius by local neighbor spacing
 			) = 0;
 
 		//! Sets the gather parameters for the shadow photon map

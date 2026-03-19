@@ -15,23 +15,187 @@
 #include "FinalGatherShaderOp.h"
 #include "FinalGatherInterpolation.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Intersection/RayIntersection.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 #define FG_RAY_BIAS Scalar(1e-4)
 #define FG_MIN_HIT_DISTANCE Scalar(1e-6)
+#define FG_MIN_TRANSLATIONAL_GRADIENT_DISTANCE (FG_RAY_BIAS * Scalar(10.0))
+#define FG_MIN_TRANSLATIONAL_GRADIENT_NORMAL_DOT Scalar(0.95)
+
+namespace
+{
+	struct GradientEstimatorSample
+	{
+		bool bHit;
+		bool bUsableForTranslation;
+		const IObject* pObject;
+		Vector3 vNormal;
+		Scalar dDistance;
+		RISEPel cIrradiance;
+
+		GradientEstimatorSample() :
+			bHit( false ),
+			bUsableForTranslation( false ),
+			pObject( 0 ),
+			vNormal( 0, 0, 0 ),
+			dDistance( 0 ),
+			cIrradiance( 0, 0, 0 )
+		{}
+	};
+
+	struct GradientEstimatorStats
+	{
+		unsigned int acceptedPairs;
+		unsigned int rejectedMisses;
+		unsigned int rejectedNearHits;
+		unsigned int rejectedDiscontinuities;
+
+		GradientEstimatorStats() :
+			acceptedPairs( 0 ),
+			rejectedMisses( 0 ),
+			rejectedNearHits( 0 ),
+			rejectedDiscontinuities( 0 )
+		{}
+
+		inline unsigned int RejectedPairs() const
+		{
+			return rejectedMisses + rejectedNearHits + rejectedDiscontinuities;
+		}
+
+		inline bool RejectWholeRecord() const
+		{
+			if( acceptedPairs == 0 ) {
+				return true;
+			}
+
+			// Translational gradients are only valid when neighboring bins see a
+			// locally smooth irradiance field. If more pair comparisons are rejected
+			// than accepted, or if miss/discontinuity pairs alone outnumber the valid
+			// ones, this record is sitting on an edge/corner/visibility boundary and
+			// should not be allowed to extrapolate a translational gradient.
+			const unsigned int rejectedPairs = RejectedPairs();
+			const unsigned int discontinuousPairs = rejectedMisses + rejectedDiscontinuities;
+			return (rejectedPairs > acceptedPairs) || (discontinuousPairs > acceptedPairs);
+		}
+	};
+
+	enum GradientPairClassification
+	{
+		eGradientPairAccepted = 0,
+		eGradientPairRejectedMiss,
+		eGradientPairRejectedNearHit,
+		eGradientPairRejectedDiscontinuity
+	};
+
+	inline GradientEstimatorSample TraceGradientEstimatorSample(
+		const IScene* pScene,
+		const RuntimeContext& rc,
+		const RasterizerState& rast,
+		const IRayCaster& caster,
+		const IRayCaster::RAY_STATE& rs,
+		const Point3& origin,
+		const Vector3& wGrad,
+		const IBSDF& brdf,
+		const RayIntersectionGeometric& shading,
+		const IRadianceMap* pRadianceMap,
+		const IORStack* const ior_stack
+		)
+	{
+		GradientEstimatorSample sample;
+
+		Ray fgGradRay( origin, wGrad );
+		fgGradRay.Advance( FG_RAY_BIAS );
+
+		RISEPel lijGrad( 0, 0, 0 );
+		Scalar tGrad = 0;
+		if( caster.CastRay( rc, rast, fgGradRay, lijGrad, rs, &tGrad, pRadianceMap, ior_stack ) ) {
+			if( tGrad > FG_MIN_HIT_DISTANCE ) {
+				sample.bHit = true;
+				sample.dDistance = tGrad;
+				sample.cIrradiance = lijGrad * brdf.value( wGrad, shading );
+
+				if( tGrad > FG_MIN_TRANSLATIONAL_GRADIENT_DISTANCE && pScene && pScene->GetObjects() ) {
+					RayIntersection gradRI( fgGradRay, rast );
+					pScene->GetObjects()->IntersectRay( gradRI, true, true, false );
+
+					if( gradRI.geometric.bHit && gradRI.pObject ) {
+						sample.bUsableForTranslation = true;
+						sample.pObject = gradRI.pObject;
+						sample.vNormal = gradRI.geometric.vNormal;
+					}
+				}
+			}
+		}
+
+		return sample;
+	}
+
+	inline GradientPairClassification ClassifyGradientPair(
+		const GradientEstimatorSample& lhs,
+		const GradientEstimatorSample& rhs
+		)
+	{
+		if( !lhs.bHit || !rhs.bHit ) {
+			return eGradientPairRejectedMiss;
+		}
+
+		if( !lhs.bUsableForTranslation || !rhs.bUsableForTranslation ) {
+			// Translational gradients divide by the hit distance. Extremely small
+			// distances usually mean the sample is grazing an adjacent wall/corner,
+			// which makes the finite-difference estimate numerically unstable.
+			return eGradientPairRejectedNearHit;
+		}
+
+		if( lhs.pObject != rhs.pObject ) {
+			return eGradientPairRejectedDiscontinuity;
+		}
+
+		if( Vector3Ops::Dot( lhs.vNormal, rhs.vNormal ) < FG_MIN_TRANSLATIONAL_GRADIENT_NORMAL_DOT ) {
+			return eGradientPairRejectedDiscontinuity;
+		}
+
+		return eGradientPairAccepted;
+	}
+
+	inline void RecordGradientPairClassification(
+		GradientEstimatorStats& stats,
+		const GradientPairClassification classification
+		)
+	{
+		switch( classification ) {
+		case eGradientPairAccepted:
+			stats.acceptedPairs++;
+			break;
+		case eGradientPairRejectedMiss:
+			stats.rejectedMisses++;
+			break;
+		case eGradientPairRejectedNearHit:
+			stats.rejectedNearHits++;
+			break;
+		case eGradientPairRejectedDiscontinuity:
+			stats.rejectedDiscontinuities++;
+			break;
+		default:
+			break;
+		}
+	}
+}
 
 FinalGatherShaderOp::FinalGatherShaderOp(
 	const unsigned int numTheta_,
 	const unsigned int numPhi_,
 	const bool bComputeCacheGradients_,
+	const unsigned int min_effective_contributors_,
 	const bool cache_
 	) :
-  numTheta( numTheta_ ),
-  numPhi( numPhi_ ),
-  bComputeCacheGradients( bComputeCacheGradients_ ),
-  cache( cache_ )
+	  numTheta( numTheta_ ),
+	  numPhi( numPhi_ ),
+	  bComputeCacheGradients( bComputeCacheGradients_ ),
+	  min_effective_contributors( min_effective_contributors_ ),
+	  cache( cache_ )
 {
 }
 
@@ -106,34 +270,41 @@ void FinalGatherShaderOp::PerformOperation(
 		{
 			bool bComputeIrradiance = true;
 
-			// If we are in normal rendering pass, look it up in the cache
-			IIrradianceCache* pCache = pScene->GetIrradianceCache();
+				// If we are in normal rendering pass, look it up in the cache
+				IIrradianceCache* pCache = pScene->GetIrradianceCache();
 				if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
 					// Look it up
 					std::vector<IIrradianceCache::CacheElement> results;
 					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
 
-					const Scalar minEffectiveContributors = 2.0;
-					if( FinalGatherInterpolation::TryInterpolate(
+					// Avoid trusting isolated cache records. Requiring a few
+					// effective contributors reduces visible record footprints.
+					const bool bInterpolated = FinalGatherInterpolation::TryInterpolate(
 						ri.geometric.ptIntersection,
 						ri.geometric.vNormal,
 						results,
 						weights,
 						bComputeCacheGradients,
-						minEffectiveContributors,
+						min_effective_contributors,
 						c,
 						0
-						) )
-					{
+						);
+
+					if( bInterpolated ) {
 						bComputeIrradiance = false;
 					}
 				}
 
 				// We are in compute irradiance pass...
 				if( rc.pass == RuntimeContext::PASS_IRRADIANCE_CACHE && pCache && pCache->GetTolerance() > 0 ) {
-				// Ask the cache if we should generate a sample
-				bComputeIrradiance = pCache->IsSampleNeeded( ri.geometric.ptIntersection, ri.geometric.vNormal );
-			}
+					// Ask the cache whether a normal-pass interpolation would already
+					// succeed here. If not, populate a denser cache record now.
+					bComputeIrradiance = !pCache->WouldInterpolate(
+						ri.geometric.ptIntersection,
+						ri.geometric.vNormal,
+						min_effective_contributors
+						);
+				}
 
 				if( bComputeIrradiance && pSPF ) {
 					// We need to initiate a final gather
@@ -150,8 +321,8 @@ void FinalGatherShaderOp::PerformOperation(
 				rs2.considerEmission = false;
 				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
 
-				Scalar rsum = 0;
-				unsigned int hits = 0;
+					Scalar rsum = 0;
+					unsigned int hits = 0;
 
 				// Computing the final gather over the hemisphere using rotational and
 				// translational gradients
@@ -171,33 +342,30 @@ void FinalGatherShaderOp::PerformOperation(
 					const Scalar fN = Scalar(irrN);
 					const Scalar fM = Scalar(irrM);
 
-						// Irradiance gradients temporary variables
-						Vector3 vim;
-						RISEPel lijm(0,0,0);						// L_{i,j-1}
-
-						RISEPel* lim = new RISEPel[irrM];		// L_{i-1,j}
-						RISEPel* l0 = new RISEPel[irrM];		// L_{0,j}
-
-						Scalar rijm = 0;						// R_{i,j-1}
-						Scalar* rim = new Scalar[irrM];			// R_{i-1,j}
-						Scalar* r0 = new Scalar[irrM];			// R_{0,j}
-						for( unsigned int j=0; j<irrM; j++ ) {
-							lim[j] = RISEPel(0,0,0);
-							l0[j] = RISEPel(0,0,0);
-							rim[j] = 0;
-							r0[j] = 0;
-						}
+					// Irradiance gradients temporary variables. Keep a separate deterministic
+					// gradient estimator so the finite differences are taken between stratum
+					// centers instead of jittered Monte Carlo samples.
+					GradientEstimatorStats gradientStats;
+					Vector3 vim;
+					GradientEstimatorSample prevThetaSample;
+					GradientEstimatorSample* prevPhiSamples = new GradientEstimatorSample[irrM];
+					GradientEstimatorSample* firstPhiSamples = new GradientEstimatorSample[irrM];
 
 					for( unsigned int i=0; i<irrN; i++ ) {
 						const Scalar xi = (Scalar(i) + rc.random.CanonicalRandom()) / fN;
 						const Scalar phi = TWO_PI * xi;
 						const Scalar cosPhi = cos(phi);
 						const Scalar sinPhi = sin(phi);
-						const Vector3 vi = ri.geometric.onb.Transform( Vector3(-sinPhi,cosPhi,0.0) );
+
+						const Scalar xiCenter = (Scalar(i) + Scalar(0.5)) / fN;
+						const Scalar phiCenter = TWO_PI * xiCenter;
+						const Scalar cosPhiCenter = cos(phiCenter);
+						const Scalar sinPhiCenter = sin(phiCenter);
+						const Vector3 vi = ri.geometric.onb.Transform( Vector3(-sinPhiCenter,cosPhiCenter,0.0) );
 
 						RISEPel rotGradientTemp(0,0,0);
 
-						const Vector3 ui = ri.geometric.onb.Transform( Vector3(cosPhi,sinPhi,0.0) );
+						const Vector3 ui = ri.geometric.onb.Transform( Vector3(cosPhiCenter,sinPhiCenter,0.0) );
 						const Scalar phim = (TWO_PI * Scalar(i)) / fN;
 						vim = ri.geometric.onb.Transform(
 							Vector3(cos( phim + PI_OV_TWO ), sin( phim + PI_OV_TWO ), 0.0)
@@ -205,17 +373,16 @@ void FinalGatherShaderOp::PerformOperation(
 
 							RISEPel transGradient1Temp = RISEPel(0,0,0);
 							RISEPel transGradient2Temp = RISEPel(0,0,0);
-							lijm = RISEPel(0,0,0);
-							rijm = 0;
+							prevThetaSample = GradientEstimatorSample();
 
 							for( unsigned int j=0; j<irrM; j++ ) {
 							const Scalar xj = (Scalar(j) + rc.random.CanonicalRandom()) / fM;
 							const Scalar sinTheta = sqrt( xj );
 							const Scalar cosTheta = sqrt( 1.0 - xj );
 
-							const Vector3 w = ri.geometric.onb.Transform(
-								Vector3(cosPhi * sinTheta,sinPhi * sinTheta,cosTheta)
-								);
+								const Vector3 w = ri.geometric.onb.Transform(
+									Vector3(cosPhi * sinTheta,sinPhi * sinTheta,cosTheta)
+									);
 
 								RISEPel lij(0,0,0);
 
@@ -226,42 +393,72 @@ void FinalGatherShaderOp::PerformOperation(
 								if (t > FG_MIN_HIT_DISTANCE) {
 									rsum += 1.0/t;
 									hits++;
-									c = c + lij * ri.pMaterial->GetBSDF()->value( w, ri.geometric );
-
-									// Increment the rotational gradient
-									rotGradientTemp = rotGradientTemp + ((-sinTheta/cosTheta) * lij);
+									c = c + lij * pBRDF->value( w, ri.geometric );
 								}
 							}
 
-							// Increment translational gradient
-								const Scalar rij = (t > FG_MIN_HIT_DISTANCE ? t : 0);
-								const Scalar sinThetam = sqrt( Scalar(j) / fM );
+							// Deterministic center-of-stratum sample for gradient estimation.
+							const Scalar xjCenter = (Scalar(j) + Scalar(0.5)) / fM;
+							const Scalar sinThetaCenter = sqrt( xjCenter );
+							const Scalar cosThetaCenter = sqrt( 1.0 - xjCenter );
+							const Vector3 wGrad = ri.geometric.onb.Transform(
+								Vector3(cosPhiCenter * sinThetaCenter,sinPhiCenter * sinThetaCenter,cosThetaCenter)
+								);
 
-								if( j > 0 ) {
-									const Scalar denom = r_min(rij,rijm);
-									if( denom > NEARZERO ) {
-										const Scalar k = (sinThetam * (1.0 - (Scalar(j)/fM))) / denom;
-										transGradient1Temp = transGradient1Temp + (lij - lijm) * k;
-									}
+							const GradientEstimatorSample gradientSample = TraceGradientEstimatorSample(
+								pScene,
+								rc,
+								ri.geometric.rast,
+								caster,
+								rs2,
+								ri.geometric.ptIntersection,
+								wGrad,
+								*pBRDF,
+								ri.geometric,
+								ri.pRadianceMap,
+								ior_stack
+								);
+
+							if( gradientSample.bHit ) {
+								// Keep the rotational gradient in the same units as the cached
+								// irradiance. Only the translational estimate gets the extra
+								// discontinuity checks below.
+								rotGradientTemp = rotGradientTemp + ((-sinThetaCenter/cosThetaCenter) * gradientSample.cIrradiance);
+							}
+
+							// Translational gradients are much more fragile than rotational ones.
+							// Only accumulate pairwise finite differences when both neighboring
+							// bins are far enough away and agree on the local surface. That
+							// keeps corners, misses, and cross-object visibility jumps from
+							// overwhelming the cache record.
+							const Scalar sinThetam = sqrt( Scalar(j) / fM );
+
+							if( j > 0 ) {
+								const GradientPairClassification classification = ClassifyGradientPair( gradientSample, prevThetaSample );
+								if( classification == eGradientPairAccepted ) {
+									const Scalar denomTheta = r_min( gradientSample.dDistance, prevThetaSample.dDistance );
+									const Scalar kTheta = (sinThetam * (1.0 - (Scalar(j)/fM))) / denomTheta;
+									transGradient1Temp = transGradient1Temp + (gradientSample.cIrradiance - prevThetaSample.cIrradiance) * kTheta;
 								}
+								RecordGradientPairClassification( gradientStats, classification );
+							}
 
-								if( i > 0 ) {
+							if( i > 0 ) {
+								const GradientPairClassification classification = ClassifyGradientPair( gradientSample, prevPhiSamples[j] );
+								if( classification == eGradientPairAccepted ) {
 									const Scalar sinThetap = sqrt( Scalar(j+1) / fM );
-									const Scalar denom = r_min(rij,rim[j]);
-									if( denom > NEARZERO ) {
-										const Scalar k = (sinThetap - sinThetam) / denom;
-										transGradient2Temp = transGradient2Temp + (lij - lim[j]) * k;
-									}
-								} else {
-									r0[j] = rij;
-									l0[j] = lij;
+									const Scalar denomPhi = r_min( gradientSample.dDistance, prevPhiSamples[j].dDistance );
+									const Scalar kPhi = (sinThetap - sinThetam) / denomPhi;
+									transGradient2Temp = transGradient2Temp + (gradientSample.cIrradiance - prevPhiSamples[j].cIrradiance) * kPhi;
+								}
+								RecordGradientPairClassification( gradientStats, classification );
+							} else {
+								firstPhiSamples[j] = gradientSample;
 							}
 
 							// Set previous
-							rijm = rij;
-							lijm = lij;
-							rim[j] = rij;
-							lim[j] = lij;
+							prevThetaSample = gradientSample;
+							prevPhiSamples[j] = gradientSample;
 						}
 
 						// Increment rotational gradient vector
@@ -285,21 +482,26 @@ void FinalGatherShaderOp::PerformOperation(
 					RISEPel transGradient2Temp = RISEPel(0,0,0);
 
 					for( unsigned int j=0; j<irrM; j++ ) {
-						const Scalar sinThetam = sqrt( Scalar(j) / fM );
-						const Scalar sinThetap = sqrt( Scalar(j+1) / fM );
-						const Scalar denom = r_min(r0[j],rim[j]);
-						if( denom > NEARZERO ) {
+						const GradientPairClassification classification = ClassifyGradientPair( firstPhiSamples[j], prevPhiSamples[j] );
+						if( classification == eGradientPairAccepted ) {
+							const Scalar sinThetam = sqrt( Scalar(j) / fM );
+							const Scalar sinThetap = sqrt( Scalar(j+1) / fM );
+							const Scalar denom = r_min( firstPhiSamples[j].dDistance, prevPhiSamples[j].dDistance );
 							const Scalar k = (sinThetap - sinThetam) / denom;
-							transGradient2Temp = transGradient2Temp + (l0[j] - lim[j]) * k;
+							transGradient2Temp = transGradient2Temp + (firstPhiSamples[j].cIrradiance - prevPhiSamples[j].cIrradiance) * k;
 						}
+						RecordGradientPairClassification( gradientStats, classification );
 					}
 
 					transGradient2[0] = transGradient2[0] + (vim.x * transGradient2Temp);
 					transGradient2[1] = transGradient2[1] + (vim.y * transGradient2Temp);
 					transGradient2[2] = transGradient2[2] + (vim.z * transGradient2Temp);
 
-					// Scale the first part of the translational gradient
-					Scalar scale = TWO_PI / fM;
+					// Scale the azimuthal part of the translational gradient by the
+					// angular spacing between phi rings (2*pi / N_phi).  Previously
+					// this used fM (N_theta) by mistake, over-amplifying the gradient
+					// by N_phi/N_theta when the two counts differ.
+					Scalar scale = TWO_PI / fN;
 
 					transGradient2[0] = transGradient2[0] * scale;
 					transGradient2[1] = transGradient2[1] * scale;
@@ -309,6 +511,10 @@ void FinalGatherShaderOp::PerformOperation(
 					transGradient1[0] = transGradient1[0] + transGradient2[0];
 					transGradient1[1] = transGradient1[1] + transGradient2[1];
 					transGradient1[2] = transGradient1[2] + transGradient2[2];
+
+					if( gradientStats.RejectWholeRecord() ) {
+						transGradient1[0] = transGradient1[1] = transGradient1[2] = RISEPel( 0, 0, 0 );
+					}
 
 					scale = PI / Scalar(final_gather_count);
 					c = c * scale;
@@ -324,11 +530,8 @@ void FinalGatherShaderOp::PerformOperation(
 					transGradient1[1] = transGradient1[1] * scale;
 					transGradient1[2] = transGradient1[2] * scale;
 
-					delete [] rim;
-					delete [] r0;
-
-					delete [] lim;
-					delete [] l0;
+					delete [] prevPhiSamples;
+					delete [] firstPhiSamples;
 				}
 				else
 				{
@@ -368,8 +571,6 @@ void FinalGatherShaderOp::PerformOperation(
 						// Add the indirect value to the cache
 						rsum = (rsum!=0 ? Scalar(hits)/rsum : 0);
 						pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
-
-						c = RISEPel(0.7,0.7,0); // shows yellow when a new cache value is computed
 					}
 				}
 			}

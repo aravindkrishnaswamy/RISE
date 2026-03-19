@@ -81,8 +81,8 @@ pinhole_camera
 	location			0.2 0 19.5
 	lookat				0.2 0 0
 	up					0 1 0
-	width				480
-	height				360
+	width				960
+	height				720
 	fov					30.0
 }
 
@@ -206,7 +206,7 @@ standard_object
 
 global_pel_photonmap
 {
-	num					10000
+	num					100000
 	max_recursion		5
 	min_importance		0.01
 }
@@ -220,7 +220,7 @@ global_pel_gather
 irradiance_cache
 {
 	size				100
-	tolerance			0.3
-	min_spacing			0.1
+	tolerance			0.1
+	min_spacing			0.02
 }
 

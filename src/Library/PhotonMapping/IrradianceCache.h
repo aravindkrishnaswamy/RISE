@@ -77,7 +77,8 @@ namespace RISE
 					const Vector3& vNormal,
 					std::vector<CacheElement>& results,
 					const Scalar invTolerance,
-					const Scalar maxSpacing
+					const Scalar maxSpacing,
+					const Scalar query_threshold_scale
 					) const;
 
 				//! Asks the cache is a sample is need at the current position
@@ -88,6 +89,13 @@ namespace RISE
 					const Scalar maxSpacing
 					) const;
 
+				void FindNearestCompatibleDistance(
+					const Point3& ptPosition,
+					const Vector3& vNormal,
+					const Scalar maxSpacing,
+					Scalar& nearestDistance
+					) const;
+
 				void Clear();
 			};
 
@@ -96,6 +104,8 @@ namespace RISE
 			Scalar			invTolerance;
 			Scalar			min_spacing;
 			Scalar			max_spacing;
+			Scalar			query_threshold_scale;
+			Scalar			neighbor_spacing_scale;
 
 			mutable RMutexReadWrite	mutex;				// Mutex to control access
 
@@ -104,7 +114,7 @@ namespace RISE
 			virtual ~IrradianceCache( );
 
 		public:
-			IrradianceCache( const Scalar size, const Scalar tol, const Scalar min, const Scalar max );
+			IrradianceCache( const Scalar size, const Scalar tol, const Scalar min, const Scalar max, const Scalar query_threshold_scale_, const Scalar neighbor_spacing_scale_ );
 
 			void InsertElement(
 				const Point3&		ptPosition,
@@ -130,6 +140,15 @@ namespace RISE
 				}
 
 				mutex.write_lock();
+				if( neighbor_spacing_scale > 0 ) {
+					Scalar finalReuseRadius = r0 * tolerance;
+					Scalar nearestCompatibleDistance = finalReuseRadius;
+					root.FindNearestCompatibleDistance( ptPosition, vNormal, max_spacing, nearestCompatibleDistance );
+					if( nearestCompatibleDistance > NEARZERO ) {
+						finalReuseRadius = r_min( finalReuseRadius, nearestCompatibleDistance * neighbor_spacing_scale );
+						r0 = finalReuseRadius / tolerance;
+					}
+				}
 				root.InsertElement( CacheElement(ptPosition, vNormal, cIRad, r0, 0, rot, trans), tolerance );
 				mutex.write_unlock();
 			}
@@ -140,7 +159,7 @@ namespace RISE
 				#ifdef _DEBUG
 				assert( bPreComputed );
 				#endif
-				return root.Query( ptPosition, vNormal, results, invTolerance, max_spacing );
+				return root.Query( ptPosition, vNormal, results, invTolerance, max_spacing, query_threshold_scale );
 			}
 
 			bool IsSampleNeeded( const Point3& ptPosition, const Vector3& vNormal ) const
@@ -152,6 +171,12 @@ namespace RISE
 				return bSampleNeeded;
 			}
 
+			bool WouldInterpolate(
+				const Point3& ptPosition,
+				const Vector3& vNormal,
+				const unsigned int minEffectiveContributors
+				) const;
+
 			inline Scalar GetTolerance(){ return tolerance; };
 			inline void Clear()
 			{
@@ -159,13 +184,7 @@ namespace RISE
 				bPreComputed = false;
 			};
 
-			void FinishedPrecomputation()
-			{
-				#ifdef _DEBUG
-				assert( !bPreComputed );
-				#endif
-				bPreComputed = true;
-			}
+			void FinishedPrecomputation();
 
 			bool Precomputed()
 			{

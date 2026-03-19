@@ -160,7 +160,12 @@ void DielectricSPF::DoSingleRGBComponent(
 
 	bool		bFromInside = false;
 
-	if( cosine < NEARZERO ) {
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available. The stack tracks which objects a ray
+	// is currently inside, so if this object is in the stack we must be
+	// exiting. This is more robust than the normal-based cosine test at
+	// grazing angles where numerical precision can give wrong results.
+	if( ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO) ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -174,7 +179,7 @@ void DielectricSPF::DoSingleRGBComponent(
 		if( oneofthree ) {
 			dielectric.kray[oneofthree-1] = 1.0;
 		} else {
-			dielectric.kray = RISEPel(1.0,1.0,1.0);	
+			dielectric.kray = RISEPel(1.0,1.0,1.0);
 		}
 	}
 
@@ -244,7 +249,9 @@ void DielectricSPF::ScatterNM(
 	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.dir);
 	bool		bFromInside = false;
 
-	if( cosine < NEARZERO ) {
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available (see DoSingleRGBComponent for details)
+	if( ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO) ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;

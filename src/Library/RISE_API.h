@@ -1393,12 +1393,14 @@ namespace RISE
 
 	//! Creates an irradiance cache
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateIrradianceCache(
+bool RISE_API_CreateIrradianceCache(
 								IIrradianceCache** ppi,				///< [out] Pointer to recieve the caustic photon tracer
 								const unsigned int size,			///< [in] Size of the cache
 								const Scalar tolerance,				///< [in] Tolerance of the cache
 								const Scalar min_spacing,			///< [in] Minimum seperation
-								const Scalar max_spacing 			///< [in] Maximum seperation
+								const Scalar max_spacing, 			///< [in] Maximum seperation
+								const Scalar query_threshold_scale,	///< [in] Scale for the query acceptance threshold
+								const Scalar neighbor_spacing_scale	///< [in] Scale for capping reuse radius by local neighbor spacing
 								);
 
 
@@ -1715,11 +1717,12 @@ namespace RISE
 
 	//! Creates a final gather shaderop
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateFinalGatherShaderOp(
+bool RISE_API_CreateFinalGatherShaderOp(
 								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
 								const unsigned int numThetaSamples, ///< [in] Number of samples in the theta direction
 								const unsigned int numPhiSamples,	///< [in] Number of samples in the phi direction
 								const bool cachegradients,		///< [in] Should cache gradients be used in the irradiance cache?
+								const unsigned int min_effective_contributors,	///< [in] Minimum effective contributors required for interpolation
 								const bool cache				///< [in] Should the rasterizer state cache be used?
 								);
 

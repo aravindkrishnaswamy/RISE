@@ -33,6 +33,7 @@ namespace RISE
 			const unsigned int numTheta;
 			const unsigned int numPhi;
 			const bool bComputeCacheGradients;
+			const unsigned int min_effective_contributors;
 			const bool cache;
 
 		public:
@@ -40,6 +41,7 @@ namespace RISE
 				const unsigned int numTheta_,
 				const unsigned int numPhi_,
 				const bool bComputeCacheGradients_,
+				const unsigned int min_effective_contributors_,
 				const bool cache_
 				);
 
