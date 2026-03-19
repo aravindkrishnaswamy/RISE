@@ -33,18 +33,25 @@ BumpMap::~BumpMap()
 void BumpMap::Modify( RayIntersectionGeometric& ri ) const
 {
 	// The bump value is the returned value multiplied by the scale
-	const Scalar bumpU = (pFunction.Evaluate( ri.ptCoord.x + dWindow, ri.ptCoord.y ) * dScale) - 
+	const Scalar bumpU = (pFunction.Evaluate( ri.ptCoord.x + dWindow, ri.ptCoord.y ) * dScale) -
 						 (pFunction.Evaluate( ri.ptCoord.x - dWindow, ri.ptCoord.y ) * dScale);
 
-	const Scalar bumpV = (pFunction.Evaluate( ri.ptCoord.x , ri.ptCoord.y + dWindow ) * dScale) - 
+	const Scalar bumpV = (pFunction.Evaluate( ri.ptCoord.x , ri.ptCoord.y + dWindow ) * dScale) -
 						 (pFunction.Evaluate( ri.ptCoord.x , ri.ptCoord.y - dWindow ) * dScale);
 
-	// And now perturb the vector accordingly
-	static const Vector3	vUBasis( 0, 1, 0 );
-	static const Vector3	vVBasis( 1, 0, 0 );
 
-	const Vector3 vTemp( Vector3Ops::Cross(ri.vNormal,(vUBasis * bumpU)) - Vector3Ops::Cross(ri.vNormal,(vVBasis * bumpV)) );
-	ri.vNormal = Vector3Ops::Normalize(ri.vNormal + vTemp);
+
+	// Perturb the normal using the surface tangent vectors from the ONB,
+	// rather than static basis vectors which fail when the normal is
+	// aligned with one of them (e.g. horizontal surfaces with N=(0,1,0)).
+	const Vector3 vTangentU = ri.onb.u();
+	const Vector3 vTangentV = ri.onb.v();
+
+	ri.vNormal = Vector3Ops::Normalize(ri.vNormal + vTangentU * bumpU + vTangentV * bumpV);
+
+	// Also rebuild the ONB so that SPFs (refraction/reflection) use
+	// the perturbed normal, not the original geometric one.
+	ri.onb.CreateFromW( ri.vNormal );
 }
 
 

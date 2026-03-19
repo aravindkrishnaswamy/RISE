@@ -1,0 +1,411 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pool_caustics.RISEscene                                                                 #
+#   Description:    Simulates underwater caustics at the bottom of a swimming pool.                         #
+#                   A wavy water surface (Perlin bump-mapped) refracts a bright spot light from above,      #
+#                   casting rippling caustic patterns onto vibrant turquoise pool tiles.                     #
+#                   Tests: spot light, perfectrefractor (water IOR 1.33), caustic photon map,               #
+#                          bumpmap_modifier, perlin2d_painter, checker painter, clipped planes, spheres     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+advanced_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting		1		100			+
+	shaderop			DefaultRefraction			1		100			+
+	shaderop			DefaultReflection			1		100			+
+	shaderop			DefaultCausticPelPhotonMap	1		100			+
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.001
+	samples				16
+	lum_samples			4
+	pixel_filter		tent
+	pixel_filter_width	1.5
+	pixel_filter_height	1.5
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pool_caustics
+	type				PNG
+	bpp					16
+	color_space			sRGB
+}
+
+##################################################
+# Camera - looking down into the pool at an angle
+##################################################
+
+pinhole_camera
+{
+	location			0 3.5 4.5
+	lookat				0 -0.5 0
+	up					0 1 0
+	width				800
+	height				600
+	fov					50.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Pool tile colors - vibrant turquoise and white checker
+uniformcolor_painter
+{
+	name				pnt_tile_a
+	color				0.15 0.75 0.80
+}
+
+uniformcolor_painter
+{
+	name				pnt_tile_b
+	color				0.85 0.95 0.98
+}
+
+checker_painter
+{
+	name				pnt_pool_floor
+	colora				pnt_tile_a
+	colorb				pnt_tile_b
+	size				8
+}
+
+# Pool wall color - deeper aqua
+uniformcolor_painter
+{
+	name				pnt_pool_wall
+	color				0.10 0.45 0.60
+}
+
+# Water tint - very slightly blue-green for realism
+uniformcolor_painter
+{
+	name				pnt_water
+	color				0.92 0.97 0.99
+}
+
+# Decorative sphere color - coral / warm accent
+uniformcolor_painter
+{
+	name				pnt_coral
+	color				1.0 0.42 0.35
+}
+
+# Second decorative sphere - golden yellow
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				1.0 0.82 0.25
+}
+
+# Third decorative sphere - vivid blue glass
+uniformcolor_painter
+{
+	name				pnt_blue_glass
+	color				0.3 0.5 1.0
+}
+
+##################################################
+# Water surface wave function (Perlin noise for ripples)
+##################################################
+
+# Perlin2D noise to simulate water surface ripples
+# Low persistence + few octaves = broad gentle waves
+# Higher scale = more waves across the surface
+perlin2d_painter
+{
+	name				pnt_water_waves
+	colora				color_black
+	colorb				color_white
+	persistence			0.5
+	octaves				3
+	scale				10.0 10.0
+}
+
+##################################################
+# Bump Map Modifier for water surface
+##################################################
+
+# The bump map perturbs the normals of the water surface
+# creating wave-like undulations that scatter refracted light
+# into caustic patterns on the pool floor.
+# Moderate Perlin scale (10) = gentle wave frequency.
+# Bump scale 15 = visible but natural-looking normal tilt.
+bumpmap_modifier
+{
+	name				water_ripple
+	function			pnt_water_waves
+	scale				12.0
+	windowsize			0.003
+}
+
+##################################################
+# Materials
+##################################################
+
+# Pool floor - checker tile pattern
+lambertian_material
+{
+	name				tile_floor
+	reflectance			pnt_pool_floor
+}
+
+# Pool walls
+lambertian_material
+{
+	name				pool_wall
+	reflectance			pnt_pool_wall
+}
+
+# Water surface - perfect refractor at water IOR
+perfectrefractor_material
+{
+	name				water
+	refractance			pnt_water
+	ior					1.33
+}
+
+# Coral decorative ball - solid matte
+lambertian_material
+{
+	name				coral_ball
+	reflectance			pnt_coral
+}
+
+# Golden glass ball - refractive with warm color
+perfectrefractor_material
+{
+	name				gold_glass
+	refractance			pnt_gold
+	ior					1.5
+}
+
+# Blue glass ball - refractive
+perfectrefractor_material
+{
+	name				blue_glass
+	refractance			pnt_blue_glass
+	ior					1.5
+}
+
+##################################################
+# Geometry & Objects
+##################################################
+
+# Pool floor - 8x8 area
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
+}
+
+standard_object
+{
+	name				pool_floor
+	geometry			floor_geom
+	position			0 -2.0 0
+	material			tile_floor
+}
+
+# Back wall
+clippedplane_geometry
+{
+	name				bwall_geom
+	pta					-4.0 0.0 0.0
+	ptb					-4.0 -2.0 0.0
+	ptc					4.0 -2.0 0.0
+	ptd					4.0 0.0 0.0
+}
+
+standard_object
+{
+	name				back_wall
+	geometry			bwall_geom
+	position			0 0 -4.0
+	material			pool_wall
+}
+
+# Left wall
+clippedplane_geometry
+{
+	name				lwall_geom
+	pta					0.0 0.0 4.0
+	ptb					0.0 -2.0 4.0
+	ptc					0.0 -2.0 -4.0
+	ptd					0.0 0.0 -4.0
+}
+
+standard_object
+{
+	name				left_wall
+	geometry			lwall_geom
+	position			-4.0 0 0
+	material			pool_wall
+}
+
+# Right wall
+clippedplane_geometry
+{
+	name				rwall_geom
+	pta					0.0 0.0 -4.0
+	ptb					0.0 -2.0 -4.0
+	ptc					0.0 -2.0 4.0
+	ptd					0.0 0.0 4.0
+}
+
+standard_object
+{
+	name				right_wall
+	geometry			rwall_geom
+	position			4.0 0 0
+	material			pool_wall
+}
+
+# Front wall (partial, below camera view)
+clippedplane_geometry
+{
+	name				fwall_geom
+	pta					4.0 0.0 0.0
+	ptb					4.0 -2.0 0.0
+	ptc					-4.0 -2.0 0.0
+	ptd					-4.0 0.0 0.0
+}
+
+standard_object
+{
+	name				front_wall
+	geometry			fwall_geom
+	position			0 0 4.0
+	material			pool_wall
+}
+
+# Water surface - bump-mapped plane with wave ripples to create caustics
+clippedplane_geometry
+{
+	name				water_geom
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
+}
+
+standard_object
+{
+	name				water_surface
+	geometry			water_geom
+	position			0 0 0
+	material			water
+	modifier			water_ripple
+}
+
+# Submerged decorative spheres resting on pool floor
+
+sphere_geometry
+{
+	name				sphere_sm
+	radius				0.35
+}
+
+sphere_geometry
+{
+	name				sphere_md
+	radius				0.5
+}
+
+sphere_geometry
+{
+	name				sphere_lg
+	radius				0.45
+}
+
+# Coral ball - front left
+standard_object
+{
+	name				ball_coral
+	geometry			sphere_sm
+	position			-1.5 -1.65 1.0
+	material			coral_ball
+}
+
+# Gold glass ball - center back, creates warm caustics on floor
+standard_object
+{
+	name				ball_gold
+	geometry			sphere_md
+	position			0.5 -1.5 -1.0
+	material			gold_glass
+}
+
+# Blue glass ball - right side, creates blue caustics on floor
+standard_object
+{
+	name				ball_blue
+	geometry			sphere_lg
+	position			2.0 -1.55 0.5
+	material			blue_glass
+}
+
+##################################################
+# Lights - bright spot light from above
+##################################################
+
+# Primary spot light - strong white sun-like illumination punching through water
+spot_light
+{
+	name				sun_spot
+	position			0 8 2
+	target				0 -2 -0.5
+	color				1.0 0.98 0.92
+	power				150.0
+	inner				25
+	outer				60
+}
+
+# Secondary fill spot - slightly blue to add underwater ambiance
+spot_light
+{
+	name				fill_spot
+	position			-3 6 -2
+	target				0 -2 0
+	color				0.7 0.85 1.0
+	power				60.0
+	inner				30
+	outer				70
+}
+
+##################################################
+# Photon mapping - caustics from water refraction
+##################################################
+
+caustic_pel_photonmap
+{
+	num					2000000
+	max_recursion		10
+	min_importance		0.001
+	branch				TRUE
+	reflect				FALSE
+	refract				TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons			150
+}
