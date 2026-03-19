@@ -3,13 +3,12 @@ RISE ASCII SCENE 5
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           pillow.RISEscene                                                                        #
-#   Description:    A "pillow" made up of spheres                                                           #
-#   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      April 23, 2004                                                                          #
+#   Description:    A jewel-toned satin pillow study made up of spheres                                     #
+#   Author:         OpenAI Codex                                                                            #
+#   Birthdate:      March 19, 2026                                                                          #
 #                                                                                                           #
 #############################################################################################################
 
-# Be sure to set the object manager for BSP
 > set accelerator B 10 8
 
 ##################################################
@@ -22,12 +21,27 @@ standard_shader
 	shaderop			DefaultDirectLighting
 }
 
+distributiontracing_shaderop
+{
+	name				dt
+	samples				12
+	diffuse				false
+	reflections			TRUE
+}
+
+standard_shader
+{
+	name				satin_shader
+	shaderop			dt
+	shaderop			DefaultDirectLighting
+}
+
 pixelpel_rasterizer
 {
-	max_recursion		10
+	max_recursion		6
 	min_importance		0.0001
-	samples				1
-	lum_samples			1
+	samples				6
+	lum_samples			4
 }
 
 file_rasterizeroutput
@@ -44,13 +58,12 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 0 15.0
-	lookat				0 0 0
+	location			0.0 0.0 12.6
+	lookat				0.0 0.0 -1.0
 	up					0 1 0
-	width				500
-	height				500
-	fov					30.0
-	theta				-35
+	width				860
+	height				620
+	fov					30.5
 }
 
 ##################################################
@@ -59,45 +72,307 @@ pinhole_camera
 
 > run scenes/colors.RISEscript
 
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.10 0.08 0.08
+}
+
+uniformcolor_painter
+{
+	name				pnt_pearl
+	color				0.96 0.97 0.94
+}
+
+uniformcolor_painter
+{
+	name				pnt_back_a
+	color				0.17 0.11 0.10
+}
+
+uniformcolor_painter
+{
+	name				pnt_back_b
+	color				0.27 0.14 0.11
+}
+
+uniformcolor_painter
+{
+	name				pnt_halo
+	color				1.0 0.70 0.44
+}
+
+uniformcolor_painter
+{
+	name				pnt_halo_cool
+	color				0.48 0.84 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_support
+	color				0.42 0.23 0.14
+}
+
+uniformcolor_painter
+{
+	name				pnt_support_pearl
+	color				0.78 0.72 0.66
+}
+
+uniformcolor_painter
+{
+	name				pnt_panel
+	color				0.14 0.07 0.10
+}
+
 ##################################################
 # Materials
 ##################################################
 
 lambertian_material
 {
-	name				gold
-	reflectance			color_gold
+	name				backdrop
+	reflectance			pnt_back_b
+}
+
+polished_material
+{
+	name				support
+	reflectance			pnt_support
+	tau					pnt_pearl
+	ior					1.45
+	scattering			260.0
+}
+
+polished_material
+{
+	name				support_pearl
+	reflectance			pnt_support_pearl
+	tau					pnt_pearl
+	ior					1.45
+	scattering			320.0
+}
+
+lambertian_material
+{
+	name				panel
+	reflectance			pnt_panel
+}
+
+lambertian_material
+{
+	name				halo_surface
+	reflectance			pnt_halo
+}
+
+lambertian_material
+{
+	name				halo_cool_surface
+	reflectance			pnt_halo_cool
+}
+
+lambertian_luminaire_material
+{
+	name				halo_lum
+	exitance			pnt_halo
+	scale				24.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				halo_cool_lum
+	exitance			pnt_halo_cool
+	scale				11.0
+	material			none
 }
 
 ##################################################
 # Objects
 ##################################################
 
+infiniteplane_geometry
+{
+	name				planegeom
+	xtile				8
+	ytile				8
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-10.0 12.0 0.0
+	ptb					-10.0 -8.0 0.0
+	ptc					10.0 -8.0 0.0
+	ptd					10.0 12.0 0.0
+}
+
+circulardisk_geometry
+{
+	name				halogeom
+	radius				4.8
+	axis				z
+}
+
+circulardisk_geometry
+{
+	name				smallhalogeom
+	radius				2.2
+	axis				z
+}
+
+torus_geometry
+{
+	name				supportgeom
+	majorradius			2.25
+	minorratio			0.22
+}
+
+torus_geometry
+{
+	name				smallsupportgeom
+	majorradius			1.45
+	minorratio			0.25
+}
+
+ellipsoid_geometry
+{
+	name				moongeom
+	radii				1.85 2.65 0.34
+}
+
+box_geometry
+{
+	name				panelgeom
+	width				2.8
+	height				11.0
+	depth				0.45
+}
+
+standard_object
+{
+	name				backdropobj
+	geometry			backwallgeom
+	position			0 0 -6.8
+	material			backdrop
+	receives_shadows	FALSE
+}
+
 FOR YY -2 2 0.4
-	FOR XX -2 2 0.4
+		FOR XX -2 2 0.4
+
+			DEFINE DIST $(sqrt(@XX*@XX+@YY*@YY))
+			DEFINE SHADE $(1.0-@DIST/3.2)
+			DEFINE FX $((@XX+2.0)/4.0)
+			DEFINE FY $((@YY+2.0)/4.0)
+			DEFINE SAT_R $(0.16+0.10*@SHADE+0.16*@FX)
+			DEFINE SAT_G $(0.34+0.16*@SHADE+0.05*cos(@YY*1.0))
+			DEFINE SAT_B $(0.48+0.16*(1.0-@FY)+0.06*sin(@XX*0.9))
+			DEFINE OFFX $(@XX+0.55)
+			DEFINE OFFY $(@YY-0.35)
+			DEFINE OFFD $(sqrt(@OFFX*@OFFX+@OFFY*@OFFY))
+			DEFINE BEND $(@XX+@YY)
+			DEFINE SWEEP $(@XX+1.0)
+			DEFINE PX $(@XX*0.92+0.20*sin(@YY*1.4)-0.15*@FY+0.18)
+			DEFINE PY $(@YY*0.88-0.55*@FX+0.10*cos(@YY*1.1)+0.12*sin(@XX*0.8)-0.05)
+			DEFINE PZ $(-0.40*@FX+0.22*sin(@BEND*0.7)+0.06*cos(@YY*1.5)-0.10)
+			DEFINE BASE_RAD $(1.10/(0.80+@OFFD/3.8))
+			DEFINE RAD_MOD $(0.88+0.10*cos(@XX*0.7-@YY*0.9)+0.04*sin(@SWEEP*1.2))
+			DEFINE RAD $(@BASE_RAD*@RAD_MOD)
+
+		uniformcolor_painter
+		{
+			name			pnt_satin@YY@XX
+			color			@SAT_R @SAT_G @SAT_B
+		}
+
+		polished_material
+		{
+			name			satin@YY@XX
+			reflectance		pnt_satin@YY@XX
+			tau				pnt_pearl
+			ior				1.5
+			scattering		560.0
+		}
 
 		sphere_geometry
 		{
 			name			spheregeom@YY@XX
-			radius			$(1.0/(0.7+sqrt(@XX*@XX+@YY*@YY)/4.0))
+			radius			@RAD
 		}
 
 		standard_object
 		{
 			name			sphere@YY@XX
 			geometry		spheregeom@YY@XX
-			position		@XX @YY 0
-			material		gold
+			position		@PX @PY @PZ
+			material		satin@YY@XX
+			shader			satin_shader
 		}
+
+			UNDEF DIST
+			UNDEF SHADE
+			UNDEF FX
+			UNDEF FY
+			UNDEF SAT_R
+			UNDEF SAT_G
+			UNDEF SAT_B
+			UNDEF OFFX
+			UNDEF OFFY
+			UNDEF OFFD
+			UNDEF BEND
+			UNDEF SWEEP
+			UNDEF PX
+			UNDEF PY
+			UNDEF PZ
+		UNDEF BASE_RAD
+		UNDEF RAD_MOD
+		UNDEF RAD
 
 	ENDFOR
 ENDFOR
 
+##################################################
+# Lights
+##################################################
+
 omni_light
 {
-	name		lightA
-	power		1.0
-	color		1.0 1.0 1.0
-	position	0.0 0.0 15.0
+	name				key_light
+	power				3.5
+	color				1.0 0.88 0.76
+	position			-9.0 6.5 8.2
 }
 
+omni_light
+{
+	name				fill_light
+	power				1.9
+	color				0.66 0.88 1.0
+	position			7.4 3.6 8.6
+}
+
+omni_light
+{
+	name				rim_light
+	power				1.35
+	color				1.0 0.54 0.42
+	position			0.8 6.8 -1.8
+}
+
+omni_light
+{
+	name				front_fill
+	power				0.65
+	color				1.0 0.98 0.95
+	position			-1.2 2.5 11.0
+}
+
+omni_light
+{
+	name				back_accent
+	power				0.8
+	color				0.88 0.72 1.0
+	position			-4.4 4.8 -0.8
+}

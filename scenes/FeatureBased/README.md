@@ -45,6 +45,10 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/shapes.RISEsce
   start with the matching directory here before diving into parser code.
 - Need a parser language example:
   inspect `Parser/` scenes first.
+- Need a more ambitious parser example with nested generated materials, geometry, and lights:
+  inspect `Parser/kaleidoscope_atrium.RISEscene`.
+- Need a parser stress scene that also exercises global illumination and caustic photon maps:
+  inspect `Parser/photon_cloister.RISEscene`.
 - Need spectral examples:
   inspect `SpectralRendering/` and `Materials/spectral_skinmodel.RISEscene`.
 

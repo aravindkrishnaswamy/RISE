@@ -1,0 +1,717 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           photon_cloister.RISEscene                                                               #
+#   Description:    A parser-driven photon-mapped cloister with global illumination,                        #
+#                   refractive caustics, generated materials, and loop-built architecture.                  #
+#   Author:         OpenAI Codex                                                                            #
+#   Birthdate:      March 19, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+> echo event Building the Photon Cloister with final gather, global photons, caustic photons, and parser-generated architecture.
+
+	DEFINE TWOPI $(2*@PI)
+	DEFINE STEP_COUNT 4
+	DEFINE DROPLET_COUNT 3
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+	shaderop			DefaultGlobalPelPhotonMap
+	shaderop			DefaultCausticPelPhotonMap
+	shaderop			DefaultEmission
+	shaderop			DefaultReflection
+	shaderop			DefaultRefraction
+}
+
+hdr_painter
+{
+	name				pnt_env
+	file				lightprobes/stpeters_probe.hdr
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	min_importance		0.001
+	samples				6
+	lum_samples			6
+	ior_stack			TRUE
+	radiance_map		pnt_env
+	radiance_scale		0.35
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/photon_cloister
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 2.9 8.8
+	lookat				0 1.8 -1.2
+	up					0 1 0
+	width				960
+	height				720
+	fov					42.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.94 0.92 0.88
+}
+
+uniformcolor_painter
+{
+	name				pnt_ceiling
+	color				0.98 0.97 0.94
+}
+
+uniformcolor_painter
+{
+	name				pnt_back_wall
+	color				0.96 0.92 0.88
+}
+
+uniformcolor_painter
+{
+	name				pnt_left_wall
+	color				0.90 0.56 0.38
+}
+
+uniformcolor_painter
+{
+	name				pnt_right_wall
+	color				0.34 0.78 0.88
+}
+
+uniformcolor_painter
+{
+	name				pnt_emit
+	color				1.0 0.96 0.92
+}
+
+uniformcolor_painter
+{
+	name				pnt_pedestal
+	color				0.63 0.49 0.32
+}
+
+uniformcolor_painter
+{
+	name				pnt_clear_glass
+	color				0.97 0.98 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_emit_cool
+	color				0.82 0.92 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_caustic_floor
+	color				0.98 0.96 0.92
+}
+
+uniformcolor_painter
+{
+	name				pnt_lens_glass
+	color				1.0 0.82 0.62
+}
+
+uniformcolor_painter
+{
+	name				pnt_prism_glass
+	color				0.64 0.88 1.0
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_material
+{
+	name				ceiling_mat
+	reflectance			pnt_ceiling
+}
+
+lambertian_material
+{
+	name				back_wall_mat
+	reflectance			pnt_back_wall
+}
+
+lambertian_material
+{
+	name				left_wall_mat
+	reflectance			pnt_left_wall
+}
+
+lambertian_material
+{
+	name				right_wall_mat
+	reflectance			pnt_right_wall
+}
+
+lambertian_material
+{
+	name				caustic_floor_mat
+	reflectance			pnt_caustic_floor
+}
+
+lambertian_luminaire_material
+{
+	name				ceiling_lum
+	exitance			pnt_emit
+	scale				120.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				ceiling_lum_cool
+	exitance			pnt_emit_cool
+	scale				100.0
+	material			none
+}
+
+perfectreflector_material
+{
+	name				mirror_mat
+	reflectance			color_silver
+}
+
+polished_material
+{
+	name				pedestal_mat
+	reflectance			pnt_pedestal
+	tau					color_white
+	ior					1.5
+	scattering			350.0
+}
+
+dielectric_material
+{
+	name				clear_glass
+	tau					pnt_clear_glass
+	ior					1.54
+	scattering			100000.0
+}
+
+dielectric_material
+{
+	name				lens_glass
+	tau					pnt_lens_glass
+	ior					1.58
+	scattering			100000.0
+}
+
+dielectric_material
+{
+	name				prism_glass
+	tau					pnt_prism_glass
+	ior					1.66
+	scattering			100000.0
+}
+
+##################################################
+# Geometry
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-6.0 0.0 -6.0
+	ptb					-6.0 0.0 6.0
+	ptc					6.0 0.0 6.0
+	ptd					6.0 0.0 -6.0
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					-6.0 0.0 6.0
+	ptb					-6.0 0.0 -6.0
+	ptc					6.0 0.0 -6.0
+	ptd					6.0 0.0 6.0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-6.0 6.0 0.0
+	ptb					-6.0 0.0 0.0
+	ptc					6.0 0.0 0.0
+	ptd					6.0 6.0 0.0
+}
+
+clippedplane_geometry
+{
+	name				sidewallgeom
+	pta					0.0 6.0 6.0
+	ptb					0.0 0.0 6.0
+	ptc					0.0 0.0 -6.0
+	ptd					0.0 6.0 -6.0
+}
+
+box_geometry
+{
+	name				mirrorgeom
+	width				0.06
+	height				2.8
+	depth				2.6
+}
+
+box_geometry
+{
+	name				stepcapgeom
+	width				1.25
+	height				0.12
+	depth				7.4
+}
+
+circulardisk_geometry
+{
+	name				lightdiskgeom
+	radius				0.55
+	axis				y
+}
+
+circulardisk_geometry
+{
+	name				causticdiskgeom
+	radius				1.55
+	axis				y
+}
+
+cylinder_geometry
+{
+	name				pedestalgeom
+	axis				y
+	radius				0.34
+	height				0.9
+}
+
+sphere_geometry
+{
+	name				orbgeom
+	radius				0.48
+}
+
+sphere_geometry
+{
+	name				lens_sphere_top
+	radius				0.44
+}
+
+sphere_geometry
+{
+	name				lens_sphere_bot
+	radius				0.44
+}
+
+ellipsoid_geometry
+{
+	name				lensgeom
+	radii				0.38 0.18 0.38
+}
+
+torus_geometry
+{
+	name				prismgeom
+	majorradius			0.26
+	minorratio			0.24
+}
+
+standard_object
+{
+	name				lens_half_a
+	geometry			lens_sphere_top
+	position			0 0.30 0
+	material			lens_glass
+}
+
+standard_object
+{
+	name				lens_half_b
+	geometry			lens_sphere_bot
+	position			0 -0.30 0
+	material			lens_glass
+}
+
+##################################################
+# Room shell
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	position			0 6.0 0
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	position			0 0 -6.0
+	material			back_wall_mat
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			sidewallgeom
+	position			-6.0 0 0
+	material			left_wall_mat
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			sidewallgeom
+	position			6.0 0 0
+	orientation			0 180 0
+	material			right_wall_mat
+}
+
+##################################################
+# Loop-generated stair banks
+##################################################
+
+FOR SIDE -1 1 2
+	FOR STEP 0 @STEP_COUNT 1
+
+			DEFINE SW $(1.15+@STEP*0.08)
+			DEFINE SH $(0.22+@STEP*0.18)
+			DEFINE SD $(7.4-@STEP*0.4)
+			DEFINE SX $(@SIDE*(4.9-@STEP*0.78))
+			DEFINE SZ $(0.0-@STEP*0.25)
+			DEFINE SR $(0.58+0.08*@STEP-0.18*@SIDE)
+			DEFINE SG $(0.44+0.06*@STEP+0.04*@SIDE)
+			DEFINE SB $(0.46+0.05*@STEP+0.18*@SIDE)
+
+		uniformcolor_painter
+		{
+			name			pnt_step@SIDE@STEP
+			color			@SR @SG @SB
+		}
+
+		orennayar_material
+		{
+			name			step_mat@SIDE@STEP
+			reflectance		pnt_step@SIDE@STEP
+			roughness		0.8
+		}
+
+		box_geometry
+		{
+			name			stepgeom@SIDE@STEP
+			width			@SW
+			height			@SH
+			depth			@SD
+		}
+
+		standard_object
+		{
+			name			step@SIDE@STEP
+			geometry		stepgeom@SIDE@STEP
+			position		@SX $(@SH*0.5) @SZ
+			material		step_mat@SIDE@STEP
+		}
+
+		standard_object
+		{
+			name			stepcap@SIDE@STEP
+			geometry		stepcapgeom
+			position		@SX $(@SH+0.06) @SZ
+			material		floor_mat
+		}
+
+		UNDEF SW
+		UNDEF SH
+		UNDEF SD
+		UNDEF SX
+		UNDEF SZ
+		UNDEF SR
+		UNDEF SG
+		UNDEF SB
+
+	ENDFOR
+ENDFOR
+
+##################################################
+# Ceiling luminaire grid
+##################################################
+
+FOR IX -1 1 1
+
+	DEFINE LX $(@IX*2.25)
+
+	standard_object
+	{
+		name			ceilingdiskwarm@IX
+		geometry		lightdiskgeom
+		position		@LX 5.92 -2.2
+		material		ceiling_lum
+	}
+
+	standard_object
+	{
+		name			ceilingdiskcool@IX
+		geometry		lightdiskgeom
+		position		@LX 5.92 0.0
+		material		ceiling_lum_cool
+	}
+
+	UNDEF LX
+
+ENDFOR
+
+##################################################
+# Mirrors
+##################################################
+
+FOR SIDE -1 1 2
+
+	standard_object
+	{
+		name			mirror@SIDE
+		geometry		mirrorgeom
+		position		$(@SIDE*5.7) 1.6 -1.9
+		orientation		0 $(@SIDE*12.0) 0
+		material		mirror_mat
+	}
+
+ENDFOR
+
+##################################################
+# Parser-generated droplet canopy
+##################################################
+
+FOR I -@DROPLET_COUNT @DROPLET_COUNT 1
+
+	DEFINE GX $(@I*1.2)
+	DEFINE GZ $(0.70+0.16*cos(@I*0.9))
+	DEFINE GY $(3.15+0.20*sin(@I*0.8))
+	DEFINE GABS $(sqrt(@I*@I))
+	DEFINE GRX $(0.20+0.02*(@DROPLET_COUNT-@GABS))
+	DEFINE GRY $(0.40+0.04*cos(@I*0.7))
+	DEFINE GC_R $(0.82+0.12*sin(@I*0.8))
+	DEFINE GC_G $(0.58+0.18*cos(@I*0.9))
+	DEFINE GC_B $(0.78+0.16*sin(@I*0.5))
+	DEFINE GLOW $(14.0+2.5*(@DROPLET_COUNT-@GABS))
+
+	uniformcolor_painter
+	{
+		name			pnt_glass@I
+		color			@GC_R @GC_G @GC_B
+	}
+
+	lambertian_luminaire_material
+	{
+		name			glass@I
+		exitance		pnt_glass@I
+		scale			@GLOW
+		material		none
+	}
+
+	ellipsoid_geometry
+	{
+		name			dropletgeom@I
+		radii			@GRX @GRY @GRX
+	}
+
+	standard_object
+	{
+		name			droplet@I
+		geometry		dropletgeom@I
+		position		@GX @GY @GZ
+		material		glass@I
+	}
+
+	UNDEF GX
+	UNDEF GZ
+	UNDEF GY
+	UNDEF GABS
+	UNDEF GRX
+	UNDEF GRY
+	UNDEF GC_R
+	UNDEF GC_G
+	UNDEF GC_B
+		UNDEF GLOW
+
+ENDFOR
+
+##################################################
+# Central caustic target
+##################################################
+
+standard_object
+{
+	name				caustic_floor
+	geometry			causticdiskgeom
+	position			0 0.001 -1.0
+	material			caustic_floor_mat
+}
+
+standard_object
+{
+	name				pedestal
+	geometry			pedestalgeom
+	position			0 0.45 -1.0
+	material			pedestal_mat
+}
+
+standard_object
+{
+	name				crystal_orb
+	geometry			orbgeom
+	position			0 1.38 -1.0
+	material			clear_glass
+}
+
+csg_object
+{
+	name				caustic_lens
+	obja				lens_half_a
+	objb				lens_half_b
+	operation			intersection
+	position			-0.74 0.46 -1.86
+	orientation			0 0 -8
+}
+
+standard_object
+{
+	name				caustic_prism
+	geometry			prismgeom
+	position			0.92 0.56 -1.98
+	orientation			84 30 52
+	material			prism_glass
+}
+
+##################################################
+# Focused lights for caustic generation
+##################################################
+
+spot_light
+{
+	name				caustic_spot_left
+	position			-0.86 5.95 -1.22
+	target				-0.74 0.46 -1.86
+	color				1.0 0.95 0.88
+	power				5.5
+	inner				1.1
+	outer				2.6
+}
+
+spot_light
+{
+	name				caustic_spot_right
+	position			1.08 5.95 -1.32
+	target				0.92 0.56 -1.98
+	color				0.92 0.96 1.0
+	power				5.7
+	inner				1.0
+	outer				2.4
+}
+
+spot_light
+{
+	name				caustic_spot_center
+	position			0 5.95 1.05
+	target				0 1.38 -1.0
+	color				1.0 0.98 0.94
+	power				2.1
+	inner				1.5
+	outer				3.2
+}
+
+spot_light
+{
+	name				fill_spot
+	position			0 5.0 3.8
+	target				0 2.0 -1.0
+	color				1.0 0.98 0.94
+	power				3.2
+	inner				18
+	outer				36
+}
+
+##################################################
+# Photon map settings
+##################################################
+
+caustic_pel_photonmap
+{
+	num					100000
+	max_recursion		10
+	min_importance		0.001
+	power_scale			10.0
+	branch				TRUE
+	reflect				TRUE
+	refract				TRUE
+	nonmeshlights		TRUE
+	ior_stack			TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons			120
+	radius				0.035
+	ellipse_ratio		0.03
+}
+
+global_pel_photonmap
+{
+	num					100000
+	max_recursion		5
+	min_importance		0.005
+	branch				FALSE
+}
+
+global_pel_gather
+{
+	max_photons			1500
+	radius				0.18
+	ellipse_ratio		0.05
+}
