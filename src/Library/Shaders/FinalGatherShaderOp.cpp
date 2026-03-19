@@ -29,11 +29,24 @@ namespace
 	const Scalar kVariationBrightRecordLuminance = Scalar(0.2);
 	const Scalar kVariationCoeffThreshold = Scalar(1.5);
 	const Scalar kVariationPeakThreshold = Scalar(6.0);
+	const Scalar kVariationRejectCoeffThreshold = Scalar(2.5);
+	const Scalar kVariationRejectPeakThreshold = Scalar(10.0);
 
 	inline Scalar ComputePelLuminance( const RISEPel& pel )
 	{
 		return 0.212671 * pel[0] + 0.715160 * pel[1] + 0.072169 * pel[2];
 	}
+
+	struct IrradianceReuseDecision
+	{
+		Scalar reuseScale;
+		bool bRejectCacheInsert;
+
+		IrradianceReuseDecision() :
+			reuseScale( 1.0 ),
+			bRejectCacheInsert( false )
+		{}
+	};
 
 	struct IrradianceVariationStats
 	{
@@ -58,20 +71,22 @@ namespace
 			maxLuminance = r_max( maxLuminance, luminance );
 		}
 
-		inline Scalar ComputeReuseScale( const RISEPel& cachedIrradiance, const Scalar minimumReuseScale ) const
+		inline IrradianceReuseDecision ComputeReuseDecision( const RISEPel& cachedIrradiance, const Scalar minimumReuseScale ) const
 		{
+			IrradianceReuseDecision decision;
+
 			if( sampleCount == 0 ) {
-				return 1.0;
+				return decision;
 			}
 
 			const Scalar cachedLuminance = r_max( Scalar(0), ComputePelLuminance( cachedIrradiance ) );
 			if( cachedLuminance <= kVariationBrightRecordLuminance ) {
-				return 1.0;
+				return decision;
 			}
 
 			const Scalar meanLuminance = sumLuminance / Scalar(sampleCount);
 			if( meanLuminance <= NEARZERO ) {
-				return 1.0;
+				return decision;
 			}
 
 			const Scalar variance = r_max(
@@ -85,15 +100,25 @@ namespace
 			// describing a locally smooth irradiance field. Reusing them broadly
 			// causes exactly the kind of hot-centered circular footprints seen in
 			// gi_spheres, so make those records much more local.
-			Scalar reuseScale = 1.0;
+			decision.reuseScale = 1.0;
 			if( coefficientOfVariation > kVariationCoeffThreshold ) {
-				reuseScale = r_min( reuseScale, kVariationCoeffThreshold / coefficientOfVariation );
+				decision.reuseScale = r_min( decision.reuseScale, kVariationCoeffThreshold / coefficientOfVariation );
 			}
 			if( peakToMeanRatio > kVariationPeakThreshold ) {
-				reuseScale = r_min( reuseScale, kVariationPeakThreshold / peakToMeanRatio );
+				decision.reuseScale = r_min( decision.reuseScale, kVariationPeakThreshold / peakToMeanRatio );
 			}
 
-				return r_max( minimumReuseScale, reuseScale );
+			// Extremely peaky bright records are usually driven by a few outlier
+			// hemisphere samples rather than a genuinely smooth irradiance field.
+			// Even a tiny reuse radius turns those records into small bright disks,
+			// so once both the variation and peakiness are well beyond the normal
+			// shrink thresholds, it is safer to skip caching the record entirely.
+			decision.bRejectCacheInsert =
+				coefficientOfVariation > kVariationRejectCoeffThreshold &&
+				peakToMeanRatio > kVariationRejectPeakThreshold;
+
+			decision.reuseScale = r_max( minimumReuseScale, decision.reuseScale );
+			return decision;
 		}
 	};
 
@@ -648,11 +673,18 @@ void FinalGatherShaderOp::PerformOperation(
 
 					// Insert into cache if we are in irradiance cache pass
 					if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_IRRADIANCE_CACHE ) {
-					if( rsum ) {
-						// Add the indirect value to the cache
-						rsum = (rsum!=0 ? Scalar(hits)/rsum : 0);
-							rsum *= irradianceVariationStats.ComputeReuseScale( c, high_variation_reuse_scale );
-							pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
+						if( rsum ) {
+							// Add the indirect value to the cache. Records whose own
+							// hemisphere estimate is extremely unstable are kept out of
+							// the cache entirely, because reusing them tends to stamp a
+							// localized bright disk onto nearby shading points.
+							rsum = (rsum!=0 ? Scalar(hits)/rsum : 0);
+							const IrradianceReuseDecision reuseDecision =
+								irradianceVariationStats.ComputeReuseDecision( c, high_variation_reuse_scale );
+							if( !reuseDecision.bRejectCacheInsert ) {
+								rsum *= reuseDecision.reuseScale;
+								pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
+							}
 						}
 					}
 			}
