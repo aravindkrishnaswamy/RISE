@@ -73,6 +73,45 @@ IObjectPriv* CSGObject::CloneGeometric()
 	return pClone;
 }
 
+const BoundingBox CSGObject::getBoundingBox() const
+{
+	if( !pObjectA || !pObjectB ) {
+		GlobalLog()->PrintSourceWarning( "CSGObject::getBoundingBox:: No subobjects for this CSG object, returning an empty box", __FILE__, __LINE__ );
+		return BoundingBox( Point3(0,0,0), Point3(0,0,0) );
+	}
+
+	BoundingBox bbox = pObjectA->getBoundingBox();
+
+	// Unions and intersections must enclose both child volumes. Subtraction
+	// can never extend beyond object A.
+	if( op != CSG_SUBTRACTION ) {
+		bbox.Include( pObjectB->getBoundingBox() );
+	}
+
+	const Point3 corners[8] = {
+		Point3( bbox.ll.x, bbox.ll.y, bbox.ll.z ),
+		Point3( bbox.ll.x, bbox.ll.y, bbox.ur.z ),
+		Point3( bbox.ll.x, bbox.ur.y, bbox.ll.z ),
+		Point3( bbox.ll.x, bbox.ur.y, bbox.ur.z ),
+		Point3( bbox.ur.x, bbox.ll.y, bbox.ll.z ),
+		Point3( bbox.ur.x, bbox.ll.y, bbox.ur.z ),
+		Point3( bbox.ur.x, bbox.ur.y, bbox.ll.z ),
+		Point3( bbox.ur.x, bbox.ur.y, bbox.ur.z )
+	};
+
+	BoundingBox transformed(
+		Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+		Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY )
+	);
+
+	for( unsigned int i=0; i<8; i++ ) {
+		transformed.Include( Point3Ops::Transform( m_mxFinalTrans, corners[i] ) );
+	}
+
+	transformed.SanityCheck();
+	return transformed;
+}
+
 bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 {
 	// Check the parameters
@@ -404,4 +443,3 @@ void CSGObject::ResetRuntimeData() const
 		pObjectB->ResetRuntimeData();
 	}
 }
-

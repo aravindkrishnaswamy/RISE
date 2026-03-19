@@ -47,6 +47,7 @@ namespace RISE
 			IObjectPriv* CloneFull();
 			IObjectPriv* CloneGeometric();
 
+			const BoundingBox getBoundingBox() const;
 			void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 
