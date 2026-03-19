@@ -1,0 +1,484 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           planetary_survey.RISEscene                                                              #
+#   Description:    A fisheye view of an alien planetary system. Procedural textures define each planet's   #
+#                   surface: Voronoi3D for cracked lava, Perlin3D for gas giant bands, blend painters       #
+#                   for mixed terrain. A blackbody radiator sun glows at the center.                        #
+#                   Tests: fisheye camera, Voronoi3D as material, Perlin3D as material, blend painter,     #
+#                          blackbody painter on luminaire, multiple sphere+ellipsoid geometry               #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+# Space background painter (must be before rasterizer)
+uniformcolor_painter
+{
+	name				pnt_space
+	color				0.02 0.02 0.04
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	DefaultEmission
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	min_importance		0.001
+	samples				49
+	lum_samples			1
+	radiance_map		pnt_space
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/planetary_survey
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras - Fisheye for wide panoramic view
+##################################################
+
+fisheye_camera
+{
+	location			0 2 18
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				800
+	scale				1.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Blackbody radiator for the central star (~5800K sun-like)
+blackbody_painter
+{
+	name				pnt_star
+	temperature			5800
+	scale				0.0005
+}
+
+# Color painters for procedural textures
+uniformcolor_painter
+{
+	name				pnt_gas_orange
+	color				0.85 0.55 0.25
+}
+
+uniformcolor_painter
+{
+	name				pnt_gas_cream
+	color				0.95 0.9 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_border
+	color				1.0 0.3 0.05
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_dark1
+	color				0.15 0.05 0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_dark2
+	color				0.12 0.04 0.01
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_dark3
+	color				0.18 0.06 0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_dark4
+	color				0.1 0.03 0.01
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_dark5
+	color				0.14 0.05 0.015
+}
+
+uniformcolor_painter
+{
+	name				pnt_lava_dark6
+	color				0.16 0.04 0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_ice_blue
+	color				0.7 0.85 0.95
+}
+
+uniformcolor_painter
+{
+	name				pnt_ice_white
+	color				0.95 0.97 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_terrain_brown
+	color				0.4 0.35 0.25
+}
+
+uniformcolor_painter
+{
+	name				pnt_terrain_tan
+	color				0.55 0.5 0.35
+}
+
+uniformcolor_painter
+{
+	name				pnt_crater_border
+	color				0.3 0.28 0.2
+}
+
+uniformcolor_painter
+{
+	name				pnt_crater_c1
+	color				0.5 0.45 0.35
+}
+
+uniformcolor_painter
+{
+	name				pnt_crater_c2
+	color				0.45 0.4 0.32
+}
+
+uniformcolor_painter
+{
+	name				pnt_crater_c3
+	color				0.48 0.42 0.33
+}
+
+uniformcolor_painter
+{
+	name				pnt_crater_c4
+	color				0.52 0.46 0.36
+}
+
+uniformcolor_painter
+{
+	name				pnt_moon_dark
+	color				0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name				pnt_moon_light
+	color				0.7 0.7 0.7
+}
+
+# Gas giant: Perlin3D bands in orange and cream
+perlin3d_painter
+{
+	name				pnt_gasgiant
+	colora				pnt_gas_orange
+	colorb				pnt_gas_cream
+	persistence			0.3
+	octaves				8
+	scale				1.0 12.0 1.0
+}
+
+# Lava world: Voronoi3D for cracked surface
+voronoi3d_painter
+{
+	name				pnt_lava
+	border				pnt_lava_border
+	bordersize			0.06
+	gen					0.1 0.2 0.3 pnt_lava_dark1
+	gen					0.6 0.4 0.1 pnt_lava_dark2
+	gen					0.3 0.8 0.7 pnt_lava_dark3
+	gen					0.8 0.2 0.6 pnt_lava_dark4
+	gen					0.5 0.5 0.5 pnt_lava_dark5
+	gen					0.2 0.6 0.9 pnt_lava_dark6
+}
+
+# Ice world: Perlin3D in blues and whites
+perlin3d_painter
+{
+	name				pnt_ice
+	colora				pnt_ice_blue
+	colorb				pnt_ice_white
+	persistence			0.5
+	octaves				5
+	scale				4.0 4.0 4.0
+}
+
+# Rocky world: blend of Perlin and Voronoi
+perlin3d_painter
+{
+	name				pnt_terrain_base
+	colora				pnt_terrain_brown
+	colorb				pnt_terrain_tan
+	persistence			0.6
+	octaves				6
+	scale				6.0 6.0 6.0
+}
+
+voronoi3d_painter
+{
+	name				pnt_craters
+	border				pnt_crater_border
+	bordersize			0.03
+	gen					0.15 0.35 0.25 pnt_crater_c1
+	gen					0.65 0.45 0.15 pnt_crater_c2
+	gen					0.35 0.85 0.75 pnt_crater_c3
+	gen					0.85 0.25 0.55 pnt_crater_c4
+}
+
+perlin2d_painter
+{
+	name				pnt_terrain_mask
+	colora				color_black
+	colorb				color_white
+	persistence			0.35
+	octaves				4
+	scale				5.0 5.0
+}
+
+blend_painter
+{
+	name				pnt_rocky
+	colora				pnt_terrain_base
+	colorb				pnt_craters
+	mask				pnt_terrain_mask
+}
+
+# Moon: simple gray Perlin
+perlin3d_painter
+{
+	name				pnt_moon
+	colora				pnt_moon_dark
+	colorb				pnt_moon_light
+	persistence			0.55
+	octaves				4
+	scale				8.0 8.0 8.0
+}
+
+##################################################
+# Materials
+##################################################
+
+# Star - luminaire with blackbody color
+lambertian_luminaire_material
+{
+	name				star_mat
+	exitance			pnt_star
+	scale				200.0
+	material			none
+}
+
+# Gas giant
+lambertian_material
+{
+	name				gasgiant_mat
+	reflectance			pnt_gasgiant
+}
+
+# Lava world
+lambertian_material
+{
+	name				lava_mat
+	reflectance			pnt_lava
+}
+
+# Ice world - slightly glossy
+isotropic_phong_material
+{
+	name				ice_mat
+	rd					pnt_ice
+	rs					color_white
+	N					32.0
+}
+
+# Rocky world
+orennayar_material
+{
+	name				rocky_mat
+	reflectance			pnt_rocky
+	roughness			0.85
+}
+
+# Moon
+lambertian_material
+{
+	name				moon_mat
+	reflectance			pnt_moon
+}
+
+# Space background
+lambertian_material
+{
+	name				space_mat
+	reflectance			pnt_space
+}
+
+##################################################
+# Geometries & Objects
+##################################################
+
+# Central star
+sphere_geometry
+{
+	name				stargeom
+	radius				1.5
+}
+
+standard_object
+{
+	name				star
+	geometry			stargeom
+	position			0 0 0
+	material			star_mat
+}
+
+# Gas giant (oblate ellipsoid)
+ellipsoid_geometry
+{
+	name				gasgiantgeom
+	radii				1.8 1.5 1.8
+}
+
+standard_object
+{
+	name				gas_giant
+	geometry			gasgiantgeom
+	position			6.0 0.5 -2.0
+	orientation			5 0 8
+	material			gasgiant_mat
+}
+
+# Gas giant ring (torus)
+torus_geometry
+{
+	name				ringgeom
+	majorradius			2.8
+	minorratio			0.02
+}
+
+standard_object
+{
+	name				giant_ring
+	geometry			ringgeom
+	position			6.0 0.5 -2.0
+	orientation			75 0 10
+	material			ice_mat
+}
+
+# Lava world
+sphere_geometry
+{
+	name				lavageom
+	radius				0.8
+}
+
+standard_object
+{
+	name				lava_planet
+	geometry			lavageom
+	position			-4.0 -0.5 1.5
+	material			lava_mat
+}
+
+# Ice world
+sphere_geometry
+{
+	name				icegeom
+	radius				1.0
+}
+
+standard_object
+{
+	name				ice_planet
+	geometry			icegeom
+	position			3.0 -1.0 5.0
+	material			ice_mat
+}
+
+# Rocky world
+sphere_geometry
+{
+	name				rockygeom
+	radius				0.65
+}
+
+standard_object
+{
+	name				rocky_planet
+	geometry			rockygeom
+	position			-2.5 1.5 -4.0
+	material			rocky_mat
+}
+
+# Small moons
+sphere_geometry
+{
+	name				moongeom
+	radius				0.2
+}
+
+standard_object
+{
+	name				moon1
+	geometry			moongeom
+	position			6.8 1.8 -1.0
+	material			moon_mat
+}
+
+standard_object
+{
+	name				moon2
+	geometry			moongeom
+	position			-4.6 -0.1 1.8
+	material			moon_mat
+}
+
+standard_object
+{
+	name				moon3
+	geometry			moongeom
+	position			3.6 -0.5 5.5
+	material			moon_mat
+}
+
+##################################################
+# Lights
+##################################################
+
+# The star itself is a luminaire, but also add a point light co-located
+omni_light
+{
+	name				starlight
+	power				6.0
+	color				1.0 0.95 0.85
+	position			0 0 0
+}

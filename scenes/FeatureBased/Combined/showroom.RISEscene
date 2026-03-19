@@ -1,0 +1,418 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           showroom.RISEscene                                                                      #
+#   Description:    A showroom displaying the torus knot mesh with iridescent material, a Ward              #
+#                   anisotropic cylinder, and various objects under ambient occlusion with IBL from          #
+#                   St. Peter's Basilica light probe. Features the adaptive rasterizer.                     #
+#                   Tests: risemesh (torusknot), iridescent painter as material, Ward anisotropic on        #
+#                          cylinder, ambient occlusion + IBL (stpeters probe), adaptive rasterizer,         #
+#                          lines painter, Ashikmin-Shirley material                                        #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+hdr_painter
+{
+	name				pnt_env
+	file				lightprobes/stpeters_probe.hdr
+}
+
+ambientocclusion_shaderop
+{
+	name				ambocc
+	multiplybrdf		true
+	numphi				16
+	numtheta			4
+	irradiance_cache	true
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+	shaderop		ambocc
+}
+
+distributiontracing_shaderop
+{
+	name			dt
+	samples			8
+	reflections		TRUE
+	diffuse			false
+}
+
+standard_shader
+{
+	name			glossy_shader
+	shaderop		dt
+	shaderop		DefaultDirectLighting
+	shaderop		ambocc
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	min_importance		0.001
+	samples				4
+	lum_samples			1
+	radiance_map		pnt_env
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/showroom
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 3.0 8.0
+	lookat				0 1.0 0
+	up					0 1 0
+	width				800
+	height				600
+	fov					35.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Iridescent painter for the torus knot
+uniformcolor_painter
+{
+	name				pnt_iri_blue
+	color				0.2 0.4 0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_iri_pink
+	color				0.8 0.3 0.5
+}
+
+iridescent_painter
+{
+	name				pnt_iridescent
+	colora				pnt_iri_blue
+	colorb				pnt_iri_pink
+	bias				0.4
+}
+
+# Lines painter for the display platform
+uniformcolor_painter
+{
+	name				pnt_lines_dark
+	color				0.15 0.15 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_lines_light
+	color				0.25 0.25 0.25
+}
+
+lines_painter
+{
+	name				pnt_lines
+	colora				pnt_lines_dark
+	colorb				pnt_lines_light
+	size				0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_brushed_metal
+	color				0.65 0.63 0.6
+}
+
+uniformcolor_painter
+{
+	name				pnt_brushed_spec
+	color				0.9 0.88 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_darkgray
+	color				0.2 0.2 0.2
+}
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.95 0.92 0.88
+}
+
+uniformcolor_painter
+{
+	name				pnt_ruby
+	color				0.6 0.1 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_ruby_spec
+	color				0.95 0.6 0.65
+}
+
+# Anisotropic highlight parameters for the cylinder
+uniformcolor_painter
+{
+	name				pnt_aniso_alpha_x
+	colorspace			RISERGB
+	color				0.01 0.01 0.01
+}
+
+uniformcolor_painter
+{
+	name				pnt_aniso_alpha_y
+	colorspace			RISERGB
+	color				0.3 0.3 0.3
+}
+
+# Ashikmin-Shirley Nu/Nv
+uniformcolor_painter
+{
+	name				pnt_nu
+	colorspace			RISERGB
+	color				10 10 10
+}
+
+uniformcolor_painter
+{
+	name				pnt_nv
+	colorspace			RISERGB
+	color				500 500 500
+}
+
+##################################################
+# Materials
+##################################################
+
+# Iridescent material for the torus knot
+lambertian_material
+{
+	name				iridescent_mat
+	reflectance			pnt_iridescent
+}
+
+# Brushed metal cylinder - Ward anisotropic
+ward_anisotropic_material
+{
+	name				brushed_metal
+	rd					pnt_brushed_metal
+	rs					pnt_brushed_spec
+	alphax				pnt_aniso_alpha_x
+	alphay				pnt_aniso_alpha_y
+}
+
+# Display platform - lines pattern
+lambertian_material
+{
+	name				platform_mat
+	reflectance			pnt_lines
+}
+
+# Dark gallery floor
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_darkgray
+}
+
+# Ashikmin-Shirley anisotropic for a vase-like object
+ashikminshirley_anisotropicphong_material
+{
+	name				ashikmin_mat
+	rd					pnt_warm_white
+	rs					pnt_warm_white
+	nu					pnt_nu
+	nv					pnt_nv
+}
+
+# Glossy ruby sphere - Schlick
+schlick_material
+{
+	name				ruby
+	rd					pnt_ruby
+	rs					pnt_ruby_spec
+	roughness			0.05
+	isotropy			1.0
+}
+
+##################################################
+# Geometries & Objects
+##################################################
+
+# Floor (clipped plane for irradiance cache compatibility)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-8.0 0.0 -6.0
+	ptb					-8.0 0.0 6.0
+	ptc					8.0 0.0 6.0
+	ptd					8.0 0.0 -6.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0.0 0.0 0.0
+	material			floor_mat
+}
+
+# Central display platform
+cylinder_geometry
+{
+	name				platformgeom
+	axis				y
+	radius				1.2
+	height				0.3
+}
+
+standard_object
+{
+	name				platform
+	geometry			platformgeom
+	position			0 0.15 0
+	material			platform_mat
+}
+
+# Torus knot (risemesh) - central showpiece with iridescent material
+risemesh_geometry
+{
+	name				torusknot_geom
+	file				models/risemesh/torusknot.risemesh
+}
+
+standard_object
+{
+	name				torus_knot
+	geometry			torusknot_geom
+	position			0 1.5 0
+	orientation			0 30 0
+	scale				0.008 0.008 0.008
+	material			iridescent_mat
+}
+
+# Brushed metal cylinder - left display
+cylinder_geometry
+{
+	name				metalcylgeom
+	axis				y
+	radius				0.4
+	height				2.0
+}
+
+standard_object
+{
+	name				metal_cylinder
+	geometry			metalcylgeom
+	position			-3.0 1.0 -1.0
+	material			brushed_metal
+	shader				glossy_shader
+}
+
+# Ashikmin-Shirley ellipsoid - right display
+ellipsoid_geometry
+{
+	name				vasegeom
+	radii				0.5 1.0 0.5
+}
+
+standard_object
+{
+	name				ashikmin_vase
+	geometry			vasegeom
+	position			3.0 1.0 -1.0
+	material			ashikmin_mat
+	shader				glossy_shader
+}
+
+# Ruby sphere in the foreground
+sphere_geometry
+{
+	name				rubygeom
+	radius				0.35
+}
+
+standard_object
+{
+	name				ruby_sphere
+	geometry			rubygeom
+	position			1.5 0.35 2.5
+	material			ruby
+	shader				glossy_shader
+}
+
+# Small display pedestals for side objects
+box_geometry
+{
+	name				sidepedestalgeom
+	width				0.8
+	height				0.6
+	depth				0.8
+}
+
+standard_object
+{
+	name				pedestal_left
+	geometry			sidepedestalgeom
+	position			-3.0 0.3 -1.0
+	material			platform_mat
+}
+
+standard_object
+{
+	name				pedestal_right
+	geometry			sidepedestalgeom
+	position			3.0 0.3 -1.0
+	material			platform_mat
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name				key
+	power				2.0
+	color				1.0 0.98 0.93
+	direction			-0.5 -1.0 0.3
+}
+
+omni_light
+{
+	name				fill
+	power				0.8
+	color				0.9 0.92 1.0
+	position			4 5 6
+}
+
+irradiance_cache
+{
+	size				500
+	tolerance			0.3
+	min_spacing			8
+	max_spacing			100
+}

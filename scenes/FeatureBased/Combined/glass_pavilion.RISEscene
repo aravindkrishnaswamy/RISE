@@ -1,0 +1,518 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           glass_pavilion.RISEscene                                                                #
+#   Description:    An architectural glass pavilion with CSG columns (cylinder minus boxes to create         #
+#                   fluted columns), polished floor, and a glass sphere and bezier vase inside.             #
+#                   Tests: CSG with cylinder, polished material on floor, Cook-Torrance material,           #
+#                          dielectric glass, bezier mesh, clipped plane geometry                            #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+distributiontracing_shaderop
+{
+	name			dt
+	samples			32
+	diffuse			false
+	reflections		TRUE
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+standard_shader
+{
+	name			floor_shader
+	shaderop		dt
+	shaderop		DefaultDirectLighting
+}
+
+standard_shader
+{
+	name			glass_shader
+	shaderop		DefaultDirectLighting
+	shaderop		DefaultReflection
+	shaderop		DefaultRefraction
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	min_importance		0.001
+	samples				16
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/glass_pavilion
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+thinlens_camera
+{
+	location			-3.5 2.0 6.0
+	lookat				0 1.5 0
+	up					0 1 0
+	width				800
+	height				600
+	fov					40.0
+	aperture_size		0.05
+	focal_length		3.5
+	focus_distance		6.5
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_marble_white
+	color				0.92 0.9 0.88
+}
+
+uniformcolor_painter
+{
+	name				pnt_marble_dark
+	color				0.3 0.28 0.26
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_light
+	color				0.88 0.86 0.82
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_dark
+	color				0.25 0.23 0.22
+}
+
+checker_painter
+{
+	name				pnt_floor_checker
+	colora				pnt_floor_light
+	colorb				pnt_floor_dark
+	size				0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				0.95 0.97 0.98
+}
+
+uniformcolor_painter
+{
+	name				pnt_bronze
+	color				0.72 0.5 0.3
+}
+
+uniformcolor_painter
+{
+	name				pnt_bronze_spec
+	color				0.9 0.7 0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+# Polished marble floor
+polished_material
+{
+	name				polished_floor
+	reflectance			pnt_floor_checker
+	tau					pnt_floor_checker
+	ior					1.5
+	scattering			600.0
+}
+
+# Column marble
+lambertian_material
+{
+	name				marble_col
+	reflectance			pnt_marble_white
+}
+
+# Darker marble for walls
+lambertian_material
+{
+	name				marble_dark
+	reflectance			pnt_marble_dark
+}
+
+# Glass
+dielectric_material
+{
+	name				glass
+	tau					pnt_glass
+	ior					1.52
+	scattering			10000.0
+}
+
+# Bronze material for the vase (Cook-Torrance)
+cooktorrance_material
+{
+	name				bronze
+	rd					pnt_bronze
+	rs					pnt_bronze_spec
+	facets				0.15
+	ior					2.5
+	extinction			3.0
+}
+
+
+##################################################
+# Geometries
+##################################################
+
+# Floor
+box_geometry
+{
+	name				floorgeom
+	width				10.0
+	height				0.2
+	depth				10.0
+}
+
+# Ceiling
+clippedplane_geometry
+{
+	name				ceilgeom
+	pta					-5.0 0.0 -5.0
+	ptb					-5.0 0.0 5.0
+	ptc					5.0 0.0 5.0
+	ptd					5.0 0.0 -5.0
+}
+
+# Column cylinder
+cylinder_geometry
+{
+	name				colcylgeom
+	axis				y
+	radius				0.25
+	height				5.0
+}
+
+# Fluting cutout (thin boxes to subtract from cylinder)
+box_geometry
+{
+	name				flutegeom
+	width				0.08
+	height				5.2
+	depth				0.5
+}
+
+# Column base/capital
+box_geometry
+{
+	name				capgeom
+	width				0.7
+	height				0.15
+	depth				0.7
+}
+
+# Glass sphere
+sphere_geometry
+{
+	name				glassspheregeom
+	radius				0.6
+}
+
+# Bezier teapot as a decorative vase
+beziermesh_geometry
+{
+	name				vasegeom
+	file				models/raw/teapot.bezier
+	detail				20
+	maxdepth			16
+	maxpolygons			10
+	bsp					TRUE
+	combine_shared		TRUE
+	center_object		TRUE
+}
+
+# Back wall
+clippedplane_geometry
+{
+	name				wallgeom
+	pta					-5.0 5.0 0.0
+	ptb					-5.0 0.0 0.0
+	ptc					5.0 0.0 0.0
+	ptd					5.0 5.0 0.0
+}
+
+##################################################
+# Objects
+##################################################
+
+# Floor with polished material and distribution tracing
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0.0 0.0 0.0
+	material			polished_floor
+	shader				floor_shader
+}
+
+# Ceiling
+standard_object
+{
+	name				ceiling
+	geometry			ceilgeom
+	position			0 5.0 0
+	material			marble_col
+}
+
+# Back wall
+standard_object
+{
+	name				backwall
+	geometry			wallgeom
+	position			0 0 -5.0
+	material			marble_dark
+}
+
+# Create 4 fluted columns at the corners using CSG
+# Column 1: front-left
+standard_object
+{
+	name				col1_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col1_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column1
+	obja				col1_cyl
+	objb				col1_flute
+	operation			subtraction
+	position			-2.5 2.5 2.5
+}
+
+# Column 2: front-right
+standard_object
+{
+	name				col2_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col2_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column2
+	obja				col2_cyl
+	objb				col2_flute
+	operation			subtraction
+	position			2.5 2.5 2.5
+	orientation			0 45 0
+}
+
+# Column 3: back-left
+standard_object
+{
+	name				col3_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col3_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column3
+	obja				col3_cyl
+	objb				col3_flute
+	operation			subtraction
+	position			-2.5 2.5 -2.5
+	orientation			0 30 0
+}
+
+# Column 4: back-right
+standard_object
+{
+	name				col4_cyl
+	geometry			colcylgeom
+	material			marble_col
+}
+
+standard_object
+{
+	name				col4_flute
+	geometry			flutegeom
+	material			marble_col
+}
+
+csg_object
+{
+	name				column4
+	obja				col4_cyl
+	objb				col4_flute
+	operation			subtraction
+	position			2.5 2.5 -2.5
+	orientation			0 60 0
+}
+
+# Column base capitals at each corner
+standard_object
+{
+	name				cap1
+	geometry			capgeom
+	position			-2.5 0.1 2.5
+	material			marble_col
+}
+
+standard_object
+{
+	name				cap2
+	geometry			capgeom
+	position			2.5 0.1 2.5
+	material			marble_col
+}
+
+standard_object
+{
+	name				cap3
+	geometry			capgeom
+	position			-2.5 0.1 -2.5
+	material			marble_col
+}
+
+standard_object
+{
+	name				cap4
+	geometry			capgeom
+	position			2.5 0.1 -2.5
+	material			marble_col
+}
+
+# Top capitals
+standard_object
+{
+	name				cap_top1
+	geometry			capgeom
+	position			-2.5 4.9 2.5
+	material			marble_col
+}
+
+standard_object
+{
+	name				cap_top2
+	geometry			capgeom
+	position			2.5 4.9 2.5
+	material			marble_col
+}
+
+standard_object
+{
+	name				cap_top3
+	geometry			capgeom
+	position			-2.5 4.9 -2.5
+	material			marble_col
+}
+
+standard_object
+{
+	name				cap_top4
+	geometry			capgeom
+	position			2.5 4.9 -2.5
+	material			marble_col
+}
+
+# Glass sphere on a small pedestal
+cylinder_geometry
+{
+	name				pedestalgeom
+	axis				y
+	radius				0.3
+	height				0.8
+}
+
+standard_object
+{
+	name				pedestal
+	geometry			pedestalgeom
+	position			-1.0 0.4 0
+	material			marble_col
+}
+
+standard_object
+{
+	name				glass_sphere
+	geometry			glassspheregeom
+	position			-1.0 1.5 0
+	material			glass
+	shader				glass_shader
+}
+
+# Bronze vase (Cook-Torrance)
+standard_object
+{
+	name				vase
+	geometry			vasegeom
+	position			1.2 0.15 -0.5
+	orientation			10 25 0
+	material			bronze
+}
+
+##################################################
+# Lights
+##################################################
+
+omni_light
+{
+	name				ceiling_light
+	power				5.0
+	color				1.0 0.98 0.92
+	position			0 4.5 0
+}
+
+omni_light
+{
+	name				fill_light
+	power				2.5
+	color				0.9 0.92 1.0
+	position			3 3 4
+}

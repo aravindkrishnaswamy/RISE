@@ -1,0 +1,354 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           spotlight_drama.RISEscene                                                               #
+#   Description:    A dramatic stage with colored spot lights illuminating SSS objects and casting           #
+#                   colored shadows. A translucent dragon is backlit, a wax-like bunny glows with           #
+#                   diffusion SSS, and a reflective floor catches all the light interplay.                 #
+#                   Tests: colored spot lights, simple SSS + diffusion SSS, reflective floor with          #
+#                          distribution tracing, risemesh (dragon + bunny), translucent material,          #
+#                          perfectreflector + distribution tracing                                         #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		sss_irrad
+	shaderop	DefaultDirectLighting
+}
+
+# Simple SSS for the dragon
+simple_sss_shaderop
+{
+	name				sss_simple
+	numpoints			2000
+	irrad_scale			60
+	geometric_scale		1.5
+	shader				sss_irrad
+}
+
+# Diffusion approximation SSS for the bunny (wax-like)
+diffusion_approximation_sss_shaderop
+{
+	name				sss_wax
+	numpoints			1000
+	irrad_scale			2000
+	geometric_scale		0.08
+
+	scattering			0.74 0.88 1.01
+	absorption			0.032 0.17 0.48
+	ior					1.3
+	g					0.8
+
+	shader				sss_irrad
+}
+
+standard_shader
+{
+	name		dragon_shader
+	shaderop	sss_simple
+}
+
+standard_shader
+{
+	name		bunny_shader
+	shaderop	sss_wax
+}
+
+distributiontracing_shaderop
+{
+	name				dt
+	samples				64
+	diffuse				false
+	reflections			TRUE
+}
+
+standard_shader
+{
+	name		floor_shader
+	shaderop	dt
+	shaderop	DefaultDirectLighting
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	min_importance		0.001
+	samples				25
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/spotlight_drama
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+thinlens_camera
+{
+	location			0 5 18
+	lookat				0 2 0
+	up					0 1 0
+	width				800
+	height				600
+	fov					40.0
+	aperture_size		0.06
+	focal_length		4.0
+	focus_distance		16.5
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.4 0.7 0.45
+}
+
+uniformcolor_painter
+{
+	name				pnt_wax_cream
+	color				0.95 0.9 0.75
+}
+
+uniformcolor_painter
+{
+	name				pnt_stage_floor
+	color				0.12 0.12 0.14
+}
+
+uniformcolor_painter
+{
+	name				pnt_curtain
+	color				0.25 0.05 0.05
+}
+
+##################################################
+# Materials
+##################################################
+
+# Translucent jade-like material for the dragon
+translucent_material
+{
+	name				jade
+	ref					pnt_jade
+	tau					pnt_jade
+	ext					color_black
+	N					1.0
+	scattering			0.7
+}
+
+# Wax-like material for the bunny
+translucent_material
+{
+	name				wax
+	ref					pnt_wax_cream
+	tau					pnt_wax_cream
+	ext					color_black
+	N					1.0
+	scattering			0.5
+}
+
+# Reflective stage floor
+perfectreflector_material
+{
+	name				mirror_floor
+	reflectance			pnt_stage_floor
+}
+
+# Curtain backdrop
+orennayar_material
+{
+	name				curtain
+	reflectance			pnt_curtain
+	roughness			0.9
+}
+
+# White pedestal
+lambertian_material
+{
+	name				pedestal_mat
+	reflectance			color_white
+}
+
+##################################################
+# Geometries & Objects
+##################################################
+
+# Stage floor
+box_geometry
+{
+	name				floorgeom
+	width				30.0
+	height				0.2
+	depth				20.0
+}
+
+standard_object
+{
+	name				stage_floor
+	geometry			floorgeom
+	position			0 -0.1 0
+	material			mirror_floor
+	shader				floor_shader
+}
+
+# Curtain backdrop
+clippedplane_geometry
+{
+	name				curtaingeom
+	pta					-15.0 15.0 0.0
+	ptb					-15.0 0.0 0.0
+	ptc					15.0 0.0 0.0
+	ptd					15.0 15.0 0.0
+}
+
+standard_object
+{
+	name				curtain
+	geometry			curtaingeom
+	position			0 0 -8
+	material			curtain
+}
+
+# Dragon - translucent jade with simple SSS
+# Dragon model is ~10 units tall natively
+risemesh_geometry
+{
+	name				dragongeom
+	file				models/risemesh/dragon_small.risemesh
+}
+
+standard_object
+{
+	name				dragon
+	geometry			dragongeom
+	position			-5 0 0
+	orientation			0 -30 0
+	material			jade
+	shader				dragon_shader
+}
+
+# Bunny - wax with diffusion approximation SSS
+# Bunny model is ~0.2 units tall natively, scale up to ~6 units
+risemesh_geometry
+{
+	name				bunnygeom
+	file				models/risemesh/bunny.risemesh
+}
+
+standard_object
+{
+	name				bunny
+	geometry			bunnygeom
+	position			5 0 1
+	orientation			0 20 0
+	scale				30 30 30
+	material			wax
+	shader				bunny_shader
+}
+
+# Central sphere on a pedestal (wax SSS material)
+sphere_geometry
+{
+	name				spheregeom
+	radius				1.5
+}
+
+cylinder_geometry
+{
+	name				pedestalgeom
+	axis				y
+	radius				0.8
+	height				1.5
+}
+
+standard_object
+{
+	name				pedestal
+	geometry			pedestalgeom
+	position			0 0.75 -2
+	material			pedestal_mat
+}
+
+standard_object
+{
+	name				center_sphere
+	geometry			spheregeom
+	position			0 3.2 -2
+	material			wax
+	shader				bunny_shader
+}
+
+##################################################
+# Lights - Colored spot lights for dramatic effect
+##################################################
+
+# Red spot from upper left - illuminates the dragon
+spot_light
+{
+	name				spot_red
+	position			-8 10 6
+	target				-5 3 0
+	color				1.0 0.2 0.15
+	power				40.0
+	inner				20
+	outer				55
+}
+
+# Blue spot from upper right - illuminates the bunny
+spot_light
+{
+	name				spot_blue
+	position			8 10 6
+	target				5 3 1
+	color				0.2 0.3 1.0
+	power				40.0
+	inner				20
+	outer				55
+}
+
+# Warm amber spot from directly above center
+spot_light
+{
+	name				spot_amber
+	position			0 12 4
+	target				0 2 -2
+	color				1.0 0.8 0.4
+	power				30.0
+	inner				20
+	outer				55
+}
+
+# Cool backlight from behind the curtain
+directional_light
+{
+	name				backlight
+	power				4.0
+	color				0.6 0.65 0.8
+	direction			0 -0.3 1
+}

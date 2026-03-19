@@ -1,0 +1,465 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sculptors_studio.RISEscene                                                              #
+#   Description:    A sculptor's studio with clay and polished objects viewed from an orthographic camera.   #
+#                   Tests: orthographic camera, Oren-Nayar material, spot lights, polished material,        #
+#                          torus geometry, bezier mesh, circular disk, bump mapping                          #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+distributiontracing_shaderop
+{
+	name			dt
+	samples			64
+	diffuse			false
+}
+
+standard_shader
+{
+	name			dt_shader
+	shaderop		dt
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	min_importance		0.001
+	samples				36
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sculptors_studio
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras - Orthographic (first test of this camera type)
+##################################################
+
+orthographic_camera
+{
+	location			0 1.0 10
+	lookat				0 1.0 0
+	up					0 1 0
+	width				800
+	height				600
+	viewport_scale		14.0 10.5
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_terracotta
+	color				0.72 0.38 0.24
+}
+
+uniformcolor_painter
+{
+	name				pnt_clay_dark
+	color				0.45 0.28 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_cream
+	color				0.95 0.92 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_pewter
+	color				0.6 0.58 0.55
+}
+
+uniformcolor_painter
+{
+	name				pnt_wood_light
+	color				0.55 0.35 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_wood_dark
+	color				0.35 0.2 0.08
+}
+
+perlin3d_painter
+{
+	name				pnt_wood
+	colora				pnt_wood_light
+	colorb				pnt_wood_dark
+	persistence			0.6
+	octaves				6
+	scale				8.0 2.0 8.0
+}
+
+# Bump map function for the clay surface
+perlin2d_painter
+{
+	name				pnt_clay_bump
+	colora				color_black
+	colorb				color_white
+	persistence			0.5
+	octaves				4
+	scale				20.0 20.0
+}
+
+##################################################
+# Bump Map Modifier
+##################################################
+
+bumpmap_modifier
+{
+	name				clay_bump
+	function			pnt_clay_bump
+	scale				0.003
+	windowsize			0.005
+}
+
+##################################################
+# Materials
+##################################################
+
+# Oren-Nayar for rough clay surfaces (first test of this material)
+orennayar_material
+{
+	name				clay
+	reflectance			pnt_terracotta
+	roughness			0.8
+}
+
+orennayar_material
+{
+	name				clay_dark
+	reflectance			pnt_clay_dark
+	roughness			0.9
+}
+
+# Polished marble pedestal
+polished_material
+{
+	name				polished_marble
+	reflectance			pnt_cream
+	tau					pnt_cream
+	ior					1.5
+	scattering			500.0
+}
+
+# Metallic tools - isotropic phong
+isotropic_phong_material
+{
+	name				pewter
+	rd					pnt_pewter
+	rs					color_white
+	N					64.0
+}
+
+# Wooden table
+lambertian_material
+{
+	name				wood
+	reflectance			pnt_wood
+}
+
+##################################################
+# Geometries
+##################################################
+
+# Bezier teapot as the central sculpture
+beziermesh_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	detail				40
+	maxdepth			24
+	maxpolygons			10
+	bsp					TRUE
+	combine_shared		TRUE
+	center_object		TRUE
+}
+
+# Torus - a ring sculpture on the pedestal
+torus_geometry
+{
+	name				torusgeom
+	majorradius			0.5
+	minorratio			0.12
+}
+
+# Pedestal (cylinder)
+cylinder_geometry
+{
+	name				pedestalgeom
+	axis				y
+	radius				0.8
+	height				1.5
+}
+
+# Sculptor's tool (thin cylinder)
+cylinder_geometry
+{
+	name				toolgeom
+	axis				y
+	radius				0.04
+	height				1.2
+}
+
+# Circular disk for a plate (first test of this geometry)
+circulardisk_geometry
+{
+	name				diskgeom
+	radius				0.6
+	axis				y
+}
+
+# Work table
+box_geometry
+{
+	name				tablegeom
+	width				5.0
+	height				0.15
+	depth				3.0
+}
+
+# Table legs
+box_geometry
+{
+	name				leggeom
+	width				0.15
+	height				1.5
+	depth				0.15
+}
+
+# Floor (clipped plane instead of infinite to work with ortho camera)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-6.0 0.0 -4.0
+	ptb					-6.0 0.0 4.0
+	ptc					6.0 0.0 4.0
+	ptd					6.0 0.0 -4.0
+}
+
+# Back wall for context
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-6.0 5.0 0.0
+	ptb					-6.0 0.0 0.0
+	ptc					6.0 0.0 0.0
+	ptd					6.0 5.0 0.0
+}
+
+##################################################
+# Objects
+##################################################
+
+# Floor
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0.0 -1.5 0.0
+	material			wood
+}
+
+# Studio back wall
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	position			0.0 -1.5 -2.5
+	material			clay_dark
+}
+
+# Work table
+standard_object
+{
+	name				table
+	geometry			tablegeom
+	position			0.0 0.0 0.0
+	material			wood
+}
+
+# Table legs
+standard_object
+{
+	name				leg1
+	geometry			leggeom
+	position			-2.2 -0.75 -1.2
+	material			wood
+}
+
+standard_object
+{
+	name				leg2
+	geometry			leggeom
+	position			2.2 -0.75 -1.2
+	material			wood
+}
+
+standard_object
+{
+	name				leg3
+	geometry			leggeom
+	position			-2.2 -0.75 1.2
+	material			wood
+}
+
+standard_object
+{
+	name				leg4
+	geometry			leggeom
+	position			2.2 -0.75 1.2
+	material			wood
+}
+
+# Clay teapot sculpture (center of table) with bump map for clay texture
+standard_object
+{
+	name				teapot
+	geometry			teapotgeom
+	position			0.0 0.1 0.0
+	orientation			10 -30 0
+	material			clay
+	modifier			clay_bump
+}
+
+# Polished marble pedestal with torus ring on it
+standard_object
+{
+	name				pedestal
+	geometry			pedestalgeom
+	position			-1.8 0.75 -0.3
+	material			polished_marble
+	shader				dt_shader
+}
+
+# Oren-Nayar clay torus sitting on the pedestal
+standard_object
+{
+	name				clay_ring
+	geometry			torusgeom
+	position			-1.8 1.7 -0.3
+	orientation			15 0 0
+	material			clay_dark
+	modifier			clay_bump
+}
+
+# Circular disk plate with a small sphere
+standard_object
+{
+	name				plate
+	geometry			diskgeom
+	position			1.5 0.12 0.5
+	material			pewter
+}
+
+# Sculptor's tools resting on table
+standard_object
+{
+	name				tool1
+	geometry			toolgeom
+	position			1.5 0.1 -0.8
+	orientation			0 0 75
+	material			pewter
+}
+
+standard_object
+{
+	name				tool2
+	geometry			toolgeom
+	position			1.8 0.1 -0.6
+	orientation			0 30 80
+	material			pewter
+}
+
+# Small clay ball on the plate
+sphere_geometry
+{
+	name				ballgeom
+	radius				0.15
+}
+
+standard_object
+{
+	name				clay_ball
+	geometry			ballgeom
+	position			1.5 0.27 0.5
+	material			clay
+	modifier			clay_bump
+}
+
+##################################################
+# Lights - Spot lights (testing spot light coverage)
+##################################################
+
+# Warm key spot light from upper left
+spot_light
+{
+	name				key_light
+	position			-4 8 6
+	target				0 0 0
+	color				1.0 0.95 0.85
+	power				3.0
+	inner				20
+	outer				45
+}
+
+# Cool fill spot light from upper right
+spot_light
+{
+	name				fill_light
+	position			5 6 4
+	target				0 0 0
+	color				0.85 0.9 1.0
+	power				2.0
+	inner				25
+	outer				50
+}
+
+# Soft ambient fill from the side
+omni_light
+{
+	name				fill_omni
+	power				0.5
+	color				0.9 0.9 1.0
+	position			5 4 5
+}
+
+# Accent spot light on the pedestal piece
+spot_light
+{
+	name				accent_light
+	position			-2 5 2
+	target				-1.8 1.5 -0.3
+	color				1.0 1.0 0.9
+	power				3.0
+	inner				10
+	outer				25
+}

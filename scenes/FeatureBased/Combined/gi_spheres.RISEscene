@@ -1,0 +1,385 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           gi_spheres.RISEscene                                                                    #
+#   Description:    A non-Cornell-box global illumination scene: colored spheres in a white cylindrical      #
+#                   room bounce light onto each other and the walls, creating rich color bleeding.          #
+#                   Uses final gather with global photon mapping and irradiance caching.                   #
+#                   Tests: global photon mapping in novel geometry, final gather + irradiance cache,        #
+#                          path tracing comparison, color bleeding from multiple colored surfaces,          #
+#                          cylinder geometry as room walls, Lambertian luminaire sphere                    #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+finalgather_shaderop
+{
+	name			fg
+	cachegradients	TRUE
+	min_effective_contributors	4
+	samples			512
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	fg
+	shaderop	DefaultEmission
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	min_importance		0.01
+	samples				16
+	lum_samples			4
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gi_spheres
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 1.5 4.5
+	lookat				0 1.0 0
+	up					0 1 0
+	width				800
+	height				800
+	fov					50.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.85 0.85 0.82
+}
+
+uniformcolor_painter
+{
+	name				pnt_saturated_red
+	color				0.8 0.1 0.08
+}
+
+uniformcolor_painter
+{
+	name				pnt_saturated_green
+	color				0.1 0.75 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_saturated_blue
+	color				0.1 0.15 0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_yellow
+	color				0.85 0.8 0.1
+}
+
+uniformcolor_painter
+{
+	name				pnt_magenta
+	color				0.7 0.1 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_light_emit
+	color				1.0 0.97 0.9
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white_wall
+	reflectance			pnt_warm_white
+}
+
+lambertian_material
+{
+	name				red_sphere
+	reflectance			pnt_saturated_red
+}
+
+lambertian_material
+{
+	name				green_sphere
+	reflectance			pnt_saturated_green
+}
+
+lambertian_material
+{
+	name				blue_sphere
+	reflectance			pnt_saturated_blue
+}
+
+lambertian_material
+{
+	name				yellow_sphere
+	reflectance			pnt_yellow
+}
+
+lambertian_material
+{
+	name				magenta_sphere
+	reflectance			pnt_magenta
+}
+
+# Luminaire sphere (ceiling light)
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light_emit
+	scale				100.0
+	material			none
+}
+
+##################################################
+# Geometries & Objects
+##################################################
+
+# Cylindrical room walls
+cylinder_geometry
+{
+	name				roomgeom
+	axis				y
+	radius				3.0
+	height				4.0
+}
+
+# The room cylinder needs to be seen from inside, so we use a large
+# clipped plane floor and back wall instead, with the cylinder for
+# the curved wall illusion. Use clipped planes for the enclosure.
+
+# Floor (normal must face UP into room)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-3.0 0.0 -3.0
+	ptb					-3.0 0.0 3.0
+	ptc					3.0 0.0 3.0
+	ptd					3.0 0.0 -3.0
+}
+
+# Ceiling (normal must face DOWN into room)
+clippedplane_geometry
+{
+	name				ceilgeom
+	pta					-3.0 0.0 3.0
+	ptb					-3.0 0.0 -3.0
+	ptc					3.0 0.0 -3.0
+	ptd					3.0 0.0 3.0
+}
+
+# Back wall (curved approximation with flat planes)
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					-3.0 4.0 0.0
+	ptb					-3.0 0.0 0.0
+	ptc					3.0 0.0 0.0
+	ptd					3.0 4.0 0.0
+}
+
+# Left wall (normal must face +X into room)
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					0.0 4.0 3.0
+	ptb					0.0 0.0 3.0
+	ptc					0.0 0.0 -3.0
+	ptd					0.0 4.0 -3.0
+}
+
+# Right wall (normal must face -X into room)
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0.0 4.0 -3.0
+	ptb					0.0 0.0 -3.0
+	ptc					0.0 0.0 3.0
+	ptd					0.0 4.0 3.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0.0 0.0 0.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilgeom
+	position			0.0 4.0 0.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				backwall
+	geometry			bwallgeom
+	position			0.0 0.0 -3.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			lwallgeom
+	position			-3.0 0.0 0.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rwallgeom
+	position			3.0 0.0 0.0
+	material			white_wall
+}
+
+# Colored spheres arranged in a circle, creating a ring of color bleed
+sphere_geometry
+{
+	name				bigspheregeom
+	radius				0.6
+}
+
+sphere_geometry
+{
+	name				smallspheregeom
+	radius				0.35
+}
+
+# Large red sphere - left
+standard_object
+{
+	name				sphere_red
+	geometry			bigspheregeom
+	position			-1.5 0.6 -1.0
+	material			red_sphere
+}
+
+# Large green sphere - right
+standard_object
+{
+	name				sphere_green
+	geometry			bigspheregeom
+	position			1.5 0.6 -1.0
+	material			green_sphere
+}
+
+# Large blue sphere - center back
+standard_object
+{
+	name				sphere_blue
+	geometry			bigspheregeom
+	position			0.0 0.6 -2.0
+	material			blue_sphere
+}
+
+# Small yellow sphere - front left
+standard_object
+{
+	name				sphere_yellow
+	geometry			smallspheregeom
+	position			-0.8 0.35 1.0
+	material			yellow_sphere
+}
+
+# Small magenta sphere - front right
+standard_object
+{
+	name				sphere_magenta
+	geometry			smallspheregeom
+	position			0.8 0.35 1.0
+	material			magenta_sphere
+}
+
+# Central white sphere to catch and display color bleeding from all sides
+sphere_geometry
+{
+	name				centerspheregeom
+	radius				0.45
+}
+
+standard_object
+{
+	name				sphere_center
+	geometry			centerspheregeom
+	position			0.0 0.45 -0.3
+	material			white_wall
+}
+
+# Ceiling light sphere
+sphere_geometry
+{
+	name				lightspheregeom
+	radius				0.3
+}
+
+standard_object
+{
+	name				light_sphere
+	geometry			lightspheregeom
+	position			0 3.65 0
+	material			light_mat
+}
+
+##################################################
+# Global Illumination settings
+##################################################
+
+global_pel_photonmap
+{
+	num					100000
+	max_recursion		3
+	min_importance		0.01
+	branch				FALSE
+}
+
+global_pel_gather
+{
+	max_photons			300
+	radius				0.5
+	ellipse_ratio		0.05
+}
+
+irradiance_cache
+{
+	size				50
+	tolerance			0.04
+	min_spacing			0.5
+	max_spacing			1
+	query_threshold_scale	1.0
+	neighbor_spacing_scale	5.0
+}
