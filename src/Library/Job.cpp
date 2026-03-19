@@ -2870,11 +2870,12 @@ bool Job::AddFinalGatherShaderOp(
 	const unsigned int numphi,								///< [in] Number of samples in the phi direction
 	const bool cachegradients,								///< [in] Should cache gradients be used in the irradiance cache?
 	const unsigned int min_effective_contributors,			///< [in] Minimum effective contributors required for interpolation
+	const double high_variation_reuse_scale,				///< [in] Minimum reuse scale for bright high-variation cache records
 	const bool cache										///< [in] Should the rasterizer state cache be used?
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateFinalGatherShaderOp( &pShaderOp, numtheta, numphi, cachegradients, min_effective_contributors, cache );
+	RISE_API_CreateFinalGatherShaderOp( &pShaderOp, numtheta, numphi, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );

@@ -3634,6 +3634,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int numPhiSamples,	///< [in] Number of samples in the phi direction
 								const bool cachegradients,			///< [in] Should cache gradients be used in the irradiance cache?
 								const unsigned int min_effective_contributors,	///< [in] Minimum effective contributors required for interpolation
+								const Scalar high_variation_reuse_scale,	///< [in] Minimum reuse scale for bright high-variation cache records
 								const bool cache					///< [in] Should the rasterizer state cache be used?
 								)
 	{
@@ -3641,7 +3642,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 			return false;
 		}
 
-		FinalGatherShaderOp* pShaderOp = new FinalGatherShaderOp( numThetaSamples, numPhiSamples, cachegradients, min_effective_contributors, cache );
+		FinalGatherShaderOp* pShaderOp = new FinalGatherShaderOp( numThetaSamples, numPhiSamples, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "final gather shaderop" );

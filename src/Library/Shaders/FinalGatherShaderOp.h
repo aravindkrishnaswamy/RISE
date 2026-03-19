@@ -34,6 +34,7 @@ namespace RISE
 			const unsigned int numPhi;
 			const bool bComputeCacheGradients;
 			const unsigned int min_effective_contributors;
+			const Scalar high_variation_reuse_scale;
 			const bool cache;
 
 		public:
@@ -42,6 +43,7 @@ namespace RISE
 				const unsigned int numPhi_,
 				const bool bComputeCacheGradients_,
 				const unsigned int min_effective_contributors_,
+				const Scalar high_variation_reuse_scale_,
 				const bool cache_
 				);
 

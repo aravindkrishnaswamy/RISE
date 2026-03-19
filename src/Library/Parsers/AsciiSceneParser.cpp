@@ -3840,6 +3840,7 @@ namespace RISE
 					unsigned int phisamples = (unsigned int)(Scalar(thetasamples)*PI);
 					bool cachegradients = true;
 					unsigned int min_effective_contributors = 2;
+					double high_variation_reuse_scale = 0.25;
 					bool cache = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -3867,6 +3868,8 @@ namespace RISE
 							cachegradients = pvalue.toBoolean();
 						} else if( pname == "min_effective_contributors" ) {
 							min_effective_contributors = pvalue.toUInt();
+						} else if( pname == "high_variation_reuse_scale" ) {
+							high_variation_reuse_scale = pvalue.toDouble();
 						} else if( pname == "cache" ) {
 							cache = pvalue.toBoolean();
 						} else {
@@ -3875,7 +3878,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, min_effective_contributors, cache );
+					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 				}
 			};
 

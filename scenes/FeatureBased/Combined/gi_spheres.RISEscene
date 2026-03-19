@@ -22,6 +22,7 @@ finalgather_shaderop
 	name			fg
 	cachegradients	TRUE
 	min_effective_contributors	4
+	high_variation_reuse_scale	0.25
 	samples			512
 }
 

@@ -20,13 +20,83 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-#define FG_RAY_BIAS Scalar(1e-4)
-#define FG_MIN_HIT_DISTANCE Scalar(1e-6)
-#define FG_MIN_TRANSLATIONAL_GRADIENT_DISTANCE (FG_RAY_BIAS * Scalar(10.0))
-#define FG_MIN_TRANSLATIONAL_GRADIENT_NORMAL_DOT Scalar(0.95)
-
 namespace
 {
+	const Scalar kRayBias = Scalar(1e-4);
+	const Scalar kMinHitDistance = Scalar(1e-6);
+	const Scalar kMinTranslationalGradientDistance = kRayBias * Scalar(10.0);
+	const Scalar kMinTranslationalGradientNormalDot = Scalar(0.95);
+	const Scalar kVariationBrightRecordLuminance = Scalar(0.2);
+	const Scalar kVariationCoeffThreshold = Scalar(1.5);
+	const Scalar kVariationPeakThreshold = Scalar(6.0);
+
+	inline Scalar ComputePelLuminance( const RISEPel& pel )
+	{
+		return 0.212671 * pel[0] + 0.715160 * pel[1] + 0.072169 * pel[2];
+	}
+
+	struct IrradianceVariationStats
+	{
+		unsigned int sampleCount;
+		Scalar sumLuminance;
+		Scalar sumSquaredLuminance;
+		Scalar maxLuminance;
+
+		IrradianceVariationStats() :
+			sampleCount( 0 ),
+			sumLuminance( 0 ),
+			sumSquaredLuminance( 0 ),
+			maxLuminance( 0 )
+		{}
+
+		inline void RecordSample( const RISEPel& sampleIrradiance )
+		{
+			const Scalar luminance = r_max( Scalar(0), ComputePelLuminance( sampleIrradiance ) );
+			sampleCount++;
+			sumLuminance += luminance;
+			sumSquaredLuminance += luminance * luminance;
+			maxLuminance = r_max( maxLuminance, luminance );
+		}
+
+		inline Scalar ComputeReuseScale( const RISEPel& cachedIrradiance, const Scalar minimumReuseScale ) const
+		{
+			if( sampleCount == 0 ) {
+				return 1.0;
+			}
+
+			const Scalar cachedLuminance = r_max( Scalar(0), ComputePelLuminance( cachedIrradiance ) );
+			if( cachedLuminance <= kVariationBrightRecordLuminance ) {
+				return 1.0;
+			}
+
+			const Scalar meanLuminance = sumLuminance / Scalar(sampleCount);
+			if( meanLuminance <= NEARZERO ) {
+				return 1.0;
+			}
+
+			const Scalar variance = r_max(
+				Scalar(0),
+				(sumSquaredLuminance / Scalar(sampleCount)) - meanLuminance * meanLuminance
+				);
+			const Scalar coefficientOfVariation = sqrt( variance ) / meanLuminance;
+			const Scalar peakToMeanRatio = maxLuminance / meanLuminance;
+
+			// Bright cache records with highly variable hemisphere samples are not
+			// describing a locally smooth irradiance field. Reusing them broadly
+			// causes exactly the kind of hot-centered circular footprints seen in
+			// gi_spheres, so make those records much more local.
+			Scalar reuseScale = 1.0;
+			if( coefficientOfVariation > kVariationCoeffThreshold ) {
+				reuseScale = r_min( reuseScale, kVariationCoeffThreshold / coefficientOfVariation );
+			}
+			if( peakToMeanRatio > kVariationPeakThreshold ) {
+				reuseScale = r_min( reuseScale, kVariationPeakThreshold / peakToMeanRatio );
+			}
+
+				return r_max( minimumReuseScale, reuseScale );
+		}
+	};
+
 	struct GradientEstimatorSample
 	{
 		bool bHit;
@@ -107,17 +177,17 @@ namespace
 		GradientEstimatorSample sample;
 
 		Ray fgGradRay( origin, wGrad );
-		fgGradRay.Advance( FG_RAY_BIAS );
+		fgGradRay.Advance( kRayBias );
 
 		RISEPel lijGrad( 0, 0, 0 );
 		Scalar tGrad = 0;
 		if( caster.CastRay( rc, rast, fgGradRay, lijGrad, rs, &tGrad, pRadianceMap, ior_stack ) ) {
-			if( tGrad > FG_MIN_HIT_DISTANCE ) {
+			if( tGrad > kMinHitDistance ) {
 				sample.bHit = true;
 				sample.dDistance = tGrad;
 				sample.cIrradiance = lijGrad * brdf.value( wGrad, shading );
 
-				if( tGrad > FG_MIN_TRANSLATIONAL_GRADIENT_DISTANCE && pScene && pScene->GetObjects() ) {
+				if( tGrad > kMinTranslationalGradientDistance && pScene && pScene->GetObjects() ) {
 					RayIntersection gradRI( fgGradRay, rast );
 					pScene->GetObjects()->IntersectRay( gradRI, true, true, false );
 
@@ -153,7 +223,7 @@ namespace
 			return eGradientPairRejectedDiscontinuity;
 		}
 
-		if( Vector3Ops::Dot( lhs.vNormal, rhs.vNormal ) < FG_MIN_TRANSLATIONAL_GRADIENT_NORMAL_DOT ) {
+		if( Vector3Ops::Dot( lhs.vNormal, rhs.vNormal ) < kMinTranslationalGradientNormalDot ) {
 			return eGradientPairRejectedDiscontinuity;
 		}
 
@@ -189,12 +259,14 @@ FinalGatherShaderOp::FinalGatherShaderOp(
 	const unsigned int numPhi_,
 	const bool bComputeCacheGradients_,
 	const unsigned int min_effective_contributors_,
+	const Scalar high_variation_reuse_scale_,
 	const bool cache_
 	) :
 	  numTheta( numTheta_ ),
 	  numPhi( numPhi_ ),
 	  bComputeCacheGradients( bComputeCacheGradients_ ),
 	  min_effective_contributors( min_effective_contributors_ ),
+	  high_variation_reuse_scale( r_max( Scalar(0), r_min( Scalar(1), high_variation_reuse_scale_ ) ) ),
 	  cache( cache_ )
 {
 }
@@ -323,6 +395,7 @@ void FinalGatherShaderOp::PerformOperation(
 
 					Scalar rsum = 0;
 					unsigned int hits = 0;
+					IrradianceVariationStats irradianceVariationStats;
 
 				// Computing the final gather over the hemisphere using rotational and
 				// translational gradients
@@ -382,20 +455,23 @@ void FinalGatherShaderOp::PerformOperation(
 
 								const Vector3 w = ri.geometric.onb.Transform(
 									Vector3(cosPhi * sinTheta,sinPhi * sinTheta,cosTheta)
-									);
+								);
 
 								RISEPel lij(0,0,0);
+								RISEPel sampleIrradiance(0,0,0);
 
 								Scalar t = 0;
 								Ray fgRay(ri.geometric.ptIntersection, w);
-								fgRay.Advance( FG_RAY_BIAS );
+								fgRay.Advance( kRayBias );
 								if( caster.CastRay( rc, ri.geometric.rast, fgRay, lij, rs2, &t, ri.pRadianceMap, ior_stack ) ) {
-								if (t > FG_MIN_HIT_DISTANCE) {
+								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									c = c + lij * pBRDF->value( w, ri.geometric );
+									sampleIrradiance = lij * pBRDF->value( w, ri.geometric );
+									c = c + sampleIrradiance;
 								}
 							}
+							irradianceVariationStats.RecordSample( sampleIrradiance );
 
 							// Deterministic center-of-stratum sample for gradient estimation.
 							const Scalar xjCenter = (Scalar(j) + Scalar(0.5)) / fM;
@@ -543,20 +619,25 @@ void FinalGatherShaderOp::PerformOperation(
 						pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );
 
 						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false );
+						RISEPel sampleIrradiance( 0, 0, 0 );
 
 						if( scat ) {
 							RISEPel cthis;
 							Scalar t = 0;
-							scat->ray.Advance( FG_RAY_BIAS );
+							scat->ray.Advance( kRayBias );
 
 							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack?scat->ior_stack:ior_stack ) ) {
-								if (t > FG_MIN_HIT_DISTANCE) {
+								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
-									c = c + (cthis * scat->kray);
+									sampleIrradiance = cthis * scat->kray;
+									c = c + sampleIrradiance;
 								}
 							}
+
 						}
+
+						irradianceVariationStats.RecordSample( sampleIrradiance );
 					}
 
 						c = c * (1.0/Scalar(final_gather_count));
@@ -570,9 +651,10 @@ void FinalGatherShaderOp::PerformOperation(
 					if( rsum ) {
 						// Add the indirect value to the cache
 						rsum = (rsum!=0 ? Scalar(hits)/rsum : 0);
-						pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
+							rsum *= irradianceVariationStats.ComputeReuseScale( c, high_variation_reuse_scale );
+							pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
+						}
 					}
-				}
 			}
 		}
 

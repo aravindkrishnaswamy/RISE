@@ -958,6 +958,7 @@ namespace RISE
 			const unsigned int numphi,								///< [in] Number of samples in the phi direction
 			const bool cachegradients,								///< [in] Should cache gradients be used in the irradiance cache?
 			const unsigned int min_effective_contributors,			///< [in] Minimum effective contributors required for interpolation
+			const double high_variation_reuse_scale,				///< [in] Minimum reuse scale for bright high-variation cache records
 			const bool cache										///< [in] Should the rasterizer state cache be used?
 			) = 0;
 
