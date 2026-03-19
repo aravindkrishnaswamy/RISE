@@ -16,7 +16,9 @@
 #define COMPOSITE_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/ILog.h"
 #include "CompositeSPF.h"
+#include "CompositeEmitter.h"
 
 namespace RISE
 {
@@ -37,16 +39,17 @@ namespace RISE
 			}
 
 		public:
-			CompositeMaterial( 
-				const IMaterial& top, 
-				const IMaterial& bottom, 
+			CompositeMaterial(
+				const IMaterial& top,
+				const IMaterial& bottom,
 				const unsigned int max_recur,
 				const unsigned int max_reflection_recursion,		// maximum level of reflection recursion
 				const unsigned int max_refraction_recursion,		// maximum level of refraction recursion
 				const unsigned int max_diffuse_recursion,			// maximum level of diffuse recursion
 				const unsigned int max_translucent_recursion,		// maximum level of translucent recursion
-				const Scalar thickness								// thickness between the materials
-				) : 
+				const Scalar thickness,								// thickness between the materials
+				const IPainter& extinction							// extinction coefficient for absorption between layers
+				) :
 			pBRDF( 0 ), 
 			pSPF( 0 ), 
 			pEmitter( 0 )
@@ -60,7 +63,7 @@ namespace RISE
 				}
 
 				if( top.GetSPF() && bottom.GetSPF() ) {
-					pSPF = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(), max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness );
+					pSPF = new CompositeSPF( *top.GetSPF(), *bottom.GetSPF(), max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, extinction );
 				} else if( top.GetSPF() ) {
 					pSPF = top.GetSPF();
 					pSPF->addref();
@@ -69,7 +72,10 @@ namespace RISE
 					pSPF->addref();
 				}
 
-				if( top.GetEmitter() ) {
+				if( top.GetEmitter() && bottom.GetEmitter() ) {
+					pEmitter = new CompositeEmitter( *top.GetEmitter(), *bottom.GetEmitter(), extinction, thickness );
+					GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "CompositeEmitter" );
+				} else if( top.GetEmitter() ) {
 					pEmitter = top.GetEmitter();
 					pEmitter->addref();
 				} else if( bottom.GetEmitter() ) {

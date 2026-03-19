@@ -16,6 +16,7 @@
 #define COMPOSITE_SPF_
 
 #include "../Interfaces/ISPF.h"
+#include "../Interfaces/IPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -37,6 +38,7 @@ namespace RISE
 			const unsigned int max_translucent_recursion;		// maximum level of translucent recursion
 
 			const Scalar thickness;			// thickness of each of the layers
+			const IPainter& extinction;		// extinction coefficient for Beer's law absorption between layers
 
 			bool	ShouldScatteredRayBePropagated(
 					const ScatteredRay::ScatRayType type,
@@ -82,15 +84,16 @@ namespace RISE
 					) const;
 
 		public:
-			CompositeSPF( 
-				const ISPF& top_, 
-				const ISPF& bottom_, 
+			CompositeSPF(
+				const ISPF& top_,
+				const ISPF& bottom_,
 				const unsigned int max_recur_,
 				const unsigned int max_reflection_recursion_,		// maximum level of reflection recursion
 				const unsigned int max_refraction_recursion_,		// maximum level of refraction recursion
 				const unsigned int max_diffuse_recursion_,			// maximum level of diffuse recursion
 				const unsigned int max_translucent_recursion_,		// maximum level of translucent recursion
-				const Scalar thickness_								// thickness between the materials
+				const Scalar thickness_,							// thickness between the materials
+				const IPainter& extinction_							// extinction coefficient for absorption between layers
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

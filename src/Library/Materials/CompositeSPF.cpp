@@ -17,15 +17,16 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-CompositeSPF::CompositeSPF( 
-	const ISPF& top_, 
-	const ISPF& bottom_, 
+CompositeSPF::CompositeSPF(
+	const ISPF& top_,
+	const ISPF& bottom_,
 	const unsigned int max_recur_ ,
 	const unsigned int max_reflection_recursion_,		// maximum level of reflection recursion
 	const unsigned int max_refraction_recursion_,		// maximum level of refraction recursion
 	const unsigned int max_diffuse_recursion_,			// maximum level of diffuse recursion
 	const unsigned int max_translucent_recursion_,		// maximum level of translucent recursion
-	const Scalar thickness_								// thickness between the materials
+	const Scalar thickness_,							// thickness between the materials
+	const IPainter& extinction_							// extinction coefficient for absorption between layers
 	) :
   top( top_ ),
   bottom( bottom_ ),
@@ -34,16 +35,19 @@ CompositeSPF::CompositeSPF(
   max_refraction_recursion( max_refraction_recursion_ ),
   max_diffuse_recursion( max_diffuse_recursion_ ),
   max_translucent_recursion( max_translucent_recursion_ ),
-  thickness( thickness_ )
+  thickness( thickness_ ),
+  extinction( extinction_ )
 {
 	top.addref();
 	bottom.addref();
+	extinction.addref();
 }
 
 CompositeSPF::~CompositeSPF( )
 {
 	top.release();
 	bottom.release();
+	extinction.release();
 }
 
 bool CompositeSPF::ShouldScatteredRayBePropagated(
@@ -82,7 +86,7 @@ void CompositeSPF::ProcessTopLayer(
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 				) const
 {
-	if( steps >= max_recur ) {
+	if( steps >= max_recur || ColorMath::MaxValue(importance) < NEARZERO ) {
 		return;
 	}
 
@@ -103,7 +107,13 @@ void CompositeSPF::ProcessTopLayer(
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.dir = Vector3Ops::Normalize(scat_top[i].ray.dir);
 				my_ri.ray.Advance( thickness );
-				ProcessBottomLayer( my_ri, scat_top[i].kray*importance, random, scattered, steps+1, ior_stack );
+
+				// Apply Beer's law absorption through the layer
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
+
+				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, random, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -118,7 +128,7 @@ void CompositeSPF::ProcessBottomLayer(
 		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 		) const
 {
-	if( steps >= max_recur ) {
+	if( steps >= max_recur || ColorMath::MaxValue(importance) < NEARZERO ) {
 		return;
 	}
 
@@ -128,7 +138,7 @@ void CompositeSPF::ProcessBottomLayer(
 	for( unsigned int i=0; i<scat_bottom.Count(); i++ )
 	{
 		// For each ray...
-		if( Vector3Ops::Dot( scat_bottom[i].ray.dir,ri. onb.w() ) <= 0 ) {
+		if( Vector3Ops::Dot( scat_bottom[i].ray.dir, ri.onb.w() ) <= 0 ) {
 			// Exits from the bottom, so its all good
 			scat_bottom[i].kray = scat_bottom[i].kray * importance;
 			scattered.AddScatteredRay( scat_bottom[i] );
@@ -139,7 +149,13 @@ void CompositeSPF::ProcessBottomLayer(
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.dir = Vector3Ops::Normalize(scat_bottom[i].ray.dir);
 				my_ri.ray.Advance( thickness );
-				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance, random, scattered, steps+1, ior_stack );
+
+				// Apply Beer's law absorption through the layer
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
+
+				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, random, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -155,7 +171,7 @@ void CompositeSPF::ProcessTopLayerNM(
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 				) const
 {
-	if( steps >= max_recur ) {
+	if( steps >= max_recur || importance < NEARZERO ) {
 		return;
 	}
 
@@ -176,7 +192,14 @@ void CompositeSPF::ProcessTopLayerNM(
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.dir = Vector3Ops::Normalize(scat_top[i].ray.dir);
 				my_ri.ray.Advance( thickness );
-				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance, random, nm, scattered, steps+1, ior_stack );
+
+				// Apply Beer's law absorption through the layer
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
+				const Scalar attenuation = exp( -extinctionNM * pathLength );
+
+				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, random, nm, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -192,7 +215,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 		) const
 {
-	if( steps >= max_recur ) {
+	if( steps >= max_recur || importance < NEARZERO ) {
 		return;
 	}
 
@@ -213,7 +236,14 @@ void CompositeSPF::ProcessBottomLayerNM(
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.dir = Vector3Ops::Normalize(scat_bottom[i].ray.dir);
 				my_ri.ray.Advance( thickness );
-				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance, random, nm, scattered, steps+1, ior_stack );
+
+				// Apply Beer's law absorption through the layer
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
+				const Scalar attenuation = exp( -extinctionNM * pathLength );
+
+				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, random, nm, scattered, steps+1, ior_stack );
 			}
 		}
 	}

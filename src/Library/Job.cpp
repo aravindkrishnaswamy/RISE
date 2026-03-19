@@ -1467,11 +1467,10 @@ bool Job::AddCompositeMaterial(
 							const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
 							const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
 							const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
-							const double thickness										///< [in] Thickness between the materials
+							const double thickness,										///< [in] Thickness between the materials
+							const char* extinction										///< [in] Extinction painter name
 							)
 {
-	GlobalLog()->PrintEasyWarning( "Job::AddCompositeMaterial:: This is an experiment and has not bee tested or verfied, its use is not recommended" );
-
 	IMaterial* pTop = pMatManager->GetItem( top );
 	IMaterial* pBottom = pMatManager->GetItem( bottom );
 
@@ -1479,8 +1478,14 @@ bool Job::AddCompositeMaterial(
 		return false;
 	}
 
+	IPainter* pExt = pPntManager->GetItem( extinction );
+
+	if( !pExt ) {
+		return false;
+	}
+
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness );
+	RISE_API_CreateCompositeMaterial( &pMaterial, *pTop, *pBottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, *pExt );
 
 	pMatManager->AddItem( pMaterial, name );
 	safe_release( pMaterial );

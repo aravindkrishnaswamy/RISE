@@ -1295,6 +1295,9 @@
 		F27F0CB0069C42910069C9E5 /* ZuckerHummelOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */; };
 		F298C65307B14247007CDF08 /* StandardShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F298C65107B14247007CDF08 /* StandardShader.cpp */; };
 		F298C65407B14247007CDF08 /* StandardShader.h in Headers */ = {isa = PBXBuildFile; fileRef = F298C65207B14247007CDF08 /* StandardShader.h */; };
+		F2C5D5272F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
+		F2C5D5282F6C725300546C97 /* CompositeEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5252F6C725300546C97 /* CompositeEmitter.h */; };
+		F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1958,6 +1961,8 @@
 		F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ZuckerHummelOperator.h; sourceTree = "<group>"; };
 		F298C65107B14247007CDF08 /* StandardShader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = StandardShader.cpp; sourceTree = "<group>"; };
 		F298C65207B14247007CDF08 /* StandardShader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StandardShader.h; sourceTree = "<group>"; };
+		F2C5D5252F6C725300546C97 /* CompositeEmitter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompositeEmitter.h; sourceTree = "<group>"; };
+		F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeEmitter.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2375,6 +2380,8 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5252F6C725300546C97 /* CompositeEmitter.h */,
+				F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */,
 				F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */,
 				F277345007ECCEDC00C0B600 /* DataDrivenBSDF.h */,
 				F277345107ECCEDC00C0B600 /* DataDrivenMaterial.h */,
@@ -3063,6 +3070,7 @@
 				F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */,
 				F27F0B30069C42910069C9E5 /* LightManager.h in Headers */,
 				F27F0B31069C42910069C9E5 /* MaterialManager.h in Headers */,
+				F2C5D5282F6C725300546C97 /* CompositeEmitter.h in Headers */,
 				F27F0B32069C42910069C9E5 /* ModifierManager.h in Headers */,
 				F27F0B34069C42910069C9E5 /* ObjectManager.h in Headers */,
 				F27F0B35069C42910069C9E5 /* PainterManager.h in Headers */,
@@ -3542,6 +3550,7 @@
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
 				F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */,
+				F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */,
 				F27F0BAF069C42910069C9E5 /* Voronoi2DPainter.cpp in Sources */,
 				F27F0BB1069C42910069C9E5 /* Voronoi3DPainter.cpp in Sources */,
 				F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */,
@@ -3704,6 +3713,7 @@
 				F24B720B2F52A632008304C4 /* PolynomialGCD.cpp in Sources */,
 				F24B720C2F52A632008304C4 /* QuadraticFunction.cpp in Sources */,
 				F24B720D2F52A632008304C4 /* QuadraticFunction.h in Sources */,
+				F2C5D5272F6C725300546C97 /* CompositeEmitter.cpp in Sources */,
 				F24B720E2F52A632008304C4 /* QuarticFunction.cpp in Sources */,
 				F24B720F2F52A632008304C4 /* QuarticFunction.h in Sources */,
 				F24B72102F52A632008304C4 /* Resultant.cpp in Sources */,

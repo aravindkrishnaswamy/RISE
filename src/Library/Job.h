@@ -552,7 +552,8 @@ namespace RISE
 			const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
 			const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
 			const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
-			const double thickness										///< [in] Thickness between the materials
+			const double thickness,										///< [in] Thickness between the materials
+			const char* extinction										///< [in] Extinction painter name
 			);
 
 		//! Adds Ward's isotropic gaussian material

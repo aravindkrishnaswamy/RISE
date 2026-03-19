@@ -91,6 +91,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
+	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
 	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\
 	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\
 	$(PATHLIBRARY)Materials/CookTorranceSPF.cpp								\

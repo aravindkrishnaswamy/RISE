@@ -1869,6 +1869,7 @@ namespace RISE
 					unsigned int max_diffuse_recur = 3;
 					unsigned int max_translucent_recur = 3;
 					double thickness = 0;
+					String extinction = "none";
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -1898,13 +1899,15 @@ namespace RISE
 							max_translucent_recur = pvalue.toUInt();
 						} else if( pname == "thickness" ) {
 							thickness = pvalue.toDouble();
+						} else if( pname == "extinction" ) {
+							extinction = pvalue;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_reflection_recur, max_refraction_recur, max_diffuse_recur, max_translucent_recur, thickness );
+					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_reflection_recur, max_refraction_recur, max_diffuse_recur, max_translucent_recur, thickness, extinction.c_str() );
 				}
 			};
 

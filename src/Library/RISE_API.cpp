@@ -1047,14 +1047,15 @@ namespace RISE
 								const unsigned int max_refraction_recursion,				///< [in] Maximum level of refraction recursion
 								const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
 								const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
-								const Scalar thickness										///< [in] Thickness between the materials
+								const Scalar thickness,										///< [in] Thickness between the materials
+								const IPainter& extinction									///< [in] Extinction coefficient for absorption between layers
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new CompositeMaterial( top, bottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness );
+		(*ppi) = new CompositeMaterial( top, bottom, max_recur, max_reflection_recursion, max_refraction_recursion, max_diffuse_recursion, max_translucent_recursion, thickness, extinction );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "composite material" );
 		return true;
 	}
