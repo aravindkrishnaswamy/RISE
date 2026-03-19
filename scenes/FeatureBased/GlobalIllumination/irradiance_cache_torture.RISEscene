@@ -1,0 +1,455 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           irradiance_cache_torture.RISEscene                                                      #
+#   Description:    A targeted torture test for final gather with irradiance caching.                       #
+#                   Two small luminaire spheres sit near the ceiling and wall boundaries, a thin            #
+#                   occluder fin sits close to the back wall, and several saturated diffuse objects         #
+#                   inject localized color bleed. The large white back wall and ceiling make cache          #
+#                   footprints easy to spot.                                                                #
+#                   Regressions in cache reuse typically show up here as circular hot spots, halos,         #
+#                   or blotchy disks on the back wall and ceiling.                                          #
+#   Author:         Generated for integration testing                                                       #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+finalgather_shaderop
+{
+	name			fg
+	cachegradients	TRUE
+	min_effective_contributors	4
+	high_variation_reuse_scale	0.25
+	samples			512
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	fg
+	shaderop	DefaultEmission
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	min_importance		0.01
+	samples				16
+	lum_samples			4
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/irradiance_cache_torture
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 1.7 5.3
+	lookat				0 1.35 -1.35
+	up					0 1 0
+	width				800
+	height				800
+	fov					46.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_wall
+	color				0.86 0.86 0.84
+}
+
+uniformcolor_painter
+{
+	name				pnt_panel
+	color				0.72 0.72 0.74
+}
+
+uniformcolor_painter
+{
+	name				pnt_saturated_red
+	color				0.82 0.12 0.10
+}
+
+uniformcolor_painter
+{
+	name				pnt_saturated_green
+	color				0.12 0.72 0.16
+}
+
+uniformcolor_painter
+{
+	name				pnt_saturated_blue
+	color				0.10 0.18 0.78
+}
+
+uniformcolor_painter
+{
+	name				pnt_amber
+	color				0.85 0.72 0.14
+}
+
+uniformcolor_painter
+{
+	name				pnt_light_warm
+	color				1.0 0.97 0.90
+}
+
+uniformcolor_painter
+{
+	name				pnt_light_cool
+	color				0.78 0.86 1.0
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white_wall
+	reflectance			pnt_wall
+}
+
+lambertian_material
+{
+	name				panel_gray
+	reflectance			pnt_panel
+}
+
+lambertian_material
+{
+	name				red_bounce
+	reflectance			pnt_saturated_red
+}
+
+lambertian_material
+{
+	name				green_bounce
+	reflectance			pnt_saturated_green
+}
+
+lambertian_material
+{
+	name				blue_bounce
+	reflectance			pnt_saturated_blue
+}
+
+lambertian_material
+{
+	name				amber_bounce
+	reflectance			pnt_amber
+}
+
+lambertian_luminaire_material
+{
+	name				light_warm
+	exitance			pnt_light_warm
+	scale				120.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				light_cool
+	exitance			pnt_light_cool
+	scale				65.0
+	material			none
+}
+
+##################################################
+# Geometries & Objects
+##################################################
+
+# Room enclosure
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-3.0 0.0 -3.0
+	ptb					-3.0 0.0 3.0
+	ptc					3.0 0.0 3.0
+	ptd					3.0 0.0 -3.0
+}
+
+clippedplane_geometry
+{
+	name				ceilgeom
+	pta					-3.0 0.0 3.0
+	ptb					-3.0 0.0 -3.0
+	ptc					3.0 0.0 -3.0
+	ptd					3.0 0.0 3.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					-3.0 4.0 0.0
+	ptb					-3.0 0.0 0.0
+	ptc					3.0 0.0 0.0
+	ptd					3.0 4.0 0.0
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					0.0 4.0 3.0
+	ptb					0.0 0.0 3.0
+	ptc					0.0 0.0 -3.0
+	ptd					0.0 4.0 -3.0
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0.0 4.0 -3.0
+	ptb					0.0 0.0 -3.0
+	ptc					0.0 0.0 3.0
+	ptd					0.0 4.0 3.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0.0 0.0 0.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilgeom
+	position			0.0 4.0 0.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				backwall
+	geometry			bwallgeom
+	position			0.0 0.0 -3.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			lwallgeom
+	position			-3.0 0.0 0.0
+	material			white_wall
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rwallgeom
+	position			3.0 0.0 0.0
+	material			white_wall
+}
+
+# Thin wall-adjacent occluder to force visibility discontinuities and make
+# cache over-reuse obvious on the back wall.
+box_geometry
+{
+	name				fingeom
+	width				0.16
+	height				2.40
+	depth				1.30
+}
+
+standard_object
+{
+	name				back_fin
+	geometry			fingeom
+	position			1.20 1.20 -2.18
+	material			panel_gray
+}
+
+# A secondary blocker below the hot corner region creates an additional
+# non-smooth indirect lighting patch for the cache to reason about.
+box_geometry
+{
+	name				blockergeom
+	width				0.75
+	height				0.90
+	depth				0.75
+}
+
+standard_object
+{
+	name				shadow_blocker
+	geometry			blockergeom
+	position			0.85 0.45 -1.75
+	material			white_wall
+}
+
+# Diffuse objects that create localized color bleed without adding glossy
+# complexity. These are intentionally arranged so their bleed overlaps on the
+# back wall and floor.
+sphere_geometry
+{
+	name				large_spheregeom
+	radius				0.55
+}
+
+sphere_geometry
+{
+	name				medium_spheregeom
+	radius				0.45
+}
+
+cylinder_geometry
+{
+	name				blue_cutout_cyl_geom
+	axis				y
+	radius				0.17
+	height				1.10
+}
+
+sphere_geometry
+{
+	name				small_spheregeom
+	radius				0.35
+}
+
+sphere_geometry
+{
+	name				tiny_spheregeom
+	radius				0.28
+}
+
+standard_object
+{
+	name				sphere_red
+	geometry			large_spheregeom
+	position			1.60 0.55 -1.00
+	material			red_bounce
+}
+
+# Replace one smooth sphere with a non-convex CSG shape so the scene also
+# stresses cache behavior around concave bounce geometry and not just smooth
+# convex spheres.
+standard_object
+{
+	name				blue_cutout_outer
+	geometry			medium_spheregeom
+	material			blue_bounce
+}
+
+standard_object
+{
+	name				blue_cutout_bore
+	geometry			blue_cutout_cyl_geom
+	material			blue_bounce
+}
+
+csg_object
+{
+	name				shape_blue_cutout
+	obja				blue_cutout_outer
+	objb				blue_cutout_bore
+	operation			subtraction
+	position			-0.45 0.45 -1.85
+}
+
+standard_object
+{
+	name				sphere_green
+	geometry			medium_spheregeom
+	position			-1.55 0.45 -0.65
+	material			green_bounce
+}
+
+standard_object
+{
+	name				sphere_white
+	geometry			small_spheregeom
+	position			0.35 0.35 0.75
+	material			white_wall
+}
+
+standard_object
+{
+	name				sphere_amber
+	geometry			tiny_spheregeom
+	position			-0.10 0.28 1.35
+	material			amber_bounce
+}
+
+# Two offset luminaire spheres create localized high-variation indirect fields.
+# The warm one lives near the ceiling/back/right corner; the cool one adds a
+# second lobe so a broken cache policy cannot hide behind symmetry.
+sphere_geometry
+{
+	name				warm_light_geom
+	radius				0.18
+}
+
+sphere_geometry
+{
+	name				cool_light_geom
+	radius				0.14
+}
+
+standard_object
+{
+	name				light_corner_warm
+	geometry			warm_light_geom
+	position			2.58 3.74 -2.58
+	material			light_warm
+}
+
+standard_object
+{
+	name				light_upper_cool
+	geometry			cool_light_geom
+	position			-2.15 3.45 -1.35
+	material			light_cool
+}
+
+##################################################
+# Global illumination settings
+##################################################
+
+global_pel_photonmap
+{
+	num					250000
+	max_recursion		3
+	min_importance		0.01
+	branch				FALSE
+}
+
+global_pel_gather
+{
+	max_photons			500
+	radius				0.30
+	ellipse_ratio		0.05
+}
+
+irradiance_cache
+{
+	size				80
+	tolerance			0.08
+	min_spacing			0.18
+	max_spacing			0.90
+	query_threshold_scale	1.0
+	neighbor_spacing_scale	5.0
+}
