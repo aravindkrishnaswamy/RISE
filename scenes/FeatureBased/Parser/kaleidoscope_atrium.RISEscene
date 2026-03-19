@@ -1,0 +1,526 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           kaleidoscope_atrium.RISEscene                                                           #
+#   Description:    A parser stress test that generates a luminous atrium from nested loops,               #
+#                   expressions, macros, and embedded commands.                                             #
+#   Author:         OpenAI Codex                                                                            #
+#   Birthdate:      March 19, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+# Be sure to set the object manager for BSP
+> set accelerator B 10 8
+> echo event Generating the Kaleidoscope Atrium using nested loops, computed geometry, generated materials, and loop-built lights.
+
+DEFINE TWOPI $(2*@PI)
+DEFINE GRID_RADIUS 4
+DEFINE GRID_SPACE 0.75
+DEFINE CORE_COUNT 3
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+distributiontracing_shaderop
+{
+	name				dt
+	samples				6
+	diffuse				false
+	reflections			TRUE
+}
+
+standard_shader
+{
+	name				glossy_shader
+	shaderop			dt
+	shaderop			DefaultDirectLighting
+}
+
+standard_shader
+{
+	name				glass_shader
+	shaderop			DefaultDirectLighting
+	shaderop			DefaultReflection
+	shaderop			DefaultRefraction
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	min_importance		0.0005
+	samples				4
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/kaleidoscope_atrium
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			-8.5 6.3 17.5
+	lookat				0 2.2 0
+	up					0 1 0
+	width				1024
+	height				768
+	fov					36.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_floor_dark
+	color				0.18 0.22 0.28
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_light
+	color				0.95 0.97 1.0
+}
+
+lines_painter
+{
+	name				pnt_floor
+	colora				pnt_floor_dark
+	colorb				pnt_floor_light
+	size				0.05
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall
+	color				0.94 0.92 0.86
+}
+
+uniformcolor_painter
+{
+	name				pnt_ring
+	color				0.72 0.52 0.36
+}
+
+uniformcolor_painter
+{
+	name				pnt_ring_spec
+	color				0.98 0.86 0.70
+}
+
+uniformcolor_painter
+{
+	name				pnt_metal
+	color				0.42 0.48 0.58
+}
+
+uniformcolor_painter
+{
+	name				pnt_metal_spec
+	color				0.92 0.95 0.99
+}
+
+uniformcolor_painter
+{
+	name				pnt_alpha_y
+	colorspace			RISERGB
+	color				0.22 0.22 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				0.94 0.98 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade
+	color				0.45 0.76 0.66
+}
+
+##################################################
+# Materials
+##################################################
+
+polished_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+	tau					color_white
+	ior					1.45
+	scattering			250.0
+}
+
+lambertian_material
+{
+	name				back_wall_mat
+	reflectance			pnt_wall
+}
+
+cooktorrance_material
+{
+	name				ring_mat
+	rd					pnt_ring
+	rs					pnt_ring_spec
+	facets				0.12
+	ior					2.4
+	extinction			1.6
+}
+
+ward_anisotropic_material
+{
+	name				pillar_mat
+	rd					pnt_metal
+	rs					pnt_metal_spec
+	alphax				0.03
+	alphay				pnt_alpha_y
+}
+
+dielectric_material
+{
+	name				crown_glass
+	tau					pnt_glass
+	ior					1.52
+	scattering			7000.0
+}
+
+translucent_material
+{
+	name				jade_core
+	ref					pnt_jade
+	tau					pnt_jade
+	ext					color_black
+	N					1.0
+	scattering			0.6
+}
+
+##################################################
+# Geometry
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-12.0 0.0 -10.0
+	ptb					-12.0 0.0 10.0
+	ptc					12.0 0.0 10.0
+	ptd					12.0 0.0 -10.0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-12.0 9.0 -9.0
+	ptb					-12.0 0.0 -9.0
+	ptc					12.0 0.0 -9.0
+	ptd					12.0 9.0 -9.0
+}
+
+box_geometry
+{
+	name				plinthgeom
+	width				1.4
+	height				0.35
+	depth				1.4
+}
+
+##################################################
+# Structural objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 0 0
+	material			floor_mat
+	shader				glossy_shader
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	position			0 0 0
+	material			back_wall_mat
+}
+
+##################################################
+# Generated wave field
+##################################################
+
+FOR IX -@GRID_RADIUS @GRID_RADIUS 1
+	FOR IZ -@GRID_RADIUS @GRID_RADIUS 1
+
+		DEFINE PX $(@IX*@GRID_SPACE)
+		DEFINE PZ $(@IZ*@GRID_SPACE)
+		DEFINE RAD $(sqrt(@PX*@PX+@PZ*@PZ))
+		DEFINE HT $(0.50+0.14*sin(@PX*0.9)+0.12*cos(@PZ*0.85)+0.06*cos(@RAD*1.7))
+
+		DEFINE RR $(0.72+0.10*sin(@PX*0.5+@PZ*0.2))
+		DEFINE GG $(0.76+0.10*cos(@PZ*0.45))
+		DEFINE BB $(0.82+0.08*sin(@RAD*1.2))
+
+		uniformcolor_painter
+		{
+			name			pnt_tile@IX@IZ
+			color			@RR @GG @BB
+		}
+
+		lambertian_material
+		{
+			name			tile@IX@IZ
+			reflectance		pnt_tile@IX@IZ
+		}
+
+		box_geometry
+		{
+			name			wavegeom@IX@IZ
+			width			0.68
+			height			@HT
+			depth			0.68
+		}
+
+		standard_object
+		{
+			name			wavebox@IX@IZ
+			geometry		wavegeom@IX@IZ
+			position		@PX $(@HT*0.5) @PZ
+			orientation		0 $((@IX-@IZ)*8) 0
+			material		tile@IX@IZ
+		}
+
+		UNDEF PX
+		UNDEF PZ
+		UNDEF RAD
+		UNDEF HT
+		UNDEF RR
+		UNDEF GG
+		UNDEF BB
+
+	ENDFOR
+ENDFOR
+
+##################################################
+# Cook-Torrance torus ring
+##################################################
+
+FOR I -3 3 1
+
+	DEFINE TX $(@I*1.75)
+	DEFINE TZ $(-4.7+0.45*cos(@I*0.7))
+	DEFINE TY $(2.15+0.18*sin(@I*0.9))
+	DEFINE MR $(0.62+0.07*cos(@I*0.8))
+
+	torus_geometry
+	{
+		name			torusgeom@I
+		majorradius		@MR
+		minorratio		0.13
+	}
+
+	standard_object
+	{
+		name			ringtorus@I
+		geometry		torusgeom@I
+		position		@TX @TY @TZ
+		orientation		90 $(@I*18.0) $(@I*12.0)
+		material		ring_mat
+		shader			glossy_shader
+	}
+
+	UNDEF TX
+	UNDEF TZ
+	UNDEF TY
+	UNDEF MR
+
+ENDFOR
+
+##################################################
+# Brushed metal inner pillars
+##################################################
+
+FOR SIDE -1 1 2
+	FOR I -1 1 1
+
+		DEFINE PX $(@SIDE*4.3+@I*0.35)
+		DEFINE PZ $(@I*1.9-@SIDE*0.25)
+		DEFINE PHA $((@I+@SIDE)*1.2)
+		DEFINE PH $(1.65+0.35*(0.5+0.5*cos(@PHA)))
+		DEFINE PR $(0.22+0.02*cos(@I*1.5))
+
+		cylinder_geometry
+		{
+			name			pillargeom@SIDE@I
+			axis			y
+			radius			@PR
+			height			@PH
+		}
+
+		standard_object
+		{
+			name			plinth@SIDE@I
+			geometry		plinthgeom
+			position		@PX 0.175 @PZ
+			material		back_wall_mat
+		}
+
+		standard_object
+		{
+			name			pillar@SIDE@I
+			geometry		pillargeom@SIDE@I
+			position		@PX $(0.35+@PH*0.5) @PZ
+			material		pillar_mat
+			shader			glossy_shader
+		}
+
+		UNDEF PX
+		UNDEF PZ
+		UNDEF PHA
+		UNDEF PH
+		UNDEF PR
+
+	ENDFOR
+ENDFOR
+
+##################################################
+# Suspended glass crown
+##################################################
+
+FOR I -2 2 1
+
+	DEFINE GX $(@I*1.85)
+	DEFINE GZ $(-0.8+0.35*sin(@I*0.8))
+	DEFINE GY $(4.05+0.28*cos(@I*0.9))
+	DEFINE GR $(0.30+0.08*(0.5+0.5*cos(@I*1.5)))
+
+	sphere_geometry
+	{
+		name			crowngeom@I
+		radius			@GR
+	}
+
+	standard_object
+	{
+		name			crownsphere@I
+		geometry		crowngeom@I
+		position		@GX @GY @GZ
+		material		crown_glass
+		shader			glass_shader
+	}
+
+	UNDEF GX
+	UNDEF GZ
+	UNDEF GY
+	UNDEF GR
+
+ENDFOR
+
+##################################################
+# Translucent central bloom
+##################################################
+
+FOR I 0 $(@CORE_COUNT-1) 1
+
+	DEFINE ANG $(@I/@CORE_COUNT*@TWOPI+@PI/6.0)
+	DEFINE CX $(cos(@ANG)*1.15)
+	DEFINE CZ $(sin(@ANG)*0.9)
+	DEFINE CY $(1.55+0.18*sin(@ANG*3.0))
+	DEFINE RY $(0.95+0.25*sin(@ANG*2.0))
+
+	ellipsoid_geometry
+	{
+		name			coregeom@I
+		radii			0.46 @RY 0.46
+	}
+
+	standard_object
+	{
+		name			core@I
+		geometry		coregeom@I
+		position		@CX @CY @CZ
+		orientation		0 $(@I*60.0) $(@I*25.0)
+		material		jade_core
+	}
+
+	UNDEF ANG
+	UNDEF CX
+	UNDEF CZ
+	UNDEF CY
+	UNDEF RY
+
+ENDFOR
+
+##################################################
+# Loop-generated light rig
+##################################################
+
+FOR L 0 3 1
+
+	DEFINE LANG $(@L/4.0*@TWOPI+@PI/8.0)
+	DEFINE LX $(cos(@LANG)*9.0)
+	DEFINE LZ $(sin(@LANG)*7.0)
+	DEFINE LR $(0.82+0.12*sin(@LANG))
+	DEFINE LG $(0.82+0.12*sin(@LANG+@PI*0.66))
+	DEFINE LB $(0.82+0.12*sin(@LANG+@PI*1.33))
+
+	omni_light
+	{
+		name			light@L
+		power			0.80
+		color			@LR @LG @LB
+		position		@LX 8.8 @LZ
+	}
+
+	UNDEF LANG
+	UNDEF LX
+	UNDEF LZ
+	UNDEF LR
+	UNDEF LG
+	UNDEF LB
+
+ENDFOR
+
+omni_light
+{
+	name		fill
+	power		1.32
+	color		1.0 0.98 0.94
+	position	0.0 8.2 5.0
+}
+
+omni_light
+{
+	name		fill_left
+	power		0.95
+	color		0.92 0.95 1.0
+	position	-6.5 6.0 7.5
+}
+
+directional_light
+{
+	name		rim
+	power		0.35
+	color		0.92 0.95 1.0
+	direction	0.2 -1.0 -0.35
+}
