@@ -684,11 +684,11 @@ spot_light
 caustic_pel_photonmap
 {
 	num					100000
-	max_recursion		10
+	max_recursion		3
 	min_importance		0.001
 	power_scale			10.0
-	branch				TRUE
-	reflect				TRUE
+	branch				FALSE
+	reflect				FALSE
 	refract				TRUE
 	nonmeshlights		TRUE
 	ior_stack			TRUE

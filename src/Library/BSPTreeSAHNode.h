@@ -397,65 +397,93 @@ public:
 	// calls inside the tree.
 	//
 
+	//
+	// Iterative kd-tree traversal using an explicit stack.
+	// Eliminates billions of recursive function calls and enables
+	// aggressive early-out when a closer hit is already found.
+	//
+	static const int BSP_MAX_STACK_DEPTH = 64;
+
+	struct TraversalEntry {
+		const BSPTreeNodeSAH*	node;
+		Scalar					tmin;
+		Scalar					tmax;
+	};
+
 	void IntersectRay(
 		const TreeElementProcessor<Element>& ep,
 		RayIntersectionGeometric& ri,
 		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
-		const Scalar tmin,
-		const Scalar tmax
+		const Scalar tmin_in,
+		const Scalar tmax_in
 		) const
 	{
-		RISE_PROFILE_INC(nBSPNodeTraversals);
+		TraversalEntry stack[BSP_MAX_STACK_DEPTH];
+		int stackPtr = 0;
+		stack[stackPtr++] = { this, tmin_in, tmax_in };
 
-		if( pElements ) {
-			typename ElementListType::const_iterator i, e;
-			for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
-				RayIntersectionGeometric myRI( ri.ray, ri.rast );
-				ep.RayElementIntersection( myRI, *i, bHitFrontFaces, bHitBackFaces );
-				if( myRI.bHit && myRI.range < ri.range ) {
-					ri = myRI;
+		while( stackPtr > 0 ) {
+			--stackPtr;
+			const BSPTreeNodeSAH* node = stack[stackPtr].node;
+			Scalar tmin = stack[stackPtr].tmin;
+			Scalar tmax = stack[stackPtr].tmax;
+
+			// Early-out: tighten tmax with current best hit, skip if unreachable
+			if( ri.bHit ) {
+				if( ri.range <= tmin ) {
+					continue;
+				}
+				if( ri.range < tmax ) {
+					tmax = ri.range;
 				}
 			}
-		}
 
-		if( !pChildren ) {
-			return;
-		}
+			RISE_PROFILE_INC(nBSPNodeTraversals);
 
-		// Distance to the split plane along the ray
-		const Scalar tSplit = (splitLocation - ri.ray.origin[splitAxis]) * ri.ray.invDir[splitAxis];
-
-		// Near child is the one the ray enters first.
-		// If ray direction is positive (sign==0), near = left (0), far = right (1).
-		// If ray direction is negative (sign==1), near = right (1), far = left (0).
-		const int nearIdx = ri.ray.sign[splitAxis];
-		const int farIdx  = 1 - nearIdx;
-		BSPTreeNodeSAH* nearChild = pChildren[nearIdx];
-		BSPTreeNodeSAH* farChild  = pChildren[farIdx];
-
-		if( tSplit < tmin ) {
-			// Split plane is behind ray entry: only traverse far child
-			if( farChild ) {
-				farChild->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, tmin, tmax );
-			}
-		} else if( tSplit > tmax ) {
-			// Split plane is beyond ray exit: only traverse near child
-			if( nearChild ) {
-				nearChild->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, tmin, tmax );
-			}
-		} else {
-			// Ray crosses the split plane: traverse near first, then far
-			if( nearChild ) {
-				nearChild->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, tmin, tSplit );
+			// Process leaf elements
+			if( node->pElements ) {
+				typename ElementListType::const_iterator i, e;
+				for( i=node->pElements->begin(), e=node->pElements->end(); i!=e; i++ ) {
+					RayIntersectionGeometric myRI( ri.ray, ri.rast );
+					ep.RayElementIntersection( myRI, *i, bHitFrontFaces, bHitBackFaces );
+					if( myRI.bHit && myRI.range < ri.range ) {
+						ri = myRI;
+					}
+				}
 			}
 
-			// Only traverse far child if we haven't found a hit closer than tSplit
-			if( farChild && (!ri.bHit || ri.range > tSplit) ) {
-				RayIntersectionGeometric myRI( ri.ray, ri.rast );
-				farChild->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, tSplit, tmax );
-				if( myRI.bHit && myRI.range < ri.range ) {
-					ri = myRI;
+			if( !node->pChildren ) {
+				continue;
+			}
+
+			// Recompute effectiveMax after leaf processing may have updated ri
+			const Scalar effectiveMax = ri.bHit ? r_min( tmax, ri.range ) : tmax;
+
+			const Scalar tSplit = (node->splitLocation - ri.ray.origin[node->splitAxis]) * ri.ray.invDir[node->splitAxis];
+
+			const int nearIdx = ri.ray.sign[node->splitAxis];
+			const int farIdx  = 1 - nearIdx;
+			const BSPTreeNodeSAH* nearChild = node->pChildren[nearIdx];
+			const BSPTreeNodeSAH* farChild  = node->pChildren[farIdx];
+
+			if( tSplit < tmin ) {
+				// Split plane behind ray entry: only far child
+				if( farChild ) {
+					stack[stackPtr++] = { farChild, tmin, effectiveMax };
+				}
+			} else if( tSplit > effectiveMax ) {
+				// Split plane beyond ray exit: only near child
+				if( nearChild ) {
+					stack[stackPtr++] = { nearChild, tmin, effectiveMax };
+				}
+			} else {
+				// Ray crosses split: push far first (LIFO = near processed first)
+				if( farChild ) {
+					stack[stackPtr++] = { farChild, tSplit, effectiveMax };
+				}
+				if( nearChild ) {
+					stack[stackPtr++] = { nearChild, tmin, r_min( tSplit, effectiveMax ) };
 				}
 			}
 		}
@@ -467,52 +495,68 @@ public:
 		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
 		const bool bComputeExitInfo,
-		const Scalar tmin,
-		const Scalar tmax
+		const Scalar tmin_in,
+		const Scalar tmax_in
 		) const
 	{
-		RISE_PROFILE_INC(nBSPNodeTraversals);
+		TraversalEntry stack[BSP_MAX_STACK_DEPTH];
+		int stackPtr = 0;
+		stack[stackPtr++] = { this, tmin_in, tmax_in };
 
-		if( pElements ) {
-			typename ElementListType::const_iterator i, e;
-			for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
-				RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
-				ep.RayElementIntersection( myRI, *i, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-				if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
-					ri = myRI;
+		while( stackPtr > 0 ) {
+			--stackPtr;
+			const BSPTreeNodeSAH* node = stack[stackPtr].node;
+			Scalar tmin = stack[stackPtr].tmin;
+			Scalar tmax = stack[stackPtr].tmax;
+
+			if( ri.geometric.bHit ) {
+				if( ri.geometric.range <= tmin ) {
+					continue;
+				}
+				if( ri.geometric.range < tmax ) {
+					tmax = ri.geometric.range;
 				}
 			}
-		}
 
-		if( !pChildren ) {
-			return;
-		}
+			RISE_PROFILE_INC(nBSPNodeTraversals);
 
-		const Scalar tSplit = (splitLocation - ri.geometric.ray.origin[splitAxis]) * ri.geometric.ray.invDir[splitAxis];
-
-		const int nearIdx = ri.geometric.ray.sign[splitAxis];
-		const int farIdx  = 1 - nearIdx;
-		BSPTreeNodeSAH* nearChild = pChildren[nearIdx];
-		BSPTreeNodeSAH* farChild  = pChildren[farIdx];
-
-		if( tSplit < tmin ) {
-			if( farChild ) {
-				farChild->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, tmin, tmax );
-			}
-		} else if( tSplit > tmax ) {
-			if( nearChild ) {
-				nearChild->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, tmin, tmax );
-			}
-		} else {
-			if( nearChild ) {
-				nearChild->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, tmin, tSplit );
+			if( node->pElements ) {
+				typename ElementListType::const_iterator i, e;
+				for( i=node->pElements->begin(), e=node->pElements->end(); i!=e; i++ ) {
+					RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+					ep.RayElementIntersection( myRI, *i, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+					if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
+						ri = myRI;
+					}
+				}
 			}
 
-			if( farChild && (!ri.geometric.bHit || ri.geometric.range > tSplit) ) {
-				RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
-				farChild->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, tSplit, tmax );
-				if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
-					ri = myRI;
+			if( !node->pChildren ) {
+				continue;
+			}
+
+			const Scalar effectiveMax = ri.geometric.bHit ? r_min( tmax, ri.geometric.range ) : tmax;
+			const Scalar tSplit = (node->splitLocation - ri.geometric.ray.origin[node->splitAxis]) * ri.geometric.ray.invDir[node->splitAxis];
+
+			const int nearIdx = ri.geometric.ray.sign[node->splitAxis];
+			const int farIdx  = 1 - nearIdx;
+			const BSPTreeNodeSAH* nearChild = node->pChildren[nearIdx];
+			const BSPTreeNodeSAH* farChild  = node->pChildren[farIdx];
+
+			if( tSplit < tmin ) {
+				if( farChild ) {
+					stack[stackPtr++] = { farChild, tmin, effectiveMax };
+				}
+			} else if( tSplit > effectiveMax ) {
+				if( nearChild ) {
+					stack[stackPtr++] = { nearChild, tmin, effectiveMax };
+				}
+			} else {
+				if( farChild ) {
+					stack[stackPtr++] = { farChild, tSplit, effectiveMax };
+				}
+				if( nearChild ) {
+					stack[stackPtr++] = { nearChild, tmin, r_min( tSplit, effectiveMax ) };
 				}
 			}
 		}
@@ -524,48 +568,58 @@ public:
 		const Scalar dHowFar,
 		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
-		const Scalar tmin,
-		const Scalar tmax
+		const Scalar tmin_in,
+		const Scalar tmax_in
 		) const
 	{
-		RISE_PROFILE_INC(nBSPNodeTraversals);
+		TraversalEntry stack[BSP_MAX_STACK_DEPTH];
+		int stackPtr = 0;
+		stack[stackPtr++] = { this, tmin_in, tmax_in };
 
-		if( pElements ) {
-			typename ElementListType::const_iterator i, e;
-			for( i=pElements->begin(), e=pElements->end(); i!=e; i++ ) {
-				if( ep.RayElementIntersection_IntersectionOnly( ray, dHowFar, *i, bHitFrontFaces, bHitBackFaces ) ) {
-					return true;
+		while( stackPtr > 0 ) {
+			--stackPtr;
+			const BSPTreeNodeSAH* node = stack[stackPtr].node;
+			const Scalar tmin = stack[stackPtr].tmin;
+			const Scalar tmax = stack[stackPtr].tmax;
+
+			RISE_PROFILE_INC(nBSPNodeTraversals);
+
+			if( node->pElements ) {
+				typename ElementListType::const_iterator i, e;
+				for( i=node->pElements->begin(), e=node->pElements->end(); i!=e; i++ ) {
+					if( ep.RayElementIntersection_IntersectionOnly( ray, dHowFar, *i, bHitFrontFaces, bHitBackFaces ) ) {
+						return true;
+					}
 				}
 			}
-		}
 
-		if( !pChildren ) {
-			return false;
-		}
-
-		const Scalar tSplit = (splitLocation - ray.origin[splitAxis]) * ray.invDir[splitAxis];
-
-		const int nearIdx = ray.sign[splitAxis];
-		const int farIdx  = 1 - nearIdx;
-		BSPTreeNodeSAH* nearChild = pChildren[nearIdx];
-		BSPTreeNodeSAH* farChild  = pChildren[farIdx];
-
-		if( tSplit < tmin ) {
-			if( farChild ) {
-				return farChild->IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, tmin, tmax );
+			if( !node->pChildren ) {
+				continue;
 			}
-		} else if( tSplit > tmax ) {
-			if( nearChild ) {
-				return nearChild->IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, tmin, tmax );
-			}
-		} else {
-			if( nearChild ) {
-				if( nearChild->IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, tmin, tSplit ) ) {
-					return true;
+
+			const Scalar tSplit = (node->splitLocation - ray.origin[node->splitAxis]) * ray.invDir[node->splitAxis];
+
+			const int nearIdx = ray.sign[node->splitAxis];
+			const int farIdx  = 1 - nearIdx;
+			const BSPTreeNodeSAH* nearChild = node->pChildren[nearIdx];
+			const BSPTreeNodeSAH* farChild  = node->pChildren[farIdx];
+
+			if( tSplit < tmin ) {
+				if( farChild ) {
+					stack[stackPtr++] = { farChild, tmin, tmax };
 				}
-			}
-			if( farChild ) {
-				return farChild->IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, tSplit, tmax );
+			} else if( tSplit > tmax ) {
+				if( nearChild ) {
+					stack[stackPtr++] = { nearChild, tmin, tmax };
+				}
+			} else {
+				// Push far first (LIFO = near processed first)
+				if( farChild ) {
+					stack[stackPtr++] = { farChild, tSplit, tmax };
+				}
+				if( nearChild ) {
+					stack[stackPtr++] = { nearChild, tmin, tSplit };
+				}
 			}
 		}
 

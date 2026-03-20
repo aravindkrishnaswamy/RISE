@@ -4356,6 +4356,7 @@
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4398,6 +4399,7 @@
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4439,6 +4441,7 @@
 					"-DRISE_BIG_ENDIAN",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4648,6 +4651,7 @@
 					"-DCOLORSPACE_RGB",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -4756,6 +4760,7 @@
 					"-DCOLORSPACE_RGB",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -4864,6 +4869,7 @@
 					"-DCOLORSPACE_RGB",
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
+					"-DRISE_ENABLE_MAILBOXING",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",

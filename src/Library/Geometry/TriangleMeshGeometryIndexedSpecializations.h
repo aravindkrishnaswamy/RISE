@@ -98,12 +98,21 @@ namespace RISE
 
 	void TriangleMeshGeometryIndexed::RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 	{
+		// Mailboxing: skip triangles already tested for this ray
+#ifdef RISE_ENABLE_MAILBOXING
+		const unsigned int triIdx = static_cast<unsigned int>( elem - &ptr_polygons[0] );
+		if( mailbox[triIdx] == currentRayId ) {
+			return;
+		}
+		mailbox[triIdx] = currentRayId;
+#endif
+
 		TRIANGLE_HIT	h;
 		h.bHit = false;
 		h.dRange = RISE_INFINITY;
 
 		// We have to intersect against every triangle and find the closest intersection
-		// We can omit triangles that aren't facing us (dot product is > 0) since they 
+		// We can omit triangles that aren't facing us (dot product is > 0) since they
 		// can't possibly hit
 
 		const PointerTriangle&	thisTri = *elem;
@@ -159,6 +168,15 @@ namespace RISE
 
 	bool TriangleMeshGeometryIndexed::RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 	{
+		// Mailboxing: skip triangles already tested for this ray
+#ifdef RISE_ENABLE_MAILBOXING
+		const unsigned int triIdx = static_cast<unsigned int>( elem - &ptr_polygons[0] );
+		if( mailbox[triIdx] == currentRayId ) {
+			return false;
+		}
+		mailbox[triIdx] = currentRayId;
+#endif
+
 		const PointerTriangle&	thisTri = *elem;
 
 		// Early rejection is based on whether we are to consider front facing triangles or 

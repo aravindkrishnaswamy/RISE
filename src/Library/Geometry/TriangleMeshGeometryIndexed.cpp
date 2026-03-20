@@ -44,6 +44,9 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
   bUseFaceNormals( bUseFaceNormals_ ),
   pPtrOctree( 0 ),
   pPtrBSPtree( 0 )
+#ifdef RISE_ENABLE_MAILBOXING
+  , currentRayId( 0 )
+#endif
 {
 }
 
@@ -62,6 +65,11 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 {
 	// Triangle mesh geometry never generates exit information, it just ignores that command!
 
+	// Bump the mailbox ray ID so duplicate triangles in multiple BSP leaves are skipped
+#ifdef RISE_ENABLE_MAILBOXING
+	++currentRayId;
+#endif
+
 	if( bUseBSP && pPtrBSPtree ) {
 		pPtrBSPtree->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
 	} else if( pPtrOctree ) {
@@ -78,6 +86,10 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 
 bool TriangleMeshGeometryIndexed::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
+#ifdef RISE_ENABLE_MAILBOXING
+	++currentRayId;
+#endif
+
 	if( bUseBSP && pPtrBSPtree ) {
 		return pPtrBSPtree->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
 	} else if( pPtrOctree ) {
@@ -246,6 +258,11 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 
 	}
 
+	// Initialize mailbox array (one slot per triangle, all zeroed)
+#ifdef RISE_ENABLE_MAILBOXING
+	mailbox.assign( ptr_polygons.size(), 0 );
+	currentRayId = 0;
+#endif
 
 	// We're done with all the triangles so stuff it all into an octree
 	// First compute the bounds of the octree
@@ -678,6 +695,12 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	}
 
 	ComputeAreas();
+
+	// Initialize mailbox for the loaded triangles
+#ifdef RISE_ENABLE_MAILBOXING
+	mailbox.assign( ptr_polygons.size(), 0 );
+	currentRayId = 0;
+#endif
 
 	// And we're done!
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Finished deserialization", bDoubleSided );
