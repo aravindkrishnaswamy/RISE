@@ -199,14 +199,56 @@ namespace RISE
 
 #else
 
+#include <unistd.h>
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+
 namespace RISE
 {
+	namespace
+	{
+		int clamp_cpu_count( const long value )
+		{
+			return value > 0 ? static_cast<int>(value) : 1;
+		}
+
+#if defined(__APPLE__)
+		int read_sysctl_cpu_count( const char* name, const int fallback )
+		{
+			int value = fallback;
+			size_t size = sizeof(value);
+
+			if( sysctlbyname( name, &value, &size, 0, 0 ) != 0 || value <= 0 ) {
+				return fallback;
+			}
+
+			return value;
+		}
+#endif
+	}
+
 	CPU_COUNT_ENUM GetCPUCount( int& logical, int& physical )
 	{
-		// TODO, we need a way to detect this in other operating systems
-		logical = physical = 1;
+		const int online_cpus = clamp_cpu_count( sysconf( _SC_NPROCESSORS_ONLN ) );
+
+#if defined(__APPLE__)
+		const int total_logical = read_sysctl_cpu_count( "hw.logicalcpu", online_cpus );
+		const int total_physical = read_sysctl_cpu_count( "hw.physicalcpu", total_logical );
+
+		physical = total_physical > 0 ? total_physical : total_logical;
+		logical = total_logical > physical ? total_logical / physical : 1;
+
+		return total_logical > physical ? HT_ENABLED : HT_NOT_CAPABLE;
+#else
+		// On Unix-like systems we can at least detect the number of online CPUs
+		// reliably, even if we cannot always distinguish physical from logical.
+		logical = 1;
+		physical = online_cpus;
 
 		return HT_CANNOT_DETECT;
+#endif
 	}
 }
 
