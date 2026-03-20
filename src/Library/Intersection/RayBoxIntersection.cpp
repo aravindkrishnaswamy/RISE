@@ -13,12 +13,14 @@
 
 #include "pch.h"
 #include "RayPrimitiveIntersections.h"
+#include "../Utilities/Profiling.h"
 
 namespace RISE
 {
 
 	void RayBoxIntersection( const Ray& ray, BOX_HIT& hit, const Point3& ll, const Point3& ur )
 	{
+		RISE_PROFILE_INC(nBoxIntersectionTests);
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 		hit.dRange2 = RISE_INFINITY;
@@ -232,6 +234,7 @@ namespace RISE
 		}
 
 		hit.bHit = true;
+		RISE_PROFILE_INC(nBoxIntersectionHits);
 
 		if( fTMin > 0 )
 		{

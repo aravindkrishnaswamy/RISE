@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "RayPrimitiveIntersections.h"
+#include "../Utilities/Profiling.h"
 
 namespace RISE
 {
@@ -25,10 +26,12 @@ namespace RISE
 		const Vector3& vEdgeB
 		)
 	{
+		RISE_PROFILE_INC(nTriangleIntersectionTests);
+
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
-		// Here is my intersection test.  
+		// Here is my intersection test.
 		// You can find this in Real-time Rendering 10.5.2
 		
 		// Equation of the ray
@@ -94,6 +97,7 @@ namespace RISE
 			hit.bHit = true;
 			hit.alpha = a;
 			hit.beta = b;
+			RISE_PROFILE_INC(nTriangleIntersectionHits);
 		}
 	}
 

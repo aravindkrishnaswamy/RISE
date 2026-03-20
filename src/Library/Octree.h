@@ -25,6 +25,7 @@
 #include "Interfaces/ILog.h"
 #include "Interfaces/ISerializable.h"
 #include "Utilities/RTime.h"
+#include "Utilities/Profiling.h"
 #include <vector>
 #include <algorithm>
 

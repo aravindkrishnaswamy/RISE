@@ -33,6 +33,11 @@ bool BezierPatchGeometry::ElementBoxIntersection( const MYOBJ elem, const Boundi
 	return bbox.DoIntersect( elem.bbox );
 }
 
+BoundingBox BezierPatchGeometry::GetElementBoundingBox( const MYOBJ elem ) const
+{
+	return elem.bbox;
+}
+
 char BezierPatchGeometry::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const
 {
 	return GeometricUtilities::WhichSideOfPlane( plane, elem.bbox );

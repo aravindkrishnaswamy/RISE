@@ -19,6 +19,16 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 namespace RISE
 {
+	BoundingBox TriangleMeshGeometryIndexed::GetElementBoundingBox( const MYOBJ elem ) const
+	{
+		BoundingBox bbTri( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
+		const PointerTriangle& p = *elem;
+		for( int j=0; j<3; j++ ) {
+			bbTri.Include( *p.pVertices[j] );
+		}
+		return bbTri;
+	}
+
 	bool TriangleMeshGeometryIndexed::ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const
 	{
 		const PointerTriangle&	p = *elem;
@@ -81,12 +91,7 @@ namespace RISE
 		//
 
 		// Cheat and use two BBs
-		BoundingBox bbTri( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY));
-		for( int j=0; j<3; j++ ) {
-			bbTri.Include( *p.pVertices[j] );
-		}
-
-		return bbTri.DoIntersect( bbox );	
+		return GetElementBoundingBox( elem ).DoIntersect( bbox );	
 	}
 
 	char TriangleMeshGeometryIndexed::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const
@@ -215,5 +220,4 @@ namespace RISE
 	//	ret = (MYOBJ)ptr;
 	}
 }
-
 

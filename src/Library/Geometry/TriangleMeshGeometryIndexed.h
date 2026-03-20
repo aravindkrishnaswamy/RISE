@@ -118,11 +118,12 @@ namespace RISE
 
 			// From TreeElementProcessor
 			typedef const PointerTriangle*	MYOBJ;
-			void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-			void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-			bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
-			char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
+				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
+				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const;
+				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
+				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
 
 			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const;
 			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const;
@@ -136,4 +137,3 @@ namespace RISE
 }
 
 #endif
-

@@ -15,6 +15,7 @@
 #include "ObjectManager.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
+#include "../Utilities/Profiling.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -30,6 +31,11 @@ bool ObjectManager::ElementBoxIntersection( const MYOBJ elem, const BoundingBox&
 	return bbox.DoIntersect( elem->getBoundingBox() );
 }
 
+BoundingBox ObjectManager::GetElementBoundingBox( const MYOBJ elem ) const
+{
+	return elem->getBoundingBox();
+}
+
 char ObjectManager::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const
 {
 	return GeometricUtilities::WhichSideOfPlane( plane, elem->getBoundingBox() );
@@ -37,8 +43,10 @@ char ObjectManager::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& pl
 
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+	RISE_PROFILE_INC(nObjectIntersectionTests);
 	if( elem->IsWorldVisible() ) {
 		elem->IntersectRay( ri, RISE_INFINITY, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+		if( ri.geometric.bHit ) { RISE_PROFILE_INC(nObjectIntersectionHits); }
 	}
 }
 
@@ -165,6 +173,8 @@ void ObjectManager::CreateOctree() const
 
 void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+	RISE_PROFILE_INC(nPrimaryRays);
+
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pBSPtree ) {
 			CreateBSPTree();
@@ -202,6 +212,8 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 
 bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
+	RISE_PROFILE_INC(nShadowRays);
+
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pBSPtree ) {
 			CreateBSPTree();
@@ -255,4 +267,3 @@ void ObjectManager::ResetRuntimeData() const
 		i->second.first->ResetRuntimeData();
 	}
 }
-
