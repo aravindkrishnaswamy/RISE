@@ -54,6 +54,10 @@ namespace RISE
 		std::atomic<unsigned long long> nBoxIntersectionTests{0};
 		std::atomic<unsigned long long> nBoxIntersectionHits{0};
 
+		// Shadow cache
+		std::atomic<unsigned long long> nShadowCacheHits{0};
+		std::atomic<unsigned long long> nShadowCacheMisses{0};
+
 		void Reset()
 		{
 			nPrimaryRays = 0;
@@ -69,6 +73,8 @@ namespace RISE
 			nSphereIntersectionHits = 0;
 			nBoxIntersectionTests = 0;
 			nBoxIntersectionHits = 0;
+			nShadowCacheHits = 0;
+			nShadowCacheMisses = 0;
 		}
 	};
 

@@ -46,6 +46,15 @@ namespace RISE
 
 			RMutex treeCreationMutex;
 
+			// Shadow cache: per-slot last occluder, padded to avoid false sharing.
+			// Each thread hashes into a slot; collisions are harmless (just a stale hint).
+			static const unsigned int kShadowCacheSlots = 64;
+			struct ShadowCacheSlot {
+				const IObjectPriv* pOccluder;
+				char pad[64 - sizeof(const IObjectPriv*)];
+			};
+			mutable ShadowCacheSlot* shadowCache;
+
 			void CreateBSPTree() const;
 			void CreateOctree() const;
 

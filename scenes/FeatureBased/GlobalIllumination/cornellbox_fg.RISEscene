@@ -243,6 +243,7 @@ rawmesh_geometry
 	file				models/raw/cornellbox_tallblock.rawmesh
 	maxpolygons			100
 	maxdepth			6
+	bsp					TRUE
 }
 
 rawmesh_geometry
@@ -251,6 +252,7 @@ rawmesh_geometry
 	file				models/raw/cornellbox_shortblock.rawmesh
 	maxpolygons			100
 	maxdepth			6
+	bsp					TRUE
 }
 
 standard_object
@@ -285,8 +287,8 @@ global_pel_gather
 irradiance_cache
 {
 	size				2000
-	tolerance			0.1
-	min_spacing		4
+	tolerance			0.08
+	min_spacing		3
 	max_spacing    100
 	query_threshold_scale 0.5
 	neighbor_spacing_scale 2.0

@@ -16,6 +16,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Profiling.h"
+#include <cstdint>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -87,7 +88,8 @@ ObjectManager::ObjectManager(
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
-  nMaxTreeDepth( nMaxTreeDepth_ )
+  nMaxTreeDepth( nMaxTreeDepth_ ),
+  shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() )
 {
 	if( bUseBSPtree && bUseOctree ) {
 		GlobalLog()->PrintEasyWarning( "ObjectManager::ObjectManager:: Can't use both Octrees and BSPtrees at the same time!" );
@@ -107,6 +109,7 @@ ObjectManager::~ObjectManager( )
 {
 	safe_release( pBSPtree );
 	safe_release( pOctree );
+	delete [] shadowCache;
 }
 
 void ObjectManager::CreateBSPTree() const
@@ -227,10 +230,30 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 
 		return pOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
 	} else {
+		// Shadow cache: hash the stack address to pick a per-thread slot.
+		// Each slot occupies its own cache line to avoid false sharing.
+		int dummy;
+		const unsigned int slot = (unsigned int)(reinterpret_cast<uintptr_t>(&dummy) >> 12) & (kShadowCacheSlots - 1);
+		const IObjectPriv* cached = shadowCache[slot].pOccluder;
+
+		if( cached ) {
+			if( cached->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+				RISE_PROFILE_INC(nShadowCacheHits);
+				return true;
+			}
+		}
+
+		RISE_PROFILE_INC(nShadowCacheMisses);
+
 		GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
 		for( i=items.begin(), e=items.end(); i!=e; i++ ) {
-			if( i->second.first->IsWorldVisible() && i->second.first->DoesCastShadows() ) {
-				if( i->second.first->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+			const IObjectPriv* obj = i->second.first;
+			if( obj == cached ) {
+				continue;  // Already tested above
+			}
+			if( obj->IsWorldVisible() && obj->DoesCastShadows() ) {
+				if( obj->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+					shadowCache[slot].pOccluder = obj;
 					return true;
 				}
 			}

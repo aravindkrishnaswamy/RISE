@@ -79,6 +79,13 @@ namespace RISE
 				(double)c.nTriangleIntersectionTests.load() /
 				(c.nBSPNodeTraversals.load() + c.nOctreeNodeTraversals.load()) );
 		}
+		line(  "  ---" );
+		linef( "  Shadow cache hits:           %llu", c.nShadowCacheHits.load() );
+		linef( "  Shadow cache misses:         %llu", c.nShadowCacheMisses.load() );
+		if( c.nShadowCacheHits.load() + c.nShadowCacheMisses.load() > 0 ) {
+			linef( "  Shadow cache hit ratio:      %.2f%%",
+				100.0 * c.nShadowCacheHits.load() / (c.nShadowCacheHits.load() + c.nShadowCacheMisses.load()) );
+		}
 		line( "============================================" );
 	}
 }
