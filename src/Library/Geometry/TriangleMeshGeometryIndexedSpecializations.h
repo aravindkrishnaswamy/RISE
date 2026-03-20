@@ -53,8 +53,7 @@ namespace RISE
 		Scalar fEdgeLength;
 
 		ray.origin = *p.pVertices[0];
-		ray.dir = Vector3Ops::mkVector3( *p.pVertices[1], *p.pVertices[0] );
-		fEdgeLength = Vector3Ops::NormalizeMag(ray.dir);
+		{ Vector3 d = Vector3Ops::mkVector3( *p.pVertices[1], *p.pVertices[0] ); fEdgeLength = Vector3Ops::NormalizeMag(d); ray.SetDir(d); }
 
 		RayBoxIntersection( ray, h, bbox.ll, bbox.ur );
 		if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -63,8 +62,7 @@ namespace RISE
 
 		// Edge 2
 		ray.origin = *p.pVertices[1];
-		ray.dir = Vector3Ops::mkVector3( *p.pVertices[2], *p.pVertices[1] );
-		fEdgeLength = Vector3Ops::NormalizeMag(ray.dir);
+		{ Vector3 d = Vector3Ops::mkVector3( *p.pVertices[2], *p.pVertices[1] ); fEdgeLength = Vector3Ops::NormalizeMag(d); ray.SetDir(d); }
 
 		RayBoxIntersection( ray, h, bbox.ll, bbox.ur );
 		if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -74,8 +72,7 @@ namespace RISE
 
 		// Edge 3
 		ray.origin = *p.pVertices[2];
-		ray.dir = Vector3Ops::mkVector3( *p.pVertices[0], *p.pVertices[2] );
-		fEdgeLength = Vector3Ops::NormalizeMag(ray.dir);
+		{ Vector3 d = Vector3Ops::mkVector3( *p.pVertices[0], *p.pVertices[2] ); fEdgeLength = Vector3Ops::NormalizeMag(d); ray.SetDir(d); }
 
 		RayBoxIntersection( ray, h, bbox.ll, bbox.ur );
 		if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -119,14 +116,14 @@ namespace RISE
 
 		// If we are not to hit front faces and we are front facing, then beat it!
 		if( !bHitFrontFaces  ) {
-			if( Vector3Ops::Dot(vFaceNormal, ri.ray.dir) < 0 ) {
+			if( Vector3Ops::Dot(vFaceNormal, ri.ray.Dir()) < 0 ) {
 				return;
 			}
 		}
 
 		// If we are not to hit back faces and we are back facing, then also beat it
 		if( !bHitBackFaces ) {
-			if( Vector3Ops::Dot(vFaceNormal, ri.ray.dir) > 0 ) {
+			if( Vector3Ops::Dot(vFaceNormal, ri.ray.Dir()) > 0 ) {
 				return;
 			}
 		}
@@ -173,14 +170,14 @@ namespace RISE
 
 		// If we are not to hit front faces and we are front facing, then beat it!
 		if( !bHitFrontFaces  ) {
-			if( Vector3Ops::Dot(vFaceNormal, ray.dir) < 0 ) {
+			if( Vector3Ops::Dot(vFaceNormal, ray.Dir()) < 0 ) {
 				return false;
 			}
 		}
 
 		// If we are not to hit back faces and we are back facing, then also beat it
 		if( !bHitBackFaces ) {
-			if( Vector3Ops::Dot(vFaceNormal, ray.dir) > 0 ) {
+			if( Vector3Ops::Dot(vFaceNormal, ray.Dir()) > 0 ) {
 				return false;
 			}
 		}

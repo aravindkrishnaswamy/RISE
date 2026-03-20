@@ -68,7 +68,7 @@ public:
 		Point3 norm;
 		Ray ray;
 		ray.p = Point3( ri.ray.origin.x, ri.ray.origin.y, ri.ray.origin.z );
-		ray.dir = Point3( ri.ray.dir.x, ri.ray.dir.y, ri.ray.dir.z );
+		ray.dir = Point3( ri.ray.Dir().x, ri.ray.Dir().y, ri.ray.Dir().z );
 		mesh->IntersectRay( ray, at, norm );
 
 		if( at > 0 ) {
@@ -87,7 +87,7 @@ public:
 		Point3 norm;
 		Ray ray;
 		ray.p = Point3( r.origin.x, r.origin.y, r.origin.z );
-		ray.dir = Point3( r.dir.x, r.dir.y, r.dir.z );
+		ray.dir = Point3( r.Dir().x, r.Dir().y, r.Dir().z );
 		mesh->IntersectRay( ray, at, norm );
 
 		if( at > 0 ) {

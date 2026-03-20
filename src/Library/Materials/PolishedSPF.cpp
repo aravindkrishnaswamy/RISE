@@ -59,7 +59,7 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	Vector3	vRefracted = ri.ray.dir;
+	Vector3	vRefracted = ri.ray.Dir();
 	const Vector3	vIn = vRefracted;
     
 	Scalar		Rs = 0.0;
@@ -114,8 +114,8 @@ void PolishedSPF::Scatter(
 	RISEPel scattering = scat.GetColor(ri);
 	RISEPel ior = Nt.GetColor(ri);
 
-	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.dir)>0 ? -ri.vNormal : ri.vNormal;
-	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.dir, n );
+	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	if( scattering[0] == scattering[1] && scattering[1] == scattering[2] &&
 		ior[0] == ior[1] && ior[1] == ior[2] )
@@ -123,7 +123,7 @@ void PolishedSPF::Scatter(
 		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scattering[0], ior[0], ior_stack );
 		dielectric.kray = tau.GetColor(ri) * Rs;
 
-		if( Vector3Ops::Dot( dielectric.ray.dir, ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			scattered.AddScatteredRay( dielectric );
 		}
 	}
@@ -135,7 +135,7 @@ void PolishedSPF::Scatter(
 			dielectric.kray = 0;
 			dielectric.kray[i] = tau.GetColor(ri)[i] * Rs[i];
 
-			if( Vector3Ops::Dot( dielectric.ray.dir, ri.onb.w() ) > 0.0 ) {
+			if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 				scattered.AddScatteredRay( dielectric );
 			}
 		}
@@ -153,7 +153,7 @@ void PolishedSPF::Scatter(
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
 			);
 
-		if( Vector3Ops::Dot( diffuse.ray.dir, ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			scattered.AddScatteredRay( diffuse );
 		}
 	}
@@ -170,14 +170,14 @@ void PolishedSPF::ScatterNM(
 	ScatteredRay	dielectric;
 	dielectric.type = ScatteredRay::eRayReflection;
 
-	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.dir)>0 ? -ri.vNormal : ri.vNormal;
-	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.dir, n );
+	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scat.GetColorNM(ri,nm), Nt.GetColorNM(ri,nm), ior_stack );
 	dielectric.krayNM = tau.GetColorNM(ri,nm) * Rs;
 
 
-	if( Vector3Ops::Dot( dielectric.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( dielectric );
 	}
 
@@ -193,7 +193,7 @@ void PolishedSPF::ScatterNM(
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
 			);
 
-		if( Vector3Ops::Dot( diffuse.ray.dir, ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			scattered.AddScatteredRay( diffuse );
 		}
 	}

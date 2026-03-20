@@ -120,12 +120,12 @@ static void GenerateSpecularRay(
 	   	  ri.onb.u().y*a.x + ri.onb.v().y*a.y + ri.onb.w().y*a.z, 
 		  ri.onb.u().z*a.x + ri.onb.v().z*a.y + ri.onb.w().z*a.z );
 
-	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.dir);
+	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.Dir());
 
 	fresnel = ::pow(1-hdotk,5);
 
 	if( hdotk > 0 ) {
-		Vector3 ret = Vector3Ops::Normalize( ri.ray.dir + 2.0 * hdotk * h );
+		Vector3 ret = Vector3Ops::Normalize( ri.ray.Dir() + 2.0 * hdotk * h );
 		specular.ray.Set( ri.ptIntersection, ret );
 	}	
 }
@@ -138,14 +138,14 @@ void SchlickSPF::Scatter(
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
 
 	ScatteredRay d, s;	
 	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
 
-	if( Vector3Ops::Dot( d.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.kray = pDiffuse.GetColor(ri);
 		scattered.AddScatteredRay( d );
 	}
@@ -159,7 +159,7 @@ void SchlickSPF::Scatter(
 		Scalar fresnel = 0;
 		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), roughness[0], isotropy[0] );
 
-		if( Vector3Ops::Dot( s.ray.dir, ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			const RISEPel rho = pSpecular.GetColor(ri);
 			s.kray = rho + (RISEPel(1.0,1.0,1.0)-rho) * fresnel;
 			scattered.AddScatteredRay( s );
@@ -174,7 +174,7 @@ void SchlickSPF::Scatter(
 			Scalar fresnel = 0;
 			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, roughness[i], isotropy[i] );
 
-			if( Vector3Ops::Dot( s.ray.dir, ri.onb.w() ) > 0.0 ) {
+			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = rho[i] + (1.0-rho[i]) * fresnel;
 				scattered.AddScatteredRay( s );
@@ -192,7 +192,7 @@ void SchlickSPF::ScatterNM(
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
 
@@ -201,12 +201,12 @@ void SchlickSPF::ScatterNM(
 	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
 	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), pRoughness.GetColorNM(ri,nm), pIsotropy.GetColorNM(ri,nm) );
 	
-	if( Vector3Ops::Dot( d.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.krayNM = pDiffuse.GetColorNM(ri,nm);
 		scattered.AddScatteredRay( d );
 	}
 
-	if( Vector3Ops::Dot( s.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		const Scalar rho = pSpecular.GetColorNM(ri,nm);
 		s.krayNM = rho + (1.0-rho) * fresnel;
 		scattered.AddScatteredRay( s );

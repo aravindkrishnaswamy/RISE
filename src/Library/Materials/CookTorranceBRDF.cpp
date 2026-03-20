@@ -62,7 +62,7 @@ template< class T >
 T CookTorranceBRDF::ComputeFactor( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& m )
 {
 	Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
-	Vector3 r = Vector3Ops::Normalize(-ri.ray.dir); // outgoing ray vector
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
 	Scalar nr = Vector3Ops::Dot(n,r);
 	Scalar nv = Vector3Ops::Dot(n,v);
@@ -90,7 +90,7 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 {
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, ri.onb.w(), pMasking.GetColor(ri) );
 	if( ColorMath::MinValue(factor) > 0 ) {
-		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.dir, ri.onb.w(), RISEPel(1,1,1), pIOR.GetColor(ri), pExtinction.GetColor(ri) );
+		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>( ri.ray.Dir(), ri.onb.w(), RISEPel(1,1,1), pIOR.GetColor(ri), pExtinction.GetColor(ri) );
 		return pDiffuse.GetColor(ri)*INV_PI + (pSpecular.GetColor(ri) * INV_PI * fresnel * factor);
 	}
 	
@@ -101,7 +101,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 {
 	const Scalar factor = ComputeFactor<Scalar>( vLightIn, ri, ri.onb.w(), pMasking.GetColorNM(ri,nm) );
 	if( factor > 0 ) {
-		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.dir, ri.onb.w(), 1.0, pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
+		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), ri.onb.w(), 1.0, pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
 		if( fresnel > 0 ) {
 			return pDiffuse.GetColorNM(ri,nm)*INV_PI + (pSpecular.GetColorNM(ri,nm) * INV_PI * fresnel * factor);
 		}

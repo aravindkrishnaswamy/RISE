@@ -20,7 +20,7 @@ bool IsPelClose(const RISEPel& a, const RISEPel& b, Scalar epsilon = 1e-8) {
 void TestGradientDataRoundTripsThroughQuery() {
 	std::cout << "Testing IrradianceCache gradient round-trip..." << std::endl;
 
-	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0);
+	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0, 0.5, 0.0);
 
 	const Point3 p(1.0, 1.0, 1.0);
 	const Vector3 n(0.0, 1.0, 0.0);
@@ -59,7 +59,7 @@ void TestGradientDataRoundTripsThroughQuery() {
 void TestNullGradientsDefaultToZero() {
 	std::cout << "Testing IrradianceCache null gradient default..." << std::endl;
 
-	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0);
+	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0, 0.5, 0.0);
 
 	const Point3 p(2.0, 2.0, 2.0);
 	const Vector3 n(0.0, 1.0, 0.0);
@@ -87,7 +87,7 @@ void TestNullGradientsDefaultToZero() {
 void TestQueryAccruesAcrossTreeLevels() {
 	std::cout << "Testing IrradianceCache hierarchical query accrual..." << std::endl;
 
-	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0);
+	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0, 0.5, 0.0);
 
 	const Vector3 n(0.0, 1.0, 0.0);
 	const Point3 query(1.0, 1.0, 1.0);
@@ -125,7 +125,7 @@ void TestQueryAccruesAcrossTreeLevels() {
 void TestBehindPlaneRecordIsRejected() {
 	std::cout << "Testing IrradianceCache behind-plane rejection..." << std::endl;
 
-	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0);
+	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0, 0.5, 0.0);
 	const Vector3 n(0.0, 1.0, 0.0);
 	const Point3 recordPos(0.0, 0.0, 0.0);
 
@@ -169,7 +169,7 @@ void TestBehindPlaneRecordIsRejected() {
 void TestNeighborCellReuseAcrossBoundary() {
 	std::cout << "Testing IrradianceCache neighbor-cell reuse..." << std::endl;
 
-	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0);
+	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0, 0.5, 0.0);
 	const Vector3 n(0.0, 1.0, 0.0);
 
 	// This r0 is small enough to force insertion into a child node.
@@ -219,7 +219,7 @@ void TestWeightFallsOffWithDistanceAndAngle() {
 void TestQueryUsesSofterThresholdThanSampleNeeded() {
 	std::cout << "Testing IrradianceCache query/sample threshold split..." << std::endl;
 
-	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0);
+	IIrradianceCache* pCache = new IrradianceCache(16.0, 0.2, 0.01, 100.0, 0.5, 0.0);
 	const Vector3 n(0.0, 1.0, 0.0);
 
 	// invTolerance = 1/0.2 = 5.0, query threshold = 2.5

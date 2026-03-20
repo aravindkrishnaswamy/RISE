@@ -89,9 +89,7 @@ int SchedulerConnection::ProcessSchedulerRequest( WorkerRenderer* pRenderer, Wor
 			r.origin.y = pRecvBuffer->getDouble();
 			r.origin.z = pRecvBuffer->getDouble();
 
-			r.dir.x = pRecvBuffer->getDouble();
-			r.dir.y = pRecvBuffer->getDouble();
-			r.dir.z = pRecvBuffer->getDouble();
+			{ Vector3D d; d.x = pRecvBuffer->getDouble(); d.y = pRecvBuffer->getDouble(); d.z = pRecvBuffer->getDouble(); r.SetDir(d); }
 
 			// get the pixel
 			unsigned int x = pRecvBuffer->getUInt();
@@ -124,7 +122,7 @@ int SchedulerConnection::ProcessSchedulerRequest( WorkerRenderer* pRenderer, Wor
 			for( int y=rc.top; y<=rc.bottom; y++ ) {
 				for( int x=rc.left; x<=rc.right; x++ ) {
 					Ray r = pCamera->GenerateRay( Point2D( x, y ) );
-					r.dir.Normalize();
+					r.SetDir(Vector3Ops::Normalize(r.Dir()));
 
 					workqueue.AddToEnd( r, x, y );
 				}
@@ -195,9 +193,9 @@ bool SchedulerConnection::SendUnresolvedRay( const Ray& ray, const unsigned int 
 	pSendBuffer->setDouble( ray.origin.y );
 	pSendBuffer->setDouble( ray.origin.z );
 
-	pSendBuffer->setDouble( ray.dir.x );
-	pSendBuffer->setDouble( ray.dir.y );
-	pSendBuffer->setDouble( ray.dir.z );
+	pSendBuffer->setDouble( ray.Dir().x );
+	pSendBuffer->setDouble( ray.Dir().y );
+	pSendBuffer->setDouble( ray.Dir().z );
 
 	pSendBuffer->setUInt( x );
 	pSendBuffer->setUInt( y );

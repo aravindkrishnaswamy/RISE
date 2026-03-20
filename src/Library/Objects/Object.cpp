@@ -176,7 +176,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	const Ray orig = ri.geometric.ray;
 
 	ri.geometric.ray.origin = Point3Ops::Transform( m_mxInvFinalTrans, orig.origin );
-	ri.geometric.ray.dir = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, orig.dir ) );
+	ri.geometric.ray.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() ) ));
 
 	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
 	Scalar dHowFar2 = dHowFar; 
@@ -254,7 +254,7 @@ bool Object::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar
 	Ray		orig = ray;
 
 	orig.origin = Point3Ops::Transform( m_mxInvFinalTrans, ray.origin );
-	orig.dir = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, ray.dir ) );
+	orig.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, ray.Dir() ) ));
 
 	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
 	Scalar dHowFar2 = dHowFar; 

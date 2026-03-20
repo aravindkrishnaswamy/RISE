@@ -96,7 +96,7 @@ void CompositeSPF::ProcessTopLayer(
 	for( unsigned int i=0; i<scat_top.Count(); i++ )
 	{
 		// For each ray...
-		if( Vector3Ops::Dot( scat_top[i].ray.dir, ri.onb.w() ) >= 0 ) {
+		if( Vector3Ops::Dot( scat_top[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
 			// Exits from the top, so its all good
 			scat_top[i].kray = scat_top[i].kray * importance;
 			scattered.AddScatteredRay( scat_top[i] );
@@ -105,11 +105,11 @@ void CompositeSPF::ProcessTopLayer(
 				// We must pass it off to the bottom
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
-				my_ri.ray.dir = Vector3Ops::Normalize(scat_top[i].ray.dir);
+				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_top[i].ray.Dir()));
 				my_ri.ray.Advance( thickness );
 
 				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
@@ -138,7 +138,7 @@ void CompositeSPF::ProcessBottomLayer(
 	for( unsigned int i=0; i<scat_bottom.Count(); i++ )
 	{
 		// For each ray...
-		if( Vector3Ops::Dot( scat_bottom[i].ray.dir, ri.onb.w() ) <= 0 ) {
+		if( Vector3Ops::Dot( scat_bottom[i].ray.Dir(), ri.onb.w() ) <= 0 ) {
 			// Exits from the bottom, so its all good
 			scat_bottom[i].kray = scat_bottom[i].kray * importance;
 			scattered.AddScatteredRay( scat_bottom[i] );
@@ -147,11 +147,11 @@ void CompositeSPF::ProcessBottomLayer(
 				// We must pass it back to the top
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
-				my_ri.ray.dir = Vector3Ops::Normalize(scat_bottom[i].ray.dir);
+				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_bottom[i].ray.Dir()));
 				my_ri.ray.Advance( thickness );
 
 				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
@@ -181,7 +181,7 @@ void CompositeSPF::ProcessTopLayerNM(
 	for( unsigned int i=0; i<scat_top.Count(); i++ )
 	{
 		// For each ray...
-		if( Vector3Ops::Dot( scat_top[i].ray.dir, ri.onb.w() ) >= 0 ) {
+		if( Vector3Ops::Dot( scat_top[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
 			// Exits from the top, so its all good
 			scat_top[i].krayNM *= importance;
 			scattered.AddScatteredRay( scat_top[i] );
@@ -190,11 +190,11 @@ void CompositeSPF::ProcessTopLayerNM(
 				// We must pass it off to the bottom
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
-				my_ri.ray.dir = Vector3Ops::Normalize(scat_top[i].ray.dir);
+				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_top[i].ray.Dir()));
 				my_ri.ray.Advance( thickness );
 
 				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
@@ -225,7 +225,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 	for( unsigned int i=0; i<scat_bottom.Count(); i++ )
 	{
 		// For each ray...
-		if( Vector3Ops::Dot( scat_bottom[i].ray.dir, ri.onb.w() ) <= 0 ) {
+		if( Vector3Ops::Dot( scat_bottom[i].ray.Dir(), ri.onb.w() ) <= 0 ) {
 			// Exits from the bottom, so its all good
 			scat_bottom[i].krayNM *= importance;
 			scattered.AddScatteredRay( scat_bottom[i] );
@@ -234,11 +234,11 @@ void CompositeSPF::ProcessBottomLayerNM(
 				// We must pass it back to the top
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
-				my_ri.ray.dir = Vector3Ops::Normalize(scat_bottom[i].ray.dir);
+				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_bottom[i].ray.Dir()));
 				my_ri.ray.Advance( thickness );
 
 				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.dir, ri.onb.w() ) );
+				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
@@ -259,7 +259,7 @@ void CompositeSPF::Scatter(
 	// We do a random walk process between the materials until the rays
 	// either exit the bottom material from the bottom, or exit the
 	// top material from the top
-	if( Vector3Ops::Dot( ri.ray.dir, ri.onb.w() ) <= 0 ) {
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) {
 		ProcessTopLayer( ri, RISEPel(1,1,1), random, scattered, 0, ior_stack );
 	} else {
 		ProcessBottomLayer( ri, RISEPel(1,1,1), random, scattered, 0, ior_stack );
@@ -282,7 +282,7 @@ void CompositeSPF::ScatterNM(
 	// We do a random walk process between the materials until the rays
 	// either exit the bottom material from the bottom, or exit the
 	// top material from the top
-	if( Vector3Ops::Dot( ri.ray.dir, ri.onb.w() ) <= 0 ) {
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) {
 		ProcessTopLayerNM( ri, 1, random, nm, scattered, 0, ior_stack );
 	} else {
 		ProcessBottomLayerNM( ri, 1, random, nm, scattered, 0, ior_stack );

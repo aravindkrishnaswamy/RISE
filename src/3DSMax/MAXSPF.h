@@ -56,12 +56,12 @@ public:
 		RISE::OrthonormalBasis3D	myonb = ri.onb;
 
 		// Generate a reflected ray randomly with a cosine distribution
-		if( RISE::Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > RISE::NEARZERO ) {
+		if( RISE::Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > RISE::NEARZERO ) {
 			myonb.FlipW();				
 		}
 
 		diffuse.ray.Set( ri.ptIntersection, RISE::GeometricUtilities::CreateDiffuseVector( myonb, ptrand ) );
-		diffuse.kray = pBSDF.value( diffuse.ray.dir,  ri ) * PI;
+		diffuse.kray = pBSDF.value( diffuse.ray.Dir(),  ri ) * PI;
 //		diffuse.kray = RISE::RISEPel(1,1,1);
 		scattered.AddScatteredRay( diffuse );
 	}

@@ -193,14 +193,14 @@ public:
 
 		// If we are not to hit front faces and we are front facing, then beat it!
 		if( !bHitFrontFaces  ) {
-			if( RISE::Vector3Ops::Dot(vFaceNormal, ri.ray.dir) < 0 ) {
+			if( RISE::Vector3Ops::Dot(vFaceNormal, ri.ray.Dir()) < 0 ) {
 				return;
 			}
 		}
 
 		// If we are not to hit back faces and we are back facing, then also beat it
 		if( !bHitBackFaces ) {
-			if( RISE::Vector3Ops::Dot(vFaceNormal, ri.ray.dir) > 0 ) {
+			if( RISE::Vector3Ops::Dot(vFaceNormal, ri.ray.Dir()) > 0 ) {
 				return;
 			}
 		}
@@ -297,14 +297,14 @@ public:
 
 		// If we are not to hit front faces and we are front facing, then beat it!
 		if( !bHitFrontFaces  ) {
-			if( RISE::Vector3Ops::Dot(vFaceNormal, ray.dir) < 0 ) {
+			if( RISE::Vector3Ops::Dot(vFaceNormal, ray.Dir()) < 0 ) {
 				return false;
 			}
 		}
 
 		// If we are not to hit back faces and we are back facing, then also beat it
 		if( !bHitBackFaces ) {
-			if( RISE::Vector3Ops::Dot(vFaceNormal, ray.dir) > 0 ) {
+			if( RISE::Vector3Ops::Dot(vFaceNormal, ray.Dir()) > 0 ) {
 				return false;
 			}
 		}
@@ -349,8 +349,7 @@ public:
 		RISE::Scalar		fEdgeLength;
 
 		ray.origin = v[0];
-		ray.dir = RISE::Vector3Ops::mkVector3( v[1], v[0] );
-		fEdgeLength = RISE::Vector3Ops::NormalizeMag(ray.dir);
+		{ RISE::Vector3 d = RISE::Vector3Ops::mkVector3( v[1], v[0] ); fEdgeLength = RISE::Vector3Ops::NormalizeMag(d); ray.SetDir(d); }
 
 		RISE::RayBoxIntersection( ray, h, bbox.ll, bbox.ur );
 		if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -359,8 +358,7 @@ public:
 
 		// Edge 2
 		ray.origin = v[1];
-		ray.dir = RISE::Vector3Ops::mkVector3( v[2], v[1] );
-		fEdgeLength = RISE::Vector3Ops::NormalizeMag(ray.dir);
+		{ RISE::Vector3 d = RISE::Vector3Ops::mkVector3( v[2], v[1] ); fEdgeLength = RISE::Vector3Ops::NormalizeMag(d); ray.SetDir(d); }
 
 		RISE::RayBoxIntersection( ray, h, bbox.ll, bbox.ur );
 		if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -370,8 +368,7 @@ public:
 
 		// Edge 3
 		ray.origin = v[2];
-		ray.dir = RISE::Vector3Ops::mkVector3( v[0], v[2] );
-		fEdgeLength = RISE::Vector3Ops::NormalizeMag(ray.dir);
+		{ RISE::Vector3 d = RISE::Vector3Ops::mkVector3( v[0], v[2] ); fEdgeLength = RISE::Vector3Ops::NormalizeMag(d); ray.SetDir(d); }
 
 		RISE::RayBoxIntersection( ray, h, bbox.ll, bbox.ur );
 		if( h.bHit && h.dRange <= fEdgeLength ) {

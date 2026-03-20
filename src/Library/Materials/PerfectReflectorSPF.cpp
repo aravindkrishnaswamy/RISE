@@ -40,10 +40,10 @@ void PerfectReflectorSPF::Scatter(
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
 
-	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, ri.onb.w() ) );
+	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 	specular.kray = reflectivity.GetColor(ri);
 	
-	if( Vector3Ops::Dot( specular.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( specular );
 	}
 }
@@ -59,10 +59,10 @@ void PerfectReflectorSPF::ScatterNM(
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
 
-	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, ri.onb.w() ) );
+	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 	specular.krayNM = reflectivity.GetColorNM(ri,nm);
 	
-	if( Vector3Ops::Dot( specular.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( specular );
 	}
 }

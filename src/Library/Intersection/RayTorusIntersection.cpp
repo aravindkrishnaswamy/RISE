@@ -25,7 +25,7 @@ namespace RISE
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
-		const Vector3& rayDirNorm = ray.dir;
+		const Vector3& rayDirNorm = ray.Dir();
 
 		/* Not sure why yet, but this causes a major major bug!
 		Scalar yin  = ray.origin.x + minorRadius * rayDirNorm.x;

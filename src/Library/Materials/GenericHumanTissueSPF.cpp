@@ -121,7 +121,7 @@ void GenericHumanTissueSPF::Scatter(
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.kray = RISEPel(1.0,1.0,1.0);
 
-	const Scalar cos_alpha = Vector3Ops::Dot(-ri.onb.w(), ri.ray.dir );
+	const Scalar cos_alpha = Vector3Ops::Dot(-ri.onb.w(), ri.ray.Dir() );
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DielectricSPF for detailed rationale)
@@ -145,28 +145,28 @@ void GenericHumanTissueSPF::Scatter(
 			// Scattering
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
-				trans.ray.dir = GeometricUtilities::Perturb( ri.ray.dir, 
+				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
 					acos( sqrt(random.CanonicalRandom()) ),
 					random.CanonicalRandom() * TWO_PI 
-				);
+				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.dir = BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.dir, g.GetColor(ri)[0] );
+				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColor(ri)[0] ));
 			}
 		}
 		
 		// Otherwise its just transmitted!
-		trans.ray.dir = ri.ray.dir;
+		trans.ray.SetDir(ri.ray.Dir());
 	} else{
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way
-			trans.ray.dir = GeometricUtilities::Perturb( ri.ray.dir, 
+			trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
 				acos( sqrt(random.CanonicalRandom()) ),
-				random.CanonicalRandom() * TWO_PI 
-			);
+				random.CanonicalRandom() * TWO_PI
+			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.dir = BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.dir, g.GetColor(ri)[0] );
+			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColor(ri)[0] ));
 		}
 	}
 
@@ -186,7 +186,7 @@ void GenericHumanTissueSPF::ScatterNM(
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.krayNM = 1.0;
 
-	const Scalar cos_alpha = Vector3Ops::Dot(ri.onb.w(), ri.ray.dir );
+	const Scalar cos_alpha = Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir() );
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DielectricSPF for detailed rationale)
@@ -209,28 +209,28 @@ void GenericHumanTissueSPF::ScatterNM(
 			// Scattering
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
-				trans.ray.dir = GeometricUtilities::Perturb( ri.ray.dir, 
+				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
 					acos( sqrt(random.CanonicalRandom()) ),
 					random.CanonicalRandom() * TWO_PI 
-				);
+				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.dir = BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.dir, g.GetColor(ri)[0] );
+				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColor(ri)[0] ));
 			}
 		}
 		
 		// Otherwise its just transmitted!
-		trans.ray.dir = ri.ray.dir;
+		trans.ray.SetDir(ri.ray.Dir());
 	} else{
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way
-			trans.ray.dir = GeometricUtilities::Perturb( ri.ray.dir, 
+			trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
 				acos( sqrt(random.CanonicalRandom()) ),
-				random.CanonicalRandom() * TWO_PI 
-			);
+				random.CanonicalRandom() * TWO_PI
+			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.dir = BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.dir, g.GetColorNM(ri,nm) );
+			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColorNM(ri,nm) ));
 		}
 	}
 

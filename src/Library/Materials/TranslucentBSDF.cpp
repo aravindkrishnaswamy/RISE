@@ -36,7 +36,7 @@ template< class T >
 static char GetReflectedSide( T& intensity, const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& exponent )
 {
 	Vector3 v = Vector3Ops::Normalize(vLightIn);
-	Vector3 r = Vector3Ops::Normalize(-ri.ray.dir);
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir());
 
 	const Scalar nr = Vector3Ops::Dot(n,r);
 	const Scalar nv = Vector3Ops::Dot(n,v);

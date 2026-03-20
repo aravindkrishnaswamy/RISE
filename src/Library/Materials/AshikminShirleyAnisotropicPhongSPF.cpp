@@ -106,7 +106,7 @@ static bool GenerateSpecularRay(
 
 	{
 		// Set the attenuation to ps from the paper, computed based on the monte carlo section of the paper
-		const Vector3 k1 = -ri.ray.dir;
+		const Vector3 k1 = -ri.ray.Dir();
 		const Scalar hdotk = Vector3Ops::Dot(h, k1);
 
 		if( hdotk < 0 ) {
@@ -114,8 +114,8 @@ static bool GenerateSpecularRay(
 		}
 
 		// Now compute the ray
-		// Rather than using -k1, we just the original ri.ray.dir
-		Vector3 k2 = Vector3Ops::Normalize( ri.ray.dir/*-k1*/ + 2.0 * hdotk * h );
+		// Rather than using -k1, we just the original ri.ray.Dir()
+		Vector3 k2 = Vector3Ops::Normalize( ri.ray.Dir()/*-k1*/ + 2.0 * hdotk * h );
 
 		// If the ray goes into the material, then lets not use it
 		if( Vector3Ops::Dot(k2, ri.onb.w()) < 0 ) {
@@ -151,7 +151,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
 
@@ -213,7 +213,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
 

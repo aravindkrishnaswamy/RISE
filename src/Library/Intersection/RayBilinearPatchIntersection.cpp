@@ -52,12 +52,12 @@ namespace RISE
 		const Point3& srfpos
 		)
 	{
-		if(fabs(ray.dir.x) >= fabs(ray.dir.y) && fabs(ray.dir.x) >= fabs(ray.dir.z)) {
-			return (srfpos.x - ray.origin.x) / ray.dir.x;
-		} else if(fabs(ray.dir.y) >= fabs(ray.dir.z)) {
-			return (srfpos.y - ray.origin.y) / ray.dir.y;
+		if(fabs(ray.Dir().x) >= fabs(ray.Dir().y) && fabs(ray.Dir().x) >= fabs(ray.Dir().z)) {
+			return (srfpos.x - ray.origin.x) / ray.Dir().x;
+		} else if(fabs(ray.Dir().y) >= fabs(ray.Dir().z)) {
+			return (srfpos.y - ray.origin.y) / ray.Dir().y;
 		} else {
-			return (srfpos.z - ray.origin.z) / ray.dir.z;
+			return (srfpos.z - ray.origin.z) / ray.Dir().z;
 		}
 	}
 
@@ -106,9 +106,9 @@ namespace RISE
 		const Scalar rz = ray.origin.z;
 
 		// Retrieve the xyz of the q part of ray
-		const Scalar qx = ray.dir.x;
-		const Scalar qy = ray.dir.y;
-		const Scalar qz = ray.dir.z;
+		const Scalar qx = ray.Dir().x;
+		const Scalar qy = ray.Dir().y;
+		const Scalar qz = ray.Dir().z;
 
 		// Find d w.r.t. x, y, z - subtracting r just after  
 		const Scalar dx = patch.pts[0].x - rx;

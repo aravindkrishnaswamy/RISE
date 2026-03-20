@@ -43,7 +43,7 @@ void LambertianSPF::Scatter(
 	diffuse.type = ScatteredRay::eRayDiffuse;
 
 	// Generate a reflected ray randomly with a cosine distribution
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO )
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO )
 	{
 		OrthonormalBasis3D	myonb = ri.onb;
 		myonb.FlipW();				
@@ -71,7 +71,7 @@ void LambertianSPF::ScatterNM(
 	diffuse.type = ScatteredRay::eRayDiffuse;
 
 	// Generate a reflected ray randomly with a cosine distribution
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO )
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO )
 	{
 		OrthonormalBasis3D	myonb = ri.onb;
 		myonb.FlipW();				

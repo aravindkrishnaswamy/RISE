@@ -18,6 +18,23 @@
 namespace RISE
 {
 
+	//
+	// Branchless slab method (Williams et al. 2004) using precomputed
+	// inverse direction and sign arrays stored in the Ray.
+	//
+	// This replaces the original 18-branch implementation with one that
+	// uses 6 multiplies, 0 divisions, and far fewer branches.
+	// The precomputed invDir handles the dir~=0 case naturally via
+	// IEEE 754 infinities.
+	//
+
+#define SIDE_X0 0
+#define SIDE_X1 1
+#define SIDE_Y0 2
+#define SIDE_Y1 3
+#define SIDE_Z0 4
+#define SIDE_Z1 5
+
 	void RayBoxIntersection( const Ray& ray, BOX_HIT& hit, const Point3& ll, const Point3& ur )
 	{
 		RISE_PROFILE_INC(nBoxIntersectionTests);
@@ -25,230 +42,72 @@ namespace RISE
 		hit.dRange = RISE_INFINITY;
 		hit.dRange2 = RISE_INFINITY;
 
-	#define SIDE_X0 0
-	#define SIDE_X1 1
-	#define SIDE_Y0 2
-	#define SIDE_Y1 3
-	#define SIDE_Z0 4
-	#define SIDE_Z1 5
+		// Store bounds as an array so we can index by sign
+		const Scalar boundsX[2] = { ll.x, ur.x };
+		const Scalar boundsY[2] = { ll.y, ur.y };
+		const Scalar boundsZ[2] = { ll.z, ur.z };
 
-		Scalar		fTMin=0, fTMax=RISE_INFINITY;
-		int			nSideMin=SIDE_X0, nSideMax=SIDE_X1;
+		// X slab
+		Scalar tmin  = (boundsX[    ray.sign[0]] - ray.origin.x) * ray.invDir.x;
+		Scalar tmax  = (boundsX[1 - ray.sign[0]] - ray.origin.x) * ray.invDir.x;
+		int sideMin  = ray.sign[0] ? SIDE_X1 : SIDE_X0;
+		int sideMax  = ray.sign[0] ? SIDE_X0 : SIDE_X1;
 
-		Scalar		t;
+		// Y slab
+		const Scalar tymin = (boundsY[    ray.sign[1]] - ray.origin.y) * ray.invDir.y;
+		const Scalar tymax = (boundsY[1 - ray.sign[1]] - ray.origin.y) * ray.invDir.y;
 
-		//
-		// Start with the X-Axis
-		//
-		if( ray.dir.x < -NEARZERO )
-		{
-			t = (ll.x - ray.origin.x) / ray.dir.x;
-
-			if( t < fTMin ) {
-				return;		// No chance
-			}
-
-			if( t <= fTMax ) {
-				fTMax = t;
-				nSideMax = SIDE_X0;
-			}
-
-			t = (ur.x - ray.origin.x) / ray.dir.x;
-
-			if( t >= fTMin ) {
-				if( t > fTMax ) {
-					return;	// No chance
-				}
-
-				fTMin = t;
-				nSideMin = SIDE_X1;
-			}
-		}
-		else
-		{
-			if( ray.dir.x > NEARZERO )
-			{
-				t = (ur.x - ray.origin.x ) / ray.dir.x;
-
-				if( t < fTMin ) {
-					return;	// No chance
-				}
-
-				if( t <= fTMax ) {
-					fTMax = t;
-					nSideMax = SIDE_X1;
-				}
-
-				t = (ll.x - ray.origin.x ) / ray.dir.x;
-
-				if( t >= fTMin ) {
-					if( t > fTMax ) {
-						return;// No chance
-					}
-
-					fTMin = t;
-					nSideMin = SIDE_X0;
-				}
-			}
-			else
-			{
-				if( (ray.origin.x < ll.x) || (ray.origin.x > ur.x) ) {
-					return;		// No chance
-				}
-			}
+		if( tmin > tymax || tymin > tmax ) {
+			return;
 		}
 
-
-		//
-		// And now the Y axis
-		//
-		
-		if( ray.dir.y < -NEARZERO )
-		{
-			t = (ll.y - ray.origin.y) / ray.dir.y;
-
-			if( t < fTMin ) {
-				return;			// no Chance
-			}
-
-			if( t <= (fTMax-NEARZERO) ) {
-				fTMax = t;
-				nSideMax = SIDE_Y0;
-			}
-
-			t = (ur.y - ray.origin.y) / ray.dir.y;
-
-			if( t >= (fTMin+NEARZERO) ) {
-				if( t > fTMax ) {
-					return;				// no chance
-				}
-
-				fTMin = t;
-				nSideMin = SIDE_Y1;
-			}
+		if( tymin > tmin ) {
+			tmin = tymin;
+			sideMin = ray.sign[1] ? SIDE_Y1 : SIDE_Y0;
 		}
-		else
-		{
-			if( ray.dir.y > NEARZERO )
-			{
-				t = (ur.y - ray.origin.y) / ray.dir.y;
-
-				if( t < fTMin ) {
-					return;			// no chance
-				}
-
-				if( t <= fTMax - NEARZERO ) {
-					fTMax = t;
-					nSideMax = SIDE_Y1;
-				}
-
-				t = (ll.y - ray.origin.y) / ray.dir.y;
-
-				if( t >= (fTMin + NEARZERO) ) {
-					if( t > fTMax ) {
-						return;			// no chance
-					}
-
-					fTMin = t;
-					nSideMin = SIDE_Y0;
-				}
-			}
-			else
-			{
-				if( (ray.origin.y < ll.y) || (ray.origin.y > ur.y) ) {
-					return;			// no chance
-				}
-			}
+		if( tymax < tmax ) {
+			tmax = tymax;
+			sideMax = ray.sign[1] ? SIDE_Y0 : SIDE_Y1;
 		}
 
+		// Z slab
+		const Scalar tzmin = (boundsZ[    ray.sign[2]] - ray.origin.z) * ray.invDir.z;
+		const Scalar tzmax = (boundsZ[1 - ray.sign[2]] - ray.origin.z) * ray.invDir.z;
 
-		//
-		// And finally the Z axis
-		//
-		
-		if( ray.dir.z < -NEARZERO )
-		{
-			t = (ll.z - ray.origin.z) / ray.dir.z;
-
-			if( t < fTMin ) {
-				return;		// no chance
-			}
-
-			if( t <= (fTMax-NEARZERO) ) {
-				fTMax = t;
-				nSideMax = SIDE_Z0;
-			}
-
-			t = (ur.z - ray.origin.z) / ray.dir.z;
-
-			if( t >= (fTMin+NEARZERO) )
-			{
-				if( t > fTMax ) {
-					return;				// no chance
-				}
-
-				fTMin = t;
-				nSideMin = SIDE_Z1;
-			}
-		}
-		else
-		{
-			if( ray.dir.z > NEARZERO )
-			{
-				t = (ur.z - ray.origin.z) / ray.dir.z;
-
-				if( t < fTMin ) {
-					return;		// no chance
-				}
-
-				if( t <= (fTMax - NEARZERO) ) {
-					fTMax = t;
-					nSideMax = SIDE_Z1;
-				}
-
-				t = (ll.z - ray.origin.z) / ray.dir.z;
-
-				if( t >= (fTMin + NEARZERO) ) {
-					if( t > fTMax ) {
-						return;			// no chance
-					}
-
-					fTMin = t;
-					nSideMin = SIDE_Z0;
-				}
-			}
-			else
-			{
-				if( (ray.origin.z < ll.z) || (ray.origin.z > ur.z) )
-					return;			// no chance
-			}
+		if( tmin > tzmax || tzmin > tmax ) {
+			return;
 		}
 
+		if( tzmin > tmin ) {
+			tmin = tzmin;
+			sideMin = ray.sign[2] ? SIDE_Z1 : SIDE_Z0;
+		}
+		if( tzmax < tmax ) {
+			tmax = tzmax;
+			sideMax = ray.sign[2] ? SIDE_Z0 : SIDE_Z1;
+		}
 
-		// Whew!  and if we make it to here, then there was an intersection, take
-		// the smallest positive distance
-
-		// If both distances are negative, then the box is behind the ray, and no intersection
-		if( fTMin < 0 && fTMax < 0 ) {
+		// If both distances are negative, the box is behind the ray
+		if( tmin < 0 && tmax < 0 ) {
 			return;
 		}
 
 		hit.bHit = true;
 		RISE_PROFILE_INC(nBoxIntersectionHits);
 
-		if( fTMin > 0 )
+		if( tmin > 0 )
 		{
-			hit.dRange = fTMin;
-			hit.dRange2 = fTMax;
-			hit.sideA = nSideMin;					// side when entering
-			hit.sideB = nSideMax;					// side when exiting
+			hit.dRange = tmin;
+			hit.dRange2 = tmax;
+			hit.sideA = sideMin;
+			hit.sideB = sideMax;
 		}
 		else
 		{
-			hit.dRange = fTMax;
-			hit.dRange2 = fTMin;
-			hit.sideA = nSideMax;					// side when entering
-			hit.sideB = nSideMin;					// side when exiting
+			hit.dRange = tmax;
+			hit.dRange2 = tmin;
+			hit.sideA = sideMax;
+			hit.sideB = sideMin;
 		}
 	}
 

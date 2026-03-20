@@ -34,7 +34,7 @@ namespace RISE
 
 		// Moller-Trumbore ray/triangle intersection with early exits.
 		// This preserves the existing alpha/beta/range contract used by the callers.
-		const Vector3 pvec = Vector3Ops::Cross( ray.dir, vEdgeB );
+		const Vector3 pvec = Vector3Ops::Cross( ray.Dir(), vEdgeB );
 		const Scalar determinant = Vector3Ops::Dot( vEdgeA, pvec );
 
 		if( determinant > -NEARZERO && determinant < NEARZERO ) {
@@ -50,7 +50,7 @@ namespace RISE
 		}
 
 		const Vector3 qvec = Vector3Ops::Cross( tvec, vEdgeA );
-		const Scalar b = Vector3Ops::Dot( ray.dir, qvec ) * oodet;
+		const Scalar b = Vector3Ops::Dot( ray.Dir(), qvec ) * oodet;
 
 		if( (b<0.0-NEARZERO) || ((a+b)>1.0+NEARZERO) ) {
 			return;
@@ -77,7 +77,7 @@ namespace RISE
 
 		// Test if it intersects the plane first
 		Vector3	vTriNormal = vEdgeA * vEdgeB;
-		Scalar		fDotNormalDir = vTriNormal % ray.dir;
+		Scalar		fDotNormalDir = vTriNormal % ray.Dir();
 
 		#define findthemax(x,y,z) \
 		((x > y) ? ((x > z) ? 0 : 2) : ((y > z) ? 1 : 2))

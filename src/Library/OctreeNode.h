@@ -215,14 +215,11 @@ public:
 	{
 		RISE_PROFILE_INC(nBBoxIntersectionTests);
 		BoundingBox my_bb;
-			
-		MyBBFromParent( bbox, which_child, my_bb );
 
-		if( GeometricUtilities::IsPointInsideBox( ray.origin, my_bb.ll, my_bb.ur ) ) {
-			h.bHit = true;
+		MyBBFromParent( bbox, which_child, my_bb );
+		RayBoxIntersection( ray, h, my_bb.ll, my_bb.ur );
+		if( h.bHit && h.dRange < 0 ) {
 			h.dRange = NEARZERO;
-		} else {
-			RayBoxIntersection( ray, h, my_bb.ll, my_bb.ur );
 		}
 	}
 
@@ -596,9 +593,7 @@ public:
 					BOX_HIT	h;
 					pChildren[i]->IntersectRayBB( my_bb, i, ray, h );
 
-					if( (h.dRange < dHowFar) ||  
-						GeometricUtilities::IsPointInsideBox( ray.origin, bbox.ll, bbox.ur )
-						)
+					if( h.bHit && h.dRange < dHowFar )
 					{
 						childrenhit[numchildrenhit] = pChildren[i];
 						nodeid[numchildrenhit] = i;

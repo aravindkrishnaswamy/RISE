@@ -50,7 +50,7 @@ void OrenNayarSPF::Scatter(
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	// Generate a reflected ray randomly with a cosine distribution
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();				
 	}
 
@@ -58,7 +58,7 @@ void OrenNayarSPF::Scatter(
 
 	// Compute the weight
 	RISEPel L1, L2;
-	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.dir, ri, ri.onb.w(), pRoughness.GetColor(ri) );
+	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, ri.onb.w(), pRoughness.GetColor(ri) );
 
 	const RISEPel rho = pReflectance.GetColor(ri);
 	diffuse.kray = L1*rho + (L2*rho*rho);
@@ -82,7 +82,7 @@ void OrenNayarSPF::ScatterNM(
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	// Generate a reflected ray randomly with a cosine distribution
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();				
 	}
 
@@ -90,7 +90,7 @@ void OrenNayarSPF::ScatterNM(
 	
 	// Compute the weight
 	Scalar L1=0, L2=0;
-	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.dir, ri, myonb.w(), pRoughness.GetColorNM(ri,nm) );
+	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness.GetColorNM(ri,nm) );
 
 	const Scalar rho = pReflectance.GetColorNM(ri,nm);
 	diffuse.krayNM = L1*rho + (L2*rho*rho);

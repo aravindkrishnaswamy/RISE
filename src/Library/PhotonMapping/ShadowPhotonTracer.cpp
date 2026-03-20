@@ -41,7 +41,7 @@ void ShadowPhotonTracer::TracePhoton(
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
 	ri.geometric.ray = ray;
-	Vector3Ops::NormalizeMag(ri.geometric.ray.dir);
+	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
 	pScene->GetObjects()->IntersectRay( ri, true, false, false );
 
 	if( ri.geometric.bHit )

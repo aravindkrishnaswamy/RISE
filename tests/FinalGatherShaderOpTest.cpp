@@ -34,19 +34,19 @@ void TestEffectiveContributorsTracksWeightBalance() {
 
 	std::vector<IIrradianceCache::CacheElement> one;
 	one.push_back(MakeElement(Point3(0, 0, 0), Vector3(0, 1, 0), RISEPel(1, 0, 0), 10.0, 0, 0));
-	const Scalar oneEff = FinalGatherInterpolation::ComputeEffectiveContributors(one, 10.0);
+	const Scalar oneEff = FinalGatherInterpolation::ComputeEffectiveContributors(one);
 	assert(IsClose(oneEff, 1.0));
 
 	std::vector<IIrradianceCache::CacheElement> twoBalanced;
 	twoBalanced.push_back(MakeElement(Point3(0, 0, 0), Vector3(0, 1, 0), RISEPel(1, 0, 0), 5.0, 0, 0));
 	twoBalanced.push_back(MakeElement(Point3(0, 0, 0), Vector3(0, 1, 0), RISEPel(0, 1, 0), 5.0, 0, 0));
-	const Scalar twoEff = FinalGatherInterpolation::ComputeEffectiveContributors(twoBalanced, 10.0);
+	const Scalar twoEff = FinalGatherInterpolation::ComputeEffectiveContributors(twoBalanced);
 	assert(IsClose(twoEff, 2.0));
 
 	std::vector<IIrradianceCache::CacheElement> twoDominated;
 	twoDominated.push_back(MakeElement(Point3(0, 0, 0), Vector3(0, 1, 0), RISEPel(1, 0, 0), 9.0, 0, 0));
 	twoDominated.push_back(MakeElement(Point3(0, 0, 0), Vector3(0, 1, 0), RISEPel(0, 1, 0), 1.0, 0, 0));
-	const Scalar dominatedEff = FinalGatherInterpolation::ComputeEffectiveContributors(twoDominated, 10.0);
+	const Scalar dominatedEff = FinalGatherInterpolation::ComputeEffectiveContributors(twoDominated);
 	assert(dominatedEff < 2.0);
 	assert(dominatedEff > 1.0);
 
@@ -66,7 +66,7 @@ void TestInterpolationRequiresEnoughEffectiveContributors() {
 		results,
 		4.0,
 		false,
-		2.0,
+		2,
 		c,
 		0
 		);
@@ -92,7 +92,7 @@ void TestInterpolationProducesWeightedAverage() {
 		results,
 		3.0,
 		false,
-		1.5,
+		1,
 		c,
 		&fallbackCount
 		);
@@ -130,14 +130,16 @@ void TestGradientFallbackRestoresBaseIrradiance() {
 		results,
 		2.0,
 		true,
-		1.0,
+		1,
 		c,
 		&fallbackCount
 		);
 
 	assert(ok == true);
 	assert(fallbackCount == 1);
-	assert(IsPelClose(c, RISEPel(0.4, 0.5, 0.6)));
+	// Gradient extrapolation: base (0.4,0.5,0.6) + dx=1.0 * trans[0]=(-1,0,0) = (-0.6,0.5,0.6)
+	// Negative channels are clamped to 0 by EnsurePositve
+	assert(IsPelClose(c, RISEPel(0.0, 0.5, 0.6)));
 
 	std::cout << "FinalGather gradient fallback Passed!" << std::endl;
 }
@@ -155,7 +157,7 @@ void TestInterpolationClampsNegativeInputs() {
 		results,
 		1.0,
 		false,
-		1.0,
+		1,
 		c,
 		0
 		);

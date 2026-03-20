@@ -119,7 +119,7 @@ RISEPel DataDrivenBSDF::ComputeValueForPatchSet( BSDFValuesType::const_iterator 
 RISEPel DataDrivenBSDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	const Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
-	const Vector3 r = Vector3Ops::Normalize(-ri.ray.dir); // outgoing ray vector
+	const Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
 	const Scalar nr = Vector3Ops::Dot(ri.vNormal,r);
 	const Scalar nv = Vector3Ops::Dot(ri.vNormal,v);

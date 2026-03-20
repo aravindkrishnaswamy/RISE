@@ -54,7 +54,7 @@ namespace RISE
 				) const
 			{
 				// Transform the world co-ordinates to the texture lookup
-				Vector3 v = Vector3Ops::Transform( mxtransform, ray.dir );
+				Vector3 v = Vector3Ops::Transform( mxtransform, ray.Dir() );
 				const Scalar r = 0.159154943*acos(-v.z)/sqrt(v.x*v.x + v.y*v.y);
 
 				RayIntersectionGeometric rig( ray, rast );
@@ -71,7 +71,7 @@ namespace RISE
 				const Scalar nm
 				) const
 			{
-				Vector3 v = Vector3Ops::Transform( mxtransform, ray.dir );
+				Vector3 v = Vector3Ops::Transform( mxtransform, ray.Dir() );
 				const Scalar r = 0.159154943*acos(-v.z)/sqrt(v.x*v.x + v.y*v.y);
 
 				RayIntersectionGeometric rig( ray, rast );

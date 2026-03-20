@@ -65,7 +65,7 @@ void CookTorranceSPF::Scatter(
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	// Generate a reflected ray randomly with a cosine distribution
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();				
 	}
 
@@ -73,10 +73,10 @@ void CookTorranceSPF::Scatter(
 	specular.ray = diffuse.ray;
 
 	// Compute the weight
-	const RISEPel fresnel = Optics::CalculateConductorReflectance( ri.ray.dir, myonb.w(), RISEPel(1,1,1), pIOR.GetColor(ri), pExtinction.GetColor(ri) );
+	const RISEPel fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), myonb.w(), RISEPel(1,1,1), pIOR.GetColor(ri), pExtinction.GetColor(ri) );
 
 	if( ColorMath::MaxValue(fresnel) > 0 ) {
-		RISEPel factor = CookTorranceBRDF::ComputeFactor<RISEPel>( diffuse.ray.dir, ri, myonb.w(), pMasking.GetColor(ri) );
+		RISEPel factor = CookTorranceBRDF::ComputeFactor<RISEPel>( diffuse.ray.Dir(), ri, myonb.w(), pMasking.GetColor(ri) );
 		ColorMath::Clamp( factor, 0, 1 );
 		if( ColorMath::MaxValue( factor ) > 0 ) {
 			specular.kray = pSpecular.GetColor(ri) * fresnel * factor;
@@ -106,7 +106,7 @@ void CookTorranceSPF::ScatterNM(
 	OrthonormalBasis3D	myonb = ri.onb;
 
 	// Generate a reflected ray randomly with a cosine distribution
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();				
 	}
 
@@ -114,10 +114,10 @@ void CookTorranceSPF::ScatterNM(
 	specular.ray = diffuse.ray;
 
 	// Compute the weight
-	const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.dir, myonb.w(), 1.0, pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
+	const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), myonb.w(), 1.0, pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
 
 	if( fresnel > 0 ) {
-		const Scalar factor = CookTorranceBRDF::ComputeFactor( diffuse.ray.dir, ri, myonb.w(), pMasking.GetColorNM(ri,nm) );
+		const Scalar factor = CookTorranceBRDF::ComputeFactor( diffuse.ray.Dir(), ri, myonb.w(), pMasking.GetColorNM(ri,nm) );
 
 		if( factor > 0 ) {
 			specular.krayNM = pSpecular.GetColorNM(ri,nm) * fresnel * factor;

@@ -55,7 +55,7 @@ static void ComputeFactors(
 	)
 {
 	Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
-	Vector3 r = Vector3Ops::Normalize(-ri.ray.dir); // outgoing ray vector
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
 	const Vector3& n = ri.onb.w();
 	const Scalar nr = Vector3Ops::Dot(n,r);

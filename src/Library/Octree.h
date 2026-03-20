@@ -86,13 +86,8 @@ namespace RISE
 			BOX_HIT	h;
 			root.IntersectRayBB( bbox, 99, ray, h );
 
-			if( h.bHit ) {
-				if( (h.dRange < dHowFar) ||
-					GeometricUtilities::IsPointInsideBox( ray.origin, bbox.ll, bbox.ur )
-					)
-				{
-					return root.IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, bbox, 99 );
-				}
+			if( h.bHit && h.dRange < dHowFar ) {
+				return root.IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, bbox, 99 );
 			}
 
 			return false;

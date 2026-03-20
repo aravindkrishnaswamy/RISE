@@ -291,12 +291,10 @@ public:
 	{
 		RISE_PROFILE_INC(nBBoxIntersectionTests);
 		MyBBFromParent( bbox, which_child, my_bb );
-
-		if( GeometricUtilities::IsPointInsideBox( ray.origin, my_bb.ll, my_bb.ur ) ) {
-			h.bHit = true;
+		RayBoxIntersection( ray, h, my_bb.ll, my_bb.ur );
+		// Handle origin-inside-box: slab method returns tmin<0, tmax>0
+		if( h.bHit && h.dRange < 0 ) {
 			h.dRange = NEARZERO;
-		} else {
-			RayBoxIntersection( ray, h, my_bb.ll, my_bb.ur );
 		}
 	}
 

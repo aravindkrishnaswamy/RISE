@@ -46,8 +46,8 @@ void ClippedPlaneGeometry::GenerateMesh( )
 
 void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
-	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ri.ray.dir );
-	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ri.ray.dir );
+	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ri.ray.Dir() );
+	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ri.ray.Dir() );
 
 	const bool bAllowTriA = (bHitFrontFaces || dDotA >= 0) && ((bHitBackFaces && bDoubleSided) || dDotA <= 0);
 	const bool bAllowTriB = (bHitFrontFaces || dDotB >= 0) && ((bHitBackFaces && bDoubleSided) || dDotB <= 0);
@@ -119,8 +119,8 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 
 bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
-	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ray.dir );
-	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ray.dir );
+	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ray.Dir() );
+	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ray.Dir() );
 
 	const bool bAllowTriA = (bHitFrontFaces || dDotA >= 0) && ((bHitBackFaces && bDoubleSided) || dDotA <= 0);
 	const bool bAllowTriB = (bHitFrontFaces || dDotB >= 0) && ((bHitBackFaces && bDoubleSided) || dDotB <= 0);

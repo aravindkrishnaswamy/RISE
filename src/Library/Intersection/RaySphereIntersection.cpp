@@ -32,8 +32,8 @@ namespace RISE
 		Scalar		fSqrRadius = radius*radius;
 		Scalar		coeffs[3] = {0};
 
-		coeffs[0] = Vector3Ops::SquaredModulus( ray.dir );
-		coeffs[1] = 2 * (ray.dir.x * vTemp.x + ray.dir.y * vTemp.y + ray.dir.z * vTemp.z);
+		coeffs[0] = Vector3Ops::SquaredModulus( ray.Dir() );
+		coeffs[1] = 2 * (ray.Dir().x * vTemp.x + ray.Dir().y * vTemp.y + ray.Dir().z * vTemp.z);
 		coeffs[2] = Vector3Ops::SquaredModulus( vTemp ) - (fSqrRadius);
 
 		Scalar		solutions[2] = {0};
@@ -98,8 +98,8 @@ namespace RISE
 		Scalar		fSqrRadius = radius*radius;
 		Scalar		coeffs[3] = {0};
 
-		coeffs[0] = Vector3Ops::SquaredModulus( ray.dir );
-		coeffs[1] = 2 * (ray.dir.x * ray.origin.x + ray.dir.y * ray.origin.y + ray.dir.z * ray.origin.z);
+		coeffs[0] = Vector3Ops::SquaredModulus( ray.Dir() );
+		coeffs[1] = 2 * (ray.Dir().x * ray.origin.x + ray.Dir().y * ray.origin.y + ray.Dir().z * ray.origin.z);
 		Vector3 d = Vector3Ops::mkVector3( ray.origin, Point3(0, 0, 0) );
 		coeffs[2] = Vector3Ops::SquaredModulus( d ) - (fSqrRadius);
 

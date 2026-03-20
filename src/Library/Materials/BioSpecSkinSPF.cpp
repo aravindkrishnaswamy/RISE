@@ -892,11 +892,11 @@ void BioSpecSkinSPF::Scatter(
 	// the bottom of the skin
 	bool bAbsorbed = false;
 
-	if( Vector3Ops::Dot( ri.ray.dir, ri.onb.w() ) < 0 ) {
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) < 0 ) {
 		// From top, so send it to the stratum corneum
 		bAbsorbed = ProcessSCInteraction(
 			random.CanonicalRandom()*400.0+380.0,
-			ri.ray.dir,
+			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
 			random,
@@ -907,7 +907,7 @@ void BioSpecSkinSPF::Scatter(
 		// From bottom, so send it to the reticular dermis
 		bAbsorbed = ProcessReticularDermisInteraction(
 			random.CanonicalRandom()*400.0+380.0,
-			ri.ray.dir,
+			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
 			random,
@@ -918,7 +918,7 @@ void BioSpecSkinSPF::Scatter(
 	if( !bAbsorbed ) {
 		ScatteredRay remmitted;
 		remmitted.ray.origin = ri.ptIntersection;
-		remmitted.ray.dir = photon_out;
+		remmitted.ray.SetDir(photon_out);
 		remmitted.kray = RISEPel(1.0,1.0,1.0);
 		scattered.AddScatteredRay( remmitted );
 	}
@@ -968,11 +968,11 @@ void BioSpecSkinSPF::ScatterNM(
 	// the bottom of the skin
 	bool bAbsorbed = false;
 
-	if( Vector3Ops::Dot( ri.ray.dir, ri.onb.w() ) < 0 ) {
+	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) < 0 ) {
 		// From top, so send it to the stratum corneum
 		bAbsorbed = ProcessSCInteraction(
 			nm,
-			ri.ray.dir,
+			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
 			random,
@@ -983,7 +983,7 @@ void BioSpecSkinSPF::ScatterNM(
 		// From bottom, so send it to the reticular dermis
 		bAbsorbed = ProcessReticularDermisInteraction(
 			nm, 
-			ri.ray.dir, 
+			ri.ray.Dir(), 
 			photon_out,
 			ri.onb, 
 			random, 
@@ -994,7 +994,7 @@ void BioSpecSkinSPF::ScatterNM(
 	if( !bAbsorbed ) {
 		ScatteredRay remmitted;
 		remmitted.ray.origin = ri.ptIntersection;
-		remmitted.ray.dir = photon_out;
+		remmitted.ray.SetDir(photon_out);
 		remmitted.krayNM = 1.0;
 		scattered.AddScatteredRay( remmitted );	
 	}

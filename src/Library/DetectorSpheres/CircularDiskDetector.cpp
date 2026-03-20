@@ -130,7 +130,7 @@ void CircularDiskDetector::DumpForMatlab( const char* szFile, const Scalar phi_b
 int CircularDiskDetector::FindDepositedDetector( const Ray& ray_from_mat )
 {
 	RayIntersectionGeometric	ri( ray_from_mat, nullRasterizerState );
-	Vector3Ops::NormalizeMag(ri.ray.dir);
+	ri.ray.SetDir(Vector3Ops::Normalize(ri.ray.Dir()));
 
 	// Patches better not overlap!  We assume they don't
 	for( unsigned int i=0; i<m_numThetaPatches; i++ ) {

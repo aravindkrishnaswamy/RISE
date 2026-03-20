@@ -78,7 +78,7 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
-	Vector3Ops::NormalizeMag(ri.geometric.ray.dir);
+	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	if( ri.geometric.bHit )
@@ -113,7 +113,7 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 			}
 
 			if( bDiffuseComponentAvailable && bStorePhoton ) {
-				pPhotonMap.Store( power, nm, ri.geometric.ptIntersection, -ray.dir );
+				pPhotonMap.Store( power, nm, ri.geometric.ptIntersection, -ray.Dir() );
 			}
 
 			if( bBranch ) {

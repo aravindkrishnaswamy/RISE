@@ -82,9 +82,9 @@ void IsotropicPhongSPF::Scatter(
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	const Scalar rdotn = Vector3Ops::Dot(ri.ray.dir, ri.vNormal);
+	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
-	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.dir, n );
+	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	const RISEPel N = exponent.GetColor(ri);
 
@@ -119,9 +119,9 @@ void IsotropicPhongSPF::ScatterNM(
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	const Scalar rdotn = Vector3Ops::Dot(ri.ray.dir, ri.vNormal);
+	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
-	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.dir, n );
+	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	ScatteredRay diffuse, specular;	
 	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ) );

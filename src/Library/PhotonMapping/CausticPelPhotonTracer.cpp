@@ -80,7 +80,7 @@ void CausticPelPhotonTracer::TracePhoton(
 
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
-	Vector3Ops::NormalizeMag(ri.geometric.ray.dir);
+	ri.geometric.ray.SetDir(Vector3Ops::Normalize(ri.geometric.ray.Dir()));
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	if( ri.geometric.bHit )
@@ -115,7 +115,7 @@ void CausticPelPhotonTracer::TracePhoton(
 			// specular bounces are ok!
 
 			if( bFromSpecular && pBRDF ) {
-				pPhotonMap.Store( power, ri.geometric.ptIntersection, -ray.dir );
+				pPhotonMap.Store( power, ri.geometric.ptIntersection, -ray.Dir() );
 				numRecursions--;
 				return;
 			}

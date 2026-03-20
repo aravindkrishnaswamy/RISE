@@ -22,7 +22,7 @@ namespace RISE
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
-		const Scalar		Vd = Vector3Ops::Dot( ray.dir, vPlaneNormal );
+		const Scalar		Vd = Vector3Ops::Dot( ray.Dir(), vPlaneNormal );
 
 		if( Vd < NEARZERO && Vd > -NEARZERO ) {
 			return;

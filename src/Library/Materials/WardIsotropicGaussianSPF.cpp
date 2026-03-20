@@ -80,10 +80,10 @@ static void GenerateSpecularRay(
 	   	  ri.onb.u().y*a.x + ri.onb.v().y*a.y + ri.onb.w().y*a.z, 
 		  ri.onb.u().z*a.x + ri.onb.v().z*a.y + ri.onb.w().z*a.z );
 
-	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.dir);
+	const Scalar hdotk = Vector3Ops::Dot(h, -ri.ray.Dir());
 
 	if( hdotk > 0 ) {
-		Vector3 ret = Vector3Ops::Normalize( ri.ray.dir + 2.0 * hdotk * h );
+		Vector3 ret = Vector3Ops::Normalize( ri.ray.Dir() + 2.0 * hdotk * h );
 		specular.ray.Set( ri.ptIntersection, ret );
 	}
 }
@@ -96,14 +96,14 @@ void WardIsotropicGaussianSPF::Scatter(
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
 
 	ScatteredRay d, s;	
 	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
 
-	if( Vector3Ops::Dot( d.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.kray = diffuse.GetColor(ri);
 		scattered.AddScatteredRay( d );
 	}
@@ -114,7 +114,7 @@ void WardIsotropicGaussianSPF::Scatter(
 	{
 		GenerateSpecularRay( s, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), a[0] );
 
-		if( Vector3Ops::Dot( s.ray.dir, ri.onb.w() ) > 0.0 ) {
+		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			s.kray = specular.GetColor(ri);
 			scattered.AddScatteredRay( s );
 		}
@@ -126,7 +126,7 @@ void WardIsotropicGaussianSPF::Scatter(
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( s, myonb, ri, ptrand, a[i] );
 
-			if( Vector3Ops::Dot( s.ray.dir, ri.onb.w() ) > 0.0 ) {
+			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = spec[i];
 				scattered.AddScatteredRay( s );
@@ -145,7 +145,7 @@ void WardIsotropicGaussianSPF::ScatterNM(
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
-	if( Vector3Ops::Dot(ri.ray.dir, ri.onb.w()) > NEARZERO ) {
+	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
 
@@ -153,11 +153,11 @@ void WardIsotropicGaussianSPF::ScatterNM(
 	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
 	GenerateSpecularRay( s, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), alpha.GetColorNM(ri,nm) );
 	
-	if( Vector3Ops::Dot( d.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.krayNM = diffuse.GetColorNM(ri,nm);
 		scattered.AddScatteredRay( d );
 	}
-	if( Vector3Ops::Dot( s.ray.dir, ri.onb.w() ) > 0.0 ) {
+	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		s.krayNM = specular.GetColorNM(ri,nm);
 		scattered.AddScatteredRay( s );
 	}

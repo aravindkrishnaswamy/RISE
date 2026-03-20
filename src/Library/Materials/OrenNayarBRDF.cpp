@@ -48,7 +48,7 @@ void OrenNayarBRDF::ComputeFactor(
 	)
 {
 	Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
-	Vector3 r = Vector3Ops::Normalize(-ri.ray.dir); // outgoing ray vector
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
 	const Scalar nr = Vector3Ops::Dot(n,r);
 	const Scalar nv = Vector3Ops::Dot(n,v);

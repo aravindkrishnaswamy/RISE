@@ -45,7 +45,7 @@ IridescentPainter::~IridescentPainter( )
 
 RISEPel IridescentPainter::GetColor( const RayIntersectionGeometric& ri  ) const
 {
-	Scalar rdotv = fabs(Vector3Ops::Dot(ri.ray.dir,ri.vNormal)) + bias;
+	Scalar rdotv = fabs(Vector3Ops::Dot(ri.ray.Dir(),ri.vNormal)) + bias;
 	rdotv = rdotv < 0.0 ? 0.0 : rdotv;
 	rdotv = rdotv > 1.0 ? 1.0 : rdotv;
 	return pInterp->InterpolateValues( a.GetColor(ri), b.GetColor(ri), rdotv );
@@ -53,7 +53,7 @@ RISEPel IridescentPainter::GetColor( const RayIntersectionGeometric& ri  ) const
 
 Scalar IridescentPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	Scalar rdotv = fabs(Vector3Ops::Dot(ri.ray.dir,ri.vNormal)) + bias;
+	Scalar rdotv = fabs(Vector3Ops::Dot(ri.ray.Dir(),ri.vNormal)) + bias;
 	rdotv = rdotv < 0.0 ? 0.0 : rdotv;
 	rdotv = rdotv > 1.0 ? 1.0 : rdotv;
 	return pScalarInterp->InterpolateValues( a.GetColorNM(ri,nm), b.GetColorNM(ri,nm), rdotv );

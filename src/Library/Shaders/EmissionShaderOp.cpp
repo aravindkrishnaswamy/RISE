@@ -48,7 +48,7 @@ void EmissionShaderOp::PerformOperation(
 	IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
 
 	if( pEmitter && rs.considerEmission ) {
-		c = pEmitter->emittedRadiance( ri.geometric, -ri.geometric.ray.dir, ri.geometric.vNormal );
+		c = pEmitter->emittedRadiance( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
 
 		// For view rays, scale their values down, to help out the AA
 		if( rs.type == rs.eRayView ) {
@@ -80,7 +80,7 @@ Scalar EmissionShaderOp::PerformOperationNM(
 	IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
 
 	if( pEmitter && rs.considerEmission ) {
-		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.dir, ri.geometric.vNormal, nm );
+		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
 	}
 
 	return c;

@@ -150,7 +150,7 @@ void WorkerRenderer::Shade( RayIntersection& ri, IFXColor& c )
 			// Shadow check
 			Ray		rayToLight;
 			rayToLight.origin = ri.geometric.ptIntersection;
-			rayToLight.dir = vToLight;
+			rayToLight.SetDir(vToLight);
 
 //			if( !ShadowCheck( rayToLight, fDistFromLight ) ) {
 			

@@ -35,13 +35,13 @@ namespace RISE
 		const Scalar qi = Q._23 + Q._32;
 		const Scalar qj = Q._33;
 
-		const Scalar k2 =	ray.dir.x * (ray.dir.x*qa + ray.dir.y*qb) + 
-							ray.dir.y * (ray.dir.y*qe + ray.dir.z*qf) + 
-							ray.dir.z * (ray.dir.z*qh + ray.dir.z*qc);
+		const Scalar k2 =	ray.Dir().x * (ray.Dir().x*qa + ray.Dir().y*qb) + 
+							ray.Dir().y * (ray.Dir().y*qe + ray.Dir().z*qf) + 
+							ray.Dir().z * (ray.Dir().z*qh + ray.Dir().z*qc);
 
-		const Scalar k1 =	ray.dir.x * ((ray.origin.x*2.0*qa + ray.origin.y*qb + ray.origin.z*qc) + qd) + 
-							ray.dir.y * ((ray.origin.x*qb + ray.origin.y*2.0*qe + ray.origin.z*qf) + qg) + 
-							ray.dir.z * ((ray.origin.x*qc + ray.origin.y*qg + ray.origin.z*2.0*qh) + qi);
+		const Scalar k1 =	ray.Dir().x * ((ray.origin.x*2.0*qa + ray.origin.y*qb + ray.origin.z*qc) + qd) + 
+							ray.Dir().y * ((ray.origin.x*qb + ray.origin.y*2.0*qe + ray.origin.z*qf) + qg) + 
+							ray.Dir().z * ((ray.origin.x*qc + ray.origin.y*qg + ray.origin.z*2.0*qh) + qi);
 
 		const Scalar k0 =	ray.origin.x * (ray.origin.x*qa + ray.origin.y*qb + ray.origin.z*qc + qd) + 
 							ray.origin.y * (                  ray.origin.y*qe + ray.origin.z*qf + qg) + 

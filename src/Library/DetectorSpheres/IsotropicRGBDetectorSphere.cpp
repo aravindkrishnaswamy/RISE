@@ -250,7 +250,7 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 			{
 				// If the ray wasn't absorbed, then fire it at the detector patches
 				RayIntersectionGeometric	ri( pScat->ray, nullRasterizerState );
-				Vector3Ops::NormalizeMag(ri.ray.dir);
+				ri.ray.SetDir(Vector3Ops::Normalize(ri.ray.Dir()));
 
 				// Ignore the front faces, just hit the back faces!
 				pDetector->IntersectRay( ri, false, true, false );

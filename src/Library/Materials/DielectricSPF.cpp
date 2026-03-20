@@ -60,7 +60,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	dielectric.type = ScatteredRay::eRayRefraction;
 	fresnel.type = ScatteredRay::eRayReflection;
 
-	Vector3	refracted = ri.ray.dir;
+	Vector3	refracted = ri.ray.Dir();
 	Scalar		ref=0;
 
 	bDielectric = bFresnel = true;
@@ -73,7 +73,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 				dielectric.ior_stack->pop();
 				GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
 			}
-			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, refracted, -ri.onb.w(), rIndex, ior_stack?ior_stack->top():1.0 );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, ior_stack?ior_stack->top():1.0 );
 		} else {
 			// We're still in the material
 			ref = 1.0;
@@ -82,7 +82,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	else
 	{
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex, refracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, refracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex );
 			if( ior_stack ) {
 				dielectric.ior_stack = new IORStack( *ior_stack );
 				dielectric.ior_stack->push( rIndex );
@@ -100,9 +100,9 @@ Scalar DielectricSPF::GenerateScatteredRay(
 				fresnel.ior_stack = new IORStack( *ior_stack );
 				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			}
-			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, ri.onb.w() ) );
+			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		} else {
-			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, -ri.onb.w() ) );
+			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 		}
 	}
 
@@ -126,16 +126,16 @@ Scalar DielectricSPF::GenerateScatteredRay(
 
 		// Use the warping function for a Phong based PDF
 		if( alpha > 0 && alpha < PI_OV_TWO ) {
-			dielectric.ray.dir = GeometricUtilities::Perturb(
-				dielectric.ray.dir,
+			dielectric.ray.SetDir(GeometricUtilities::Perturb(
+				dielectric.ray.Dir(),
 				alpha,
 				TWO_PI * random.y
-				);
+				));
 		}
 
-		if( !bFromInside && Vector3Ops::Dot(dielectric.ray.dir, ri.onb.w()) > -NEARZERO ) {
+		if( !bFromInside && Vector3Ops::Dot(dielectric.ray.Dir(), ri.onb.w()) > -NEARZERO ) {
 			bDielectric = false;
-		} else if( bFromInside && Vector3Ops::Dot(dielectric.ray.dir, ri.onb.w()) < NEARZERO ) {
+		} else if( bFromInside && Vector3Ops::Dot(dielectric.ray.Dir(), ri.onb.w()) < NEARZERO ) {
 			bDielectric = false;
 		}
 	}
@@ -215,7 +215,7 @@ void DielectricSPF::Scatter(
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.dir);
+	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
 	
 	const RISEPel ior = rIndex.GetColor(ri);
 	const RISEPel scattering = scat.GetColor(ri);
@@ -246,7 +246,7 @@ void DielectricSPF::ScatterNM(
 	ScatteredRay dielectric;
 	ScatteredRay fresnel;
 
-	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.dir);
+	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
 	bool		bFromInside = false;
 
 	// Use the IOR stack as the authoritative source for inside/outside

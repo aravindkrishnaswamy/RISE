@@ -27,7 +27,7 @@ namespace RISE
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
-		const Vector3& v = ray.dir;
+		const Vector3& v = ray.Dir();
 		Scalar a = v.y * v.y + v.z * v.z;
 
 		const Point3&  o = ray.origin;
@@ -45,7 +45,7 @@ namespace RISE
 		Scalar sqrad = sqrt(rad);
 		Scalar t = (-b - sqrad) * inva;
 		Scalar t2 = t;
-		Scalar x = ray.origin.x + t * ray.dir.x;
+		Scalar x = ray.origin.x + t * ray.Dir().x;
 
 		// Check if the first hit is ok... 
 		bool	bFirstHit = true;
@@ -54,7 +54,7 @@ namespace RISE
 			// First hit no, good, that means we are inside the cylinder now
 			// for there to be a hit
 			t += 2 * sqrad * inva;
-			x = ray.origin.x + t * ray.dir.x;
+			x = ray.origin.x + t * ray.Dir().x;
 			bFirstHit = false;
 		}
 
@@ -77,7 +77,7 @@ namespace RISE
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
-		const Vector3& v = ray.dir;
+		const Vector3& v = ray.Dir();
 		Scalar a = v.z * v.z + v.x * v.x;
 
 		const Point3&  o = ray.origin;
@@ -96,7 +96,7 @@ namespace RISE
 		Scalar sqrad = sqrt(rad);
 		Scalar t = (-b - sqrad) * inva;
 		Scalar t2 = t;
-		Scalar y = ray.origin.y + t * ray.dir.y;
+		Scalar y = ray.origin.y + t * ray.Dir().y;
 
 		// Check if the first hit is ok... 
 		bool	bFirstHit = true;
@@ -105,7 +105,7 @@ namespace RISE
 			// First hit no, good, that means we are inside the cylinder now
 			// for there to be a hit
 			t += 2 * sqrad * inva;
-			y = ray.origin.y + t * ray.dir.y;
+			y = ray.origin.y + t * ray.Dir().y;
 			bFirstHit = false;
 		}
 
@@ -128,7 +128,7 @@ namespace RISE
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
-		const Vector3& v = ray.dir;
+		const Vector3& v = ray.Dir();
 		Scalar a = v.x * v.x + v.y * v.y;
 
 		const Point3&  o = ray.origin;
@@ -147,7 +147,7 @@ namespace RISE
 		Scalar sqrad = sqrt(rad);
 		Scalar t = (-b - sqrad) * inva;
 		Scalar t2 = t;
-		Scalar z = ray.origin.z + t * ray.dir.z;
+		Scalar z = ray.origin.z + t * ray.Dir().z;
 
 		// Check if the first hit is ok... 
 		bool	bFirstHit = true;
@@ -156,7 +156,7 @@ namespace RISE
 			// First hit no, good, that means we are inside the cylinder now
 			// for there to be a hit
 			t += 2 * sqrad * inva;
-			z = ray.origin.z + t * ray.dir.z;
+			z = ray.origin.z + t * ray.Dir().z;
 			bFirstHit = false;
 		}
 

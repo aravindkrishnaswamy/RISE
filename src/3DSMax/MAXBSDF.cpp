@@ -57,7 +57,7 @@ RISE::RISEPel MAXBSDF::value( const RISE::Vector3& vLightIn, const RISE::RayInte
 			mid = mid % nNumSubs;
 		}
 
-		const Point3 viewDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(ri.ray.dir));
+		const Point3 viewDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(ri.ray.Dir()));
 		const Point3 viewCam = renderer->view.affineTM * RISE2MAXPoint(ri.ray.origin);
 
 		lightDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(vLightIn));

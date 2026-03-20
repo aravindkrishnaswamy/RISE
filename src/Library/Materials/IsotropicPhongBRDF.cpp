@@ -44,7 +44,7 @@ static void ComputeDiffuseSpecularFactors(
 	)
 {
 	Vector3 v = Vector3Ops::Normalize(vLightIn); // light vector
-	Vector3 r = Vector3Ops::Normalize(-ri.ray.dir); // outgoing ray vector
+	Vector3 r = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
 	const Vector3& n = ri.onb.w();
 

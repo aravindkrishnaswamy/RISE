@@ -58,7 +58,7 @@ public:
 	{
 		Color bg;
 
-		const Point3 viewDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(ray.dir));
+		const Point3 viewDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(ray.Dir()));
 		const Point3 viewCam = renderer->view.affineTM * RISE2MAXPoint(ray.origin);
 
 		bc.SetViewDir( viewDir );

@@ -140,7 +140,7 @@ namespace RISE
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
-						r.dir = pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
+						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
 
 						// Each photon gets a different wavelength...
 						const Scalar nm = num_wavelengths < 10000 ? 

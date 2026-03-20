@@ -235,7 +235,7 @@ void DirectVolumeRenderingShader::Shade(
 	// If we are leaving, then actually do the shading
 
 	// We tell if we are entering or leaving by the ray's orientation to the surface normal
-	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vNormal, ri.geometric.ray.dir);
+	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vNormal, ri.geometric.ray.Dir());
 	if( cosine < NEARZERO ) {
 		// We are coming from the inside of the object, hence we are leaving
 		// We need to do the volume shading now
@@ -329,21 +329,21 @@ void DirectVolumeRenderingShader::Shade(
 		pComposite->EndOperation( );
 
 		if( cPel.a == 0 ) {
-			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.dir );
+			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.Dir() );
 			r.Advance( 1e-6 );
 			caster.CastRay( rc, ri.geometric.rast, r, c, rs, 0, ri.pRadianceMap, ior_stack );
 		} else if( cPel.a == 1.0 ) {
 			c = cPel.base;
 		} else {
 			// Still some transparancy, continue the ray
-			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.dir );
+			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.Dir() );
 			r.Advance( 1e-6 );
 			caster.CastRay( rc, ri.geometric.rast, r, c, rs, 0, ri.pRadianceMap, ior_stack );
             c = (c*(1.0-cPel.a)) + (cPel.base*cPel.a);
 		}
 	} else {
 		// Defer the shading to the other side
-		Ray r( ri.geometric.ptIntersection,ri.geometric.ray.dir );
+		Ray r( ri.geometric.ptIntersection,ri.geometric.ray.Dir() );
 		r.Advance( 1e-6 );
 		caster.CastRay( rc, ri.geometric.rast, r, c, rs, 0, ri.pRadianceMap, ior_stack );
 	}
@@ -377,7 +377,7 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 	// If we are leaving, then actually do the shading
 
 	// We tell if we are entering or leaving by the ray's orientation to the surface normal
-	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vNormal, ri.geometric.ray.dir);
+	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vNormal, ri.geometric.ray.Dir());
 	if( cosine < NEARZERO ) {
 		// We are coming from the inside of the object, hence we are leaving
 		// We need to do the volume shading now
@@ -462,21 +462,21 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 		pComposite->EndOperation( );
 
 		if( cPel.first == 0 ) {
-			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.dir );
+			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.Dir() );
 			r.Advance( 1e-6 );
 			caster.CastRayNM( rc, ri.geometric.rast, r, c, rs, nm, 0, ri.pRadianceMap, ior_stack );
 		} else if( cPel.first == 1.0 ) {
 			c = cPel.second;
 		} else {
 			// Still some transparancy, continue the ray
-			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.dir );
+			Ray r( ri.geometric.ptIntersection,ri.geometric.ray.Dir() );
 			r.Advance( 1e-6 );
 			caster.CastRayNM( rc, ri.geometric.rast, r, c, rs, nm, 0, ri.pRadianceMap, ior_stack );
             c = (c*(1.0-cPel.first)) + (cPel.second*cPel.first);
 		}
 	} else {
 		// Defer the shading to the other side
-		Ray r( ri.geometric.ptIntersection,ri.geometric.ray.dir );
+		Ray r( ri.geometric.ptIntersection,ri.geometric.ray.Dir() );
 		r.Advance( 1e-6 );
 		caster.CastRayNM( rc, ri.geometric.rast, r, c, rs, nm, 0, ri.pRadianceMap, ior_stack );
 	}

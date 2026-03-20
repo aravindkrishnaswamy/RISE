@@ -59,9 +59,7 @@ bool PRISEOctree<MYTRI>::PRISEOctreeNode::ElementBoxIntersection( const MYTRI el
 	Scalar fEdgeLength;
 
 	ray.origin = p.vertices[0];
-	ray.dir = p.vertices[1] - p.vertices[0];
-	fEdgeLength = ~ray.dir;
-	ray.dir.Normalize();
+	{ Vector3D d = p.vertices[1] - p.vertices[0]; fEdgeLength = ~d; d.Normalize(); ray.SetDir(d); }
 
 	RayBoxIntersection( ray, h, ll, ur );
 	if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -70,9 +68,7 @@ bool PRISEOctree<MYTRI>::PRISEOctreeNode::ElementBoxIntersection( const MYTRI el
 
 	// Edge 2
 	ray.origin = p.vertices[1];
-	ray.dir = p.vertices[2] - p.vertices[1];
-	fEdgeLength = ~ray.dir;
-	ray.dir.Normalize();
+	{ Vector3D d = p.vertices[2] - p.vertices[1]; fEdgeLength = ~d; d.Normalize(); ray.SetDir(d); }
 
 	RayBoxIntersection( ray, h, ll, ur );
 	if( h.bHit && h.dRange <= fEdgeLength ) {
@@ -82,9 +78,7 @@ bool PRISEOctree<MYTRI>::PRISEOctreeNode::ElementBoxIntersection( const MYTRI el
 
 	// Edge 3
 	ray.origin = p.vertices[2];
-	ray.dir = p.vertices[0] - p.vertices[2];
-	fEdgeLength = ~ray.dir;
-	ray.dir.Normalize();
+	{ Vector3D d = p.vertices[0] - p.vertices[2]; fEdgeLength = ~d; d.Normalize(); ray.SetDir(d); }
 
 	RayBoxIntersection( ray, h, ll, ur );
 	if( h.bHit && h.dRange <= fEdgeLength ) {

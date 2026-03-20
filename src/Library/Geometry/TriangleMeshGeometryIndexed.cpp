@@ -70,7 +70,7 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 
 	if( ri.bHit && bDoubleSided ) {
 		// Flip the normal if we must
-		if( Vector3Ops::Dot(ri.vNormal, ri.ray.dir) > 0 ) {
+		if( Vector3Ops::Dot(ri.vNormal, ri.ray.Dir()) > 0 ) {
 			ri.vNormal = -ri.vNormal;
 		}
 	}

@@ -50,7 +50,7 @@ void AshikminShirleyAnisotropicPhongBRDF::ComputeDiffuseSpecularFactors(
 	diffuse = specular = 0;
 
 	Vector3 k1 = Vector3Ops::Normalize(vLightIn);
-	Vector3 k2 = Vector3Ops::Normalize(-ri.ray.dir);
+	Vector3 k2 = Vector3Ops::Normalize(-ri.ray.Dir());
 	Vector3 h = Vector3Ops::Normalize(k1+k2);
 
 	const Vector3& k = k2;

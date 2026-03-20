@@ -63,7 +63,7 @@ void TranslucentSPF::Scatter(
 	const Vector3& n = ri.onb.w();
 	OrthonormalBasis3D	myonb = ri.onb;
 
-	const Vector3	r = ri.ray.dir;
+	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
 
 	if( Vector3Ops::Dot(n,r) < 0.0 )
@@ -189,7 +189,7 @@ void TranslucentSPF::ScatterNM(
 	const Vector3& n = ri.onb.w();
 	OrthonormalBasis3D	myonb = ri.onb;
 
-	const Vector3	r = ri.ray.dir;
+	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
 
 	if( Vector3Ops::Dot(n,r) < 0.0 )

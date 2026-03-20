@@ -62,7 +62,7 @@ void MAXShaderOp::PerformOperation(
 			mid = mid % nNumSubs;
 		}
 
-		const Point3 viewDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(ri.geometric.ray.dir));
+		const Point3 viewDir = VectorTransform(renderer->view.affineTM, RISE2MAXVector(ri.geometric.ray.Dir()));
 		const Point3 viewCam = renderer->view.affineTM * RISE2MAXPoint(ri.geometric.ray.origin);
 
 		// Shade the face that was closest to the camera

@@ -25,7 +25,7 @@ public:
 					Matrix3 invTM = Inverse(affineTM);
 					Point3 ptLightPos = invTM*pLightDesc->LightPosition();
 					ray.origin = MAX2RISEPoint(ptLightPos);
-					ray.dir = RISE::Vector3Ops::Normalize( MAX2RISEVector(VectorTransform(invTM,-dir)) );
+					ray.SetDir( RISE::Vector3Ops::Normalize( MAX2RISEVector(VectorTransform(invTM,-dir)) ) );
 
 					RISE::Scalar dist = RISE::Vector3Ops::Magnitude( MAX2RISEVector(worldPtIntersection - ptLightPos) );
 

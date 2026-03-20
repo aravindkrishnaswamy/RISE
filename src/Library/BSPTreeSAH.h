@@ -119,23 +119,84 @@ namespace RISE
 			GlobalLog()->PrintEx( eLog_Info, "BSPTreeSAH:: Overall BBox LL(%lf,%lf,%lf) UR(%lf,%lf,%lf)", bbox.ll.x, bbox.ll.y, bbox.ll.z, bbox.ur.x, bbox.ur.y, bbox.ur.z );
 		}
 
+		//
+		// Inline slab test to compute the ray's tmin/tmax interval against
+		// the root bounding box. Uses precomputed invDir and sign from the Ray.
+		// Returns false if the ray misses the box entirely.
+		//
+		inline bool ComputeRootInterval( const Ray& ray, Scalar& tmin, Scalar& tmax ) const
+		{
+			const Scalar bx[2] = { bbox.ll.x, bbox.ur.x };
+			const Scalar by[2] = { bbox.ll.y, bbox.ur.y };
+			const Scalar bz[2] = { bbox.ll.z, bbox.ur.z };
+
+			tmin = (bx[    ray.sign[0]] - ray.origin.x) * ray.invDir.x;
+			tmax = (bx[1 - ray.sign[0]] - ray.origin.x) * ray.invDir.x;
+
+			const Scalar tymin = (by[    ray.sign[1]] - ray.origin.y) * ray.invDir.y;
+			const Scalar tymax = (by[1 - ray.sign[1]] - ray.origin.y) * ray.invDir.y;
+
+			if( tmin > tymax || tymin > tmax ) {
+				return false;
+			}
+
+			if( tymin > tmin ) tmin = tymin;
+			if( tymax < tmax ) tmax = tymax;
+
+			const Scalar tzmin = (bz[    ray.sign[2]] - ray.origin.z) * ray.invDir.z;
+			const Scalar tzmax = (bz[1 - ray.sign[2]] - ray.origin.z) * ray.invDir.z;
+
+			if( tmin > tzmax || tzmin > tmax ) {
+				return false;
+			}
+
+			if( tzmin > tmin ) tmin = tzmin;
+			if( tzmax < tmax ) tmax = tzmax;
+
+			if( tmax < 0 ) {
+				return false;
+			}
+
+			// Clamp tmin to 0 when the ray origin is inside the box
+			if( tmin < 0 ) tmin = 0;
+
+			return true;
+		}
+
 		void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 		{
 			ri.bHit = false;
 			ri.range = RISE_INFINITY;
-			root.IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bbox );
+
+			Scalar tmin, tmax;
+			if( !ComputeRootInterval( ri.ray, tmin, tmax ) ) {
+				return;
+			}
+
+			root.IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, tmin, tmax );
 		}
 
 		void IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 		{
 			ri.geometric.bHit = false;
 			ri.geometric.range = RISE_INFINITY;
-			root.IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, bbox );
+
+			Scalar tmin, tmax;
+			if( !ComputeRootInterval( ri.geometric.ray, tmin, tmax ) ) {
+				return;
+			}
+
+			root.IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, tmin, tmax );
 		}
 
 		bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 		{
-			return root.IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, bbox );
+			Scalar tmin, tmax;
+			if( !ComputeRootInterval( ray, tmin, tmax ) ) {
+				return false;
+			}
+
+			return root.IntersectRay_IntersectionOnly( ep, ray, dHowFar, bHitFrontFaces, bHitBackFaces, tmin, tmax );
 		}
 
 		void AddElements( const std::vector<Element>& elements, const unsigned char max_recursion_level )

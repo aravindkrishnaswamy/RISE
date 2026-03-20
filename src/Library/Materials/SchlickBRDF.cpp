@@ -56,7 +56,7 @@ static T ComputeFactor(
 	)
 {
 	const Vector3 l = Vector3Ops::Normalize(vLightIn); // light vector
-	const Vector3 v = Vector3Ops::Normalize(-ri.ray.dir); // outgoing ray vector
+	const Vector3 v = Vector3Ops::Normalize(-ri.ray.Dir()); // outgoing ray vector
 
 	const Vector3 n = ri.onb.w();
 

@@ -83,9 +83,7 @@ void SpotLight::ComputeDirectLighting(
 	{
 		if( bReceivesShadows ) {
 			// Check to see if there is a shadow
-			Ray		rayToLight;
-			rayToLight.origin = ri.ptIntersection;
-			rayToLight.dir = vToLight;
+			Ray		rayToLight( ri.ptIntersection, vToLight );
 
 			if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
 				return;

@@ -51,7 +51,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	fresnel.type = ScatteredRay::eRayReflection;
 	specular.type = ScatteredRay::eRayRefraction;
 
-	Vector3	vRefracted = ri.ray.dir;
+	Vector3	vRefracted = ri.ray.Dir();
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available. If the object is NOT in the stack,
@@ -65,7 +65,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	{
 		// Going in
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
 			if( ior_stack ) {
 				specular.ior_stack = new IORStack( *ior_stack );
 				specular.ior_stack->push( newIOR );
@@ -77,7 +77,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		}
 
 		if( ref > 0.0 ) {
-			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, ri.onb.w() ) );
+			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		}
 	}
 	else
@@ -90,7 +90,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 
 		// Coming out, IOR becomes air
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, vRefracted, -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0 );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0 );
 		} else {
 			// TIR, so reflect
 			// We're still in the material
@@ -102,7 +102,7 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 				fresnel.ior_stack = new IORStack( *ior_stack );
 				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			}
-			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, -ri.onb.w() ) );
+			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 		}
 	}
 
@@ -136,7 +136,7 @@ void PerfectRefractorSPF::Scatter(
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.dir );
+	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	
 	const RISEPel ior = Nt.GetColor(ri);
 
@@ -166,8 +166,8 @@ void PerfectRefractorSPF::ScatterNM(
 	fresnel.type = ScatteredRay::eRayReflection;
 	specular.type = ScatteredRay::eRayRefraction;
 
-	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.dir );
-	Vector3	vRefracted = ri.ray.dir;
+	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
+	Vector3	vRefracted = ri.ray.Dir();
 
 	Scalar newIOR = Nt.GetColorNM(ri,nm);
 
@@ -180,7 +180,7 @@ void PerfectRefractorSPF::ScatterNM(
 	{
 		// Going in
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
 			if( ior_stack ) {
 				specular.ior_stack = new IORStack( *ior_stack );
 				specular.ior_stack->push( newIOR );
@@ -192,7 +192,7 @@ void PerfectRefractorSPF::ScatterNM(
 		}
 
 		if( ref > 0.0 ) {
-			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, ri.onb.w() ) );
+			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		}
 	}
 	else
@@ -205,7 +205,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 		// Coming out, IOR becomes whatever was there before
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.dir, vRefracted, -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0 );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0 );
 		} else {
 			// TIR, so reflect
 			// We're still in the material
@@ -217,7 +217,7 @@ void PerfectRefractorSPF::ScatterNM(
 				fresnel.ior_stack = new IORStack( *ior_stack );
 				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			}
-			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.dir, -ri.onb.w() ) );
+			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 		}
 	}
 

@@ -131,7 +131,7 @@ namespace RISE
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
-						r.dir = pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
+						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
 						
 						// Now shoot that ray as a photon
 						TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );

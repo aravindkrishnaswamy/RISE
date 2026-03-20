@@ -53,9 +53,7 @@ void DirectionalLight::ComputeDirectLighting(
 
 	if( bReceivesShadows ) {
 		// Check to see if there is a shadow
-		Ray		rayToLight;
-		rayToLight.origin = ri.ptIntersection;
-		rayToLight.dir = vDirection;
+		Ray		rayToLight( ri.ptIntersection, vDirection );
 
 		if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
 			return;

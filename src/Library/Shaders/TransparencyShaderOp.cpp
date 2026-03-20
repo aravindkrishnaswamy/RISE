@@ -53,7 +53,7 @@ void TransparencyShaderOp::PerformOperation(
 		// Blend by painter color
 		// But if we one sided only and the ray is coming from behind, then don't
 		if( bOneSided ) {
-			if( Vector3Ops::Dot( ri.geometric.ray.dir, ri.geometric.vNormal ) > 0 ) {
+			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) > 0 ) {
 				c = cthis;
 			}
 		}
@@ -87,7 +87,7 @@ Scalar TransparencyShaderOp::PerformOperationNM(
 		// Blend by painter color
 		// But if we one sided only and the ray is coming from behind, then don't
 		if( bOneSided ) {
-			if( Vector3Ops::Dot( ri.geometric.ray.dir, ri.geometric.vNormal ) > 0 ) {
+			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) > 0 ) {
 				return c;
 			}
 		}
