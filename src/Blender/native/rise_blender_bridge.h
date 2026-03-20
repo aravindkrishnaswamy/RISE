@@ -125,6 +125,16 @@ typedef struct rise_blender_render_result {
 } rise_blender_render_result;
 
 typedef int (*rise_blender_progress_callback)(void* user_data, float progress, const char* title);
+typedef int (*rise_blender_image_callback)(
+	void* user_data,
+	const unsigned short* rgba16,
+	uint32_t region_width,
+	uint32_t region_height,
+	uint32_t full_width,
+	uint32_t full_height,
+	uint32_t rc_top,
+	uint32_t rc_left
+);
 
 RISE_BLENDER_EXPORT int rise_blender_api_version(void);
 
@@ -132,6 +142,7 @@ RISE_BLENDER_EXPORT int rise_blender_render_scene(
 	const rise_blender_scene* scene,
 	const rise_blender_render_settings* settings,
 	rise_blender_progress_callback progress_callback,
+	rise_blender_image_callback image_callback,
 	void* user_data,
 	rise_blender_render_result* result,
 	char* error_message,

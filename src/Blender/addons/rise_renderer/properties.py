@@ -56,7 +56,7 @@ class RISERenderSettings(bpy.types.PropertyGroup):
     use_world_ambient: bpy.props.BoolProperty(
         name="Approximate World",
         description="Approximate the Blender world color as a simple ambient light",
-        default=True,
+        default=False,
     )
     choose_one_light: bpy.props.BoolProperty(
         name="Choose One Light",
@@ -103,4 +103,3 @@ def unregister():
 
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
-

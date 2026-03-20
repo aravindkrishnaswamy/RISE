@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -149,11 +150,16 @@ namespace
 		std::vector<float> rgba_;
 		unsigned int width_;
 		unsigned int height_;
+		rise_blender_image_callback image_callback_;
+		void* user_data_;
+		mutable std::mutex buffer_mutex_;
 
 	public:
-		MemoryRasterizerOutput() :
+		MemoryRasterizerOutput( rise_blender_image_callback image_callback, void* user_data ) :
 			width_( 0 ),
-			height_( 0 )
+			height_( 0 ),
+			image_callback_( image_callback ),
+			user_data_( user_data )
 		{
 		}
 
@@ -181,25 +187,54 @@ namespace
 				return;
 			}
 
-			if( width_ != width || height_ != height || rgba_.empty() ) {
-				width_ = width;
-				height_ = height;
-				rgba_.assign( width_ * height_ * 4, 0.0f );
+			{
+				std::lock_guard<std::mutex> guard( buffer_mutex_ );
+
+				if( width_ != width || height_ != height || rgba_.empty() ) {
+					width_ = width;
+					height_ = height;
+					rgba_.assign( width_ * height_ * 4, 0.0f );
+				}
+
+				for( unsigned int y = rc_top; y <= rc_bottom; y++ ) {
+					for( unsigned int x = rc_left; x <= rc_right; x++ ) {
+						const unsigned int offset = ( y * width_ + x ) * 4;
+						rgba_[offset+0] = float(pImageData[offset+0]) / 65535.0f;
+						rgba_[offset+1] = float(pImageData[offset+1]) / 65535.0f;
+						rgba_[offset+2] = float(pImageData[offset+2]) / 65535.0f;
+						rgba_[offset+3] = float(pImageData[offset+3]) / 65535.0f;
+					}
+				}
 			}
 
-			for( unsigned int y = rc_top; y <= rc_bottom; y++ ) {
-				for( unsigned int x = rc_left; x <= rc_right; x++ ) {
-					const unsigned int offset = ( y * width_ + x ) * 4;
-					rgba_[offset+0] = float(pImageData[offset+0]) / 65535.0f;
-					rgba_[offset+1] = float(pImageData[offset+1]) / 65535.0f;
-					rgba_[offset+2] = float(pImageData[offset+2]) / 65535.0f;
-					rgba_[offset+3] = float(pImageData[offset+3]) / 65535.0f;
+			if( image_callback_ ) {
+				const unsigned int region_width = rc_right - rc_left + 1;
+				const unsigned int region_height = rc_bottom - rc_top + 1;
+				std::vector<unsigned short> region_rgba( region_width * region_height * 4, 0 );
+
+				for( unsigned int y = 0; y < region_height; y++ ) {
+					const unsigned short* src = pImageData + ( ( ( rc_top + y ) * width + rc_left ) * 4 );
+					unsigned short* dst = &region_rgba[ y * region_width * 4 ];
+					std::memcpy( dst, src, sizeof(unsigned short) * region_width * 4 );
 				}
+
+				image_callback_(
+					user_data_,
+					&region_rgba[0],
+					region_width,
+					region_height,
+					width,
+					height,
+					rc_top,
+					rc_left
+				);
 			}
 		}
 
 		bool CopyToResult( rise_blender_render_result& result ) const
 		{
+			std::lock_guard<std::mutex> guard( buffer_mutex_ );
+
 			if( rgba_.empty() || width_ == 0 || height_ == 0 ) {
 				return false;
 			}
@@ -527,6 +562,12 @@ namespace
 
 		double color[3];
 		linear_rgb_to_srgb( light.color, color );
+		const double linear_attenuation = 0.0;
+		// Blender point and spot lights use inverse-square falloff from radiant
+		// flux. RISE uses 1 / (1 + linear*d + quadratic*d^2), so scaling the
+		// quadratic term by 4*pi is a closer approximation for isotropic light
+		// power than a unit coefficient.
+		const double quadratic_attenuation = 4.0 * M_PI;
 
 		switch( light.type )
 		{
@@ -534,7 +575,7 @@ namespace
 		case RISE_BLENDER_LIGHT_AREA:
 		{
 			double position[3] = { light.position[0], light.position[1], light.position[2] };
-			if( !job.AddPointOmniLight( light.name, light.intensity, color, position, 0.0, 0.0 ) ) {
+			if( !job.AddPointOmniLight( light.name, light.intensity, color, position, linear_attenuation, quadratic_attenuation ) ) {
 				write_error( error_message, error_message_size, "Failed to add a point light" );
 				return false;
 			}
@@ -550,9 +591,9 @@ namespace
 				position[1] + direction[1],
 				position[2] + direction[2]
 			};
-			const double outer_angle = clamp_value<float>( light.spot_size, 0.0f, float(M_PI) ) * 0.5;
-			const double inner_angle = outer_angle - outer_angle * clamp_value<float>( light.spot_blend, 0.0f, 1.0f );
-			if( !job.AddPointSpotLight( light.name, light.intensity, color, focus, inner_angle, outer_angle, position, 0.0, 0.0 ) ) {
+			const double outer_angle = clamp_value<float>( light.spot_size, 0.0f, float(M_PI) );
+			const double inner_angle = outer_angle * ( 1.0 - clamp_value<float>( light.spot_blend, 0.0f, 1.0f ) );
+			if( !job.AddPointSpotLight( light.name, light.intensity, color, focus, inner_angle, outer_angle, position, linear_attenuation, quadratic_attenuation ) ) {
 				write_error( error_message, error_message_size, "Failed to add a spot light" );
 				return false;
 			}
@@ -560,7 +601,10 @@ namespace
 		}
 		case RISE_BLENDER_LIGHT_SUN:
 		{
-			double direction[3] = { light.direction[0], light.direction[1], light.direction[2] };
+			// Blender stores the direction the light shines toward. RISE's
+			// directional light expects the vector from the shaded point toward
+			// the light source, which is the opposite direction.
+			double direction[3] = { -light.direction[0], -light.direction[1], -light.direction[2] };
 			normalize3( direction );
 			if( !job.AddDirectionalLight( light.name, light.intensity, color, direction ) ) {
 				write_error( error_message, error_message_size, "Failed to add a directional light" );
@@ -588,6 +632,7 @@ extern "C" int rise_blender_render_scene(
 	const rise_blender_scene* scene,
 	const rise_blender_render_settings* settings,
 	rise_blender_progress_callback progress_callback,
+	rise_blender_image_callback image_callback,
 	void* user_data,
 	rise_blender_render_result* result,
 	char* error_message,
@@ -614,7 +659,7 @@ extern "C" int rise_blender_render_scene(
 	}
 
 	ProgressBridge progress( progress_callback, user_data );
-	MemoryRasterizerOutput raster_output;
+	MemoryRasterizerOutput raster_output( image_callback, user_data );
 
 	job->SetProgress( &progress );
 	job->SetPrimaryAcceleration( true, false, 100, 8 );

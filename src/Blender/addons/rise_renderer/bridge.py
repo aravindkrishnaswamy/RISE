@@ -131,6 +131,17 @@ class _RenderResult(ctypes.Structure):
 
 
 _PROGRESS_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_float, ctypes.c_char_p)
+_IMAGE_CALLBACK = ctypes.CFUNCTYPE(
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint16),
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+)
 
 _LOADED_LIBRARY = None
 _LOADED_PATH = None
@@ -197,6 +208,7 @@ def _load_library(preferred_path: str | None = None):
     library.rise_blender_render_scene.argtypes = [
         ctypes.POINTER(_Scene),
         ctypes.POINTER(_RenderSettings),
+        ctypes.c_void_p,
         ctypes.c_void_p,
         ctypes.c_void_p,
         ctypes.POINTER(_RenderResult),
@@ -350,7 +362,7 @@ class _SceneHandle:
         return payload
 
 
-def render_scene(scene, settings, bridge_path: str | None = None, progress=None) -> RenderImage:
+def render_scene(scene, settings, bridge_path: str | None = None, progress=None, image_update=None) -> RenderImage:
     library = _load_library(bridge_path)
     handle = _SceneHandle(scene, settings)
     error_buffer = ctypes.create_string_buffer(2048)
@@ -366,10 +378,30 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None)
         progress_callback = _PROGRESS_CALLBACK(_bridge_progress)
         progress_pointer = ctypes.cast(progress_callback, ctypes.c_void_p)
 
+    image_callback = None
+    image_pointer = None
+    if image_update is not None:
+        def _bridge_image(_user_data, rgba16, region_width, region_height, full_width, full_height, rc_top, rc_left):
+            value_count = int(region_width) * int(region_height) * 4
+            rgba16_bytes = ctypes.string_at(rgba16, value_count * ctypes.sizeof(ctypes.c_uint16))
+            return 1 if image_update(
+                rgba16_bytes,
+                int(region_width),
+                int(region_height),
+                int(full_width),
+                int(full_height),
+                int(rc_top),
+                int(rc_left),
+            ) else 0
+
+        image_callback = _IMAGE_CALLBACK(_bridge_image)
+        image_pointer = ctypes.cast(image_callback, ctypes.c_void_p)
+
     success = library.rise_blender_render_scene(
         ctypes.byref(handle.scene),
         ctypes.byref(handle.settings),
         progress_pointer,
+        image_pointer,
         None,
         ctypes.byref(result),
         error_buffer,

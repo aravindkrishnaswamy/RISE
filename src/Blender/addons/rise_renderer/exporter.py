@@ -543,13 +543,19 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0
     if render_settings.use_world_ambient and scene.world is not None:
-        if scene.world.use_nodes:
+        if lights:
             _warn_once(
                 state,
-                "RISE currently reduces Blender world nodes to the world viewport color for ambient approximation.",
+                "RISE disables the world ambient approximation when explicit lights are present because the ambient fallback can flatten shading noticeably.",
             )
-        world_color = _float_color3(scene.world.color)
-        world_strength = 1.0
+        else:
+            if scene.world.use_nodes:
+                _warn_once(
+                    state,
+                    "RISE currently reduces Blender world nodes to the world viewport color for ambient approximation.",
+                )
+            world_color = _float_color3(scene.world.color)
+            world_strength = 1.0
 
     scene_data = SceneData(
         camera=camera,

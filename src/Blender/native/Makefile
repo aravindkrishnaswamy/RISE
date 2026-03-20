@@ -21,7 +21,12 @@ CXXFLAGS += -std=c++17
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS) ../../../bin/librise.a
+.PHONY: rise_archive
+
+rise_archive:
+	@$(MAKE) -C ../../../build/make/rise librise
+
+$(TARGET): rise_archive $(OBJS) ../../../bin/librise.a
 	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(SHARED_FLAGS) -o $@ $(OBJS) ../../../bin/librise.a $(LDLIBS)
 
@@ -34,4 +39,3 @@ $(TARGET): $(OBJS) ../../../bin/librise.a
 
 clean:
 	@rm -f $(OBJS) $(TARGET)
-
