@@ -269,7 +269,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	if( bUseBSP ) {	
 		safe_release( pPtrBSPtree );
 
-		pPtrBSPtree = new BSPTree<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
+		pPtrBSPtree = new BSPTreeSAH<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
 		GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree" );
 
 		pPtrBSPtree->AddElements( temp, nMaxRecursionLevel );
@@ -335,7 +335,7 @@ BoundingBox TriangleMeshGeometryIndexed::GenerateBoundingBox( ) const
 }
 
 static const char * szSignature = "RISETMGI";
-static const unsigned int cur_version = 1;
+static const unsigned int cur_version = 2;
 
 void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 {
@@ -472,7 +472,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	// Next check version
 	const unsigned int version = buffer.getUInt();
 	
-	if( version != cur_version ) {
+	if( version != 1 && version != cur_version ) {
 		GlobalLog()->PrintEasyError( "TriangleMeshGeometryIndexed::Deserialize:: Versions don't match.  Are you using an older format?" );
 		return;
 	}
@@ -488,6 +488,8 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	pNormals.clear();
 	pCoords.clear();
 	ptr_polygons.clear();
+	safe_release( pPtrOctree );
+	safe_release( pPtrBSPtree );
 
 	// Now get the list of points
 	{
@@ -593,24 +595,28 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		const bool bptrbsptree = !!buffer.getChar();
 
 		if( bptrbsptree ) {
-			pPtrBSPtree = new BSPTree<const PointerTriangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree" );
+			if( version == cur_version ) {
+				pPtrBSPtree = new BSPTreeSAH<const PointerTriangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
+				GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree" );
 
-			// Deserialize
-			pPtrBSPtree->Deserialize( buffer );
+				// Deserialize
+				pPtrBSPtree->Deserialize( buffer );
 
-			// Validate the deserialized bounding box
-			BoundingBox treeBBox = pPtrBSPtree->GetBBox();
-			Vector3 extents = treeBBox.GetExtents();
-			if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
-				std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
-				std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
-			{
-				bTreeValid = true;
+				// Validate the deserialized bounding box
+				BoundingBox treeBBox = pPtrBSPtree->GetBBox();
+				Vector3 extents = treeBBox.GetExtents();
+				if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
+					std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
+					std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
+				{
+					bTreeValid = true;
+				} else {
+					GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Deserialized BSP tree has invalid bounding box, will rebuild" );
+					safe_release( pPtrBSPtree );
+					pPtrBSPtree = 0;
+				}
 			} else {
-				GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Deserialized BSP tree has invalid bounding box, will rebuild" );
-				safe_release( pPtrBSPtree );
-				pPtrBSPtree = 0;
+				GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Legacy BSP serialization detected, rebuilding SAH tree from polygon data" );
 			}
 		}
 	} else {
@@ -659,7 +665,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		}
 
 		if( bUseBSP ) {
-			pPtrBSPtree = new BSPTree<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
+			pPtrBSPtree = new BSPTreeSAH<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
 			GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree (rebuilt)" );
 			pPtrBSPtree->AddElements( temp, nMaxRecursionLevel );
 		} else {
@@ -683,5 +689,3 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 	pNormals.reserve( pPoints.size() );
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );
 }
-
-

@@ -17,7 +17,7 @@
 #include "Geometry.h"
 #include "../Interfaces/IBezierPatchGeometry.h"
 #include "../Octree.h"
-#include "../BSPTree.h"
+#include "../BSPTreeSAH.h"
 #include "BezierValueGenerator.h"
 
 namespace RISE
@@ -36,7 +36,7 @@ namespace RISE
 
 		protected:
 			// The BSP tree of bezier patches
-			BSPTree<MYBEZIERPATCH>*		pBSPTree;
+				BSPTreeSAH<MYBEZIERPATCH>*		pBSPTree;
 
 			// The Octree tree of bezier patches
 			Octree<MYBEZIERPATCH>*		pOctree;

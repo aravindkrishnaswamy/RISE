@@ -17,7 +17,7 @@
 #include "Geometry.h"
 #include "../Interfaces/IBilinearPatchGeometry.h"
 #include "../Octree.h"
-#include "../BSPTree.h"
+#include "../BSPTreeSAH.h"
 
 namespace RISE
 {
@@ -35,7 +35,7 @@ namespace RISE
 
 		protected:
 			// The BSP tree of bezier patches
-			BSPTree<const BilinearPatch*>*	pBSPTree;
+				BSPTreeSAH<const BilinearPatch*>*	pBSPTree;
 
 			// The Octree tree of bezier patches
 			Octree<const BilinearPatch*>*		pOctree;

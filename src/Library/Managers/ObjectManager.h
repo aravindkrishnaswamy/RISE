@@ -21,7 +21,7 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Utilities/Threads/Threads.h"
 #include "GenericManager.h"
-#include "../BSPTree.h"
+#include "../BSPTreeSAH.h"
 #include "../Octree.h"
 
 namespace RISE
@@ -36,7 +36,7 @@ namespace RISE
 		protected:
 			virtual ~ObjectManager();
 
-			mutable BSPTree<const IObjectPriv*>* pBSPtree;
+			mutable BSPTreeSAH<const IObjectPriv*>* pBSPtree;
 			mutable Octree<const IObjectPriv*>* pOctree;
 
 			bool bUseBSPtree;

@@ -230,6 +230,33 @@ namespace
 		std::cout << "BSPTreeSAH intersections against naive traversal Passed!" << std::endl;
 	}
 
+	void TestBinnedBuildMatchesNaive()
+	{
+		std::cout << "Testing BSPTreeSAH binned build path..." << std::endl;
+
+		TestProcessor processor;
+		std::vector<TestPrimitive> primitives;
+		for( unsigned int i=0; i<200; i++ ) {
+			const Scalar minx = Scalar(i) * 2.0;
+			primitives.push_back( MakePrimitive( i+1, minx, minx+1.0 ) );
+		}
+
+		BSPTreeSAH<TestPrimitive>* pTree = BuildTree( processor, primitives, 1, 32 );
+
+		unsigned char axis = BSP_SAH_AXIS_INVALID;
+		Scalar location = -1;
+		assert( pTree->GetRootSplit( axis, location ) );
+		assert( axis == BSP_SAH_AXIS_X );
+
+		AssertTreeMatchesNaive( processor, primitives, *pTree, Ray( Point3(0.5, 0.5, -1.0), Vector3(0, 0, 1) ) );
+		AssertTreeMatchesNaive( processor, primitives, *pTree, Ray( Point3(120.5, 0.5, -1.0), Vector3(0, 0, 1) ) );
+		AssertTreeMatchesNaive( processor, primitives, *pTree, Ray( Point3(398.5, 0.5, -1.0), Vector3(0, 0, 1) ) );
+
+		safe_release( pTree );
+
+		std::cout << "BSPTreeSAH binned build path Passed!" << std::endl;
+	}
+
 	void TestSerializationRoundTrip()
 	{
 		std::cout << "Testing BSPTreeSAH serialization..." << std::endl;
@@ -275,6 +302,7 @@ int main()
 	TestRootSplitUsesSAH();
 	TestFullyOverlappingBoxesStayLeaf();
 	TestIntersectionsMatchNaive();
+	TestBinnedBuildMatchesNaive();
 	TestSerializationRoundTrip();
 
 	std::cout << "All BSPTreeSAH tests passed!" << std::endl;

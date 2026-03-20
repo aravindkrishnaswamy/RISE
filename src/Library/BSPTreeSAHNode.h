@@ -121,6 +121,175 @@ public:
 			);
 	}
 
+	bool FindBestExactSplit(
+		const ElementInfoListType& my_elements,
+		const BoundingBox& my_bb,
+		const Scalar totalSA,
+		Scalar& bestCost,
+		unsigned char& bestAxis,
+		Scalar& bestLocation
+		) const
+	{
+		bool bFound = false;
+
+		for( unsigned char axis=BSP_SAH_AXIS_X; axis<=BSP_SAH_AXIS_Z; axis++ ) {
+			const Scalar nodeMin = my_bb.ll[axis];
+			const Scalar nodeMax = my_bb.ur[axis];
+
+			if( (nodeMax-nodeMin) <= bsp_sah_error_delta_box_size ) {
+				continue;
+			}
+
+			std::vector<BoundEdge> edges;
+			edges.reserve( my_elements.size() * 2 );
+
+			for( unsigned int i=0; i<my_elements.size(); i++ ) {
+				edges.push_back( BoundEdge( my_elements[i].bbox.ll[axis], i, true ) );
+				edges.push_back( BoundEdge( my_elements[i].bbox.ur[axis], i, false ) );
+			}
+
+			std::sort( edges.begin(), edges.end(), BoundEdgeLess() );
+
+			unsigned int nBelow = 0;
+			unsigned int nAbove = static_cast<unsigned int>( my_elements.size() );
+			const unsigned char otherAxis0 = (axis + 1) % 3;
+			const unsigned char otherAxis1 = (axis + 2) % 3;
+			const Vector3 d = my_bb.GetExtents();
+
+			for( unsigned int i=0; i<edges.size(); i++ ) {
+				if( edges[i].type == BoundEdge::EDGE_END ) {
+					nAbove--;
+				}
+
+				const Scalar edgeT = edges[i].t;
+				if( edgeT > nodeMin + NEARZERO && edgeT < nodeMax - NEARZERO ) {
+					const Scalar belowSA = 2.0 * (d[otherAxis0]*d[otherAxis1] + (edgeT-nodeMin) * (d[otherAxis0]+d[otherAxis1]));
+					const Scalar aboveSA = 2.0 * (d[otherAxis0]*d[otherAxis1] + (nodeMax-edgeT) * (d[otherAxis0]+d[otherAxis1]));
+					const Scalar pBelow = belowSA / totalSA;
+					const Scalar pAbove = aboveSA / totalSA;
+					const Scalar emptyBonus = (nAbove == 0 || nBelow == 0) ? bsp_sah_empty_bonus : 0.0;
+					const Scalar cost = bsp_sah_traversal_cost +
+						bsp_sah_intersection_cost * (1.0-emptyBonus) * (pBelow*Scalar(nBelow) + pAbove*Scalar(nAbove));
+
+					if( cost < bestCost ) {
+						bestCost = cost;
+						bestAxis = axis;
+						bestLocation = edgeT;
+						bFound = true;
+					}
+				}
+
+				if( edges[i].type == BoundEdge::EDGE_START ) {
+					nBelow++;
+				}
+			}
+		}
+
+		return bFound;
+	}
+
+	bool FindBestBinnedSplit(
+		const ElementInfoListType& my_elements,
+		const BoundingBox& my_bb,
+		const Scalar totalSA,
+		Scalar& bestCost,
+		unsigned char& bestAxis,
+		Scalar& bestLocation
+		) const
+	{
+		bool bFound = false;
+		const Vector3 d = my_bb.GetExtents();
+
+		for( unsigned char axis=BSP_SAH_AXIS_X; axis<=BSP_SAH_AXIS_Z; axis++ ) {
+			const Scalar nodeMin = my_bb.ll[axis];
+			const Scalar nodeMax = my_bb.ur[axis];
+			const Scalar nodeExtent = nodeMax - nodeMin;
+
+			if( nodeExtent <= bsp_sah_error_delta_box_size ) {
+				continue;
+			}
+
+			std::vector<unsigned int> startCounts( bsp_sah_num_bins, 0 );
+			std::vector<unsigned int> endCounts( bsp_sah_num_bins, 0 );
+			std::vector<unsigned int> prefixStarts( bsp_sah_num_bins, 0 );
+			std::vector<unsigned int> suffixEnds( bsp_sah_num_bins, 0 );
+
+			const Scalar invExtent = Scalar( bsp_sah_num_bins ) / nodeExtent;
+
+			for( unsigned int i=0; i<my_elements.size(); i++ ) {
+				Scalar minEdge = my_elements[i].bbox.ll[axis];
+				Scalar maxEdge = my_elements[i].bbox.ur[axis];
+
+				if( minEdge < nodeMin ) {
+					minEdge = nodeMin;
+				} else if( minEdge > nodeMax ) {
+					minEdge = nodeMax;
+				}
+
+				if( maxEdge < nodeMin ) {
+					maxEdge = nodeMin;
+				} else if( maxEdge > nodeMax ) {
+					maxEdge = nodeMax;
+				}
+
+				int startBin = static_cast<int>( (minEdge-nodeMin) * invExtent );
+				int endBin = static_cast<int>( (maxEdge-nodeMin) * invExtent );
+
+				if( startBin < 0 ) {
+					startBin = 0;
+				} else if( startBin >= static_cast<int>(bsp_sah_num_bins) ) {
+					startBin = bsp_sah_num_bins - 1;
+				}
+
+				if( endBin < 0 ) {
+					endBin = 0;
+				} else if( endBin >= static_cast<int>(bsp_sah_num_bins) ) {
+					endBin = bsp_sah_num_bins - 1;
+				}
+
+				startCounts[startBin]++;
+				endCounts[endBin]++;
+			}
+
+			unsigned int runningStarts = 0;
+			for( unsigned int i=0; i<bsp_sah_num_bins; i++ ) {
+				runningStarts += startCounts[i];
+				prefixStarts[i] = runningStarts;
+			}
+
+			unsigned int runningEnds = 0;
+			for( int i=static_cast<int>(bsp_sah_num_bins)-1; i>=0; i-- ) {
+				runningEnds += endCounts[static_cast<unsigned int>(i)];
+				suffixEnds[static_cast<unsigned int>(i)] = runningEnds;
+			}
+
+			const unsigned char otherAxis0 = (axis + 1) % 3;
+			const unsigned char otherAxis1 = (axis + 2) % 3;
+
+			for( unsigned int i=0; i<bsp_sah_num_bins-1; i++ ) {
+				const Scalar edgeT = nodeMin + nodeExtent * Scalar(i+1) / Scalar(bsp_sah_num_bins);
+				const unsigned int nBelow = prefixStarts[i];
+				const unsigned int nAbove = suffixEnds[i+1];
+				const Scalar belowSA = 2.0 * (d[otherAxis0]*d[otherAxis1] + (edgeT-nodeMin) * (d[otherAxis0]+d[otherAxis1]));
+				const Scalar aboveSA = 2.0 * (d[otherAxis0]*d[otherAxis1] + (nodeMax-edgeT) * (d[otherAxis0]+d[otherAxis1]));
+				const Scalar pBelow = belowSA / totalSA;
+				const Scalar pAbove = aboveSA / totalSA;
+				const Scalar emptyBonus = (nAbove == 0 || nBelow == 0) ? bsp_sah_empty_bonus : 0.0;
+				const Scalar cost = bsp_sah_traversal_cost +
+					bsp_sah_intersection_cost * (1.0-emptyBonus) * (pBelow*Scalar(nBelow) + pAbove*Scalar(nAbove));
+
+				if( cost < bestCost ) {
+					bestCost = cost;
+					bestAxis = axis;
+					bestLocation = edgeT;
+					bFound = true;
+				}
+			}
+		}
+
+		return bFound;
+	}
+
 	void AddElements(
 		const TreeElementProcessor<Element>& ep,
 		const ElementInfoListType& my_elements,
@@ -151,65 +320,11 @@ public:
 		Scalar bestCost = bsp_sah_intersection_cost * Scalar( my_elements.size() );
 		unsigned char bestAxis = BSP_SAH_AXIS_INVALID;
 		Scalar bestLocation = 0;
-		int bestOffset = -1;
-		std::vector<BoundEdge> bestEdges;
-		bestEdges.reserve( my_elements.size() * 2 );
+		const bool bFoundSplit = my_elements.size() <= bsp_sah_exact_threshold ?
+			FindBestExactSplit( my_elements, my_bb, totalSA, bestCost, bestAxis, bestLocation ) :
+			FindBestBinnedSplit( my_elements, my_bb, totalSA, bestCost, bestAxis, bestLocation );
 
-		for( unsigned char axis=BSP_SAH_AXIS_X; axis<=BSP_SAH_AXIS_Z; axis++ ) {
-			const Scalar nodeMin = my_bb.ll[axis];
-			const Scalar nodeMax = my_bb.ur[axis];
-
-			if( (nodeMax-nodeMin) <= bsp_sah_error_delta_box_size ) {
-				continue;
-			}
-
-			std::vector<BoundEdge> edges;
-			edges.reserve( my_elements.size() * 2 );
-
-			for( unsigned int i=0; i<my_elements.size(); i++ ) {
-				edges.push_back( BoundEdge( my_elements[i].bbox.ll[axis], i, true ) );
-				edges.push_back( BoundEdge( my_elements[i].bbox.ur[axis], i, false ) );
-			}
-
-			std::sort( edges.begin(), edges.end(), BoundEdgeLess() );
-
-			unsigned int nBelow = 0;
-			unsigned int nAbove = static_cast<unsigned int>( my_elements.size() );
-
-			for( unsigned int i=0; i<edges.size(); i++ ) {
-				if( edges[i].type == BoundEdge::EDGE_END ) {
-					nAbove--;
-				}
-
-				const Scalar edgeT = edges[i].t;
-				if( edgeT > nodeMin + NEARZERO && edgeT < nodeMax - NEARZERO ) {
-					const unsigned char otherAxis0 = (axis + 1) % 3;
-					const unsigned char otherAxis1 = (axis + 2) % 3;
-					const Vector3 d = my_bb.GetExtents();
-					const Scalar belowSA = 2.0 * (d[otherAxis0]*d[otherAxis1] + (edgeT-nodeMin) * (d[otherAxis0]+d[otherAxis1]));
-					const Scalar aboveSA = 2.0 * (d[otherAxis0]*d[otherAxis1] + (nodeMax-edgeT) * (d[otherAxis0]+d[otherAxis1]));
-					const Scalar pBelow = belowSA / totalSA;
-					const Scalar pAbove = aboveSA / totalSA;
-					const Scalar emptyBonus = (nAbove == 0 || nBelow == 0) ? bsp_sah_empty_bonus : 0.0;
-					const Scalar cost = bsp_sah_traversal_cost +
-						bsp_sah_intersection_cost * (1.0-emptyBonus) * (pBelow*Scalar(nBelow) + pAbove*Scalar(nAbove));
-
-					if( cost < bestCost ) {
-						bestCost = cost;
-						bestAxis = axis;
-						bestLocation = edgeT;
-						bestOffset = static_cast<int>(i);
-						bestEdges = edges;
-					}
-				}
-
-				if( edges[i].type == BoundEdge::EDGE_START ) {
-					nBelow++;
-				}
-			}
-		}
-
-		if( bestAxis == BSP_SAH_AXIS_INVALID || bestOffset < 0 ) {
+		if( !bFoundSplit || bestAxis == BSP_SAH_AXIS_INVALID ) {
 			BuildLeaf( my_elements );
 			return;
 		}
@@ -219,15 +334,19 @@ public:
 		leftElements.reserve( my_elements.size() );
 		rightElements.reserve( my_elements.size() );
 
-		for( int i=0; i<bestOffset; i++ ) {
-			if( bestEdges[i].type == BoundEdge::EDGE_START ) {
-				leftElements.push_back( my_elements[bestEdges[i].primNum] );
-			}
-		}
+		typename ElementInfoListType::const_iterator i, e;
+		for( i=my_elements.begin(), e=my_elements.end(); i!=e; i++ ) {
+			const Scalar minEdge = i->bbox.ll[bestAxis];
+			const Scalar maxEdge = i->bbox.ur[bestAxis];
+			const bool bGoesLeft = (minEdge < bestLocation) || fabs( maxEdge-bestLocation ) <= NEARZERO;
+			const bool bGoesRight = (maxEdge > bestLocation) || fabs( minEdge-bestLocation ) <= NEARZERO;
 
-		for( unsigned int i=static_cast<unsigned int>(bestOffset+1); i<bestEdges.size(); i++ ) {
-			if( bestEdges[i].type == BoundEdge::EDGE_END ) {
-				rightElements.push_back( my_elements[bestEdges[i].primNum] );
+			if( bGoesLeft ) {
+				leftElements.push_back( *i );
+			}
+
+			if( bGoesRight ) {
+				rightElements.push_back( *i );
 			}
 		}
 

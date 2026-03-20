@@ -43,6 +43,8 @@ namespace RISE
 	static const Scalar			bsp_sah_traversal_cost = 1.0;
 	static const Scalar			bsp_sah_intersection_cost = 80.0;
 	static const Scalar			bsp_sah_empty_bonus = 0.2;
+	static const unsigned int	bsp_sah_exact_threshold = 128;
+	static const unsigned int	bsp_sah_num_bins = 32;
 
 	template< class Element >
 	class BSPTreeSAH : public Implementation::Reference

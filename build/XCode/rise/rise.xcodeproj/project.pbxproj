@@ -1298,6 +1298,8 @@
 		F2C5D5272F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 		F2C5D5282F6C725300546C97 /* CompositeEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5252F6C725300546C97 /* CompositeEmitter.h */; };
 		F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
+		F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */; };
+		F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1963,6 +1965,8 @@
 		F298C65207B14247007CDF08 /* StandardShader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StandardShader.h; sourceTree = "<group>"; };
 		F2C5D5252F6C725300546C97 /* CompositeEmitter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompositeEmitter.h; sourceTree = "<group>"; };
 		F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeEmitter.cpp; sourceTree = "<group>"; };
+		F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAH.h; sourceTree = "<group>"; };
+		F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAHNode.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2068,6 +2072,8 @@
 		F27F07E8069C428F0069C9E5 /* Library */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */,
+				F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */,
 				F277342507ECCC1600C0B600 /* Detector Spheres */,
 				F27F07EB069C428F0069C9E5 /* Animation */,
 				F27F07F5069C428F0069C9E5 /* BSPTree.h */,
@@ -2960,6 +2966,8 @@
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
+				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
+				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
 				F27F0AAB069C42910069C9E5 /* TorusGeometry.h in Headers */,
 				F27F0AAD069C42910069C9E5 /* TriangleMeshGeometry.h in Headers */,
 				F27F0AAF069C42910069C9E5 /* TriangleMeshGeometryIndexed.h in Headers */,

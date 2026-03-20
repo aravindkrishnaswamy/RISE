@@ -170,7 +170,7 @@ void TriangleMeshGeometry::DoneTriangles( )
 	if( bUseBSP ) {
 		safe_release( pPolygonsBSPtree );
 
-		pPolygonsBSPtree = new BSPTree<const Triangle*>( *this, bbox, nMaxPerOctantNode );
+		pPolygonsBSPtree = new BSPTreeSAH<const Triangle*>( *this, bbox, nMaxPerOctantNode );
 		GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons bsptree" );
 
 		pPolygonsBSPtree->AddElements( temp, nMaxRecursionLevel );
@@ -246,7 +246,7 @@ BoundingBox TriangleMeshGeometry::GenerateBoundingBox( ) const
 }
 
 static const char * szSignature = "RISE_TMG";
-static const unsigned int cur_version = 2;
+static const unsigned int cur_version = 3;
 
 void TriangleMeshGeometry::Serialize( IWriteBuffer& buffer ) const
 {
@@ -332,7 +332,7 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 	// Next check version
 	const unsigned int version = buffer.getUInt();
 	
-	if( version != cur_version ) {
+	if( version != 2 && version != cur_version ) {
 		GlobalLog()->PrintEasyError( "TriangleMeshGeometry::Deserialize:: Versions don't match.  Are you using an older format?" );
 		return;
 	}
@@ -342,6 +342,8 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 	nMaxRecursionLevel = buffer.getChar();
 
 	polygons.clear();
+	safe_release( pPolygonsOctree );
+	safe_release( pPolygonsBSPtree );
 
 	// Get the list of pure triangles
 	{
@@ -379,18 +381,36 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 
 	char bsp = buffer.getChar();
 	bUseBSP = !!bsp;
+	bool bTreeValid = false;
 		
 	if( bUseBSP ) {
 		// Deserialize the bsp trees
 		const bool bpolybsptree = !!buffer.getChar();
 
 		if( bpolybsptree ) {
-			pPolygonsBSPtree = new BSPTree<const Triangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons bsptree" );
+				if( version == cur_version ) {
+					pPolygonsBSPtree = new BSPTreeSAH<const Triangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
+					GlobalLog()->PrintNew( pPolygonsBSPtree, __FILE__, __LINE__, "polygons bsptree" );
 
-			// Deserialize
-			pPolygonsOctree->Deserialize( buffer );
-		}
+				// Deserialize
+				pPolygonsBSPtree->Deserialize( buffer );
+
+				BoundingBox treeBBox = pPolygonsBSPtree->GetBBox();
+				Vector3 extents = treeBBox.GetExtents();
+				if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
+					std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
+					std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
+				{
+					bTreeValid = true;
+				} else {
+					GlobalLog()->PrintEasyWarning( "TriangleMeshGeometry::Deserialize:: Deserialized BSP tree has invalid bounding box, will rebuild" );
+					safe_release( pPolygonsBSPtree );
+					pPolygonsBSPtree = 0;
+				}
+				} else {
+					GlobalLog()->PrintEasyWarning( "TriangleMeshGeometry::Deserialize:: Legacy BSP serialization detected, rebuilding SAH tree from polygon data" );
+				}
+			}
 	} else {
 		// Deserialize the octrees
 		const bool bpolyoctree = !!buffer.getChar();
@@ -401,6 +421,31 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 
 			// Deserialize
 			pPolygonsOctree->Deserialize( buffer );
+			bTreeValid = true;
+		}
+	}
+
+	if( !bTreeValid && polygons.size() > 0 ) {
+		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometry::Deserialize:: Rebuilding spatial structure from %u polygons", polygons.size() );
+
+		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+		std::vector<const Triangle*> temp;
+		MyTriangleList::iterator i, e;
+		for( i=polygons.begin(), e=polygons.end(); i!=e; i++ ) {
+			temp.push_back( &(*i) );
+			for( int j=0; j<3; j++ ) {
+				bbox.Include( i->vertices[j] );
+			}
+		}
+
+		if( bUseBSP ) {
+			pPolygonsBSPtree = new BSPTreeSAH<const Triangle*>( *this, bbox, nMaxPerOctantNode );
+			GlobalLog()->PrintNew( pPolygonsBSPtree, __FILE__, __LINE__, "polygons bsptree (rebuilt)" );
+			pPolygonsBSPtree->AddElements( temp, nMaxRecursionLevel );
+		} else {
+			pPolygonsOctree = new Octree<const Triangle*>( *this, bbox, nMaxPerOctantNode );
+			GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons octree (rebuilt)" );
+			pPolygonsOctree->AddElements( temp, nMaxRecursionLevel );
 		}
 	}
 
@@ -409,5 +454,3 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 	// And we're done!
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometry::Deserialize:: Finished deserialization", bDoubleSided );
 }
-
-

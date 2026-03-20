@@ -18,7 +18,7 @@
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "Geometry.h"
 #include "../Octree.h"
-#include "../BSPTree.h"
+#include "../BSPTreeSAH.h"
 #include <vector>
 
 namespace RISE
@@ -51,7 +51,7 @@ namespace RISE
 			bool					bUseBSP;			// Are we using BSP trees ?
 			
 			Octree<const Triangle*>*			pPolygonsOctree;
-			BSPTree<const Triangle*>*			pPolygonsBSPtree;
+				BSPTreeSAH<const Triangle*>*			pPolygonsBSPtree;
 
 			TriangleAreasList		areas;				// Areas of the triangles
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas

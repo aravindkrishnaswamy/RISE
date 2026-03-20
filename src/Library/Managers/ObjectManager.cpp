@@ -132,7 +132,7 @@ void ObjectManager::CreateBSPTree() const
 		}
 	}
 
-	BSPTree<const IObjectPriv*>* newpBSPtree = new BSPTree<MYOBJ>( *this, bbox, nMaxObjectsPerNode );
+	BSPTreeSAH<const IObjectPriv*>* newpBSPtree = new BSPTreeSAH<MYOBJ>( *this, bbox, nMaxObjectsPerNode );
 	GlobalLog()->PrintNew( newpBSPtree, __FILE__, __LINE__, "bsptree" );
 	newpBSPtree->AddElements( elements, nMaxTreeDepth );
 	pBSPtree = newpBSPtree;

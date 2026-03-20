@@ -154,7 +154,7 @@ void BezierPatchGeometry::Prepare()
 	safe_release( pOctree );
 
 	if( bUseBSP ) {
-		pBSPTree = new BSPTree<MYBEZIERPATCH>( *this, overall, nMaxPerOctantNode );
+		pBSPTree = new BSPTreeSAH<MYBEZIERPATCH>( *this, overall, nMaxPerOctantNode );
 		GlobalLog()->PrintNew( pBSPTree, __FILE__, __LINE__, "bezier patches bsptree" );
 
 		pBSPTree->AddElements( patchptrs, nMaxRecursionLevel );

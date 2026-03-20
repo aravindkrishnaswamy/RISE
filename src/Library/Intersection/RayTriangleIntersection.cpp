@@ -30,67 +30,33 @@ namespace RISE
 
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
+		hit.dRange2 = RISE_INFINITY;
 
-		// Here is my intersection test.
-		// You can find this in Real-time Rendering 10.5.2
-		
-		// Equation of the ray
-		// X = raybegin + nRange * raydir
-		
-		// Equation of the triangle
-		// X = vPoint1 + X * vPoint2 + Y * vPoint3;
-		
-		Matrix3	m;
-		m._00 = ray.dir.x;
-		m._01 = ray.dir.y;
-		m._02 = ray.dir.z;
-
-		m._10 = vEdgeA.x;
-		m._11 = vEdgeA.y;
-		m._12 = vEdgeA.z;
-
-		m._20 = vEdgeB.x;
-		m._21 = vEdgeB.y;
-		m._22 = vEdgeB.z;
-
-		const Scalar determinant = Matrix3Ops::Determinant(m);
+		// Moller-Trumbore ray/triangle intersection with early exits.
+		// This preserves the existing alpha/beta/range contract used by the callers.
+		const Vector3 pvec = Vector3Ops::Cross( ray.dir, vEdgeB );
+		const Scalar determinant = Vector3Ops::Dot( vEdgeA, pvec );
 
 		if( determinant > -NEARZERO && determinant < NEARZERO ) {
 			return;
 		}
 
-		Scalar	oodet = 1.0/determinant;
-		
-		Matrix3	m2;
-		// The vector v gives the vector from the ray's begining to the first point on the triangle
-		const Vector3	v = Vector3Ops::mkVector3( vPt1, ray.origin );
-
-		m2 = m;
-		m2._10 = v.x;
-		m2._11 = v.y;
-		m2._12 = v.z;
-
-		const Scalar a = -(Matrix3Ops::Determinant(m2))*oodet;
+		const Scalar oodet = 1.0 / determinant;
+		const Vector3 tvec = Vector3Ops::mkVector3( ray.origin, vPt1 );
+		const Scalar a = Vector3Ops::Dot( tvec, pvec ) * oodet;
 
 		if( (a < 0.0-NEARZERO) || (a > 1.0+NEARZERO) ) {
 			return;
 		}
 
-		m2 = m;
-		m2._20 = v.x;
-		m2._21 = v.y;
-		m2._22 = v.z;
-		const Scalar b = -(Matrix3Ops::Determinant(m2))*oodet;
+		const Vector3 qvec = Vector3Ops::Cross( tvec, vEdgeA );
+		const Scalar b = Vector3Ops::Dot( ray.dir, qvec ) * oodet;
 
 		if( (b<0.0-NEARZERO) || ((a+b)>1.0+NEARZERO) ) {
 			return;
 		}
 
-		m2 = m;
-		m2._00 = v.x;
-		m2._01 = v.y;
-		m2._02 = v.z;
-		hit.dRange = (Matrix3Ops::Determinant(m2))*oodet;
+		hit.dRange = Vector3Ops::Dot( vEdgeB, qvec ) * oodet;
 
 		if( hit.dRange >= NEARZERO ) {
 			hit.dRange2 = hit.dRange;
@@ -203,4 +169,3 @@ namespace RISE
 	*/
 
 }
-

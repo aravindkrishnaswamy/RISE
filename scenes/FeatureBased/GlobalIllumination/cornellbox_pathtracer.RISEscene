@@ -215,6 +215,7 @@ rawmesh_geometry
 	file				models/raw/cornellbox_tallblock.rawmesh
 	maxpolygons			100
 	maxdepth			6
+	bsp					true
 }
 
 rawmesh_geometry
@@ -223,6 +224,7 @@ rawmesh_geometry
 	file				models/raw/cornellbox_shortblock.rawmesh
 	maxpolygons			100
 	maxdepth			6
+	bsp					true
 }
 
 standard_object

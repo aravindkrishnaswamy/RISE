@@ -18,7 +18,7 @@
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "Geometry.h"
 #include "../Octree.h"
-#include "../BSPTree.h"
+#include "../BSPTreeSAH.h"
 #include <vector>
 
 namespace RISE
@@ -61,7 +61,7 @@ namespace RISE
 			bool					bUseFaceNormals;	// Are we going to use computed face normals rather than interpolated vertex normals?
 
 			Octree<const PointerTriangle*>*		pPtrOctree;
-			BSPTree<const PointerTriangle*>*	pPtrBSPtree;
+			BSPTreeSAH<const PointerTriangle*>*	pPtrBSPtree;
 
 			TriangleAreasList		areas;				// Areas of the triangles
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas

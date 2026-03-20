@@ -17,7 +17,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Octree.h"
-#include "../BSPTree.h"
+#include "../BSPTreeSAH.h"
 #include "../Utilities/stl_utils.h"
 
 using namespace RISE;
@@ -145,7 +145,7 @@ void BilinearPatchGeometry::Prepare()
 	safe_release( pOctree );
 
 	if( bUseBSP ) {
-		pBSPTree = new BSPTree<const BilinearPatch*>( *this, overall, nMaxPerOctantNode );
+		pBSPTree = new BSPTreeSAH<const BilinearPatch*>( *this, overall, nMaxPerOctantNode );
 		GlobalLog()->PrintNew( pBSPTree, __FILE__, __LINE__, "bilinear patches bsptree" );
 
 		pBSPTree->AddElements( patchptrs, nMaxRecursionLevel );
