@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "PixelBasedRasterizerHelper.h"
 #include "../Utilities/RTime.h"
+#include "../Utilities/Profiling.h"
 #include "../RasterImages/RasterImage.h"
 #include "RasterizeDispatchers.h"
 
@@ -389,6 +390,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 
+	RISE_PROFILE_REPORT(GlobalLog());
+
 	if( blocks ) {
 		safe_release( blocks );
 		blocks = 0;
@@ -586,6 +589,8 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		FlushToOutputs( *pImage, pRect, specificFrame?*specificFrame:i );
 		pImage->Clear( RISEColor(0,0,0,0), pRect );
 	}
+
+	RISE_PROFILE_REPORT(GlobalLog());
 
 	if( blocks ) {
 		safe_release( blocks );

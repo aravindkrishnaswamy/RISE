@@ -34,6 +34,11 @@ bool BilinearPatchGeometry::ElementBoxIntersection( const MYOBJ elem, const Boun
 	return bbox.DoIntersect( GeometricUtilities::BilinearPatchBoundingBox(*elem) );
 }
 
+BoundingBox BilinearPatchGeometry::GetElementBoundingBox( const MYOBJ elem ) const
+{
+	return GeometricUtilities::BilinearPatchBoundingBox(*elem);
+}
+
 char BilinearPatchGeometry::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const
 {
 	return GeometricUtilities::WhichSideOfPlane( plane, GeometricUtilities::BilinearPatchBoundingBox(*elem) );

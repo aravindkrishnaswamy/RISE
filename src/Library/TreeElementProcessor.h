@@ -28,11 +28,12 @@ namespace RISE
 		// These five functions need to specialized for EVERY type we want to use
 		// Octrees or BSP trees with
 		
-		virtual void RayElementIntersection( RayIntersectionGeometric& ri, const T elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const = 0;
-		virtual void RayElementIntersection( RayIntersection& ri, const T elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const = 0;
-		virtual bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const T elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const = 0;
-		virtual bool ElementBoxIntersection( const T elem, const BoundingBox& bbox ) const = 0;
-		virtual char WhichSideofPlaneIsElement( const T elem, const Plane& plane ) const = 0;
+			virtual void RayElementIntersection( RayIntersectionGeometric& ri, const T elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const = 0;
+			virtual void RayElementIntersection( RayIntersection& ri, const T elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const = 0;
+			virtual bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const T elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const = 0;
+			virtual BoundingBox GetElementBoundingBox( const T elem ) const = 0;
+			virtual bool ElementBoxIntersection( const T elem, const BoundingBox& bbox ) const = 0;
+			virtual char WhichSideofPlaneIsElement( const T elem, const Plane& plane ) const = 0;
 
 		virtual void SerializeElement( IWriteBuffer& buffer, const T elem ) const = 0;
 		virtual void DeserializeElement( IReadBuffer& buffer, T& ret ) const = 0;
@@ -40,4 +41,3 @@ namespace RISE
 }
 
 #endif
-

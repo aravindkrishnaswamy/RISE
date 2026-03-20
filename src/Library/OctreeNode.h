@@ -213,6 +213,7 @@ public:
 	void IntersectRayBB( const BoundingBox& bbox, const char which_child,
 						 const Ray& ray, BOX_HIT& h ) const
 	{
+		RISE_PROFILE_INC(nBBoxIntersectionTests);
 		BoundingBox my_bb;
 			
 		MyBBFromParent( bbox, which_child, my_bb );
@@ -225,26 +226,22 @@ public:
 		}
 	}
 
-	void IntersectRay( 
+	void IntersectRay(
 		const TreeElementProcessor<Element>& ep,
-		RayIntersectionGeometric& ri, 
-		const bool bHitFrontFaces, 
+		RayIntersectionGeometric& ri,
+		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
-		const BoundingBox& bbox, 
-		const char which_child 
+		const BoundingBox& bbox,
+		const char which_child
 		) const
 	{
-		// If we are called we'll assume our parent has made sure the ray
-		// intersects our BB, so now we check our children's BB.
-		// We check all the octant nodes that have an intersection, however
-		// we will not check those nodes that we can conclusively say
-		// will not hit, or is behind existing nodes
+		RISE_PROFILE_INC(nOctreeNodeTraversals);
 
 		ri.bHit = false;
 		ri.range = RISE_INFINITY;
 
 		BoundingBox my_bb;
-			
+
 		MyBBFromParent( bbox, which_child, my_bb );
 
 		if( pChildren )
@@ -401,27 +398,23 @@ public:
 		}
 	}
 
-	void IntersectRay( 
+	void IntersectRay(
 		const TreeElementProcessor<Element>& ep,
-		RayIntersection& ri, 
-		const bool bHitFrontFaces, 
+		RayIntersection& ri,
+		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
 		const bool bComputeExitInfo,
-		const BoundingBox& bbox, 
-		const char which_child 
+		const BoundingBox& bbox,
+		const char which_child
 		) const
 	{
-		// If we are called we'll assume our parent has made sure the ray
-		// intersects our BB, so now we check our children's BB.
-		// We check all the octant nodes that have an intersection, however
-		// we will not check those nodes that we can conclusively say
-		// will not hit, or is behind existing nodes
+		RISE_PROFILE_INC(nOctreeNodeTraversals);
 
 		ri.geometric.bHit = false;
 		ri.geometric.range = RISE_INFINITY;
 
 		BoundingBox my_bb;
-			
+
 		MyBBFromParent( bbox, which_child, my_bb );
 
 		if( pChildren )
@@ -438,7 +431,7 @@ public:
 					BOX_HIT	h;
 					pChildren[i]->IntersectRayBB( my_bb, i, ri.geometric.ray, h );
 
-					// This checks not only if a particular octant node 
+					// This checks not only if a particular octant node
 					// was hit, but also checks to see if the closest distance
 					// in that octant node is too far away for us to care!
 					if( h.bHit ) {
@@ -453,7 +446,7 @@ public:
 			// We add a little optimization here
 			// We can attack the candidate nodes in a sorted order which manages to speed things up
 			// a little
-			
+
 			if( numchildrenhit==1 ) {
 				// Special case for only one child hit
 				childrenhit[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[0] );
@@ -576,21 +569,18 @@ public:
 		}
 	}
 
-	bool IntersectRay_IntersectionOnly( 
+	bool IntersectRay_IntersectionOnly(
 		const TreeElementProcessor<Element>& ep,
-		const Ray& ray, 
-		const Scalar dHowFar, 
-		const bool bHitFrontFaces, 
+		const Ray& ray,
+		const Scalar dHowFar,
+		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
-		const BoundingBox& bbox, 
-		const char which_child 
+		const BoundingBox& bbox,
+		const char which_child
 		) const
 	{
-		// If we are called we'll assume our parent has made sure the ray
-		// intersects our BB, so now we check our children's BB, take the 
-		// smallest range and call IntersectRay on that child, if that
-		// child fails, we try the second smallest and so on, until we 
-		// either run out of children or we get an intersection
+		RISE_PROFILE_INC(nOctreeNodeTraversals);
+
 		if( pChildren )
 		{
 			BoundingBox my_bb;

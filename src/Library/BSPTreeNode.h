@@ -281,14 +281,15 @@ public:
 		tree_level--;
 	}
 
-	void IntersectRayBB( 
+	void IntersectRayBB(
 		const BoundingBox& bbox,
 		BoundingBox& my_bb,
 		const char which_child,
-		const Ray& ray, 
-		BOX_HIT& h 
+		const Ray& ray,
+		BOX_HIT& h
 		) const
 	{
+		RISE_PROFILE_INC(nBBoxIntersectionTests);
 		MyBBFromParent( bbox, which_child, my_bb );
 
 		if( GeometricUtilities::IsPointInsideBox( ray.origin, my_bb.ll, my_bb.ur ) ) {
@@ -299,15 +300,17 @@ public:
 		}
 	}
 
-	void IntersectRay( 
+	void IntersectRay(
 		const TreeElementProcessor<Element>& ep,
 		RayIntersectionGeometric& ri,
-		const bool bHitFrontFaces, 
+		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
-		const BoundingBox& my_bb, 
+		const BoundingBox& my_bb,
 		const char which_child
 		) const
 	{
+		RISE_PROFILE_INC(nBSPNodeTraversals);
+
 		// We can have both children and elements
 		if( pChildren ) {
 			// We have children instead
@@ -403,16 +406,18 @@ public:
 		}
 	}
 
-	void IntersectRay( 
+	void IntersectRay(
 		const TreeElementProcessor<Element>& ep,
 		RayIntersection& ri,
-		const bool bHitFrontFaces, 
+		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
 		const bool bComputeExitInfo,
-		const BoundingBox& my_bb, 
+		const BoundingBox& my_bb,
 		const char which_child
 		) const
 	{
+		RISE_PROFILE_INC(nBSPNodeTraversals);
+
 		// We can have both children and elements
 		if( pChildren ) {
 			// We have children instead
@@ -507,16 +512,18 @@ public:
 		} 
 	}
 
-	bool IntersectRay_IntersectionOnly( 
+	bool IntersectRay_IntersectionOnly(
 		const TreeElementProcessor<Element>& ep,
-		const Ray& ray, 
-		const Scalar dHowFar, 
-		const bool bHitFrontFaces, 
+		const Ray& ray,
+		const Scalar dHowFar,
+		const bool bHitFrontFaces,
 		const bool bHitBackFaces,
 		const BoundingBox& my_bb,
 		const char which_child
 		) const
-	{		
+	{
+		RISE_PROFILE_INC(nBSPNodeTraversals);
+
 		if( pElements )
 		{
 			// Just go through our element list and check each

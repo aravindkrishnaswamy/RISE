@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "RayPrimitiveIntersections.h"
 #include "../Functions/Polynomial.h"
+#include "../Utilities/Profiling.h"
 
 #include "math.h"			// for sqrt
 
@@ -22,6 +23,7 @@ namespace RISE
 
 	void RaySphereIntersection( const Ray& ray, HIT& hit, const Scalar radius, const Point3& center )
 	{
+		RISE_PROFILE_INC(nSphereIntersectionTests);
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
@@ -82,11 +84,14 @@ namespace RISE
 			}
 			break;
 		}
+
+		if( hit.bHit ) { RISE_PROFILE_INC(nSphereIntersectionHits); }
 	}
 
 
 	extern void RaySphereIntersection( const Ray& ray, HIT& hit, const Scalar radius )
 	{
+		RISE_PROFILE_INC(nSphereIntersectionTests);
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
 
@@ -146,6 +151,8 @@ namespace RISE
 			}
 			break;
 		}
+
+		if( hit.bHit ) { RISE_PROFILE_INC(nSphereIntersectionHits); }
 	}
 
 }
