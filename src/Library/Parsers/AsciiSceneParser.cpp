@@ -5130,6 +5130,67 @@ namespace RISE
 				}
 			};
 
+			struct MLTRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String defaultshader = "global";
+					unsigned int maxRecur = 12;
+					double minImportance = 0.001;
+					unsigned int maxEyeDepth = 10;
+					unsigned int maxLightDepth = 10;
+					unsigned int bootstrapSamples = 100000;
+					unsigned int chains = 512;
+					unsigned int mutationsPerPixel = 100;
+					double largeStepProb = 0.3;
+					bool showLuminaires = true;
+					bool useiorstack = false;
+					bool onlyonelight = false;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "defaultshader" ) {
+							defaultshader = pvalue;
+						} else if( pname == "max_recursion" ) {
+							maxRecur = pvalue.toUInt();
+						} else if( pname == "min_importance" ) {
+							minImportance = pvalue.toDouble();
+						} else if( pname == "max_eye_depth" ) {
+							maxEyeDepth = pvalue.toUInt();
+						} else if( pname == "max_light_depth" ) {
+							maxLightDepth = pvalue.toUInt();
+						} else if( pname == "bootstrap_samples" ) {
+							bootstrapSamples = pvalue.toUInt();
+						} else if( pname == "chains" ) {
+							chains = pvalue.toUInt();
+						} else if( pname == "mutations_per_pixel" ) {
+							mutationsPerPixel = pvalue.toUInt();
+						} else if( pname == "large_step_prob" ) {
+							largeStepProb = pvalue.toDouble();
+						} else if( pname == "show_luminaires" ) {
+							showLuminaires = pvalue.toBoolean();
+						} else if( pname == "ior_stack" ) {
+							useiorstack = pvalue.toBoolean();
+						} else if( pname == "choose_one_light" ) {
+							onlyonelight = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.SetMLTRasterizer( maxRecur, minImportance, maxEyeDepth, maxLightDepth,
+						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
+						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight );
+				}
+			};
+
 			struct FileRasterizerOutputAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -6120,6 +6181,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["adaptivepixelpel_rasterizer"] = new AdaptivePixelPelRasterizerAsciiChunkParser();
 	chunks["contrastAApixelpel_rasterizer"] = new PixelPelRasterizerContrastAAAsciiChunkParser();
 	chunks["bdpt_rasterizer"] = new BDPTRasterizerAsciiChunkParser();
+	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();
 	chunks["file_rasterizeroutput"] = new FileRasterizerOutputAsciiChunkParser();
 
 	chunks["ambient_light"] = new AmbientLightAsciiChunkParser();

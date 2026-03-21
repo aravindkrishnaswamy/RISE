@@ -1,0 +1,288 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_caustic_chain.RISEscene                                                             #
+#   Description:    MLT torture test: Caustic Chain                                                         #
+#                                                                                                           #
+#   Three glass spheres arranged in a line.  A small, bright area light is positioned so                    #
+#   its light must refract through ALL three spheres in sequence to illuminate a target                     #
+#   patch on the floor.  Each additional specular bounce exponentially reduces BDPT's                       #
+#   chance of constructing a valid path.  MLT traces the refractive chain once and then                     #
+#   mutates along it, converging much faster on the intricate caustic patterns.                              #
+#                                                                                                           #
+#   Scene layout:                                                                                           #
+#     - Cornell box (standard dimensions)                                                                   #
+#     - Three glass spheres (r=60) at z=200, 320, 440 along the center line                                 #
+#     - Small bright light near the back wall, positioned to send light through the chain                   #
+#     - Camera looking at the floor to see the caustic pattern                                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 20, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	pt
+}
+
+mlt_rasterizer
+{
+	max_recursion		16
+	min_importance		0.0001
+	max_eye_depth		12
+	max_light_depth		12
+	bootstrap_samples	50000
+	chains				64
+	mutations_per_pixel	200
+	large_step_prob		0.25
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_caustic_chain
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - looking down at the floor from the front
+##################################################
+
+pinhole_camera
+{
+	location			278 350 -600
+	lookat				278 60 300
+	up					0 1 0
+	width				256
+	height				256
+	fov					40.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.99 0.99 0.99
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_ior
+	color				1.5 1.5 1.5
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Very bright light -- needs high intensity because light must
+# pass through three glass spheres, losing energy at each interface
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				500.0
+	material			none
+}
+
+# Clear glass for the sphere chain
+dielectric_material
+{
+	name				glass
+	tau					pnt_glass_tau
+	ior					pnt_glass_ior
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# Small bright light - positioned high near the
+# back wall, aimed to send light through the chain
+##################################################
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					308.0 548.7999 480.0
+	ptb					308.0 548.7999 520.0
+	ptc					248.0 548.7999 520.0
+	ptd					248.0 548.7999 480.0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			bright_lum
+}
+
+##################################################
+# Glass sphere chain - three spheres along z-axis
+#
+# Light enters from sphere 3 (nearest to light),
+# refracts through sphere 2, then sphere 1,
+# casting a complex caustic on the floor.
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom1
+	radius				60
+}
+
+sphere_geometry
+{
+	name				spheregeom2
+	radius				60
+}
+
+sphere_geometry
+{
+	name				spheregeom3
+	radius				60
+}
+
+standard_object
+{
+	name				glass_sphere_1
+	geometry			spheregeom1
+	material			glass
+	position			278 60 180
+}
+
+standard_object
+{
+	name				glass_sphere_2
+	geometry			spheregeom2
+	material			glass
+	position			278 60 320
+}
+
+standard_object
+{
+	name				glass_sphere_3
+	geometry			spheregeom3
+	material			glass
+	position			278 60 460
+}

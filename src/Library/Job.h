@@ -1315,6 +1315,21 @@ namespace RISE
 			const unsigned int spectral_samples = 1					///< [in] Spectral samples per pixel
 			);
 
+		bool SetMLTRasterizer(
+			const unsigned int maxRecur,							///< [in] Maximum recursion level
+			const double minImportance,								///< [in] Minimum importance to stop at
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const unsigned int nBootstrap,							///< [in] Number of bootstrap samples
+			const unsigned int nChains,								///< [in] Number of Markov chains
+			const unsigned int nMutationsPerPixel,					///< [in] Mutations per pixel budget
+			const double largeStepProb,								///< [in] Large step probability
+			const char* shader,										///< [in] The default shader
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			);
+
 		//
 		// Adds rasterizer outputs
 		//

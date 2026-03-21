@@ -55,6 +55,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
+	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
 	$(PATHLIBRARY)Utilities/Transformable.cpp					\
@@ -216,7 +217,8 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
-	$(PATHLIBRARY)Rendering/BDPTRasterizer.cpp
+	$(PATHLIBRARY)Rendering/BDPTRasterizer.cpp								\
+	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\

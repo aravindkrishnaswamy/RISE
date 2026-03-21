@@ -1,0 +1,311 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_keyhole.RISEscene                                                                   #
+#   Description:    MLT torture test: Keyhole Illumination                                                  #
+#                                                                                                           #
+#   A dark room lit only through a narrow slit in a dividing wall.  Light from a bright                     #
+#   area light in the "source" chamber must pass through the slit to illuminate the                         #
+#   "receiver" chamber.  BDPT rarely discovers paths through the narrow opening at                          #
+#   equal sample counts; MLT finds one such path and then mutates along it, producing                       #
+#   dramatically faster convergence in the dark room.                                                       #
+#                                                                                                           #
+#   Scene layout (top-down, Y is up):                                                                       #
+#     - Full room: 560 x 549 x 560                                                                         #
+#     - Dividing wall at z=280 with a narrow slit (40 units wide, centered)                                 #
+#     - Light source: area light on ceiling of source chamber (z > 280)                                     #
+#     - Camera in receiver chamber (z < 280) looking through the slit                                       #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 20, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	pt
+}
+
+mlt_rasterizer
+{
+	max_recursion		8
+	min_importance		0.001
+	max_eye_depth		8
+	max_light_depth		8
+	bootstrap_samples	50000
+	chains				64
+	mutations_per_pixel	200
+	large_step_prob		0.3
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_keyhole
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - in the dark receiver chamber
+##################################################
+
+pinhole_camera
+{
+	location			278 200 -400
+	lookat				278 200 280
+	up					0 1 0
+	width				256
+	height				256
+	fov					50.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Bright light in the source chamber -- high scale because light
+# must pass through the narrow slit to illuminate the dark room
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				300.0
+	material			none
+}
+
+##################################################
+# Geometry - outer room (same as Cornell box)
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 -560
+	ptb					0 0 -560
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 -560
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 -560
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				fwallgeom
+	pta					0 0 -560
+	ptb					549.6 0 -560
+	ptc					556.0 548.8 -560
+	ptd					0.0 548.8 -560
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 -560
+	ptc					0 548.8 -560
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 -560
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 -560
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				fwall
+	geometry			fwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# Dividing wall with slit
+#
+# The wall at z=280 is built from two panels that
+# leave a narrow vertical slit in the center:
+#   Left panel:  x = [0, 238]      (width 238)
+#   Slit:        x = [238, 318]    (width 80)
+#   Right panel: x = [318, 556]    (width 238)
+##################################################
+
+# Left panel of dividing wall
+clippedplane_geometry
+{
+	name				divwall_left_geom
+	pta					0 0 280
+	ptb					238 0 280
+	ptc					238 548.8 280
+	ptd					0 548.8 280
+}
+
+# Right panel of dividing wall
+clippedplane_geometry
+{
+	name				divwall_right_geom
+	pta					318 0 280
+	ptb					556 0 280
+	ptc					556 548.8 280
+	ptd					318 548.8 280
+}
+
+# Top panel above slit (slit height: y = [150, 400])
+clippedplane_geometry
+{
+	name				divwall_top_geom
+	pta					238 400 280
+	ptb					318 400 280
+	ptc					318 548.8 280
+	ptd					238 548.8 280
+}
+
+# Bottom panel below slit
+clippedplane_geometry
+{
+	name				divwall_bottom_geom
+	pta					238 0 280
+	ptb					318 0 280
+	ptc					318 150 280
+	ptd					238 150 280
+}
+
+standard_object
+{
+	name				divwall_left
+	geometry			divwall_left_geom
+	material			white
+}
+
+standard_object
+{
+	name				divwall_right
+	geometry			divwall_right_geom
+	material			white
+}
+
+standard_object
+{
+	name				divwall_top
+	geometry			divwall_top_geom
+	material			white
+}
+
+standard_object
+{
+	name				divwall_bottom
+	geometry			divwall_bottom_geom
+	material			white
+}
+
+##################################################
+# Light source - ceiling of source chamber (z > 280)
+##################################################
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343.0 548.7999 380.0
+	ptb					343.0 548.7999 500.0
+	ptc					213.0 548.7999 500.0
+	ptd					213.0 548.7999 380.0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			bright_lum
+}

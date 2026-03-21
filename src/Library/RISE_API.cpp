@@ -4112,6 +4112,7 @@ namespace RISE
 }
 
 #include "Rendering/BDPTRasterizer.h"
+#include "Rendering/MLTRasterizer.h"
 
 namespace RISE
 {
@@ -4147,6 +4148,29 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT rasterizer" );
+		return true;
+	}
+
+	bool RISE_API_CreateMLTRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const unsigned int nBootstrap,
+								const unsigned int nChains,
+								const unsigned int nMutationsPerPixel,
+								const Scalar largeStepProb
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		MLTRasterizer* pRasterizer = new MLTRasterizer( caster, maxEyeDepth, maxLightDepth,
+			nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT rasterizer" );
 		return true;
 	}
 }

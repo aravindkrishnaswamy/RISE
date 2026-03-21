@@ -3814,6 +3814,42 @@ bool Job::SetBDPTRasterizer(
 	return true;
 }
 
+bool Job::SetMLTRasterizer(
+	const unsigned int maxRecur,
+	const double minImportance,
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const unsigned int nBootstrap,
+	const unsigned int nChains,
+	const unsigned int nMutationsPerPixel,
+	const double largeStepProb,
+	const char* shader,
+	const bool bShowLuminaires,
+	const bool bUseIORStack,
+	const bool bChooseOnlyOneLight
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetMLTRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, false, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
+		nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
 //
 // Adds raster outputs
 //

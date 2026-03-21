@@ -1964,6 +1964,19 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int spectral_samples = 1	///< [in] Spectral samples per pixel
 								);
 
+	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap = 100000,		///< [in] Number of bootstrap samples
+								const unsigned int nChains = 512,			///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel = 100,///< [in] Mutations per pixel budget
+								const Scalar largeStepProb = 0.3			///< [in] Large step probability
+								);
+
 	//////////////////////////////////////////////////////////
 	// Parsers
 	//////////////////////////////////////////////////////////

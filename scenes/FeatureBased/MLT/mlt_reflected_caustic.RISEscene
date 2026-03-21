@@ -1,0 +1,299 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_reflected_caustic.RISEscene                                                         #
+#   Description:    MLT torture test: Reflected Caustic (SDS path)                                          #
+#                                                                                                           #
+#   Light from a small bright source reflects off a mirror, then refracts through a                         #
+#   glass sphere, casting a caustic on the floor.  This creates a Specular-Diffuse-Specular                 #
+#   (SDS) transport path that is nearly impossible for standard BDPT because:                               #
+#     1. BDPT cannot connect through specular vertices (zero-measure)                                       #
+#     2. The path must go: light → mirror (S) → glass (S) → floor (D) → eye                               #
+#     3. Only path tracing from the light side could find it, but the target on the                         #
+#        floor is small and indirect                                                                        #
+#                                                                                                           #
+#   MLT excels here: once a single SDS path is discovered (via a large step), mutations                    #
+#   explore nearby paths along the caustic, converging rapidly.                                             #
+#                                                                                                           #
+#   Scene layout:                                                                                           #
+#     - Cornell box (standard dimensions)                                                                   #
+#     - Large mirror on the back wall (reflects light downward)                                             #
+#     - Glass sphere on the floor (refracts the reflected light into a caustic)                             #
+#     - Small bright area light on the ceiling, offset to one side                                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 20, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	pt
+}
+
+mlt_rasterizer
+{
+	max_recursion		14
+	min_importance		0.0001
+	max_eye_depth		10
+	max_light_depth		10
+	bootstrap_samples	50000
+	chains				64
+	mutations_per_pixel	200
+	large_step_prob		0.25
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_reflected_caustic
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			278 250 -700
+	lookat				278 150 280
+	up					0 1 0
+	width				256
+	height				256
+	fov					40.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_mirror
+	color				0.95 0.95 0.95
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.99 0.99 0.99
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_ior
+	color				1.5 1.5 1.5
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Bright light -- offset to the left so its reflection off the
+# mirror hits the glass sphere
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				250.0
+	material			none
+}
+
+perfectreflector_material
+{
+	name				mirror
+	reflectance			pnt_mirror
+}
+
+dielectric_material
+{
+	name				glass
+	tau					pnt_glass_tau
+	ior					pnt_glass_ior
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# Small bright light on the ceiling, offset left
+# so reflection off mirror hits the glass sphere
+##################################################
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					180.0 548.7999 200.0
+	ptb					180.0 548.7999 300.0
+	ptc					100.0 548.7999 300.0
+	ptd					100.0 548.7999 200.0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			bright_lum
+}
+
+##################################################
+# Mirror panel on the back wall
+#
+# A large flat mirror mounted on the back wall,
+# positioned to catch light from the ceiling light
+# and redirect it toward the glass sphere on the floor.
+##################################################
+
+clippedplane_geometry
+{
+	name				mirror_geom
+	pta					450 150 558.0
+	ptb					150 150 558.0
+	ptc					150 450 558.0
+	ptd					450 450 558.0
+}
+
+standard_object
+{
+	name				mirror_panel
+	geometry			mirror_geom
+	material			mirror
+}
+
+##################################################
+# Glass sphere on the floor
+#
+# Positioned to catch the reflected light from the
+# mirror and cast a caustic pattern on the floor.
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				80
+}
+
+standard_object
+{
+	name				glass_sphere
+	geometry			spheregeom
+	material			glass
+	position			300 80 350
+}
