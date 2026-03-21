@@ -32,8 +32,8 @@ simple_sss_shaderop
 diffusion_approximation_sss_shaderop
 {
 	name				sss2
-	numpoints			1000
-	irrad_scale			1500
+	numpoints			3000
+	irrad_scale			50000
 	geometric_scale		0.1
 
 	scattering			0.18 0.07 0.03
