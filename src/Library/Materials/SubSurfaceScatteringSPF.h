@@ -1,27 +1,29 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SubSurfaceScatteringSPF.h - Defines a volumetric random walk
-//  subsurface scattering SPF.
+//  SubSurfaceScatteringSPF.h - Defines the surface scattering
+//  probability function for BSSRDF-based subsurface scattering.
 //
-//  This SPF models light transport through translucent media using
-//  a surface-based random walk approximation.  At each surface
-//  boundary the ray undergoes Fresnel reflection/refraction.  When
-//  a ray traveling inside the medium hits the back surface, it may:
-//    1. Fresnel-reflect back into the medium  (specular, delta)
-//    2. Scatter back into the medium via the Henyey-Greenstein
-//       phase function  (non-delta, enables BDPT connections)
-//    3. Exit the medium through Fresnel refraction  (delta)
+//  With the BSSRDF approach, all subsurface light transport is
+//  handled analytically by the diffusion profile (evaluated in the
+//  integrator via probe ray sampling).  The SPF is responsible only
+//  for surface interactions at the boundary:
 //
-//  Beer-Lambert absorption is applied based on the distance
-//  traveled through the medium.  The scattering albedo
-//  (sigma_s / sigma_t) controls the balance between scattering
-//  and absorption.
+//  From outside (front face):
+//    - GGX-sampled reflection (non-delta when rough, delta when smooth)
+//    - The refracted (entry) ray is NOT generated here — the BDPT
+//      integrator samples entry points via BSSRDF importance sampling.
+//      The SPF only emits a surface reflection ray.
+//
+//  From inside (back face):
+//    - Should not occur with BSSRDF (no volumetric random walk).
+//      If hit from inside (e.g. BDPT light subpath), emit a delta
+//      Fresnel reflection back into the medium.
 //
 //  References:
-//    - Jensen et al., "A Practical Model for Subsurface Light
-//      Transport", SIGGRAPH 2001
-//    - Henyey & Greenstein, "Diffuse radiation in the galaxy",
-//      Astrophysical Journal 93, 1941
+//    - Christensen & Burley, "Approximate Reflectance Profiles for
+//      Efficient Subsurface Scattering", SIGGRAPH 2015
+//    - Walter et al., "Microfacet Models for Refraction through
+//      Rough Surfaces", EGSR 2007
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 21, 2026
@@ -50,9 +52,9 @@ namespace RISE
 			virtual ~SubSurfaceScatteringSPF();
 
 			const IPainter&		ior;		// Index of refraction
-			const IPainter&		absorption;	// Absorption coefficient (per unit distance)
-			const IPainter&		scattering;	// Scattering coefficient (per unit distance)
-			const Scalar		g;			// Henyey-Greenstein asymmetry parameter [-1, 1]
+			const IPainter&		absorption;	// Absorption coefficient (kept for parameter storage)
+			const IPainter&		scattering;	// Scattering coefficient (kept for parameter storage)
+			const Scalar		g;			// HG asymmetry parameter (kept for parameter storage)
 			const Scalar		roughness;	// Surface roughness for microfacet boundary [0, 1]
 			const Scalar		alpha;		// GGX alpha = roughness^2
 
@@ -85,8 +87,8 @@ namespace RISE
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
-			//! Evaluates the PDF for the HG scatter component.
-			//! Returns non-zero only for the volumetric scatter direction (non-delta).
+			//! Evaluates the PDF for the scattered direction.
+			//! Returns GGX reflection PDF for front face hits, 0 otherwise.
 			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack* const ior_stack ) const;
 
 			//! Spectral version of Pdf evaluation

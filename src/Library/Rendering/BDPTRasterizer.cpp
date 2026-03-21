@@ -45,6 +45,11 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+// Maximum per-strategy contribution to prevent fireflies from imperfect
+// MIS weights at volumetric vertices (SSS).  The value is generous
+// enough to preserve energy for typical scenes.
+static const Scalar BDPT_MAX_CONTRIBUTION = 50.0;
+
 BDPTRasterizer::BDPTRasterizer(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
@@ -124,7 +129,12 @@ Scalar BDPTRasterizer::IntegratePixelNM(
 			continue;
 		}
 
-		const Scalar weighted = cr.contribution * cr.misWeight;
+		Scalar weighted = cr.contribution * cr.misWeight;
+
+		// Clamp per-strategy contribution
+		if( fabs(weighted) > BDPT_MAX_CONTRIBUTION ) {
+			weighted = (weighted > 0) ? BDPT_MAX_CONTRIBUTION : -BDPT_MAX_CONTRIBUTION;
+		}
 
 		if( cr.needsSplat && pSplatFilm )
 		{
@@ -301,7 +311,14 @@ void BDPTRasterizer::IntegratePixel(
 					continue;
 				}
 
-				const RISEPel weighted = cr.contribution * cr.misWeight;
+				RISEPel weighted = cr.contribution * cr.misWeight;
+
+				// Clamp per-strategy contribution to prevent fireflies from
+				// imperfect MIS weights at volumetric vertices.
+				const Scalar maxVal = ColorMath::MaxValue( weighted );
+				if( maxVal > BDPT_MAX_CONTRIBUTION ) {
+					weighted = weighted * (BDPT_MAX_CONTRIBUTION / maxVal);
+				}
 
 				if( cr.needsSplat && pSplatFilm )
 				{

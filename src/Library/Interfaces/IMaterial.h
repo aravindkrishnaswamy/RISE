@@ -21,6 +21,7 @@ namespace RISE
 	class ISPF;
 	class IBSDF;
 	class IEmitter;
+	class ISubSurfaceDiffusionProfile;
 
 	//! The IMaterial interface is basically an aggregate of other interfaces.  Though we don't actually
 	//! aggregate the interfaces, in essense what is all it does
@@ -43,6 +44,19 @@ namespace RISE
 
 		/// \return The emission properties for this material.  NULL If there is not an emitter
 		virtual IEmitter* GetEmitter() const  = 0;
+
+		/// \return True if this material has volumetric transport (e.g. SSS).
+		/// When true, BDPT should use kray for throughput instead of BSDF * cos / pdf,
+		/// since the SPF's kray already includes Beer-Lambert attenuation and
+		/// correct volumetric weighting that the BSDF cannot reproduce.
+		virtual bool IsVolumetric() const { return false; }
+
+		/// \return The diffusion profile for subsurface scattering.
+		/// NULL if this material does not use BSSRDF-based transport.
+		/// When non-NULL, the BDPT integrator performs importance-sampled
+		/// probe ray casting to find entry points on the surface, using
+		/// this profile's Rd(r) for weighting and sampling.
+		virtual ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return 0; }
 	};
 }
 

@@ -157,7 +157,6 @@
 		F24B72462F52A632008304C4 /* IAnimator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0852069C428F0069C9E5 /* IAnimator.h */; };
 		F24B72472F52A632008304C4 /* IBezierPatchGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0853069C428F0069C9E5 /* IBezierPatchGeometry.h */; };
 		F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */; };
-		F24B72492F52A632008304C4 /* IBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0855069C428F0069C9E5 /* IBRDF.h */; };
 		F24B724A2F52A632008304C4 /* IBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0856069C428F0069C9E5 /* IBuffer.h */; };
 		F24B724B2F52A632008304C4 /* ICamera.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0857069C428F0069C9E5 /* ICamera.h */; };
 		F24B724C2F52A632008304C4 /* ICommunicator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0858069C428F0069C9E5 /* ICommunicator.h */; };
@@ -818,7 +817,6 @@
 		F27F0ABE069C42910069C9E5 /* IAnimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0852069C428F0069C9E5 /* IAnimator.h */; };
 		F27F0ABF069C42910069C9E5 /* IBezierPatchGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0853069C428F0069C9E5 /* IBezierPatchGeometry.h */; };
 		F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */; };
-		F27F0AC1069C42910069C9E5 /* IBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0855069C428F0069C9E5 /* IBRDF.h */; };
 		F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0856069C428F0069C9E5 /* IBuffer.h */; };
 		F27F0AC3069C42910069C9E5 /* ICamera.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0857069C428F0069C9E5 /* ICamera.h */; };
 		F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0858069C428F0069C9E5 /* ICommunicator.h */; };
@@ -1330,6 +1328,9 @@
 		F2C5D5902F6ED30E00546C97 /* SubSurfaceScatteringSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D58A2F6ED30E00546C97 /* SubSurfaceScatteringSPF.h */; };
 		F2C5D5912F6ED30E00546C97 /* SubSurfaceScatteringBSDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5872F6ED30E00546C97 /* SubSurfaceScatteringBSDF.h */; };
 		F2C5D5922F6ED30E00546C97 /* SubSurfaceScatteringMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5892F6ED30E00546C97 /* SubSurfaceScatteringMaterial.h */; };
+		F2C5D5C72F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */; };
+		F2C5D5C82F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5C52F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h */; };
+		F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1516,7 +1517,6 @@
 		F27F0852069C428F0069C9E5 /* IAnimator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IAnimator.h; sourceTree = "<group>"; };
 		F27F0853069C428F0069C9E5 /* IBezierPatchGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBezierPatchGeometry.h; sourceTree = "<group>"; };
 		F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBilinearPatchGeometry.h; sourceTree = "<group>"; };
-		F27F0855069C428F0069C9E5 /* IBRDF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBRDF.h; sourceTree = "<group>"; };
 		F27F0856069C428F0069C9E5 /* IBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBuffer.h; sourceTree = "<group>"; };
 		F27F0857069C428F0069C9E5 /* ICamera.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICamera.h; sourceTree = "<group>"; };
 		F27F0858069C428F0069C9E5 /* ICommunicator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICommunicator.h; sourceTree = "<group>"; };
@@ -2018,6 +2018,8 @@
 		F2C5D5892F6ED30E00546C97 /* SubSurfaceScatteringMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SubSurfaceScatteringMaterial.h; sourceTree = "<group>"; };
 		F2C5D58A2F6ED30E00546C97 /* SubSurfaceScatteringSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SubSurfaceScatteringSPF.h; sourceTree = "<group>"; };
 		F2C5D58B2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SubSurfaceScatteringSPF.cpp; sourceTree = "<group>"; };
+		F2C5D5C52F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BurleyNormalizedDiffusionProfile.h; sourceTree = "<group>"; };
+		F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BurleyNormalizedDiffusionProfile.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2297,7 +2299,6 @@
 				F27F0852069C428F0069C9E5 /* IAnimator.h */,
 				F27F0853069C428F0069C9E5 /* IBezierPatchGeometry.h */,
 				F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */,
-				F27F0855069C428F0069C9E5 /* IBRDF.h */,
 				F27F0856069C428F0069C9E5 /* IBuffer.h */,
 				F27F0857069C428F0069C9E5 /* ICamera.h */,
 				F27F0858069C428F0069C9E5 /* ICommunicator.h */,
@@ -2441,6 +2442,8 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5C52F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h */,
+				F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */,
 				F2C5D5872F6ED30E00546C97 /* SubSurfaceScatteringBSDF.h */,
 				F2C5D5882F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp */,
 				F2C5D5892F6ED30E00546C97 /* SubSurfaceScatteringMaterial.h */,
@@ -3056,7 +3059,6 @@
 				F27F0ABE069C42910069C9E5 /* IAnimator.h in Headers */,
 				F27F0ABF069C42910069C9E5 /* IBezierPatchGeometry.h in Headers */,
 				F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */,
-				F27F0AC1069C42910069C9E5 /* IBRDF.h in Headers */,
 				F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */,
 				F27F0AC3069C42910069C9E5 /* ICamera.h in Headers */,
 				F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */,
@@ -3324,6 +3326,7 @@
 				F27F0C47069C42910069C9E5 /* Color.h in Headers */,
 				F27F0C48069C42910069C9E5 /* Color_Template.h in Headers */,
 				F27F0C49069C42910069C9E5 /* ColorDefs.h in Headers */,
+				F2C5D5C82F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h in Headers */,
 				F27F0C4B069C42910069C9E5 /* ColorUtils.h in Headers */,
 				F27F0C4C069C42910069C9E5 /* CompositeOperator.h in Headers */,
 				F27F0C4D069C42910069C9E5 /* RGB.h in Headers */,
@@ -3653,6 +3656,7 @@
 				F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */,
 				F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */,
 				F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */,
+				F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
 				F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */,
 				F27F0BBE069C42910069C9E5 /* CausticPelPhotonMap.cpp in Sources */,
 				F27F0BC0069C42910069C9E5 /* CausticPelPhotonTracer.cpp in Sources */,
@@ -3875,7 +3879,6 @@
 				F24B72462F52A632008304C4 /* IAnimator.h in Sources */,
 				F24B72472F52A632008304C4 /* IBezierPatchGeometry.h in Sources */,
 				F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */,
-				F24B72492F52A632008304C4 /* IBRDF.h in Sources */,
 				F24B724A2F52A632008304C4 /* IBuffer.h in Sources */,
 				F24B724B2F52A632008304C4 /* ICamera.h in Sources */,
 				F24B724C2F52A632008304C4 /* ICommunicator.h in Sources */,
@@ -4298,6 +4301,7 @@
 				F24B73E52F52A632008304C4 /* TranslucentPelPhotonMapShaderOp.cpp in Sources */,
 				F24B73E62F52A632008304C4 /* TranslucentPelPhotonMapShaderOp.h in Sources */,
 				F24B73E72F52A632008304C4 /* TransparencyShaderOp.cpp in Sources */,
+				F2C5D5C72F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
 				F24B73E82F52A632008304C4 /* TransparencyShaderOp.h in Sources */,
 				F24B73E92F52A632008304C4 /* AdvancedShader.cpp in Sources */,
 				F24B73EA2F52A632008304C4 /* AdvancedShader.h in Sources */,

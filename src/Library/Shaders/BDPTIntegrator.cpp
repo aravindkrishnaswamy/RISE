@@ -62,6 +62,7 @@
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/ILightPriv.h"
@@ -225,6 +226,274 @@ bool BDPTIntegrator::IsVisible(
 	// CastShadowRay returns TRUE if something is hit (i.e. NOT visible)
 	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
 }
+
+//////////////////////////////////////////////////////////////////////
+// SampleBSSRDFEntryPoint
+//
+// Attempts to importance-sample an entry point on a translucent
+// surface using the material's diffusion profile.  The disk
+// projection method (Christensen & Burley 2015) works as follows:
+//
+//   1. Choose one of three color channels uniformly at random.
+//   2. Choose a projection axis: the surface normal (50%),
+//      tangent (25%), or bitangent (25%).  The normal is favored
+//      because most nearby surface points are visible from it.
+//   3. Sample a radius r from the profile's radial CDF for the
+//      chosen channel.  Larger radii = more scattering.
+//   4. Sample an angle phi uniformly on [0, 2pi).
+//   5. In the plane perpendicular to the chosen axis, offset from
+//      the exit point by (r*cos(phi), r*sin(phi)).
+//   6. Cast a probe ray along the chosen axis through the object.
+//   7. If the probe hits the same object: compute the actual 3D
+//      distance r_actual, evaluate Rd(r_actual), and compute the
+//      BSSRDF weight.
+//   8. Generate a cosine-weighted direction from the entry normal,
+//      pointing outward from the surface.
+//
+// The weight includes Fresnel transmission at the exit point and
+// the full Rd(r) profile.  Fresnel transmission at the entry point
+// is NOT included — it will be evaluated at the next vertex when
+// the cosine-weighted ray interacts with the scene.
+//
+// Returns valid=false if the probe ray misses the object (caller
+// should fall back to surface reflection).
+//////////////////////////////////////////////////////////////////////
+
+BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
+	const RayIntersectionGeometric& ri,
+	const IObject* pObject,
+	const IMaterial* pMaterial,
+	const RandomNumberGenerator& rng
+	) const
+{
+	BSSRDFSampleResult result;
+
+	if( !pObject || !pMaterial ) {
+		return result;
+	}
+
+	ISubSurfaceDiffusionProfile* pProfile = pMaterial->GetDiffusionProfile();
+	if( !pProfile ) {
+		return result;
+	}
+
+	// Exit point geometry
+	const Point3& exitPoint = ri.ptIntersection;
+	const Vector3& exitNormal = ri.onb.w();
+	const Vector3& exitTangent = ri.onb.u();
+	const Vector3& exitBitangent = ri.onb.v();
+
+	// Fresnel transmission at exit point
+	const Scalar cosExit = fabs( Vector3Ops::Dot( exitNormal,
+		Vector3Ops::Normalize( -ri.ray.Dir() ) ) );
+	const Scalar FtExit = pProfile->FresnelTransmission( cosExit, ri );
+
+	if( FtExit < 1e-10 ) {
+		return result;
+	}
+
+	//
+	// Step 1: Choose a color channel uniformly
+	//
+	const int channel = static_cast<int>( rng.CanonicalRandom() * 3.0 );
+	const int ch = (channel >= 3) ? 2 : channel;  // clamp
+
+	//
+	// Step 2: Choose a projection axis
+	//
+	const Scalar axisSample = rng.CanonicalRandom();
+	Vector3 probeAxis;
+	Scalar pdfAxis;
+	Vector3 perpU, perpV;  // Basis vectors in the plane perpendicular to the probe axis
+
+	if( axisSample < 0.5 )
+	{
+		// Normal axis (probability 0.5)
+		probeAxis = exitNormal;
+		pdfAxis = 0.5;
+		perpU = exitTangent;
+		perpV = exitBitangent;
+	}
+	else if( axisSample < 0.75 )
+	{
+		// Tangent axis (probability 0.25)
+		probeAxis = exitTangent;
+		pdfAxis = 0.25;
+		perpU = exitNormal;
+		perpV = exitBitangent;
+	}
+	else
+	{
+		// Bitangent axis (probability 0.25)
+		probeAxis = exitBitangent;
+		pdfAxis = 0.25;
+		perpU = exitNormal;
+		perpV = exitTangent;
+	}
+
+	//
+	// Step 3: Sample radius from profile CDF
+	//
+	const Scalar rSample = pProfile->SampleRadius( rng.CanonicalRandom(), ch, ri );
+	if( rSample <= 0 ) {
+		return result;
+	}
+
+	//
+	// Step 4: Sample angle uniformly
+	//
+	const Scalar phi = TWO_PI * rng.CanonicalRandom();
+
+	//
+	// Step 5: Compute probe origin offset in the perpendicular plane
+	//
+	const Scalar offsetU = rSample * cos( phi );
+	const Scalar offsetV = rSample * sin( phi );
+	const Point3 probeCenter = Point3Ops::mkPoint3(
+		exitPoint,
+		perpU * offsetU + perpV * offsetV );
+
+	//
+	// Step 6: Cast probe rays along the axis through the object.
+	// We cast in both +axis and -axis directions from the probe
+	// center and take the nearest valid hit.  This ensures we find
+	// entry points regardless of which side of the exit point they
+	// are on relative to the projection axis.
+	//
+	const Scalar probeMaxDist = 1000.0;
+	bool foundEntry = false;
+	Point3 entryPoint;
+	Vector3 entryNormal;
+	OrthonormalBasis3D entryONB;
+	Scalar bestDist = probeMaxDist;
+
+	// Cast in +axis direction
+	{
+		Ray probeRay( probeCenter, probeAxis );
+		probeRay.Advance( BDPT_RAY_EPSILON );
+
+		RayIntersection probeRI( probeRay, nullRasterizerState );
+		pObject->IntersectRay( probeRI, probeMaxDist, true, true, false );
+
+		if( probeRI.geometric.bHit && probeRI.geometric.range < bestDist )
+		{
+			if( probeRI.pModifier ) {
+				probeRI.pModifier->Modify( probeRI.geometric );
+			}
+			entryPoint = probeRI.geometric.ptIntersection;
+			entryNormal = probeRI.geometric.vNormal;
+			entryONB = probeRI.geometric.onb;
+			bestDist = probeRI.geometric.range;
+			foundEntry = true;
+		}
+	}
+
+	// Cast in -axis direction
+	{
+		Ray probeRay( probeCenter, -probeAxis );
+		probeRay.Advance( BDPT_RAY_EPSILON );
+
+		RayIntersection probeRI( probeRay, nullRasterizerState );
+		pObject->IntersectRay( probeRI, probeMaxDist, true, true, false );
+
+		if( probeRI.geometric.bHit && probeRI.geometric.range < bestDist )
+		{
+			if( probeRI.pModifier ) {
+				probeRI.pModifier->Modify( probeRI.geometric );
+			}
+			entryPoint = probeRI.geometric.ptIntersection;
+			entryNormal = probeRI.geometric.vNormal;
+			entryONB = probeRI.geometric.onb;
+			bestDist = probeRI.geometric.range;
+			foundEntry = true;
+		}
+	}
+
+	if( !foundEntry ) {
+		return result;
+	}
+
+	// Skip if entry point is too close to exit point (self-intersection)
+	const Vector3 offset = Vector3Ops::mkVector3( exitPoint, entryPoint );
+	const Scalar rActual = Vector3Ops::Magnitude( offset );
+	if( rActual < BDPT_RAY_EPSILON ) {
+		return result;
+	}
+
+	//
+	// Step 7: Evaluate profile and compute weight
+	//
+
+	// Jacobian: the probe samples a disk perpendicular to probeAxis,
+	// but the actual surface has a different orientation.  The
+	// cosProjection factor converts disk area to surface area.
+	const Scalar cosProjection = fabs( Vector3Ops::Dot( entryNormal, probeAxis ) );
+	if( cosProjection < 1e-6 ) {
+		return result;  // Surface nearly parallel to probe — unreliable
+	}
+
+	// Evaluate the diffusion profile at the actual 3D distance
+	const RISEPel Rd = pProfile->EvaluateProfile( rActual, ri );
+
+	// Channel-averaged PDF for multi-channel MIS
+	const Scalar pdfR0 = pProfile->PdfRadius( rActual, 0, ri );
+	const Scalar pdfR1 = pProfile->PdfRadius( rActual, 1, ri );
+	const Scalar pdfR2 = pProfile->PdfRadius( rActual, 2, ri );
+	const Scalar pdfRAvg = (pdfR0 + pdfR1 + pdfR2) / 3.0;
+
+	if( pdfRAvg < 1e-20 ) {
+		return result;
+	}
+
+	// Full sampling PDF in surface area measure:
+	//   pdf = pdfRAvg * pdfAxis * (1/(2*pi)) / cosProjection
+	const Scalar pdfPhi = INV_PI * 0.5;  // 1/(2*pi)
+	const Scalar pdfSurface = pdfRAvg * pdfAxis * pdfPhi / cosProjection;
+
+	if( pdfSurface < 1e-20 ) {
+		return result;
+	}
+
+	// BSSRDF weight: Rd(r) * Ft(exit) / pdf_surface
+	result.weight = Rd * (FtExit / pdfSurface);
+
+	// Scalar weight for NM path (use luminance-weighted average of Rd)
+	const Scalar RdScalar = 0.2126 * Rd[0] + 0.7152 * Rd[1] + 0.0722 * Rd[2];
+	result.weightNM = RdScalar * FtExit / pdfSurface;
+
+	//
+	// Step 8: Generate cosine-weighted direction from entry point
+	//
+	// The direction points outward from the surface (away from the
+	// object interior).  For eye subpaths this represents "where did
+	// the light come from before entering."  For light subpaths it
+	// represents "where does the light go after exiting."
+	//
+	OrthonormalBasis3D cosineONB;
+	cosineONB.CreateFromW( entryNormal );
+
+	const Scalar u1 = rng.CanonicalRandom();
+	const Scalar u2 = rng.CanonicalRandom();
+	const Scalar cosTheta = sqrt( u1 );
+	const Scalar sinTheta = sqrt( 1.0 - u1 );
+	const Scalar phiCosine = TWO_PI * u2;
+
+	const Vector3 cosineDir = Vector3Ops::Normalize(
+		cosineONB.u() * (sinTheta * cos(phiCosine)) +
+		cosineONB.v() * (sinTheta * sin(phiCosine)) +
+		cosineONB.w() * cosTheta );
+
+	result.entryPoint = entryPoint;
+	result.entryNormal = entryNormal;
+	result.entryONB = entryONB;
+	result.scatteredRay = Ray( entryPoint, cosineDir );
+	result.scatteredRay.Advance( BDPT_RAY_EPSILON );
+	result.cosinePdf = cosTheta * INV_PI;
+	result.valid = true;
+
+	return result;
+}
+
 
 //////////////////////////////////////////////////////////////////////
 // GenerateLightSubpath
@@ -407,6 +676,52 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Mark the current vertex as delta if the scattered ray is delta
 		vertices.back().isDelta = pScat->isDelta;
 
+		// --- BSSRDF sampling for materials with diffusion profiles ---
+		// At front-face hits on SSS surfaces, attempt to importance-sample
+		// an entry point using the diffusion profile.  If successful, the
+		// subsurface path replaces the SPF reflection; if the probe ray
+		// misses, fall back to normal surface reflection.
+		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
+		{
+			const Scalar cosIn = fabs( Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() ) );
+			if( cosIn > NEARZERO )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng );
+
+				if( bssrdf.valid )
+				{
+					// Mark exit vertex as delta (BSSRDF-sampled path)
+					vertices.back().isDelta = true;
+
+					// Apply BSSRDF weight to throughput
+					beta = beta * bssrdf.weight;
+
+					// Create delta vertex at the BSSRDF entry point.
+					// Marked delta to prevent MIS connections here.
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = true;
+					entryV.throughput = beta;
+					entryV.pdfFwd = 1.0;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
+
+					// Continue subpath with cosine-weighted ray from entry
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
+				}
+			}
+		}
+		// --- End BSSRDF sampling ---
+
 		// Compute throughput update: beta *= f * |cos| / pdf
 		const RISEPel f = EvalBSDFAtVertex(
 			vertices.back(),
@@ -423,8 +738,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			break;
 		}
 
-		// For non-delta scattering, use the actual BSDF * cos / pdf
-		// For delta scattering, pScat->kray already incorporates the right factor
+		// For delta scattering, kray already incorporates the right factor.
+		// For standard non-delta, use the BSDF * cos / pdf formula.
 		if( pScat->isDelta ) {
 			beta = beta * pScat->kray;
 		} else {
@@ -457,7 +772,6 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			// Reverse PDF: pdf of scattering from curr back toward prev
 			Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
 				pScat->ray.Dir(),
@@ -619,6 +933,42 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Mark the current vertex as delta
 		vertices.back().isDelta = pScat->isDelta;
 
+		// --- BSSRDF sampling for materials with diffusion profiles ---
+		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
+		{
+			const Scalar cosIn = fabs( Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() ) );
+			if( cosIn > NEARZERO )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng );
+
+				if( bssrdf.valid )
+				{
+					vertices.back().isDelta = true;
+					beta = beta * bssrdf.weight;
+
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = true;
+					entryV.throughput = beta;
+					entryV.pdfFwd = 1.0;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
+
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
+				}
+			}
+		}
+		// --- End BSSRDF sampling ---
+
 		// Compute throughput update
 		const RISEPel f = EvalBSDFAtVertex(
 			vertices.back(),
@@ -635,7 +985,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			break;
 		}
 
-		// Update beta
 		if( pScat->isDelta ) {
 			beta = beta * pScat->kray;
 		} else {
@@ -666,7 +1015,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			// Reverse PDF at curr for direction back to prev
 			Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
 				pScat->ray.Dir(),
@@ -1592,6 +1940,42 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		vertices.back().isDelta = pScat->isDelta;
 
+		// --- BSSRDF sampling (NM light subpath) ---
+		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
+		{
+			const Scalar cosIn = fabs( Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() ) );
+			if( cosIn > NEARZERO )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng );
+
+				if( bssrdf.valid )
+				{
+					vertices.back().isDelta = true;
+					betaNM = betaNM * bssrdf.weightNM;
+
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = true;
+					entryV.throughputNM = betaNM;
+					entryV.pdfFwd = 1.0;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
+
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
+				}
+			}
+		}
+		// --- End BSSRDF sampling ---
+
 		// Throughput update using valueNM
 		const Scalar fNM = EvalBSDFAtVertexNM(
 			vertices.back(),
@@ -1764,6 +2148,42 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		vertices.back().isDelta = pScat->isDelta;
+
+		// --- BSSRDF sampling (NM eye subpath) ---
+		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
+		{
+			const Scalar cosIn = fabs( Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() ) );
+			if( cosIn > NEARZERO )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng );
+
+				if( bssrdf.valid )
+				{
+					vertices.back().isDelta = true;
+					betaNM = betaNM * bssrdf.weightNM;
+
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = true;
+					entryV.throughputNM = betaNM;
+					entryV.pdfFwd = 1.0;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
+
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
+				}
+			}
+		}
+		// --- End BSSRDF sampling ---
 
 		// Throughput update using valueNM
 		const Scalar fNM = EvalBSDFAtVertexNM(

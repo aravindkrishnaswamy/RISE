@@ -116,6 +116,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/SchlickSPF.cpp									\
 	$(PATHLIBRARY)Materials/SubSurfaceScatteringSPF.cpp						\
 	$(PATHLIBRARY)Materials/SubSurfaceScatteringBSDF.cpp					\
+	$(PATHLIBRARY)Materials/BurleyNormalizedDiffusionProfile.cpp			\
 	$(PATHLIBRARY)Materials/TranslucentBSDF.cpp								\
 	$(PATHLIBRARY)Materials/TranslucentSPF.cpp								\
 	$(PATHLIBRARY)Materials/WardIsotropicGaussianBRDF.cpp					\

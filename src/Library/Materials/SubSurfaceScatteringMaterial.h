@@ -1,15 +1,25 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  SubSurfaceScatteringMaterial.h - Defines a material that
-//  simulates subsurface scattering via a volumetric random walk
-//  approximation.  Provides both SPF (for path tracing) and
-//  BSDF (for direct lighting evaluation in BDPT).
+//  simulates subsurface scattering via a BSSRDF (Bidirectional
+//  Surface Scattering Reflectance Distribution Function).
+//
+//  The subsurface light transport is modeled analytically using
+//  a diffusion profile (Burley's normalized diffusion) that
+//  evaluates Rd(r) as a function of surface distance.  The BDPT
+//  integrator importance-samples entry points using probe rays,
+//  weighted by the profile.
+//
+//  The SPF handles surface reflection only (no volumetric random
+//  walk).  The BSDF evaluates surface reflection for BDPT
+//  connection strategies.
 //
 //  Parameters:
 //    ior     - Index of refraction at the surface boundary
 //    sigma_a - Absorption coefficient (per unit distance, per channel)
 //    sigma_s - Scattering coefficient (per unit distance, per channel)
 //    g       - Henyey-Greenstein asymmetry parameter (-1 to 1)
+//    roughness - Surface roughness for microfacet boundary [0, 1]
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 21, 2026
@@ -26,6 +36,7 @@
 #include "../Interfaces/ILog.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "SubSurfaceScatteringSPF.h"
+#include "BurleyNormalizedDiffusionProfile.h"
 
 namespace RISE
 {
@@ -36,13 +47,15 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			SubSurfaceScatteringBSDF*		pBSDF;
-			SubSurfaceScatteringSPF*		pSPF;
+			SubSurfaceScatteringBSDF*				pBSDF;
+			SubSurfaceScatteringSPF*				pSPF;
+			BurleyNormalizedDiffusionProfile*		pProfile;
 
 			virtual ~SubSurfaceScatteringMaterial()
 			{
 				safe_release( pBSDF );
 				safe_release( pSPF );
+				safe_release( pProfile );
 			}
 
 		public:
@@ -59,6 +72,9 @@ namespace RISE
 
 				pSPF = new SubSurfaceScatteringSPF( ior, absorption, scattering, g, roughness );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
+
+				pProfile = new BurleyNormalizedDiffusionProfile( ior, absorption, scattering, g );
+				GlobalLog()->PrintNew( pProfile, __FILE__, __LINE__, "DiffusionProfile" );
 			}
 
 			/// \return The BSDF for this material.  NULL If there is no BSDF
@@ -69,6 +85,14 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			/// BSSRDF-based SSS does not use volumetric random walk.
+			/// All subsurface transport is handled analytically by the
+			/// diffusion profile — no interior vertices are created.
+			inline bool IsVolumetric() const { return false; };
+
+			/// \return The diffusion profile for BSSRDF importance sampling.
+			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return pProfile; };
 		};
 	}
 }

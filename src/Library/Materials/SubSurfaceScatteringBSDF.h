@@ -1,11 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SubSurfaceScatteringBSDF.h - Defines a BSDF for subsurface
-//  scattering materials, enabling direct lighting evaluation in
-//  BDPT connection strategies.
+//  SubSurfaceScatteringBSDF.h - Defines a BSDF for BSSRDF-based
+//  subsurface scattering materials.
 //
-//  Front face: diffuse Fresnel approximation (Schlick R0)
-//  Back face (inside medium): HG phase function evaluation
+//  With the BSSRDF approach, the BSDF only handles surface
+//  reflection for BDPT connection strategies:
+//
+//  Both outside (front/front): GGX microfacet reflection BRDF
+//    (rough surfaces) or diffuse Fresnel approximation (smooth).
+//  All other cases: return 0.  The subsurface transport between
+//    surface points is handled by the diffusion profile in the
+//    integrator, not by the BSDF.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 21, 2026
