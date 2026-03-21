@@ -44,7 +44,7 @@ mlt_rasterizer
 	min_importance		0.0001
 	max_eye_depth		12
 	max_light_depth		12
-	bootstrap_samples	50000
+	bootstrap_samples	100000
 	chains				64
 	mutations_per_pixel	200
 	large_step_prob		0.25
@@ -68,8 +68,8 @@ pinhole_camera
 	location			278 350 -600
 	lookat				278 60 300
 	up					0 1 0
-	width				256
-	height				256
+	width				800
+	height				800
 	fov					40.0
 }
 
@@ -82,18 +82,6 @@ uniformcolor_painter
 {
 	name				pnt_light
 	color				1.0 0.95 0.85
-}
-
-uniformcolor_painter
-{
-	name				pnt_glass_tau
-	color				0.99 0.99 0.99
-}
-
-uniformcolor_painter
-{
-	name				pnt_glass_ior
-	color				1.5 1.5 1.5
 }
 
 lambertian_material
@@ -128,8 +116,8 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau					1.0
+	ior					1.5
 }
 
 ##################################################

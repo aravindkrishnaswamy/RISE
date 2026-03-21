@@ -53,18 +53,6 @@ uniformcolor_painter
 	color				1.0 0.95 0.85
 }
 
-uniformcolor_painter
-{
-	name				pnt_glass_tau
-	color				0.99 0.99 0.99
-}
-
-uniformcolor_painter
-{
-	name				pnt_glass_ior
-	color				1.5 1.5 1.5
-}
-
 lambertian_material
 {
 	name				white
@@ -94,8 +82,8 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau					1.0
+	ior					1.5
 }
 
 clippedplane_geometry

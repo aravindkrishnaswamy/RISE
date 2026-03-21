@@ -148,7 +148,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 }
 
 
-void DielectricSPF::DoSingleRGBComponent( 
+void DielectricSPF::DoSingleRGBComponent(
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 const Point2& random,										///< [in] Two canonical random numbers
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface

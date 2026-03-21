@@ -1069,8 +1069,16 @@ bool Job::AddDielectricMaterial(
 							)
 {
 	IPainter* pTau = pPntManager->GetItem( tau );
-	if( !pTau ) {
-		return false;
+	if( !pTau )
+	{
+		double fTau = atof(tau);
+		if( fTau > 0 ) {
+			RISE_API_CreateUniformColorPainter( &pTau, RISEPel(fTau,fTau,fTau) );
+		} else {
+			return false;
+		}
+	} else {
+		pTau->addref();
 	}
 
 	IPainter*		rindex = pPntManager->GetItem( rIndex );
@@ -1098,6 +1106,7 @@ bool Job::AddDielectricMaterial(
 	pMatManager->AddItem( pMaterial, name );
 
 	safe_release( pMaterial );
+	safe_release( pTau );
 	safe_release( sc );
 	safe_release( rindex );
 

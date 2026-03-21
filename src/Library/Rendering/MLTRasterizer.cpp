@@ -3,7 +3,8 @@
 //  MLTRasterizer.cpp - Implementation of the PSSMLT rasterizer.
 //
 //  ALGORITHM OVERVIEW:
-//    This file implements the complete PSSMLT rendering pipeline:
+//    This file implements the complete PSSMLT rendering pipeline
+//    with round-based progressive rendering:
 //
 //    1. Bootstrap Phase:
 //       Generate nBootstrap independent BDPT samples using different
@@ -14,33 +15,51 @@
 //       bootstrap luminances so we can importance-sample initial
 //       states for the Markov chains.
 //
-//    2. Chain Execution Phase:
-//       Launch nChains independent Markov chains, distributed across
-//       available threads.  Each chain:
-//       (a) Picks an initial state from the bootstrap CDF
-//       (b) Creates a PSSMLTSampler seeded from that state
-//       (c) Evaluates BDPT to get the initial path
-//       (d) Runs mutationsPerChain iterations of Metropolis-Hastings:
-//           - PSSMLTSampler proposes a mutation (large or small step)
-//           - BDPT evaluates the proposed path
-//           - Acceptance probability a = min(1, f_proposed/f_current)
-//           - Both paths contribute to the film with weights:
-//             proposed: a * weight * b / f_proposed
-//             current:  (1-a) * weight * b / f_current
-//             This is Veach's "expected values" technique, which
-//             ensures unbiased results regardless of accept/reject.
-//           - Accept with probability a; reject otherwise
+//    2. Chain Initialization:
+//       Create all nChains Markov chains up front: each gets a
+//       PSSMLTSampler seeded from a CDF-selected bootstrap sample,
+//       and its initial path is evaluated.  The chain states
+//       (ChainState structs) persist across all rendering rounds.
 //
-//    3. Resolve Phase:
-//       The SplatFilm accumulated all contributions with pre-baked
-//       Metropolis weights.  We resolve it with sampleCount=1.0
-//       to add the results to the output image.
+//    3. Round-Based Execution:
+//       The total mutation budget is divided into nProgressiveRounds
+//       rounds.  Each round:
+//       (a) Dispatch chains to threads; each thread runs its assigned
+//           chains for mutationsPerRound mutations.
+//       (b) After all threads finish, resolve the accumulated splat
+//           film to a fresh image, scaling by the fraction of total
+//           mutations completed so far.
+//       (c) Output the progressive image and report progress.
+//
+//       This design preserves full Markov chain continuity — the
+//       PSSMLTSampler and currentSample persist across rounds, so
+//       the chains are never interrupted.  The round boundaries are
+//       pure observation points: we snapshot the film and continue.
+//
+//       If the user cancels mid-render, the last output image is a
+//       valid (noisy) render at the quality achieved so far.
+//
+//    4. Final Resolve:
+//       After all rounds complete, the last output is the final
+//       fully-converged image.
+//
+//  SPLATTING MATH:
+//    Each splat is pre-weighted by invTotalMutations = 1/totalMutations.
+//    After round r of R total rounds, the film contains approximately
+//    (r/R) of the final accumulated value.  To produce a correctly-
+//    exposed image at round r, we resolve with:
+//      sampleCount = r / R
+//    so that:
+//      pixel = accumulated / (r/R) = accumulated * R/r
+//    At the final round (r=R), sampleCount=1.0, which is the exact
+//    final result.
 //
 //  THREADING:
-//    Chains are dispatched to threads using the same pattern as
-//    BDPTRasterizer's block dispatch.  Each thread runs a contiguous
-//    range of chains independently.  SplatFilm's row-level mutexes
-//    handle concurrent writes to the same scanline.
+//    Each round dispatches threads using the same pattern as before.
+//    Each thread runs its assigned chains for mutationsPerRound
+//    mutations.  SplatFilm's row-level mutexes handle concurrent
+//    writes.  Between rounds, all threads are joined before the
+//    main thread snapshots the film — no races during resolve.
 //
 //  REFERENCES:
 //    - Kelemen et al. 2002, Section 3: PSSMLT algorithm
@@ -58,10 +77,10 @@
 
 #include "pch.h"
 #include "MLTRasterizer.h"
-#include "../Utilities/PSSMLTSampler.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
+#include "../Utilities/RTime.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -220,92 +239,106 @@ unsigned int MLTRasterizer::SelectFromCDF(
 }
 
 //////////////////////////////////////////////////////////////////////
-// RunChain - Execute a single Markov chain.
+// InitChain - Initialize a single Markov chain.
 //
-// This is the core Metropolis-Hastings loop.  Each iteration:
+// Creates the PSSMLTSampler from a bootstrap seed, evaluates the
+// initial path, and stores the result in the persistent ChainState.
+// If the initial sample has zero luminance (path hit nothing),
+// try additional large steps to find a productive starting point.
+//
+// This is called once per chain during setup, before the round
+// loop begins.  The resulting ChainState persists across all rounds.
+//////////////////////////////////////////////////////////////////////
+
+void MLTRasterizer::InitChain(
+	ChainState& state,
+	const IScene& scene,
+	const ICamera& camera,
+	const BootstrapSample& seed,
+	const unsigned int width,
+	const unsigned int height
+	) const
+{
+	state.pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
+	state.pSampler->addref();
+	state.chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
+
+	// Evaluate the initial state
+	state.pSampler->StartIteration();
+	state.currentSample = EvaluateSample( scene, camera, *state.pSampler, width, height );
+	state.pSampler->Accept();
+
+	// If zero luminance, try additional large steps to find a valid state
+	if( !state.currentSample.valid )
+	{
+		for( unsigned int attempt = 0; attempt < 64; attempt++ )
+		{
+			state.pSampler->StartIteration();
+			state.currentSample = EvaluateSample( scene, camera, *state.pSampler, width, height );
+			if( state.currentSample.valid ) {
+				state.pSampler->Accept();
+				break;
+			}
+			state.pSampler->Reject();
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// RunChainSegment - Run a fixed number of mutations on an existing
+// chain.
+//
+// This is the core Metropolis-Hastings loop, identical in logic to
+// the old RunChain but operating on externally-owned ChainState.
+// The chain can be paused after this call (for a film snapshot)
+// and resumed with another call — the state is fully preserved.
+//
+// Each iteration:
 // 1. PSSMLTSampler.StartIteration() decides large vs small step
 // 2. EvaluateSample() evaluates the proposed path through BDPT
 // 3. Compute acceptance probability a = min(1, f_proposed/f_current)
 // 4. Splat both current and proposed with complementary weights
-//    (Veach's expected-value technique -- ensures unbiased image
-//    even though we're randomly accepting/rejecting)
+//    (Veach's expected-value technique)
 // 5. Accept or reject based on random draw vs a
 //
 // SPLATTING MATH:
 //   The normalization constant b = b_mean * numPixels where b_mean
-//   is the average per-sample luminance from bootstrap.  This accounts
-//   for the Metropolis estimator integrating over the full primary
-//   sample space (which includes uniform pixel selection).
-//
-//   For each mutation, the contribution to the film is:
-//     weight = (1/totalMutations) * b / luminance * accept_factor
-//   where totalMutations = nMutationsPerPixel * numPixels.
-//
-//   Expected per-pixel value:
-//     E[I_p] = (b/M) * M * P(at p) * E[color/lum | at p]
-//            = b * (L_p / total_lum) * (color_p / L_p)
-//            = b * color_p / total_lum
-//            = (b_mean * W*H) * color_p / (b_mean * W*H) = color_p  ✓
+//   is the average per-sample luminance from bootstrap.
+//   Each splat is weighted by invTotalMutations * b / luminance,
+//   where totalMutations is the FULL budget across ALL rounds.
+//   This ensures that after all rounds complete, the film contains
+//   the correct total accumulation.
 //////////////////////////////////////////////////////////////////////
 
-void MLTRasterizer::RunChain(
+void MLTRasterizer::RunChainSegment(
+	ChainState& state,
 	const IScene& scene,
 	const ICamera& camera,
 	SplatFilm& splatFilm,
-	const unsigned int chainMutations,
-	const BootstrapSample& initialSeed,
+	const unsigned int numMutations,
 	const Scalar normalization,
 	const unsigned int width,
 	const unsigned int height
 	) const
 {
-	// Create the PSSMLT sampler for this chain, seeded from the
-	// bootstrap sample that was selected by importance sampling.
-	PSSMLTSampler* pSampler = new PSSMLTSampler( initialSeed.seed, largeStepProb );
-	pSampler->addref();
-
-	// Evaluate the initial state by consuming samples from the
-	// sampler in its initial (large-step) configuration.
-	pSampler->StartIteration();
-	MLTSample currentSample = EvaluateSample( scene, camera, *pSampler, width, height );
-	pSampler->Accept();
-
-	// If the initial state has zero luminance, try a few more large steps
-	// to find a valid starting point
-	if( !currentSample.valid )
-	{
-		for( unsigned int attempt = 0; attempt < 64; attempt++ )
-		{
-			pSampler->StartIteration();
-			currentSample = EvaluateSample( scene, camera, *pSampler, width, height );
-			if( currentSample.valid ) {
-				pSampler->Accept();
-				break;
-			}
-			pSampler->Reject();
-		}
-	}
-
-	// Per-mutation weight: each mutation contributes 1/totalMutations
-	// of the image, scaled by the normalization constant b.
+	// invTotalMutations is over the FULL budget, not per-round.
+	// This ensures correct accumulation across all rounds.
 	const Scalar totalMutations = static_cast<Scalar>( nMutationsPerPixel ) *
 		static_cast<Scalar>( width ) * static_cast<Scalar>( height );
 	const Scalar invTotalMutations = 1.0 / totalMutations;
 
-	RandomNumberGenerator chainRNG( initialSeed.seed + 1000000 );
-
-	for( unsigned int m = 0; m < chainMutations; m++ )
+	for( unsigned int m = 0; m < numMutations; m++ )
 	{
 		// Propose a mutation
-		pSampler->StartIteration();
-		MLTSample proposedSample = EvaluateSample( scene, camera, *pSampler, width, height );
+		state.pSampler->StartIteration();
+		MLTSample proposedSample = EvaluateSample( scene, camera, *state.pSampler, width, height );
 
 		// Compute Metropolis-Hastings acceptance probability.
 		// For symmetric mutations (PSSMLT small steps are symmetric),
 		// this is simply the ratio of scalar contributions.
 		Scalar accept = 0;
-		if( currentSample.luminance > 0 ) {
-			accept = proposedSample.luminance / currentSample.luminance;
+		if( state.currentSample.luminance > 0 ) {
+			accept = proposedSample.luminance / state.currentSample.luminance;
 			if( accept > 1.0 ) {
 				accept = 1.0;
 			}
@@ -319,7 +352,6 @@ void MLTRasterizer::RunChain(
 		// the chain "spends" at each state, producing an unbiased image.
 		if( proposedSample.valid && proposedSample.luminance > 0 )
 		{
-			// Proposed contribution: weighted by acceptance probability
 			const Scalar proposedWeight = accept * invTotalMutations * normalization / proposedSample.luminance;
 			const RISEPel proposedSplat = proposedSample.color * proposedWeight;
 
@@ -331,14 +363,13 @@ void MLTRasterizer::RunChain(
 			}
 		}
 
-		if( currentSample.valid && currentSample.luminance > 0 )
+		if( state.currentSample.valid && state.currentSample.luminance > 0 )
 		{
-			// Current contribution: weighted by rejection probability (1-a)
-			const Scalar currentWeight = ( 1.0 - accept ) * invTotalMutations * normalization / currentSample.luminance;
-			const RISEPel currentSplat = currentSample.color * currentWeight;
+			const Scalar currentWeight = ( 1.0 - accept ) * invTotalMutations * normalization / state.currentSample.luminance;
+			const RISEPel currentSplat = state.currentSample.color * currentWeight;
 
-			const unsigned int sx = static_cast<unsigned int>( currentSample.rasterPos.x );
-			const unsigned int sy = static_cast<unsigned int>( currentSample.rasterPos.y );
+			const unsigned int sx = static_cast<unsigned int>( state.currentSample.rasterPos.x );
+			const unsigned int sy = static_cast<unsigned int>( state.currentSample.rasterPos.y );
 
 			if( sx < width && sy < height ) {
 				splatFilm.Splat( sx, sy, currentSplat );
@@ -346,43 +377,36 @@ void MLTRasterizer::RunChain(
 		}
 
 		// Accept or reject the proposed mutation
-		if( chainRNG.CanonicalRandom() < accept )
+		if( state.chainRNG.CanonicalRandom() < accept )
 		{
-			pSampler->Accept();
-			currentSample = proposedSample;
+			state.pSampler->Accept();
+			state.currentSample = proposedSample;
 		}
 		else
 		{
-			pSampler->Reject();
+			state.pSampler->Reject();
 		}
 	}
-
-	safe_release( pSampler );
 }
 
 //////////////////////////////////////////////////////////////////////
-// ChainThread_ThreadProc - Thread entry point for parallel chain
-// execution.  Each thread runs its assigned range of chains.
+// RoundThread_ThreadProc - Thread entry point for round-based
+// parallel chain execution.  Each thread runs its assigned range
+// of chains for the round's mutation budget.
 //////////////////////////////////////////////////////////////////////
 
-void* MLTRasterizer::ChainThread_ThreadProc( void* lpParameter )
+void* MLTRasterizer::RoundThread_ThreadProc( void* lpParameter )
 {
-	ChainThreadData* pData = (ChainThreadData*)lpParameter;
+	RoundThreadData* pData = (RoundThreadData*)lpParameter;
 
 	for( unsigned int c = pData->chainStart; c < pData->chainEnd; c++ )
 	{
-		// Select initial state from bootstrap CDF
-		RandomNumberGenerator threadRNG( c * 31337 );
-		const Scalar u = threadRNG.CanonicalRandom();
-		const unsigned int bootstrapIdx = pData->pRasterizer->SelectFromCDF( *pData->pCDF, u );
-		const BootstrapSample& seed = (*pData->pBootstrapSamples)[bootstrapIdx];
-
-		pData->pRasterizer->RunChain(
+		pData->pRasterizer->RunChainSegment(
+			pData->pChainStates[c],
 			*pData->pScene,
 			*pData->pScene->GetCamera(),
 			*pData->pSplatFilm,
 			pData->mutationsPerChain,
-			seed,
 			pData->normalization,
 			pData->width,
 			pData->height
@@ -411,12 +435,19 @@ unsigned int MLTRasterizer::PredictTimeToRasterizeScene(
 //////////////////////////////////////////////////////////////////////
 // RasterizeScene - Main entry point for MLT rendering.
 //
-// Orchestrates the full PSSMLT pipeline:
+// Orchestrates the full PSSMLT pipeline with progressive rendering:
 // 1. Initialize light sampler from scene
 // 2. Bootstrap: generate independent samples, estimate normalization
 // 3. Build CDF for chain initialization
-// 4. Dispatch chains to threads
-// 5. Resolve splat film to output image
+// 4. Initialize all chain states
+// 5. Run rounds: dispatch chains → join → snapshot → output → repeat
+// 6. Clean up chain states
+//
+// The round-based structure ensures that:
+// - Markov chains are never interrupted (state persists across rounds)
+// - Progress is accurately reported (round / numRounds)
+// - Cancellation produces a valid image (last snapshot)
+// - Film snapshots are race-free (taken after all threads join)
 //////////////////////////////////////////////////////////////////////
 
 void MLTRasterizer::RasterizeScene(
@@ -452,10 +483,7 @@ void MLTRasterizer::RasterizeScene(
 	// fresh RNG seed and an IndependentSampler.  We record the
 	// luminance and seed for each sample.
 	//
-	// The normalization constant b = mean(luminances) represents
-	// the expected luminance of a random pixel.  This is used to
-	// correctly weight the Metropolis contributions so the final
-	// image brightness matches the ground truth.
+	// The normalization constant b = mean(luminances) * numPixels.
 	//////////////////////////////////////////////////////////////////
 
 	if( pProgressFunc ) {
@@ -464,6 +492,9 @@ void MLTRasterizer::RasterizeScene(
 
 	std::vector<BootstrapSample> bootstrapSamples( nBootstrap );
 	Scalar luminanceSum = 0;
+
+	Timer bootstrapTimer;
+	bootstrapTimer.start();
 
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
@@ -486,15 +517,13 @@ void MLTRasterizer::RasterizeScene(
 		}
 	}
 
+	bootstrapTimer.stop();
+
 	// Normalization constant b:
-	// b_mean = mean luminance per bootstrap sample (= mean path contribution
-	// when pixel is chosen uniformly).  The full normalization for the
-	// Metropolis estimator is b_mean * numPixels, because the primary
-	// sample space integral covers all pixels and we divide by totalMutations
-	// (= numPixels * mutationsPerPixel).  This ensures each pixel gets
-	// its correct expected value:
-	//   E[I_p] = (b*W*H / totalMutations) * totalMutations * P(pixel=p) * E[color/lum | p]
-	//          = b*W*H * (L_p / (b*W*H)) * (color_p / L_p) = color_p  ✓
+	// b_mean = mean luminance per bootstrap sample.  The full
+	// normalization is b_mean * numPixels, because the primary
+	// sample space integral covers all pixels and we divide by
+	// totalMutations (= numPixels * mutationsPerPixel).
 	const Scalar b_mean = luminanceSum / static_cast<Scalar>( nBootstrap );
 
 	if( b_mean <= 0 ) {
@@ -508,11 +537,7 @@ void MLTRasterizer::RasterizeScene(
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap complete. Mean luminance = %f, Normalization b = %f", b_mean, b );
 
 	//////////////////////////////////////////////////////////////////
-	// Phase 1b: Build CDF for importance-sampling initial chain states
-	//
-	// Higher-luminance bootstrap samples are more likely to be
-	// selected as chain starting points, which means chains start
-	// in productive regions of path space.
+	// Phase 1b: Build CDF for importance-sampling initial states
 	//////////////////////////////////////////////////////////////////
 
 	std::vector<Scalar> cdf( nBootstrap );
@@ -521,7 +546,6 @@ void MLTRasterizer::RasterizeScene(
 		cdf[i] = cdf[i-1] + bootstrapSamples[i].luminance;
 	}
 
-	// Normalize the CDF to [0,1]
 	if( cdf[nBootstrap-1] > 0 ) {
 		const Scalar invTotal = 1.0 / cdf[nBootstrap-1];
 		for( unsigned int i = 0; i < nBootstrap; i++ ) {
@@ -530,32 +554,27 @@ void MLTRasterizer::RasterizeScene(
 	}
 
 	//////////////////////////////////////////////////////////////////
-	// Phase 2: Markov Chain Execution
+	// Phase 2: Initialize all chain states
 	//
-	// Total mutations = nMutationsPerPixel * width * height
-	// Distributed evenly across nChains chains, each running on
-	// a thread.
+	// Create PSSMLTSampler and evaluate initial path for each chain.
+	// These states persist across all progressive rendering rounds.
 	//////////////////////////////////////////////////////////////////
 
+	const unsigned int effectiveChains = nChains > 0 ? nChains : 1;
 	const unsigned int totalMutations = nMutationsPerPixel * width * height;
-	const unsigned int mutationsPerChain = totalMutations / nChains;
+	const unsigned int mutationsPerChain = totalMutations / effectiveChains;
 
-	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Total mutations: %u, Per chain: %u", totalMutations, mutationsPerChain );
-
-	// Create splat film
-	SplatFilm* pSplatFilm = new SplatFilm( width, height );
-	pSplatFilm->addref();
-
-	// Create output image
-	// Initialize image with zero color but alpha=1.0, so the PNG writer
-	// doesn't treat pixels as transparent (Resolve adds splat color but
-	// preserves the existing alpha value).
-	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
-	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "MLT image" );
-
-	if( pProgressFunc ) {
-		pProgressFunc->SetTitle( "MLT Rendering: " );
-	}
+	//////////////////////////////////////////////////////////////////
+	// Auto-calculate progressive rounds from bootstrap timing.
+	//
+	// Each bootstrap sample evaluates one full BDPT path — the same
+	// core operation as one mutation.  We time the bootstrap phase
+	// (single-threaded) and use it to estimate how long the rendering
+	// phase will take per mutation (multi-threaded).
+	//
+	// Target: ~5 seconds per round, so the user gets frequent
+	// progressive updates without excessive snapshot overhead.
+	//////////////////////////////////////////////////////////////////
 
 	int threads = HowManyThreadsToSpawn();
 	static const int MAX_THREADS = 10000;
@@ -563,82 +582,223 @@ void MLTRasterizer::RasterizeScene(
 		threads = MAX_THREADS;
 	}
 
-	// Ensure we have at least as many chains as threads
-	const unsigned int effectiveChains = nChains > 0 ? nChains : 1;
+	unsigned int numRounds = 1;
+	const unsigned int bootstrapMs = bootstrapTimer.getInterval();
 
-	if( threads > 1 )
+	if( bootstrapMs > 0 && nBootstrap > 0 )
 	{
-		// Multi-threaded: distribute chains across threads
-		const unsigned int chainsPerThread = effectiveChains / threads;
+		// Time per single-threaded sample (milliseconds)
+		const double msPerSample = static_cast<double>( bootstrapMs ) / static_cast<double>( nBootstrap );
 
-		std::vector<ChainThreadData> threadData( threads );
-		RISETHREADID* thread_ids = new RISETHREADID[threads];
+		// Estimated total render time in ms (divide by thread count for parallelism)
+		const int effectiveThreads = threads > 0 ? threads : 1;
+		const double estTotalMs = msPerSample * static_cast<double>( totalMutations ) / static_cast<double>( effectiveThreads );
 
-		for( int t = 0; t < threads; t++ )
-		{
-			threadData[t].pRasterizer = this;
-			threadData[t].pScene = &pScene;
-			threadData[t].pSplatFilm = pSplatFilm;
-			threadData[t].pBootstrapSamples = &bootstrapSamples;
-			threadData[t].pCDF = &cdf;
-			threadData[t].normalization = b;
-			threadData[t].chainStart = t * chainsPerThread;
-			threadData[t].chainEnd = ( t == threads - 1 ) ? effectiveChains : ( t + 1 ) * chainsPerThread;
-			threadData[t].mutationsPerChain = mutationsPerChain;
-			threadData[t].width = width;
-			threadData[t].height = height;
+		// Target ~5000ms per round
+		const double targetRoundMs = 5000.0;
+		const unsigned int computedRounds = static_cast<unsigned int>( estTotalMs / targetRoundMs + 0.5 );
 
-			Threading::riseCreateThread( ChainThread_ThreadProc, (void*)&threadData[t], 0, 0, &thread_ids[t] );
+		// Clamp to reasonable range: at least 2 rounds (so we get at
+		// least one intermediate update), at most totalMutations/chains
+		// (each round must have at least 1 mutation per chain).
+		numRounds = computedRounds < 2 ? 2 : computedRounds;
+		if( numRounds > mutationsPerChain ) {
+			numRounds = mutationsPerChain;
 		}
 
-		for( int t = 0; t < threads; t++ ) {
-			Threading::riseWaitUntilThreadFinishes( thread_ids[t], 0 );
-		}
-
-		delete[] thread_ids;
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap took %u ms for %u samples (%.3f ms/sample)",
+			bootstrapMs, nBootstrap, msPerSample );
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Estimated total render time: %.1f s, targeting %.1f s/round -> %u rounds",
+			estTotalMs / 1000.0, targetRoundMs / 1000.0, numRounds );
 	}
 	else
 	{
-		// Single-threaded: run all chains sequentially
-		for( unsigned int c = 0; c < effectiveChains; c++ )
-		{
-			RandomNumberGenerator selRNG( c * 31337 );
-			const Scalar u = selRNG.CanonicalRandom();
-			const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
-			const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
+		// Bootstrap was too fast to measure — use a reasonable default
+		numRounds = 10;
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap too fast to time, using %u rounds", numRounds );
+	}
 
-			RunChain( pScene, *pCamera, *pSplatFilm, mutationsPerChain, seed, b, width, height );
+	const unsigned int mutationsPerChainPerRound = mutationsPerChain / numRounds;
 
-			if( pProgressFunc ) {
-				if( !pProgressFunc->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
-					break;
+	// Ensure at least 1 mutation per chain per round
+	const unsigned int effectiveMutPerRound = mutationsPerChainPerRound > 0 ? mutationsPerChainPerRound : 1;
+
+	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Total mutations: %u, Per chain: %u, Per chain per round: %u, Rounds: %u",
+		totalMutations, mutationsPerChain, effectiveMutPerRound, numRounds );
+
+	if( pProgressFunc ) {
+		pProgressFunc->SetTitle( "MLT Init Chains: " );
+	}
+
+	std::vector<ChainState> chainStates( effectiveChains );
+
+	for( unsigned int c = 0; c < effectiveChains; c++ )
+	{
+		// Select initial state from bootstrap CDF
+		RandomNumberGenerator selRNG( c * 31337 );
+		const Scalar u = selRNG.CanonicalRandom();
+		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
+		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
+
+		InitChain( chainStates[c], pScene, *pCamera, seed, width, height );
+
+		if( pProgressFunc && (c % 10 == 0) ) {
+			if( !pProgressFunc->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
+				// Clean up on cancel
+				for( unsigned int j = 0; j <= c; j++ ) {
+					safe_release( chainStates[j].pSampler );
 				}
+				return;
 			}
 		}
 	}
 
 	//////////////////////////////////////////////////////////////////
-	// Phase 3: Resolve
+	// Phase 3: Round-based rendering
 	//
-	// The splat film contains pre-weighted contributions.  Resolve
-	// with sampleCount=1.0 since the Metropolis weights are already
-	// baked into each splat.
+	// Each round:
+	// 1. Dispatch chains to threads for effectiveMutPerRound mutations
+	// 2. Wait for all threads to finish
+	// 3. Resolve the film to a fresh image, scaling by the fraction
+	//    of total work completed: sampleCount = (r+1) / numRounds
+	// 4. Output the progressive image
+	// 5. Report progress
+	//
+	// The scaling math: each splat is weighted by 1/totalMutations.
+	// After round r+1 of R, approximately ((r+1)/R) of all mutations
+	// have run, so the film holds ((r+1)/R) of the final value.
+	// Dividing by sampleCount = (r+1)/R gives the correct image.
 	//////////////////////////////////////////////////////////////////
 
-	pSplatFilm->Resolve( *pImage, 1.0 );
+	SplatFilm* pSplatFilm = new SplatFilm( width, height );
+	pSplatFilm->addref();
+
+	if( pProgressFunc ) {
+		pProgressFunc->SetTitle( "MLT Rendering: " );
+	}
+
+	bool cancelled = false;
+    
+    // Before starting update the progress function because each round takes time
+    // Report progress and check for cancellation
+    if( pProgressFunc ) {
+        if( !pProgressFunc->Progress( 0, static_cast<double>(numRounds) ) ) {
+            cancelled = true;
+        }
+    }
+
+	for( unsigned int round = 0; round < numRounds && !cancelled; round++ )
+	{
+		// For the last round, use remaining mutations to avoid rounding loss
+		const unsigned int mutThisRound = ( round == numRounds - 1 )
+			? ( mutationsPerChain - effectiveMutPerRound * ( numRounds - 1 ) )
+			: effectiveMutPerRound;
+
+		if( threads > 1 )
+		{
+			// Multi-threaded: distribute chains across threads
+			const unsigned int chainsPerThread = effectiveChains / threads;
+
+			std::vector<RoundThreadData> threadData( threads );
+			RISETHREADID* thread_ids = new RISETHREADID[threads];
+
+			for( int t = 0; t < threads; t++ )
+			{
+				threadData[t].pRasterizer = this;
+				threadData[t].pScene = &pScene;
+				threadData[t].pSplatFilm = pSplatFilm;
+				threadData[t].pChainStates = &chainStates[0];
+				threadData[t].chainStart = t * chainsPerThread;
+				threadData[t].chainEnd = ( t == threads - 1 ) ? effectiveChains : ( t + 1 ) * chainsPerThread;
+				threadData[t].mutationsPerChain = mutThisRound;
+				threadData[t].normalization = b;
+				threadData[t].width = width;
+				threadData[t].height = height;
+
+				Threading::riseCreateThread( RoundThread_ThreadProc, (void*)&threadData[t], 0, 0, &thread_ids[t] );
+			}
+
+			for( int t = 0; t < threads; t++ ) {
+				Threading::riseWaitUntilThreadFinishes( thread_ids[t], 0 );
+			}
+
+			delete[] thread_ids;
+		}
+		else
+		{
+			// Single-threaded: run all chains sequentially
+			for( unsigned int c = 0; c < effectiveChains; c++ )
+			{
+				RunChainSegment( chainStates[c], pScene, *pCamera, *pSplatFilm,
+					mutThisRound, b, width, height );
+			}
+		}
+
+		//////////////////////////////////////////////////////////////
+		// Snapshot: resolve the film and send intermediate update
+		//
+		// sampleCount = fraction of total mutations completed.
+		// This scales up the partially-accumulated film to produce
+		// a correctly-exposed image at any stage.
+		//
+		// Between rounds we call OutputIntermediateImage so outputs
+		// can display a preview without writing the final file.
+		// OutputImage is called only once: after all rounds finish,
+		// or when the user cancels (so the last valid image is saved).
+		//////////////////////////////////////////////////////////////
+
+		const Scalar fraction = static_cast<Scalar>( round + 1 ) / static_cast<Scalar>( numRounds );
+		const bool isFinalRound = ( round + 1 == numRounds );
+
+		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
+		pSplatFilm->Resolve( *pImage, fraction );
+
+		if( !isFinalRound )
+		{
+			// Intermediate round: send preview update only
+			RasterizerOutputListType::const_iterator r, s;
+			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+				(*r)->OutputIntermediateImage( *pImage, 0 );
+			}
+		}
+
+		// Report progress and check for cancellation
+		if( pProgressFunc ) {
+			if( !pProgressFunc->Progress( static_cast<double>(round + 1), static_cast<double>(numRounds) ) ) {
+				cancelled = true;
+			}
+		}
+
+		// Write the final file on completion or cancellation.
+		// On cancellation we still output so the user gets a
+		// valid image at whatever quality was reached.
+		if( isFinalRound || cancelled )
+		{
+			RasterizerOutputListType::const_iterator r, s;
+			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+				(*r)->OutputImage( *pImage, 0, 0 );
+			}
+		}
+
+		safe_release( pImage );
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Phase 4: Cleanup
+	//////////////////////////////////////////////////////////////////
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
-	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Rendering complete" );
-
-	// Output final image
-	{
-		RasterizerOutputListType::const_iterator r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputImage( *pImage, 0, 0 );
-		}
+	if( cancelled ) {
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Rendering cancelled by user" );
+	} else {
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Rendering complete" );
 	}
 
-	safe_release( pImage );
+	// Release all chain states
+	for( unsigned int c = 0; c < effectiveChains; c++ ) {
+		safe_release( chainStates[c].pSampler );
+	}
+
 	safe_release( pSplatFilm );
 }

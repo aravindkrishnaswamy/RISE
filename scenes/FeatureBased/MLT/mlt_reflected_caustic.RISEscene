@@ -73,8 +73,8 @@ pinhole_camera
 	location			278 250 -700
 	lookat				278 150 280
 	up					0 1 0
-	width				256
-	height				256
+	width				800
+	height				800
 	fov					40.0
 }
 
@@ -93,18 +93,6 @@ uniformcolor_painter
 {
 	name				pnt_mirror
 	color				0.95 0.95 0.95
-}
-
-uniformcolor_painter
-{
-	name				pnt_glass_tau
-	color				0.99 0.99 0.99
-}
-
-uniformcolor_painter
-{
-	name				pnt_glass_ior
-	color				1.5 1.5 1.5
 }
 
 lambertian_material
@@ -144,8 +132,8 @@ perfectreflector_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau					1.0
+	ior					1.5
 }
 
 ##################################################
