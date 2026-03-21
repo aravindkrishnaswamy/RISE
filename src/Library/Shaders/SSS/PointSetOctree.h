@@ -1,12 +1,21 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PointSetOctree.h - The point set octree, which we use
-//    in two translucence shaders for acceleration
+//  PointSetOctree.h - Hierarchical evaluation of irradiance samples
+//
+//  Implements the octree acceleration structure from Jensen & Buhler,
+//  "A Rapid Hierarchical Rendering Technique for Translucent
+//  Materials" (SIGGRAPH 2002, Section 4).
+//
+//  Each leaf stores a set of irradiance sample points.  Internal
+//  nodes cache the average irradiance of their subtree.  During
+//  evaluation, if a child node is farther than maxDistance from the
+//  shading point, its average irradiance is used directly instead
+//  of recursing — this is the key hierarchical approximation that
+//  makes the BSSRDF evaluation sublinear in the number of samples.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 19, 2005
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

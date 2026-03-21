@@ -1,11 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PointSetOctree.cpp - Implementation of the point set octree class
+//  PointSetOctree.cpp - Hierarchical irradiance sample octree
+//
+//  See PointSetOctree.h for algorithm overview.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 21, 2005
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

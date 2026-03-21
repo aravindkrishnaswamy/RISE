@@ -1,11 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SubSurfaceScatteringShaderOp.cpp - Implementation of the SubSurfaceScatteringShaderOp class
+//  SubSurfaceScatteringShaderOp.cpp - Implementation of the
+//  point-sampled BSSRDF shader op.
+//
+//  See SubSurfaceScatteringShaderOp.h for algorithm overview.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 18, 2005
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -108,7 +110,8 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		// Once grabbed, check again, just in case someone else made one
 		PointSetMap::iterator again = pointsets.find( ri.pObject );
 		if( again == pointsets.end() ) {
-			// There is no point set ready, so we need to create one
+			// Pass 1: Generate the irradiance point set for this object.
+			// This happens once per object, lazily on first hit.
 			GlobalLog()->PrintEasyInfo( "SubSurfaceScatteringShaderOp:: Generating point sample set for object" );
 			
 			PointSetOctree::PointSet points;
@@ -150,7 +153,6 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 
 				// Discard points that have no illumination
 				if( ColorMath::MaxValue(sp.irrad) > 0 ) {
-	//				sp.irrad = sp.irrad * sample_area;			// remember we are integrating over surface area
 					sp.irrad = sp.irrad * irrad_scale;
 					points.push_back( sp );
 					bbox.Include( sp.ptPosition );
@@ -181,16 +183,20 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		ps = it->second;
 	}
 
-    // We have a list of points that are part of our sample, 
-	// we must query all the points that are within one path length of us and evaluate how much light
-	// gets here from there
+	// Pass 2: Evaluate the BSSRDF integral at the shading point.
+	// The octree sums Rd(|xi - xo|) * E(xi) over all sample points,
+	// using hierarchical approximation for distant clusters (Jensen 2002).
 	ps->Evaluate( c, ri.geometric.ptIntersection, extinction, error, multiplyBSDF?ri.pMaterial->GetBSDF():0, ri.geometric );
 
-	// Account for the integration over area
-//	c = c * (1.0/Scalar(ri.pObject->GetArea()));
-	// Since we know each point samples the area of the surface equally, we can just do this to save time
+	// Monte Carlo normalization: divide by N (the number of sample points).
+	// Each sample's irradiance was pre-multiplied by irrad_scale, which
+	// absorbs the area weight (dA = total_area / N) and the unit conversion
+	// between the extinction function's internal units and scene-space.
 	c = c * (1.0/Scalar(numPoints));
 
+	// When multiplyBSDF is enabled, the octree evaluation already divided
+	// by pi (via the Lambertian BSDF).  Multiply by pi to cancel that and
+	// recover the correct BSSRDF integral.
 	if( ri.pMaterial->GetBSDF() && multiplyBSDF ) {
 		c = c*PI;
 	}

@@ -1,11 +1,34 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SubSurfaceScatteringShaderOp.h - 
+//  SubSurfaceScatteringShaderOp.h - BSSRDF evaluation via point
+//  sampling and hierarchical octree summation
+//
+//  Implements the two-pass approach from Jensen & Buhler,
+//  "A Rapid Hierarchical Rendering Technique for Translucent
+//  Materials" (SIGGRAPH 2002):
+//
+//  Pass 1 (sample generation):
+//    Distribute N sample points uniformly on the object surface.
+//    At each point, evaluate incident irradiance using a separate
+//    shader (typically direct lighting only).  Points with zero
+//    illumination are discarded.  The samples are stored in a
+//    PointSetOctree for hierarchical evaluation.
+//
+//  Pass 2 (BSSRDF evaluation):
+//    For each shading point, query the octree to sum contributions
+//    from all sample points weighted by the extinction function
+//    Rd(r).  Distant clusters are approximated using the node's
+//    average irradiance (the hierarchical acceleration).
+//
+//  The irrad_scale parameter absorbs the area-to-point-count ratio
+//  and the unit conversion between the extinction function's
+//  internal units (mm for the dipole) and scene-space meters.
+//  It is effectively dA * unit_conversion and must be tuned
+//  per-scene when changing numpoints or geometric_scale.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 18, 2005
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

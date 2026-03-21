@@ -1,11 +1,20 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SimpleExtinction.h - Simple extinction function for SSS
+//  SimpleExtinction.h - Phenomenological extinction for SSS
+//
+//  A simple exp(-sigma * r) falloff used as an artist-friendly
+//  alternative to the physically-based dipole model.  This is NOT
+//  a normalized BSSRDF — it produces a dimensionless weight that
+//  falls off exponentially with distance, which is why irrad_scale
+//  must be tuned per-scene to achieve the desired look.
+//
+//  The extinction parameter directly controls the falloff rate
+//  without any physical derivation from scattering/absorption.
+//  Use DiffusionApproximationExtinction for physically-based SSS.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 21, 2005
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
