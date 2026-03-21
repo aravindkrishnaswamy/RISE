@@ -1,0 +1,792 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           bdpt_crystal_garden.RISEscene                                                           #
+#   Description:    BDPT torture test: nested refractive objects with varying IOR, standalone glass          #
+#                   pieces, and caustic-catching surfaces.  Light must traverse multiple refractive          #
+#                   boundaries to illuminate the scene -- a nightmare for unidirectional path tracing.      #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 20, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	pt
+}
+
+bdpt_rasterizer
+{
+	max_recursion		12
+	min_importance		0.0005
+	max_eye_depth		12
+	max_light_depth		10
+	samples				128
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/bdpt_crystal_garden
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 5.5 11.0
+	lookat				0 1.5 4.0
+	up					0 1 0
+	width				800
+	height				600
+	fov					50.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+# Floor and walls
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.92 0.90 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_back_wall
+	color				0.75 0.73 0.70
+}
+
+uniformcolor_painter
+{
+	name				pnt_left_wall
+	color				0.72 0.65 0.60
+}
+
+uniformcolor_painter
+{
+	name				pnt_right_wall
+	color				0.60 0.68 0.72
+}
+
+uniformcolor_painter
+{
+	name				pnt_pedestal
+	color				0.95 0.93 0.90
+}
+
+uniformcolor_painter
+{
+	name				pnt_caustic_pad
+	color				0.97 0.95 0.92
+}
+
+# Light colors
+uniformcolor_painter
+{
+	name				pnt_warm_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_cool_light
+	color				0.85 0.92 1.0
+}
+
+# Glass tints -- subtle colors for artistic variety
+uniformcolor_painter
+{
+	name				pnt_water_glass
+	color				0.92 0.96 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_amber_glass
+	color				1.0 0.88 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_emerald_glass
+	color				0.70 0.95 0.75
+}
+
+uniformcolor_painter
+{
+	name				pnt_ruby_glass
+	color				0.98 0.72 0.72
+}
+
+uniformcolor_painter
+{
+	name				pnt_sapphire_glass
+	color				0.72 0.78 0.98
+}
+
+uniformcolor_painter
+{
+	name				pnt_clear_glass
+	color				0.97 0.97 0.99
+}
+
+uniformcolor_painter
+{
+	name				pnt_diamond_glass
+	color				0.98 0.98 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_crystal_glass
+	color				0.94 0.96 1.0
+}
+
+##################################################
+# Materials
+##################################################
+
+# Diffuse surfaces for catching caustics
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_material
+{
+	name				back_wall_mat
+	reflectance			pnt_back_wall
+}
+
+lambertian_material
+{
+	name				left_wall_mat
+	reflectance			pnt_left_wall
+}
+
+lambertian_material
+{
+	name				right_wall_mat
+	reflectance			pnt_right_wall
+}
+
+lambertian_material
+{
+	name				pedestal_mat
+	reflectance			pnt_pedestal
+}
+
+lambertian_material
+{
+	name				caustic_pad_mat
+	reflectance			pnt_caustic_pad
+}
+
+# Area lights
+lambertian_luminaire_material
+{
+	name				warm_lum
+	exitance			pnt_warm_light
+	scale				180.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				cool_lum
+	exitance			pnt_cool_light
+	scale				140.0
+	material			none
+}
+
+# ---- Glass materials at different IOR values ----
+
+# Water glass (IOR 1.33) -- gentle refraction
+dielectric_material
+{
+	name				glass_water
+	tau					pnt_water_glass
+	ior					1.33
+	scattering			100000.0
+}
+
+# Amber crown glass (IOR 1.52)
+dielectric_material
+{
+	name				glass_amber
+	tau					pnt_amber_glass
+	ior					1.52
+	scattering			100000.0
+}
+
+# Emerald glass (IOR 1.58)
+dielectric_material
+{
+	name				glass_emerald
+	tau					pnt_emerald_glass
+	ior					1.58
+	scattering			100000.0
+}
+
+# Ruby flint glass (IOR 1.65)
+dielectric_material
+{
+	name				glass_ruby
+	tau					pnt_ruby_glass
+	ior					1.65
+	scattering			100000.0
+}
+
+# Sapphire glass (IOR 1.77)
+dielectric_material
+{
+	name				glass_sapphire
+	tau					pnt_sapphire_glass
+	ior					1.77
+	scattering			100000.0
+}
+
+# Clear heavy flint (IOR 1.72) -- for nesting
+dielectric_material
+{
+	name				glass_clear
+	tau					pnt_clear_glass
+	ior					1.72
+	scattering			100000.0
+}
+
+# Diamond (IOR 2.42) -- strong refraction
+dielectric_material
+{
+	name				glass_diamond
+	tau					pnt_diamond_glass
+	ior					2.42
+	scattering			100000.0
+}
+
+# Crystal (IOR 1.46) -- for nesting
+dielectric_material
+{
+	name				glass_crystal
+	tau					pnt_crystal_glass
+	ior					1.46
+	scattering			100000.0
+}
+
+# Mirror for accent reflections
+perfectreflector_material
+{
+	name				mirror_mat
+	reflectance			color_silver
+}
+
+##################################################
+# Geometry
+##################################################
+
+# Room surfaces
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-8.0 0.0 -6.0
+	ptb					-8.0 0.0 14.0
+	ptc					8.0 0.0 14.0
+	ptd					8.0 0.0 -6.0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-8.0 10.0 0.0
+	ptb					-8.0 0.0 0.0
+	ptc					8.0 0.0 0.0
+	ptd					8.0 10.0 0.0
+}
+
+# Light panels
+clippedplane_geometry
+{
+	name				warmlightgeom
+	pta					-1.8 0.0 -0.8
+	ptb					-1.8 0.0 0.8
+	ptc					1.8 0.0 0.8
+	ptd					1.8 0.0 -0.8
+}
+
+clippedplane_geometry
+{
+	name				coollightgeom
+	pta					-1.2 0.0 -0.6
+	ptb					-1.2 0.0 0.6
+	ptc					1.2 0.0 0.6
+	ptd					1.2 0.0 -0.6
+}
+
+# Caustic catching pads (white disks on the floor)
+circulardisk_geometry
+{
+	name				padgeom_large
+	radius				2.2
+	axis				y
+}
+
+circulardisk_geometry
+{
+	name				padgeom_small
+	radius				1.4
+	axis				y
+}
+
+# Pedestals
+cylinder_geometry
+{
+	name				pedestal_tall_geom
+	axis				y
+	radius				0.8
+	height				1.6
+}
+
+cylinder_geometry
+{
+	name				pedestal_short_geom
+	axis				y
+	radius				0.6
+	height				0.8
+}
+
+cylinder_geometry
+{
+	name				pedestal_med_geom
+	axis				y
+	radius				0.5
+	height				1.1
+}
+
+# Glass geometries
+
+# Nested centerpiece: outer sphere (r=1.5), middle sphere (r=1.0), inner sphere (r=0.5)
+sphere_geometry
+{
+	name				nest_outer_geom
+	radius				1.5
+}
+
+sphere_geometry
+{
+	name				nest_middle_geom
+	radius				1.0
+}
+
+sphere_geometry
+{
+	name				nest_inner_geom
+	radius				0.55
+}
+
+# Standalone pieces
+sphere_geometry
+{
+	name				diamond_geom
+	radius				0.7
+}
+
+ellipsoid_geometry
+{
+	name				amber_egg_geom
+	radii				0.65 1.0 0.65
+}
+
+torus_geometry
+{
+	name				sapphire_ring_geom
+	majorradius			0.7
+	minorratio			0.28
+}
+
+ellipsoid_geometry
+{
+	name				emerald_lens_geom
+	radii				0.8 0.3 0.8
+}
+
+cylinder_geometry
+{
+	name				ruby_column_geom
+	axis				y
+	radius				0.4
+	height				1.6
+}
+
+# Mirror accent
+box_geometry
+{
+	name				mirror_slab_geom
+	width				0.05
+	height				3.0
+	depth				2.0
+}
+
+##################################################
+# Room and surfaces
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	position			0 0 -6.0
+	material			back_wall_mat
+}
+
+# Ceiling
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					-8.0 0.0 14.0
+	ptb					-8.0 0.0 -6.0
+	ptc					8.0 0.0 -6.0
+	ptd					8.0 0.0 14.0
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	position			0 8.0 0
+	material			back_wall_mat
+}
+
+# Side walls
+clippedplane_geometry
+{
+	name				sidewallgeom
+	pta					0.0 10.0 14.0
+	ptb					0.0 0.0 14.0
+	ptc					0.0 0.0 -6.0
+	ptd					0.0 10.0 -6.0
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			sidewallgeom
+	position			-8.0 0 0
+	material			left_wall_mat
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			sidewallgeom
+	position			8.0 0 0
+	material			right_wall_mat
+}
+
+# Caustic catching pads on the floor (bright white to show caustics clearly)
+standard_object
+{
+	name				center_pad
+	geometry			padgeom_large
+	position			0 0.002 4.0
+	material			caustic_pad_mat
+}
+
+standard_object
+{
+	name				left_pad
+	geometry			padgeom_small
+	position			-2.8 0.002 5.5
+	material			caustic_pad_mat
+}
+
+standard_object
+{
+	name				right_pad
+	geometry			padgeom_small
+	position			2.8 0.002 5.5
+	material			caustic_pad_mat
+}
+
+# Additional pads for the far objects
+standard_object
+{
+	name				far_left_pad
+	geometry			padgeom_small
+	position			-3.8 0.002 2.5
+	material			caustic_pad_mat
+}
+
+standard_object
+{
+	name				far_right_pad
+	geometry			padgeom_small
+	position			3.8 0.002 2.5
+	material			caustic_pad_mat
+}
+
+# Pads for the floor-level spheres
+standard_object
+{
+	name				front_left_pad
+	geometry			padgeom_small
+	position			-1.2 0.002 7.5
+	material			caustic_pad_mat
+}
+
+standard_object
+{
+	name				front_right_pad
+	geometry			padgeom_small
+	position			1.5 0.002 7.0
+	material			caustic_pad_mat
+}
+
+##################################################
+# Pedestals
+##################################################
+
+# Center pedestal (tall, for nested spheres)
+standard_object
+{
+	name				pedestal_center
+	geometry			pedestal_tall_geom
+	position			0 0.8 4.0
+	material			pedestal_mat
+}
+
+# Left pedestal (short, for amber egg)
+standard_object
+{
+	name				pedestal_left
+	geometry			pedestal_short_geom
+	position			-2.8 0.4 5.5
+	material			pedestal_mat
+}
+
+# Right pedestal (medium, for sapphire ring)
+standard_object
+{
+	name				pedestal_right
+	geometry			pedestal_med_geom
+	position			2.8 0.55 5.5
+	material			pedestal_mat
+}
+
+# Far left pedestal (for emerald lens)
+standard_object
+{
+	name				pedestal_far_left
+	geometry			pedestal_short_geom
+	position			-3.8 0.4 2.5
+	material			pedestal_mat
+}
+
+# Far right pedestal (for ruby column)
+standard_object
+{
+	name				pedestal_far_right
+	geometry			pedestal_short_geom
+	position			3.8 0.4 2.5
+	material			pedestal_mat
+}
+
+##################################################
+# Nested refractive centerpiece
+# Three concentric glass spheres with different IOR
+# Light must cross 6 refractive boundaries (3 enter + 3 exit)
+##################################################
+
+# Outer sphere: crystal glass (IOR 1.46)
+standard_object
+{
+	name				nest_outer
+	geometry			nest_outer_geom
+	position			0 3.1 4.0
+	material			glass_crystal
+}
+
+# Middle sphere: clear heavy flint (IOR 1.72)
+standard_object
+{
+	name				nest_middle
+	geometry			nest_middle_geom
+	position			0 3.1 4.0
+	material			glass_clear
+}
+
+# Inner sphere: diamond (IOR 2.42)
+standard_object
+{
+	name				nest_inner
+	geometry			nest_inner_geom
+	position			0 3.1 4.0
+	material			glass_diamond
+}
+
+##################################################
+# Standalone refractive pieces
+##################################################
+
+# Left: amber egg (IOR 1.52) on its pedestal
+standard_object
+{
+	name				amber_egg
+	geometry			amber_egg_geom
+	position			-2.8 1.8 5.5
+	material			glass_amber
+}
+
+# Right: sapphire torus ring (IOR 1.77), tilted for visual interest
+standard_object
+{
+	name				sapphire_ring
+	geometry			sapphire_ring_geom
+	position			2.8 1.55 5.5
+	orientation			25 15 0
+	material			glass_sapphire
+}
+
+# Far left: emerald lens (IOR 1.58)
+standard_object
+{
+	name				emerald_lens
+	geometry			emerald_lens_geom
+	position			-3.8 1.1 2.5
+	orientation			0 30 10
+	material			glass_emerald
+}
+
+# Far right: ruby column (IOR 1.65)
+standard_object
+{
+	name				ruby_column
+	geometry			ruby_column_geom
+	position			3.8 1.6 2.5
+	material			glass_ruby
+}
+
+# Floor level: water glass sphere (IOR 1.33), in front for caustics
+standard_object
+{
+	name				water_sphere
+	geometry			diamond_geom
+	position			1.5 0.7 7.0
+	material			glass_water
+}
+
+# Floor level diamond sphere (IOR 2.42), small and brilliant
+sphere_geometry
+{
+	name				small_diamond_geom
+	radius				0.45
+}
+
+standard_object
+{
+	name				floor_diamond
+	geometry			small_diamond_geom
+	position			-1.2 0.45 7.5
+	material			glass_diamond
+}
+
+##################################################
+# Mirror accents -- angled to bounce light through the glass pieces
+##################################################
+
+standard_object
+{
+	name				mirror_left
+	geometry			mirror_slab_geom
+	position			-5.5 1.5 4.0
+	orientation			0 15 0
+	material			mirror_mat
+}
+
+standard_object
+{
+	name				mirror_right
+	geometry			mirror_slab_geom
+	position			5.5 1.5 4.0
+	orientation			0 -15 0
+	material			mirror_mat
+}
+
+##################################################
+# Lighting
+# Two area lights: warm from upper left, cool from upper right
+# Creates interesting colored caustics through the glass
+##################################################
+
+# Main warm light -- large panel directly above the scene
+standard_object
+{
+	name				warm_light
+	geometry			warmlightgeom
+	position			-1.0 6.0 4.0
+	material			warm_lum
+}
+
+# Cool accent light (upper right, slightly forward)
+standard_object
+{
+	name				cool_light
+	geometry			coollightgeom
+	position			2.0 6.0 5.5
+	material			cool_lum
+}
+
+# Spot light aimed at the nested centerpiece
+spot_light
+{
+	name				center_spot
+	position			0 7.0 4.0
+	target				0 3.1 4.0
+	color				1.0 0.98 0.94
+	power				4.0
+	inner				5.0
+	outer				12.0
+}
+
+# Fill spot for overall ambient-like illumination
+spot_light
+{
+	name				fill_spot
+	position			0 6.5 9.0
+	target				0 1.5 3.0
+	color				1.0 0.98 0.96
+	power				3.0
+	inner				25
+	outer				50
+}

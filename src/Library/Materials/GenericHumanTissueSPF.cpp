@@ -120,6 +120,7 @@ void GenericHumanTissueSPF::Scatter(
 	trans.ray.origin = ri.ray.origin;
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.kray = RISEPel(1.0,1.0,1.0);
+	trans.isDelta = false;
 
 	const Scalar cos_alpha = Vector3Ops::Dot(-ri.onb.w(), ri.ray.Dir() );
 
@@ -185,6 +186,7 @@ void GenericHumanTissueSPF::ScatterNM(
 	trans.ray.origin = ri.ray.origin;
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.krayNM = 1.0;
+	trans.isDelta = false;
 
 	const Scalar cos_alpha = Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir() );
 

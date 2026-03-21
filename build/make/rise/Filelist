@@ -199,6 +199,7 @@ SRCLIBPHOTONMAPPING =\
 # Camera
 SRCLIBCAMERA =\
 	$(PATHLIBRARY)Cameras/CameraCommon.cpp						\
+	$(PATHLIBRARY)Cameras/CameraUtilities.cpp					\
 	$(PATHLIBRARY)Cameras/FisheyeCamera.cpp						\
 	$(PATHLIBRARY)Cameras/OrthographicCamera.cpp				\
 	$(PATHLIBRARY)Cameras/PinholeCamera.cpp						\
@@ -213,7 +214,9 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedSpectralIntegratingRasterizer.cpp		\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
-	$(PATHLIBRARY)Rendering/RayCaster.cpp
+	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
+	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
+	$(PATHLIBRARY)Rendering/BDPTRasterizer.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\
@@ -234,7 +237,8 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/TransparencyShaderOp.cpp						\
-	$(PATHLIBRARY)Shaders/TranslucentPelPhotonMapShaderOp.cpp
+	$(PATHLIBRARY)Shaders/TranslucentPelPhotonMapShaderOp.cpp			\
+	$(PATHLIBRARY)Shaders/BDPTIntegrator.cpp
 
 # Shaders
 SRCLIBSHADERS =\
@@ -274,7 +278,8 @@ SRCLIBRASTERIMAGES =\
 SRCLIBLIGHTS =\
 	$(PATHLIBRARY)Lights/DirectionalLight.cpp					\
 	$(PATHLIBRARY)Lights/PointLight.cpp							\
-	$(PATHLIBRARY)Lights/SpotLight.cpp
+	$(PATHLIBRARY)Lights/SpotLight.cpp							\
+	$(PATHLIBRARY)Lights/LightSampler.cpp
 
 # Animation
 SRCLIBANIMATION =\

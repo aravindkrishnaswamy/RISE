@@ -1,0 +1,77 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  BDPTVertex.h - Defines the vertex data structure used in
+//  Bidirectional Path Tracing (BDPT).  Each vertex stores the
+//  geometric, material, and probability information needed to
+//  evaluate and connect subpaths.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: March 20, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef BDPT_VERTEX_
+#define BDPT_VERTEX_
+
+#include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/OrthonormalBasis3D.h"
+#include "../Utilities/Color/Color.h"
+
+namespace RISE
+{
+	class IMaterial;
+	class IObject;
+	class ILight;
+
+	struct BDPTVertex
+	{
+		enum Type
+		{
+			CAMERA = 0,
+			LIGHT,
+			SURFACE
+		};
+
+		Type					type;
+
+		Point3					position;
+		Vector3					normal;
+		OrthonormalBasis3D		onb;
+		const IMaterial*		pMaterial;		///< NULL for camera/light endpoints
+		const IObject*			pObject;		///< NULL for camera/light endpoints
+
+		RISEPel					throughput;		///< Cumulative throughput from subpath origin (alpha_i)
+		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
+		Scalar					pdfFwd;			///< Forward PDF in area measure
+		Scalar					pdfRev;			///< Reverse PDF in area measure (filled during MIS weight computation)
+		bool					isDelta;		///< True if BSDF at this vertex is a delta distribution
+
+		// Light endpoint data (non-null only for type == LIGHT)
+		const ILight*			pLight;
+		const IObject*			pLuminary;
+
+		// Camera endpoint data (valid only for type == CAMERA)
+		Point2					screenPos;
+
+		BDPTVertex() :
+		type( SURFACE ),
+		pMaterial( 0 ),
+		pObject( 0 ),
+		throughput( RISEPel( 0, 0, 0 ) ),
+		throughputNM( 0 ),
+		pdfFwd( 0 ),
+		pdfRev( 0 ),
+		isDelta( false ),
+		pLight( 0 ),
+		pLuminary( 0 ),
+		screenPos( Point2( 0, 0 ) )
+		{
+		}
+	};
+}
+
+#endif

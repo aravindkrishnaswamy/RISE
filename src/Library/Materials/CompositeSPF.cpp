@@ -271,7 +271,7 @@ void CompositeSPF::Scatter(
 	}
 }
 
-void CompositeSPF::ScatterNM( 
+void CompositeSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	const RandomNumberGenerator& random,				///< [in] Random number generator
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
@@ -292,5 +292,32 @@ void CompositeSPF::ScatterNM(
 		// To account for thicknesses
 		scattered[i].ray.origin = ri.ptIntersection;
 	}
+}
+
+Scalar CompositeSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	// The composite SPF combines top and bottom layers with equal weight.
+	// Return the average of the two child PDFs.
+	const Scalar pdf_top = top.Pdf( ri, wo, ior_stack );
+	const Scalar pdf_bottom = bottom.Pdf( ri, wo, ior_stack );
+	return 0.5 * (pdf_top + pdf_bottom);
+}
+
+Scalar CompositeSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	// The composite SPF combines top and bottom layers with equal weight.
+	// Return the average of the two child PDFs.
+	const Scalar pdf_top = top.PdfNM( ri, wo, nm, ior_stack );
+	const Scalar pdf_bottom = bottom.PdfNM( ri, wo, nm, ior_stack );
+	return 0.5 * (pdf_top + pdf_bottom);
 }
 

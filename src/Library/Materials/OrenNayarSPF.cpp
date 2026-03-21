@@ -63,6 +63,10 @@ void OrenNayarSPF::Scatter(
 	const RISEPel rho = pReflectance.GetColor(ri);
 	diffuse.kray = L1*rho + (L2*rho*rho);
 
+	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
+	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+	diffuse.isDelta = false;
+
 	scattered.AddScatteredRay( diffuse );
 }
 
@@ -95,6 +99,36 @@ void OrenNayarSPF::ScatterNM(
 	const Scalar rho = pReflectance.GetColorNM(ri,nm);
 	diffuse.krayNM = L1*rho + (L2*rho*rho);
 
+	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
+	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+	diffuse.isDelta = false;
+
 	scattered.AddScatteredRay( diffuse );
+}
+
+Scalar OrenNayarSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	// Cosine-weighted hemisphere PDF = cos(theta) / pi
+	// Same as Lambertian since the sampling strategy is identical
+	const bool bFrontFace = Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) <= NEARZERO;
+	const Scalar cosTheta = bFrontFace ?
+		Vector3Ops::Dot( wo, ri.onb.w() ) :
+		-Vector3Ops::Dot( wo, ri.onb.w() );
+	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+}
+
+Scalar OrenNayarSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	// Oren-Nayar sampling PDF is wavelength-independent
+	return Pdf( ri, wo, ior_stack );
 }
 

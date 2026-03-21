@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PerfectRefractorSPF.h - A SPF which 
-//  refracts the incoming vector perfectly... 
+//  PerfectRefractorSPF.h - A SPF which
+//  refracts the incoming vector perfectly...
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 21, 2003
@@ -32,7 +32,7 @@ namespace RISE
 
 			virtual ~PerfectRefractorSPF( );
 
-			void DoSingleRGBComponent( 
+			void DoSingleRGBComponent(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const IORStack* const ior_stack,							///< [in/out] Index of refraction stack
@@ -45,8 +45,8 @@ namespace RISE
 			PerfectRefractorSPF( const IPainter& ref, const IPainter& Nt_ );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
-			//! the reflected and transmitted rays along with attenuation factors.  
-			void	Scatter( 
+			//! the reflected and transmitted rays along with attenuation factors.
+			void	Scatter(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				const RandomNumberGenerator& random,				///< [in] Random number generator
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
@@ -54,18 +54,23 @@ namespace RISE
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
-			//! the reflected and transmitted rays along with attenuation factors which taking into 
-			//! account spectral affects.  
-			void	ScatterNM( 
+			//! the reflected and transmitted rays along with attenuation factors which taking into
+			//! account spectral affects.
+			void	ScatterNM(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				const RandomNumberGenerator& random,				///< [in] Random number generator
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 				) const;
+
+			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
+			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack* const ior_stack ) const;
+
+			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
+			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack* const ior_stack ) const;
 		};
 	}
 }
 
 #endif
-

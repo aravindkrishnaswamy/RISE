@@ -5,7 +5,7 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 21, 2003
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -21,16 +21,16 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-PolishedSPF::PolishedSPF( 
-	const IPainter& Rd_, 
-	const IPainter& tau_, 
+PolishedSPF::PolishedSPF(
+	const IPainter& Rd_,
+	const IPainter& tau_,
 	const IPainter& Nt_,
 	const IPainter& s,
 	const bool hg
-	) : 
-  Rd( Rd_ ), 
+	) :
+  Rd( Rd_ ),
   tau( tau_ ),
-  Nt( Nt_ ), 
+  Nt( Nt_ ),
   scat( s ),
   bHG( hg )
 {
@@ -61,7 +61,7 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 {
 	Vector3	vRefracted = ri.ray.Dir();
 	const Vector3	vIn = vRefracted;
-    
+
 	Scalar		Rs = 0.0;
 	if( Optics::CalculateRefractedRay( normal, ior_stack?ior_stack->top():1.0, ior, vRefracted ) ) {
 		Rs = Optics::CalculateDielectricReflectance( vIn, vRefracted, normal, ior_stack?ior_stack->top():1.0, ior );
@@ -79,10 +79,30 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 				const Scalar inner = (1.0 - g*g) / (1 - g + 2*g*random.x);
 				alpha = acos( (1/(2.0*g)) * (1 + g*g - inner*inner) );
 			} while( alpha < 0 || alpha > PI_OV_TWO );
+
+			dielectric.isDelta = false;
+			// HG phase function PDF: p(cos_alpha) = (1-g^2) / (4*PI*(1+g^2-2*g*cos(alpha))^(3/2))
+			// Convert to solid angle (already in solid angle for phase functions)
+			const Scalar cos_alpha = cos(alpha);
+			const Scalar denom = 1.0 + g*g - 2.0*g*cos_alpha;
+			dielectric.pdf = (1.0 - g*g) / (FOUR_PI * denom * sqrt(denom));
+		} else {
+			// Perfect mirror reflection (g >= 1)
+			dielectric.isDelta = true;
+			dielectric.pdf = 1.0;
 		}
 	} else {
 		if( scatfunc < 1000000.0 ) {
 			alpha = acos( pow(random.x, 1.0 / (scatfunc+1.0)) );
+
+			dielectric.isDelta = false;
+			// Phong lobe PDF: p(alpha) = (n+1)/(2*PI) * cos^n(alpha)
+			const Scalar cos_alpha = cos(alpha);
+			dielectric.pdf = (scatfunc + 1.0) / TWO_PI * pow(cos_alpha, scatfunc);
+		} else {
+			// Perfect mirror reflection (very high Phong exponent)
+			dielectric.isDelta = true;
+			dielectric.pdf = 1.0;
 		}
 	}
 
@@ -100,7 +120,7 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 	return Rs;
 }
 
-void PolishedSPF::Scatter( 
+void PolishedSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	const RandomNumberGenerator& random,				///< [in] Random number generator
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
@@ -127,7 +147,7 @@ void PolishedSPF::Scatter(
 			scattered.AddScatteredRay( dielectric );
 		}
 	}
-	else 
+	else
 	{
 		Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
 		for( int i=0; i<3; i++ ) {
@@ -145,13 +165,17 @@ void PolishedSPF::Scatter(
 	{
 		ScatteredRay	diffuse;
 		diffuse.type = ScatteredRay::eRayDiffuse;
+		diffuse.isDelta = false;
 
 		// Generate a reflected ray with a cosine distribution
 		diffuse.kray = Rd.GetColor(ri) * (1.0-Rs);
- 		diffuse.ray.Set( 
+ 		diffuse.ray.Set(
 			ri.ptIntersection,
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
 			);
+		// Cosine-weighted hemisphere: pdf = cos(theta) / PI
+		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
+		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
 
 		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			scattered.AddScatteredRay( diffuse );
@@ -159,7 +183,7 @@ void PolishedSPF::Scatter(
 	}
 }
 
-void PolishedSPF::ScatterNM( 
+void PolishedSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	const RandomNumberGenerator& random,				///< [in] Random number generator
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
@@ -185,13 +209,16 @@ void PolishedSPF::ScatterNM(
 	{
 		ScatteredRay	diffuse;
 		diffuse.type = ScatteredRay::eRayDiffuse;
+		diffuse.isDelta = false;
 
 		// Generate a reflected ray with a cosine distribution
 		diffuse.krayNM = Rd.GetColorNM(ri,nm) * (1.0-Rs);
-		diffuse.ray.Set( 
+		diffuse.ray.Set(
 			ri.ptIntersection,
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
 			);
+		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
+		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
 
 		if( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			scattered.AddScatteredRay( diffuse );
@@ -199,3 +226,89 @@ void PolishedSPF::ScatterNM(
 	}
 }
 
+// Computes the Polished SPF PDF for a given direction
+static Scalar PolishedPdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar scatfunc,
+	const Scalar ior,
+	const bool bHG,
+	const IORStack* const ior_stack
+	)
+{
+	const Vector3& n = ri.onb.w();
+	const Scalar cos_theta_o = Vector3Ops::Dot( wo, n );
+
+	if( cos_theta_o <= 0.0 ) {
+		return 0.0;
+	}
+
+	// Diffuse PDF: cosine-weighted hemisphere
+	const Scalar pdf_diffuse = cos_theta_o * INV_PI;
+
+	// Specular PDF: depends on whether it's a delta or not
+	bool is_delta = false;
+
+	if( bHG ) {
+		is_delta = (scatfunc >= 1.0);
+	} else {
+		is_delta = (scatfunc >= 1000000.0);
+	}
+
+	if( is_delta ) {
+		// Delta distribution for specular: pdf is 0 for any non-delta query direction
+		// Only the diffuse component contributes
+		return pdf_diffuse;
+	}
+
+	// For non-delta specular, compute the lobe PDF
+	// The specular ray is perturbed from the perfect reflection direction
+	const Vector3 vn = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), vn );
+
+	// Angle between wo and the reflected direction
+	const Scalar cos_alpha = Vector3Ops::Dot( wo, rv );
+
+	Scalar pdf_specular = 0.0;
+
+	if( cos_alpha > 0.0 ) {
+		if( bHG ) {
+			// Henyey-Greenstein phase function
+			const Scalar& g = scatfunc;
+			const Scalar denom = 1.0 + g*g - 2.0*g*cos_alpha;
+			pdf_specular = (1.0 - g*g) / (FOUR_PI * denom * sqrt(denom));
+		} else {
+			// Phong lobe: (n+1)/(2*PI) * cos^n(alpha)
+			pdf_specular = (scatfunc + 1.0) / TWO_PI * pow(cos_alpha, scatfunc);
+		}
+	}
+
+	// Average of diffuse and specular PDFs
+	return 0.5 * (pdf_diffuse + pdf_specular);
+}
+
+Scalar PolishedSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	const RISEPel s = scat.GetColor(ri);
+	const RISEPel ior_val = Nt.GetColor(ri);
+	// Use average values across channels
+	const Scalar s_val = (s[0] + s[1] + s[2]) / 3.0;
+	const Scalar ior_avg = (ior_val[0] + ior_val[1] + ior_val[2]) / 3.0;
+	return PolishedPdf( ri, wo, s_val, ior_avg, bHG, ior_stack );
+}
+
+Scalar PolishedSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	const Scalar s_val = scat.GetColorNM(ri,nm);
+	const Scalar ior_val = Nt.GetColorNM(ri,nm);
+	return PolishedPdf( ri, wo, s_val, ior_val, bHG, ior_stack );
+}

@@ -1,0 +1,310 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           cornellbox_bdpt_full.RISEscene                                                          #
+#   Description:    Full complexity BDPT test - diffuse, glossy, mirror, glass, area + point lights         #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 20, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+	shaderop	pt
+}
+
+bdpt_rasterizer
+{
+	max_recursion		12
+	min_importance		0.0001
+	max_eye_depth		10
+	max_light_depth		10
+	samples				128
+	lum_samples			1
+	ior_stack			true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cornellbox_bdpt_full
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 200 300
+	up					0 1 0
+	width				512
+	height				512
+	fov					37.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.9 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_glossy_diff
+	color				0.02 0.02 0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_glossy_spec
+	color				0.8 0.6 0.3
+}
+
+uniformcolor_painter
+{
+	name				pnt_mirror
+	color				0.95 0.95 0.95
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.98 0.98 0.98
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_ior
+	color				1.5 1.5 1.5
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				80.0
+	material			none
+}
+
+# Glossy gold material
+isotropic_phong_material
+{
+	name				glossy_gold
+	rd					pnt_glossy_diff
+	rs					pnt_glossy_spec
+	N			80.0
+}
+
+# Perfect mirror
+perfectreflector_material
+{
+	name				mirror
+	reflectance			pnt_mirror
+}
+
+# Glass
+dielectric_material
+{
+	name				glass
+	tau					pnt_glass_tau
+	ior					pnt_glass_ior
+}
+
+##################################################
+# Lights
+##################################################
+
+# Small point light for additional illumination
+omni_light
+{
+	name				filllight
+	power				20 18 14
+	position			100 400 100
+}
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+# Smaller area light
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					320.0 548.7999 260.0
+	ptb					320.0 548.7999 310.0
+	ptc					240.0 548.7999 310.0
+	ptd					240.0 548.7999 260.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Objects - three spheres: glossy, mirror, glass
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom_large
+	radius				80
+}
+
+sphere_geometry
+{
+	name				spheregeom_small
+	radius				60
+}
+
+# Left: glossy gold sphere
+standard_object
+{
+	name				glossy_sphere
+	geometry			spheregeom_large
+	material			glossy_gold
+	position			140 80 350
+}
+
+# Center: glass sphere
+standard_object
+{
+	name				glass_sphere
+	geometry			spheregeom_small
+	material			glass
+	position			278 60 280
+}
+
+# Right: mirror sphere
+standard_object
+{
+	name				mirror_sphere
+	geometry			spheregeom_large
+	material			mirror
+	position			420 80 350
+}

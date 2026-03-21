@@ -1218,6 +1218,38 @@ namespace RISE
 			) = 0;
 
 
+		//! Sets the rasterizer type to be BDPT (bidirectional path tracing)
+		virtual bool SetBDPTRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
+			const unsigned int maxRecur,							///< [in] Maximum recursion level
+			const double minImportance,								///< [in] Minimum importance to stop at
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const char* shader,										///< [in] The default shader
+			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+			const bool bBackground,									///< [in] Is the radiance map a background object
+			const double scale,										///< [in] How much to scale the radiance values
+			const double orient[3],									///< [in] Euler angles for orienting the radiance map
+			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
+			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
+			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bSpectral = false,							///< [in] Enable spectral rendering
+			const double nmbegin = 380.0,							///< [in] Start wavelength (nm)
+			const double nmend = 780.0,								///< [in] End wavelength (nm)
+			const unsigned int num_wavelengths = 10,				///< [in] Number of wavelength bins
+			const unsigned int spectral_samples = 1					///< [in] Spectral samples per pixel
+			) = 0;
+
 		//
 		// Adds rasterizer outputs
 		//

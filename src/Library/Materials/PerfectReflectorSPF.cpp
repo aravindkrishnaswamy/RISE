@@ -39,10 +39,12 @@ void PerfectReflectorSPF::Scatter(
 {
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
+	specular.isDelta = true;
+	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 	specular.kray = reflectivity.GetColor(ri);
-	
+
 	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( specular );
 	}
@@ -58,12 +60,33 @@ void PerfectReflectorSPF::ScatterNM(
 {
 	ScatteredRay specular;
 	specular.type = ScatteredRay::eRayReflection;
+	specular.isDelta = true;
+	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 	specular.krayNM = reflectivity.GetColorNM(ri,nm);
-	
+
 	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( specular );
 	}
+}
+
+Scalar PerfectReflectorSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	return 0;
+}
+
+Scalar PerfectReflectorSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	return 0;
 }
 

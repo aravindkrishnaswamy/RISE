@@ -920,6 +920,7 @@ void BioSpecSkinSPF::Scatter(
 		remmitted.ray.origin = ri.ptIntersection;
 		remmitted.ray.SetDir(photon_out);
 		remmitted.kray = RISEPel(1.0,1.0,1.0);
+		remmitted.isDelta = false;
 		scattered.AddScatteredRay( remmitted );
 	}
 }
@@ -996,7 +997,8 @@ void BioSpecSkinSPF::ScatterNM(
 		remmitted.ray.origin = ri.ptIntersection;
 		remmitted.ray.SetDir(photon_out);
 		remmitted.krayNM = 1.0;
-		scattered.AddScatteredRay( remmitted );	
+		remmitted.isDelta = false;
+		scattered.AddScatteredRay( remmitted );
 	}
 }
 

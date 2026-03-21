@@ -3729,6 +3729,90 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 	return true;
 }
 
+//! Sets the rasterizer type to be BDPT (bidirectional path tracing)
+bool Job::SetBDPTRasterizer(
+	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
+	const unsigned int maxRecur,							///< [in] Maximum recursion level
+	const double minImportance,								///< [in] Minimum importance to stop at
+	const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+	const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+	const char* shader,										///< [in] The default shader
+	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+	const bool bBackground,									///< [in] Is the radiance map a background object
+	const double scale,										///< [in] How much to scale the radiance values
+	const double orient[3],									///< [in] Euler angles for orienting the radiance map
+	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
+	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
+	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+	const bool bSpectral,
+	const double nmbegin,
+	const double nmend,
+	const unsigned int num_wavelengths,
+	const unsigned int spectral_samples
+	)
+{
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
+		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetBDPTRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+
+	if( globalRadianceMap ) {
+		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, scale );
+			pRm->SetOrientation( Vector3( orient ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetBDPTRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( pLumSampler ) {
+		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreateBDPTRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
+		bSpectral, nmbegin, nmend, num_wavelengths, spectral_samples );
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
 
 //
 // Adds raster outputs

@@ -74,11 +74,13 @@ void TranslucentSPF::Scatter(
 		front.type = ScatteredRay::eRayDiffuse;
 
 		if( front.kray[0] > 0 ) {
-			rv = GeometricUtilities::Perturb( n, 
+			rv = GeometricUtilities::Perturb( n,
 				acos( sqrt( random.CanonicalRandom() ) ),
 				TWO_PI * random.CanonicalRandom() );
-		
+
 			front.ray.Set( ri.ptIntersection, rv );
+			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+			front.isDelta = false;
 			scattered.AddScatteredRay( front );
 		}
 
@@ -95,6 +97,10 @@ void TranslucentSPF::Scatter(
 					TWO_PI * random.CanonicalRandom() );
 
 				trans.ray.Set( ri.ptIntersection, rv );
+				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+				const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
+				trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
+				trans.isDelta = false;
 				scattered.AddScatteredRay( trans );
 			} else {
 				// Add a new ray for each color component
@@ -109,6 +115,10 @@ void TranslucentSPF::Scatter(
 					trans.kray = 0;
 					trans.kray[0] = p[0];
 					trans.ray.Set( ri.ptIntersection, rv );
+					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
+					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
+					trans.isDelta = false;
 					scattered.AddScatteredRay( trans );
 				}
 			}
@@ -142,6 +152,12 @@ void TranslucentSPF::Scatter(
 						TWO_PI * random.CanonicalRandom() );
 
 					trans.ray.Set( ri.ptIntersection, rv );
+					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+					{
+						const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
+						trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
+						trans.isDelta = false;
+					}
 					front.kray = front.kray * (RISEPel(1.0,1.0,1.0)-scat);
 					scattered.AddScatteredRay( trans );
 				} else {
@@ -158,6 +174,12 @@ void TranslucentSPF::Scatter(
 						trans.kray = 0;
 						trans.kray[i] = p[i];
 						trans.ray.Set( ri.ptIntersection, rv );
+						// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+						{
+							const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
+							trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
+							trans.isDelta = false;
+						}
 						front.kray = 0;
 						front.kray[i] = f[i] * (1.0-scat[i]);
 						scattered.AddScatteredRay( trans );
@@ -165,12 +187,14 @@ void TranslucentSPF::Scatter(
 				}
 			}
 		}
-		
-		rv = GeometricUtilities::Perturb( n, 
+
+		rv = GeometricUtilities::Perturb( n,
 				acos( sqrt(random.CanonicalRandom() ) ),
 				TWO_PI * random.CanonicalRandom() );
 
 		front.ray.Set( ri.ptIntersection, rv );
+		front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+		front.isDelta = false;
 		scattered.AddScatteredRay( front );
 	}
 }
@@ -199,11 +223,13 @@ void TranslucentSPF::ScatterNM(
 		front.type = ScatteredRay::eRayDiffuse;
 		
 		if( front.krayNM > 0 ) {
-			rv = GeometricUtilities::Perturb( n, 
+			rv = GeometricUtilities::Perturb( n,
 				acos( sqrt(random.CanonicalRandom()) ),
 				TWO_PI * random.CanonicalRandom() );
-		
+
 			front.ray.Set( ri.ptIntersection, rv );
+			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+			front.isDelta = false;
 			scattered.AddScatteredRay( front );
 		}
 
@@ -213,11 +239,16 @@ void TranslucentSPF::ScatterNM(
 		if( trans.krayNM > 0 ) {
 			myonb.FlipW();
 
+			const Scalar Nval = N.GetColorNM(ri,nm);
 			rv = GeometricUtilities::Perturb( myonb.w(),
-				acos( pow(random.CanonicalRandom(), 1.0 / (N.GetColorNM(ri,nm) + 1.0)) ),
+				acos( pow(random.CanonicalRandom(), 1.0 / (Nval + 1.0)) ),
 				TWO_PI * random.CanonicalRandom() );
 
 			trans.ray.Set( ri.ptIntersection, rv );
+			// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+			const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
+			trans.pdf = (Nval + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval );
+			trans.isDelta = false;
 			scattered.AddScatteredRay( trans );
 		}
 	}
@@ -237,26 +268,66 @@ void TranslucentSPF::ScatterNM(
 			if( scat > 0 ) {
 				// Multiple scatter back
 				myonb.FlipW();
+				const Scalar Nval_scat = N.GetColorNM(ri,nm);
 				rv = GeometricUtilities::Perturb( myonb.w(),
-					acos( pow(random.CanonicalRandom(), 1.0 / (N.GetColorNM(ri,nm) + 1.0)) ),
+					acos( pow(random.CanonicalRandom(), 1.0 / (Nval_scat + 1.0)) ),
 					TWO_PI * random.CanonicalRandom() );
 
 				trans.type = ScatteredRay::eRayTranslucent;
 				trans.krayNM *= scat;
 				trans.ray.Set( ri.ptIntersection, rv );
+				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+				{
+					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
+					trans.pdf = (Nval_scat + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval_scat );
+					trans.isDelta = false;
+				}
 				scattered.AddScatteredRay( trans );
 
 				front.krayNM *= (1.0-scat);
 			}
 		}
 
-		rv = GeometricUtilities::Perturb( n, 
-			acos( pow(random.CanonicalRandom(), 1.0 / (N.GetColorNM(ri,nm) + 1.0)) ),
-			TWO_PI * random.CanonicalRandom() );
+		{
+			const Scalar Nval_front = N.GetColorNM(ri,nm);
+			rv = GeometricUtilities::Perturb( n,
+				acos( pow(random.CanonicalRandom(), 1.0 / (Nval_front + 1.0)) ),
+				TWO_PI * random.CanonicalRandom() );
 
-		front.ray.Set( ri.ptIntersection, rv );
+			front.ray.Set( ri.ptIntersection, rv );
+			// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
+			const Scalar cosAlpha = fabs( Vector3Ops::Dot( front.ray.Dir(), n ) );
+			front.pdf = (Nval_front + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval_front );
+			front.isDelta = false;
+		}
 
 		scattered.AddScatteredRay( front );
 	}
+}
+
+Scalar TranslucentSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	// For the front hemisphere diffuse component, return cosine-weighted PDF
+	// For the translucent (back hemisphere) component, return 0
+	// (translucent paths have a complex mixed PDF that we approximate as 0)
+	const bool bFrontFace = Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) <= NEARZERO;
+	const Scalar cosTheta = bFrontFace ?
+		Vector3Ops::Dot( wo, ri.onb.w() ) :
+		-Vector3Ops::Dot( wo, ri.onb.w() );
+	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+}
+
+Scalar TranslucentSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	return Pdf( ri, wo, ior_stack );
 }
 

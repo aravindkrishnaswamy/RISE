@@ -49,7 +49,11 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	ScatteredRay fresnel;
 
 	fresnel.type = ScatteredRay::eRayReflection;
+	fresnel.isDelta = true;
+	fresnel.pdf = 1.0;
 	specular.type = ScatteredRay::eRayRefraction;
+	specular.isDelta = true;
+	specular.pdf = 1.0;
 
 	Vector3	vRefracted = ri.ray.Dir();
 
@@ -164,7 +168,11 @@ void PerfectRefractorSPF::ScatterNM(
 	ScatteredRay fresnel;
 
 	fresnel.type = ScatteredRay::eRayReflection;
+	fresnel.isDelta = true;
+	fresnel.pdf = 1.0;
 	specular.type = ScatteredRay::eRayRefraction;
+	specular.isDelta = true;
+	specular.pdf = 1.0;
 
 	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	Vector3	vRefracted = ri.ray.Dir();
@@ -233,5 +241,24 @@ void PerfectRefractorSPF::ScatterNM(
 
 		scattered.AddScatteredRay( fresnel );
 	}
+}
+
+Scalar PerfectRefractorSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	return 0;
+}
+
+Scalar PerfectRefractorSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	return 0;
 }
 

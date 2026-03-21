@@ -4111,6 +4111,46 @@ namespace RISE
 	}
 }
 
+#include "Rendering/BDPTRasterizer.h"
+
+namespace RISE
+{
+	//! Creates a BDPT (bidirectional path tracing) rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const bool bSpectral,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		BDPTRasterizer* pRasterizer = new BDPTRasterizer( caster, maxEyeDepth, maxLightDepth );
+
+		if( bSpectral ) {
+			pRasterizer->SetSpectralMode( lambda_begin, lambda_end, num_wavelengths, spectral_samples );
+		}
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT rasterizer" );
+		return true;
+	}
+}
+
 //////////////////////////////////////////////////////////
 // Parsers
 //////////////////////////////////////////////////////////

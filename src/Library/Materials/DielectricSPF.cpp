@@ -58,7 +58,11 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
+	dielectric.isDelta = true;
+	dielectric.pdf = 1.0;
 	fresnel.type = ScatteredRay::eRayReflection;
+	fresnel.isDelta = true;
+	fresnel.pdf = 1.0;
 
 	Vector3	refracted = ri.ray.Dir();
 	Scalar		ref=0;
@@ -273,4 +277,23 @@ void DielectricSPF::ScatterNM(
 		fresnel.krayNM = ref;
 		scattered.AddScatteredRay( fresnel );
 	}
+}
+
+Scalar DielectricSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	return 0;
+}
+
+Scalar DielectricSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	return 0;
 }

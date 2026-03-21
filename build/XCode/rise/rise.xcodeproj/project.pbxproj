@@ -1300,6 +1300,23 @@
 		F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 		F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */; };
 		F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */; };
+		F2C5D5652F6E447400546C97 /* SplatFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5642F6E447400546C97 /* SplatFilm.cpp */; };
+		F2C5D5662F6E447400546C97 /* BDPTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5612F6E447400546C97 /* BDPTRasterizer.cpp */; };
+		F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5632F6E447400546C97 /* SplatFilm.h */; };
+		F2C5D5682F6E447400546C97 /* BDPTRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5602F6E447400546C97 /* BDPTRasterizer.h */; };
+		F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */; };
+		F2C5D56A2F6E447400546C97 /* SplatFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5642F6E447400546C97 /* SplatFilm.cpp */; };
+		F2C5D56B2F6E447400546C97 /* BDPTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5612F6E447400546C97 /* BDPTRasterizer.cpp */; };
+		F2C5D56F2F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */; };
+		F2C5D5702F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */; };
+		F2C5D5712F6E44CD00546C97 /* BDPTVertex.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D56E2F6E44CD00546C97 /* BDPTVertex.h */; };
+		F2C5D5722F6E44CD00546C97 /* BDPTIntegrator.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */; };
+		F2C5D5752F6E44DE00546C97 /* LightSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5732F6E44DE00546C97 /* LightSampler.h */; };
+		F2C5D5762F6E44DE00546C97 /* LightSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */; };
+		F2C5D5772F6E44DE00546C97 /* LightSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */; };
+		F2C5D57A2F6E450F00546C97 /* CameraUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5792F6E450F00546C97 /* CameraUtilities.cpp */; };
+		F2C5D57B2F6E450F00546C97 /* CameraUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5782F6E450F00546C97 /* CameraUtilities.h */; };
+		F2C5D57C2F6E450F00546C97 /* CameraUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5792F6E450F00546C97 /* CameraUtilities.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1967,6 +1984,18 @@
 		F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeEmitter.cpp; sourceTree = "<group>"; };
 		F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAH.h; sourceTree = "<group>"; };
 		F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAHNode.h; sourceTree = "<group>"; };
+		F2C5D5602F6E447400546C97 /* BDPTRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTRasterizer.h; sourceTree = "<group>"; };
+		F2C5D5612F6E447400546C97 /* BDPTRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BDPTRasterizer.cpp; sourceTree = "<group>"; };
+		F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerStateCache.h; sourceTree = "<group>"; };
+		F2C5D5632F6E447400546C97 /* SplatFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SplatFilm.h; sourceTree = "<group>"; };
+		F2C5D5642F6E447400546C97 /* SplatFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SplatFilm.cpp; sourceTree = "<group>"; };
+		F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTIntegrator.h; sourceTree = "<group>"; };
+		F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BDPTIntegrator.cpp; sourceTree = "<group>"; };
+		F2C5D56E2F6E44CD00546C97 /* BDPTVertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTVertex.h; sourceTree = "<group>"; };
+		F2C5D5732F6E44DE00546C97 /* LightSampler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LightSampler.h; sourceTree = "<group>"; };
+		F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = LightSampler.cpp; sourceTree = "<group>"; };
+		F2C5D5782F6E450F00546C97 /* CameraUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CameraUtilities.h; sourceTree = "<group>"; };
+		F2C5D5792F6E450F00546C97 /* CameraUtilities.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CameraUtilities.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2137,6 +2166,8 @@
 		F27F07F7069C428F0069C9E5 /* Cameras */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5782F6E450F00546C97 /* CameraUtilities.h */,
+				F2C5D5792F6E450F00546C97 /* CameraUtilities.cpp */,
 				F27F07F8069C428F0069C9E5 /* CameraCommon.cpp */,
 				F27F07F9069C428F0069C9E5 /* CameraCommon.h */,
 				F27F07FA069C428F0069C9E5 /* CameraTransforms.h */,
@@ -2350,6 +2381,8 @@
 		F27F08B5069C428F0069C9E5 /* Lights */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5732F6E44DE00546C97 /* LightSampler.h */,
+				F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */,
 				F27F08B6069C428F0069C9E5 /* AmbientLight.h */,
 				F27F08B7069C428F0069C9E5 /* DirectionalLight.cpp */,
 				F27F08B8069C428F0069C9E5 /* DirectionalLight.h */,
@@ -2637,6 +2670,11 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5602F6E447400546C97 /* BDPTRasterizer.h */,
+				F2C5D5612F6E447400546C97 /* BDPTRasterizer.cpp */,
+				F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */,
+				F2C5D5632F6E447400546C97 /* SplatFilm.h */,
+				F2C5D5642F6E447400546C97 /* SplatFilm.cpp */,
 				F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */,
 				F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */,
 				F27F0998069C42900069C9E5 /* BlockRasterizeSequence.h */,
@@ -2709,6 +2747,9 @@
 		F27F09D5069C42900069C9E5 /* Shaders */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */,
+				F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */,
+				F2C5D56E2F6E44CD00546C97 /* BDPTVertex.h */,
 				6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */,
 				6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */,
 				6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */,
@@ -2950,6 +2991,8 @@
 				F27F0A87069C42910069C9E5 /* QuarticFunction.h in Headers */,
 				F27F0A89069C42910069C9E5 /* Resultant.h in Headers */,
 				F27F0A8A069C42910069C9E5 /* 3DS_Defines.h in Headers */,
+				F2C5D5712F6E44CD00546C97 /* BDPTVertex.h in Headers */,
+				F2C5D5722F6E44CD00546C97 /* BDPTIntegrator.h in Headers */,
 				F27F0A8C069C42910069C9E5 /* BezierPatchGeometry.h in Headers */,
 				F27F0A8E069C42910069C9E5 /* BezierTesselation.h in Headers */,
 				F27F0A8F069C42910069C9E5 /* BezierValueGenerator.h in Headers */,
@@ -3010,6 +3053,7 @@
 				F27F0ADA069C42910069C9E5 /* ILightPriv.h in Headers */,
 				F27F0ADB069C42910069C9E5 /* ILog.h in Headers */,
 				F27F0ADC069C42910069C9E5 /* ILogPrinter.h in Headers */,
+				F2C5D57B2F6E450F00546C97 /* CameraUtilities.h in Headers */,
 				F27F0ADD069C42910069C9E5 /* ILogPriv.h in Headers */,
 				F27F0ADE069C42910069C9E5 /* ILuminaryManager.h in Headers */,
 				F27F0ADF069C42910069C9E5 /* IManager.h in Headers */,
@@ -3074,6 +3118,9 @@
 				F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */,
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
 				F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */,
+				F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */,
+				F2C5D5682F6E447400546C97 /* BDPTRasterizer.h in Headers */,
+				F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */,
 				F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */,
 				F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */,
 				F27F0B30069C42910069C9E5 /* LightManager.h in Headers */,
@@ -3320,6 +3367,7 @@
 				F27F0CAE069C42910069C9E5 /* VolumeOp_LMIP.h in Headers */,
 				F27F0CAF069C42910069C9E5 /* VolumeOp_MIP.h in Headers */,
 				F27F0CB0069C42910069C9E5 /* ZuckerHummelOperator.h in Headers */,
+				F2C5D5752F6E44DE00546C97 /* LightSampler.h in Headers */,
 				F298C65407B14247007CDF08 /* StandardShader.h in Headers */,
 				F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */,
 				F277340D07ECCB7300C0B600 /* HaltonPointsSampling2D.h in Headers */,
@@ -3537,6 +3585,8 @@
 				F27F0B74069C42910069C9E5 /* SchlickSPF.cpp in Sources */,
 				F27F0B79069C42910069C9E5 /* TranslucentSPF.cpp in Sources */,
 				F27F0B7B069C42910069C9E5 /* WardAnisotropicEllipticalGaussianBRDF.cpp in Sources */,
+				F2C5D56A2F6E447400546C97 /* SplatFilm.cpp in Sources */,
+				F2C5D56B2F6E447400546C97 /* BDPTRasterizer.cpp in Sources */,
 				F27F0B7E069C42910069C9E5 /* WardAnisotropicEllipticalGaussianSPF.cpp in Sources */,
 				F27F0B80069C42910069C9E5 /* WardIsotropicGaussianBRDF.cpp in Sources */,
 				F27F0B83069C42910069C9E5 /* WardIsotropicGaussianSPF.cpp in Sources */,
@@ -3576,8 +3626,10 @@
 				F27F0BCC069C42910069C9E5 /* GlobalSpectralPhotonTracer.cpp in Sources */,
 				F27F0BCE069C42910069C9E5 /* IrradianceCache.cpp in Sources */,
 				F27F0BD3069C42910069C9E5 /* ShadowPhotonMap.cpp in Sources */,
+				F2C5D5702F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
 				F27F0BD5069C42910069C9E5 /* ShadowPhotonTracer.cpp in Sources */,
 				F27F0BD8069C42910069C9E5 /* TranslucentPelPhotonMap.cpp in Sources */,
+				F2C5D57C2F6E450F00546C97 /* CameraUtilities.cpp in Sources */,
 				F27F0BDA069C42910069C9E5 /* TranslucentPelPhotonTracer.cpp in Sources */,
 				F27F0BDF069C42910069C9E5 /* HDRReader.cpp in Sources */,
 				F27F0BE1069C42910069C9E5 /* HDRWriter.cpp in Sources */,
@@ -3634,6 +3686,7 @@
 				F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */,
 				F27F0C9B069C42910069C9E5 /* ThreadsPTHREADs.cpp in Sources */,
 				F27F0C9D069C42910069C9E5 /* Transformable.cpp in Sources */,
+				F2C5D5762F6E44DE00546C97 /* LightSampler.cpp in Sources */,
 				F298C65307B14247007CDF08 /* StandardShader.cpp in Sources */,
 				F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */,
 				F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */,
@@ -3751,6 +3804,7 @@
 				F24B72282F52A632008304C4 /* Geometry.cpp in Sources */,
 				F24B72292F52A632008304C4 /* Geometry.h in Sources */,
 				F24B722A2F52A632008304C4 /* GeometryUtilities.cpp in Sources */,
+				F2C5D57A2F6E450F00546C97 /* CameraUtilities.cpp in Sources */,
 				F24B722B2F52A632008304C4 /* GeometryUtilities.h in Sources */,
 				F24B722C2F52A632008304C4 /* InfinitePlaneGeometry.cpp in Sources */,
 				F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */,
@@ -4047,6 +4101,8 @@
 				F24B73502F52A632008304C4 /* GlobalPelPhotonMap.h in Sources */,
 				F24B73512F52A632008304C4 /* GlobalPelPhotonTracer.cpp in Sources */,
 				F24B73522F52A632008304C4 /* GlobalPelPhotonTracer.h in Sources */,
+				F2C5D5652F6E447400546C97 /* SplatFilm.cpp in Sources */,
+				F2C5D5662F6E447400546C97 /* BDPTRasterizer.cpp in Sources */,
 				F24B73532F52A632008304C4 /* GlobalSpectralPhotonMap.cpp in Sources */,
 				F24B73542F52A632008304C4 /* GlobalSpectralPhotonMap.h in Sources */,
 				F24B73552F52A632008304C4 /* GlobalSpectralPhotonTracer.cpp in Sources */,
@@ -4100,6 +4156,7 @@
 				F24B73852F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */,
 				F24B73862F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.h in Sources */,
 				F24B73872F52A632008304C4 /* BlockRasterizeSequence.h in Sources */,
+				F2C5D56F2F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
 				F24B73882F52A632008304C4 /* FileRasterizerOutput.cpp in Sources */,
 				F24B73892F52A632008304C4 /* FileRasterizerOutput.h in Sources */,
 				F24B738A2F52A632008304C4 /* HilbertRasterizeSequence.h in Sources */,
@@ -4172,6 +4229,7 @@
 				F24B73CD2F52A632008304C4 /* DistributionTracingShaderOp.cpp in Sources */,
 				F24B73CE2F52A632008304C4 /* DistributionTracingShaderOp.h in Sources */,
 				F24B73CF2F52A632008304C4 /* EmissionShaderOp.cpp in Sources */,
+				F2C5D5772F6E44DE00546C97 /* LightSampler.cpp in Sources */,
 				F24B73D02F52A632008304C4 /* EmissionShaderOp.h in Sources */,
 				F24B73D12F52A632008304C4 /* FinalGatherShaderOp.cpp in Sources */,
 				F24B73D22F52A632008304C4 /* FinalGatherShaderOp.h in Sources */,

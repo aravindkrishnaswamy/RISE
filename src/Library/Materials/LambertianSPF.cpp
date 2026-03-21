@@ -54,6 +54,10 @@ void LambertianSPF::Scatter(
 
 	diffuse.kray = reflectance.GetColor(ri);
 
+	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
+	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+	diffuse.isDelta = false;
+
 	scattered.AddScatteredRay( diffuse );
 }
 
@@ -82,6 +86,36 @@ void LambertianSPF::ScatterNM(
 	
 	diffuse.krayNM = reflectance.GetColorNM(ri, nm);
 
+	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
+	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
+	diffuse.isDelta = false;
+
 	scattered.AddScatteredRay( diffuse );
+}
+
+Scalar LambertianSPF::Pdf(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const IORStack* const ior_stack
+	) const
+{
+	// Cosine-weighted hemisphere PDF = cos(theta) / pi
+	// Use the geometric normal to determine which hemisphere we're scattering into
+	const bool bFrontFace = Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) <= NEARZERO;
+	const Scalar cosTheta = bFrontFace ?
+		Vector3Ops::Dot( wo, ri.onb.w() ) :
+		-Vector3Ops::Dot( wo, ri.onb.w() );
+	return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+}
+
+Scalar LambertianSPF::PdfNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& wo,
+	const Scalar nm,
+	const IORStack* const ior_stack
+	) const
+{
+	// Lambertian PDF is wavelength-independent
+	return Pdf( ri, wo, ior_stack );
 }
 

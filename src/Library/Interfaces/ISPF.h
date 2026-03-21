@@ -48,13 +48,17 @@ namespace RISE
 		RISEPel		kray;						///< Blending factor for this ray
 		Scalar		krayNM;						///< Blending factor for a particular wavelength of light for spectral processing
 		ScatRayType	type;						///< Type of ray
+		Scalar		pdf;						///< Sampling PDF for this scattered direction (solid angle measure)
+		bool		isDelta;					///< True if this ray was sampled from a delta distribution (perfect mirror/refraction)
 		bool		delete_stack;				///< Should the IOR stack be deleted ?
 		IORStack	*ior_stack;					///< Index of refraction stack for this ray
 
 		ScatteredRay() :
 		  kray( RISEPel(0,0,0) ),
 		  krayNM( 0 ),
-		  type( eRayUnknown ), 
+		  type( eRayUnknown ),
+		  pdf( 0 ),
+		  isDelta( false ),
 		  delete_stack( true ),
 		  ior_stack( 0 )
 		{}
@@ -130,15 +134,35 @@ namespace RISE
 			) const = 0;
 
 		//! Given parameters describing the intersection of a ray with a surface, this will return
-		//! the reflected and transmitted rays along with attenuation factors which taking into 
-		//! account spectral affects.  
-		virtual void	ScatterNM( 
+		//! the reflected and transmitted rays along with attenuation factors which taking into
+		//! account spectral affects.
+		virtual void	ScatterNM(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 			const RandomNumberGenerator& random,				///< [in] Random number generator
 			const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 			) const = 0;
+
+		//! Evaluates the PDF (probability density function) for scattering from the incoming
+		//! direction (given by ri.ray.Dir()) to the outgoing direction wo.
+		//! Returns the PDF value in solid angle measure.
+		//! For delta distributions (perfect reflection/refraction), returns 0.
+		/// \return PDF value in solid angle measure [1/sr]
+		virtual Scalar	Pdf(
+			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details (incoming direction is ri.ray.Dir())
+			const Vector3& wo,											///< [in] Outgoing scattered direction to evaluate PDF for
+			const IORStack* const ior_stack								///< [in] Index of refraction stack
+			) const { return 0; }
+
+		//! Spectral version of Pdf evaluation
+		/// \return PDF value in solid angle measure [1/sr]
+		virtual Scalar	PdfNM(
+			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details (incoming direction is ri.ray.Dir())
+			const Vector3& wo,											///< [in] Outgoing scattered direction to evaluate PDF for
+			const Scalar nm,											///< [in] Wavelength
+			const IORStack* const ior_stack								///< [in] Index of refraction stack
+			) const { return 0; }
 	};
 }
 

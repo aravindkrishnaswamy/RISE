@@ -1948,6 +1948,22 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool bShowSamples				///< [in] Show the regions in which more samples were taken
 								);
 
+	//! Creates a BDPT (bidirectional path tracing) rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const bool bSpectral = false,		///< [in] Enable spectral rendering
+								const Scalar lambda_begin = 380.0,	///< [in] Start wavelength (nm)
+								const Scalar lambda_end = 780.0,	///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths = 10,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples = 1	///< [in] Spectral samples per pixel
+								);
+
 	//////////////////////////////////////////////////////////
 	// Parsers
 	//////////////////////////////////////////////////////////
