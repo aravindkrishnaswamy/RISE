@@ -1,9 +1,61 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  BDPTIntegrator.h - Core bidirectional path tracing algorithm.
-//  Encapsulates light/eye subpath generation, connection strategies,
-//  and MIS weight computation.  Separated from the rasterizer for
-//  testability and future MLT reuse.
+//
+//    CONTEXT:
+//    Standard unidirectional path tracing only discovers light paths
+//    from the camera side.  For scenes where important light paths
+//    are hard to find from the eye (caustics, small luminaries, SSS
+//    materials), convergence is very slow.  BDPT generates subpaths
+//    from both the camera and light sources, then connects them with
+//    all possible (s,t) strategies, weighted by MIS to minimize
+//    variance.
+//
+//    ARCHITECTURE:
+//    BDPTIntegrator is a standalone algorithm class (not a rasterizer)
+//    so it can be reused by both BDPTRasterizer (pixel-based) and
+//    MLTRasterizer (Markov chain-based).  The public API is:
+//
+//    1. GenerateLightSubpath / GenerateEyeSubpath:
+//       Trace a subpath from a sampled light or camera ray, storing
+//       vertices with throughput (alpha), forward/reverse PDFs, and
+//       delta flags.  Each vertex's throughput is the cumulative
+//       path contribution from the subpath origin to that vertex.
+//
+//    2. ConnectAndEvaluate:
+//       Evaluate a single (s,t) strategy — connect lightVerts[s-1]
+//       to eyeVerts[t-1], check visibility, evaluate BSDFs, compute
+//       the geometric term, and return the unweighted contribution.
+//       Special cases: s=0 (eye path hits emitter), s=1 (next event
+//       estimation), t=0/t=1 (light path connects to camera/sensor).
+//
+//    3. MISWeight:
+//       Balance heuristic weight computed by walking along the full
+//       path and accumulating ratios of forward/reverse PDFs at each
+//       vertex, following Veach's thesis Section 10.2.1.
+//
+//    DIRECTION CONVENTIONS:
+//    In RISE, BSDF::value(vLightIn, ri) expects:
+//      - vLightIn (wi): direction AWAY from surface toward light
+//      - ri.ray.Dir(): direction TOWARD surface (incoming viewer ray)
+//    EvalBSDFAtVertex adapts to this by negating wo to build ri.
+//    EvalPdfAtVertex negates wi (since SPF::Pdf expects the incoming
+//    ray as ri.ray.Dir() and the outgoing direction as wo).
+//
+//    THROUGHPUT CONVENTION:
+//    beta (path throughput) accumulates f*|cos|/pdf for non-delta
+//    interactions, and kray directly for delta interactions.  The
+//    stored vertex.throughput is the value of beta at that vertex,
+//    representing the measurement contribution from the subpath
+//    origin to that point.  The full path contribution for (s,t) is:
+//      C = alpha_light * f_light * G * f_eye * alpha_eye
+//    where alpha_light = lightVerts[s-1].throughput and similarly
+//    for the eye side.
+//
+//    REFERENCES:
+//    - Veach, E. "Robust Monte Carlo Methods for Light Transport
+//      Simulation." PhD Thesis, Stanford, 1997. Chapters 8-10.
+//    - Lafortune & Willems. "Bi-Directional Path Tracing." 1993.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026

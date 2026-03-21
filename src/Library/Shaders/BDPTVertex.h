@@ -1,9 +1,25 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BDPTVertex.h - Defines the vertex data structure used in
-//  Bidirectional Path Tracing (BDPT).  Each vertex stores the
-//  geometric, material, and probability information needed to
-//  evaluate and connect subpaths.
+//  BDPTVertex.h - Vertex data structure for Bidirectional Path
+//  Tracing.
+//
+//  Each vertex stores everything needed for connection evaluation
+//  and MIS weight computation:
+//
+//  - Geometric data (position, normal, ONB) for BSDF evaluation
+//    and geometric term computation.
+//  - Material pointer for BSDF/SPF lookups during connections.
+//  - Cumulative throughput (alpha) from the subpath origin, used
+//    directly in the full path contribution formula.
+//  - Forward PDF (pdfFwd) in area measure: the probability of
+//    generating this vertex during subpath construction.
+//  - Reverse PDF (pdfRev) in area measure: the probability of
+//    generating this vertex if the subpath were traced in the
+//    opposite direction.  Filled retroactively after the next
+//    vertex is generated, since it requires the outgoing direction.
+//  - isDelta flag: marks specular (delta) interactions so the MIS
+//    weight computation can skip strategies that cannot generate
+//    this vertex through explicit connections.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026

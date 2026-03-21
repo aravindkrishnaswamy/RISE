@@ -1,11 +1,30 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  BDPTRasterizer.h - Pixel-based rasterizer for Bidirectional
-//    Path Tracing.  Extends PixelBasedPelRasterizer to add light
-//    subpath generation, all (s,t) connection strategies, MIS
-//    weighting, and thread-safe film splatting for s<=1 strategies.
+//    Path Tracing.
 //
-//    Supports both RGB and spectral (per-wavelength) rendering modes.
+//    ARCHITECTURE:
+//    Extends PixelBasedPelRasterizer so it inherits the existing
+//    multi-threaded block-based rendering pipeline.  The only
+//    override is IntegratePixel(), which generates both light and
+//    eye subpaths via BDPTIntegrator, evaluates all (s,t) strategies,
+//    and accumulates contributions.
+//
+//    SPLAT FILM:
+//    Strategies where t<=1 (light path connects to camera) produce
+//    contributions at arbitrary pixel positions, not the current
+//    pixel being rendered.  These are accumulated into a SplatFilm
+//    with row-level mutex locking for thread safety.  After the
+//    main render pass completes, the splat film is resolved into
+//    the primary image by dividing by the total sample count.
+//
+//    SPECTRAL MODE:
+//    When enabled, each pixel sample generates multiple wavelength
+//    samples.  Each wavelength runs a complete BDPT evaluation
+//    (GenerateLightSubpathNM / GenerateEyeSubpathNM) and the
+//    scalar results are converted to XYZ via color matching
+//    functions, then accumulated.  Splats in spectral mode are
+//    also XYZ-converted before being added to the SplatFilm.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026

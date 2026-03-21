@@ -1,7 +1,28 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  BDPTRasterizer.cpp - Implementation of the BDPT rasterizer.
-//    Supports both RGB and spectral (per-wavelength) rendering.
+//
+//  RENDERING PIPELINE:
+//    1. Create a SplatFilm the same size as the output image.
+//    2. Run the standard pixel-based render loop (multi-threaded,
+//       block-based).  Each pixel calls IntegratePixel(), which
+//       generates subpaths and evaluates all (s,t) strategies.
+//       - Strategies with t>=2 contribute directly to the pixel.
+//       - Strategies with t<=1 (needsSplat=true) are accumulated
+//         into the SplatFilm at the projected raster position.
+//    3. After all pixels are rendered, resolve the SplatFilm:
+//       divide accumulated splats by the total sample count
+//       and add them to the primary image.
+//    4. Output the final composited image.
+//
+//  SPECTRAL RENDERING:
+//    In spectral mode, each pixel sample takes nSpectralSamples
+//    random wavelength samples.  For each wavelength:
+//    - Full BDPT subpath generation and connection at that nm.
+//    - Scalar result converted to XYZ via color matching functions.
+//    - XYZ contributions accumulated and averaged over wavelengths.
+//    The splat film sample count is scaled by nSpectralSamples
+//    since each pixel sample produces that many splat contributions.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -418,7 +439,10 @@ void BDPTRasterizer::RasterizeScene(
 		}
 	}
 
-	// Resolve splat film: add s<=1 contributions to the primary image
+	// Resolve splat film: add t<=1 strategy contributions to the primary
+	// image.  Each pixel sample may have contributed one splat per (s,t)
+	// strategy with needsSplat=true, so we divide by the total number of
+	// pixel samples to get the correct per-pixel average.
 	Scalar totalSamples = 1.0;
 	if( pSampling ) {
 		totalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );

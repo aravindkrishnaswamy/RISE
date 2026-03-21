@@ -1,7 +1,50 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BDPTIntegrator.cpp - Implementation of the BDPTIntegrator class,
-//  containing the full bidirectional path tracing algorithm.
+//  BDPTIntegrator.cpp - Implementation of the BDPTIntegrator class.
+//
+//  ALGORITHM OVERVIEW:
+//    For each pixel sample, the integrator:
+//    1. Generates a light subpath by sampling a light source (via
+//       LightSampler), emitting a ray, and tracing it through the
+//       scene.  At each surface hit, the SPF is sampled to extend
+//       the path.  Forward PDFs (area measure) and cumulative
+//       throughput are stored at each vertex.
+//
+//    2. Generates an eye subpath from the camera ray.  Same logic
+//       as the light subpath but starting from the camera vertex.
+//
+//    3. Evaluates all (s,t) connection strategies where s is the
+//       number of light vertices and t the number of eye vertices.
+//       Each strategy gets a MIS weight via the balance heuristic.
+//
+//  CONNECTION STRATEGIES:
+//    - s=0: Eye path naturally hits an emitter (no light subpath
+//      needed).  Contribution = eyeThroughput * Le.
+//    - s=1, t>1: Next event estimation — connect the last eye
+//      vertex to the sampled light vertex.  Classic direct lighting.
+//    - t=1: Connect the last light vertex to the camera.  This
+//      produces contributions at arbitrary pixel positions, so the
+//      result must be splatted via the SplatFilm (needsSplat=true).
+//    - t=0: Pure light path reaches the camera sensor.  Also needs
+//      splatting.  Only evaluated for s>=2.
+//    - s>1, t>1: General case — connect the two subpath endpoints,
+//      evaluate BSDFs at both, multiply with the geometric term.
+//
+//  PDF BOOKKEEPING:
+//    Each vertex stores pdfFwd (area measure, from the direction
+//    it was generated) and pdfRev (area measure, computed after the
+//    NEXT vertex is generated, representing the probability of
+//    sampling the reverse direction).  These are used by MISWeight
+//    to incrementally compute PDF ratios for all strategies.
+//
+//    Delta interactions (perfect specular) set isDelta=true.  The
+//    MIS weight computation skips delta vertices since only exactly
+//    one strategy can generate them.
+//
+//  RUSSIAN ROULETTE:
+//    Applied after depth > 2 to terminate low-throughput paths.
+//    Survival probability is clamped to [0, 1] and the throughput
+//    is divided by the survival probability to maintain unbiasedness.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -78,7 +121,14 @@ void BDPTIntegrator::SetLightSampler( LightSampler* pSampler )
 }
 
 //////////////////////////////////////////////////////////////////////
-// Helper: evaluate BSDF at a vertex for given in/out directions
+// Helper: evaluate BSDF at a vertex for given in/out directions.
+//
+// Adapts the RISE BSDF convention where value(vLightIn, ri) expects
+// the incoming viewer ray stored in ri.ray.Dir() (toward-surface)
+// and vLightIn pointing away from surface toward the light.
+//
+// Callers pass wi and wo both as "away from surface" directions,
+// so we negate wo to construct the ri.ray toward-surface direction.
 //////////////////////////////////////////////////////////////////////
 
 RISEPel BDPTIntegrator::EvalBSDFAtVertex(
@@ -113,7 +163,13 @@ RISEPel BDPTIntegrator::EvalBSDFAtVertex(
 }
 
 //////////////////////////////////////////////////////////////////////
-// Helper: evaluate SPF PDF at a vertex
+// Helper: evaluate SPF PDF at a vertex.
+//
+// SPF::Pdf(ri, wo) expects ri.ray.Dir() as the incoming direction
+// (toward surface) and wo as the outgoing direction (away from
+// surface).  Since callers pass wi as the "incoming" side and wo as
+// the "outgoing" side (both away-from-surface), we negate wi to
+// build ri.ray.Dir().
 //////////////////////////////////////////////////////////////////////
 
 Scalar BDPTIntegrator::EvalPdfAtVertex(
@@ -172,6 +228,20 @@ bool BDPTIntegrator::IsVisible(
 
 //////////////////////////////////////////////////////////////////////
 // GenerateLightSubpath
+//
+// Traces a path starting from a randomly sampled light source.
+// Vertex 0 is the light itself (type LIGHT), subsequent vertices
+// are surface intersections.
+//
+// Light selection and emission sampling are delegated to
+// LightSampler, which selects lights proportional to their radiant
+// exitance (same strategy used by PhotonTracer for consistency).
+//
+// Throughput (beta) tracks the path weight beyond vertex 0:
+//   beta_0 = Le * |cos(theta_0)| / (pdfSelect * pdfPos * pdfDir)
+// At each bounce:
+//   delta:     beta *= kray  (kray = f*|cos|/pdf, precomputed by SPF)
+//   non-delta: beta *= f * |cos| / pdf  (f from BSDF evaluation)
 //////////////////////////////////////////////////////////////////////
 
 unsigned int BDPTIntegrator::GenerateLightSubpath(
@@ -413,6 +483,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 //////////////////////////////////////////////////////////////////////
 // GenerateEyeSubpath
+//
+// Traces a path starting from the camera.  Vertex 0 is the camera
+// itself (type CAMERA, pdfFwd=1, throughput=1), subsequent vertices
+// are surface intersections.
+//
+// The camera's directional PDF (BDPTCameraUtilities::PdfDirection)
+// is used as pdfFwdPrev for the first surface vertex.  For pinhole
+// cameras this is 1/cos^3(theta) * focaldist^2 (Veach eq. 8.10).
 //////////////////////////////////////////////////////////////////////
 
 unsigned int BDPTIntegrator::GenerateEyeSubpath(
@@ -612,7 +690,22 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 }
 
 //////////////////////////////////////////////////////////////////////
-// ConnectAndEvaluate - evaluate a single (s,t) strategy
+// ConnectAndEvaluate - evaluate a single (s,t) strategy.
+//
+// Each case handles a different connection topology:
+//   s=0:       Eye path hits emitter.  No connection needed.
+//   s=1, t>1:  Next event estimation (direct lighting).
+//   t=0:       Light path reaches camera sensor.  Needs splatting.
+//   t=1:       Light endpoint connects to camera.  Needs splatting.
+//   s>1, t>1:  General connection between two interior vertices.
+//
+// For strategies that reach the camera from the light side (t<=1),
+// the contribution lands at an arbitrary pixel, so needsSplat=true
+// and rasterPos is computed via BDPTCameraUtilities::Rasterize().
+//
+// Delta vertices cannot participate in explicit connections since
+// there is zero probability of the connection direction matching
+// the specular direction.
 //////////////////////////////////////////////////////////////////////
 
 BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(

@@ -1,9 +1,22 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SplatFilm.h - Thread-safe film buffer for accumulating splat
-//  contributions from s<=1 BDPT strategies.  Uses row-level
-//  mutexes so that multiple threads can splat to different
-//  scanlines concurrently.
+//  SplatFilm.h - Thread-safe film buffer for accumulating
+//  contributions that land at arbitrary pixel positions.
+//
+//  In BDPT, connection strategies where t<=1 (light subpath
+//  connects to camera) produce contributions at pixel positions
+//  determined by projecting the light vertex onto the camera,
+//  NOT the pixel currently being rendered.  These cannot be added
+//  to the primary image during the per-pixel render pass because
+//  the target pixel may be processed by a different thread.
+//
+//  SplatFilm provides a separate accumulation buffer with row-level
+//  mutex locking so multiple render threads can splat concurrently.
+//  After the render pass completes, Resolve() divides by the total
+//  sample count and adds the result to the primary image.
+//
+//  Also used by MLTRasterizer for all contributions (since MLT
+//  paths land at arbitrary pixels determined by the sample vector).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026

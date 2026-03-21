@@ -1,7 +1,17 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  BDPTUtilities.h - Utility functions for Bidirectional Path Tracing
-//    including geometric term computation and PDF measure conversion.
+//  BDPTUtilities.h - Geometric and PDF measure conversion utilities
+//  for BDPT.
+//
+//  BDPT requires frequent conversions between solid angle and area
+//  PDF measures.  The relationship is (Veach thesis eq. 8.8):
+//    pdfArea = pdfSolidAngle * |cos(theta)| / dist^2
+//  where theta is the angle at the receiving vertex and dist is the
+//  distance between vertices.
+//
+//  The geometric term G(x<->y) is the product of cosines at both
+//  endpoints divided by the squared distance.  It appears in every
+//  BDPT connection evaluation.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026

@@ -1,8 +1,25 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LightSampler.h - Utility for sampling lights and mesh luminaries
-//  with explicit PDF computation, for use in bidirectional path
-//  tracing (BDPT).
+//  LightSampler.h - Light source sampling with explicit PDFs for
+//  bidirectional path tracing.
+//
+//  BDPT requires explicit PDF values for every sampling decision
+//  (light selection, position on surface, emission direction) so
+//  that MIS weights can be computed.  The existing RISE light
+//  classes (SpotLight, PointLight, mesh luminaries) provide
+//  generateRandomPhoton() but no PDF queries.  LightSampler wraps
+//  these with explicit PDF computation.
+//
+//  LIGHT SELECTION:
+//  Lights are selected proportional to their radiant exitance
+//  (MaxValue of RGB), matching PhotonTracer's strategy.  This
+//  means brighter lights get proportionally more subpath starts.
+//
+//  EMISSION SAMPLING:
+//  - Non-mesh lights (point/spot): delta position (pdfPosition=1),
+//    uniform directional sampling over the sphere (pdfDir=1/4pi).
+//  - Mesh luminaries: uniform position on surface (pdfPos=1/area),
+//    cosine-weighted hemisphere direction (pdfDir=cos/pi).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
