@@ -284,14 +284,15 @@ namespace RISE
 		const Scalar power,										///< [in] Power of the light in watts
 		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
 		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation						///< [in] Amount of quadratic attenuation
+		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
+		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new PointLight( power, color, linearAttenuation, quadraticAttenuation );
+		(*ppi) = new PointLight( power, color, linearAttenuation, quadraticAttenuation, shootPhotons );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "point light" );
 		return true;
 	}
@@ -306,14 +307,15 @@ namespace RISE
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
 		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation						///< [in] Amount of quadratic attenuation
+		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
+		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new SpotLight( power, foc, inner, outer, color, linearAttenuation, quadraticAttenuation );
+		(*ppi) = new SpotLight( power, foc, inner, outer, color, linearAttenuation, quadraticAttenuation, shootPhotons );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "spot light" );
 		return true;
 	}
@@ -2684,18 +2686,19 @@ namespace RISE
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const bool reflect,					///< [in] Should we trace reflected rays?
 								const bool refract,					///< [in] Should we trace refracted rays?
-								const bool nonmeshlights,			///< [in] Should we shoot from non mesh based lights?
+								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
 								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
-								const bool regenerate				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
+								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
+								const bool shootFromMeshLights		///< [in] Should we shoot from mesh based lights (luminaries)?
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new CausticPelPhotonTracer( maxR, minImp, branch, reflect, refract, nonmeshlights, useiorstack, power_scale, temporal_samples, regenerate );
+		(*ppi) = new CausticPelPhotonTracer( maxR, minImp, branch, reflect, refract, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, " caustic pel photon tracer" );
 		return true;
 	}
@@ -2707,18 +2710,19 @@ namespace RISE
 								const unsigned int maxR,			///< [in] Maximum recursion level when tracing
 								const Scalar minImp,				///< [in] Minimum photon importance before giving up
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
-								const bool nonmeshlights,			///< [in] Should we shoot from non mesh based lights?
+								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
 								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
-								const bool regenerate				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
+								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
+								const bool shootFromMeshLights		///< [in] Should we shoot from mesh based lights (luminaries)?
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GlobalPelPhotonTracer( maxR, minImp, branch, nonmeshlights, useiorstack, power_scale, temporal_samples, regenerate );
+		(*ppi) = new GlobalPelPhotonTracer( maxR, minImp, branch, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "global pel photon tracer" );
 		return true;
 	}
@@ -2733,18 +2737,19 @@ namespace RISE
 								const bool reflect,					///< [in] Should we trace reflected rays?
 								const bool refract,					///< [in] Should we trace refracted rays?
 								const bool direct_translucent,		///< [in] Should we trace translucent primary interaction rays?
-								const bool nonmeshlights,			///< [in] Should we shoot from non mesh based lights?
+								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
 								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
-								const bool regenerate				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
+								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
+								const bool shootFromMeshLights		///< [in] Should we shoot from mesh based lights (luminaries)?
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new TranslucentPelPhotonTracer( maxR, minImp, reflect, refract, direct_translucent, nonmeshlights, useiorstack, power_scale, temporal_samples, regenerate );
+		(*ppi) = new TranslucentPelPhotonTracer( maxR, minImp, reflect, refract, direct_translucent, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "translucent pel photon tracer" );
 		return true;
 	}

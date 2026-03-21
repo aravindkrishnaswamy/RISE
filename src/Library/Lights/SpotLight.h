@@ -38,6 +38,7 @@ namespace RISE
 			RISEPel		cColor;
 			Scalar		linearAttenuation;
 			Scalar		quadraticAttenuation;
+			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
 			Vector3		vDirection;
 
@@ -47,7 +48,7 @@ namespace RISE
 
 			inline bool CanGeneratePhotons() const
 			{
-				return true;
+				return bShootPhotons;
 			}
 
 			inline RISEPel radiantExitance() const
@@ -91,14 +92,15 @@ namespace RISE
 					);
 			}
 
-			SpotLight( 
+			SpotLight(
 				const Scalar radiantEnergy_,
 				const Point3& target,
-				const Scalar inner, 
-				const Scalar outer, 
+				const Scalar inner,
+				const Scalar outer,
 				const RISEPel& c,
 				const Scalar linearAtten,
-				const Scalar quadraticAtten
+				const Scalar quadraticAtten,
+				const bool shootPhotons = true
 				);
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;

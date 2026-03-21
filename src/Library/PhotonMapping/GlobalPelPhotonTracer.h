@@ -65,15 +65,16 @@ namespace RISE
 			}
 
 		public:
-			GlobalPelPhotonTracer( 
-				const unsigned int maxR, 
-				const Scalar ext, 
-				const bool branch, 
-				const bool dononmeshlights,
+			GlobalPelPhotonTracer(
+				const unsigned int maxR,
+				const Scalar ext,
+				const bool branch,
+				const bool shootFromNonMeshLights,
 				const bool useiorstack,						///< [in] Should we use an ior stack ?
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
-				const bool regenerate
+				const bool regenerate,
+				const bool shootFromMeshLights = true
 				);
 		};
 	}

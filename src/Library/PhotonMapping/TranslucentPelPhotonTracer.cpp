@@ -24,18 +24,19 @@ using namespace RISE::Implementation;
 #define ENABLE_MAX_RECURSION
 
 TranslucentPelPhotonTracer::TranslucentPelPhotonTracer(
-	const unsigned int maxR, 
+	const unsigned int maxR,
 	const Scalar ext,
-	const bool reflect, 
-	const bool refract, 
+	const bool reflect,
+	const bool refract,
 	const bool direct_translucent,
-	const bool dononmeshlights,
+	const bool shootFromNonMeshLights,
 	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
-	const bool regenerate
-	) : 
-  PhotonTracer<TranslucentPelPhotonMap>( dononmeshlights, useiorstack, powerscale, temporal_samples, regenerate ),
+	const bool regenerate,
+	const bool shootFromMeshLights
+	) :
+  PhotonTracer<TranslucentPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bTraceReflections( reflect ),

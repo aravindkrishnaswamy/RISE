@@ -184,7 +184,7 @@ caustic_pel_photonmap
 	branch				TRUE
 	reflect				FALSE
 	refract				TRUE
-	nonmeshlights		TRUE
+	shootFromNonMeshLights		TRUE
 }
 
 caustic_pel_gather

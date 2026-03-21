@@ -337,7 +337,7 @@ caustic_pel_photonmap
 	branch				TRUE
 	reflect				TRUE
 	refract				TRUE
-	nonmeshlights		TRUE
+	shootFromNonMeshLights		TRUE
 	ior_stack			TRUE
 }
 

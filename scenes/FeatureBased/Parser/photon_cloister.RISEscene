@@ -675,6 +675,7 @@ spot_light
 	power				3.2
 	inner				18
 	outer				36
+	shootphotons		FALSE
 }
 
 ##################################################
@@ -683,14 +684,15 @@ spot_light
 
 caustic_pel_photonmap
 {
-	num					100000
-	max_recursion		3
+	num					10000
+	max_recursion		5
 	min_importance		0.001
 	power_scale			10.0
 	branch				FALSE
-	reflect				FALSE
+	reflect				TRUE
 	refract				TRUE
-	nonmeshlights		TRUE
+	shootFromNonMeshLights		TRUE
+	shootFromMeshLights			FALSE
 	ior_stack			TRUE
 }
 
@@ -703,7 +705,7 @@ caustic_pel_gather
 
 global_pel_photonmap
 {
-	num					100000
+	num					10000
 	max_recursion		5
 	min_importance		0.005
 	branch				FALSE
@@ -711,7 +713,7 @@ global_pel_photonmap
 
 global_pel_gather
 {
-	max_photons			1500
+	max_photons			150
 	radius				0.18
 	ellipse_ratio		0.05
 }

@@ -3596,6 +3596,7 @@ namespace RISE
 					double power = 1.0;
 					double linearAttenuation = 0;
 					double quadraticAttenuation = 0;
+					bool shootphotons = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -3619,13 +3620,15 @@ namespace RISE
 							linearAttenuation = pvalue.toDouble();
 						} else if( pname == "quadratic_attenuation" ) {
 							quadraticAttenuation = pvalue.toDouble();
+						} else if( pname == "shootphotons" ) {
+							shootphotons = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddPointOmniLight( name.c_str(), power, color, position, linearAttenuation, quadraticAttenuation );
+					return pJob.AddPointOmniLight( name.c_str(), power, color, position, linearAttenuation, quadraticAttenuation, shootphotons );
 				}
 			};
 
@@ -3645,6 +3648,7 @@ namespace RISE
 					double outer = PI_OV_TWO;
 					double linearAttenuation = 0;
 					double quadraticAttenuation = 0;
+					bool shootphotons = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -3674,13 +3678,15 @@ namespace RISE
 							linearAttenuation = pvalue.toDouble();
 						} else if( pname == "quadratic_attenuation" ) {
 							quadraticAttenuation = pvalue.toDouble();
+						} else if( pname == "shootphotons" ) {
+							shootphotons = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, linearAttenuation, quadraticAttenuation );
+					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, linearAttenuation, quadraticAttenuation, shootphotons );
 				}
 			};
 
@@ -5110,7 +5116,8 @@ namespace RISE
 					bool branch = true;
 					bool reflect = true;
 					bool refract = true;
-					bool nonmeshlights = true;
+					bool shootFromNonMeshLights = true;
+					bool shootFromMeshLights = true;
 					bool useiorstack = false;
 					unsigned int temporal_samples = 100;
 					bool regenerate = true;
@@ -5139,8 +5146,10 @@ namespace RISE
 							reflect = pvalue.toBoolean();
 						} else if( pname == "refract" ) {
 							refract = pvalue.toBoolean();
-						} else if( pname == "nonmeshlights" ) {
-							nonmeshlights = pvalue.toBoolean();
+						} else if( pname == "shootFromNonMeshLights" ) {
+							shootFromNonMeshLights = pvalue.toBoolean();
+						} else if( pname == "shootFromMeshLights" ) {
+							shootFromMeshLights = pvalue.toBoolean();
 						} else if( pname == "ior_stack" ) {
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "temporal_samples" ) {
@@ -5155,7 +5164,7 @@ namespace RISE
 
 					std::cout << "Shooting Caustic Pel Photons: " << std::endl;
 
-					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, nonmeshlights, useiorstack, temporal_samples, regenerate );
+					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, useiorstack, temporal_samples, regenerate, shootFromMeshLights );
 				}
 			};
 
@@ -5299,7 +5308,8 @@ namespace RISE
 					unsigned int maxRecur = 10;
 					double minImportance = 0.01;
 					double power_scale = 1.0;
-					bool nonmeshlights = true;
+					bool shootFromNonMeshLights = true;
+					bool shootFromMeshLights = true;
 					bool useiorstack = false;
 					bool reflect = true;
 					bool refract = true;
@@ -5325,8 +5335,10 @@ namespace RISE
 							minImportance = pvalue.toDouble();
 						} else if( pname == "power_scale" ) {
 							power_scale = pvalue.toDouble();
-						} else if( pname == "nonmeshlights" ) {
-							nonmeshlights = pvalue.toBoolean();
+						} else if( pname == "shootFromNonMeshLights" ) {
+							shootFromNonMeshLights = pvalue.toBoolean();
+						} else if( pname == "shootFromMeshLights" ) {
+							shootFromMeshLights = pvalue.toBoolean();
 						} else if( pname == "ior_stack" ) {
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "reflect" ) {
@@ -5347,7 +5359,7 @@ namespace RISE
 
 					std::cout << "Shooting Translucent Pel Photons: " << std::endl;
 
-					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, nonmeshlights, useiorstack, temporal_samples, regenerate );
+					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, useiorstack, temporal_samples, regenerate, shootFromMeshLights );
 				}
 			};
 
@@ -5400,7 +5412,8 @@ namespace RISE
 					unsigned int maxRecur = 10;
 					double minImportance = 0.01;
 					bool branch = true;
-					bool nonmeshlights = true;
+					bool shootFromNonMeshLights = true;
+					bool shootFromMeshLights = true;
 					bool useiorstack = false;
 					unsigned int temporal_samples = 100;
 					bool regenerate = true;
@@ -5425,8 +5438,10 @@ namespace RISE
 							minImportance = pvalue.toDouble();
 						} else if( pname == "branch" ) {
 							branch = pvalue.toBoolean();
-						} else if( pname == "nonmeshlights" ) {
-							nonmeshlights = pvalue.toBoolean();
+						} else if( pname == "shootFromNonMeshLights" ) {
+							shootFromNonMeshLights = pvalue.toBoolean();
+						} else if( pname == "shootFromMeshLights" ) {
+							shootFromMeshLights = pvalue.toBoolean();
 						} else if( pname == "ior_stack" ) {
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "temporal_samples" ) {
@@ -5441,7 +5456,7 @@ namespace RISE
 
 					std::cout << "Shooting Global Pel Photons: " << std::endl;
 
-					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, nonmeshlights, useiorstack, temporal_samples, regenerate );
+					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, useiorstack, temporal_samples, regenerate, shootFromMeshLights );
 				}
 			};
 

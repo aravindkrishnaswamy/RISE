@@ -30,7 +30,10 @@ CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 # Turn this on to enable performance profiling counters
 #DEF_PROFILING = -DRISE_ENABLE_PROFILING
 
-DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING)
+# Turn this on to enable mailboxing (avoids redundant triangle tests in BSP)
+DEF_MAILBOXING = -DRISE_ENABLE_MAILBOXING
+
+DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING)
 
 # libraries to link with
 LDLIBS = -L/opt/homebrew/lib -lpng -lz

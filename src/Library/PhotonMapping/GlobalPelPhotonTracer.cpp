@@ -24,16 +24,17 @@ using namespace RISE::Implementation;
 #define ENABLE_MAX_RECURSION
 
 GlobalPelPhotonTracer::GlobalPelPhotonTracer(
-	const unsigned int maxR, 
-	const Scalar ext, 
+	const unsigned int maxR,
+	const Scalar ext,
 	const bool branch,
-	const bool dononmeshlights,					///< Should we trace non-mesh lights?
+	const bool shootFromNonMeshLights,
 	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
-	const bool regenerate
-	) : 
-  PhotonTracer<GlobalPelPhotonMap>( dononmeshlights, useiorstack, powerscale, temporal_samples, regenerate ),
+	const bool regenerate,
+	const bool shootFromMeshLights
+	) :
+  PhotonTracer<GlobalPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bBranch( branch )

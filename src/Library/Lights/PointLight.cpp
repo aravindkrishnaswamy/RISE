@@ -18,17 +18,19 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-PointLight::PointLight( 
+PointLight::PointLight(
 	const Scalar radiantEnergy_,
 	const RISEPel& c,
 	const Scalar linearAtten,
-	const Scalar quadraticAtten
-	) : 
+	const Scalar quadraticAtten,
+	const bool shootPhotons
+	) :
   radiantEnergy( radiantEnergy_ ),
   ptPosition( Point3( 0, 0, 0 ) ),
   cColor( c ),
   linearAttenuation( linearAtten ),
-  quadraticAttenuation( quadraticAtten )
+  quadraticAttenuation( quadraticAtten ),
+  bShootPhotons( shootPhotons )
 {
 }
 

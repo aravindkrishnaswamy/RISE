@@ -68,16 +68,17 @@ namespace RISE
 
 		public:
 			CausticPelPhotonTracer(
-				const unsigned int maxR, 
-				const Scalar ext, 
-				const bool branch, 
-				const bool reflect, 
-				const bool refract, 
-				const bool dononmeshlights,
+				const unsigned int maxR,
+				const Scalar ext,
+				const bool branch,
+				const bool reflect,
+				const bool refract,
+				const bool shootFromNonMeshLights,
 				const bool useiorstack,
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
-				const bool regenerate
+				const bool regenerate,
+				const bool shootFromMeshLights = true
 				);
 		};
 	}

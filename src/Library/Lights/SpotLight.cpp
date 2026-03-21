@@ -18,15 +18,16 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-SpotLight::SpotLight( 
-	const Scalar radiantEnergy_, 
+SpotLight::SpotLight(
+	const Scalar radiantEnergy_,
 	const Point3& target,
-	const Scalar inner, 
-	const Scalar outer, 
+	const Scalar inner,
+	const Scalar outer,
 	const RISEPel& c,
 	const Scalar linearAtten,
-	const Scalar quadraticAtten
-	) : 
+	const Scalar quadraticAtten,
+	const bool shootPhotons
+	) :
   radiantEnergy( radiantEnergy_ ),
   ptPosition( Point3( 0, 0, 0 ) ),
   ptTarget( target ),
@@ -34,7 +35,8 @@ SpotLight::SpotLight(
   dOuterAngle( outer ),
   cColor( c ),
   linearAttenuation( linearAtten ),
-  quadraticAttenuation( quadraticAtten )
+  quadraticAttenuation( quadraticAtten ),
+  bShootPhotons( shootPhotons )
 {
 	vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
 }

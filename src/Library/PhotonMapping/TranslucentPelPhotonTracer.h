@@ -67,17 +67,18 @@ namespace RISE
 			}
 
 		public:
-			TranslucentPelPhotonTracer( 
-				const unsigned int maxR, 
+			TranslucentPelPhotonTracer(
+				const unsigned int maxR,
 				const Scalar ext,
-				const bool reflect, 
-				const bool refract, 
+				const bool reflect,
+				const bool refract,
 				const bool direct_translucent,
-				const bool dononmeshlights,			///< Should we trace non-mesh lights?
+				const bool shootFromNonMeshLights,
 				const bool useiorstack,				///< [in] Should we use an ior stack ?
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
-				const bool regenerate
+				const bool regenerate,
+				const bool shootFromMeshLights = true
 				);
 		};
 	}

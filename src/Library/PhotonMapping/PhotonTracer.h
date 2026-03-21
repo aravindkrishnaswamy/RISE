@@ -28,7 +28,8 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			const bool					bNonMeshLights;			///< Should we shoot from non mesh based lights?
+			const bool					bShootFromNonMeshLights;///< Should we shoot from non mesh based lights?
+			const bool					bShootFromMeshLights;	///< Should we shoot from mesh based lights (luminaries)?
 			const bool					bUseIORStack;			///< Should we use an ior stack ?
 			const Scalar				dPowerScale;			///< How much to scale shooting power by
 			const unsigned int			nNumTemporalSamples;	///< Number of temporal samples to take when tracing at a particular time
@@ -40,13 +41,15 @@ namespace RISE
 			const RandomNumberGenerator random;
 
 			PhotonTracer(
-				const bool dononmeshlights,
+				const bool shootFromNonMeshLights,
 				const bool useiorstack,
 				const Scalar power_scale,
 				const unsigned int temporal_samples,
-				const bool regenerate
-				) : 
-			  bNonMeshLights( dononmeshlights ),
+				const bool regenerate,
+				const bool shootFromMeshLights = true
+				) :
+			  bShootFromNonMeshLights( shootFromNonMeshLights ),
+			  bShootFromMeshLights( shootFromMeshLights ),
 			  bUseIORStack( useiorstack ),
 			  dPowerScale( power_scale ),
 			  nNumTemporalSamples( temporal_samples ),
@@ -91,6 +94,7 @@ namespace RISE
 				IORStack ior_stack( 1.0 );
 
 				// Then from now on each luminaire will only shoot photons proportional to its relative power
+				if( bShootFromMeshLights )
 				for( i=lum.begin(), e=lum.end(); i!=e; i++ )
 				{
 					const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
@@ -107,8 +111,8 @@ namespace RISE
 					while( pPhotonMap->NumStored() < thislummax )
 					{
 						//! This is a slightly dangerous fix, since it is entirely possible to only have a very small amount of photos
-						//  be deposited for a luminary and since we are dealing with a stochastic process, there is a chance (albeit 
-						//  a trivially small chance) of having this introduce a bug.  However in any realworld use, this won't be a 
+						//  be deposited for a luminary and since we are dealing with a stochastic process, there is a chance (albeit
+						//  a trivially small chance) of having this introduce a bug.  However in any realworld use, this won't be a
 						//  problem, hence the fix is here.
 						if( (unsigned int)numshot_thislum > thislummax*100 ) {
 							// bugfix for infinite loop when no photon is stored
@@ -125,14 +129,14 @@ namespace RISE
 						Vector3 normal;
 						Point2 coord;
 						i->pLum->UniformRandomPoint( &r.origin, &normal, &coord, Point3( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) );
-						
+
 						RayIntersectionGeometric rig( r, nullRasterizerState );
 						rig.vNormal = normal;
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
-						
+
 						// Now shoot that ray as a photon
 						TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );
 
@@ -143,7 +147,7 @@ namespace RISE
 				}
 
 				// Do the non-mesh based lights
-				if( bNonMeshLights ) {
+				if( bShootFromNonMeshLights ) {
 					const ILightManager::LightsList& lights = pScene->GetLights()->getLights();
 					ILightManager::LightsList::const_iterator	m, n;
 
@@ -161,8 +165,8 @@ namespace RISE
 							while( pPhotonMap->NumStored() < thislummax )
 							{
 								//! This is a slightly dangerous fix, since it is entirely possible to only have a very small amount of photos
-								//  be deposited for a luminary and since we are dealing with a stochastic process, there is a chance (albeit 
-								//  a trivially small chance) of having this introduce a bug.  However in any realworld use, this won't be a 
+								//  be deposited for a luminary and since we are dealing with a stochastic process, there is a chance (albeit
+								//  a trivially small chance) of having this introduce a bug.  However in any realworld use, this won't be a
 								//  problem, hence the fix is here.
 								if( (unsigned int)numshot_thislum > thislummax*100 ) {
 									// bugfix for infinite loop when no photon is stored
@@ -176,7 +180,7 @@ namespace RISE
 
 								Ray r;
 								r = l->generateRandomPhoton( Point3(geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom()) );
-								
+
 								TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );
 
 								numshot_thislum++;
@@ -244,17 +248,19 @@ namespace RISE
 
 				Scalar total_exitance=0;
 				// Compute the total power of all luminaires
-				for( i=lum.begin(), e=lum.end(); i!=e; i++ ) {
-					const Scalar area = (*i).pLum->GetArea();
-					const RISEPel power = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
-					total_exitance += ColorMath::MaxValue(power);
+				if( bShootFromMeshLights ) {
+					for( i=lum.begin(), e=lum.end(); i!=e; i++ ) {
+						const Scalar area = (*i).pLum->GetArea();
+						const RISEPel power = (*i).pLum->GetMaterial()->GetEmitter()->averageRadiantExitance() * area;
+						total_exitance += ColorMath::MaxValue(power);
+					}
 				}
 
 				// Include the non-physically based luminaires as well
 				const ILightManager::LightsList& lights = pScene->GetLights()->getLights();
 				ILightManager::LightsList::const_iterator	m, n;
 
-				if( bNonMeshLights ) {
+				if( bShootFromNonMeshLights ) {
 					for( m=lights.begin(), n=lights.end(); m!=n; m++ ) {
 						const ILightPriv* l = *m;
 						if( l->CanGeneratePhotons() ) {
