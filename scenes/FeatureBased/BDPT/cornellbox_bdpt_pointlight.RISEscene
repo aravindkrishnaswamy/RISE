@@ -91,7 +91,8 @@ lambertian_material
 omni_light
 {
 	name				pointlight
-	power				80 72 56
+	power				200000
+	color				1.0 0.9 0.7
 	position			278 520 280
 }
 

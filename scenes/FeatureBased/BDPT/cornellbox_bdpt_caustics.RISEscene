@@ -31,7 +31,7 @@ bdpt_rasterizer
 	min_importance		0.0001
 	max_eye_depth		10
 	max_light_depth		10
-	samples				128
+	samples				256
 	lum_samples			1
 	ior_stack			true
 }
@@ -51,7 +51,7 @@ file_rasterizeroutput
 pinhole_camera
 {
 	location			278 273 -800
-	lookat				278 200 300
+	lookat				278 273 300
 	up					0 1 0
 	width				512
 	height				512
@@ -72,7 +72,7 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_glass_tau
-	color				0.98 0.98 0.98
+	color				0.9999 0.9999 0.9999
 }
 
 uniformcolor_painter

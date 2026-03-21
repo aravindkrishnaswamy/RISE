@@ -228,6 +228,65 @@ bool BDPTIntegrator::IsVisible(
 }
 
 //////////////////////////////////////////////////////////////////////
+// Helper: visibility test that passes through dielectric objects.
+//
+// Instead of a simple shadow ray, this traces full intersections
+// and skips objects whose material has no BSDF (i.e. dielectrics).
+// This allows caustic splats behind glass to be visible to the camera.
+//////////////////////////////////////////////////////////////////////
+
+bool BDPTIntegrator::IsVisibleThroughTransparents(
+	const IScene& scene,
+	const Point3& p1,
+	const Point3& p2
+	) const
+{
+	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
+	Scalar remainDist = Vector3Ops::Magnitude( d );
+
+	if( remainDist < BDPT_RAY_EPSILON ) {
+		return true;
+	}
+
+	d = d * (1.0 / remainDist);
+
+	Point3 origin = p1;
+	Scalar traveled = 0;
+
+	for( int bounce = 0; bounce < 64; bounce++ )
+	{
+		Ray ray( origin, d );
+		ray.Advance( BDPT_RAY_EPSILON );
+		traveled += BDPT_RAY_EPSILON;
+
+		const Scalar maxDist = remainDist - traveled - BDPT_RAY_EPSILON;
+		if( maxDist <= 0 ) {
+			return true;
+		}
+
+		RayIntersection ri( ray, nullRasterizerState );
+		scene.GetObjects()->IntersectRay( ri, true, true, false );
+
+		if( !ri.geometric.bHit || ri.geometric.range > maxDist ) {
+			return true;
+		}
+
+		// Check if the hit material allows light to pass through
+		if( ri.pMaterial && ri.pMaterial->CouldLightPassThrough() ) {
+			// Transparent/translucent — advance past this object
+			origin = ri.geometric.ptIntersection;
+			traveled += ri.geometric.range;
+			continue;
+		}
+
+		// Opaque hit
+		return false;
+	}
+
+	return false;
+}
+
+//////////////////////////////////////////////////////////////////////
 // SampleBSSRDFEntryPoint
 //
 // Attempts to importance-sample an entry point on a translucent
@@ -1126,7 +1185,30 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		result.contribution = eyeEnd.throughput * Le;
 		result.needsSplat = false;
 		result.valid = true;
+
+		// --- Update pdfRev at emitter vertex for correct MIS ---
+		// eyeEnd.pdfRev should be the PDF that the light sampling process
+		// would have generated this point: pdfSelect * pdfPosition.
+		const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
+
+		if( pLightSampler && eyeEnd.pObject )
+		{
+			const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+			const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+			LuminaryManager::LuminariesList emptyList;
+			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
+
+			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
+				scene, luminaries, *eyeEnd.pObject );
+			const Scalar area = eyeEnd.pObject->GetArea();
+			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+
+		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
 
 		return result;
 	}
@@ -1151,8 +1233,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		// Check visibility from camera to light vertex
+		// Use transparent-aware visibility so glass doesn't block caustic splats
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
+		if( !IsVisibleThroughTransparents( scene, camPos, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -1190,14 +1273,29 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// Geometric term between light endpoint and camera
 		const Scalar distSq = dist * dist;
-		const Scalar absCosLight = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+		const Scalar absCosLight = lightEnd.isDelta ?
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
 		result.contribution = lightEnd.throughput * fLight * (G * We);
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
+
+		// --- Update pdfRev at light endpoint for correct MIS ---
+		// lightEnd.pdfRev: PDF that camera would generate lightEnd
+		// = camera's directional PDF converted to area at lightEnd
+		const Scalar savedLightPdfRev = lightEnd.pdfRev;
+		{
+			Ray camRayToLight( camPos, -dirToCam );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 
 		return result;
 	}
@@ -1275,9 +1373,18 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		// Geometric term
-		const Scalar G = BDPTUtilities::GeometricTerm(
-			lightStart.position, lightStart.normal,
-			eyeEnd.position, eyeEnd.normal );
+		// For delta-position lights (point/spot), the light has no surface
+		// so the geometric coupling excludes the cosine at the light vertex.
+		Scalar G;
+		if( lightStart.isDelta ) {
+			const Scalar dist2 = dist * dist;
+			const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+			G = absCosEye / dist2;
+		} else {
+			G = BDPTUtilities::GeometricTerm(
+				lightStart.position, lightStart.normal,
+				eyeEnd.position, eyeEnd.normal );
+		}
 
 		// Contribution: eyeThroughput * fEye * G * Le / pdfLight
 		// lightStart.throughput already has Le / (pdfSelect * pdfPosition)
@@ -1297,7 +1404,42 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		result.contribution = eyeEnd.throughput * fEye * Le * (G / pdfLight);
 		result.needsSplat = false;
 		result.valid = true;
+
+		// --- Update pdfRev at connection vertices for correct MIS ---
+		const Scalar distSq_conn = dist * dist;
+		const Scalar savedLightPdfRev = lightStart.pdfRev;
+		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
+
+		// lightStart.pdfRev: PDF that eye-side process would "find" the light
+		// For delta-position lights (point/spot), leave at 0 (eye can't hit a point)
+		if( !lightStart.isDelta ) {
+			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirToLight );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, dirToLight ) );
+			const_cast<BDPTVertex&>( lightStart ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+		}
+
+		// eyeEnd.pdfRev: PDF that light-side would generate eyeEnd
+		// = emission directional PDF at light toward eyeEnd, converted to area at eyeEnd
+		{
+			Scalar emissionPdfDir = 0;
+			if( lightStart.pLuminary ) {
+				// Mesh luminary: cosine-weighted hemisphere emission
+				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, -dirToLight ) );
+				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
+			} else if( lightStart.pLight ) {
+				// Point/spot light: uniform sphere
+				emissionPdfDir = Scalar(1.0) / FOUR_PI;
+			}
+			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+
+		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
+		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
 
 		return result;
 	}
@@ -1325,9 +1467,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Check visibility
+		// Check visibility — use transparent-aware test so glass doesn't
+		// block caustic splats from reaching the camera
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
+		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
 			return result;
 		}
 
@@ -1386,14 +1529,43 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 
 			const Scalar distSq = dist * dist;
-			const Scalar absCosLight = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+			const Scalar absCosLight = lightEnd.isDelta ?
+				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
 			result.contribution = fLight * (G * We / pdfLight);
 			result.rasterPos = rasterPos;
 			result.needsSplat = true;
 			result.valid = true;
+
+			// --- Update pdfRev at connection vertices for correct MIS ---
+			const Scalar savedLightPdfRev = lightEnd.pdfRev;
+			const Scalar savedEyePdfRev = eyeVerts[0].pdfRev;
+
+			// lightEnd.pdfRev: camera's directional PDF at lightEnd
+			{
+				Ray camRayToLight( camPos, -dirToCam );
+				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			}
+
+			// eyeVerts[0].pdfRev: emission directional PDF toward camera
+			{
+				Scalar emPdfDir = 0;
+				if( lightEnd.pLuminary ) {
+					const Scalar cosEmit = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
+				} else if( lightEnd.pLight ) {
+					emPdfDir = Scalar(1.0) / FOUR_PI;
+				}
+				const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );
+			}
+
 			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
 			return result;
 		}
 
@@ -1410,7 +1582,33 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
+
+		// --- Update pdfRev at connection vertices for correct MIS ---
+		const Scalar savedLightPdfRev = lightEnd.pdfRev;
+		const Scalar savedEyePdfRev = eyeVerts[0].pdfRev;
+
+		// lightEnd.pdfRev: camera's directional PDF at lightEnd
+		{
+			Ray camRayToLight( camPos, -dirToCam );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+		}
+
+		// eyeVerts[0].pdfRev: PDF at lightEnd of scattering toward camera
+		if( s >= 2 && lightEnd.pMaterial ) {
+			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
+				lightVerts[s - 2].position, lightEnd.position );
+			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
+			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLightMIS, dirToCam );
+			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
 
 		return result;
 	}
@@ -1493,7 +1691,40 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			RISEPel( G, G, G ) * fEye * eyeEnd.throughput;
 		result.needsSplat = false;
 		result.valid = true;
+
+		// --- Update pdfRev at connection vertices for correct MIS ---
+		// The connection introduces a new edge between lightEnd and eyeEnd.
+		// pdfRev at each endpoint must reflect the probability of generating
+		// the reverse direction through this connection edge, not the
+		// direction from subpath generation.
+		const Scalar distSq_conn = dist * dist;
+
+		const Scalar savedLightPdfRev = lightEnd.pdfRev;
+		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
+
+		// lightEnd.pdfRev: PDF that eye-side process would generate lightEnd
+		// = PDF at eyeEnd of scattering toward lightEnd, converted to area at lightEnd
+		{
+			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dConnect );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+		}
+
+		// eyeEnd.pdfRev: PDF that light-side process would generate eyeEnd
+		// = PDF at lightEnd of scattering toward eyeEnd, converted to area at eyeEnd
+		{
+			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLight, -dConnect );
+			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+
+		// Restore original values
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
 
 		return result;
 	}
@@ -2294,7 +2525,27 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		result.contribution = eyeEnd.throughputNM * LeNM;
 		result.needsSplat = false;
 		result.valid = true;
+
+		// --- Update pdfRev at emitter vertex for correct MIS ---
+		const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
+
+		if( pLightSampler && eyeEnd.pObject )
+		{
+			const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+			const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+			LuminaryManager::LuminariesList emptyList;
+			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
+
+			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
+				scene, luminaries, *eyeEnd.pObject );
+			const Scalar area = eyeEnd.pObject->GetArea();
+			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
 		return result;
 	}
 
@@ -2314,7 +2565,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
+		if( !IsVisibleThroughTransparents( scene, camPos, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -2339,14 +2590,26 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 
 		const Scalar distSq = dist * dist;
-		const Scalar absCosLight = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+		const Scalar absCosLight = lightEnd.isDelta ?
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
 		result.contribution = lightEnd.throughputNM * fLightNM * G * We;
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
+
+		// --- Update pdfRev at light endpoint for correct MIS ---
+		const Scalar savedLightPdfRev = lightEnd.pdfRev;
+		{
+			Ray camRayToLight( camPos, -dirToCam );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		return result;
 	}
 
@@ -2411,9 +2674,16 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
-		const Scalar G = BDPTUtilities::GeometricTerm(
-			lightStart.position, lightStart.normal,
-			eyeEnd.position, eyeEnd.normal );
+		Scalar G;
+		if( lightStart.isDelta ) {
+			const Scalar dist2 = dist * dist;
+			const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+			G = absCosEye / dist2;
+		} else {
+			G = BDPTUtilities::GeometricTerm(
+				lightStart.position, lightStart.normal,
+				eyeEnd.position, eyeEnd.normal );
+		}
 
 		const Scalar pdfLight = lightStart.pdfFwd;
 		if( pdfLight <= 0 ) {
@@ -2423,7 +2693,35 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM * G / pdfLight;
 		result.needsSplat = false;
 		result.valid = true;
+
+		// --- Update pdfRev at connection vertices for correct MIS ---
+		const Scalar distSq_conn = dist * dist;
+		const Scalar savedLightPdfRev = lightStart.pdfRev;
+		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
+
+		if( !lightStart.isDelta ) {
+			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirToLight );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, dirToLight ) );
+			const_cast<BDPTVertex&>( lightStart ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+		}
+
+		{
+			Scalar emissionPdfDir = 0;
+			if( lightStart.pLuminary ) {
+				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, -dirToLight ) );
+				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
+			} else if( lightStart.pLight ) {
+				emissionPdfDir = Scalar(1.0) / FOUR_PI;
+			}
+			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
+		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
 		return result;
 	}
 
@@ -2447,7 +2745,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
+		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
 			return result;
 		}
 
@@ -2496,14 +2794,40 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			}
 
 			const Scalar distSq = dist * dist;
-			const Scalar absCosLight = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+			const Scalar absCosLight = lightEnd.isDelta ?
+				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
 			result.contribution = LeNM * G * We / pdfLight;
 			result.rasterPos = rasterPos;
 			result.needsSplat = true;
 			result.valid = true;
+
+			// --- Update pdfRev at connection vertices for correct MIS ---
+			const Scalar savedLightPdfRevNM = lightEnd.pdfRev;
+			const Scalar savedEyePdfRevNM = eyeVerts[0].pdfRev;
+
+			{
+				Ray camRayToLight( camPos, -dirToCam );
+				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			}
+			{
+				Scalar emPdfDir = 0;
+				if( lightEnd.pLuminary ) {
+					const Scalar cosEmit = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
+				} else if( lightEnd.pLight ) {
+					emPdfDir = Scalar(1.0) / FOUR_PI;
+				}
+				const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );
+			}
+
 			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRevNM;
+			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRevNM;
 			return result;
 		}
 
@@ -2519,7 +2843,30 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
+
+		// --- Update pdfRev at connection vertices for correct MIS ---
+		const Scalar savedLightPdfRevNM2 = lightEnd.pdfRev;
+		const Scalar savedEyePdfRevNM2 = eyeVerts[0].pdfRev;
+
+		{
+			Ray camRayToLight( camPos, -dirToCam );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+		}
+
+		if( s >= 2 && lightEnd.pMaterial ) {
+			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
+				lightVerts[s - 2].position, lightEnd.position );
+			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
+			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLightMIS, dirToCam );
+			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRevNM2;
+		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRevNM2;
 		return result;
 	}
 
@@ -2583,7 +2930,32 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		result.contribution = lightEnd.throughputNM * fLightNM * G * fEyeNM * eyeEnd.throughputNM;
 		result.needsSplat = false;
 		result.valid = true;
+
+		// --- Update pdfRev at connection vertices for correct MIS ---
+		const Scalar distSq_conn = dist * dist;
+
+		const Scalar savedLightPdfRev = lightEnd.pdfRev;
+		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
+
+		{
+			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dConnect );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+		}
+
+		{
+			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLight, -dConnect );
+			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
+
 		return result;
 	}
 }

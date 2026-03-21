@@ -86,6 +86,8 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
 
+			inline bool CouldLightPassThrough() const { return true; };
+
 			/// BSSRDF-based SSS does not use volumetric random walk.
 			/// All subsurface transport is handled analytically by the
 			/// diffusion profile — no interior vertices are created.
