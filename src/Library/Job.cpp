@@ -1113,6 +1113,60 @@ bool Job::AddDielectricMaterial(
 	return true;
 }
 
+//! Creates a SubSurface Scattering material
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddSubSurfaceScatteringMaterial(
+							const char* name,				///< [in] Name of the material
+							const char* ior,				///< [in] Index of refraction
+							const char* absorption,			///< [in] Absorption coefficient
+							const char* scattering,			///< [in] Scattering coefficient
+							const char* g,					///< [in] HG asymmetry parameter
+							const char* roughness			///< [in] Surface roughness [0,1]
+							)
+{
+	IPainter* pIOR = pPntManager->GetItem( ior );
+	if( !pIOR )
+	{
+		double fIOR = atof(ior);
+		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fIOR,fIOR,fIOR) );
+	} else {
+		pIOR->addref();
+	}
+
+	IPainter* pAbsorption = pPntManager->GetItem( absorption );
+	if( !pAbsorption )
+	{
+		double fAbsorption = atof(absorption);
+		RISE_API_CreateUniformColorPainter( &pAbsorption, RISEPel(fAbsorption,fAbsorption,fAbsorption) );
+	} else {
+		pAbsorption->addref();
+	}
+
+	IPainter* pScattering = pPntManager->GetItem( scattering );
+	if( !pScattering )
+	{
+		double fScattering = atof(scattering);
+		RISE_API_CreateUniformColorPainter( &pScattering, RISEPel(fScattering,fScattering,fScattering) );
+	} else {
+		pScattering->addref();
+	}
+
+	double gVal = atof(g);
+	double roughnessVal = atof(roughness);
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateSubSurfaceScatteringMaterial( &pMaterial, *pIOR, *pAbsorption, *pScattering, gVal, roughnessVal );
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+	safe_release( pIOR );
+	safe_release( pAbsorption );
+	safe_release( pScattering );
+
+	return true;
+}
+
 //! Creates an isotropic phong material
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddIsotropicPhongMaterial(

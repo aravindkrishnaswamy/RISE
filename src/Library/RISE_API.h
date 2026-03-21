@@ -480,6 +480,17 @@ namespace RISE
 								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 								);
 
+	//! Creates a SubSurface Scattering material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSubSurfaceScatteringMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& absorption,		///< [in] Absorption coefficient
+								const IPainter& scattering,		///< [in] Scattering coefficient
+								const Scalar g,					///< [in] HG asymmetry parameter
+								const Scalar roughness			///< [in] Surface roughness [0,1]
+								);
+
 	//! Creates an isotropic phong material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIsotropicPhongMaterial(
