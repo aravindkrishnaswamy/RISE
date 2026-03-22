@@ -28,11 +28,11 @@ standard_shader
 
 bdpt_rasterizer
 {
-	max_recursion		24
+	max_recursion		14
 	min_importance		0.00001
 	max_eye_depth		16
 	max_light_depth		16
-	samples				1024
+	samples				64
 	lum_samples			1
 	ior_stack			true
 }
@@ -101,7 +101,7 @@ lambertian_luminaire_material
 {
 	name				lum
 	exitance			pnt_light
-	scale				200.0
+	scale				20.0
 	material			none
 }
 

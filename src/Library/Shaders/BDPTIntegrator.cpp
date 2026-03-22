@@ -446,74 +446,68 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 
 	//
 	// Step 6: Cast probe rays in both +axis and -axis directions.
-	// Collect up to 2 hits and select one uniformly (PBRT convention).
+	// Trace the full intersection chain through the object and collect
+	// all valid hits, then select one uniformly (PBRT convention).
 	//
 	struct ProbeHit {
 		Point3 point;
 		Vector3 normal;
 		OrthonormalBasis3D onb;
 	};
-	ProbeHit hits[2];
-	int numHits = 0;
+	std::vector<ProbeHit> hits;
+	hits.reserve( 8 );
 	const Scalar probeMaxDist = 1000.0;
+	const int maxProbeHits = 64;  // safety cap
 
-	// Cast in +axis direction
+	// Trace all intersections along +axis and -axis
+	for( int dir = 0; dir < 2; dir++ )
 	{
-		Ray probeRay( probeCenter, probeAxis );
+		const Vector3 probeDir = (dir == 0) ? probeAxis : -probeAxis;
+		Ray probeRay( probeCenter, probeDir );
 		probeRay.Advance( BDPT_RAY_EPSILON );
 
-		RayIntersection probeRI( probeRay, nullRasterizerState );
-		pObject->IntersectRay( probeRI, probeMaxDist, true, true, false );
-
-		if( probeRI.geometric.bHit )
+		Scalar traveled = 0;
+		for( int bounce = 0; bounce < maxProbeHits; bounce++ )
 		{
+			const Scalar remaining = probeMaxDist - traveled;
+			if( remaining < BDPT_RAY_EPSILON ) break;
+
+			RayIntersection probeRI( probeRay, nullRasterizerState );
+			pObject->IntersectRay( probeRI, remaining, true, true, false );
+
+			if( !probeRI.geometric.bHit ) break;
+
 			if( probeRI.pModifier ) {
 				probeRI.pModifier->Modify( probeRI.geometric );
 			}
-			hits[numHits].point = probeRI.geometric.ptIntersection;
-			hits[numHits].normal = probeRI.geometric.vNormal;
-			hits[numHits].onb = probeRI.geometric.onb;
-			numHits++;
+
+			ProbeHit h;
+			h.point = probeRI.geometric.ptIntersection;
+			h.normal = probeRI.geometric.vNormal;
+			h.onb = probeRI.geometric.onb;
+			hits.push_back( h );
+
+			// Advance ray past this hit
+			traveled += probeRI.geometric.range;
+			probeRay = Ray( probeRI.geometric.ptIntersection, probeDir );
+			probeRay.Advance( BDPT_RAY_EPSILON );
+			traveled += BDPT_RAY_EPSILON;
 		}
 	}
 
-	// Cast in -axis direction
-	{
-		Ray probeRay( probeCenter, -probeAxis );
-		probeRay.Advance( BDPT_RAY_EPSILON );
-
-		RayIntersection probeRI( probeRay, nullRasterizerState );
-		pObject->IntersectRay( probeRI, probeMaxDist, true, true, false );
-
-		if( probeRI.geometric.bHit && numHits < 2 )
-		{
-			if( probeRI.pModifier ) {
-				probeRI.pModifier->Modify( probeRI.geometric );
-			}
-			// Only add if sufficiently separated from the first hit
-			const bool distinct = (numHits == 0) ||
-				Vector3Ops::Magnitude( Vector3Ops::mkVector3(
-					hits[0].point, probeRI.geometric.ptIntersection ) ) > BDPT_RAY_EPSILON;
-			if( distinct ) {
-				hits[numHits].point = probeRI.geometric.ptIntersection;
-				hits[numHits].normal = probeRI.geometric.vNormal;
-				hits[numHits].onb = probeRI.geometric.onb;
-				numHits++;
-			}
-		}
-	}
-
+	const int numHits = static_cast<int>( hits.size() );
 	if( numHits == 0 ) {
 		return result;
 	}
 
-	// Select uniformly among hits
-	const int selected = (numHits == 1) ? 0 :
-		(rng.CanonicalRandom() < 0.5 ? 0 : 1);
+	// Select uniformly among all hits
+	const int selected = static_cast<int>(
+		rng.CanonicalRandom() * numHits );
+	const int sel = (selected >= numHits) ? numHits - 1 : selected;
 
-	Point3 entryPoint = hits[selected].point;
-	Vector3 entryNormal = hits[selected].normal;
-	OrthonormalBasis3D entryONB = hits[selected].onb;
+	Point3 entryPoint = hits[sel].point;
+	Vector3 entryNormal = hits[sel].normal;
+	OrthonormalBasis3D entryONB = hits[sel].onb;
 
 	// Skip if entry point is too close to exit point (self-intersection)
 	const Vector3 offset = Vector3Ops::mkVector3( exitPoint, entryPoint );
