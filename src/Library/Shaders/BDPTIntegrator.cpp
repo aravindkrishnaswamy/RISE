@@ -1207,9 +1207,41 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
 		}
 
+		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
+		// The emission directional PDF from the emitter toward the predecessor
+		// vertex determines pdfRev at the predecessor.
+		Scalar savedEyePredPdfRev = 0;
+		const bool hasEyePred = (t >= 3);
+		if( hasEyePred )
+		{
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			savedEyePredPdfRev = eyePred.pdfRev;
+
+			// Emission directional PDF at eyeEnd toward eyePred
+			Scalar emPdfDir = 0;
+			if( eyeEnd.pMaterial ) {
+				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
+				if( pEm ) {
+					// Cosine-weighted hemisphere emission
+					const Scalar cosAtEmitter = fabs( Vector3Ops::Dot( eyeEnd.normal, woFromEmitter ) );
+					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
+				}
+			}
+
+			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( eyePred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
+		if( hasEyePred ) {
+			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRev;
+		}
 
 		return result;
 	}
@@ -1294,9 +1326,36 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 		}
 
+		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
+		// PDF at lightEnd of scattering toward lightVerts[s-2] given incoming = dirToCam
+		Scalar savedLightPredPdfRev_t0 = 0;
+		const bool hasLightPred_t0 = (s >= 2);
+		if( hasLightPred_t0 )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRev_t0 = lightPred.pdfRev;
+
+			Vector3 wiAtLightEnd;
+			if( s >= 2 ) {
+				wiAtLightEnd = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
+				wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
+			}
+
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+		if( hasLightPred_t0 ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRev_t0;
+		}
 
 		return result;
 	}
@@ -1437,10 +1496,31 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
 		}
 
+		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
+		// PDF at eyeEnd of scattering toward eyeVerts[t-2] given incoming = dirToLight
+		Scalar savedEyePredPdfRev = 0;
+		const bool hasEyePred_s1 = (t >= 3);
+		if( hasEyePred_s1 )
+		{
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			savedEyePredPdfRev = eyePred.pdfRev;
+
+			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
+			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirToLight, dirToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+			const_cast<BDPTVertex&>( eyePred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
+		if( hasEyePred_s1 ) {
+			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRev;
+		}
 
 		return result;
 	}
@@ -1606,10 +1686,35 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
 		}
 
+		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
+		// PDF at lightEnd of scattering toward lightVerts[s-2] given incoming = dirToCam
+		Scalar savedLightPredPdfRev_t1 = 0;
+		const bool hasLightPred_t1 = (s >= 2 && lightEnd.pMaterial);
+		if( hasLightPred_t1 )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRev_t1 = lightPred.pdfRev;
+
+			Vector3 wiAtLightEnd = Vector3Ops::mkVector3(
+				lightVerts[s - 2].position, lightEnd.position );
+			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
+
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
+		if( hasLightPred_t1 ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRev_t1;
+		}
 
 		return result;
 	}
@@ -1721,11 +1826,61 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
 		}
 
+		// --- Update predecessor pdfRev at lightVerts[s-2] ---
+		// The connection changed the outgoing direction at lightEnd, so the
+		// reverse PDF at the predecessor must reflect scattering at lightEnd
+		// from the connection direction (-dConnect) back toward the predecessor.
+		Scalar savedLightPredPdfRev = 0;
+		const bool hasLightPred = (s >= 2);
+		if( hasLightPred )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRev = lightPred.pdfRev;
+
+			// woAtLight = -dConnect (toward eye side), scatter toward pred = -wiAtLight
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, -wiAtLight );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
+		// --- Update predecessor pdfRev at eyeVerts[t-2] ---
+		// The connection changed the outgoing direction at eyeEnd, so the
+		// reverse PDF at the predecessor must reflect scattering at eyeEnd
+		// from the connection direction (dConnect) back toward the predecessor.
+		Scalar savedEyePredPdfRev = 0;
+		const bool hasEyePred = (t >= 2);
+		if( hasEyePred )
+		{
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			savedEyePredPdfRev = eyePred.pdfRev;
+
+			// wiAtEye = dConnect (from light side), scatter toward pred = -woAtEye
+			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, wiAtEye, -woAtEye );
+			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			// Camera vertex has no meaningful surface normal; use 1.0
+			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
+				Scalar(1.0) :
+				fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( eyePred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 
 		// Restore original values
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
+		if( hasLightPred ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRev;
+		}
+		if( hasEyePred ) {
+			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRev;
+		}
 
 		return result;
 	}
@@ -2545,8 +2700,36 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
 		}
 
+		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
+		Scalar savedEyePredPdfRevNM_s0 = 0;
+		const bool hasEyePredNM_s0 = (t >= 3);
+		if( hasEyePredNM_s0 )
+		{
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			savedEyePredPdfRevNM_s0 = eyePred.pdfRev;
+
+			Scalar emPdfDir = 0;
+			if( eyeEnd.pMaterial ) {
+				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
+				if( pEm ) {
+					const Scalar cosAtEmitter = fabs( Vector3Ops::Dot( eyeEnd.normal, woFromEmitter ) );
+					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
+				}
+			}
+
+			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( eyePred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
+		if( hasEyePredNM_s0 ) {
+			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRevNM_s0;
+		}
 		return result;
 	}
 
@@ -2609,8 +2792,32 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 		}
 
+		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
+		Scalar savedLightPredPdfRevNM_t0 = 0;
+		const bool hasLightPredNM_t0 = (s >= 2 && lightEnd.pMaterial);
+		if( hasLightPredNM_t0 )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRevNM_t0 = lightPred.pdfRev;
+
+			Vector3 wiAtLightEnd = Vector3Ops::mkVector3(
+				lightVerts[s - 2].position, lightEnd.position );
+			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
+
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+		if( hasLightPredNM_t0 ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM_t0;
+		}
 		return result;
 	}
 
@@ -2720,9 +2927,29 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
 		}
 
+		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
+		Scalar savedEyePredPdfRevNM_s1 = 0;
+		const bool hasEyePredNM_s1 = (t >= 3);
+		if( hasEyePredNM_s1 )
+		{
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			savedEyePredPdfRevNM_s1 = eyePred.pdfRev;
+
+			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
+			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirToLight, dirToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+			const_cast<BDPTVertex&>( eyePred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
+		if( hasEyePredNM_s1 ) {
+			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRevNM_s1;
+		}
 		return result;
 	}
 
@@ -2865,9 +3092,33 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
 		}
 
+		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
+		Scalar savedLightPredPdfRevNM_t1 = 0;
+		const bool hasLightPredNM_t1 = (s >= 2 && lightEnd.pMaterial);
+		if( hasLightPredNM_t1 )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRevNM_t1 = lightPred.pdfRev;
+
+			Vector3 wiAtLightEnd = Vector3Ops::mkVector3(
+				lightVerts[s - 2].position, lightEnd.position );
+			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
+
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRevNM2;
 		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRevNM2;
+		if( hasLightPredNM_t1 ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM_t1;
+		}
 		return result;
 	}
 
@@ -2952,10 +3203,52 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
 		}
 
+		// --- Update predecessor pdfRev at lightVerts[s-2] ---
+		Scalar savedLightPredPdfRevNM = 0;
+		const bool hasLightPredNM = (s >= 2);
+		if( hasLightPredNM )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRevNM = lightPred.pdfRev;
+
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, -wiAtLight );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
+		// --- Update predecessor pdfRev at eyeVerts[t-2] ---
+		Scalar savedEyePredPdfRevNM = 0;
+		const bool hasEyePredNM = (t >= 2);
+		if( hasEyePredNM )
+		{
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			savedEyePredPdfRevNM = eyePred.pdfRev;
+
+			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, wiAtEye, -woAtEye );
+			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			// Camera vertex has no meaningful surface normal; use 1.0
+			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
+				Scalar(1.0) :
+				fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( eyePred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
+		if( hasLightPredNM ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM;
+		}
+		if( hasEyePredNM ) {
+			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRevNM;
+		}
 
 		return result;
 	}
