@@ -53,8 +53,8 @@ pixelintegratingspectral_rasterizer
 {
 	max_recursion		10
 	min_importance		0.0001
-	samples				4000
-#	samples				1000
+#	samples				4000
+	samples				1000
 	nmbegin				380
 	nmend				720
 	num_wavelengths		8
@@ -82,7 +82,7 @@ animation_options
 ##################################################
 # Cameras
 ##################################################
-
+/*
 pinhole_camera
 {
 	location			0 0 50.0
@@ -92,10 +92,10 @@ pinhole_camera
 	height				500
 	fov					30.0
 }
-
+*/
 
 # Camera to focus in on the the ears
-/*
+
 pinhole_camera
 {
 	location			-6 -1.5 12.0
@@ -105,7 +105,7 @@ pinhole_camera
 	height				200
 	fov					30.0
 }
-*/
+
 
 /*
 # Camera to subtlely focus on ears
