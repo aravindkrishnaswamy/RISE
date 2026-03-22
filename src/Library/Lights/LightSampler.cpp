@@ -138,15 +138,8 @@ bool LightSampler::SampleLight(
 					// For delta-position lights, pdfPosition = 1
 					sample.pdfPosition = 1.0;
 
-					// For point lights: uniform sphere => 1/(4*pi)
-					// For spot lights: uniform within cone.  Since we cannot
-					// query the cone angle through the ILight interface, we
-					// use 1/(4*pi) as a conservative default.  Spot light
-					// sampling already constrains to the cone via
-					// generateRandomPhoton, so the effective pdf is higher
-					// but that is accounted for by the emittedRadiance being
-					// zero outside the cone.
-					sample.pdfDirection = Scalar(1.0) / FOUR_PI;
+					// Query the light's own directional PDF
+					sample.pdfDirection = l->pdfDirection( photonRay.Dir() );
 
 					return true;
 				}

@@ -56,10 +56,17 @@ namespace RISE
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
-				return Ray(ptPosition, GeometricUtilities::Perturb(
-					Vector3( 0, 1, 0 ), 
-					PI*ptrand.x, ptrand.y*TWO_PI)
-					);
+				// Uniform sampling on the full sphere
+				const Scalar cosTheta = 1.0 - 2.0 * ptrand.x;
+				const Scalar sinTheta = sqrt( r_max( 0.0, 1.0 - cosTheta * cosTheta ) );
+				const Scalar phi = TWO_PI * ptrand.y;
+				return Ray( ptPosition,
+					Vector3( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta ) );
+			}
+
+			inline Scalar pdfDirection( const Vector3& ) const
+			{
+				return Scalar(1.0) / FOUR_PI;
 			}
 
 			PointLight(

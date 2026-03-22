@@ -1575,8 +1575,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, -dirToLight ) );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
-				// Point/spot light: uniform sphere
-				emissionPdfDir = Scalar(1.0) / FOUR_PI;
+				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
 			}
 			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
@@ -1725,7 +1724,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					const Scalar cosEmit = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
-					emPdfDir = Scalar(1.0) / FOUR_PI;
+					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
 				}
 				const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );
@@ -3057,7 +3056,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, -dirToLight ) );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
-				emissionPdfDir = Scalar(1.0) / FOUR_PI;
+				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
 			}
 			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
@@ -3184,7 +3183,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					const Scalar cosEmit = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
-					emPdfDir = Scalar(1.0) / FOUR_PI;
+					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
 				}
 				const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );

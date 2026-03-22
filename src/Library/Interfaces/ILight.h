@@ -52,6 +52,9 @@ namespace RISE
 		//! Asks the light to generate a random emitted photon
 		virtual Ray generateRandomPhoton( const Point3& ptrand ) const = 0;
 
+		//! Returns the solid angle PDF for the directional sampling used by generateRandomPhoton
+		virtual Scalar pdfDirection( const Vector3& dir ) const = 0;
+
 		//! Computes direct lighting
 		virtual void ComputeDirectLighting( 
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information

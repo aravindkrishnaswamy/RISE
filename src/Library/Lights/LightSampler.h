@@ -17,7 +17,8 @@
 //
 //  EMISSION SAMPLING:
 //  - Non-mesh lights (point/spot): delta position (pdfPosition=1),
-//    uniform directional sampling over the sphere (pdfDir=1/4pi).
+//    uniform solid angle sampling (point=sphere, spot=cone),
+//    pdfDirection queried from the light via pdfDirection().
 //  - Mesh luminaries: uniform position on surface (pdfPos=1/area),
 //    cosine-weighted hemisphere direction (pdfDir=cos/pi).
 //

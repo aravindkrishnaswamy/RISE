@@ -60,6 +60,11 @@ namespace RISE
 				return Ray();
 			}
 
+			inline Scalar pdfDirection( const Vector3& ) const
+			{
+				return 0;
+			}
+
 			inline void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool, RISEPel& amount ) const
 			{
 				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );

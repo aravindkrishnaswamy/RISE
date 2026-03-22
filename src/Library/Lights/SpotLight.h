@@ -86,10 +86,30 @@ namespace RISE
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
-				return Ray(ptPosition, GeometricUtilities::Perturb(
-					vDirection, 
-					dOuterAngle*ptrand.x, ptrand.y*TWO_PI)
-					);
+				// Uniform solid angle sampling within the cone
+				const Scalar cosAlpha = cos( dOuterAngle );
+				const Scalar cosTheta = 1.0 - ptrand.x * (1.0 - cosAlpha);
+				const Scalar sinTheta = sqrt( r_max( 0.0, 1.0 - cosTheta * cosTheta ) );
+				const Scalar phi = TWO_PI * ptrand.y;
+
+				// Local direction in cone frame (z = cone axis)
+				const Vector3 localDir( cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta );
+
+				// Transform to world space using ONB around vDirection
+				OrthonormalBasis3D onb;
+				onb.CreateFromW( vDirection );
+				return Ray( ptPosition, Vector3(
+					onb.u().x*localDir.x + onb.v().x*localDir.y + onb.w().x*localDir.z,
+					onb.u().y*localDir.x + onb.v().y*localDir.y + onb.w().y*localDir.z,
+					onb.u().z*localDir.x + onb.v().z*localDir.y + onb.w().z*localDir.z ) );
+			}
+
+			inline Scalar pdfDirection( const Vector3& dir ) const
+			{
+				const Scalar cost = Vector3Ops::Dot( dir, vDirection );
+				if( cost <= 0 ) return 0;
+				if( acos( r_min( 1.0, cost ) ) > dOuterAngle ) return 0;
+				return Scalar(1.0) / (TWO_PI * (1.0 - cos( dOuterAngle )));
 			}
 
 			SpotLight(

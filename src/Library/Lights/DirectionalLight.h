@@ -56,6 +56,11 @@ namespace RISE
 				return Ray();
 			}
 
+			inline Scalar pdfDirection( const Vector3& ) const
+			{
+				return 0;
+			}
+
 			DirectionalLight( Scalar radiantEnergy_, const RISEPel& c, const Vector3& vDir );
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
