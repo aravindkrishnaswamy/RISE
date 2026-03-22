@@ -40,7 +40,7 @@ bdpt_rasterizer
 	min_importance		0.001
 	max_eye_depth		10
 	max_light_depth		10
-	samples				128
+	samples				64
 	lum_samples			1
 	ior_stack			TRUE
 }
@@ -118,7 +118,8 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_clear_glass
-	color				0.97 0.98 1.0
+	color				0.997 0.998 1.0
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
@@ -136,13 +137,15 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_lens_glass
-	color				1.0 0.82 0.62
+	color				1.0 0.997 0.62
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_prism_glass
-	color				0.64 0.88 1.0
+	color				0.64 0.99 1.0
+	colorspace			RISERGB
 }
 
 ##################################################
@@ -189,7 +192,7 @@ lambertian_luminaire_material
 {
 	name				ceiling_lum
 	exitance			pnt_emit
-	scale				8.0
+	scale				40.0
 	material			none
 }
 
@@ -197,7 +200,7 @@ lambertian_luminaire_material
 {
 	name				ceiling_lum_cool
 	exitance			pnt_emit_cool
-	scale				6.0
+	scale				40.0
 	material			none
 }
 
@@ -344,7 +347,7 @@ ellipsoid_geometry
 
 torus_geometry
 {
-	name				prismgeom
+	name				torusgeom
 	majorradius			0.26
 	minorratio			0.24
 }
@@ -534,7 +537,7 @@ FOR I -@DROPLET_COUNT @DROPLET_COUNT 1
 	DEFINE GC_R $(0.82+0.12*sin(@I*0.8))
 	DEFINE GC_G $(0.58+0.18*cos(@I*0.9))
 	DEFINE GC_B $(0.78+0.16*sin(@I*0.5))
-	DEFINE GLOW $(1.0+0.2*(@DROPLET_COUNT-@GABS))
+	DEFINE GLOW $(10.0+50*(@DROPLET_COUNT-@GABS))
 
 	uniformcolor_painter
 	{
@@ -611,63 +614,16 @@ csg_object
 	obja				lens_half_a
 	objb				lens_half_b
 	operation			intersection
-	position			-0.74 0.46 -1.86
+	position			-1.5 1.36 -1.86
 	orientation			0 0 -8
 }
 
 standard_object
 {
 	name				caustic_prism
-	geometry			prismgeom
-	position			0.92 0.56 -1.98
+	geometry			torusgeom
+	position			1.5 1.36 -1.98
 	orientation			84 30 52
-	material			prism_glass
+	material			clear_glass
 }
 
-##################################################
-# Focused lights for caustic generation
-##################################################
-
-spot_light
-{
-	name				caustic_spot_left
-	position			-0.86 5.95 -1.22
-	target				-0.74 0.46 -1.86
-	color				1.0 0.95 0.88
-	power				0.4
-	inner				1.1
-	outer				2.6
-}
-
-spot_light
-{
-	name				caustic_spot_right
-	position			1.08 5.95 -1.32
-	target				0.92 0.56 -1.98
-	color				0.92 0.96 1.0
-	power				0.4
-	inner				1.0
-	outer				2.4
-}
-
-spot_light
-{
-	name				caustic_spot_center
-	position			0 5.95 1.05
-	target				0 1.38 -1.0
-	color				1.0 0.98 0.94
-	power				0.15
-	inner				1.5
-	outer				3.2
-}
-
-spot_light
-{
-	name				fill_spot
-	position			0 5.0 3.8
-	target				0 2.0 -1.0
-	color				1.0 0.98 0.94
-	power				0.25
-	inner				18
-	outer				36
-}

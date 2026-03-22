@@ -68,15 +68,15 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 
 		ri.vNormal = Vector3Ops::Normalize(ri.vNormal);
 		
-		if( bComputeExitInfo )
+		if( bComputeExitInfo && ri.range2 != 0 )
 		{
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
-			//Scalar d2 = sqrt( ri.ptExit.x*ri.ptExit.x + ri.ptExit.z*ri.ptExit.z );
-			//Scalar f2 = (2.0 * (d2 - m_p0)) / (d2*m_sqrP1);
+			Scalar d2 = sqrt( ri.ptExit.x*ri.ptExit.x + ri.ptExit.z*ri.ptExit.z );
+			Scalar f2 = (2.0 * (d2 - m_p0)) / (d2*m_sqrP1);
 
-			ri.vNormal2.x = ri.ptExit.x * f;
+			ri.vNormal2.x = ri.ptExit.x * f2;
 			ri.vNormal2.y = (ri.ptExit.y * 2)/(m_sqrP1);
-			ri.vNormal2.z = ri.ptExit.z * f;
+			ri.vNormal2.z = ri.ptExit.z * f2;
 
 			ri.vNormal2 = Vector3Ops::Normalize(ri.vNormal2);
 		}

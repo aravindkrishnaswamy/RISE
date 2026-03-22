@@ -186,25 +186,78 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// in range.
 		if( riObjA.geometric.bHit && riObjB.geometric.bHit )
 		{
-			// If B begins after A ends, then take A
-			if( riObjB.geometric.range > riObjA.geometric.range2 ) {
-				ri = riObjA;
+			const bool insideA = (riObjA.geometric.range2 == 0);
+			const bool insideB = (riObjB.geometric.range2 == 0);
+
+			if( insideA && insideB )
+			{
+				// Inside both objects — inside the union.
+				// Exit at the farther boundary.
+				if( riObjA.geometric.range >= riObjB.geometric.range ) {
+					ri = riObjA;
+				} else {
+					ri = riObjB;
+				}
+				// range2 is already 0, signaling "inside"
 			}
-			// If A begins after B ends, then take B
-			else if( riObjA.geometric.range > riObjB.geometric.range2 ) {
-				ri = riObjB;
+			else if( insideA && !insideB )
+			{
+				// Inside A — inside the union.
+				// Exit at A's boundary, unless B overlaps and extends further.
+				if( riObjB.geometric.range < riObjA.geometric.range &&
+					riObjB.geometric.range2 > riObjA.geometric.range )
+				{
+					// B overlaps and extends past A — exit at B's far side
+					ri = riObjB;
+					ri.geometric.range = riObjB.geometric.range2;
+					ri.geometric.vNormal = riObjB.geometric.vNormal2;
+				} else {
+					ri = riObjA;
+				}
+				ri.geometric.range2 = 0;
 			}
-			// If a comes first, then take a's start and B's end
-			else if( riObjA.geometric.range < riObjB.geometric.range ) {
-				ri = riObjA;
-				ri.geometric.range2 = riObjB.geometric.range2;
-				ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+			else if( !insideA && insideB )
+			{
+				// Inside B — inside the union.
+				if( riObjA.geometric.range < riObjB.geometric.range &&
+					riObjA.geometric.range2 > riObjB.geometric.range )
+				{
+					ri = riObjA;
+					ri.geometric.range = riObjA.geometric.range2;
+					ri.geometric.vNormal = riObjA.geometric.vNormal2;
+				} else {
+					ri = riObjB;
+				}
+				ri.geometric.range2 = 0;
 			}
-			// take b's start and A's end, because B came first
-			else {
-				ri = riObjB;
-				ri.geometric.range2 = riObjA.geometric.range2;
-				ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+			else
+			{
+				// Outside both objects.
+				// If B begins after A ends, then take A (disjoint)
+				if( riObjB.geometric.range > riObjA.geometric.range2 ) {
+					ri = riObjA;
+				}
+				// If A begins after B ends, then take B (disjoint)
+				else if( riObjA.geometric.range > riObjB.geometric.range2 ) {
+					ri = riObjB;
+				}
+				// Overlapping: A enters first
+				else if( riObjA.geometric.range <= riObjB.geometric.range ) {
+					ri = riObjA;
+					// Exit at the farther boundary
+					if( riObjB.geometric.range2 > riObjA.geometric.range2 ) {
+						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+					}
+				}
+				// Overlapping: B enters first
+				else {
+					ri = riObjB;
+					if( riObjA.geometric.range2 > riObjB.geometric.range2 ) {
+						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+					}
+				}
 			}
 		} else if( riObjA.geometric.bHit && !riObjB.geometric.bHit ) {
 			ri = riObjA;
@@ -213,29 +266,99 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		}
 		break;
 	case CSG_INTERSECTION:
-		// If both the objects don't intersect, then there can't be an 
+		// If both the objects don't intersect, then there can't be an
 		// intersection
 		if( riObjA.geometric.bHit && riObjB.geometric.bHit )
 		{
-			if( 
-				(riObjA.geometric.range <= riObjB.geometric.range) &&
-				(riObjB.geometric.range <= riObjA.geometric.range2) )
+			const bool insideA = (riObjA.geometric.range2 == 0);
+			const bool insideB = (riObjB.geometric.range2 == 0);
+
+			if( insideA && insideB )
 			{
-				ri = riObjA;
-				ri.geometric.range = riObjA.geometric.range;
-				ri.geometric.range2 = riObjB.geometric.range2;
-				ri.geometric.vNormal = riObjB.geometric.vNormal;
-				ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+				// Inside both objects — we are inside the CSG intersection.
+				// Exit at whichever boundary we reach first.
+				if( riObjA.geometric.range <= riObjB.geometric.range ) {
+					ri = riObjA;
+				} else {
+					ri = riObjB;
+				}
+				// range2 is already 0 from child, signaling "inside"
 			}
-			else if( 
-				(riObjB.geometric.range <= riObjA.geometric.range) &&
-				(riObjA.geometric.range <= riObjB.geometric.range2) )
+			else if( insideA && !insideB )
 			{
-				ri = riObjB;
-				ri.geometric.range = riObjB.geometric.range;
-				ri.geometric.range2 = riObjA.geometric.range2;
-				ri.geometric.vNormal = riObjA.geometric.vNormal;
-				ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+				// Inside A, outside B — not inside the CSG intersection.
+				// Can enter the intersection at B's entry if it's before A's exit.
+				if( riObjB.geometric.range < riObjA.geometric.range )
+				{
+					ri = riObjB;
+					ri.geometric.range = riObjB.geometric.range;
+					ri.geometric.vNormal = riObjB.geometric.vNormal;
+					// Exit at whichever boundary is closer
+					if( riObjA.geometric.range <= riObjB.geometric.range2 ) {
+						ri.geometric.range2 = riObjA.geometric.range;
+						ri.geometric.vNormal2 = riObjA.geometric.vNormal;
+					} else {
+						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+					}
+				}
+			}
+			else if( !insideA && insideB )
+			{
+				// Outside A, inside B — not inside the CSG intersection.
+				// Can enter the intersection at A's entry if it's before B's exit.
+				if( riObjA.geometric.range < riObjB.geometric.range )
+				{
+					ri = riObjA;
+					ri.geometric.range = riObjA.geometric.range;
+					ri.geometric.vNormal = riObjA.geometric.vNormal;
+					// Exit at whichever boundary is closer
+					if( riObjB.geometric.range <= riObjA.geometric.range2 ) {
+						ri.geometric.range2 = riObjB.geometric.range;
+						ri.geometric.vNormal2 = riObjB.geometric.vNormal;
+					} else {
+						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+					}
+				}
+			}
+			else
+			{
+				// Outside both objects.
+				// CSG intersection entry = max(A.range, B.range)
+				// CSG intersection exit  = min(A.range2, B.range2)
+				if(
+					(riObjA.geometric.range <= riObjB.geometric.range) &&
+					(riObjB.geometric.range <= riObjA.geometric.range2) )
+				{
+					// A enters first, B enters while inside A
+					ri = riObjA;
+					ri.geometric.range = riObjB.geometric.range;
+					ri.geometric.vNormal = riObjB.geometric.vNormal;
+					if( riObjA.geometric.range2 <= riObjB.geometric.range2 ) {
+						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+					} else {
+						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+					}
+				}
+				else if(
+					(riObjB.geometric.range <= riObjA.geometric.range) &&
+					(riObjA.geometric.range <= riObjB.geometric.range2) )
+				{
+					// B enters first, A enters while inside B
+					ri = riObjB;
+					ri.geometric.range = riObjA.geometric.range;
+					ri.geometric.vNormal = riObjA.geometric.vNormal;
+					if( riObjB.geometric.range2 <= riObjA.geometric.range2 ) {
+						ri.geometric.range2 = riObjB.geometric.range2;
+						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+					} else {
+						ri.geometric.range2 = riObjA.geometric.range2;
+						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+					}
+				}
 			}
 		}
 		break;
@@ -312,8 +435,8 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 
 		// Compute the intersection in world space
-		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - 1e-4 ) );
-		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + 1e-4 ) );
+		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
+		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
 
 		// Re-compute the ranges in world space
 		ri.geometric.range = Vector3Ops::Magnitude( Vector3Ops::mkVector3( ri.geometric.ptIntersection, orig.origin ) );
@@ -382,14 +505,36 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 		}
 		break;
 	case CSG_INTERSECTION:
-		// If both the objects don't intersect, then there can't be an 
+		// If both the objects don't intersect, then there can't be an
 		// intersection
 		if( riObjA.geometric.bHit && riObjB.geometric.bHit ) {
-			if( (riObjA.geometric.range <= riObjB.geometric.range) && (riObjB.geometric.range <= riObjA.geometric.range2) ) {
-				return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
-			}
-			else if( (riObjB.geometric.range <= riObjA.geometric.range) && (riObjA.geometric.range <= riObjB.geometric.range2) ) {
-				return (riObjB.geometric.range < dHowFar2 && riObjB.geometric.range > 0);
+			const bool insideA = (riObjA.geometric.range2 == 0);
+			const bool insideB = (riObjB.geometric.range2 == 0);
+
+			if( insideA && insideB ) {
+				// Inside both — inside the CSG intersection.
+				// The exit is at whichever boundary we reach first.
+				const Scalar exitRange = (riObjA.geometric.range <= riObjB.geometric.range)
+					? riObjA.geometric.range : riObjB.geometric.range;
+				return (exitRange < dHowFar2 && exitRange > 0);
+			} else if( insideA && !insideB ) {
+				// Inside A, outside B. Enter CSG at B's entry if before A's exit.
+				if( riObjB.geometric.range < riObjA.geometric.range ) {
+					return (riObjB.geometric.range < dHowFar2 && riObjB.geometric.range > 0);
+				}
+			} else if( !insideA && insideB ) {
+				// Outside A, inside B. Enter CSG at A's entry if before B's exit.
+				if( riObjA.geometric.range < riObjB.geometric.range ) {
+					return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
+				}
+			} else {
+				// Outside both. CSG entry = max(A.range, B.range).
+				if( (riObjA.geometric.range <= riObjB.geometric.range) && (riObjB.geometric.range <= riObjA.geometric.range2) ) {
+					return (riObjB.geometric.range < dHowFar2 && riObjB.geometric.range > 0);
+				}
+				else if( (riObjB.geometric.range <= riObjA.geometric.range) && (riObjA.geometric.range <= riObjB.geometric.range2) ) {
+					return (riObjA.geometric.range < dHowFar2 && riObjA.geometric.range > 0);
+				}
 			}
 		}
 		break;

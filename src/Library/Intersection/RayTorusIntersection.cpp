@@ -24,18 +24,10 @@ namespace RISE
 	{
 		hit.bHit = false;
 		hit.dRange = RISE_INFINITY;
+		hit.dRange2 = RISE_INFINITY;
 
 		const Vector3& rayDirNorm = ray.Dir();
 
-		/* Not sure why yet, but this causes a major major bug!
-		Scalar yin  = ray.origin.x + minorRadius * rayDirNorm.x;
-		Scalar yout = ray.origin.x + majorRadius * rayDirNorm.x;
-
-		if( ( (yin >  majorRadius && yout >  majorRadius) ||
-			(yin < -majorRadius && yout < -majorRadius) )) {
-				return;
-			}
-		*/
 		// Compute torus constants
 		Scalar a0  = 4.0 * sqrP0;
 		Scalar b0  = sqrP0 - minorRadius*minorRadius;
@@ -51,30 +43,6 @@ namespace RISE
 		Scalar m = (l + 2.0*rayDirNorm.y*ray.origin.y) / g;
 		Scalar u = (t +  ray.origin.y*ray.origin.y + b0) / g;
 
-	#if 0
-		std::vector<Scalar> coeffs;
-		coeffs.push_back( u*u - q*t );
-		coeffs.push_back( 2.0*m*u - q*l );
-		coeffs.push_back( m*m + 2.0*u - q*f );
-		coeffs.push_back( 2.0 * m );
-		coeffs.push_back( 1.0 );
-
-	//	Scalar solution;
-	//	if( Polynomial::SolvePolynomialWithinRange( coeffs, 0.0, 10000, solution, 0 ) ) {
-	//		hit.bHit = true;
-	//		hit.dRange = solution;
-	//	}
-
-		std::vector<Scalar> solutions;
-		if( Polynomial::SolvePolynomialWithinRange( coeffs, 0.0, 10000, solutions, 0 ) > 0 ) {
-			hit.bHit = true;
-			hit.dRange = solutions[0];
-			if( solutions.size() > 1 ) {
-				hit.dRange2 = solutions[1];
-			}
-		}
-
-	#else
 		// Form a quartic with the torus co-efficients
 		Scalar C[5];
 
@@ -89,29 +57,51 @@ namespace RISE
 
 		if( n > 0 )
 		{
-			// We have some solutions
-			// Find the closest solution
-			for( int i=0; i<n; i++ ) {
-				if( s[i] < hit.dRange && s[i] > NEARZERO ) {
-					hit.dRange2 = hit.dRange + 1e-3;
-					hit.dRange = s[i] - 1e-6;// / dirnorm;			
-					hit.bHit = true;
+			// Sort solutions (simple insertion sort, at most 4 elements)
+			for( int i = 1; i < n; i++ ) {
+				Scalar key = s[i];
+				int j = i - 1;
+				while( j >= 0 && s[j] > key ) {
+					s[j+1] = s[j];
+					j--;
+				}
+				s[j+1] = key;
+			}
+
+			// Collect positive roots and count negative roots
+			Scalar pos[4];
+			int npos = 0;
+			int nneg = 0;
+			for( int i = 0; i < n; i++ ) {
+				if( s[i] > NEARZERO ) {
+					pos[npos++] = s[i];
+				} else {
+					nneg++;
 				}
 			}
-		}/* else {
-			std::vector<Scalar> coeffs;
-			coeffs.push_back( u*u - q*t );
-			coeffs.push_back( 2.0*m*u - q*l );
-			coeffs.push_back( m*m + 2.0*u - q*f );
-			coeffs.push_back( 2.0 * m );
-			coeffs.push_back( 1.0 );
 
-			Scalar solution;
-			if( Polynomial::SolvePolynomialWithinRange( coeffs, 0.0, 10000, solution, 1e-8 ) ) {
-				_asm int 3h;
-			}		
-		} Used for testing the faster Quartic solver */
-	#endif
+			if( npos > 0 )
+			{
+				hit.bHit = true;
+				hit.dRange = pos[0];
+
+				// For a closed surface, an odd number of negative roots
+				// means the ray originates inside the torus tube.
+				if( nneg % 2 == 1 ) {
+					// Inside the torus — signal with range2 = 0
+					hit.dRange2 = 0;
+				} else {
+					// Outside the torus — range2 is the exit point
+					if( npos >= 2 ) {
+						hit.dRange2 = pos[1];
+					} else {
+						// Only one positive root but even negative count;
+						// tangent hit — treat as a thin intersection
+						hit.dRange2 = pos[0];
+					}
+				}
+			}
+		}
 	}
 }
 
