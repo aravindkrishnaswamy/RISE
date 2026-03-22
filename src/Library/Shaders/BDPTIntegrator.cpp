@@ -1367,7 +1367,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// The emission directional PDF from the emitter toward the predecessor
 		// vertex determines pdfRev at the predecessor.
 		Scalar savedEyePredPdfRev = 0;
-		const bool hasEyePred = (t >= 3);
+		const bool hasEyePred = (t >= 2);
 		if( hasEyePred )
 		{
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
@@ -1386,8 +1386,11 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
+			// Camera vertex has no meaningful surface normal; use 1.0
+			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
+				Scalar(1.0) :
+				fabs( Vector3Ops::Dot( eyePred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
 			const_cast<BDPTVertex&>( eyePred ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
 		}
@@ -1654,7 +1657,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
 		// PDF at eyeEnd of scattering toward eyeVerts[t-2] given incoming = dirToLight
 		Scalar savedEyePredPdfRev = 0;
-		const bool hasEyePred_s1 = (t >= 3);
+		const bool hasEyePred_s1 = (t >= 2);
 		if( hasEyePred_s1 )
 		{
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
@@ -1664,7 +1667,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
 			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirToLight, dirToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+			// Camera vertex has no meaningful surface normal; use 1.0
+			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
+				Scalar(1.0) :
+				fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
 			const_cast<BDPTVertex&>( eyePred ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 		}
@@ -2191,7 +2197,12 @@ Scalar BDPTIntegrator::MISWeight(
 			// exactly one strategy, so their contribution to the sum is 0.
 			// For non-connection vertices isDelta reflects the sampled lobe;
 			// for connection vertices isDelta was cleared above if connectible.
+			// Both vertices at the proposed connection must be non-delta
+			// (PBRT convention: !v[i].delta && !v[i-1].delta).
 			if( vi.isDelta ) {
+				continue;
+			}
+			if( i > 0 && lightVerts[i-1].isDelta ) {
 				continue;
 			}
 
@@ -2220,8 +2231,12 @@ Scalar BDPTIntegrator::MISWeight(
 				ri = 0;
 			}
 
-			// Skip non-connectible vertices
+			// Skip non-connectible vertices.
+			// Both vertices at the proposed connection must be non-delta.
 			if( vj.isDelta ) {
+				continue;
+			}
+			if( j > 0 && eyeVerts[j-1].isDelta ) {
 				continue;
 			}
 
@@ -2989,7 +3004,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
 		Scalar savedEyePredPdfRevNM_s0 = 0;
-		const bool hasEyePredNM_s0 = (t >= 3);
+		const bool hasEyePredNM_s0 = (t >= 2);
 		if( hasEyePredNM_s0 )
 		{
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
@@ -3006,8 +3021,11 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
+			// Camera vertex has no meaningful surface normal; use 1.0
+			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
+				Scalar(1.0) :
+				fabs( Vector3Ops::Dot( eyePred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
 			const_cast<BDPTVertex&>( eyePred ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
 		}
@@ -3216,7 +3234,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
 		Scalar savedEyePredPdfRevNM_s1 = 0;
-		const bool hasEyePredNM_s1 = (t >= 3);
+		const bool hasEyePredNM_s1 = (t >= 2);
 		if( hasEyePredNM_s1 )
 		{
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
@@ -3226,7 +3244,10 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
 			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, dirToLight, dirToPred, nm );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+			// Camera vertex has no meaningful surface normal; use 1.0
+			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
+				Scalar(1.0) :
+				fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
 			const_cast<BDPTVertex&>( eyePred ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 		}
