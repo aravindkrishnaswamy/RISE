@@ -297,14 +297,15 @@ namespace RISE
 				Vector3				entryNormal;	///< Surface normal at entry point
 				OrthonormalBasis3D	entryONB;		///< ONB at entry point
 				Ray					scatteredRay;	///< Cosine-weighted ray from entry point
-				RISEPel				weight;			///< BSSRDF weight (Rd * Ft / pdf)
+				RISEPel				weight;			///< BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
 				Scalar				weightNM;		///< Scalar weight for spectral path
 				Scalar				cosinePdf;		///< PDF of the cosine-weighted direction
+				Scalar				pdfSurface;		///< Spatial sampling PDF in area measure
 				bool				valid;			///< True if sampling succeeded
 
 				BSSRDFSampleResult() :
 				weight( RISEPel(0,0,0) ), weightNM(0),
-				cosinePdf(0), valid(false) {}
+				cosinePdf(0), pdfSurface(0), valid(false) {}
 			};
 
 			/// Attempts BSSRDF importance sampling at a front-face hit

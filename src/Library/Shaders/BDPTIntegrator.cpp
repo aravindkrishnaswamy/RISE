@@ -514,13 +514,6 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 		return result;
 	}
 
-	// BSSRDF weight: Rd(r) * Ft(exit) / pdf_surface
-	result.weight = Rd * (FtExit / pdfSurface);
-
-	// Scalar weight for NM path (use luminance-weighted average of Rd)
-	const Scalar RdScalar = 0.2126 * Rd[0] + 0.7152 * Rd[1] + 0.0722 * Rd[2];
-	result.weightNM = RdScalar * FtExit / pdfSurface;
-
 	//
 	// Step 8: Generate cosine-weighted direction from entry point
 	//
@@ -543,12 +536,45 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 		cosineONB.v() * (sinTheta * sin(phiCosine)) +
 		cosineONB.w() * cosTheta );
 
+	//
+	// Step 9: Compute entry Fresnel and Sw normalization
+	//
+	// The separable BSSRDF is:
+	//   S = Ft(exit) * Sp(r) * Sw(wi)
+	// where Sw(wi) = Ft(entry) / (c * PI), and c is the directional
+	// normalization: c = integral of Ft(cos theta) * cos theta over
+	// the hemisphere.  The cosine-weighted sampling PDF cos/PI cancels
+	// the PI in Sw's denominator, leaving Ft(entry)/c as the per-sample
+	// weight factor.
+	//
+	// With Schlick's approximation, c has a closed-form expression:
+	//   c = (41 - 20*F0) / 42
+	// where F0 = ((eta-1)/(eta+1))^2.
+	//
+	const Scalar eta = pProfile->GetIOR( ri );
+	const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
+	const Scalar SwNorm = (41.0 - 20.0 * F0) / 42.0;
+
+	// Entry-point Fresnel transmission for the cosine-weighted direction.
+	// Use the cosTheta from sampling (angle between cosineDir and entryNormal).
+	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, ri );
+
+	// Full BSSRDF weight:
+	//   Rd(r) * Ft(exit) * Ft(entry) / (c * pdfSurface)
+	const Scalar SwFactor = (SwNorm > 1e-20) ? FtEntry / SwNorm : FtEntry;
+	result.weight = Rd * (FtExit * SwFactor / pdfSurface);
+
+	// Scalar weight for NM path (use luminance-weighted average of Rd)
+	const Scalar RdScalar = 0.2126 * Rd[0] + 0.7152 * Rd[1] + 0.0722 * Rd[2];
+	result.weightNM = RdScalar * FtExit * SwFactor / pdfSurface;
+
 	result.entryPoint = entryPoint;
 	result.entryNormal = entryNormal;
 	result.entryONB = entryONB;
 	result.scatteredRay = Ray( entryPoint, cosineDir );
 	result.scatteredRay.Advance( BDPT_RAY_EPSILON );
 	result.cosinePdf = cosTheta * INV_PI;
+	result.pdfSurface = pdfSurface;
 	result.valid = true;
 
 	return result;
@@ -753,46 +779,62 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		vertices.back().isDelta = pScat->isDelta;
 
 		// --- BSSRDF sampling for materials with diffusion profiles ---
-		// At front-face hits on SSS surfaces, attempt to importance-sample
-		// an entry point using the diffusion profile.  If successful, the
-		// subsurface path replaces the SPF reflection; if the probe ray
-		// misses, fall back to normal surface reflection.
+		// At front-face hits on SSS surfaces, use a Fresnel coin flip to
+		// choose between surface reflection and subsurface transmission.
+		// This ensures reflection and subsurface compete with the correct
+		// Fresnel-weighted probabilities (Veach/PBRT convention).
+		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
 			const Scalar cosIn = fabs( Vector3Ops::Dot(
 				ri.geometric.vNormal, -currentRay.Dir() ) );
 			if( cosIn > NEARZERO )
 			{
-				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, rng );
+				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
+				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+				const Scalar R = 1.0 - Ft;
 
-				if( bssrdf.valid )
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
-					// Mark exit vertex as delta (BSSRDF-sampled path)
-					vertices.back().isDelta = true;
+					// Chose subsurface transmission (probability Ft)
+					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+						ri.geometric, ri.pObject, ri.pMaterial, rng );
 
-					// Apply BSSRDF weight to throughput
-					beta = beta * bssrdf.weight;
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
 
-					// Create delta vertex at the BSSRDF entry point.
-					// Marked delta to prevent MIS connections here.
-					BDPTVertex entryV;
-					entryV.type = BDPTVertex::SURFACE;
-					entryV.position = bssrdf.entryPoint;
-					entryV.normal = bssrdf.entryNormal;
-					entryV.onb = bssrdf.entryONB;
-					entryV.pMaterial = ri.pMaterial;
-					entryV.pObject = ri.pObject;
-					entryV.isDelta = true;
-					entryV.throughput = beta;
-					entryV.pdfFwd = 1.0;
-					entryV.pdfRev = 0;
-					vertices.push_back( entryV );
+						// bssrdf.weight = Rd * Ft / pdfSurface.
+						// Ft cancels with selection probability, so
+						// effective weight = Rd / pdfSurface.
+						beta = beta * bssrdf.weight * (1.0 / Ft);
 
-					// Continue subpath with cosine-weighted ray from entry
-					pdfFwdPrev = bssrdf.cosinePdf;
-					currentRay = bssrdf.scatteredRay;
-					continue;
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.isDelta = true;
+						entryV.throughput = beta;
+						entryV.pdfFwd = bssrdf.pdfSurface;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					// Probe failed → no valid subsurface sample, terminate
+					break;
+				}
+				// Chose reflection (probability R):
+				// The SPF's kray already contains R, so throughput update
+				// below gives beta *= R.  We need beta *= R/R = 1, so
+				// compensate by dividing by R.
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
 				}
 			}
 		}
@@ -819,13 +861,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// For standard non-delta, use the BSDF * cos / pdf formula with
 		// pdf scaled by the selection probability.
 		if( pScat->isDelta ) {
-			beta = beta * pScat->kray * (1.0 / selectProb);
+			beta = beta * pScat->kray * (bssrdfReflectCompensation / selectProb);
 		} else {
 			const Scalar maxF = ColorMath::MaxValue( f );
 			if( maxF <= 0 ) {
 				break;
 			}
-			beta = beta * f * (cosTheta / (selectProb * pdf));
+			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * pdf));
 		}
 
 		// Russian Roulette
@@ -1026,36 +1068,48 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		vertices.back().isDelta = pScat->isDelta;
 
 		// --- BSSRDF sampling for materials with diffusion profiles ---
+		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
 			const Scalar cosIn = fabs( Vector3Ops::Dot(
 				ri.geometric.vNormal, -currentRay.Dir() ) );
 			if( cosIn > NEARZERO )
 			{
-				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, rng );
+				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
+				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+				const Scalar R = 1.0 - Ft;
 
-				if( bssrdf.valid )
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
-					vertices.back().isDelta = true;
-					beta = beta * bssrdf.weight;
+					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+						ri.geometric, ri.pObject, ri.pMaterial, rng );
 
-					BDPTVertex entryV;
-					entryV.type = BDPTVertex::SURFACE;
-					entryV.position = bssrdf.entryPoint;
-					entryV.normal = bssrdf.entryNormal;
-					entryV.onb = bssrdf.entryONB;
-					entryV.pMaterial = ri.pMaterial;
-					entryV.pObject = ri.pObject;
-					entryV.isDelta = true;
-					entryV.throughput = beta;
-					entryV.pdfFwd = 1.0;
-					entryV.pdfRev = 0;
-					vertices.push_back( entryV );
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+						beta = beta * bssrdf.weight * (1.0 / Ft);
 
-					pdfFwdPrev = bssrdf.cosinePdf;
-					currentRay = bssrdf.scatteredRay;
-					continue;
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.isDelta = true;
+						entryV.throughput = beta;
+						entryV.pdfFwd = bssrdf.pdfSurface;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
 				}
 			}
 		}
@@ -1078,13 +1132,13 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		}
 
 		if( pScat->isDelta ) {
-			beta = beta * pScat->kray * (1.0 / selectProb);
+			beta = beta * pScat->kray * (bssrdfReflectCompensation / selectProb);
 		} else {
 			const Scalar maxF = ColorMath::MaxValue( f );
 			if( maxF <= 0 ) {
 				break;
 			}
-			beta = beta * f * (cosTheta / (selectProb * pdf));
+			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * pdf));
 		}
 
 		// Russian Roulette after a few bounces
@@ -2374,36 +2428,48 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		vertices.back().isDelta = pScat->isDelta;
 
 		// --- BSSRDF sampling (NM light subpath) ---
+		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
 			const Scalar cosIn = fabs( Vector3Ops::Dot(
 				ri.geometric.vNormal, -currentRay.Dir() ) );
 			if( cosIn > NEARZERO )
 			{
-				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, rng );
+				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
+				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+				const Scalar R = 1.0 - Ft;
 
-				if( bssrdf.valid )
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
-					vertices.back().isDelta = true;
-					betaNM = betaNM * bssrdf.weightNM;
+					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+						ri.geometric, ri.pObject, ri.pMaterial, rng );
 
-					BDPTVertex entryV;
-					entryV.type = BDPTVertex::SURFACE;
-					entryV.position = bssrdf.entryPoint;
-					entryV.normal = bssrdf.entryNormal;
-					entryV.onb = bssrdf.entryONB;
-					entryV.pMaterial = ri.pMaterial;
-					entryV.pObject = ri.pObject;
-					entryV.isDelta = true;
-					entryV.throughputNM = betaNM;
-					entryV.pdfFwd = 1.0;
-					entryV.pdfRev = 0;
-					vertices.push_back( entryV );
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+						betaNM = betaNM * bssrdf.weightNM / Ft;
 
-					pdfFwdPrev = bssrdf.cosinePdf;
-					currentRay = bssrdf.scatteredRay;
-					continue;
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.isDelta = true;
+						entryV.throughputNM = betaNM;
+						entryV.pdfFwd = bssrdf.pdfSurface;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
 				}
 			}
 		}
@@ -2425,12 +2491,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		if( pScat->isDelta ) {
-			betaNM = betaNM * pScat->krayNM / selectProb;
+			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
 		} else {
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * cosTheta / (selectProb * pdf);
+			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * pdf);
 		}
 
 		// Russian Roulette
@@ -2596,36 +2662,48 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		vertices.back().isDelta = pScat->isDelta;
 
 		// --- BSSRDF sampling (NM eye subpath) ---
+		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
 			const Scalar cosIn = fabs( Vector3Ops::Dot(
 				ri.geometric.vNormal, -currentRay.Dir() ) );
 			if( cosIn > NEARZERO )
 			{
-				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, rng );
+				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
+				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+				const Scalar R = 1.0 - Ft;
 
-				if( bssrdf.valid )
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
-					vertices.back().isDelta = true;
-					betaNM = betaNM * bssrdf.weightNM;
+					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+						ri.geometric, ri.pObject, ri.pMaterial, rng );
 
-					BDPTVertex entryV;
-					entryV.type = BDPTVertex::SURFACE;
-					entryV.position = bssrdf.entryPoint;
-					entryV.normal = bssrdf.entryNormal;
-					entryV.onb = bssrdf.entryONB;
-					entryV.pMaterial = ri.pMaterial;
-					entryV.pObject = ri.pObject;
-					entryV.isDelta = true;
-					entryV.throughputNM = betaNM;
-					entryV.pdfFwd = 1.0;
-					entryV.pdfRev = 0;
-					vertices.push_back( entryV );
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+						betaNM = betaNM * bssrdf.weightNM / Ft;
 
-					pdfFwdPrev = bssrdf.cosinePdf;
-					currentRay = bssrdf.scatteredRay;
-					continue;
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.isDelta = true;
+						entryV.throughputNM = betaNM;
+						entryV.pdfFwd = bssrdf.pdfSurface;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
 				}
 			}
 		}
@@ -2647,12 +2725,12 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		if( pScat->isDelta ) {
-			betaNM = betaNM * pScat->krayNM / selectProb;
+			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
 		} else {
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * cosTheta / (selectProb * pdf);
+			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * pdf);
 		}
 
 		// Russian Roulette

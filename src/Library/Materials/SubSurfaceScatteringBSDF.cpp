@@ -120,10 +120,11 @@ RISEPel SubSurfaceScatteringBSDF::value(
 		return RISEPel( val, val, val );
 	}
 
-	// Smooth surface: diffuse Fresnel reflection approximation
-	const Scalar cosMin = (NdotO < NdotI) ? NdotO : NdotI;
-	const Scalar F = SchlickFresnel( cosMin, 1.0, n_ior );
-	return RISEPel( F, F, F ) * INV_PI;
+	// Smooth surface: perfect specular (delta) reflection only.
+	// The delta interaction is handled by the SPF's kray; the BSDF
+	// must return 0 for all non-specular direction pairs to stay
+	// consistent with the SPF's Pdf() which returns 0 (delta).
+	return RISEPel( 0, 0, 0 );
 }
 
 Scalar SubSurfaceScatteringBSDF::valueNM(
@@ -157,7 +158,6 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 		return D * F * G / (4.0 * NdotO * NdotI);
 	}
 
-	const Scalar cosMin = (NdotO < NdotI) ? NdotO : NdotI;
-	const Scalar F = SchlickFresnel( cosMin, 1.0, n_ior );
-	return F * INV_PI;
+	// Smooth surface: delta interaction, BSDF = 0 for non-specular directions
+	return 0;
 }
