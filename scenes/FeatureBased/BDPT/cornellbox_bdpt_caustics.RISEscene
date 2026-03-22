@@ -31,7 +31,7 @@ bdpt_rasterizer
 	min_importance		0.0001
 	max_eye_depth		10
 	max_light_depth		10
-	samples				256
+	samples				64
 	lum_samples			1
 	ior_stack			true
 }
@@ -73,12 +73,14 @@ uniformcolor_painter
 {
 	name				pnt_glass_tau
 	color				0.9999 0.9999 0.9999
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_glass_ior
 	color				1.5 1.5 1.5
+	colorspace			RISERGB
 }
 
 ##################################################

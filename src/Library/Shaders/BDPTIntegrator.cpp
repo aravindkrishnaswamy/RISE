@@ -505,9 +505,10 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	}
 
 	// Full sampling PDF in surface area measure:
-	//   pdf = pdfRAvg * pdfAxis * (1/(2*pi)) / cosProjection
-	const Scalar pdfPhi = INV_PI * 0.5;  // 1/(2*pi)
-	const Scalar pdfSurface = pdfRAvg * pdfAxis * pdfPhi / cosProjection;
+	// The 1D radial PDF must be converted to 2D area measure on the
+	// disk by dividing by r (Jacobian: dA = r dr dphi).
+	//   pdf_area = pdfR / (2*pi*r) * pdfAxis / cosProjection
+	const Scalar pdfSurface = pdfRAvg * pdfAxis / (TWO_PI * rActual * cosProjection);
 
 	if( pdfSurface < 1e-20 ) {
 		return result;

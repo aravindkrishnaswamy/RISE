@@ -179,6 +179,7 @@ uniformcolor_painter
 {
 	name				pnt_water
 	color				0.85 0.92 0.95
+	colorspace			RISERGB
 }
 
 uniformcolor_painter

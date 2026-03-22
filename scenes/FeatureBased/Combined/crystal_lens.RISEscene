@@ -77,12 +77,14 @@ uniformcolor_painter
 {
 	name				pnt_glass_clear
 	color				0.97 0.97 0.99
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_glass_rose
 	color				0.95 0.75 0.8
+	colorspace			RISERGB
 }
 
 uniformcolor_painter

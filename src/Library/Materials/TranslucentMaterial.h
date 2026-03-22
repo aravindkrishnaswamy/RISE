@@ -57,7 +57,11 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
 
-			inline bool CouldLightPassThrough() const { return true; };
+			// Translucent materials scatter light diffusely through the
+			// surface, so straight-line camera connections (t=0, t=1) through
+			// them are unphysical.  Light transport through translucent objects
+			// is handled correctly by the eye/light subpath tracing.
+			inline bool CouldLightPassThrough() const { return false; };
 		};
 	}
 }

@@ -35,7 +35,7 @@ bdpt_rasterizer
 	min_importance		0.0005
 	max_eye_depth		12
 	max_light_depth		10
-	samples				128
+	samples				64
 	lum_samples			1
 	ior_stack			TRUE
 }
@@ -122,48 +122,56 @@ uniformcolor_painter
 {
 	name				pnt_water_glass
 	color				0.92 0.96 1.0
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_amber_glass
 	color				1.0 0.88 0.65
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_emerald_glass
 	color				0.70 0.95 0.75
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_ruby_glass
 	color				0.98 0.72 0.72
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_sapphire_glass
 	color				0.72 0.78 0.98
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_clear_glass
 	color				0.97 0.97 0.99
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_diamond_glass
 	color				0.98 0.98 1.0
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_crystal_glass
 	color				0.94 0.96 1.0
+	colorspace			RISERGB
 }
 
 ##################################################

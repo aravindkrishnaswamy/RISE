@@ -158,6 +158,7 @@ uniformcolor_painter
 {
 	name				pnt_glass_tau
 	color				1.0 1.0 1.0
+	colorspace			RISERGB
 }
 
 # Floor

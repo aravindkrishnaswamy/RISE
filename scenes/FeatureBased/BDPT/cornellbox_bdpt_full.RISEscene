@@ -91,12 +91,14 @@ uniformcolor_painter
 {
 	name				pnt_glass_tau
 	color				0.98 0.98 0.98
+	colorspace			RISERGB
 }
 
 uniformcolor_painter
 {
 	name				pnt_glass_ior
 	color				1.5 1.5 1.5
+	colorspace			RISERGB
 }
 
 ##################################################

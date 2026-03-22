@@ -86,7 +86,9 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
 
-			inline bool CouldLightPassThrough() const { return true; };
+			// SSS materials scatter light diffusely through the volume,
+			// so straight-line camera connections through them are unphysical.
+			inline bool CouldLightPassThrough() const { return false; };
 
 			/// BSSRDF-based SSS does not use volumetric random walk.
 			/// All subsurface transport is handled analytically by the

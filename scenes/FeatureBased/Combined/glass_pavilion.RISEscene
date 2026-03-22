@@ -120,6 +120,7 @@ uniformcolor_painter
 {
 	name				pnt_glass
 	color				0.95 0.97 0.98
+	colorspace			RISERGB
 }
 
 uniformcolor_painter

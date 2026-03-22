@@ -32,7 +32,7 @@ bdpt_rasterizer
 	min_importance		0.00001
 	max_eye_depth		16
 	max_light_depth		16
-	samples				2048
+	samples				1024
 	lum_samples			1
 	ior_stack			true
 }
@@ -55,8 +55,8 @@ pinhole_camera
 	location			0 0 16
 	lookat				0 0 0
 	up					0 1 0
-	width				250
-	height				200
+	width				500
+	height				400
 	fov					30.0
 }
 
@@ -101,7 +101,7 @@ lambertian_luminaire_material
 {
 	name				lum
 	exitance			pnt_light
-	scale				8.0
+	scale				200.0
 	material			none
 }
 
@@ -135,14 +135,14 @@ standard_object
 	material			dragon_sss
 }
 
-# Smaller area light behind the dragon (~1/4 of projected image)
+# Smaller area light behind the dragon full size
 clippedplane_geometry
 {
 	name				lightgeom
-	pta					-3 -3 0
-	ptb					3 -3 0
-	ptc					3 3 0
-	ptd					-3 3 0
+	pta					-10 -9 0
+	ptb					10 -9 0
+	ptc					10 9 0
+	ptd					-10 9 0
 }
 
 standard_object
