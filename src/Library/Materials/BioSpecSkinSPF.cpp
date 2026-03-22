@@ -330,7 +330,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 			return false;
 		}
 
-		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm );
+		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
 
 		if( path_length <=  thickness_SC ) {
@@ -398,7 +398,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				true );
 		}
 
-		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm );
+		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
 
 		if( path_length <=  thickness_SC ) {

@@ -308,8 +308,9 @@ namespace RISE
 				const Scalar abs_eumelanin = ComputeEumelaninAbsorptionCoefficient( nm );
 				const Scalar abs_pheomelanin = ComputePheomelaninAbsorptionCoefficient( nm );
 				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientEpidermis( nm );
+				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_eumelanin+abs_pheomelanin)*melanosomes_in_epidermis)+abs_carotene*(1.0-melanosomes_in_epidermis);
+				return ((abs_eumelanin+abs_pheomelanin)*melanosomes_in_epidermis)+(abs_carotene+abs_baseline)*(1.0-melanosomes_in_epidermis);
 			}
 
 			//! Computes the absorption coefficient for hemoglobin
@@ -382,27 +383,29 @@ namespace RISE
 			// Computes the absorption coefficient for the papillary dermis
 			inline Scalar ComputePapillaryDermisAbsorptionCoefficient(
 				const Scalar nm											///< [in] Wavelength of light to consider
-				) const 
+				) const
 			{
 				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * hb_ratio;
 				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-hb_ratio);
 				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( nm );
 				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( nm );
+				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_papillary_dermis)+abs_carotene;
+				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_papillary_dermis)+(abs_carotene+abs_baseline)*(1.0-whole_blood_in_papillary_dermis);
 			}
 
 			// Computes the absorption coefficient for the reticular dermis
 			inline Scalar ComputeReticularDermisAbsorptionCoefficient(
 				const Scalar nm											///< [in] Wavelength of light to consider
-				) const 
+				) const
 			{
 				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * hb_ratio;
 				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-hb_ratio);
 				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( nm );
 				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( nm );
+				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_reticular_dermis)+abs_carotene;
+				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_reticular_dermis)+(abs_carotene+abs_baseline)*(1.0-whole_blood_in_reticular_dermis);
 			}
 
 			static inline Scalar ComputeBeta( 
