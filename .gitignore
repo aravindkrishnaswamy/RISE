@@ -10,3 +10,5 @@ Xcuserdata/
 RISE_Log.txt
 *.mov
 .claude/
+/scenes/Internal
+/models/risemesh/internal
