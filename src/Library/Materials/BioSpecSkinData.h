@@ -242,7 +242,7 @@ namespace RISE
 		/////////////////////////////////////////////////
 
 		// Concentration of bilirubin in whole blood
-		static const Scalar bilirubin_concen_whole_blood = 0.005;			// g / L for whole blood
+		static const Scalar bilirubin_concen_whole_blood = 0.05;			// g / L for whole blood
 
 		// The wavelengths the data is for
 		static const Scalar omlc_prahl_bilirubin_wavelengths[] =

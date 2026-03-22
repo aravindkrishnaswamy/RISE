@@ -1771,7 +1771,7 @@ namespace RISE
 					String hb_ratio = "0.75";
 					String whole_blood_in_papillary_dermis = "0.012";			// 0.2 - 5%
 					String whole_blood_in_reticular_dermis = "0.0091";		// 0.2 - 5%
-					String bilirubin_concentration = "0.005";					// from 0.005 to 0.5 even 5.0 might be ok g/L
+					String bilirubin_concentration = "0.05";					// from 0.01 to 0.5 even 5.0 might be ok g/L
 					String betacarotene_concentration_SC = "2.1e-4";
 					String betacarotene_concentration_epidermis = "2.1e-4";
 					String betacarotene_concentration_dermis = "7.0e-5";
@@ -1855,7 +1855,7 @@ namespace RISE
 					String sca = "0.85";
 					double hb_ratio = 0.75;
 					double whole_blood = 0.012;							// 0.2 - 7%
-					double bilirubin_concentration = 0.005;					// from 0.005 to 0.5 even 5.0 might be ok g/L
+					double bilirubin_concentration = 0.05;					// from 0.01 to 0.5 even 5.0 might be ok g/L
 					double betacarotene_concentration = 7.0e-5;
 					bool diffuse = true;
 

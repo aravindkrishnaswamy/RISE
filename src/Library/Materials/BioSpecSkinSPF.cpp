@@ -333,7 +333,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
 
-		if( path_length <=  thickness_papillary_dermis ) {
+		if( path_length <=  thickness_SC ) {
 			return true;
 		}
 
@@ -401,7 +401,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
 
-		if( path_length <=  thickness_papillary_dermis ) {
+		if( path_length <=  thickness_SC ) {
 			return true;
 		}
 
@@ -436,7 +436,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 			}
 
 			// Otherwise, the photon escapes the skin and we return the result
-			photon_out = photon_temp;
+			photon_out = leaving_skin;
 			return false;
 		}
 	}
