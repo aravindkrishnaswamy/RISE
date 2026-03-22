@@ -10,3 +10,13 @@ Xcuserdata/
 RISE_Log.txt
 *.mov
 .claude/
+extlib/
+.vs/
+*.idb
+*.pdb
+/build/VS2022/Library/Debug
+/build/VS2022/RISE/Debug
+*.user
+*.lib
+build/VS2022/UpgradeLog.htm
+*.exe
