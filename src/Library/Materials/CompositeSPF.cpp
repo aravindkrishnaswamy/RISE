@@ -300,8 +300,9 @@ Scalar CompositeSPF::Pdf(
 	const IORStack* const ior_stack
 	) const
 {
-	// The composite SPF combines top and bottom layers with equal weight.
-	// Return the average of the two child PDFs.
+	// The composite SPF uses a random walk between top and bottom layers,
+	// making exact lobe weights impractical to compute analytically.
+	// Equal weighting is the best approximation for this material.
 	const Scalar pdf_top = top.Pdf( ri, wo, ior_stack );
 	const Scalar pdf_bottom = bottom.Pdf( ri, wo, ior_stack );
 	return 0.5 * (pdf_top + pdf_bottom);
@@ -314,8 +315,7 @@ Scalar CompositeSPF::PdfNM(
 	const IORStack* const ior_stack
 	) const
 {
-	// The composite SPF combines top and bottom layers with equal weight.
-	// Return the average of the two child PDFs.
+	// See Pdf() comment — random walk makes exact weights impractical.
 	const Scalar pdf_top = top.PdfNM( ri, wo, nm, ior_stack );
 	const Scalar pdf_bottom = bottom.PdfNM( ri, wo, nm, ior_stack );
 	return 0.5 * (pdf_top + pdf_bottom);

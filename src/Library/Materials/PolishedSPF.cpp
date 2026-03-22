@@ -233,7 +233,9 @@ static Scalar PolishedPdf(
 	const Scalar scatfunc,
 	const Scalar ior,
 	const bool bHG,
-	const IORStack* const ior_stack
+	const IORStack* const ior_stack,
+	const Scalar wSpec,
+	const Scalar wDiff
 	)
 {
 	const Vector3& n = ri.onb.w();
@@ -283,8 +285,12 @@ static Scalar PolishedPdf(
 		}
 	}
 
-	// Average of diffuse and specular PDFs
-	return 0.5 * (pdf_diffuse + pdf_specular);
+	// Weighted mixture of diffuse and specular PDFs
+	const Scalar totalWeight = wSpec + wDiff;
+	if( totalWeight < 1e-20 ) {
+		return pdf_diffuse;
+	}
+	return (wSpec * pdf_specular + wDiff * pdf_diffuse) / totalWeight;
 }
 
 Scalar PolishedSPF::Pdf(
@@ -298,7 +304,21 @@ Scalar PolishedSPF::Pdf(
 	// Use average values across channels
 	const Scalar s_val = (s[0] + s[1] + s[2]) / 3.0;
 	const Scalar ior_avg = (ior_val[0] + ior_val[1] + ior_val[2]) / 3.0;
-	return PolishedPdf( ri, wo, s_val, ior_avg, bHG, ior_stack );
+
+	// Compute Fresnel reflectance for lobe weighting
+	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	Vector3 vRefracted = ri.ray.Dir();
+	Scalar Rs = 0.0;
+	if( Optics::CalculateRefractedRay( n, ior_stack?ior_stack->top():1.0, ior_avg, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack?ior_stack->top():1.0, ior_avg );
+	}
+
+	// Weight by MaxValue(kray) to match RandomlySelect:
+	// specular kray = tau * Rs, diffuse kray = Rd * (1 - Rs)
+	const Scalar wSpec = ColorMath::MaxValue( tau.GetColor(ri) * Rs );
+	const Scalar wDiff = ColorMath::MaxValue( Rd.GetColor(ri) * (1.0 - Rs) );
+
+	return PolishedPdf( ri, wo, s_val, ior_avg, bHG, ior_stack, wSpec, wDiff );
 }
 
 Scalar PolishedSPF::PdfNM(
@@ -310,5 +330,18 @@ Scalar PolishedSPF::PdfNM(
 {
 	const Scalar s_val = scat.GetColorNM(ri,nm);
 	const Scalar ior_val = Nt.GetColorNM(ri,nm);
-	return PolishedPdf( ri, wo, s_val, ior_val, bHG, ior_stack );
+
+	// Compute Fresnel reflectance for lobe weighting
+	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	Vector3 vRefracted = ri.ray.Dir();
+	Scalar Rs = 0.0;
+	if( Optics::CalculateRefractedRay( n, ior_stack?ior_stack->top():1.0, ior_val, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack?ior_stack->top():1.0, ior_val );
+	}
+
+	// Weight by krayNM magnitude: specular = tau*Rs, diffuse = Rd*(1-Rs)
+	const Scalar wSpec = fabs( tau.GetColorNM(ri,nm) * Rs );
+	const Scalar wDiff = fabs( Rd.GetColorNM(ri,nm) * (1.0 - Rs) );
+
+	return PolishedPdf( ri, wo, s_val, ior_val, bHG, ior_stack, wSpec, wDiff );
 }

@@ -221,7 +221,9 @@ static Scalar WardAnisotropicPdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar ax,
-	const Scalar ay
+	const Scalar ay,
+	const Scalar wDiff,
+	const Scalar wSpec
 	)
 {
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
@@ -260,8 +262,12 @@ static Scalar WardAnisotropicPdf(
 
 	const Scalar pdf_specular = pdf_h / (4.0 * hdotwo);
 
-	// Average of diffuse and specular PDFs
-	return 0.5 * (pdf_diffuse + pdf_specular);
+	// Weighted mixture of diffuse and specular PDFs
+	const Scalar totalWeight = wDiff + wSpec;
+	if( totalWeight < 1e-20 ) {
+		return pdf_diffuse;
+	}
+	return (wDiff * pdf_diffuse + wSpec * pdf_specular) / totalWeight;
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
@@ -275,7 +281,12 @@ Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
 	// Use average values across channels
 	const Scalar ax_val = (ax[0] + ax[1] + ax[2]) / 3.0;
 	const Scalar ay_val = (ay[0] + ay[1] + ay[2]) / 3.0;
-	return WardAnisotropicPdf( ri, wo, ax_val, ay_val );
+
+	// Weight by MaxValue(kray) to match RandomlySelect
+	const Scalar wDiff = ColorMath::MaxValue( diffuse.GetColor(ri) );
+	const Scalar wSpec = ColorMath::MaxValue( specular.GetColor(ri) );
+
+	return WardAnisotropicPdf( ri, wo, ax_val, ay_val, wDiff, wSpec );
 }
 
 Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
@@ -287,5 +298,10 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 {
 	const Scalar ax_val = alphax.GetColorNM(ri,nm);
 	const Scalar ay_val = alphay.GetColorNM(ri,nm);
-	return WardAnisotropicPdf( ri, wo, ax_val, ay_val );
+
+	// Weight by krayNM magnitude to match RandomlySelect
+	const Scalar wDiff = fabs( diffuse.GetColorNM(ri,nm) );
+	const Scalar wSpec = fabs( specular.GetColorNM(ri,nm) );
+
+	return WardAnisotropicPdf( ri, wo, ax_val, ay_val, wDiff, wSpec );
 }

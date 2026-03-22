@@ -260,7 +260,9 @@ static Scalar AshikminShirleySpecularPdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nu,
-	const Scalar nv
+	const Scalar nv,
+	const Scalar wSpec,
+	const Scalar wDiff
 	)
 {
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
@@ -307,8 +309,12 @@ static Scalar AshikminShirleySpecularPdf(
 
 	const Scalar pdf_specular = (factor1 * factor2) / (4.0 * hdotk);
 
-	// Average of diffuse and specular PDFs
-	return 0.5 * (pdf_diffuse + pdf_specular);
+	// Weighted mixture of diffuse and specular PDFs
+	const Scalar totalWeight = wSpec + wDiff;
+	if( totalWeight < 1e-20 ) {
+		return pdf_diffuse;
+	}
+	return (wSpec * pdf_specular + wDiff * pdf_diffuse) / totalWeight;
 }
 
 Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
@@ -322,7 +328,12 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	// Use average values across channels
 	const Scalar nu_val = (nu[0] + nu[1] + nu[2]) / 3.0;
 	const Scalar nv_val = (nv[0] + nv[1] + nv[2]) / 3.0;
-	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val );
+
+	// Weight by MaxValue(kray) to match RandomlySelect
+	const Scalar wSpec = ColorMath::MaxValue( Rs.GetColor(ri) );
+	const Scalar wDiff = ColorMath::MaxValue( Rd.GetColor(ri) );
+
+	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
 }
 
 Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
@@ -334,5 +345,10 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 {
 	const Scalar nu_val = Nu.GetColorNM(ri,nm);
 	const Scalar nv_val = Nv.GetColorNM(ri,nm);
-	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val );
+
+	// Weight by krayNM magnitude to match RandomlySelect
+	const Scalar wSpec = fabs( Rs.GetColorNM(ri,nm) );
+	const Scalar wDiff = fabs( Rd.GetColorNM(ri,nm) );
+
+	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
 }

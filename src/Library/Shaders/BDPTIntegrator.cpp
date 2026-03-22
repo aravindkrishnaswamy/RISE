@@ -733,6 +733,22 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			break;
 		}
 
+		// Compute the discrete lobe selection probability.
+		// RandomlySelect picks ray i with probability proportional to MaxValue(kray_i).
+		// For single-lobe materials this is 1.0; for multi-lobe (e.g., polished,
+		// dielectric) we must account for this in both throughput and stored PDFs.
+		Scalar selectProb = 1.0;
+		if( scattered.Count() > 1 ) {
+			Scalar totalKray = 0;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				totalKray += ColorMath::MaxValue( scattered[i].kray );
+			}
+			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+				selectProb = selectedKray / totalKray;
+			}
+		}
+
 		// Mark the current vertex as delta if the scattered ray is delta
 		vertices.back().isDelta = pScat->isDelta;
 
@@ -798,16 +814,18 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			break;
 		}
 
-		// For delta scattering, kray already incorporates the right factor.
-		// For standard non-delta, use the BSDF * cos / pdf formula.
+		// For delta scattering, kray already incorporates the right factor
+		// but must be divided by the lobe selection probability.
+		// For standard non-delta, use the BSDF * cos / pdf formula with
+		// pdf scaled by the selection probability.
 		if( pScat->isDelta ) {
-			beta = beta * pScat->kray;
+			beta = beta * pScat->kray * (1.0 / selectProb);
 		} else {
 			const Scalar maxF = ColorMath::MaxValue( f );
 			if( maxF <= 0 ) {
 				break;
 			}
-			beta = beta * f * (cosTheta / pdf);
+			beta = beta * f * (cosTheta / (selectProb * pdf));
 		}
 
 		// Russian Roulette
@@ -823,8 +841,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			}
 		}
 
-		// Store the forward pdf for the next vertex (solid angle measure)
-		pdfFwdPrev = pdf;
+		// Store the forward pdf for the next vertex (solid angle measure),
+		// accounting for lobe selection probability.
+		pdfFwdPrev = selectProb * pdf;
 
 		// Update the previous vertex's pdfRev
 		// pdfRev of vertex[n-1] = pdf of sampling the reverse direction at vertex[n]
@@ -990,6 +1009,19 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			break;
 		}
 
+		// Compute the discrete lobe selection probability
+		Scalar selectProb = 1.0;
+		if( scattered.Count() > 1 ) {
+			Scalar totalKray = 0;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				totalKray += ColorMath::MaxValue( scattered[i].kray );
+			}
+			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+				selectProb = selectedKray / totalKray;
+			}
+		}
+
 		// Mark the current vertex as delta
 		vertices.back().isDelta = pScat->isDelta;
 
@@ -1046,13 +1078,13 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		}
 
 		if( pScat->isDelta ) {
-			beta = beta * pScat->kray;
+			beta = beta * pScat->kray * (1.0 / selectProb);
 		} else {
 			const Scalar maxF = ColorMath::MaxValue( f );
 			if( maxF <= 0 ) {
 				break;
 			}
-			beta = beta * f * (cosTheta / pdf);
+			beta = beta * f * (cosTheta / (selectProb * pdf));
 		}
 
 		// Russian Roulette after a few bounces
@@ -1067,8 +1099,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			}
 		}
 
-		// Store the forward pdf for the next vertex
-		pdfFwdPrev = pdf;
+		// Store the forward pdf for the next vertex,
+		// accounting for lobe selection probability.
+		pdfFwdPrev = selectProb * pdf;
 
 		// Update previous vertex's pdfRev
 		if( vertices.size() >= 2 ) {
@@ -2325,6 +2358,19 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			break;
 		}
 
+		// Compute lobe selection probability
+		Scalar selectProb = 1.0;
+		if( scattered.Count() > 1 ) {
+			Scalar totalKray = 0;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				totalKray += ColorMath::MaxValue( scattered[i].kray );
+			}
+			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+				selectProb = selectedKray / totalKray;
+			}
+		}
+
 		vertices.back().isDelta = pScat->isDelta;
 
 		// --- BSSRDF sampling (NM light subpath) ---
@@ -2379,12 +2425,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		if( pScat->isDelta ) {
-			betaNM = betaNM * pScat->krayNM;
+			betaNM = betaNM * pScat->krayNM / selectProb;
 		} else {
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * cosTheta / pdf;
+			betaNM = betaNM * fNM * cosTheta / (selectProb * pdf);
 		}
 
 		// Russian Roulette
@@ -2399,7 +2445,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			}
 		}
 
-		pdfFwdPrev = pdf;
+		pdfFwdPrev = selectProb * pdf;
 
 		// Update previous vertex's pdfRev
 		if( vertices.size() >= 2 ) {
@@ -2534,6 +2580,19 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			break;
 		}
 
+		// Compute lobe selection probability
+		Scalar selectProb = 1.0;
+		if( scattered.Count() > 1 ) {
+			Scalar totalKray = 0;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				totalKray += ColorMath::MaxValue( scattered[i].kray );
+			}
+			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+				selectProb = selectedKray / totalKray;
+			}
+		}
+
 		vertices.back().isDelta = pScat->isDelta;
 
 		// --- BSSRDF sampling (NM eye subpath) ---
@@ -2588,12 +2647,12 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		if( pScat->isDelta ) {
-			betaNM = betaNM * pScat->krayNM;
+			betaNM = betaNM * pScat->krayNM / selectProb;
 		} else {
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * cosTheta / pdf;
+			betaNM = betaNM * fNM * cosTheta / (selectProb * pdf);
 		}
 
 		// Russian Roulette
@@ -2607,7 +2666,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			}
 		}
 
-		pdfFwdPrev = pdf;
+		pdfFwdPrev = selectProb * pdf;
 
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
