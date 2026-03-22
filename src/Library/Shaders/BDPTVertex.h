@@ -64,7 +64,9 @@ namespace RISE
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
 		Scalar					pdfFwd;			///< Forward PDF in area measure
 		Scalar					pdfRev;			///< Reverse PDF in area measure (filled during MIS weight computation)
-		bool					isDelta;		///< True if BSDF at this vertex is a delta distribution
+		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
+		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
+		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
 
 		// Light endpoint data (non-null only for type == LIGHT)
 		const ILight*			pLight;
@@ -82,6 +84,8 @@ namespace RISE
 		pdfFwd( 0 ),
 		pdfRev( 0 ),
 		isDelta( false ),
+		isConnectible( true ),
+		isBSSRDFEntry( false ),
 		pLight( 0 ),
 		pLuminary( 0 ),
 		screenPos( Point2( 0, 0 ) )

@@ -331,7 +331,8 @@ namespace RISE
 				const RayIntersectionGeometric& ri,		///< [in] Exit point intersection
 				const IObject* pObject,					///< [in] Object to cast probe rays against
 				const IMaterial* pMaterial,				///< [in] Material with diffusion profile
-				const RandomNumberGenerator& rng		///< [in] RNG
+				const RandomNumberGenerator& rng,		///< [in] RNG
+				const Scalar nm = 0						///< [in] Wavelength for NM path (0 = RGB)
 				) const;
 		};
 	}

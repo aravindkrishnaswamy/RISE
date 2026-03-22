@@ -142,6 +142,37 @@ RISEPel BDPTIntegrator::EvalBSDFAtVertex(
 		return RISEPel( 0, 0, 0 );
 	}
 
+	// BSSRDF entry vertex: evaluate Sw(direction) = Ft(cos) / (c * PI).
+	// This is the directional component of the separable BSSRDF at the
+	// re-emission point.  The cosine-hemisphere PDF cos/PI cancels PI in
+	// the denominator during sampling, but for connections we need the
+	// full Sw value.
+	if( vertex.isBSSRDFEntry ) {
+		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
+		if( pProfile ) {
+			// wi is the direction into the surface (from outside)
+			const Scalar cosTheta = fabs( Vector3Ops::Dot( wi, vertex.normal ) );
+			if( cosTheta <= NEARZERO ) {
+				return RISEPel( 0, 0, 0 );
+			}
+
+			RayIntersectionGeometric rig(
+				Ray( vertex.position, -wi ), nullRasterizerState );
+			rig.bHit = true;
+			rig.ptIntersection = vertex.position;
+			rig.vNormal = vertex.normal;
+			rig.onb = vertex.onb;
+
+			const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
+			const Scalar eta = pProfile->GetIOR( rig );
+			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
+			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+			const Scalar Sw = (c > 1e-20) ? FtEntry / (c * PI) : 0;
+			return RISEPel( Sw, Sw, Sw );
+		}
+		return RISEPel( 0, 0, 0 );
+	}
+
 	const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
 	if( !pBSDF ) {
 		return RISEPel( 0, 0, 0 );
@@ -181,6 +212,13 @@ Scalar BDPTIntegrator::EvalPdfAtVertex(
 {
 	if( !vertex.pMaterial ) {
 		return 0;
+	}
+
+	// BSSRDF entry vertex: the scattered direction is cosine-weighted,
+	// so the sampling PDF is cos(theta) / PI.
+	if( vertex.isBSSRDFEntry ) {
+		const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
+		return cosTheta * INV_PI;
 	}
 
 	const ISPF* pSPF = vertex.pMaterial->GetSPF();
@@ -322,7 +360,8 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	const RayIntersectionGeometric& ri,
 	const IObject* pObject,
 	const IMaterial* pMaterial,
-	const RandomNumberGenerator& rng
+	const RandomNumberGenerator& rng,
+	const Scalar nm
 	) const
 {
 	BSSRDFSampleResult result;
@@ -362,30 +401,23 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	//
 	const Scalar axisSample = rng.CanonicalRandom();
 	Vector3 probeAxis;
-	Scalar pdfAxis;
-	Vector3 perpU, perpV;  // Basis vectors in the plane perpendicular to the probe axis
+	Vector3 perpU, perpV;
 
 	if( axisSample < 0.5 )
 	{
-		// Normal axis (probability 0.5)
 		probeAxis = exitNormal;
-		pdfAxis = 0.5;
 		perpU = exitTangent;
 		perpV = exitBitangent;
 	}
 	else if( axisSample < 0.75 )
 	{
-		// Tangent axis (probability 0.25)
 		probeAxis = exitTangent;
-		pdfAxis = 0.25;
 		perpU = exitNormal;
 		perpV = exitBitangent;
 	}
 	else
 	{
-		// Bitangent axis (probability 0.25)
 		probeAxis = exitBitangent;
-		pdfAxis = 0.25;
 		perpU = exitNormal;
 		perpV = exitTangent;
 	}
@@ -413,18 +445,17 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 		perpU * offsetU + perpV * offsetV );
 
 	//
-	// Step 6: Cast probe rays along the axis through the object.
-	// We cast in both +axis and -axis directions from the probe
-	// center and take the nearest valid hit.  This ensures we find
-	// entry points regardless of which side of the exit point they
-	// are on relative to the projection axis.
+	// Step 6: Cast probe rays in both +axis and -axis directions.
+	// Collect up to 2 hits and select one uniformly (PBRT convention).
 	//
+	struct ProbeHit {
+		Point3 point;
+		Vector3 normal;
+		OrthonormalBasis3D onb;
+	};
+	ProbeHit hits[2];
+	int numHits = 0;
 	const Scalar probeMaxDist = 1000.0;
-	bool foundEntry = false;
-	Point3 entryPoint;
-	Vector3 entryNormal;
-	OrthonormalBasis3D entryONB;
-	Scalar bestDist = probeMaxDist;
 
 	// Cast in +axis direction
 	{
@@ -434,16 +465,15 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 		RayIntersection probeRI( probeRay, nullRasterizerState );
 		pObject->IntersectRay( probeRI, probeMaxDist, true, true, false );
 
-		if( probeRI.geometric.bHit && probeRI.geometric.range < bestDist )
+		if( probeRI.geometric.bHit )
 		{
 			if( probeRI.pModifier ) {
 				probeRI.pModifier->Modify( probeRI.geometric );
 			}
-			entryPoint = probeRI.geometric.ptIntersection;
-			entryNormal = probeRI.geometric.vNormal;
-			entryONB = probeRI.geometric.onb;
-			bestDist = probeRI.geometric.range;
-			foundEntry = true;
+			hits[numHits].point = probeRI.geometric.ptIntersection;
+			hits[numHits].normal = probeRI.geometric.vNormal;
+			hits[numHits].onb = probeRI.geometric.onb;
+			numHits++;
 		}
 	}
 
@@ -455,22 +485,35 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 		RayIntersection probeRI( probeRay, nullRasterizerState );
 		pObject->IntersectRay( probeRI, probeMaxDist, true, true, false );
 
-		if( probeRI.geometric.bHit && probeRI.geometric.range < bestDist )
+		if( probeRI.geometric.bHit && numHits < 2 )
 		{
 			if( probeRI.pModifier ) {
 				probeRI.pModifier->Modify( probeRI.geometric );
 			}
-			entryPoint = probeRI.geometric.ptIntersection;
-			entryNormal = probeRI.geometric.vNormal;
-			entryONB = probeRI.geometric.onb;
-			bestDist = probeRI.geometric.range;
-			foundEntry = true;
+			// Only add if sufficiently separated from the first hit
+			const bool distinct = (numHits == 0) ||
+				Vector3Ops::Magnitude( Vector3Ops::mkVector3(
+					hits[0].point, probeRI.geometric.ptIntersection ) ) > BDPT_RAY_EPSILON;
+			if( distinct ) {
+				hits[numHits].point = probeRI.geometric.ptIntersection;
+				hits[numHits].normal = probeRI.geometric.vNormal;
+				hits[numHits].onb = probeRI.geometric.onb;
+				numHits++;
+			}
 		}
 	}
 
-	if( !foundEntry ) {
+	if( numHits == 0 ) {
 		return result;
 	}
+
+	// Select uniformly among hits
+	const int selected = (numHits == 1) ? 0 :
+		(rng.CanonicalRandom() < 0.5 ? 0 : 1);
+
+	Point3 entryPoint = hits[selected].point;
+	Vector3 entryNormal = hits[selected].normal;
+	OrthonormalBasis3D entryONB = hits[selected].onb;
 
 	// Skip if entry point is too close to exit point (self-intersection)
 	const Vector3 offset = Vector3Ops::mkVector3( exitPoint, entryPoint );
@@ -480,35 +523,58 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	}
 
 	//
-	// Step 7: Evaluate profile and compute weight
+	// Step 7: Evaluate profile and compute multi-axis PDF
 	//
-
-	// Jacobian: the probe samples a disk perpendicular to probeAxis,
-	// but the actual surface has a different orientation.  The
-	// cosProjection factor converts disk area to surface area.
-	const Scalar cosProjection = fabs( Vector3Ops::Dot( entryNormal, probeAxis ) );
-	if( cosProjection < 1e-6 ) {
-		return result;  // Surface nearly parallel to probe — unreliable
-	}
-
-	// Evaluate the diffusion profile at the actual 3D distance
+	// Evaluate Rd(r) at the actual 3D distance between exit and entry.
 	const RISEPel Rd = pProfile->EvaluateProfile( rActual, ri );
 
-	// Channel-averaged PDF for multi-channel MIS
-	const Scalar pdfR0 = pProfile->PdfRadius( rActual, 0, ri );
-	const Scalar pdfR1 = pProfile->PdfRadius( rActual, 1, ri );
-	const Scalar pdfR2 = pProfile->PdfRadius( rActual, 2, ri );
-	const Scalar pdfRAvg = (pdfR0 + pdfR1 + pdfR2) / 3.0;
+	// Compute offset in exit-point local frame for projected radii
+	const Scalar dN = Vector3Ops::Dot( offset, exitNormal );
+	const Scalar dT = Vector3Ops::Dot( offset, exitTangent );
+	const Scalar dB = Vector3Ops::Dot( offset, exitBitangent );
 
-	if( pdfRAvg < 1e-20 ) {
-		return result;
+	// Projected radii for each axis:
+	//   Normal axis:    project onto tangent-bitangent plane
+	//   Tangent axis:   project onto normal-bitangent plane
+	//   Bitangent axis: project onto normal-tangent plane
+	const Scalar rProjN = sqrt( dT*dT + dB*dB );
+	const Scalar rProjT = sqrt( dN*dN + dB*dB );
+	const Scalar rProjB = sqrt( dN*dN + dT*dT );
+
+	// cosProjection for each axis: |dot(entryNormal, axisDir)|
+	// This is the Jacobian converting disk area to surface area.
+	const Scalar cosN = fabs( Vector3Ops::Dot( entryNormal, exitNormal ) );
+	const Scalar cosT = fabs( Vector3Ops::Dot( entryNormal, exitTangent ) );
+	const Scalar cosB = fabs( Vector3Ops::Dot( entryNormal, exitBitangent ) );
+
+	// Sum PDF over all 3 axes × 3 channels (PBRT Pdf_Sp convention).
+	// For each axis a with probability pdfAxis[a]:
+	//   pdf_disk = PdfR(rProj[a], ch) / (2*pi*rProj[a])
+	//   pdf_surface = pdf_disk * cosProj[a]
+	// Average over channels and sum over axes.
+	const Scalar axisProbs[3] = { 0.5, 0.25, 0.25 };
+	const Scalar rProjs[3] = { rProjN, rProjT, rProjB };
+	const Scalar cosProjs[3] = { cosN, cosT, cosB };
+
+	Scalar pdfSurface = 0;
+	for( int a = 0; a < 3; a++ )
+	{
+		if( rProjs[a] < 1e-10 || cosProjs[a] < 1e-6 ) {
+			continue;
+		}
+
+		Scalar channelSum = 0;
+		for( int c = 0; c < 3; c++ ) {
+			channelSum += pProfile->PdfRadius( rProjs[a], c, ri );
+		}
+		channelSum /= 3.0;
+
+		pdfSurface += axisProbs[a] * channelSum * cosProjs[a]
+			/ (TWO_PI * rProjs[a]);
 	}
 
-	// Full sampling PDF in surface area measure:
-	// The 1D radial PDF must be converted to 2D area measure on the
-	// disk by dividing by r (Jacobian: dA = r dr dphi).
-	//   pdf_area = pdfR / (2*pi*r) * pdfAxis / cosProjection
-	const Scalar pdfSurface = pdfRAvg * pdfAxis / (TWO_PI * rActual * cosProjection);
+	// Account for uniform selection among probe hits
+	pdfSurface /= static_cast<Scalar>( numHits );
 
 	if( pdfSurface < 1e-20 ) {
 		return result;
@@ -516,11 +582,6 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 
 	//
 	// Step 8: Generate cosine-weighted direction from entry point
-	//
-	// The direction points outward from the surface (away from the
-	// object interior).  For eye subpaths this represents "where did
-	// the light come from before entering."  For light subpaths it
-	// represents "where does the light go after exiting."
 	//
 	OrthonormalBasis3D cosineONB;
 	cosineONB.CreateFromW( entryNormal );
@@ -539,24 +600,9 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	//
 	// Step 9: Compute entry Fresnel and Sw normalization
 	//
-	// The separable BSSRDF is:
-	//   S = Ft(exit) * Sp(r) * Sw(wi)
-	// where Sw(wi) = Ft(entry) / (c * PI), and c is the directional
-	// normalization: c = integral of Ft(cos theta) * cos theta over
-	// the hemisphere.  The cosine-weighted sampling PDF cos/PI cancels
-	// the PI in Sw's denominator, leaving Ft(entry)/c as the per-sample
-	// weight factor.
-	//
-	// With Schlick's approximation, c has a closed-form expression:
-	//   c = (41 - 20*F0) / 42
-	// where F0 = ((eta-1)/(eta+1))^2.
-	//
 	const Scalar eta = pProfile->GetIOR( ri );
 	const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
 	const Scalar SwNorm = (41.0 - 20.0 * F0) / 42.0;
-
-	// Entry-point Fresnel transmission for the cosine-weighted direction.
-	// Use the cosTheta from sampling (angle between cosineDir and entryNormal).
 	const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, ri );
 
 	// Full BSSRDF weight:
@@ -564,9 +610,15 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	const Scalar SwFactor = (SwNorm > 1e-20) ? FtEntry / SwNorm : FtEntry;
 	result.weight = Rd * (FtExit * SwFactor / pdfSurface);
 
-	// Scalar weight for NM path (use luminance-weighted average of Rd)
-	const Scalar RdScalar = 0.2126 * Rd[0] + 0.7152 * Rd[1] + 0.0722 * Rd[2];
-	result.weightNM = RdScalar * FtExit * SwFactor / pdfSurface;
+	// Scalar weight for NM path: use spectral profile evaluation when
+	// a wavelength is provided, falling back to RGB luminance otherwise.
+	if( nm > 0 ) {
+		const Scalar RdNM = pProfile->EvaluateProfileNM( rActual, ri, nm );
+		result.weightNM = RdNM * FtExit * SwFactor / pdfSurface;
+	} else {
+		const Scalar RdScalar = 0.2126 * Rd[0] + 0.7152 * Rd[1] + 0.0722 * Rd[2];
+		result.weightNM = RdScalar * FtExit * SwFactor / pdfSurface;
+	}
 
 	result.entryPoint = entryPoint;
 	result.entryNormal = entryNormal;
@@ -648,6 +700,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.pLight = ls.pLight;
 		v.pLuminary = ls.pLuminary;
 		v.isDelta = ls.isDelta;
+		v.isConnectible = !ls.isDelta;
 
 		// pdfFwd is the probability of generating this light vertex
 		// = pdfSelect * pdfPosition
@@ -775,6 +828,15 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			}
 		}
 
+		// Determine connectibility: true if any scattered lobe is non-delta
+		{
+			bool hasNonDelta = false;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			vertices.back().isConnectible = hasNonDelta;
+		}
+
 		// Mark the current vertex as delta if the scattered ray is delta
 		vertices.back().isDelta = pScat->isDelta;
 
@@ -816,7 +878,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
-						entryV.isDelta = true;
+						entryV.isDelta = false;
+						entryV.isConnectible = true;
+						entryV.isBSSRDFEntry = true;
 						entryV.throughput = beta;
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
@@ -1064,6 +1128,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			}
 		}
 
+		// Determine connectibility: true if any scattered lobe is non-delta
+		{
+			bool hasNonDelta = false;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			vertices.back().isConnectible = hasNonDelta;
+		}
+
 		// Mark the current vertex as delta
 		vertices.back().isDelta = pScat->isDelta;
 
@@ -1096,7 +1169,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
-						entryV.isDelta = true;
+						entryV.isDelta = false;
+						entryV.isConnectible = true;
+						entryV.isBSSRDFEntry = true;
 						entryV.throughput = beta;
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
@@ -1342,7 +1417,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// Light path endpoint connects directly to camera sensor
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
 
-		if( lightEnd.isDelta ) {
+		if( !lightEnd.isConnectible ) {
 			return result;
 		}
 
@@ -1460,7 +1535,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		if( eyeEnd.isDelta ) {
+		if( !eyeEnd.isConnectible ) {
 			return result;
 		}
 
@@ -1619,7 +1694,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	{
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
 
-		if( lightEnd.isDelta ) {
+		if( !lightEnd.isConnectible ) {
 			return result;
 		}
 
@@ -1813,8 +1888,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 
-		// Cannot connect through delta vertices
-		if( lightEnd.isDelta || eyeEnd.isDelta ) {
+		// Cannot connect at vertices with only delta lobes
+		if( !lightEnd.isConnectible || !eyeEnd.isConnectible ) {
 			return result;
 		}
 
@@ -2079,6 +2154,24 @@ Scalar BDPTIntegrator::MISWeight(
 
 	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself contributes 1
 
+	// Temporarily clear isDelta on the two connection vertices (PBRT convention).
+	// The connection always evaluates the full BSDF (non-delta), so these
+	// vertices should be treated as non-delta for MIS weight computation
+	// regardless of which lobe was sampled during subpath generation.
+	bool savedLightEndDelta = false, savedEyeEndDelta = false;
+	if( s > 0 ) {
+		savedLightEndDelta = lightVerts[s-1].isDelta;
+		if( lightVerts[s-1].isConnectible ) {
+			const_cast<BDPTVertex&>( lightVerts[s-1] ).isDelta = false;
+		}
+	}
+	if( t > 0 ) {
+		savedEyeEndDelta = eyeVerts[t-1].isDelta;
+		if( eyeVerts[t-1].isConnectible ) {
+			const_cast<BDPTVertex&>( eyeVerts[t-1] ).isDelta = false;
+		}
+	}
+
 	//
 	// Walk along the light subpath (decreasing s, increasing t)
 	// This computes ratios for strategies (s-1, t+1), (s-2, t+2), etc.
@@ -2100,8 +2193,10 @@ Scalar BDPTIntegrator::MISWeight(
 				ri = 0;
 			}
 
-			// Skip delta vertices -- they can only be generated by
-			// exactly one strategy, so their contribution to the sum is 0
+			// Skip non-connectible vertices — they can only be generated by
+			// exactly one strategy, so their contribution to the sum is 0.
+			// For non-connection vertices isDelta reflects the sampled lobe;
+			// for connection vertices isDelta was cleared above if connectible.
 			if( vi.isDelta ) {
 				continue;
 			}
@@ -2131,7 +2226,7 @@ Scalar BDPTIntegrator::MISWeight(
 				ri = 0;
 			}
 
-			// Skip delta vertices
+			// Skip non-connectible vertices
 			if( vj.isDelta ) {
 				continue;
 			}
@@ -2139,6 +2234,14 @@ Scalar BDPTIntegrator::MISWeight(
 			// Strategy (s+t-j, j) contributes ri to the sum
 			sumWeights += ri;
 		}
+	}
+
+	// Restore isDelta on connection vertices
+	if( s > 0 ) {
+		const_cast<BDPTVertex&>( lightVerts[s-1] ).isDelta = savedLightEndDelta;
+	}
+	if( t > 0 ) {
+		const_cast<BDPTVertex&>( eyeVerts[t-1] ).isDelta = savedEyeEndDelta;
 	}
 
 	if( sumWeights <= 0 ) {
@@ -2174,6 +2277,31 @@ Scalar BDPTIntegrator::EvalBSDFAtVertexNM(
 		return 0;
 	}
 
+	// BSSRDF entry vertex: Sw(direction) = Ft(cos) / (c * PI)
+	if( vertex.isBSSRDFEntry ) {
+		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
+		if( pProfile ) {
+			const Scalar cosTheta = fabs( Vector3Ops::Dot( wi, vertex.normal ) );
+			if( cosTheta <= NEARZERO ) {
+				return 0;
+			}
+
+			RayIntersectionGeometric rig(
+				Ray( vertex.position, -wi ), nullRasterizerState );
+			rig.bHit = true;
+			rig.ptIntersection = vertex.position;
+			rig.vNormal = vertex.normal;
+			rig.onb = vertex.onb;
+
+			const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
+			const Scalar eta = pProfile->GetIOR( rig );
+			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
+			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+			return (c > 1e-20) ? FtEntry / (c * PI) : 0;
+		}
+		return 0;
+	}
+
 	const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
 	if( !pBSDF ) {
 		return 0;
@@ -2205,6 +2333,12 @@ Scalar BDPTIntegrator::EvalPdfAtVertexNM(
 {
 	if( !vertex.pMaterial ) {
 		return 0;
+	}
+
+	// BSSRDF entry vertex: cosine hemisphere PDF
+	if( vertex.isBSSRDFEntry ) {
+		const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
+		return cosTheta * INV_PI;
 	}
 
 	const ISPF* pSPF = vertex.pMaterial->GetSPF();
@@ -2320,6 +2454,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.pLight = ls.pLight;
 		v.pLuminary = ls.pLuminary;
 		v.isDelta = ls.isDelta;
+		v.isConnectible = !ls.isDelta;
 
 		v.pdfFwd = ls.pdfSelect * ls.pdfPosition;
 
@@ -2406,22 +2541,31 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			break;
 		}
 
-		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), false );
+		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), true );
 		if( !pScat ) {
 			break;
 		}
 
-		// Compute lobe selection probability
+		// Compute lobe selection probability using spectral krayNM weights
 		Scalar selectProb = 1.0;
 		if( scattered.Count() > 1 ) {
 			Scalar totalKray = 0;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				totalKray += ColorMath::MaxValue( scattered[i].kray );
+				totalKray += fabs( scattered[i].krayNM );
 			}
-			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+			const Scalar selectedKray = fabs( pScat->krayNM );
 			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
 				selectProb = selectedKray / totalKray;
 			}
+		}
+
+		// Determine connectibility: true if any scattered lobe is non-delta
+		{
+			bool hasNonDelta = false;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			vertices.back().isConnectible = hasNonDelta;
 		}
 
 		vertices.back().isDelta = pScat->isDelta;
@@ -2441,7 +2585,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
 					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng );
+						ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
 
 					if( bssrdf.valid )
 					{
@@ -2455,7 +2599,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
-						entryV.isDelta = true;
+						entryV.isDelta = false;
+						entryV.isConnectible = true;
+						entryV.isBSSRDFEntry = true;
 						entryV.throughputNM = betaNM;
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
@@ -2640,22 +2786,31 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			break;
 		}
 
-		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), false );
+		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), true );
 		if( !pScat ) {
 			break;
 		}
 
-		// Compute lobe selection probability
+		// Compute lobe selection probability using spectral krayNM weights
 		Scalar selectProb = 1.0;
 		if( scattered.Count() > 1 ) {
 			Scalar totalKray = 0;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				totalKray += ColorMath::MaxValue( scattered[i].kray );
+				totalKray += fabs( scattered[i].krayNM );
 			}
-			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+			const Scalar selectedKray = fabs( pScat->krayNM );
 			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
 				selectProb = selectedKray / totalKray;
 			}
+		}
+
+		// Determine connectibility: true if any scattered lobe is non-delta
+		{
+			bool hasNonDelta = false;
+			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			vertices.back().isConnectible = hasNonDelta;
 		}
 
 		vertices.back().isDelta = pScat->isDelta;
@@ -2675,7 +2830,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
 					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng );
+						ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
 
 					if( bssrdf.valid )
 					{
@@ -2689,7 +2844,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
-						entryV.isDelta = true;
+						entryV.isDelta = false;
+						entryV.isConnectible = true;
+						entryV.isBSSRDFEntry = true;
 						entryV.throughputNM = betaNM;
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
@@ -2875,7 +3032,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	if( t == 0 )
 	{
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
-		if( lightEnd.isDelta ) {
+		if( !lightEnd.isConnectible ) {
 			return result;
 		}
 
@@ -2940,7 +3097,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, -wiAtLightEnd, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -2968,7 +3125,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
 			return result;
 		}
-		if( eyeEnd.isDelta ) {
+		if( !eyeEnd.isConnectible ) {
 			return result;
 		}
 
@@ -3044,7 +3201,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
 
 		if( !lightStart.isDelta ) {
-			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirToLight );
+			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dirToLight, nm );
 			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, dirToLight ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
@@ -3074,7 +3231,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
-			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirToLight, dirToPred );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, dirToLight, dirToPred, nm );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
 			const_cast<BDPTVertex&>( eyePred ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -3095,7 +3252,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	if( t == 1 )
 	{
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
-		if( lightEnd.isDelta ) {
+		if( !lightEnd.isConnectible ) {
 			return result;
 		}
 
@@ -3223,7 +3380,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
-			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLightMIS, dirToCam );
+			const Scalar pdfRevSA = EvalPdfAtVertexNM( lightEnd, wiAtLightMIS, dirToCam, nm );
 			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
 		}
@@ -3240,7 +3397,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, -wiAtLightEnd, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -3265,7 +3422,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 
-		if( lightEnd.isDelta || eyeEnd.isDelta ) {
+		if( !lightEnd.isConnectible || !eyeEnd.isConnectible ) {
 			return result;
 		}
 
@@ -3326,14 +3483,14 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
 
 		{
-			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dConnect );
+			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dConnect, nm );
 			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
 			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 		}
 
 		{
-			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLight, -dConnect );
+			const Scalar pdfRevSA = EvalPdfAtVertexNM( lightEnd, wiAtLight, -dConnect, nm );
 			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
@@ -3347,7 +3504,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const BDPTVertex& lightPred = lightVerts[s - 2];
 			savedLightPredPdfRevNM = lightPred.pdfRev;
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, -wiAtLight );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, woAtLight, -wiAtLight, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -3364,7 +3521,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
 			savedEyePredPdfRevNM = eyePred.pdfRev;
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, wiAtEye, -woAtEye );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, wiAtEye, -woAtEye, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			// Camera vertex has no meaningful surface normal; use 1.0
