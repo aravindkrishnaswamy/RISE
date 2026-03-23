@@ -25,7 +25,7 @@ namespace RISE
 
 	namespace Implementation
 	{
-		class PixelBasedSpectralIntegratingRasterizer : public PixelBasedRasterizerHelper
+		class PixelBasedSpectralIntegratingRasterizer : public virtual PixelBasedRasterizerHelper
 		{
 		protected:
 			struct SPECTRAL_SAMPLE

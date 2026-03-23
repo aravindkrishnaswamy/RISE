@@ -4191,21 +4191,47 @@ namespace RISE
 	}
 }
 
-#include "Rendering/BDPTRasterizer.h"
+#include "Rendering/BDPTPelRasterizer.h"
+#include "Rendering/BDPTSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 
 namespace RISE
 {
-	//! Creates a BDPT (bidirectional path tracing) rasterizer
+	//! Creates a Pel (RGB) BDPT rasterizer
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBDPTRasterizer(
+	bool RISE_API_CreateBDPTPelRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth );
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Pel rasterizer" );
+		return true;
+	}
+
+	//! Creates a spectral BDPT rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizer(
 								IRasterizer** ppi,
 								IRayCaster* caster,
 								ISampling2D* pSamples,
 								IPixelFilter* pFilter,
 								const unsigned int maxEyeDepth,
 								const unsigned int maxLightDepth,
-								const bool bSpectral,
 								const Scalar lambda_begin,
 								const Scalar lambda_end,
 								const unsigned int num_wavelengths,
@@ -4216,18 +4242,16 @@ namespace RISE
 			return false;
 		}
 
-		BDPTRasterizer* pRasterizer = new BDPTRasterizer( caster, maxEyeDepth, maxLightDepth );
-
-		if( bSpectral ) {
-			pRasterizer->SetSpectralMode( lambda_begin, lambda_end, num_wavelengths, spectral_samples );
-		}
+		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
+			caster, maxEyeDepth, maxLightDepth,
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
 		}
 
 		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT rasterizer" );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
 		return true;
 	}
 

@@ -1986,20 +1986,30 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool bShowSamples				///< [in] Show the regions in which more samples were taken
 								);
 
-	//! Creates a BDPT (bidirectional path tracing) rasterizer
+	//! Creates a Pel (RGB) BDPT rasterizer
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBDPTRasterizer(
+	bool RISE_API_CreateBDPTPelRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth	///< [in] Maximum light subpath depth
+								);
+
+	//! Creates a spectral BDPT rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
-								const bool bSpectral = false,		///< [in] Enable spectral rendering
-								const Scalar lambda_begin = 380.0,	///< [in] Start wavelength (nm)
-								const Scalar lambda_end = 780.0,	///< [in] End wavelength (nm)
-								const unsigned int num_wavelengths = 10,	///< [in] Number of wavelength bins
-								const unsigned int spectral_samples = 1	///< [in] Spectral samples per pixel
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples	///< [in] Spectral samples per pixel
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
@@ -2009,10 +2019,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
-								const unsigned int nBootstrap = 100000,		///< [in] Number of bootstrap samples
-								const unsigned int nChains = 512,			///< [in] Number of Markov chains
-								const unsigned int nMutationsPerPixel = 100,///< [in] Mutations per pixel budget
-								const Scalar largeStepProb = 0.3			///< [in] Large step probability
+								const unsigned int nBootstrap,				///< [in] Number of bootstrap samples
+								const unsigned int nChains,					///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
+								const Scalar largeStepProb					///< [in] Large step probability
 								);
 
 	//////////////////////////////////////////////////////////

@@ -5148,7 +5148,7 @@ namespace RISE
 				}
 			};
 
-			struct BDPTRasterizerAsciiChunkParser : public IAsciiChunkParser
+			struct BDPTPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
@@ -5175,7 +5175,107 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool spectral = false;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "defaultshader" ) {
+							defaultshader = pvalue;
+						} else if( pname == "max_recursion" ) {
+							maxRecur = pvalue.toUInt();
+						} else if( pname == "min_importance" ) {
+							minImportance = pvalue.toDouble();
+						} else if( pname == "max_eye_depth" ) {
+							maxEyeDepth = pvalue.toUInt();
+						} else if( pname == "max_light_depth" ) {
+							maxLightDepth = pvalue.toUInt();
+						} else if( pname == "samples" ) {
+							numSamples = pvalue.toUInt();
+						} else if( pname == "lum_samples" ) {
+							numLumSamples = pvalue.toUInt();
+						} else if( pname == "radiance_map" ) {
+							radiancemap = pvalue;
+						} else if( pname == "radiance_scale" ) {
+							radianceScale = pvalue.toDouble();
+						} else if( pname == "radiance_background" ) {
+							radback = pvalue.toBoolean();
+						} else if( pname == "radiance_orient" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
+							radorient[0] *= DEG_TO_RAD;
+							radorient[1] *= DEG_TO_RAD;
+							radorient[2] *= DEG_TO_RAD;
+						} else if( pname == "pixel_sampler" ) {
+							pixelSampler = pvalue;
+						} else if( pname == "pixel_sampler_param" ) {
+							pixelSamplerParam = pvalue.toDouble();
+						} else if( pname == "luminary_sampler" ) {
+							luminarySampler = pvalue;
+						} else if( pname == "luminary_sampler_param" ) {
+							luminarySamplerParam = pvalue.toDouble();
+						} else if( pname == "pixel_filter" ) {
+							pixelFilter = pvalue;
+						} else if( pname == "pixel_filter_width" ) {
+							pixelFilterWidth = pvalue.toDouble();
+						} else if( pname == "pixel_filter_height" ) {
+							pixelFilterHeight = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramA" ) {
+							pixelFilterParamA = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramB" ) {
+							pixelFilterParamB = pvalue.toDouble();
+						} else if( pname == "show_luminaires" ) {
+							showLuminaires = pvalue.toBoolean();
+						} else if( pname == "ior_stack" ) {
+							useiorstack = pvalue.toBoolean();
+						} else if( pname == "choose_one_light" ) {
+							onlyonelight = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.SetBDPTPelRasterizer( numSamples, numLumSamples,
+						maxRecur, minImportance, maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
+						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
+						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
+						showLuminaires, useiorstack, onlyonelight );
+				}
+			};
+
+			struct BDPTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String defaultshader = "global";
+					unsigned int maxRecur = 10;
+					unsigned int numSamples = 1;
+					unsigned int numLumSamples = 1;
+					double minImportance = 0.01;
+					unsigned int maxEyeDepth = 8;
+					unsigned int maxLightDepth = 8;
+					String radiancemap = "none";
+					double radianceScale = 1.0;
+					double radorient[3] = {0};
+					bool radback = true;
+					String pixelFilter = "none";
+					String pixelSampler = "none";
+					String luminarySampler = "none";
+					double pixelSamplerParam = 1.0;
+					double luminarySamplerParam = 1.0;
+					double pixelFilterWidth = 1.0;
+					double pixelFilterHeight = 1.0;
+					double pixelFilterParamA = 1.0;
+					double pixelFilterParamB = 1.0;
+					bool showLuminaires = true;
+					bool useiorstack = false;
+					bool onlyonelight = false;
 					double nmbegin = 380.0;
 					double nmend = 780.0;
 					unsigned int num_wavelengths = 80;
@@ -5238,8 +5338,6 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
-						} else if( pname == "spectral" ) {
-							spectral = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
 							nmbegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
@@ -5254,14 +5352,14 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetBDPTRasterizer( numSamples, numLumSamples,
+					return pJob.SetBDPTSpectralRasterizer( numSamples, numLumSamples,
 						maxRecur, minImportance, maxEyeDepth, maxLightDepth,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						spectral, nmbegin, nmend, num_wavelengths, spectral_samples );
+						nmbegin, nmend, num_wavelengths, spectral_samples );
 				}
 			};
 
@@ -6317,7 +6415,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["pixelintegratingspectral_rasterizer"] = new PixelIntegratingSpectralRasterizerAsciiChunkParser();
 	chunks["adaptivepixelpel_rasterizer"] = new AdaptivePixelPelRasterizerAsciiChunkParser();
 	chunks["contrastAApixelpel_rasterizer"] = new PixelPelRasterizerContrastAAAsciiChunkParser();
-	chunks["bdpt_rasterizer"] = new BDPTRasterizerAsciiChunkParser();
+	chunks["bdpt_pel_rasterizer"] = new BDPTPelRasterizerAsciiChunkParser();
+	chunks["bdpt_spectral_rasterizer"] = new BDPTSpectralRasterizerAsciiChunkParser();
 	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();
 	chunks["file_rasterizeroutput"] = new FileRasterizerOutputAsciiChunkParser();
 

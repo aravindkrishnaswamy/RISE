@@ -16,7 +16,7 @@ standard_shader
 	shaderop	pt
 }
 
-bdpt_rasterizer
+bdpt_pel_rasterizer
 {
 	max_recursion		16
 	min_importance		0.0001
