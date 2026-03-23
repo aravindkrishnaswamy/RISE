@@ -964,7 +964,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertex(
+			// Reverse PDF: EvalPdfAtVertex returns 0 for delta interactions
+			// (SPF::Pdf() returns 0 for Dirac distributions).  This is correct;
+			// remap0 in MISWeight maps the zero to 1 so the ratio chain
+			// propagates through delta vertices without dying.
+			const Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
 				pScat->ray.Dir(),
 				-currentRay.Dir()
@@ -1244,7 +1248,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertex(
+			// Reverse PDF: returns 0 for delta interactions, handled by remap0 in MISWeight.
+			const Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
 				pScat->ray.Dir(),
 				-currentRay.Dir()
@@ -1437,10 +1442,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Check visibility from camera to light vertex
-		// Use transparent-aware visibility so glass doesn't block caustic splats
+		// Check visibility from camera to light vertex using standard shadow ray.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, camPos, lightEnd.position ) ) {
+		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -1722,8 +1726,12 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Check visibility — use transparent-aware test so glass doesn't
-		// block caustic splats from reaching the camera
+		// Check visibility — use transparent-aware test so that caustic
+		// contributions from light paths through glass can reach the camera.
+		// The light subpath's throughput already accounts for Fresnel
+		// attenuation at each glass surface, so the energy is correct;
+		// only the projected pixel position is approximate (no refraction
+		// offset), which is the standard BDPT approximation for t=1 splats.
 		const Point3 camPos = camera.GetLocation();
 		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
 			return result;
@@ -2152,20 +2160,18 @@ Scalar BDPTIntegrator::MISWeight(
 	// and the eye subpath has t vertices.  The connection is between
 	// lightVerts[s-1] and eyeVerts[t-1].
 
-	// We compute the MIS weight using the power heuristic with exponent 1
-	// (balance heuristic).
+	// We compute the MIS weight using the power heuristic with exponent 2.
+	// The power heuristic concentrates weight on the strategy with the
+	// highest sampling probability, which provides provably lower variance
+	// than the balance heuristic (exponent 1) for scenes with caustics and
+	// other difficult light transport paths (Veach thesis, Section 9.2.4).
 	//
-	// The key insight is that the ratio of the PDF for strategy (s',t')
-	// to strategy (s,t) can be computed as a product of ratios of
-	// forward/reverse PDFs at each vertex along the path.
+	// w(s,t) = p_s^2 / sum_i p_i^2 = 1 / sum_i (p_i / p_s)^2
+	//
+	// The ratios p_i/p_s are computed incrementally by walking along the
+	// path and accumulating forward/reverse PDF ratios at each vertex.
 
-	// For simplicity and robustness, we accumulate the sum of PDF ratios
-	// by walking in both directions from the connection point.
-
-	// ri = p_{s-i} / p_{s} for i = 1, 2, ..., s (walking toward light)
-	// rj = p_{s+j} / p_{s} for j = 1, 2, ..., t (walking toward camera)
-
-	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself contributes 1
+	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself contributes 1^2 = 1
 
 	// Temporarily clear isDelta on the two connection vertices (PBRT convention).
 	// The connection always evaluates the full BSDF (non-delta), so these
@@ -2223,8 +2229,8 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
-			// Strategy (i, s+t-i) contributes ri to the sum
-			sumWeights += ri;
+			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
+			sumWeights += ri * ri;
 		}
 	}
 
@@ -2255,8 +2261,8 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
-			// Strategy (s+t-j, j) contributes ri to the sum
-			sumWeights += ri;
+			// Strategy (s+t-j, j) contributes ri^2 to the sum (power heuristic)
+			sumWeights += ri * ri;
 		}
 	}
 
@@ -2688,7 +2694,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertexNM(
+			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
+			const Scalar revPdfSA = EvalPdfAtVertexNM(
 				curr, pScat->ray.Dir(), -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
@@ -2931,7 +2938,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertexNM(
+			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
+			const Scalar revPdfSA = EvalPdfAtVertexNM(
 				curr, pScat->ray.Dir(), -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
@@ -3070,7 +3078,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, camPos, lightEnd.position ) ) {
+		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
 

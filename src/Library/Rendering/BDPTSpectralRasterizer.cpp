@@ -30,9 +30,10 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 // Maximum per-strategy contribution to prevent fireflies from imperfect
-// MIS weights at volumetric vertices (SSS).  The value is generous
-// enough to preserve energy for typical scenes.
-static const Scalar BDPT_MAX_CONTRIBUTION = 50.0;
+// MIS weights at volumetric vertices (SSS).  The value must be high
+// enough to preserve energy for caustic paths through glass where
+// individual contributions can legitimately reach several hundred.
+static const Scalar BDPT_MAX_CONTRIBUTION = 1000.0;
 
 BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	IRayCaster* pCaster_,
