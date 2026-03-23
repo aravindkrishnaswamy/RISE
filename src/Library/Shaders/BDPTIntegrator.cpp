@@ -941,6 +941,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// accounting for lobe selection probability.
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		// Update the previous vertex's pdfRev
 		// pdfRev of vertex[n-1] = pdf of sampling the reverse direction at vertex[n]
 		if( vertices.size() >= 2 ) {
