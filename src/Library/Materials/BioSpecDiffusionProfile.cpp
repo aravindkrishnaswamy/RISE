@@ -302,12 +302,14 @@ void BioSpecDiffusionProfile::ComputePerLayerCoefficients(
 	const Scalar abs_bilirubin = pBilirubinExt->Evaluate(nm) * bilirubin_conc / 585.0 * log(10.0);
 	const Scalar abs_carotene_dermis = pBetaCaroteneExt->Evaluate(nm) * carotene_dermis / 537.0 * log(10.0);
 
-	const Scalar sigma_a_papillary = (abs_hbo2 * hb_ratio + abs_hb * (1.0 - hb_ratio) + abs_bilirubin) * blood_papillary
-		+ (abs_carotene_dermis + baseline) * (1.0 - blood_papillary);
+	const Scalar sigma_a_papillary =
+		(abs_hbo2 * hb_ratio + abs_hb * (1.0 - hb_ratio) + abs_bilirubin + abs_carotene_dermis) * blood_papillary
+		+ baseline * (1.0 - blood_papillary);
 
 	// Reticular dermis
-	const Scalar sigma_a_reticular = (abs_hbo2 * hb_ratio + abs_hb * (1.0 - hb_ratio) + abs_bilirubin) * blood_reticular
-		+ (abs_carotene_dermis + baseline) * (1.0 - blood_reticular);
+	const Scalar sigma_a_reticular =
+		(abs_hbo2 * hb_ratio + abs_hb * (1.0 - hb_ratio) + abs_bilirubin + abs_carotene_dermis) * blood_reticular
+		+ baseline * (1.0 - blood_reticular);
 
 	//----------------------------------------------------------
 	// Per-layer reduced scattering coefficients
@@ -394,7 +396,7 @@ void BioSpecDiffusionProfile::PrecomputeProfileAtWavelength(
 	for( int i = 0; i < N_RADIAL; i++ )
 	{
 		r_samples[i] = exp( log_r_min + i * log_r_step );
-		Rd_samples[i] = grid.InverseTransform( composite_R, r_samples[i] );
+		Rd_samples[i] = grid.InverseTransform( composite_R, r_samples[i] ) / (2.0 * PI);
 
 		// Clamp negative values (numerical noise)
 		if( Rd_samples[i] < 0 ) Rd_samples[i] = 0;
@@ -438,17 +440,25 @@ void BioSpecDiffusionProfile::PrecomputeProfileAtWavelength(
 	// Fit sum of exponentials via NNLS
 	FitSumOfExponentials( r_samples, Rd_samples, N_RADIAL, rates, K_TERMS, terms_out );
 
-	// Compute total weight and CDF for mixture sampling
+	// Compute total integrated mass and CDF for mixture sampling.
+	// The fit model is Rd(r)*r = Σ w_k exp(-λ_k r), so the integral
+	// of each component is ∫₀^∞ w_k exp(-λ_k r) dr = w_k / λ_k.
+	// Mixture weights must be proportional to w_k / λ_k (the mass),
+	// not w_k alone.
 	total_weight_out = 0;
 	for( int k = 0; k < K_TERMS; k++ )
 	{
-		total_weight_out += terms_out[k].weight;
+		const double mass_k = (terms_out[k].rate > 1e-30)
+			? terms_out[k].weight / terms_out[k].rate : 0;
+		total_weight_out += mass_k;
 	}
 
 	double cumulative = 0;
 	for( int k = 0; k < K_TERMS; k++ )
 	{
-		cumulative += terms_out[k].weight;
+		const double mass_k = (terms_out[k].rate > 1e-30)
+			? terms_out[k].weight / terms_out[k].rate : 0;
+		cumulative += mass_k;
 		cdf_out[k] = (total_weight_out > 1e-30) ? (cumulative / total_weight_out) : 0;
 	}
 }
@@ -620,13 +630,15 @@ Scalar BioSpecDiffusionProfile::PdfRadius(
 
 	if( totalW < 1e-30 ) return 0.0;
 
-	// Mixture PDF: sum_k (w_k/W) * rate_k * exp(-rate_k * r)
+	// Mixture PDF: sum_k (mass_k / W) * rate_k * exp(-rate_k * r)
+	// where mass_k = w_k / rate_k, and each component's PDF is rate_k * exp(-rate_k * r).
 	Scalar pdf = 0;
 	for( int k = 0; k < K_TERMS; k++ )
 	{
-		if( terms[k].weight > 1e-30 )
+		if( terms[k].weight > 1e-30 && terms[k].rate > 1e-30 )
 		{
-			pdf += (terms[k].weight / totalW) * terms[k].rate * exp( -terms[k].rate * r );
+			const Scalar mass_k = terms[k].weight / terms[k].rate;
+			pdf += (mass_k / totalW) * terms[k].rate * exp( -terms[k].rate * r );
 		}
 	}
 

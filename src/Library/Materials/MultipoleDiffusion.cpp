@@ -25,14 +25,21 @@ using namespace RISE;
 
 double RISE::ComputeFdr( const double eta )
 {
-	// Egan & Hilgeman 1973 polynomial fit (Jensen 2001)
+	// Polynomial fits for diffuse Fresnel reflectance (Jensen 2001, Table 1).
+	// eta = n_medium / n_outside  (ratio at the boundary).
 	if( eta < 1.0 )
 	{
-		const double eta_inv = 1.0 / eta;
-		return -1.440 / (eta_inv * eta_inv) + 0.710 / eta_inv + 0.668 + 0.0636 * eta_inv;
+		// For eta < 1 (going from denser to rarer medium):
+		//   Fdr = -0.4399 + 0.7099/eta - 0.3319/eta^2 + 0.0636/eta^3
+		const double inv  = 1.0 / eta;
+		const double inv2 = inv * inv;
+		const double inv3 = inv2 * inv;
+		return -0.4399 + 0.7099 * inv - 0.3319 * inv2 + 0.0636 * inv3;
 	}
 
-	return -1.440 / (eta * eta) + 0.710 / eta + 0.668 + 0.0636 * eta;
+	// For eta >= 1 (going from rarer to denser medium):
+	//   Fdr = -1.4399/eta^2 + 0.7099/eta + 0.6681 + 0.0636*eta
+	return -1.4399 / (eta * eta) + 0.7099 / eta + 0.6681 + 0.0636 * eta;
 }
 
 //=============================================================
@@ -110,14 +117,46 @@ void RISE::EvaluateMultipoleReflectanceHankel(
 	)
 {
 	const double d = lp.thickness;
-	const double prefactor = lp.alpha_prime / (4.0 * PI);
 
-	// Extrapolated slab boundaries and period for method of images
-	// Top boundary:    z = -d_e
-	// Bottom boundary: z = d + d_e  (= z_bottom)
-	// Effective slab:  D_slab = d + 2*d_e  (= d_eff)
-	// Period:          L = 2 * D_slab
-	const double z_bottom = d + lp.d_e;
+	// Thin-layer regime: when the slab is thinner than one transport
+	// mean free path (d < z_r = 1/sigma_t'), the dipole source falls
+	// outside the slab, making the multipole expansion invalid.
+	// In this regime the layer is optically thin to scattering — most
+	// photons traverse it without scattering.  We approximate:
+	//   R ≈ 0  (negligible diffuse back-scatter)
+	//   T ≈ exp(-sigma_a * d)  (Beer-Lambert absorption only)
+	// This is constant in s (no lateral spread), which is correct
+	// for a sub-mean-free-path slab.
+	if( d < lp.z_r )
+	{
+		const double T_beer = exp( -lp.sigma_a * d );
+		for( int i = 0; i < N_freq; i++ )
+		{
+			R_tilde_out[i] = 0;
+			T_tilde_out[i] = T_beer;
+		}
+		return;
+	}
+
+	const double prefactor = lp.alpha_prime / 2.0;
+
+	// Method of images for a slab with extrapolated boundaries at
+	// z_top = -d_e  and  z_bottom = d + d_e.
+	//
+	// The dipole pair (real at z_r, Q=+1; virtual at -z_v, Q=-1)
+	// is reflected between the two boundaries, generating image
+	// pairs at offsets j*L where L = 2*(d + 2*d_e) is the full
+	// period.  Since z_v = z_r + 2*d_e, the reflected-about-bottom
+	// images at offset j duplicate the primary images at offset j±1,
+	// so only the primary dipole pair is needed per period.
+	//
+	// Reflectance at z=0 from source at z_s with charge Q:
+	//   Q * sign(z_s) * exp(-|z_s| * q)
+	// Transmittance at z=d:
+	//   Q * sign(d - z_s) * exp(-|d - z_s| * q)
+	//
+	// where q = sqrt(sigma_tr^2 + s^2).
+
 	const double d_eff = d + 2.0 * lp.d_e;
 	const double L = 2.0 * d_eff;		// full period
 
@@ -131,75 +170,25 @@ void RISE::EvaluateMultipoleReflectanceHankel(
 		{
 			const double offset = j * L;
 
-			// Method of images for a slab with extrapolated boundaries.
-			//
-			// Primary sources (j=0):
-			//   Real:    charge +1 at z_r
-			//   Virtual: charge -1 at -z_v
-			//
-			// Reflected about bottom boundary (z = d + d_e):
-			//   Reflected real:    charge -1 at 2*(d+d_e) - z_r
-			//   Reflected virtual: charge +1 at 2*(d+d_e) + z_v
-			//
-			// All four source types repeat with period L = 2*(d+2*d_e).
-			//
-			// Reflectance contribution from source at z_s with charge Q:
-			//   Q * sign(z_s) * exp(-|z_s| * q)
-			//
-			// Transmittance contribution:
-			//   Q * sign(d - z_s) * exp(-|d - z_s| * q)
+			const double z_real = lp.z_r + offset;
+			const double z_virt = -lp.z_v + offset;
 
-			// Type A sources (same polarity as original dipole)
-			{
-				const double z_real = lp.z_r + offset;
-				const double z_virt = -lp.z_v + offset;
+			// Reflectance at z=0
+			const double e_real = FluxHankelContrib( fabs(z_real), lp.sigma_tr, s );
+			const double e_virt = FluxHankelContrib( fabs(z_virt), lp.sigma_tr, s );
 
-				// Reflectance at z=0
-				// Real (Q=+1):    +sign(z_real) * exp(-|z_real|*q)
-				// Virtual (Q=-1): -sign(z_virt) * exp(-|z_virt|*q)
-				const double e_real = FluxHankelContrib( fabs(z_real), lp.sigma_tr, s );
-				const double e_virt = FluxHankelContrib( fabs(z_virt), lp.sigma_tr, s );
+			const double sign_zr = (z_real >= 0) ? 1.0 : -1.0;
+			const double sign_zv = (z_virt >= 0) ? 1.0 : -1.0;
 
-				const double sign_zr = (z_real >= 0) ? 1.0 : -1.0;
-				const double sign_zv = (z_virt >= 0) ? 1.0 : -1.0;
+			R_sum += sign_zr * e_real;			// Q=+1 (real)
+			R_sum += -sign_zv * e_virt;			// Q=-1 (virtual)
 
-				R_sum += sign_zr * e_real;			// Q=+1
-				R_sum += -sign_zv * e_virt;			// Q=-1
+			// Transmittance at z=d
+			const double sign_dr = (d - z_real >= 0) ? 1.0 : -1.0;
+			const double sign_dv = (d - z_virt >= 0) ? 1.0 : -1.0;
 
-				// Transmittance at z=d
-				// Real (Q=+1):    +sign(d-z_real) * exp(-|d-z_real|*q)
-				// Virtual (Q=-1): -sign(d-z_virt) * exp(-|d-z_virt|*q)
-				const double sign_dr = (d - z_real >= 0) ? 1.0 : -1.0;
-				const double sign_dv = (d - z_virt >= 0) ? 1.0 : -1.0;
-
-				T_sum += sign_dr * FluxHankelContrib( fabs(d - z_real), lp.sigma_tr, s );
-				T_sum += -sign_dv * FluxHankelContrib( fabs(d - z_virt), lp.sigma_tr, s );
-			}
-
-			// Type B sources (reflected about bottom boundary, opposite sign)
-			{
-				// Reflect real (Q=+1 at z_r) about z_bottom → Q=-1 at 2*z_bottom - z_r
-				// Reflect virtual (Q=-1 at -z_v) about z_bottom → Q=+1 at 2*z_bottom + z_v
-				const double z_real_refl = 2.0 * z_bottom - lp.z_r + offset;
-				const double z_virt_refl = 2.0 * z_bottom + lp.z_v + offset;
-
-				// Reflectance at z=0
-				const double e_rr = FluxHankelContrib( fabs(z_real_refl), lp.sigma_tr, s );
-				const double e_vr = FluxHankelContrib( fabs(z_virt_refl), lp.sigma_tr, s );
-
-				const double sign_rr = (z_real_refl >= 0) ? 1.0 : -1.0;
-				const double sign_vr = (z_virt_refl >= 0) ? 1.0 : -1.0;
-
-				R_sum += -sign_rr * e_rr;			// Q=-1 (reflected real)
-				R_sum += sign_vr * e_vr;			// Q=+1 (reflected virtual)
-
-				// Transmittance at z=d
-				const double sign_drr = (d - z_real_refl >= 0) ? 1.0 : -1.0;
-				const double sign_dvr = (d - z_virt_refl >= 0) ? 1.0 : -1.0;
-
-				T_sum += -sign_drr * FluxHankelContrib( fabs(d - z_real_refl), lp.sigma_tr, s );
-				T_sum += sign_dvr * FluxHankelContrib( fabs(d - z_virt_refl), lp.sigma_tr, s );
-			}
+			T_sum += sign_dr * FluxHankelContrib( fabs(d - z_real), lp.sigma_tr, s );
+			T_sum += -sign_dv * FluxHankelContrib( fabs(d - z_virt), lp.sigma_tr, s );
 
 			// Early exit: if sources are far enough that contributions are negligible
 			if( j > 0 )
