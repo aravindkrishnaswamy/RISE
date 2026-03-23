@@ -132,6 +132,9 @@ namespace RISE
 
 			/// \return The luminary manager for the current scene
 			const ILuminaryManager* GetLuminaries() const { return pLuminaryManager; };
+
+			/// \return True when the ray caster tracks a per-ray IOR stack
+			inline bool UsesIORStack() const { return bIORStack; }
 		};
 	}
 }

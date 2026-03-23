@@ -91,25 +91,28 @@ namespace RISE
 
 	/// Stack two layers in the Hankel domain using the adding-doubling
 	/// recurrence.  Accounts for Fresnel coupling at the internal
-	/// boundary via the diffuse Fresnel transmission factor.
+	/// boundary via separate downward and upward diffuse Fresnel
+	/// transmission factors.
 	///
 	/// The combined reflectance and transmittance are:
-	///   R = R1 + T1*Ft*R2*Ft*T1 / (1 - R1b*Ft*R2t*Ft)
-	///   T = T1*Ft*T2 / (1 - R1b*Ft*R2t*Ft)
+	///   R = R1 + T1 * Ft_down * R2 * Ft_up * T1 / denom
+	///   T = T1 * Ft_down * T2 / denom
+	///   denom = 1 - R1 * Ft_down * Ft_up * R2
 	///
-	/// where Ft = 1 - Fdr(eta_ratio) is the diffuse Fresnel transmission
-	/// at the internal boundary, and R1b is the bottom reflectance of
-	/// layer 1 (same as R1 for symmetric diffusion).
+	/// Ft_down = 1 - Fdr(n_top / n_bottom)  (light exiting top layer downward)
+	/// Ft_up   = 1 - Fdr(n_bottom / n_top)  (light exiting bottom layer upward)
 	///
 	/// \param R1, T1        Top layer Hankel R/T, length N_freq
 	/// \param R2, T2        Bottom layer Hankel R/T, length N_freq
-	/// \param Ft_boundary   Diffuse Fresnel transmission at interface
+	/// \param Ft_down       Diffuse Fresnel transmission, top→bottom
+	/// \param Ft_up         Diffuse Fresnel transmission, bottom→top
 	/// \param N_freq        Number of frequency samples
 	/// \param R_out, T_out  Combined R/T output, length N_freq
 	void StackLayersHankel(
 		const double* R1, const double* T1,
 		const double* R2, const double* T2,
-		double Ft_boundary,
+		double Ft_down,
+		double Ft_up,
 		int N_freq,
 		double* R_out, double* T_out
 		);

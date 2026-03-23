@@ -216,16 +216,17 @@ void RISE::EvaluateMultipoleReflectanceHankel(
 void RISE::StackLayersHankel(
 	const double* R1, const double* T1,
 	const double* R2, const double* T2,
-	const double Ft_boundary,
+	const double Ft_down,
+	const double Ft_up,
 	const int N_freq,
 	double* R_out, double* T_out
 	)
 {
-	const double Ft2 = Ft_boundary * Ft_boundary;
+	const double Ft_product = Ft_down * Ft_up;
 
 	for( int i = 0; i < N_freq; i++ )
 	{
-		const double denom = 1.0 - R1[i] * Ft2 * R2[i];
+		const double denom = 1.0 - R1[i] * Ft_product * R2[i];
 
 		if( fabs(denom) < 1e-30 )
 		{
@@ -236,8 +237,13 @@ void RISE::StackLayersHankel(
 
 		const double inv_denom = 1.0 / denom;
 
-		R_out[i] = R1[i] + T1[i] * Ft_boundary * R2[i] * Ft_boundary * T1[i] * inv_denom;
-		T_out[i] = T1[i] * Ft_boundary * T2[i] * inv_denom;
+		// Light goes down through T1, crosses interface (Ft_down), reflects
+		// off lower stack (R2), crosses interface back up (Ft_up), through T1.
+		R_out[i] = R1[i] + T1[i] * Ft_down * R2[i] * Ft_up * T1[i] * inv_denom;
+
+		// Transmittance: light goes down through T1, crosses interface (Ft_down),
+		// then through the lower stack (T2).
+		T_out[i] = T1[i] * Ft_down * T2[i] * inv_denom;
 	}
 }
 
@@ -275,15 +281,18 @@ void RISE::ComputeCompositeProfileHankel(
 			layers[L], s_grid, N_freq,
 			R_layer, T_layer, N_multipole );
 
-		// Fresnel coupling at the boundary between layers[L] and layers[L+1]
-		const double eta_ratio = layers[L + 1].ior / layers[L].ior;
-		const double Fdr_boundary = ComputeFdr( eta_ratio );
-		const double Ft_boundary = 1.0 - Fdr_boundary;
+		// Fresnel coupling at the boundary between layers[L] (top) and layers[L+1] (bottom).
+		// Downward: light exits layers[L] into layers[L+1], eta = n_top / n_bottom.
+		// Upward:   light exits layers[L+1] into layers[L], eta = n_bottom / n_top.
+		const double eta_down = layers[L].ior / layers[L + 1].ior;
+		const double eta_up   = layers[L + 1].ior / layers[L].ior;
+		const double Ft_down  = 1.0 - ComputeFdr( eta_down );
+		const double Ft_up    = 1.0 - ComputeFdr( eta_up );
 
 		StackLayersHankel(
 			R_layer, T_layer,
 			R_accum, T_accum,
-			Ft_boundary,
+			Ft_down, Ft_up,
 			N_freq,
 			R_temp, T_temp );
 

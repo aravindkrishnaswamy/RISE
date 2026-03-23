@@ -257,16 +257,6 @@ namespace RISE
 				const Point3& p2
 				) const;
 
-			/// Helper: visibility test that passes through transparent/translucent
-			/// materials (dielectric, SSS, translucent, etc).  Used for camera
-			/// connections (t=0, t=1) so that splats behind transparent objects
-			/// aren't blocked.
-			bool IsVisibleThroughTransparents(
-				const IScene& scene,
-				const Point3& p1,
-				const Point3& p2
-				) const;
-
 			/// NM helper: evaluates the BSDF at a surface vertex for a single wavelength
 			Scalar EvalBSDFAtVertexNM(
 				const BDPTVertex& vertex,

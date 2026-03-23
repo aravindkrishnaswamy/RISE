@@ -74,6 +74,7 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Rendering/RayCaster.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -87,6 +88,36 @@ static const Scalar BDPT_RAY_EPSILON = 1e-6;
 // Minimum throughput before Russian Roulette kicks in
 //
 static const Scalar BDPT_RR_THRESHOLD = 0.05;
+
+namespace
+{
+	inline const IORStack* BuildVertexIORStack(
+		const BDPTVertex& vertex,
+		IORStack& stack
+		)
+	{
+		if( !vertex.pObject ) {
+			return 0;
+		}
+
+		if( vertex.insideObject ) {
+			stack = IORStack( 1.0 );
+			stack.SetCurrentObject( vertex.pObject );
+			stack.push( vertex.mediumIOR );
+		} else {
+			stack = IORStack( vertex.mediumIOR );
+			stack.SetCurrentObject( vertex.pObject );
+		}
+
+		return &stack;
+	}
+
+	inline bool BDPTUsesIORStack( const IRayCaster& caster )
+	{
+		const RayCaster* pConcrete = dynamic_cast<const RayCaster*>( &caster );
+		return pConcrete ? pConcrete->UsesIORStack() : false;
+	}
+}
 
 //////////////////////////////////////////////////////////////////////
 // Construction / Destruction
@@ -237,7 +268,8 @@ Scalar BDPTIntegrator::EvalPdfAtVertex(
 	ri.vNormal = vertex.normal;
 	ri.onb = vertex.onb;
 
-	return pSPF->Pdf( ri, wo, 0 );
+	IORStack stack( 1.0 );
+	return pSPF->Pdf( ri, wo, BuildVertexIORStack( vertex, stack ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -264,65 +296,6 @@ bool BDPTIntegrator::IsVisible(
 
 	// CastShadowRay returns TRUE if something is hit (i.e. NOT visible)
 	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
-}
-
-//////////////////////////////////////////////////////////////////////
-// Helper: visibility test that passes through dielectric objects.
-//
-// Instead of a simple shadow ray, this traces full intersections
-// and skips objects whose material has no BSDF (i.e. dielectrics).
-// This allows caustic splats behind glass to be visible to the camera.
-//////////////////////////////////////////////////////////////////////
-
-bool BDPTIntegrator::IsVisibleThroughTransparents(
-	const IScene& scene,
-	const Point3& p1,
-	const Point3& p2
-	) const
-{
-	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
-	Scalar remainDist = Vector3Ops::Magnitude( d );
-
-	if( remainDist < BDPT_RAY_EPSILON ) {
-		return true;
-	}
-
-	d = d * (1.0 / remainDist);
-
-	Point3 origin = p1;
-	Scalar traveled = 0;
-
-	for( int bounce = 0; bounce < 64; bounce++ )
-	{
-		Ray ray( origin, d );
-		ray.Advance( BDPT_RAY_EPSILON );
-		traveled += BDPT_RAY_EPSILON;
-
-		const Scalar maxDist = remainDist - traveled - BDPT_RAY_EPSILON;
-		if( maxDist <= 0 ) {
-			return true;
-		}
-
-		RayIntersection ri( ray, nullRasterizerState );
-		scene.GetObjects()->IntersectRay( ri, true, true, false );
-
-		if( !ri.geometric.bHit || ri.geometric.range > maxDist ) {
-			return true;
-		}
-
-		// Check if the hit material allows light to pass through
-		if( ri.pMaterial && ri.pMaterial->CouldLightPassThrough() ) {
-			// Transparent/translucent — advance past this object
-			origin = ri.geometric.ptIntersection;
-			traveled += ri.geometric.range;
-			continue;
-		}
-
-		// Opaque hit
-		return false;
-	}
-
-	return false;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -683,6 +656,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	// For now, since LightSampler expects RandomNumberGenerator, we use
 	// the existing RNG interface.  The sampler's Get1D is used for bounces.
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	LightSample ls;
 	if( !pLightSampler->SampleLight( scene, luminaries, rng, ls ) ) {
@@ -774,6 +749,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -805,7 +785,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, rng, scattered, 0 );
+		pSPF->Scatter( ri.geometric, rng, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -838,6 +818,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			bool hasNonDelta = false;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
 			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
@@ -986,6 +969,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Advance to next ray
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -1059,6 +1045,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 	Scalar pdfFwdPrev = pdfCamDir;
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -1085,6 +1073,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -1114,7 +1107,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, rng, scattered, 0 );
+		pSPF->Scatter( ri.geometric, rng, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -1144,6 +1137,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			bool hasNonDelta = false;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
 			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
@@ -1266,6 +1262,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Advance to next ray
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -1726,14 +1725,12 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Check visibility — use transparent-aware test so that caustic
-		// contributions from light paths through glass can reach the camera.
-		// The light subpath's throughput already accounts for Fresnel
-		// attenuation at each glass surface, so the energy is correct;
-		// only the projected pixel position is approximate (no refraction
-		// offset), which is the standard BDPT approximation for t=1 splats.
+		// This strategy is only valid for a direct camera connection.
+		// Refractive blockers must be sampled as explicit specular eye
+		// vertices; treating them as transparent here produces invalid
+		// splats and severe caustic fireflies.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
+		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
 			return result;
 		}
 
@@ -2385,7 +2382,8 @@ Scalar BDPTIntegrator::EvalPdfAtVertexNM(
 	ri.vNormal = vertex.normal;
 	ri.onb = vertex.onb;
 
-	return pSPF->PdfNM( ri, wo, nm, 0 );
+	IORStack stack( 1.0 );
+	return pSPF->PdfNM( ri, wo, nm, BuildVertexIORStack( vertex, stack ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2441,6 +2439,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	LightSample ls;
 	if( !pLightSampler->SampleLight( scene, luminaries, rng, ls ) ) {
@@ -2541,6 +2541,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
@@ -2566,7 +2571,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, 0 );
+		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2595,6 +2600,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			bool hasNonDelta = false;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
 			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
@@ -2704,6 +2712,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -2764,6 +2775,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 	Scalar pdfFwdPrev = pdfCamDir;
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -2787,6 +2800,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
@@ -2812,7 +2830,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, 0 );
+		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2841,6 +2859,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			bool hasNonDelta = false;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
 			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
@@ -2951,6 +2972,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -3304,8 +3328,10 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
+		// Same validity rule as the RGB path above: t == 1 only handles a
+		// direct camera connection, not a refracted one through glass.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
+		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
 			return result;
 		}
 

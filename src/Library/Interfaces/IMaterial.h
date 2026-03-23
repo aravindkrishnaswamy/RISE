@@ -46,9 +46,7 @@ namespace RISE
 		virtual IEmitter* GetEmitter() const  = 0;
 
 		/// \return True if light can pass through this material (e.g.
-		/// glass, translucent, SSS).  Used by BDPT visibility tests
-		/// so that camera connections (t=0, t=1) aren't blocked by
-		/// transparent surfaces.
+		/// glass or other transmissive media).
 		virtual bool CouldLightPassThrough() const { return false; }
 
 		/// \return True if this material has volumetric transport (e.g. SSS).
