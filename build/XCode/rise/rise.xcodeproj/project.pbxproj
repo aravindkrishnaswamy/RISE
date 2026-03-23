@@ -1335,6 +1335,11 @@
 		F2C5D5CE2F70B94700546C97 /* BioSpecDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */; };
 		F2C5D5CF2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5CC2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h */; };
 		F2C5D5D02F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */; };
+		F2C5D5D32F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */; };
+		F2C5D5D42F70D4B300546C97 /* MultipoleDiffusion.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */; };
+		F2C5D5D52F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */; };
+		F2C5D5D82F70D4D000546C97 /* HankelTransform.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5D62F70D4D000546C97 /* HankelTransform.h */; };
+		F2C5D5D92F70D4D000546C97 /* SumOfExponentialsFit.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5D72F70D4D000546C97 /* SumOfExponentialsFit.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2027,6 +2032,10 @@
 		F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecDiffusionProfile.h; sourceTree = "<group>"; };
 		F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecDiffusionProfile.cpp; sourceTree = "<group>"; };
 		F2C5D5CC2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinBSSRDFMaterial.h; sourceTree = "<group>"; };
+		F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MultipoleDiffusion.h; sourceTree = "<group>"; };
+		F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MultipoleDiffusion.cpp; sourceTree = "<group>"; };
+		F2C5D5D62F70D4D000546C97 /* HankelTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HankelTransform.h; sourceTree = "<group>"; };
+		F2C5D5D72F70D4D000546C97 /* SumOfExponentialsFit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SumOfExponentialsFit.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2449,6 +2458,8 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */,
+				F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */,
 				F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */,
 				F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */,
 				F2C5D5CC2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h */,
@@ -2838,6 +2849,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5D62F70D4D000546C97 /* HankelTransform.h */,
+				F2C5D5D72F70D4D000546C97 /* SumOfExponentialsFit.h */,
 				F2C5D57D2F6EA5B300546C97 /* PSSMLTSampler.h */,
 				F2C5D57E2F6EA5B300546C97 /* PSSMLTSampler.cpp */,
 				6DFD32ED0A0FBB1D00E99FBE /* CPU_Count.cpp */,
@@ -3026,6 +3039,8 @@
 				F27F0A70069C42910069C9E5 /* PinholeCamera.h in Headers */,
 				F27F0A72069C42910069C9E5 /* ThinLensCamera.h in Headers */,
 				F27F0A78069C42910069C9E5 /* ConstantFunctions.h in Headers */,
+				F2C5D5D82F70D4D000546C97 /* HankelTransform.h in Headers */,
+				F2C5D5D92F70D4D000546C97 /* SumOfExponentialsFit.h in Headers */,
 				F27F0A7A069C42910069C9E5 /* CubicFunction.h in Headers */,
 				F27F0A7C069C42910069C9E5 /* KleinBottleParametricFunctions.h in Headers */,
 				F27F0A7E069C42910069C9E5 /* LinearFunction.h in Headers */,
@@ -3279,6 +3294,7 @@
 				F27F0BE2069C42910069C9E5 /* HDRWriter.h in Headers */,
 				F27F0BE3069C42910069C9E5 /* NNBRasterImageAccessor.h in Headers */,
 				F27F0BE5069C42910069C9E5 /* PNGReader.h in Headers */,
+				F2C5D5D42F70D4B300546C97 /* MultipoleDiffusion.h in Headers */,
 				F27F0BE7069C42910069C9E5 /* PNGWriter.h in Headers */,
 				F27F0BE9069C42910069C9E5 /* PPMWriter.h in Headers */,
 				F27F0BEA069C42910069C9E5 /* RasterImage.h in Headers */,
@@ -3748,6 +3764,7 @@
 				F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */,
 				F277341D07ECCBB200C0B600 /* AdvancedShader.cpp in Sources */,
 				F277342107ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */,
+				F2C5D5D32F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */,
 				F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */,
 				F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */,
 				F277343207ECCC2F00C0B600 /* DetectorSphere.cpp in Sources */,
@@ -3817,6 +3834,7 @@
 				F24B71FD2F52A632008304C4 /* ThinLensCamera.cpp in Sources */,
 				F24B71FE2F52A632008304C4 /* ThinLensCamera.h in Sources */,
 				F24B71FF2F52A632008304C4 /* BezierRootFinder.cpp in Sources */,
+				F2C5D5D52F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */,
 				F24B72002F52A632008304C4 /* ConstantFunctions.h in Sources */,
 				F24B72012F52A632008304C4 /* CubicFunction.cpp in Sources */,
 				F24B72022F52A632008304C4 /* CubicFunction.h in Sources */,

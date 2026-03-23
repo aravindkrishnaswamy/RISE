@@ -70,7 +70,7 @@ namespace RISE
 				pBSDF = new SubSurfaceScatteringBSDF( ior, absorption, scattering, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
-				pSPF = new SubSurfaceScatteringSPF( ior, absorption, scattering, g, roughness );
+				pSPF = new SubSurfaceScatteringSPF( ior, absorption, scattering, g, roughness, true );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				pProfile = new BurleyNormalizedDiffusionProfile( ior, absorption, scattering, g );
