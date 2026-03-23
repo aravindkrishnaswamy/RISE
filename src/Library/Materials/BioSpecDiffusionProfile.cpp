@@ -1,7 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  BioSpecDiffusionProfile.cpp - Implementation of the BioSpec
-//  biophysically-parameterized BSSRDF diffusion profile.
+//  biophysically-parameterized BSSRDF diffusion profile using
+//  per-layer multipole diffusion (Donner & Jensen 2005).
 //
 //  See BioSpecDiffusionProfile.h for overview and references.
 //
@@ -16,10 +17,31 @@
 #include "pch.h"
 #include "BioSpecDiffusionProfile.h"
 #include "BioSpecSkinData.h"
+#include "MultipoleDiffusion.h"
+#include "../Utilities/HankelTransform.h"
+#include "../Utilities/SumOfExponentialsFit.h"
 #include "../RISE_API.h"
+#include "../Interfaces/ILog.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+//=============================================================
+// Static wavelength tables
+//=============================================================
+
+const Scalar BioSpecDiffusionProfile::ms_rgb_wavelengths[NUM_RGB] = { 615.0, 550.0, 465.0 };
+
+const Scalar BioSpecDiffusionProfile::ms_spectral_wavelengths[NUM_SPECTRAL] = {
+	400.0, 410.0, 420.0, 430.0, 440.0, 450.0, 460.0, 470.0, 480.0, 490.0,
+	500.0, 510.0, 520.0, 530.0, 540.0, 550.0, 560.0, 570.0, 580.0, 590.0,
+	600.0, 610.0, 620.0, 630.0, 640.0, 650.0, 660.0, 670.0, 680.0, 690.0,
+	700.0
+};
+
+//=============================================================
+// Constructor / Destructor
+//=============================================================
 
 BioSpecDiffusionProfile::BioSpecDiffusionProfile(
 	const IPainter& thickness_SC_,
@@ -64,7 +86,8 @@ BioSpecDiffusionProfile::BioSpecDiffusionProfile(
   pOxyHemoglobinExt( 0 ),
   pDeoxyHemoglobinExt( 0 ),
   pBilirubinExt( 0 ),
-  pBetaCaroteneExt( 0 )
+  pBetaCaroteneExt( 0 ),
+  m_min_rate( 1.0 )
 {
 	// Addref all painter references
 	pnt_thickness_SC.addref();
@@ -138,6 +161,16 @@ BioSpecDiffusionProfile::BioSpecDiffusionProfile(
 		pFunc->addControlPoints( count, SkinData::omlc_prahl_betacarotene_wavelengths, SkinData::omlc_prahl_betacarotene );
 		pBetaCaroteneExt = pFunc;
 	}
+
+	// Initialize precomputed tables to zero
+	memset( m_rgb_terms, 0, sizeof(m_rgb_terms) );
+	memset( m_rgb_total_weight, 0, sizeof(m_rgb_total_weight) );
+	memset( m_rgb_cdf, 0, sizeof(m_rgb_cdf) );
+	memset( m_spectral_terms, 0, sizeof(m_spectral_terms) );
+	memset( m_spectral_total_weight, 0, sizeof(m_spectral_total_weight) );
+
+	// Run the multipole precomputation pipeline
+	PrecomputeProfiles();
 }
 
 BioSpecDiffusionProfile::~BioSpecDiffusionProfile()
@@ -201,13 +234,6 @@ Scalar BioSpecDiffusionProfile::ComputeBeta(
 	return a / c;
 }
 
-Scalar BioSpecDiffusionProfile::ComputeScalingFactor( const Scalar A )
-{
-	// Christensen & Burley 2015 empirical fit
-	const Scalar diff = A - 0.8;
-	return 1.9 - A + 3.5 * diff * diff;
-}
-
 Scalar BioSpecDiffusionProfile::SchlickFresnel(
 	const Scalar cosTheta,
 	const Scalar eta
@@ -220,14 +246,13 @@ Scalar BioSpecDiffusionProfile::SchlickFresnel(
 }
 
 //=============================================================
-// Core: compute effective sigma_a and sigma_s' from BioSpec
+// Per-layer coefficient computation
 //=============================================================
 
-void BioSpecDiffusionProfile::ComputeEffectiveCoefficients(
+void BioSpecDiffusionProfile::ComputePerLayerCoefficients(
 	const Scalar nm,
 	const RayIntersectionGeometric& ri,
-	Scalar& sigma_a_out,
-	Scalar& sigma_sp_out
+	LayerParams layers_out[4]
 	) const
 {
 	// Extract painter values
@@ -236,6 +261,8 @@ void BioSpecDiffusionProfile::ComputeEffectiveCoefficients(
 	const Scalar thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColor( ri )[0];
 	const Scalar thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColor( ri )[0];
 
+	const Scalar ior_SC = pnt_ior_SC.GetColor( ri )[0];
+	const Scalar ior_epidermis = pnt_ior_epidermis.GetColor( ri )[0];
 	const Scalar ior_papillary = pnt_ior_papillary_dermis.GetColor( ri )[0];
 	const Scalar ior_reticular = pnt_ior_reticular_dermis.GetColor( ri )[0];
 
@@ -255,7 +282,7 @@ void BioSpecDiffusionProfile::ComputeEffectiveCoefficients(
 	const Scalar baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
 	//----------------------------------------------------------
-	// Per-layer absorption coefficients (same formulas as BioSpecSkinSPF)
+	// Per-layer absorption coefficients
 	//----------------------------------------------------------
 
 	// Stratum corneum
@@ -286,91 +313,231 @@ void BioSpecDiffusionProfile::ComputeEffectiveCoefficients(
 	// Per-layer reduced scattering coefficients
 	//----------------------------------------------------------
 
-	// SC and epidermis: Mie scattering is dominant.  Use an empirical
-	// approximation: sigma_s' ~ 73.7 * (nm/nm_ref)^(-2.33) cm^-1
-	// (Bashkatov et al. 2005 fit to Mie theory for epidermal tissue)
 	const Scalar sigma_sp_SC = 73.7 * pow( nm / 500.0, -2.33 );
-	const Scalar sigma_sp_epidermis = sigma_sp_SC;  // same tissue type
+	const Scalar sigma_sp_epidermis = sigma_sp_SC;
 
-	// Dermis: Rayleigh scattering from collagen fibers
-	// ComputeBeta gives scattering coefficient; Rayleigh has g~0 so sigma_s' ~ sigma_s
-	const Scalar lambda_cm = nm * 1e-7;  // convert nm to cm
+	const Scalar lambda_cm = nm * 1e-7;
 	const Scalar sigma_sp_papillary = ComputeBeta( lambda_cm, ior_papillary );
 	const Scalar sigma_sp_reticular = ComputeBeta( lambda_cm, ior_reticular );
 
 	//----------------------------------------------------------
-	// Combine into effective coefficients (thickness-weighted average)
+	// Fill LayerParams (top to bottom)
 	//----------------------------------------------------------
 
-	const Scalar total_thickness = thickness_SC + thickness_epidermis
-		+ thickness_papillary_dermis + thickness_reticular_dermis;
+	// Layer 0: Stratum Corneum
+	layers_out[0].sigma_a = sigma_a_SC;
+	layers_out[0].sigma_sp = sigma_sp_SC;
+	layers_out[0].thickness = thickness_SC;
+	layers_out[0].ior = ior_SC;
+	ComputeLayerDerivedParams( layers_out[0] );
 
-	if( total_thickness < 1e-10 )
+	// Layer 1: Epidermis
+	layers_out[1].sigma_a = sigma_a_epidermis;
+	layers_out[1].sigma_sp = sigma_sp_epidermis;
+	layers_out[1].thickness = thickness_epidermis;
+	layers_out[1].ior = ior_epidermis;
+	ComputeLayerDerivedParams( layers_out[1] );
+
+	// Layer 2: Papillary Dermis
+	layers_out[2].sigma_a = sigma_a_papillary;
+	layers_out[2].sigma_sp = sigma_sp_papillary;
+	layers_out[2].thickness = thickness_papillary_dermis;
+	layers_out[2].ior = ior_papillary;
+	ComputeLayerDerivedParams( layers_out[2] );
+
+	// Layer 3: Reticular Dermis
+	layers_out[3].sigma_a = sigma_a_reticular;
+	layers_out[3].sigma_sp = sigma_sp_reticular;
+	layers_out[3].thickness = thickness_reticular_dermis;
+	layers_out[3].ior = ior_reticular;
+	ComputeLayerDerivedParams( layers_out[3] );
+}
+
+//=============================================================
+// Multipole precomputation pipeline
+//=============================================================
+
+void BioSpecDiffusionProfile::PrecomputeProfileAtWavelength(
+	const Scalar nm,
+	const RayIntersectionGeometric& ri,
+	ExponentialTerm terms_out[K_TERMS],
+	Scalar& total_weight_out,
+	Scalar cdf_out[K_TERMS]
+	)
+{
+	// Get per-layer optical properties at this wavelength
+	LayerParams layers[4];
+	ComputePerLayerCoefficients( nm, ri, layers );
+
+	// Hankel frequency grid
+	static const int N_FREQ = 512;
+	static const int N_MULTIPOLE = 20;
+
+	HankelGrid grid;
+	grid.Create( 0.01, 1e5, N_FREQ );
+
+	// Compute composite reflectance in Hankel domain
+	double composite_R[N_FREQ];
+	ComputeCompositeProfileHankel( layers, 4, grid.s, N_FREQ, N_MULTIPOLE, composite_R );
+
+	// Inverse Hankel transform to tabulated Rd(r)
+	static const int N_RADIAL = 256;
+	double r_samples[N_RADIAL];
+	double Rd_samples[N_RADIAL];
+
+	const double r_min = 1e-5;		// cm
+	const double r_max = 5.0;		// cm
+	const double log_r_min = log( r_min );
+	const double log_r_max = log( r_max );
+	const double log_r_step = (log_r_max - log_r_min) / (N_RADIAL - 1);
+
+	for( int i = 0; i < N_RADIAL; i++ )
 	{
-		sigma_a_out = 0;
-		sigma_sp_out = 0;
-		return;
+		r_samples[i] = exp( log_r_min + i * log_r_step );
+		Rd_samples[i] = grid.InverseTransform( composite_R, r_samples[i] );
+
+		// Clamp negative values (numerical noise)
+		if( Rd_samples[i] < 0 ) Rd_samples[i] = 0;
 	}
 
-	const Scalar inv_total = 1.0 / total_thickness;
+	// Determine rate range from per-layer sigma_tr
+	double min_sigma_tr = 1e10;
+	double max_sigma_tr = 0;
+	for( int L = 0; L < 4; L++ )
+	{
+		if( layers[L].sigma_tr > 1e-10 && layers[L].sigma_tr < min_sigma_tr )
+			min_sigma_tr = layers[L].sigma_tr;
+		if( layers[L].sigma_tr > max_sigma_tr )
+			max_sigma_tr = layers[L].sigma_tr;
+	}
 
-	sigma_a_out = (sigma_a_SC * thickness_SC
-		+ sigma_a_epidermis * thickness_epidermis
-		+ sigma_a_papillary * thickness_papillary_dermis
-		+ sigma_a_reticular * thickness_reticular_dermis) * inv_total;
+	// Ensure valid range
+	if( min_sigma_tr > max_sigma_tr || min_sigma_tr < 1e-10 )
+	{
+		min_sigma_tr = 1.0;
+		max_sigma_tr = 100.0;
+	}
 
-	sigma_sp_out = (sigma_sp_SC * thickness_SC
-		+ sigma_sp_epidermis * thickness_epidermis
-		+ sigma_sp_papillary * thickness_papillary_dermis
-		+ sigma_sp_reticular * thickness_reticular_dermis) * inv_total;
+	// Extend range slightly on the high end to capture sharp peaks.
+	// Do NOT extend below min_sigma_tr — the diffusion profile cannot
+	// decay slower than exp(-sigma_tr * r), so slower rates are unphysical
+	// and create excessively large BSSRDF search radii.
+	max_sigma_tr *= 2.0;
+
+	// Place K rates on a geometric grid
+	double rates[K_TERMS];
+	const double log_min_rate = log( min_sigma_tr );
+	const double log_max_rate = log( max_sigma_tr );
+	const double log_rate_step = (K_TERMS > 1) ? (log_max_rate - log_min_rate) / (K_TERMS - 1) : 0;
+
+	for( int k = 0; k < K_TERMS; k++ )
+	{
+		rates[k] = exp( log_min_rate + k * log_rate_step );
+	}
+
+	// Fit sum of exponentials via NNLS
+	FitSumOfExponentials( r_samples, Rd_samples, N_RADIAL, rates, K_TERMS, terms_out );
+
+	// Compute total weight and CDF for mixture sampling
+	total_weight_out = 0;
+	for( int k = 0; k < K_TERMS; k++ )
+	{
+		total_weight_out += terms_out[k].weight;
+	}
+
+	double cumulative = 0;
+	for( int k = 0; k < K_TERMS; k++ )
+	{
+		cumulative += terms_out[k].weight;
+		cdf_out[k] = (total_weight_out > 1e-30) ? (cumulative / total_weight_out) : 0;
+	}
+}
+
+void BioSpecDiffusionProfile::PrecomputeProfiles()
+{
+	// Create a synthetic RayIntersectionGeometric for painter evaluation.
+	// For uniform painters this is arbitrary; the painters return constant values.
+	Ray dummyRay( Point3(0,0,0), Vector3(0,0,1) );
+	RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
+	ri.ptIntersection = Point3(0,0,0);
+	ri.vNormal = Vector3(0,1,0);
+
+	m_min_rate = 1e10;
+
+	// Precompute RGB profiles
+	for( int c = 0; c < NUM_RGB; c++ )
+	{
+		PrecomputeProfileAtWavelength(
+			ms_rgb_wavelengths[c], ri,
+			m_rgb_terms[c], m_rgb_total_weight[c], m_rgb_cdf[c] );
+
+		for( int k = 0; k < K_TERMS; k++ )
+		{
+			if( m_rgb_terms[c][k].weight > 1e-20 && m_rgb_terms[c][k].rate < m_min_rate )
+				m_min_rate = m_rgb_terms[c][k].rate;
+		}
+	}
+
+	// Precompute spectral profiles
+	for( int w = 0; w < NUM_SPECTRAL; w++ )
+	{
+		Scalar dummy_cdf[K_TERMS];
+		PrecomputeProfileAtWavelength(
+			ms_spectral_wavelengths[w], ri,
+			m_spectral_terms[w], m_spectral_total_weight[w], dummy_cdf );
+
+		for( int k = 0; k < K_TERMS; k++ )
+		{
+			if( m_spectral_terms[w][k].weight > 1e-20 && m_spectral_terms[w][k].rate < m_min_rate )
+				m_min_rate = m_spectral_terms[w][k].rate;
+		}
+	}
+
+	// Safety floor
+	if( m_min_rate < 1e-10 ) m_min_rate = 0.1;
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"BioSpecDiffusionProfile: Multipole precomputation complete (min_rate=%.3f cm^-1)",
+		m_min_rate );
+}
+
+//=============================================================
+// Sum-of-exponentials evaluation
+//=============================================================
+
+Scalar BioSpecDiffusionProfile::EvaluateSumOfExp(
+	const ExponentialTerm terms[K_TERMS],
+	const Scalar r
+	)
+{
+	const Scalar rClamped = (r < 1e-10) ? 1e-10 : r;
+	Scalar result = 0;
+
+	for( int k = 0; k < K_TERMS; k++ )
+	{
+		if( terms[k].weight > 1e-30 )
+		{
+			result += terms[k].weight * exp( -terms[k].rate * rClamped );
+		}
+	}
+
+	return result / rClamped;
 }
 
 //=============================================================
 // Profile evaluation
 //=============================================================
 
-/// Evaluates Rd(r) for a single channel given albedo, mfp, and scaling factor.
-static Scalar EvaluateRdChannel(
-	const Scalar r,
-	const Scalar albedo,
-	const Scalar mfp,
-	const Scalar s
-	)
-{
-	if( albedo < 1e-10 || mfp < 1e-10 ) return 0.0;
-
-	const Scalar rClamped = (r < 1e-10) ? 1e-10 : r;
-	const Scalar sr_over_d = s * rClamped / mfp;
-
-	const Scalar term1 = exp( -sr_over_d );
-	const Scalar term2 = exp( -sr_over_d / 3.0 );
-
-	return albedo * s / (8.0 * PI * mfp) * (term1 + term2) / rClamped;
-}
-
 RISEPel BioSpecDiffusionProfile::EvaluateProfile(
 	const Scalar r,
 	const RayIntersectionGeometric& ri
 	) const
 {
-	// Evaluate at three representative wavelengths for RGB:
-	// R ~ 615 nm, G ~ 550 nm, B ~ 465 nm
-	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
-
 	RISEPel result;
-	for( int c = 0; c < 3; c++ )
+	for( int c = 0; c < NUM_RGB; c++ )
 	{
-		Scalar sigma_a, sigma_sp;
-		ComputeEffectiveCoefficients( rgb_wavelengths[c], ri, sigma_a, sigma_sp );
-
-		const Scalar st_prime = sigma_sp + sigma_a;
-		const Scalar albedo = st_prime > 1e-10 ? sigma_sp / st_prime : 0.0;
-		const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
-		const Scalar s = ComputeScalingFactor( albedo );
-
-		result[c] = EvaluateRdChannel( r, albedo, mfp, s );
+		result[c] = EvaluateSumOfExp( m_rgb_terms[c], r );
 	}
-
 	return result;
 }
 
@@ -380,19 +547,33 @@ Scalar BioSpecDiffusionProfile::EvaluateProfileNM(
 	const Scalar nm
 	) const
 {
-	Scalar sigma_a, sigma_sp;
-	ComputeEffectiveCoefficients( nm, ri, sigma_a, sigma_sp );
+	// Find bracketing wavelengths and interpolate
+	if( nm <= ms_spectral_wavelengths[0] )
+		return EvaluateSumOfExp( m_spectral_terms[0], r );
 
-	const Scalar st_prime = sigma_sp + sigma_a;
-	const Scalar albedo = st_prime > 1e-10 ? sigma_sp / st_prime : 0.0;
-	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
-	const Scalar s = ComputeScalingFactor( albedo );
+	if( nm >= ms_spectral_wavelengths[NUM_SPECTRAL - 1] )
+		return EvaluateSumOfExp( m_spectral_terms[NUM_SPECTRAL - 1], r );
 
-	return EvaluateRdChannel( r, albedo, mfp, s );
+	// Linear search (31 entries — fast enough)
+	for( int w = 0; w < NUM_SPECTRAL - 1; w++ )
+	{
+		if( nm >= ms_spectral_wavelengths[w] && nm < ms_spectral_wavelengths[w + 1] )
+		{
+			const Scalar t = (nm - ms_spectral_wavelengths[w]) /
+				(ms_spectral_wavelengths[w + 1] - ms_spectral_wavelengths[w]);
+
+			const Scalar Rd_lo = EvaluateSumOfExp( m_spectral_terms[w], r );
+			const Scalar Rd_hi = EvaluateSumOfExp( m_spectral_terms[w + 1], r );
+
+			return Rd_lo * (1.0 - t) + Rd_hi * t;
+		}
+	}
+
+	return EvaluateSumOfExp( m_spectral_terms[NUM_SPECTRAL / 2], r );
 }
 
 //=============================================================
-// Importance sampling
+// Importance sampling (K-term mixture)
 //=============================================================
 
 Scalar BioSpecDiffusionProfile::SampleRadius(
@@ -401,31 +582,31 @@ Scalar BioSpecDiffusionProfile::SampleRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
+	const ExponentialTerm* terms = m_rgb_terms[channel];
+	const Scalar* cdf = m_rgb_cdf[channel];
+	const Scalar totalW = m_rgb_total_weight[channel];
 
-	Scalar sigma_a, sigma_sp;
-	ComputeEffectiveCoefficients( rgb_wavelengths[channel], ri, sigma_a, sigma_sp );
+	if( totalW < 1e-30 ) return 0.0;
 
-	const Scalar st_prime = sigma_sp + sigma_a;
-	const Scalar albedo = st_prime > 1e-10 ? sigma_sp / st_prime : 0.0;
-	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
-	const Scalar s = ComputeScalingFactor( albedo );
-
-	if( mfp < 1e-10 || s < 1e-10 ) return 0.0;
-
-	// 50/50 mixture of two exponentials (same as BurleyNormalizedDiffusionProfile)
-	if( u < 0.5 )
+	// Select which exponential term to sample from via the CDF
+	int k = 0;
+	for( k = 0; k < K_TERMS - 1; k++ )
 	{
-		const Scalar u_remapped = 2.0 * u;
-		const Scalar one_minus_u = (u_remapped > 0.999999) ? 1e-6 : (1.0 - u_remapped);
-		return -mfp / s * log( one_minus_u );
+		if( u < cdf[k] ) break;
 	}
-	else
-	{
-		const Scalar u_remapped = 2.0 * (u - 0.5);
-		const Scalar one_minus_u = (u_remapped > 0.999999) ? 1e-6 : (1.0 - u_remapped);
-		return -3.0 * mfp / s * log( one_minus_u );
-	}
+
+	// Remap u into [0,1) within the selected term
+	const Scalar cdf_lo = (k > 0) ? cdf[k - 1] : 0.0;
+	const Scalar cdf_hi = cdf[k];
+	const Scalar u_remapped = (cdf_hi > cdf_lo + 1e-30) ?
+		(u - cdf_lo) / (cdf_hi - cdf_lo) : 0.0;
+
+	// Invert exponential CDF: r = -log(1-u) / rate
+	const Scalar rate = terms[k].rate;
+	if( rate < 1e-30 ) return 0.0;
+
+	const Scalar one_minus_u = (u_remapped > 0.999999) ? 1e-6 : (1.0 - u_remapped);
+	return -log( one_minus_u ) / rate;
 }
 
 Scalar BioSpecDiffusionProfile::PdfRadius(
@@ -434,23 +615,22 @@ Scalar BioSpecDiffusionProfile::PdfRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
+	const ExponentialTerm* terms = m_rgb_terms[channel];
+	const Scalar totalW = m_rgb_total_weight[channel];
 
-	Scalar sigma_a, sigma_sp;
-	ComputeEffectiveCoefficients( rgb_wavelengths[channel], ri, sigma_a, sigma_sp );
+	if( totalW < 1e-30 ) return 0.0;
 
-	const Scalar st_prime = sigma_sp + sigma_a;
-	const Scalar albedo = st_prime > 1e-10 ? sigma_sp / st_prime : 0.0;
-	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
-	const Scalar s = ComputeScalingFactor( albedo );
+	// Mixture PDF: sum_k (w_k/W) * rate_k * exp(-rate_k * r)
+	Scalar pdf = 0;
+	for( int k = 0; k < K_TERMS; k++ )
+	{
+		if( terms[k].weight > 1e-30 )
+		{
+			pdf += (terms[k].weight / totalW) * terms[k].rate * exp( -terms[k].rate * r );
+		}
+	}
 
-	if( mfp < 1e-10 || s < 1e-10 ) return 0.0;
-
-	const Scalar lambda1 = s / mfp;
-	const Scalar lambda2 = s / (3.0 * mfp);
-
-	return 0.5 * lambda1 * exp( -lambda1 * r )
-	     + 0.5 * lambda2 * exp( -lambda2 * r );
+	return pdf;
 }
 
 //=============================================================
@@ -483,7 +663,8 @@ Scalar BioSpecDiffusionProfile::GetMaximumDistanceForError(
 	) const
 {
 	if( error <= 0 ) return RISE_INFINITY;
-	return -log(error) * 10.0;
+	// Use the slowest-decaying exponential term
+	return -log(error) / m_min_rate;
 }
 
 RISEPel BioSpecDiffusionProfile::ComputeTotalExtinction(

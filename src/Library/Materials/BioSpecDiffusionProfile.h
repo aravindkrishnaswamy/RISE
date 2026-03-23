@@ -3,16 +3,17 @@
 //  BioSpecDiffusionProfile.h - A BSSRDF diffusion profile driven
 //  by BioSpec's biophysical skin parameters.
 //
-//  Computes per-layer absorption coefficients from BioSpec's
-//  chromophore formulas (melanin, hemoglobin, bilirubin,
-//  beta-carotene, baseline) and combines them with Rayleigh
-//  scattering coefficients to produce effective (sigma_a, sigma_s')
-//  for the full skin stack.  These feed into a Burley normalized
-//  diffusion profile for Rd(r) evaluation and importance sampling.
+//  Uses per-layer multipole diffusion (Donner & Jensen 2005) to
+//  compute a composite Rd(r) profile for the 4-layer skin stack.
+//  The layers are composited in the Hankel (spatial frequency)
+//  domain, then the result is fit to a sum of K exponentials for
+//  efficient importance sampling.
 //
 //  The profile supports both RGB and spectral (NM) evaluation.
 //
 //  References:
+//    Donner & Jensen 2005 — Light Diffusion in Multi-Layered
+//      Translucent Materials
 //    Christensen & Burley 2015 — Approximate Reflectance Profiles
 //    Krishnaswamy & Baranoski 2004 — BioSpec skin model
 //
@@ -31,6 +32,8 @@
 #include "../Interfaces/IPainter.h"
 #include "../Interfaces/IFunction1D.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/SumOfExponentialsFit.h"
+#include "MultipoleDiffusion.h"
 
 namespace RISE
 {
@@ -75,6 +78,28 @@ namespace RISE
 
 			Scalar				hb_concentration;		///< Hemoglobin concentration in whole blood (g/L)
 
+			//=============================================================
+			// Precomputed multipole diffusion profile data
+			//=============================================================
+
+			static const int K_TERMS = 6;				///< Number of exponential terms per wavelength
+			static const int NUM_RGB = 3;				///< RGB channels
+			static const int NUM_SPECTRAL = 31;			///< 400-700 nm at 10 nm spacing
+
+			/// Per-wavelength sum-of-exponentials fit for RGB mode (3 wavelengths)
+			ExponentialTerm		m_rgb_terms[NUM_RGB][K_TERMS];
+			Scalar				m_rgb_total_weight[NUM_RGB];		///< Sum of weights per channel (for PDF normalization)
+			Scalar				m_rgb_cdf[NUM_RGB][K_TERMS];		///< CDF for mixture sampling
+
+			/// Per-wavelength sum-of-exponentials fit for spectral mode (31 wavelengths)
+			ExponentialTerm		m_spectral_terms[NUM_SPECTRAL][K_TERMS];
+			Scalar				m_spectral_total_weight[NUM_SPECTRAL];
+
+			static const Scalar	ms_rgb_wavelengths[NUM_RGB];
+			static const Scalar	ms_spectral_wavelengths[NUM_SPECTRAL];
+
+			Scalar				m_min_rate;				///< Minimum rate across all terms (for GetMaximumDistanceForError)
+
 			virtual ~BioSpecDiffusionProfile();
 
 			//=============================================================
@@ -83,17 +108,34 @@ namespace RISE
 
 			static Scalar ComputeSkinBaselineAbsorptionCoefficient( const Scalar nm );
 			static Scalar ComputeBeta( const Scalar lambda, const Scalar ior_medium );
-			static Scalar ComputeScalingFactor( const Scalar A );
 			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
-			/// Compute effective sigma_a and sigma_s' for the full skin stack
-			/// at a given wavelength, using BioSpec biophysical parameters.
-			void ComputeEffectiveCoefficients(
+			/// Compute per-layer optical properties at a given wavelength.
+			/// Fills 4 LayerParams (SC, epidermis, papillary dermis, reticular dermis).
+			void ComputePerLayerCoefficients(
 				const Scalar nm,
 				const RayIntersectionGeometric& ri,
-				Scalar& sigma_a_out,
-				Scalar& sigma_sp_out
+				LayerParams layers_out[4]
 				) const;
+
+			/// Precompute multipole profiles for all wavelengths.
+			/// Called once from the constructor after LUT setup.
+			void PrecomputeProfiles();
+
+			/// Run the multipole pipeline for a single wavelength.
+			void PrecomputeProfileAtWavelength(
+				const Scalar nm,
+				const RayIntersectionGeometric& ri,
+				ExponentialTerm terms_out[K_TERMS],
+				Scalar& total_weight_out,
+				Scalar cdf_out[K_TERMS]
+				);
+
+			/// Evaluate the K-term sum-of-exponentials at radius r.
+			static Scalar EvaluateSumOfExp(
+				const ExponentialTerm terms[K_TERMS],
+				const Scalar r
+				);
 
 		public:
 			BioSpecDiffusionProfile(
