@@ -57,6 +57,7 @@ namespace RISE
 			const Scalar		g;			// HG asymmetry parameter (kept for parameter storage)
 			const Scalar		roughness;	// Surface roughness for microfacet boundary [0, 1]
 			const Scalar		alpha;		// GGX alpha = roughness^2
+			const bool			bAbsorbBackFace;	// If true, back-face hits are absorbed (no scattering)
 
 		public:
 			SubSurfaceScatteringSPF(
@@ -64,7 +65,8 @@ namespace RISE
 				const IPainter& absorption_,
 				const IPainter& scattering_,
 				const Scalar g_,
-				const Scalar roughness_
+				const Scalar roughness_,
+				const bool bAbsorbBackFace_ = false
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

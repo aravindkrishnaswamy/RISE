@@ -539,6 +539,33 @@ namespace RISE
 			const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 			);
 
+		//! Adds a BioSpec skin BSSRDF material (BDPT-compatible)
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddBioSpecSkinBSSRDFMaterial(
+			const char* name,
+			const char* thickness_SC_,
+			const char* thickness_epidermis_,
+			const char* thickness_papillary_dermis_,
+			const char* thickness_reticular_dermis_,
+			const char* ior_SC_,
+			const char* ior_epidermis_,
+			const char* ior_papillary_dermis_,
+			const char* ior_reticular_dermis_,
+			const char* concentration_eumelanin_,
+			const char* concentration_pheomelanin_,
+			const char* melanosomes_in_epidermis_,
+			const char* hb_ratio_,
+			const char* whole_blood_in_papillary_dermis_,
+			const char* whole_blood_in_reticular_dermis_,
+			const char* bilirubin_concentration_,
+			const char* betacarotene_concentration_SC_,
+			const char* betacarotene_concentration_epidermis_,
+			const char* betacarotene_concentration_dermis_,
+			const char* folds_aspect_ratio_,
+			const bool bSubdermalLayer,
+			const char* roughness
+			);
+
 		//! Adds a generic human tissue material based on BioSpec
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddGenericHumanTissueMaterial(

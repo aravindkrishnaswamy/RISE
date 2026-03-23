@@ -1473,6 +1473,122 @@ bool Job::AddBioSpecSkinMaterial(
 	return true;
 }
 
+//! Adds a BioSpec skin BSSRDF material (BDPT-compatible)
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddBioSpecSkinBSSRDFMaterial(
+	const char* name,
+	const char* thickness_SC_,
+	const char* thickness_epidermis_,
+	const char* thickness_papillary_dermis_,
+	const char* thickness_reticular_dermis_,
+	const char* ior_SC_,
+	const char* ior_epidermis_,
+	const char* ior_papillary_dermis_,
+	const char* ior_reticular_dermis_,
+	const char* concentration_eumelanin_,
+	const char* concentration_pheomelanin_,
+	const char* melanosomes_in_epidermis_,
+	const char* hb_ratio_,
+	const char* whole_blood_in_papillary_dermis_,
+	const char* whole_blood_in_reticular_dermis_,
+	const char* bilirubin_concentration_,
+	const char* betacarotene_concentration_SC_,
+	const char* betacarotene_concentration_epidermis_,
+	const char* betacarotene_concentration_dermis_,
+	const char* folds_aspect_ratio_,
+	const bool bSubdermalLayer,
+	const char* roughness
+	)
+{
+
+	IPainter* pnt_thickness_SC_ = pPntManager->GetItem( thickness_SC_ );
+	IPainter* pnt_thickness_epidermis_ = pPntManager->GetItem( thickness_epidermis_ );
+	IPainter* pnt_thickness_papillary_dermis_ = pPntManager->GetItem( thickness_papillary_dermis_ );
+	IPainter* pnt_thickness_reticular_dermis_ = pPntManager->GetItem( thickness_reticular_dermis_ );
+	IPainter* pnt_ior_SC_ = pPntManager->GetItem( ior_SC_ );
+	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
+	IPainter* pnt_ior_papillary_dermis_ = pPntManager->GetItem( ior_papillary_dermis_ );
+	IPainter* pnt_ior_reticular_dermis_ = pPntManager->GetItem( ior_reticular_dermis_ );
+	IPainter* pnt_concentration_eumelanin_ = pPntManager->GetItem( concentration_eumelanin_ );
+	IPainter* pnt_concentration_pheomelanin_ = pPntManager->GetItem( concentration_pheomelanin_ );
+	IPainter* pnt_melanosomes_in_epidermis_ = pPntManager->GetItem( melanosomes_in_epidermis_ );
+	IPainter* pnt_hb_ratio_ = pPntManager->GetItem( hb_ratio_ );
+	IPainter* pnt_whole_blood_in_papillary_dermis_ = pPntManager->GetItem( whole_blood_in_papillary_dermis_ );
+	IPainter* pnt_whole_blood_in_reticular_dermis_ = pPntManager->GetItem( whole_blood_in_reticular_dermis_ );
+	IPainter* pnt_bilirubin_concentration_ = pPntManager->GetItem( bilirubin_concentration_ );
+	IPainter* pnt_betacarotene_concentration_SC_ = pPntManager->GetItem( betacarotene_concentration_SC_ );
+	IPainter* pnt_betacarotene_concentration_epidermis_ = pPntManager->GetItem( betacarotene_concentration_epidermis_ );
+	IPainter* pnt_betacarotene_concentration_dermis_ = pPntManager->GetItem( betacarotene_concentration_dermis_ );
+	IPainter* pnt_folds_aspect_ratio_ = pPntManager->GetItem( folds_aspect_ratio_ );
+
+	{
+#define CHECK_FOR_VALUE( x )\
+		{\
+			if( !pnt_##x ) {\
+				double d = atof( x );\
+				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
+			} else {\
+				pnt_##x->addref();\
+			}\
+		}
+
+	CHECK_FOR_VALUE(thickness_SC_);
+	CHECK_FOR_VALUE(thickness_epidermis_);
+	CHECK_FOR_VALUE(thickness_papillary_dermis_);
+	CHECK_FOR_VALUE(thickness_reticular_dermis_);
+	CHECK_FOR_VALUE(ior_SC_);
+	CHECK_FOR_VALUE(ior_epidermis_);
+	CHECK_FOR_VALUE(ior_papillary_dermis_);
+	CHECK_FOR_VALUE(ior_reticular_dermis_);
+	CHECK_FOR_VALUE(concentration_eumelanin_);
+	CHECK_FOR_VALUE(concentration_pheomelanin_);
+	CHECK_FOR_VALUE(melanosomes_in_epidermis_);
+	CHECK_FOR_VALUE(hb_ratio_);
+	CHECK_FOR_VALUE(whole_blood_in_papillary_dermis_);
+	CHECK_FOR_VALUE(whole_blood_in_reticular_dermis_);
+	CHECK_FOR_VALUE(bilirubin_concentration_);
+	CHECK_FOR_VALUE(betacarotene_concentration_SC_);
+	CHECK_FOR_VALUE(betacarotene_concentration_epidermis_);
+	CHECK_FOR_VALUE(betacarotene_concentration_dermis_);
+	CHECK_FOR_VALUE(folds_aspect_ratio_);
+
+#undef CHECK_FOR_VALUE
+	}
+
+	const double roughnessVal = atof( roughness );
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateBioSpecSkinBSSRDFMaterial( &pMaterial,
+		*pnt_thickness_SC_,
+		*pnt_thickness_epidermis_,
+		*pnt_thickness_papillary_dermis_,
+		*pnt_thickness_reticular_dermis_,
+		*pnt_ior_SC_,
+		*pnt_ior_epidermis_,
+		*pnt_ior_papillary_dermis_,
+		*pnt_ior_reticular_dermis_,
+		*pnt_concentration_eumelanin_,
+		*pnt_concentration_pheomelanin_,
+		*pnt_melanosomes_in_epidermis_,
+		*pnt_hb_ratio_,
+		*pnt_whole_blood_in_papillary_dermis_,
+		*pnt_whole_blood_in_reticular_dermis_,
+		*pnt_bilirubin_concentration_,
+		*pnt_betacarotene_concentration_SC_,
+		*pnt_betacarotene_concentration_epidermis_,
+		*pnt_betacarotene_concentration_dermis_,
+		*pnt_folds_aspect_ratio_,
+		bSubdermalLayer,
+		roughnessVal
+		);
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+
+	return true;
+}
+
 //! Adds a generic human tissue material based on BioSpec
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddGenericHumanTissueMaterial(

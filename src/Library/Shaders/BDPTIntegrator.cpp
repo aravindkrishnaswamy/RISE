@@ -150,8 +150,9 @@ RISEPel BDPTIntegrator::EvalBSDFAtVertex(
 	if( vertex.isBSSRDFEntry ) {
 		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
 		if( pProfile ) {
-			// wi is the direction into the surface (from outside)
-			const Scalar cosTheta = fabs( Vector3Ops::Dot( wi, vertex.normal ) );
+			// wi is the direction into the surface (from outside).
+			// No fabs: back-face connections (cosTheta < 0) return zero.
+			const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
 			if( cosTheta <= NEARZERO ) {
 				return RISEPel( 0, 0, 0 );
 			}
@@ -456,7 +457,9 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	};
 	std::vector<ProbeHit> hits;
 	hits.reserve( 8 );
-	const Scalar probeMaxDist = 1000.0;
+	// Limit probe distance to the profile's effective range — hits
+	// beyond this contribute negligible energy and may cross voids.
+	const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
 	const int maxProbeHits = 64;  // safety cap
 
 	// Trace all intersections along +axis and -axis
@@ -513,6 +516,14 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	const Vector3 offset = Vector3Ops::mkVector3( exitPoint, entryPoint );
 	const Scalar rActual = Vector3Ops::Magnitude( offset );
 	if( rActual < BDPT_RAY_EPSILON ) {
+		return result;
+	}
+
+	// Skip entry points beyond the profile's effective range.
+	// This prevents probe rays from finding distant entry points
+	// across voids (e.g., mouth cavity between lips).
+	const Scalar maxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
+	if( rActual > maxDist ) {
 		return result;
 	}
 
@@ -842,8 +853,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			// No fabs: back-face hits (cosIn < 0) skip BSSRDF,
+			// preventing artifacts on thin geometry (lips, eyelids).
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
@@ -1138,8 +1151,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
@@ -2290,7 +2303,8 @@ Scalar BDPTIntegrator::EvalBSDFAtVertexNM(
 	if( vertex.isBSSRDFEntry ) {
 		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
 		if( pProfile ) {
-			const Scalar cosTheta = fabs( Vector3Ops::Dot( wi, vertex.normal ) );
+			// No fabs: back-face connections (cosTheta < 0) return zero.
+			const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
 			if( cosTheta <= NEARZERO ) {
 				return 0;
 			}
@@ -2583,48 +2597,48 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-				const Scalar R = 1.0 - Ft;
+			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+			const Scalar R = 1.0 - Ft;
 
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+
+				if( bssrdf.valid )
 				{
-					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+					vertices.back().isDelta = true;
+					betaNM = betaNM * bssrdf.weightNM / Ft;
 
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-						betaNM = betaNM * bssrdf.weightNM / Ft;
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = false;
+					entryV.isConnectible = true;
+					entryV.isBSSRDFEntry = true;
+					entryV.throughputNM = betaNM;
+					entryV.pdfFwd = bssrdf.pdfSurface;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
 
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.isDelta = false;
-						entryV.isConnectible = true;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughputNM = betaNM;
-						entryV.pdfFwd = bssrdf.pdfSurface;
-						entryV.pdfRev = 0;
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
 				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
+				break;
+			}
+			if( R > NEARZERO ) {
+				bssrdfReflectCompensation = 1.0 / R;
+			}
 			}
 		}
 		// --- End BSSRDF sampling ---
@@ -2828,48 +2842,48 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-				const Scalar R = 1.0 - Ft;
+			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+			const Scalar R = 1.0 - Ft;
 
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+
+				if( bssrdf.valid )
 				{
-					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+					vertices.back().isDelta = true;
+					betaNM = betaNM * bssrdf.weightNM / Ft;
 
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-						betaNM = betaNM * bssrdf.weightNM / Ft;
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = false;
+					entryV.isConnectible = true;
+					entryV.isBSSRDFEntry = true;
+					entryV.throughputNM = betaNM;
+					entryV.pdfFwd = bssrdf.pdfSurface;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
 
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.isDelta = false;
-						entryV.isConnectible = true;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughputNM = betaNM;
-						entryV.pdfFwd = bssrdf.pdfSurface;
-						entryV.pdfRev = 0;
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
 				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
+				break;
+			}
+			if( R > NEARZERO ) {
+				bssrdfReflectCompensation = 1.0 / R;
+			}
 			}
 		}
 		// --- End BSSRDF sampling ---
