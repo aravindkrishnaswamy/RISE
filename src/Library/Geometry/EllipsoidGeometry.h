@@ -27,6 +27,13 @@ namespace RISE
 			Matrix4			Q;					// Matrix representation of ellipsoid
 			Scalar			m_OVmaxRadius;		// Inverse of max radius (for fast spherical UV)
 
+			// Marginal theta CDF for area-uniform sampling on the ellipsoid surface.
+			// The naive (costheta = 1-2u) mapping is only uniform on a sphere;
+			// for an ellipsoid we precompute a CDF that warps theta to account
+			// for the varying area element.
+			static const unsigned int THETA_CDF_SIZE = 256;
+			Scalar			m_thetaCDF[THETA_CDF_SIZE + 1];
+
 			virtual ~EllipsoidGeometry( );
 
 		public:

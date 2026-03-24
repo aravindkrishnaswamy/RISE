@@ -100,15 +100,40 @@ BoundingBox EllipsoidGeometry::GenerateBoundingBox() const
 
 void EllipsoidGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	Point3 pt = GeometricUtilities::PointOnEllipsoid( Point3(0,0,0), m_vRadius, Point2( prand.x, prand.y ) );
+	// Semi-axes (m_vRadius stores diameters, Q uses half of those)
+	const Scalar a = m_vRadius.x * 0.5;
+	const Scalar b = m_vRadius.y * 0.5;
+	const Scalar c = m_vRadius.z * 0.5;
+
+	// Use the precomputed marginal CDF to sample theta with area-uniform distribution.
+	// Binary search for the CDF bin containing prand.x.
+	const Scalar* it = std::lower_bound( m_thetaCDF + 1, m_thetaCDF + THETA_CDF_SIZE + 1, prand.x );
+	int idx = int(it - m_thetaCDF) - 1;
+	if( idx < 0 ) idx = 0;
+	if( idx >= (int)THETA_CDF_SIZE ) idx = THETA_CDF_SIZE - 1;
+
+	// Linearly interpolate within the bin to get theta
+	const Scalar binWidth = m_thetaCDF[idx + 1] - m_thetaCDF[idx];
+	const Scalar t = (binWidth > 0.0) ? (prand.x - m_thetaCDF[idx]) / binWidth : 0.5;
+	const Scalar theta = PI * (idx + t) / Scalar(THETA_CDF_SIZE);
+
+	const Scalar sinTheta = sin(theta);
+	const Scalar cosTheta = cos(theta);
+	const Scalar phi = TWO_PI * prand.y;
+
+	// Point on the ellipsoid surface using the correct semi-axes
+	const Point3 pt( a * sinTheta * cos(phi),
+					  b * sinTheta * sin(phi),
+					  c * cosTheta );
 
 	if( point ) {
 		*point = pt;
 	}
 
 	if( normal ) {
+		// Gradient of the implicit form x^2/a^2 + y^2/b^2 + z^2/c^2 = 1
 		*normal = Vector3Ops::Normalize(
-					Vector3(	Q._00*pt.x, 
+					Vector3(	Q._00*pt.x,
 								Q._11*pt.y,
 								Q._22*pt.z )
 					);
@@ -177,5 +202,55 @@ void EllipsoidGeometry::RegenerateData( )
 	Q._33 = -1.0;
 
 	m_OVmaxRadius = 1.0 / (r_max( r_max(m_vRadius.x, m_vRadius.y), m_vRadius.z ));
+
+	// Build marginal CDF for theta to enable area-uniform sampling.
+	// For the parametric ellipsoid r(theta,phi) = (a*sinT*cosP, b*sinT*sinP, c*cosT),
+	// the area element is:
+	//   dA = sinT * sqrt(b^2*c^2*sin^2T*cos^2P + a^2*c^2*sin^2T*sin^2P + a^2*b^2*cos^2T) dT dP
+	// We numerically integrate over phi to get the marginal M(theta), then build the CDF.
+	const Scalar a = m_vRadius.x * 0.5;
+	const Scalar b = m_vRadius.y * 0.5;
+	const Scalar c = m_vRadius.z * 0.5;
+
+	const Scalar a2 = a*a, b2 = b*b, c2 = c*c;
+
+	m_thetaCDF[0] = 0.0;
+	static const unsigned int PHI_STEPS = 64;
+
+	for( unsigned int i = 0; i < THETA_CDF_SIZE; i++ )
+	{
+		const Scalar theta = PI * (i + 0.5) / Scalar(THETA_CDF_SIZE);
+		const Scalar sinT = sin(theta);
+		const Scalar cosT = cos(theta);
+		const Scalar sin2T = sinT * sinT;
+		const Scalar cos2T = cosT * cosT;
+
+		// Numerically integrate the area element magnitude over phi
+		Scalar phiSum = 0.0;
+		for( unsigned int j = 0; j < PHI_STEPS; j++ )
+		{
+			const Scalar phi = TWO_PI * (j + 0.5) / Scalar(PHI_STEPS);
+			const Scalar cosP = cos(phi);
+			const Scalar sinP = sin(phi);
+
+			phiSum += sqrt(
+				b2*c2*sin2T*cosP*cosP +
+				a2*c2*sin2T*sinP*sinP +
+				a2*b2*cos2T
+			);
+		}
+
+		// Strip area = sinT * (avg over phi) * 2pi * dTheta
+		m_thetaCDF[i+1] = m_thetaCDF[i] +
+			sinT * (phiSum / Scalar(PHI_STEPS)) * TWO_PI * (PI / Scalar(THETA_CDF_SIZE));
+	}
+
+	// Normalize CDF to [0,1]
+	const Scalar totalCDF = m_thetaCDF[THETA_CDF_SIZE];
+	if( totalCDF > 0.0 ) {
+		for( unsigned int i = 1; i <= THETA_CDF_SIZE; i++ ) {
+			m_thetaCDF[i] /= totalCDF;
+		}
+	}
 }
 

@@ -37,13 +37,14 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			278 350 -600
-	lookat				278 60 300
+	location			278 500 -600
+	lookat				278 200 300
 	up					0 1 0
-	width				256
-	height				256
+	width				400
+	height				400
 	fov					40.0
 }
+
 
 > run scenes/colors.RISEscript
 

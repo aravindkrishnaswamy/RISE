@@ -23,9 +23,9 @@ bdpt_pel_rasterizer
 {
 	max_recursion		10
 	min_importance		0.001
-	max_eye_depth		4
-	max_light_depth		3
-	samples				64
+	max_eye_depth		5
+	max_light_depth		5
+	samples				200
 	lum_samples			1
 	ior_stack			TRUE
 }

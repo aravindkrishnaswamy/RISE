@@ -33,10 +33,10 @@ standard_shader
 bdpt_pel_rasterizer
 {
 	max_recursion		14
-	min_importance		0.0003
+	min_importance		0.003
 	max_eye_depth		14
-	max_light_depth		10
-	samples				1000
+	max_light_depth		12
+	samples				5000
 	lum_samples			1
 	ior_stack			TRUE
 }
@@ -55,12 +55,12 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 5.5 14.0
-	lookat				0 3.0 4.0
+	location			0 5.5 19.0
+	lookat				0 3.5 4.0
 	up					0 1 0
-	width				256
-	height				192
-	fov					55.0
+	width				300
+	height				300
+	fov					50.0
 }
 
 ##################################################
@@ -97,13 +97,13 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_warm_light
-	color				1.0 0.85 0.75
+	color				1.0 0.75 0.65
 }
 
 uniformcolor_painter
 {
 	name				pnt_cool_light
-	color				0.75 0.85 1.0
+	color				0.65 0.75 1.0
 }
 
 uniformcolor_painter
@@ -160,7 +160,7 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				1000.0
+	scale				200.0
 	material			none
 }
 
@@ -168,7 +168,7 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				1000.0
+	scale				200.0
 	material			none
 }
 
@@ -176,7 +176,7 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				10000.0
+	scale				2000.0
 	material			none
 }
 
