@@ -1346,6 +1346,10 @@
 		F2C5D5E62F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */; };
 		F2C5D5E72F716C5000546C97 /* BDPTPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5E42F716C5000546C97 /* BDPTPelRasterizer.h */; };
 		F2C5D5E82F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */; };
+		F2C5D5EC2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */; };
+		F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */; };
+		F2C5D5EE2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */; };
+		F2C5D5EF2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2046,6 +2050,9 @@
 		F2C5D5DD2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BDPTSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F2C5D5E42F716C5000546C97 /* BDPTPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTPelRasterizer.h; sourceTree = "<group>"; };
 		F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BDPTPelRasterizer.cpp; sourceTree = "<group>"; };
+		F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinBSSRDFMaterial.h; sourceTree = "<group>"; };
+		F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinDiffusionProfile.h; sourceTree = "<group>"; };
+		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2468,6 +2475,9 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */,
+				F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */,
+				F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */,
 				F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */,
 				F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */,
 				F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */,
@@ -3318,6 +3328,8 @@
 				F27F0BED069C42910069C9E5 /* RGBEAWriter.h in Headers */,
 				F27F0BEF069C42910069C9E5 /* TGAReader.h in Headers */,
 				F27F0BF1069C42910069C9E5 /* TGAWriter.h in Headers */,
+				F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */,
+				F2C5D5EE2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h in Headers */,
 				F27F0BF2069C42910069C9E5 /* TIFFCommon.h in Headers */,
 				F27F0BF4069C42910069C9E5 /* TIFFReader.h in Headers */,
 				F27F0BF6069C42910069C9E5 /* TIFFWriter.h in Headers */,
@@ -3742,6 +3754,7 @@
 				F27F0C21069C42910069C9E5 /* PoissonDiskSampling2D.cpp in Sources */,
 				F27F0C24069C42910069C9E5 /* RandomSampling2D.cpp in Sources */,
 				F27F0C28069C42910069C9E5 /* SincPixelFilter.cpp in Sources */,
+				F2C5D5EC2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */,
 				F27F0C2A069C42910069C9E5 /* StratifiedSampling2D.cpp in Sources */,
 				F27F0C2D069C42910069C9E5 /* UniformSampling1D.cpp in Sources */,
 				F27F0C2F069C42910069C9E5 /* UniformSampling2D.cpp in Sources */,
@@ -4069,6 +4082,7 @@
 				F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */,
 				F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */,
 				F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */,
+				F2C5D5EF2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */,
 				F24B72D72F52A632008304C4 /* GenericHumanTissueMaterial.h in Sources */,
 				F24B72D82F52A632008304C4 /* GenericHumanTissueSPF.cpp in Sources */,
 				F24B72D92F52A632008304C4 /* GenericHumanTissueSPF.h in Sources */,

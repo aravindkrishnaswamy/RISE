@@ -1589,6 +1589,77 @@ bool Job::AddBioSpecSkinBSSRDFMaterial(
 	return true;
 }
 
+bool Job::AddDonnerJensenSkinBSSRDFMaterial(
+	const char* name,
+	const char* melanin_fraction_,
+	const char* melanin_blend_,
+	const char* hemoglobin_epidermis_,
+	const char* carotene_fraction_,
+	const char* hemoglobin_dermis_,
+	const char* epidermis_thickness_,
+	const char* ior_epidermis_,
+	const char* ior_dermis_,
+	const char* blood_oxygenation_,
+	const char* roughness
+	)
+{
+	IPainter* pnt_melanin_fraction_ = pPntManager->GetItem( melanin_fraction_ );
+	IPainter* pnt_melanin_blend_ = pPntManager->GetItem( melanin_blend_ );
+	IPainter* pnt_hemoglobin_epidermis_ = pPntManager->GetItem( hemoglobin_epidermis_ );
+	IPainter* pnt_carotene_fraction_ = pPntManager->GetItem( carotene_fraction_ );
+	IPainter* pnt_hemoglobin_dermis_ = pPntManager->GetItem( hemoglobin_dermis_ );
+	IPainter* pnt_epidermis_thickness_ = pPntManager->GetItem( epidermis_thickness_ );
+	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
+	IPainter* pnt_ior_dermis_ = pPntManager->GetItem( ior_dermis_ );
+	IPainter* pnt_blood_oxygenation_ = pPntManager->GetItem( blood_oxygenation_ );
+
+	{
+#define CHECK_FOR_VALUE( x )\
+		{\
+			if( !pnt_##x ) {\
+				double d = atof( x );\
+				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
+			} else {\
+				pnt_##x->addref();\
+			}\
+		}
+
+	CHECK_FOR_VALUE(melanin_fraction_);
+	CHECK_FOR_VALUE(melanin_blend_);
+	CHECK_FOR_VALUE(hemoglobin_epidermis_);
+	CHECK_FOR_VALUE(carotene_fraction_);
+	CHECK_FOR_VALUE(hemoglobin_dermis_);
+	CHECK_FOR_VALUE(epidermis_thickness_);
+	CHECK_FOR_VALUE(ior_epidermis_);
+	CHECK_FOR_VALUE(ior_dermis_);
+	CHECK_FOR_VALUE(blood_oxygenation_);
+
+#undef CHECK_FOR_VALUE
+	}
+
+	const double roughnessVal = atof( roughness );
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateDonnerJensenSkinBSSRDFMaterial( &pMaterial,
+		*pnt_melanin_fraction_,
+		*pnt_melanin_blend_,
+		*pnt_hemoglobin_epidermis_,
+		*pnt_carotene_fraction_,
+		*pnt_hemoglobin_dermis_,
+		*pnt_epidermis_thickness_,
+		*pnt_ior_epidermis_,
+		*pnt_ior_dermis_,
+		*pnt_blood_oxygenation_,
+		roughnessVal
+		);
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+
+	return true;
+}
+
 //! Adds a generic human tissue material based on BioSpec
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddGenericHumanTissueMaterial(

@@ -589,6 +589,22 @@ namespace RISE
 								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
 								);
 
+	//! Creates a Donner & Jensen 2008 spectral skin BSSRDF material (BDPT-compatible)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
+								IMaterial** ppi,											///< [out] Pointer to recieve the material
+								const IPainter& melanin_fraction_,							///< C_m: melanin volume fraction (0-0.5)
+								const IPainter& melanin_blend_,								///< beta_m: eumelanin vs pheomelanin blend (0-1)
+								const IPainter& hemoglobin_epidermis_,						///< C_he: hemoglobin fraction in epidermis (0-0.05)
+								const IPainter& carotene_fraction_,							///< C_bc: carotene fraction (0-0.05)
+								const IPainter& hemoglobin_dermis_,							///< C_hd: hemoglobin fraction in dermis (0-0.1)
+								const IPainter& epidermis_thickness_,						///< Epidermis thickness in cm (default 0.025)
+								const IPainter& ior_epidermis_,								///< Index of refraction of epidermis (default 1.4)
+								const IPainter& ior_dermis_,								///< Index of refraction of dermis (default 1.38)
+								const IPainter& blood_oxygenation_,							///< Blood oxygenation ratio (default 0.7)
+								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
+								);
+
 	//! Creates a generic human tissue material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGenericHumanTissueMaterial(

@@ -783,6 +783,7 @@ namespace RISE
 #include "Materials/TranslucentMaterial.h"
 #include "Materials/BioSpecSkinMaterial.h"
 #include "Materials/BioSpecSkinBSSRDFMaterial.h"
+#include "Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "Materials/GenericHumanTissueMaterial.h"
 #include "Materials/CompositeMaterial.h"
 #include "Materials/WardIsotropicGaussianMaterial.h"
@@ -1085,6 +1086,40 @@ namespace RISE
 			roughness
 			);
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin bssrdf material" );
+		return true;
+	}
+
+	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
+								IMaterial** ppi,
+								const IPainter& melanin_fraction_,
+								const IPainter& melanin_blend_,
+								const IPainter& hemoglobin_epidermis_,
+								const IPainter& carotene_fraction_,
+								const IPainter& hemoglobin_dermis_,
+								const IPainter& epidermis_thickness_,
+								const IPainter& ior_epidermis_,
+								const IPainter& ior_dermis_,
+								const IPainter& blood_oxygenation_,
+								const Scalar roughness
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DonnerJensenSkinBSSRDFMaterial(
+			melanin_fraction_,
+			melanin_blend_,
+			hemoglobin_epidermis_,
+			carotene_fraction_,
+			hemoglobin_dermis_,
+			epidermis_thickness_,
+			ior_epidermis_,
+			ior_dermis_,
+			blood_oxygenation_,
+			roughness
+			);
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "donner jensen skin bssrdf material" );
 		return true;
 	}
 

@@ -94,6 +94,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
 	$(PATHLIBRARY)Materials/BioSpecDiffusionProfile.cpp					\
+	$(PATHLIBRARY)Materials/DonnerJensenSkinDiffusionProfile.cpp			\
 	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
 	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\

@@ -107,7 +107,6 @@ namespace RISE
 			//=============================================================
 
 			static Scalar ComputeSkinBaselineAbsorptionCoefficient( const Scalar nm );
-			static Scalar ComputeBeta( const Scalar lambda, const Scalar ior_medium );
 			static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta );
 
 			/// Compute per-layer optical properties at a given wavelength.
@@ -138,6 +137,11 @@ namespace RISE
 				);
 
 		public:
+			/// Rayleigh scattering coefficient for dermal collagen fibers.
+			/// \param lambda Wavelength in cm
+			/// \param ior_medium Index of refraction of the medium
+			static Scalar ComputeBeta( const Scalar lambda, const Scalar ior_medium );
+
 			BioSpecDiffusionProfile(
 				const IPainter& thickness_SC_,
 				const IPainter& thickness_epidermis_,

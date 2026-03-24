@@ -1938,6 +1938,68 @@ namespace RISE
 				}
 			};
 
+			struct DonnerJensenSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					// Donner et al. 2008 spectral skin model parameters
+					String name = "noname";
+					String melanin_fraction = "0.02";
+					String melanin_blend = "0.5";
+					String hemoglobin_epidermis = "0.002";
+					String carotene_fraction = "0.001";
+					String hemoglobin_dermis = "0.005";
+					String epidermis_thickness = "0.025";
+					String ior_epidermis = "1.4";
+					String ior_dermis = "1.38";
+					String blood_oxygenation = "0.7";
+					String roughness = "0.35";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "melanin_fraction" ) {
+							melanin_fraction = pvalue;
+						} else if( pname == "melanin_blend" ) {
+							melanin_blend = pvalue;
+						} else if( pname == "hemoglobin_epidermis" ) {
+							hemoglobin_epidermis = pvalue;
+						} else if( pname == "carotene_fraction" ) {
+							carotene_fraction = pvalue;
+						} else if( pname == "hemoglobin_dermis" ) {
+							hemoglobin_dermis = pvalue;
+						} else if( pname == "epidermis_thickness" ) {
+							epidermis_thickness = pvalue;
+						} else if( pname == "ior_epidermis" ) {
+							ior_epidermis = pvalue;
+						} else if( pname == "ior_dermis" ) {
+							ior_dermis = pvalue;
+						} else if( pname == "blood_oxygenation" ) {
+							blood_oxygenation = pvalue;
+						} else if( pname == "roughness" ) {
+							roughness = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddDonnerJensenSkinBSSRDFMaterial( name.c_str(),
+						melanin_fraction.c_str(), melanin_blend.c_str(),
+						hemoglobin_epidermis.c_str(), carotene_fraction.c_str(),
+						hemoglobin_dermis.c_str(), epidermis_thickness.c_str(),
+						ior_epidermis.c_str(), ior_dermis.c_str(),
+						blood_oxygenation.c_str(), roughness.c_str() );
+				}
+			};
+
 			struct GenericHumanTissueMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -6359,6 +6421,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["translucent_material"] = new TranslucentMaterialAsciiChunkParser();
 	chunks["biospec_skin_material"] = new BioSpecSkinMaterialAsciiChunkParser();
 	chunks["biospec_skin_bssrdf_material"] = new BioSpecSkinBSSRDFMaterialAsciiChunkParser();
+	chunks["donner_jensen_skin_bssrdf_material"] = new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser();
 	chunks["generic_human_tissue_material"] = new GenericHumanTissueMaterialAsciiChunkParser();
 	chunks["composite_material"] = new CompositeMaterialAsciiChunkParser();
 	chunks["ward_isotropic_material"] = new WardIsotropicGaussianMaterialAsciiChunkParser();

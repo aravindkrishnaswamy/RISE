@@ -496,6 +496,22 @@ namespace RISE
 			const char* roughness
 			) = 0;
 
+		//! Adds a Donner & Jensen 2008 spectral skin BSSRDF material
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddDonnerJensenSkinBSSRDFMaterial(
+			const char* name,
+			const char* melanin_fraction_,
+			const char* melanin_blend_,
+			const char* hemoglobin_epidermis_,
+			const char* carotene_fraction_,
+			const char* hemoglobin_dermis_,
+			const char* epidermis_thickness_,
+			const char* ior_epidermis_,
+			const char* ior_dermis_,
+			const char* blood_oxygenation_,
+			const char* roughness
+			) = 0;
+
 		//! Adds a generic human tissue material based on BioSpec
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddGenericHumanTissueMaterial(
