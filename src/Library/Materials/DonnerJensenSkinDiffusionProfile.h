@@ -66,7 +66,22 @@
 //     Jacques 1998 melanosome power law (6.6e11 * lambda^-3.33).
 //     C_m then acts as the melanosome volume fraction.
 //
-//  4. INTER-LAYER ABSORPTION: The paper's thin absorbing layer
+//  4. SCATTERING FORMULA: The paper's Eq. 13 prints:
+//       sigma_sp = 14.74*lambda^(-0.22) + 2.2e11*lambda^(-4)
+//     which gives only ~6 cm^-1 at 550nm.  The Jacques 1998
+//     reference that the paper cites gives ~37 cm^-1.  The
+//     Rayleigh coefficient appears to be 10x too small (2.2e11
+//     vs 2e12 from OMLC) and the Mie exponent differs (-0.22
+//     vs -1.5).  At moderate-to-high melanin, the low scattering
+//     causes albedo < 10%, where the diffusion approximation
+//     breaks down and produces spectral artifacts (blue tinting).
+//     We use the Jacques/OMLC formula instead:
+//       sigma_sp = 2e12*lambda^(-4) + 2e5*lambda^(-1.5)
+//     which gives ~37 cm^-1 at 550nm — consistent with measured
+//     skin optical properties and valid for the diffusion model
+//     across the full melanin range.
+//
+//  5. INTER-LAYER ABSORPTION: The paper's thin absorbing layer
 //     (Eq. 7-8, A(x,y) = exp(-P(x,y))) is a spatially-varying
 //     pointwise boundary attenuation applied between convolution
 //     passes in the texture-space pipeline.  In our point-sampled

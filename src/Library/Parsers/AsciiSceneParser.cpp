@@ -4319,6 +4319,85 @@ namespace RISE
 				}
 			};
 
+			struct DonnerJensenSkinSSSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					unsigned int numpoints = 10000;
+					double error = 0.001;
+					unsigned int maxPointsPerNode = 40;
+					unsigned char maxDepth = 8;
+					double irrad_scale = 1.0;
+					String shader = "none";
+					bool cache = true;
+					double melanin_fraction = 0.02;
+					double melanin_blend = 0.5;
+					double hemoglobin_epidermis = 0.002;
+					double carotene_fraction = 0.001;
+					double hemoglobin_dermis = 0.005;
+					double epidermis_thickness = 0.025;
+					double ior_epidermis = 1.4;
+					double ior_dermis = 1.38;
+					double blood_oxygenation = 0.7;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "numpoints" ) {
+							numpoints = pvalue.toUInt();
+						} else if( pname == "error" ) {
+							error = pvalue.toDouble();
+						} else if( pname == "maxpointspernode" ) {
+							maxPointsPerNode = pvalue.toUInt();
+						} else if( pname == "maxdepth" ) {
+							maxDepth = pvalue.toUChar();
+						} else if( pname == "irrad_scale" ) {
+							irrad_scale = pvalue.toDouble();
+						} else if( pname == "shader" ) {
+							shader = pvalue;
+						} else if( pname == "cache" ) {
+							cache = pvalue.toBoolean();
+						} else if( pname == "melanin_fraction" ) {
+							melanin_fraction = pvalue.toDouble();
+						} else if( pname == "melanin_blend" ) {
+							melanin_blend = pvalue.toDouble();
+						} else if( pname == "hemoglobin_epidermis" ) {
+							hemoglobin_epidermis = pvalue.toDouble();
+						} else if( pname == "carotene_fraction" ) {
+							carotene_fraction = pvalue.toDouble();
+						} else if( pname == "hemoglobin_dermis" ) {
+							hemoglobin_dermis = pvalue.toDouble();
+						} else if( pname == "epidermis_thickness" ) {
+							epidermis_thickness = pvalue.toDouble();
+						} else if( pname == "ior_epidermis" ) {
+							ior_epidermis = pvalue.toDouble();
+						} else if( pname == "ior_dermis" ) {
+							ior_dermis = pvalue.toDouble();
+						} else if( pname == "blood_oxygenation" ) {
+							blood_oxygenation = pvalue.toDouble();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddDonnerJensenSkinSSSShaderOp( name.c_str(),
+						numpoints, error, maxPointsPerNode, maxDepth, irrad_scale,
+						shader.c_str(), cache,
+						melanin_fraction, melanin_blend, hemoglobin_epidermis,
+						carotene_fraction, hemoglobin_dermis, epidermis_thickness,
+						ior_epidermis, ior_dermis, blood_oxygenation );
+				}
+			};
+
 			struct AreaLightShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -6466,6 +6545,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["finalgather_shaderop"] = new FinalGatherShaderOpAsciiChunkParser();
 	chunks["simple_sss_shaderop"] = new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser();
 	chunks["diffusion_approximation_sss_shaderop"] = new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser();
+	chunks["donner_jensen_skin_sss_shaderop"] = new DonnerJensenSkinSSSShaderOpAsciiChunkParser();
 	chunks["arealight_shaderop"] = new AreaLightShaderOpAsciiChunkParser();
 	chunks["transparency_shaderop"] = new TransparencyShaderOpAsciiChunkParser();
 

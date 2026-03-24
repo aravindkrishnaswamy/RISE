@@ -1350,6 +1350,9 @@
 		F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */; };
 		F2C5D5EE2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */; };
 		F2C5D5EF2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */; };
+		F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
+		F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */; };
+		F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2053,6 +2056,8 @@
 		F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinBSSRDFMaterial.h; sourceTree = "<group>"; };
 		F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinDiffusionProfile.h; sourceTree = "<group>"; };
 		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
+		F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinSSSShaderOp.h; sourceTree = "<group>"; };
+		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2120,6 +2125,8 @@
 		6DBFAA4A09C4D2A20048A09D /* SSS */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */,
+				F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */,
 				6DBFAA4B09C4D2A20048A09D /* DiffusionApproximationExtinction.h */,
 				6DBFAA4C09C4D2A20048A09D /* PointSetOctree.cpp */,
 				6DBFAA4D09C4D2A20048A09D /* PointSetOctree.h */,
@@ -3326,6 +3333,7 @@
 				F27F0BEA069C42910069C9E5 /* RasterImage.h in Headers */,
 				F27F0BEB069C42910069C9E5 /* ReadOnlyRasterImage.h in Headers */,
 				F27F0BED069C42910069C9E5 /* RGBEAWriter.h in Headers */,
+				F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */,
 				F27F0BEF069C42910069C9E5 /* TGAReader.h in Headers */,
 				F27F0BF1069C42910069C9E5 /* TGAWriter.h in Headers */,
 				F2C5D5ED2F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h in Headers */,
@@ -3800,6 +3808,7 @@
 				F277343407ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp in Sources */,
 				F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */,
 				F277345707ECCEDC00C0B600 /* TranslucentBSDF.cpp in Sources */,
+				F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
 				F27734A007ECD64300C0B600 /* MediaPathLocator.cpp in Sources */,
 				6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */,
 				6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */,
@@ -4038,6 +4047,7 @@
 				F24B72A82F52A632008304C4 /* DirectionalLight.cpp in Sources */,
 				F24B72A92F52A632008304C4 /* DirectionalLight.h in Sources */,
 				F24B72AA2F52A632008304C4 /* PointLight.cpp in Sources */,
+				F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
 				F24B72AB2F52A632008304C4 /* PointLight.h in Sources */,
 				F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */,
 				F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */,

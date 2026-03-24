@@ -1136,6 +1136,26 @@ namespace RISE
 			const double g											///< [in] Scattering asymmetry
 			);
 
+		bool AddDonnerJensenSkinSSSShaderOp(
+			const char* name,
+			const unsigned int numPoints,
+			const double error,
+			const unsigned int maxPointsPerNode,
+			const unsigned char maxDepth,
+			const double irrad_scale,
+			const char* shader,
+			const bool cache,
+			const double melanin_fraction,
+			const double melanin_blend,
+			const double hemoglobin_epidermis,
+			const double carotene_fraction,
+			const double hemoglobin_dermis,
+			const double epidermis_thickness,
+			const double ior_epidermis,
+			const double ior_dermis,
+			const double blood_oxygenation
+			);
+
 		bool AddAreaLightShaderOp(
 			const char* name,										///< [in] Name of the shaderop
 			const double width,										///< [in] Width of the light source

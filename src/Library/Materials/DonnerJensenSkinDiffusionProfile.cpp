@@ -167,10 +167,21 @@ Scalar DonnerJensenSkinDiffusionProfile::ComputeSkinBaselineAbsorption( const Sc
 
 Scalar DonnerJensenSkinDiffusionProfile::ComputeEpidermisScattering( const Scalar nm )
 {
-	// Paper Eq. 13: sigma_sp(lambda) = 14.74 * lambda^(-0.22) + 2.2e11 * lambda^(-4)
-	// where lambda is in nm.  This is a Mie + Rayleigh decomposition from
-	// Jacques 1998.  The dermis uses half this value per the paper.
-	return 14.74 * pow( nm, -0.22 ) + 2.2e11 * pow( nm, -4.0 );
+	// Jacques 1998 / OMLC reduced scattering for skin (cm^-1):
+	//   mu_sp = mu_sp_Rayleigh + mu_sp_Mie
+	//         = 2e12 * nm^(-4) + 2e5 * nm^(-1.5)
+	//
+	// The paper's Eq. 13 cites Jacques 1998 but prints coefficients
+	// that produce ~6 cm^-1 at 550nm (vs ~37 cm^-1 from OMLC).  The
+	// Rayleigh coefficient appears to be 10x too small (2.2e11 vs 2e12)
+	// and the Mie exponent differs (-0.22 vs -1.5).  This causes the
+	// diffusion approximation to break down at moderate melanin levels
+	// (albedo < 10%), producing spectral artifacts.
+	//
+	// We use the OMLC formula directly, which is the underlying data
+	// source the paper references.  The dermis uses half this value
+	// per the paper's convention.
+	return 2.0e12 * pow( nm, -4.0 ) + 2.0e5 * pow( nm, -1.5 );
 }
 
 Scalar DonnerJensenSkinDiffusionProfile::SchlickFresnel(

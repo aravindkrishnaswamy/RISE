@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "Job.h"
 #include "RISE_API.h"
+#include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
 #include "Utilities/RString.h"
 #include <stdio.h>
 #include "Utilities/MediaPathLocator.h"
@@ -3231,6 +3232,45 @@ bool Job::AddDiffusionApproximationSubSurfaceScatteringShaderOp(
 
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateDiffusionApproximationSubSurfaceScatteringShaderOp( &pShaderOp, numPoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, *pShader, cache, low_discrepancy, RISEPel(scattering), RISEPel(absorption), ior, g );
+
+	pShaderOpManager->AddItem( pShaderOp, name );
+	safe_release( pShaderOp );
+	return true;
+}
+
+bool Job::AddDonnerJensenSkinSSSShaderOp(
+	const char* name,
+	const unsigned int numPoints,
+	const double error,
+	const unsigned int maxPointsPerNode,
+	const unsigned char maxDepth,
+	const double irrad_scale,
+	const char* shader,
+	const bool cache,
+	const double melanin_fraction,
+	const double melanin_blend,
+	const double hemoglobin_epidermis,
+	const double carotene_fraction,
+	const double hemoglobin_dermis,
+	const double epidermis_thickness,
+	const double ior_epidermis,
+	const double ior_dermis,
+	const double blood_oxygenation
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddDonnerJensenSkinSSSShaderOp:: Shader not found '%s'", shader );
+		return false;
+	}
+
+	IShaderOp* pShaderOp = new Implementation::DonnerJensenSkinSSSShaderOp(
+		numPoints, error, maxPointsPerNode, maxDepth, irrad_scale,
+		*pShader, cache,
+		melanin_fraction, melanin_blend, hemoglobin_epidermis,
+		carotene_fraction, hemoglobin_dermis, epidermis_thickness,
+		ior_epidermis, ior_dermis, blood_oxygenation );
+	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "donner jensen skin sss shaderop" );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
