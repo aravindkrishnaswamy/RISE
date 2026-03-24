@@ -969,6 +969,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, d2 );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		// Advance to next ray
@@ -1244,6 +1245,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// accounting for lobe selection probability.
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		// Update previous vertex's pdfRev
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
@@ -1262,6 +1268,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		// Advance to next ray
@@ -2121,22 +2128,22 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 }
 
 //////////////////////////////////////////////////////////////////////
-// MISWeight - balance heuristic (power = 1)
+// MISWeight - power heuristic (exponent = 2)
 //
 // Uses the technique from Veach's thesis: compute the weight by
 // walking along the path and computing ratios of PDFs for adjacent
 // strategies.
 //
-// For a path of length k = s + t - 1, the balance heuristic weight
+// For a path of length k = s + t - 1, the power heuristic weight
 // for strategy (s,t) is:
 //
-//   w(s,t) = 1 / sum_{i} (p_i / p_{s})
+//   w(s,t) = p_s^2 / sum_{i} p_i^2 = 1 / sum_{i} (p_i / p_s)^2
 //
 // where p_i is the probability of generating this path using
 // strategy i.  The ratios p_i/p_{s} can be computed incrementally
 // using the stored forward and reverse PDFs at each vertex.
 //////////////////////////////////////////////////////////////////////
-
+//#define MISWEIGHT_BALANCE_HEURISTIC 1
 Scalar BDPTIntegrator::MISWeight(
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<BDPTVertex>& eyeVerts,
@@ -2231,8 +2238,14 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
+			#if MISWEIGHT_BALANCE_HEURISTIC
+			// Strategy (i, s+t-i) contributes ri to the sum (balance heuristic)
+			sumWeights += ri;
+			#else
 			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
 			sumWeights += ri * ri;
+			#endif
+
 		}
 	}
 
@@ -2243,7 +2256,7 @@ Scalar BDPTIntegrator::MISWeight(
 	{
 		Scalar ri = 1.0;
 
-		for( int j = static_cast<int>(t) - 1; j >= 0; j-- )
+		for( int j = static_cast<int>(t) - 1; j > 0; j-- )
 		{
 			// Vertex at position j in the eye subpath
 			const BDPTVertex& vj = (static_cast<unsigned int>(j) < eyeVerts.size()) ?
@@ -2263,8 +2276,13 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
-			// Strategy (s+t-j, j) contributes ri^2 to the sum (power heuristic)
+			#if MISWEIGHT_BALANCE_HEURISTIC
+			// Strategy (i, s+t-i) contributes ri to the sum (balance heuristic)
+			sumWeights += ri;
+			#else
+			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
 			sumWeights += ri * ri;
+			#endif
 		}
 	}
 
@@ -2702,6 +2720,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		// Update previous vertex's pdfRev
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
@@ -2713,6 +2736,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 			const Scalar absCosAtPrev = fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		currentRay = pScat->ray;
@@ -2960,6 +2984,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
@@ -2973,6 +3002,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		currentRay = pScat->ray;
