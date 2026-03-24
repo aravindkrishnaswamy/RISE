@@ -98,19 +98,33 @@ namespace RISE
 			unsigned int			nChains;			///< Number of independent Markov chains (default 512)
 			unsigned int			nMutationsPerPixel;	///< Mutations per pixel budget (default 100)
 			Scalar					largeStepProb;		///< Probability of large step mutation (default 0.3)
+			/// A single strategy's contribution with its own pixel position.
+			/// Strategies with t<=1 (light-to-camera connections) produce
+			/// contributions at arbitrary pixel positions, so each strategy
+			/// must be splatted independently.
+			struct MLTStrategySplat
+			{
+				RISEPel		color;			///< MIS-weighted contribution for this strategy
+				Point2		rasterPos;		///< Pixel position for splatting
+
+				MLTStrategySplat() :
+				color( RISEPel( 0, 0, 0 ) ),
+				rasterPos( Point2( 0, 0 ) )
+				{
+				}
+			};
+
 			/// Result of evaluating a single BDPT sample through the MLT pipeline.
-			/// Contains the path's contribution, its film position, and scalar
-			/// luminance for Metropolis acceptance computation.
+			/// Contains per-strategy contributions (each with its own pixel
+			/// position) and the aggregate scalar luminance for Metropolis
+			/// acceptance computation.
 			struct MLTSample
 			{
-				RISEPel		color;			///< RGB path contribution
-				Point2		rasterPos;		///< Pixel position for splatting
-				Scalar		luminance;		///< Scalar luminance for acceptance ratio
+				std::vector<MLTStrategySplat>	splats;		///< Per-strategy contributions with pixel positions
+				Scalar		luminance;		///< Total scalar luminance for acceptance ratio
 				bool		valid;			///< False if the path produced zero contribution
 
 				MLTSample() :
-				color( RISEPel( 0, 0, 0 ) ),
-				rasterPos( Point2( 0, 0 ) ),
 				luminance( 0 ),
 				valid( false )
 				{
