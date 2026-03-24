@@ -15,10 +15,11 @@
 
 #include "pch.h"
 #include "DonnerJensenSkinDiffusionProfile.h"
-#include "BioSpecDiffusionProfile.h"
 #include "BioSpecSkinData.h"
 #include "MultipoleDiffusion.h"
-#include "../Utilities/SumOfExponentialsFit.h"
+#include "../Utilities/HankelTransform.h"
+// Note: NNLS solver is implemented inline in PrecomputeProfileAtWavelength
+// (same algorithm as SumOfExponentialsFit.h but with Gaussian basis functions)
 #include "../RISE_API.h"
 #include "../Interfaces/ILog.h"
 
@@ -67,7 +68,7 @@ DonnerJensenSkinDiffusionProfile::DonnerJensenSkinDiffusionProfile(
   pOxyHemoglobinExt( 0 ),
   pDeoxyHemoglobinExt( 0 ),
   pBetaCaroteneExt( 0 ),
-  m_min_rate( 1.0 )
+  m_max_variance( 1.0 )
 {
 	// Addref all painter references
 	pnt_melanin_fraction.addref();
@@ -166,16 +167,10 @@ Scalar DonnerJensenSkinDiffusionProfile::ComputeSkinBaselineAbsorption( const Sc
 
 Scalar DonnerJensenSkinDiffusionProfile::ComputeEpidermisScattering( const Scalar nm )
 {
-	// Reduced scattering for skin epidermis.
-	// The paper's Eq. 13 uses a Mie+Rayleigh decomposition, but the
-	// printed coefficients produce values ~10x too low compared to
-	// measured skin data (Jacques 1998, Bashkatov 2005).  We use the
-	// Bashkatov 2005 power-law fit instead, which matches the measured
-	// range of 40-75 cm^-1 at 500nm and is the same formula used by the
-	// existing BioSpec skin model.
-	//
-	// sigma_sp(lambda) = 73.7 * (lambda/500)^(-2.33)   [cm^-1]
-	return 73.7 * pow( nm / 500.0, -2.33 );
+	// Paper Eq. 13: sigma_sp(lambda) = 14.74 * lambda^(-0.22) + 2.2e11 * lambda^(-4)
+	// where lambda is in nm.  This is a Mie + Rayleigh decomposition from
+	// Jacques 1998.  The dermis uses half this value per the paper.
+	return 14.74 * pow( nm, -0.22 ) + 2.2e11 * pow( nm, -4.0 );
 }
 
 Scalar DonnerJensenSkinDiffusionProfile::SchlickFresnel(
@@ -217,16 +212,24 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 	//----------------------------------------------------------
 
 	// Melanin absorption (eumelanin + pheomelanin weighted by beta_m).
-	// The OMLC data is extinction in cm^-1/(mg/ml).  To get the
-	// absorption coefficient of a melanosome, multiply by the melanin
-	// concentration within the melanosome (typical values from medical
-	// literature: 80 mg/ml for eumelanin, 12 mg/ml for pheomelanin).
-	// C_m then acts as the volume fraction of melanosomes.
-	static const Scalar CONC_EUMELANIN = 80.0;		// mg/ml in melanosome
-	static const Scalar CONC_PHEOMELANIN = 12.0;	// mg/ml in melanosome
+	//
+	// The OMLC tabulated data gives eu/pheo extinction in cm^-1/(mg/ml).
+	// To convert to melanosome-level absorption (cm^-1), we use a single
+	// reference concentration C_MEL for both types.  C_MEL is calibrated
+	// so that a 50/50 eu/pheo blend at 550nm matches the Jacques 1998
+	// melanosome power law: mu_a_mel = 6.6e11 * lambda^(-3.33).
+	//
+	//   Jacques at 550nm = 514 cm^-1
+	//   OMLC eu(550) = 5.76, ph(550) = 2.0 cm^-1/(mg/ml)
+	//   C_MEL = 514 / (0.5 * (5.76 + 2.0)) = 132.5 mg/ml
+	//
+	// Using the same concentration for both types ensures that beta_m
+	// linearly blends between spectral shapes without concentration
+	// bias, and C_m acts as the melanosome volume fraction.
+	static const Scalar C_MEL = 132.5;		// mg/ml — calibrated to Jacques 1998
 
-	const Scalar abs_eumelanin = pEumelaninExt->Evaluate( nm ) * CONC_EUMELANIN;
-	const Scalar abs_pheomelanin = pPheomelaninExt->Evaluate( nm ) * CONC_PHEOMELANIN;
+	const Scalar abs_eumelanin = pEumelaninExt->Evaluate( nm ) * C_MEL;
+	const Scalar abs_pheomelanin = pPheomelaninExt->Evaluate( nm ) * C_MEL;
 	const Scalar abs_melanin = beta_m * abs_eumelanin + (1.0 - beta_m) * abs_pheomelanin;
 
 	// Hemoglobin absorption (oxy + deoxy weighted by gamma)
@@ -253,14 +256,18 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 	// Dermis absorption (Eq. 12)
 	//----------------------------------------------------------
 
-	// sigma_a_derm = C_hd * abs_blood + (1 - C_hd) * baseline
+	// Dermis absorption per Eq. 12:
+	//   sigma_a_derm = C_hd * abs_blood + (1 - C_hd) * baseline
 	//
-	// DEVIATION: The paper's 17.5% melanin leakage (Eq. 7-8) is NOT
-	// added to dermis sigma_a here.  It is instead applied as a
-	// boundary attenuation factor A^2 = exp(-2*tau) in the composite
-	// profile construction (see PrecomputeProfileAtWavelength, step 3).
-	// Adding it as volume absorption would triple dermis sigma_a and
-	// halve the diffusion distance, producing skin far too dark.
+	// Note: the paper's 17.5% melanin leakage (Eq. 7-8) is a
+	// spatially-varying thin absorbing layer between the scattering
+	// layers, applied as a pointwise multiplication A(x,y) = exp(-P)
+	// between convolution passes in the texture-space pipeline.  It
+	// is NOT added to the dermis volume absorption.  In our BSSRDF
+	// implementation, this inter-layer absorption is omitted; the
+	// epidermis already absorbs melanin volumetrically, and the
+	// Fresnel boundary coupling in the multipole layer stacking
+	// handles the inter-layer transmission.
 	const Scalar sigma_a_derm = C_hd * abs_blood
 		+ (1.0 - C_hd) * baseline;
 
@@ -270,14 +277,8 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 
 	const Scalar sigma_sp_epi = ComputeEpidermisScattering( nm );
 
-	// DEVIATION: The paper says dermis scattering = epidermis / 2.
-	// With the Bashkatov epidermis formula this gives ~30 cm^-1 at
-	// 550nm.  We instead use Rayleigh scattering from collagen
-	// fibers (ComputeBeta, Jacques 1996, 5um fibers at 21% volume
-	// fraction), which gives ~93 cm^-1 at 550nm.  This matches
-	// measured dermal scattering and is consistent with BioSpec.
-	const Scalar lambda_cm = nm * 1e-7;
-	const Scalar sigma_sp_derm = BioSpecDiffusionProfile::ComputeBeta( lambda_cm, ior_derm );
+	// Paper: dermis scattering = epidermis / 2.
+	const Scalar sigma_sp_derm = sigma_sp_epi * 0.5;
 
 	//----------------------------------------------------------
 	// Fill LayerParams
@@ -305,7 +306,7 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 void DonnerJensenSkinDiffusionProfile::PrecomputeProfileAtWavelength(
 	const Scalar nm,
 	const RayIntersectionGeometric& ri,
-	ExponentialTerm terms_out[K_TERMS],
+	GaussianTerm terms_out[K_TERMS],
 	Scalar& total_weight_out,
 	Scalar cdf_out[K_TERMS]
 	)
@@ -315,281 +316,224 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeProfileAtWavelength(
 	ComputePerLayerCoefficients( nm, ri, layers );
 
 	//=============================================================
-	// DEVIATION: Spatial-domain two-layer profile (instead of
-	// Hankel-domain multipole + inverse transform).
+	// Hankel-domain Sum-of-Gaussians fitting.
 	//
-	// The paper computes the composite profile R_12(r) by stacking
-	// layer profiles in the Hankel (spatial frequency) domain via
-	// adding-doubling, then inverse-transforming to the spatial
-	// domain (Donner & Jensen 2005).  The numerical Hankel inverse
-	// transform produces severe J0 Bessel oscillation artifacts for
-	// the thin 2-layer epidermis+dermis configuration: the profile
-	// tail is inflated by orders of magnitude, corrupting the
-	// exponential fit and creating visible rendering artifacts.
+	// This follows the paper's approach (Section 4.3, Eq. 4):
+	// 1. Compute composite R_tilde(s) via multipole layer stacking
+	//    in the Hankel domain (no inverse transform needed).
+	// 2. Fit R_tilde(s) ≈ Σ c_k · exp(-σ_k² · s² / 2) directly
+	//    in the Hankel domain using NNLS.
+	// 3. Each Gaussian maps to the spatial domain as:
+	//    Rd_k(r) = (c_k / 2πσ_k²) · exp(-r² / 2σ_k²)
+	//    which is sampled via a Rayleigh distribution.
 	//
-	// Instead, we evaluate the profile directly in the spatial
-	// domain:
-	//   - Epidermis: spatial-domain multipole (Donner 2005 image
-	//     sources evaluated at each radius r, no Hankel transform)
-	//   - Dermis: Jensen 2001 dipole (semi-infinite, analytical)
-	//   - Composite: R(r) = R_epi(r) + T_epi^2 * Ft * A^2 * R_derm(r)
-	//
-	// The convolution T_epi * R_derm * T_epi from the adding-doubling
-	// is approximated by scaling R_derm with the scalar T_epi_total.
-	// This is valid because the thin epidermis (~1-2 mfp) has a
-	// transmittance profile sharply peaked at r~0, so convolving
-	// with it is nearly the identity operation.
+	// This avoids the inverse Hankel transform entirely, since the
+	// fit is performed where the profile is smooth (frequency domain).
 	//=============================================================
 
 	const LayerParams& epi = layers[0];
 	const LayerParams& derm = layers[1];
 
-	static const int N_RADIAL = 256;
+	// --- Compute composite reflectance in Hankel domain ---
+	static const int N_FREQ = 512;
 	static const int N_MULTIPOLE = 20;
 
-	double r_samples[N_RADIAL];
-	double Rd_samples[N_RADIAL];
-	double R_epi_samples[N_RADIAL];
-	double T_epi_samples[N_RADIAL];
-	double R_derm_samples[N_RADIAL];
+	HankelGrid grid;
+	grid.Create( 0.01, 1e5, N_FREQ );
 
-	const double r_min = 1e-5;		// cm
-	const double r_max = 5.0;		// cm
-	const double log_r_min = log( r_min );
-	const double log_r_max = log( r_max );
-	const double log_r_step = (log_r_max - log_r_min) / (N_RADIAL - 1);
+	double composite_R[N_FREQ];
+	ComputeCompositeProfileHankel( layers, 2, grid.s, N_FREQ, N_MULTIPOLE, composite_R );
 
-	for( int i = 0; i < N_RADIAL; i++ )
-		r_samples[i] = exp( log_r_min + i * log_r_step );
+	// --- Choose Gaussian variances ---
+	// Span from the near-field (epidermis, high sigma_tr → small σ)
+	// to the far-field (dermis, lower sigma_tr → larger σ).
+	// σ_min ~ 1/sigma_tr_max captures highest-frequency features.
+	// σ_max ~ 3/sigma_tr_min captures broadest spatial spread.
+	const double sigma_tr_max = (epi.sigma_tr > derm.sigma_tr) ? epi.sigma_tr : derm.sigma_tr;
+	const double sigma_tr_min = (epi.sigma_tr < derm.sigma_tr) ? epi.sigma_tr : derm.sigma_tr;
 
-	//----------------------------------------------------------
-	// 1. Epidermis: spatial-domain multipole for finite slab
-	//----------------------------------------------------------
+	double sigma_min = 0.5 / sigma_tr_max;
+	double sigma_max = 3.0 / sigma_tr_min;
 
-	const bool epi_is_thin = (epi.thickness < epi.z_r);
+	if( sigma_min < 1e-5 ) sigma_min = 1e-5;
+	if( sigma_max < sigma_min * 2.0 ) sigma_max = sigma_min * 100.0;
 
-	if( epi_is_thin )
+	double variances[K_TERMS];
+	const double log_smin = log( sigma_min );
+	const double log_smax = log( sigma_max );
+	const double log_sstep = (K_TERMS > 1) ? (log_smax - log_smin) / (K_TERMS - 1) : 0;
+
+	for( int k = 0; k < K_TERMS; k++ )
 	{
-		// Sub-mean-free-path slab: no diffuse scattering, Beer-Lambert only
-		for( int i = 0; i < N_RADIAL; i++ )
-		{
-			R_epi_samples[i] = 0;
-			T_epi_samples[i] = 0;	// delta function — handled via T_total below
-		}
+		const double sigma_k = exp( log_smin + k * log_sstep );
+		variances[k] = sigma_k * sigma_k;
 	}
-	else
+
+	// --- NNLS fit in Hankel domain ---
+	// R_tilde(s_i) ≈ Σ c_k · exp(-variance_k · s_i² / 2)
+	// A[i][k] = exp(-variance_k · s_i² / 2)
+	// Solve A·c = R_tilde for c ≥ 0
 	{
-		// Full multipole in spatial domain
-		const double prefactor = epi.alpha_prime / (4.0 * PI);
-		const double L = epi.slab_period;
-		const double d_epi = epi.thickness;
+		static const int MAX_K = 16;
+		double AtA[MAX_K][MAX_K];
+		double Aty[MAX_K];
+		memset( AtA, 0, sizeof(AtA) );
+		memset( Aty, 0, sizeof(Aty) );
 
-		for( int i = 0; i < N_RADIAL; i++ )
+		for( int i = 0; i < N_FREQ; i++ )
 		{
-			const double r = r_samples[i];
-			const double r2 = r * r;
-			double R_sum = 0;
-			double T_sum = 0;
+			const double si2 = grid.s[i] * grid.s[i];
+			const double yi = composite_R[i];
 
-			for( int j = -N_MULTIPOLE; j <= N_MULTIPOLE; j++ )
+			double Ai[MAX_K];
+			for( int k = 0; k < K_TERMS; k++ )
+				Ai[k] = exp( -variances[k] * si2 * 0.5 );
+
+			for( int k = 0; k < K_TERMS; k++ )
 			{
-				const double offset = j * L;
-				const double z_real = epi.z_r + offset;		// charge +1
-				const double z_virt = -epi.z_v + offset;	// charge -1
+				Aty[k] += Ai[k] * yi;
+				for( int j = 0; j < K_TERMS; j++ )
+					AtA[k][j] += Ai[k] * Ai[j];
+			}
+		}
 
-				// Reflectance at z=0: contribution = Q * sign(z_s) * |z_s| * kernel(r, z_s)
-				{
-					// Real source
-					const double dz = fabs( z_real );
-					const double dist = sqrt( r2 + dz * dz );
-					const double flux = dz * (1.0 + epi.sigma_tr * dist) *
-						exp( -epi.sigma_tr * dist ) / (dist * dist * dist);
-					R_sum += (z_real >= 0 ? 1.0 : -1.0) * flux;
+		// NNLS: Lawson & Hanson active-set method (same as SumOfExponentialsFit.h)
+		double w[MAX_K];
+		bool passive[MAX_K];
+		memset( w, 0, sizeof(w) );
+		memset( passive, 0, sizeof(passive) );
 
-					// Virtual source (Q=-1)
-					const double dz_v = fabs( z_virt );
-					const double dist_v = sqrt( r2 + dz_v * dz_v );
-					const double flux_v = dz_v * (1.0 + epi.sigma_tr * dist_v) *
-						exp( -epi.sigma_tr * dist_v ) / (dist_v * dist_v * dist_v);
-					R_sum -= (z_virt >= 0 ? 1.0 : -1.0) * flux_v;
-				}
+		const int MAX_ITER = K_TERMS * 3 + 30;
 
-				// Transmittance at z=d_epi
-				{
-					const double dz_r = fabs( d_epi - z_real );
-					const double dist_r = sqrt( r2 + dz_r * dz_r );
-					const double flux_r = dz_r * (1.0 + epi.sigma_tr * dist_r) *
-						exp( -epi.sigma_tr * dist_r ) / (dist_r * dist_r * dist_r);
-					T_sum += ((d_epi - z_real) >= 0 ? 1.0 : -1.0) * flux_r;
-
-					const double dz_v = fabs( d_epi - z_virt );
-					const double dist_v = sqrt( r2 + dz_v * dz_v );
-					const double flux_v = dz_v * (1.0 + epi.sigma_tr * dist_v) *
-						exp( -epi.sigma_tr * dist_v ) / (dist_v * dist_v * dist_v);
-					T_sum -= ((d_epi - z_virt) >= 0 ? 1.0 : -1.0) * flux_v;
-				}
-
-				// Early exit
-				if( j > 0 && exp( -epi.sigma_tr * (epi.z_r + j * L) ) < 1e-15 )
-					break;
+		for( int iter = 0; iter < MAX_ITER; iter++ )
+		{
+			double grad[MAX_K];
+			for( int k = 0; k < K_TERMS; k++ )
+			{
+				grad[k] = -Aty[k];
+				for( int j = 0; j < K_TERMS; j++ )
+					grad[k] += AtA[k][j] * w[j];
 			}
 
-			R_epi_samples[i] = prefactor * R_sum;
-			T_epi_samples[i] = prefactor * T_sum;
-			if( R_epi_samples[i] < 0 ) R_epi_samples[i] = 0;
-			if( T_epi_samples[i] < 0 ) T_epi_samples[i] = 0;
+			int best = -1;
+			double bestGrad = -1e-12;
+			for( int k = 0; k < K_TERMS; k++ )
+			{
+				if( !passive[k] && grad[k] < bestGrad )
+				{
+					bestGrad = grad[k];
+					best = k;
+				}
+			}
+			if( best < 0 ) break;
+
+			passive[best] = true;
+
+			for( int inner = 0; inner < MAX_ITER; inner++ )
+			{
+				int passiveIdx[MAX_K];
+				int nPassive = 0;
+				for( int k = 0; k < K_TERMS; k++ )
+					if( passive[k] ) passiveIdx[nPassive++] = k;
+				if( nPassive == 0 ) break;
+
+				// Cholesky solve
+				double subAtA[MAX_K][MAX_K], subRhs[MAX_K], L[MAX_K][MAX_K];
+				for( int a = 0; a < nPassive; a++ )
+				{
+					subRhs[a] = Aty[passiveIdx[a]];
+					for( int b = 0; b < nPassive; b++ )
+						subAtA[a][b] = AtA[passiveIdx[a]][passiveIdx[b]];
+				}
+				memset( L, 0, sizeof(L) );
+				for( int a = 0; a < nPassive; a++ )
+				{
+					double sum = 0;
+					for( int p = 0; p < a; p++ ) sum += L[a][p] * L[a][p];
+					double diag = subAtA[a][a] - sum;
+					L[a][a] = (diag > 1e-30) ? sqrt(diag) : 1e-15;
+					for( int b = a+1; b < nPassive; b++ )
+					{
+						double s = 0;
+						for( int p = 0; p < a; p++ ) s += L[b][p] * L[a][p];
+						L[b][a] = (subAtA[b][a] - s) / L[a][a];
+					}
+				}
+
+				double z[MAX_K];
+				for( int a = 0; a < nPassive; a++ )
+				{
+					double s = 0;
+					for( int p = 0; p < a; p++ ) s += L[a][p] * z[p];
+					z[a] = (subRhs[a] - s) / L[a][a];
+				}
+
+				double wSub[MAX_K];
+				for( int a = nPassive-1; a >= 0; a-- )
+				{
+					double s = 0;
+					for( int p = a+1; p < nPassive; p++ ) s += L[p][a] * wSub[p];
+					wSub[a] = (z[a] - s) / L[a][a];
+				}
+
+				bool allPositive = true;
+				for( int a = 0; a < nPassive; a++ )
+					if( wSub[a] <= 0 ) { allPositive = false; break; }
+
+				if( allPositive )
+				{
+					for( int a = 0; a < nPassive; a++ )
+						w[passiveIdx[a]] = wSub[a];
+					break;
+				}
+
+				double alpha = 1.0;
+				for( int a = 0; a < nPassive; a++ )
+				{
+					if( wSub[a] <= 0 )
+					{
+						double t = w[passiveIdx[a]] / (w[passiveIdx[a]] - wSub[a]);
+						if( t < alpha ) alpha = t;
+					}
+				}
+				for( int a = 0; a < nPassive; a++ )
+				{
+					int k = passiveIdx[a];
+					w[k] = w[k] + alpha * (wSub[a] - w[k]);
+					if( w[k] < 1e-30 ) { w[k] = 0; passive[k] = false; }
+				}
+			}
 		}
-	}
 
-	//----------------------------------------------------------
-	// 2. Integrate epidermis transmittance for total T_epi
-	//----------------------------------------------------------
-
-	double T_epi_total;
-	if( epi_is_thin )
-	{
-		T_epi_total = exp( -epi.sigma_a * epi.thickness );
-	}
-	else
-	{
-		// Numerical integration: T_total = integral T_epi(r) * 2*pi*r dr
-		T_epi_total = 0;
-		for( int i = 0; i < N_RADIAL - 1; i++ )
+		for( int k = 0; k < K_TERMS; k++ )
 		{
-			const double dr = r_samples[i + 1] - r_samples[i];
-			const double avg = 0.5 * (T_epi_samples[i] * r_samples[i] +
-				T_epi_samples[i + 1] * r_samples[i + 1]);
-			T_epi_total += avg * dr * 2.0 * PI;
+			terms_out[k].weight = (w[k] > 0) ? w[k] : 0;
+			terms_out[k].variance = variances[k];
 		}
-		// Clamp to physical range
-		if( T_epi_total > 1.0 ) T_epi_total = 1.0;
-		if( T_epi_total < 0.0 ) T_epi_total = 0.0;
 	}
 
-	//----------------------------------------------------------
-	// 3. Fresnel and inter-layer absorption at boundary
-	//----------------------------------------------------------
-
-	const double eta_down = epi.ior / derm.ior;
-	const double eta_up = derm.ior / epi.ior;
-	const double Ft_boundary = (1.0 - ComputeFdr( eta_down )) * (1.0 - ComputeFdr( eta_up ));
-
-	// Inter-layer absorbing boundary (Donner 2008 Eq. 7-8).
-	// The paper places 17.5% of the epidermal melanin absorption in
-	// a thin absorbing layer between the scattering layers.  This is
-	// a multiplicative attenuation A = exp(-tau) applied to light
-	// crossing the boundary in each direction.
-	//
-	// tau = 0.175 * (melanin contribution to sigma_a_epi) * d_epi
-	//
-	// We extract the melanin component from the total epidermis
-	// absorption by subtracting the baseline and other chromophores.
-	// As an approximation, we use: melanin_sigma_a ≈ C_m * abs_melanin
-	// which was the dominant term added to sigma_a_epi.
-	const Scalar C_m = pnt_melanin_fraction.GetColor( ri )[0];
-	const Scalar beta_m = pnt_melanin_blend.GetColor( ri )[0];
-
-	static const Scalar CONC_EU = 80.0;
-	static const Scalar CONC_PH = 12.0;
-	const Scalar abs_eu_local = pEumelaninExt->Evaluate( nm ) * CONC_EU;
-	const Scalar abs_ph_local = pPheomelaninExt->Evaluate( nm ) * CONC_PH;
-	const Scalar abs_melanin_local = beta_m * abs_eu_local + (1.0 - beta_m) * abs_ph_local;
-
-	const double tau_boundary = 0.175 * C_m * abs_melanin_local * epi.thickness;
-	const double A_boundary = exp( -tau_boundary );
-
-	//----------------------------------------------------------
-	// 4. Dermis: Jensen 2001 dipole (semi-infinite medium)
-	//----------------------------------------------------------
-
-	for( int i = 0; i < N_RADIAL; i++ )
-	{
-		const double r = r_samples[i];
-		const double d_r = sqrt( r * r + derm.z_r * derm.z_r );
-		const double d_v = sqrt( r * r + derm.z_v * derm.z_v );
-
-		const double term_r = derm.z_r * (1.0 + derm.sigma_tr * d_r) *
-			exp( -derm.sigma_tr * d_r ) / (d_r * d_r * d_r);
-		const double term_v = derm.z_v * (1.0 + derm.sigma_tr * d_v) *
-			exp( -derm.sigma_tr * d_v ) / (d_v * d_v * d_v);
-
-		R_derm_samples[i] = (derm.alpha_prime / (4.0 * PI)) * (term_r + term_v);
-		if( R_derm_samples[i] < 0 ) R_derm_samples[i] = 0;
-	}
-
-	//----------------------------------------------------------
-	// 5. Composite: R(r) = R_epi(r) + T_epi^2 * Ft * A^2 * R_derm(r)
-	//    A^2 because light crosses the absorbing boundary twice
-	//    (down into dermis, then back up out of dermis)
-	//----------------------------------------------------------
-
-	const double T_factor = T_epi_total * T_epi_total * Ft_boundary * A_boundary * A_boundary;
-
-	for( int i = 0; i < N_RADIAL; i++ )
-	{
-		Rd_samples[i] = R_epi_samples[i] + T_factor * R_derm_samples[i];
-		if( Rd_samples[i] < 0 ) Rd_samples[i] = 0;
-	}
-
-	//----------------------------------------------------------
-	// 6. Determine rate range for exponential fitting
-	//----------------------------------------------------------
-
-	// The composite profile has two distinct decay scales: a sharp
-	// peak from the epidermis (rate ~ epi.sigma_tr) and a broad tail
-	// from the dermis (rate ~ derm.sigma_tr).  The rate range must
-	// span both to avoid smearing the near-field epidermis energy
-	// into the slow dermis rate (which creates bright SSS artifacts).
-	double min_rate = derm.sigma_tr * 0.5;
-	double max_rate = (epi.sigma_tr > derm.sigma_tr * 2.0) ? epi.sigma_tr : derm.sigma_tr * 2.0;
-
-	if( min_rate < 0.1 ) min_rate = 0.1;
-	if( max_rate < min_rate * 2.0 ) max_rate = min_rate * 10.0;
-
-	// Place K rates on a geometric grid
-	double rates[K_TERMS];
-	const double log_min_rate = log( min_rate );
-	const double log_max_rate = log( max_rate );
-	const double log_rate_step = (K_TERMS > 1) ? (log_max_rate - log_min_rate) / (K_TERMS - 1) : 0;
-
-	for( int k = 0; k < K_TERMS; k++ )
-	{
-		rates[k] = exp( log_min_rate + k * log_rate_step );
-	}
-
-	// Fit sum of exponentials via NNLS
-	FitSumOfExponentials( r_samples, Rd_samples, N_RADIAL, rates, K_TERMS, terms_out );
-
-	// Compute total integrated mass and CDF for mixture sampling.
-	// The fit model is Rd(r)*r = sum w_k exp(-rate_k * r), so the integral
-	// of each component is w_k / rate_k.
+	// --- Build CDF for mixture sampling ---
+	// Each term's weight c_k is its integrated mass (total reflectance).
 	total_weight_out = 0;
 	for( int k = 0; k < K_TERMS; k++ )
-	{
-		const double mass_k = (terms_out[k].rate > 1e-30)
-			? terms_out[k].weight / terms_out[k].rate : 0;
-		total_weight_out += mass_k;
-	}
+		total_weight_out += terms_out[k].weight;
 
 	double cumulative = 0;
 	for( int k = 0; k < K_TERMS; k++ )
 	{
-		const double mass_k = (terms_out[k].rate > 1e-30)
-			? terms_out[k].weight / terms_out[k].rate : 0;
-		cumulative += mass_k;
+		cumulative += terms_out[k].weight;
 		cdf_out[k] = (total_weight_out > 1e-30) ? (cumulative / total_weight_out) : 0;
 	}
 }
 
 void DonnerJensenSkinDiffusionProfile::PrecomputeProfiles()
 {
-	// Create a synthetic RayIntersectionGeometric for painter evaluation.
 	Ray dummyRay( Point3(0,0,0), Vector3(0,0,1) );
 	RayIntersectionGeometric ri( dummyRay, nullRasterizerState );
 	ri.ptIntersection = Point3(0,0,0);
 	ri.vNormal = Vector3(0,1,0);
 
-	m_min_rate = 1e10;
+	m_max_variance = 0;
 
 	// Precompute RGB profiles
 	for( int c = 0; c < NUM_RGB; c++ )
@@ -600,8 +544,8 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeProfiles()
 
 		for( int k = 0; k < K_TERMS; k++ )
 		{
-			if( m_rgb_terms[c][k].weight > 1e-20 && m_rgb_terms[c][k].rate < m_min_rate )
-				m_min_rate = m_rgb_terms[c][k].rate;
+			if( m_rgb_terms[c][k].weight > 1e-20 && m_rgb_terms[c][k].variance > m_max_variance )
+				m_max_variance = m_rgb_terms[c][k].variance;
 		}
 	}
 
@@ -615,40 +559,41 @@ void DonnerJensenSkinDiffusionProfile::PrecomputeProfiles()
 
 		for( int k = 0; k < K_TERMS; k++ )
 		{
-			if( m_spectral_terms[w][k].weight > 1e-20 && m_spectral_terms[w][k].rate < m_min_rate )
-				m_min_rate = m_spectral_terms[w][k].rate;
+			if( m_spectral_terms[w][k].weight > 1e-20 && m_spectral_terms[w][k].variance > m_max_variance )
+				m_max_variance = m_spectral_terms[w][k].variance;
 		}
 	}
 
-	// Safety floor
-	if( m_min_rate < 1e-10 ) m_min_rate = 0.1;
+	if( m_max_variance < 1e-10 ) m_max_variance = 0.01;
 
 	GlobalLog()->PrintEx( eLog_Info,
-		"DonnerJensenSkinDiffusionProfile: Multipole precomputation complete (min_rate=%.3f cm^-1)",
-		m_min_rate );
+		"DonnerJensenSkinDiffusionProfile: SoG precomputation complete (max_sigma=%.4f cm)",
+		sqrt(m_max_variance) );
 }
 
 //=============================================================
-// Sum-of-exponentials evaluation
+// Sum-of-Gaussians evaluation
 //=============================================================
 
-Scalar DonnerJensenSkinDiffusionProfile::EvaluateSumOfExp(
-	const ExponentialTerm terms[K_TERMS],
+Scalar DonnerJensenSkinDiffusionProfile::EvaluateSumOfGaussians(
+	const GaussianTerm terms[K_TERMS],
 	const Scalar r
 	)
 {
-	const Scalar rClamped = (r < 1e-10) ? 1e-10 : r;
+	// Rd(r) = Σ (c_k / (2π σ_k²)) · exp(-r² / (2 σ_k²))
 	Scalar result = 0;
+	const Scalar r2 = r * r;
 
 	for( int k = 0; k < K_TERMS; k++ )
 	{
-		if( terms[k].weight > 1e-30 )
+		if( terms[k].weight > 1e-30 && terms[k].variance > 1e-30 )
 		{
-			result += terms[k].weight * exp( -terms[k].rate * rClamped );
+			result += (terms[k].weight / (2.0 * PI * terms[k].variance)) *
+				exp( -r2 / (2.0 * terms[k].variance) );
 		}
 	}
 
-	return result / rClamped;
+	return result;
 }
 
 //=============================================================
@@ -662,9 +607,7 @@ RISEPel DonnerJensenSkinDiffusionProfile::EvaluateProfile(
 {
 	RISEPel result;
 	for( int c = 0; c < NUM_RGB; c++ )
-	{
-		result[c] = EvaluateSumOfExp( m_rgb_terms[c], r );
-	}
+		result[c] = EvaluateSumOfGaussians( m_rgb_terms[c], r );
 	return result;
 }
 
@@ -674,33 +617,28 @@ Scalar DonnerJensenSkinDiffusionProfile::EvaluateProfileNM(
 	const Scalar nm
 	) const
 {
-	// Find bracketing wavelengths and interpolate
 	if( nm <= ms_spectral_wavelengths[0] )
-		return EvaluateSumOfExp( m_spectral_terms[0], r );
+		return EvaluateSumOfGaussians( m_spectral_terms[0], r );
 
 	if( nm >= ms_spectral_wavelengths[NUM_SPECTRAL - 1] )
-		return EvaluateSumOfExp( m_spectral_terms[NUM_SPECTRAL - 1], r );
+		return EvaluateSumOfGaussians( m_spectral_terms[NUM_SPECTRAL - 1], r );
 
-	// Linear search (31 entries — fast enough)
 	for( int w = 0; w < NUM_SPECTRAL - 1; w++ )
 	{
 		if( nm >= ms_spectral_wavelengths[w] && nm < ms_spectral_wavelengths[w + 1] )
 		{
 			const Scalar t = (nm - ms_spectral_wavelengths[w]) /
 				(ms_spectral_wavelengths[w + 1] - ms_spectral_wavelengths[w]);
-
-			const Scalar Rd_lo = EvaluateSumOfExp( m_spectral_terms[w], r );
-			const Scalar Rd_hi = EvaluateSumOfExp( m_spectral_terms[w + 1], r );
-
-			return Rd_lo * (1.0 - t) + Rd_hi * t;
+			return EvaluateSumOfGaussians( m_spectral_terms[w], r ) * (1.0 - t)
+				 + EvaluateSumOfGaussians( m_spectral_terms[w + 1], r ) * t;
 		}
 	}
 
-	return EvaluateSumOfExp( m_spectral_terms[NUM_SPECTRAL / 2], r );
+	return EvaluateSumOfGaussians( m_spectral_terms[NUM_SPECTRAL / 2], r );
 }
 
 //=============================================================
-// Importance sampling (K-term mixture)
+// Importance sampling (Rayleigh mixture)
 //=============================================================
 
 Scalar DonnerJensenSkinDiffusionProfile::SampleRadius(
@@ -709,13 +647,13 @@ Scalar DonnerJensenSkinDiffusionProfile::SampleRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const ExponentialTerm* terms = m_rgb_terms[channel];
+	const GaussianTerm* terms = m_rgb_terms[channel];
 	const Scalar* cdf = m_rgb_cdf[channel];
 	const Scalar totalW = m_rgb_total_weight[channel];
 
 	if( totalW < 1e-30 ) return 0.0;
 
-	// Select which exponential term to sample from via the CDF
+	// Select Gaussian component via CDF
 	int k = 0;
 	for( k = 0; k < K_TERMS - 1; k++ )
 	{
@@ -728,12 +666,12 @@ Scalar DonnerJensenSkinDiffusionProfile::SampleRadius(
 	const Scalar u_remapped = (cdf_hi > cdf_lo + 1e-30) ?
 		(u - cdf_lo) / (cdf_hi - cdf_lo) : 0.0;
 
-	// Invert exponential CDF: r = -log(1-u) / rate
-	const Scalar rate = terms[k].rate;
-	if( rate < 1e-30 ) return 0.0;
+	// Sample Rayleigh distribution: r = σ · sqrt(-2 · ln(1-u))
+	const Scalar variance = terms[k].variance;
+	if( variance < 1e-30 ) return 0.0;
 
 	const Scalar one_minus_u = (u_remapped > 0.999999) ? 1e-6 : (1.0 - u_remapped);
-	return -log( one_minus_u ) / rate;
+	return sqrt( -2.0 * variance * log( one_minus_u ) );
 }
 
 Scalar DonnerJensenSkinDiffusionProfile::PdfRadius(
@@ -742,19 +680,20 @@ Scalar DonnerJensenSkinDiffusionProfile::PdfRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const ExponentialTerm* terms = m_rgb_terms[channel];
+	const GaussianTerm* terms = m_rgb_terms[channel];
 	const Scalar totalW = m_rgb_total_weight[channel];
 
 	if( totalW < 1e-30 ) return 0.0;
 
-	// Mixture PDF: sum_k (mass_k / W) * rate_k * exp(-rate_k * r)
+	// Mixture PDF: Σ (c_k / W) · (r / σ_k²) · exp(-r² / (2 σ_k²))
+	const Scalar r2 = r * r;
 	Scalar pdf = 0;
 	for( int k = 0; k < K_TERMS; k++ )
 	{
-		if( terms[k].weight > 1e-30 && terms[k].rate > 1e-30 )
+		if( terms[k].weight > 1e-30 && terms[k].variance > 1e-30 )
 		{
-			const Scalar mass_k = terms[k].weight / terms[k].rate;
-			pdf += (mass_k / totalW) * terms[k].rate * exp( -terms[k].rate * r );
+			pdf += (terms[k].weight / totalW) *
+				(r / terms[k].variance) * exp( -r2 / (2.0 * terms[k].variance) );
 		}
 	}
 
@@ -770,7 +709,6 @@ Scalar DonnerJensenSkinDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	// Use epidermis IOR for the outermost scattering boundary
 	const Scalar eta = pnt_ior_epidermis.GetColor( ri )[0];
 	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
 }
@@ -791,7 +729,9 @@ Scalar DonnerJensenSkinDiffusionProfile::GetMaximumDistanceForError(
 	) const
 {
 	if( error <= 0 ) return RISE_INFINITY;
-	return -log(error) / m_min_rate;
+	// For a Gaussian with variance σ², exp(-r²/(2σ²)) = error
+	// → r = σ · sqrt(-2 · ln(error))
+	return sqrt( -2.0 * m_max_variance * log(error) );
 }
 
 RISEPel DonnerJensenSkinDiffusionProfile::ComputeTotalExtinction(
