@@ -1097,6 +1097,32 @@ namespace RISE
 			const char* hemoglobin_dermis_offset
 			) = 0;
 
+		//! Adds a BioSpec skin SSS shader op (octree-based, 4-layer multipole)
+		virtual bool AddBioSpecSkinSSSShaderOp(
+			const char* name,
+			const unsigned int numPoints,
+			const double error,
+			const unsigned int maxPointsPerNode,
+			const unsigned char maxDepth,
+			const double irrad_scale,
+			const char* shader,
+			const bool cache,
+			const double thickness_SC, const double thickness_epidermis,
+			const double thickness_papillary, const double thickness_reticular,
+			const double ior_SC, const double ior_epidermis,
+			const double ior_papillary, const double ior_reticular,
+			const double concentration_eumelanin, const double concentration_pheomelanin,
+			const double melanosomes_in_epidermis,
+			const double hb_ratio,
+			const double whole_blood_papillary, const double whole_blood_reticular,
+			const double bilirubin_concentration,
+			const double betacarotene_SC, const double betacarotene_epidermis,
+			const double betacarotene_dermis,
+			const char* melanosomes_offset,
+			const char* blood_papillary_offset,
+			const char* blood_reticular_offset
+			) = 0;
+
 		virtual bool AddAreaLightShaderOp(
 			const char* name,										///< [in] Name of the shaderop
 			const double width,										///< [in] Width of the light source

@@ -1353,6 +1353,9 @@
 		F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
 		F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */; };
 		F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
+		F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
+		F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
+		F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2058,6 +2061,8 @@
 		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
 		F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinSSSShaderOp.h; sourceTree = "<group>"; };
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
+		F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinSSSShaderOp.h; sourceTree = "<group>"; };
+		F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2125,6 +2130,8 @@
 		6DBFAA4A09C4D2A20048A09D /* SSS */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */,
+				F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */,
 				F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */,
 				F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */,
 				6DBFAA4B09C4D2A20048A09D /* DiffusionApproximationExtinction.h */,
@@ -3120,6 +3127,7 @@
 				F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */,
 				F27F0AC5069C42910069C9E5 /* ICubicInterpolator.h in Headers */,
 				F27F0AC6069C42910069C9E5 /* IDeletedCallback.h in Headers */,
+				F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */,
 				F27F0AC7069C42910069C9E5 /* IDetectorSphere.h in Headers */,
 				F27F0AC8069C42910069C9E5 /* IEmitter.h in Headers */,
 				F27F0AC9069C42910069C9E5 /* IEnumCallback.h in Headers */,
@@ -3745,6 +3753,7 @@
 				F27F0BEC069C42910069C9E5 /* RGBEAWriter.cpp in Sources */,
 				F27F0BEE069C42910069C9E5 /* TGAReader.cpp in Sources */,
 				F27F0BF0069C42910069C9E5 /* TGAWriter.cpp in Sources */,
+				F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */,
 				F27F0BF3069C42910069C9E5 /* TIFFReader.cpp in Sources */,
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F27F0BF9069C42910069C9E5 /* FileRasterizerOutput.cpp in Sources */,
@@ -4102,6 +4111,7 @@
 				F24B72DD2F52A632008304C4 /* IsotropicPhongSPF.cpp in Sources */,
 				F24B72DE2F52A632008304C4 /* IsotropicPhongSPF.h in Sources */,
 				F24B72DF2F52A632008304C4 /* LambertianBRDF.cpp in Sources */,
+				F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */,
 				F24B72E02F52A632008304C4 /* LambertianBRDF.h in Sources */,
 				F2C5D5E82F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */,
 				F24B72E12F52A632008304C4 /* LambertianEmitter.cpp in Sources */,

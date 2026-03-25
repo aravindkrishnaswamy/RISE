@@ -15,6 +15,7 @@
 #include "Job.h"
 #include "RISE_API.h"
 #include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
+#include "Shaders/SSS/BioSpecSkinSSSShaderOp.h"
 #include "Utilities/RString.h"
 #include <stdio.h>
 #include "Utilities/MediaPathLocator.h"
@@ -3283,6 +3284,62 @@ bool Job::AddDonnerJensenSkinSSSShaderOp(
 		ior_epidermis, ior_dermis, blood_oxygenation,
 		pOffMel, pOffHbEpi, pOffHbDerm );
 	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "donner jensen skin sss shaderop" );
+
+	pShaderOpManager->AddItem( pShaderOp, name );
+	safe_release( pShaderOp );
+	return true;
+}
+
+bool Job::AddBioSpecSkinSSSShaderOp(
+	const char* name,
+	const unsigned int numPoints,
+	const double error,
+	const unsigned int maxPointsPerNode,
+	const unsigned char maxDepth,
+	const double irrad_scale,
+	const char* shader,
+	const bool cache,
+	const double thickness_SC, const double thickness_epidermis,
+	const double thickness_papillary, const double thickness_reticular,
+	const double ior_SC, const double ior_epidermis,
+	const double ior_papillary, const double ior_reticular,
+	const double concentration_eumelanin, const double concentration_pheomelanin,
+	const double melanosomes_in_epidermis,
+	const double hb_ratio,
+	const double whole_blood_papillary, const double whole_blood_reticular,
+	const double bilirubin_concentration,
+	const double betacarotene_SC, const double betacarotene_epidermis,
+	const double betacarotene_dermis,
+	const char* melanosomes_offset,
+	const char* blood_papillary_offset,
+	const char* blood_reticular_offset
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddBioSpecSkinSSSShaderOp:: Shader not found '%s'", shader );
+		return false;
+	}
+
+	IPainter* pOffMel = (melanosomes_offset && melanosomes_offset[0]) ?
+		pPntManager->GetItem( melanosomes_offset ) : 0;
+	IPainter* pOffBP = (blood_papillary_offset && blood_papillary_offset[0]) ?
+		pPntManager->GetItem( blood_papillary_offset ) : 0;
+	IPainter* pOffBR = (blood_reticular_offset && blood_reticular_offset[0]) ?
+		pPntManager->GetItem( blood_reticular_offset ) : 0;
+
+	IShaderOp* pShaderOp = new Implementation::BioSpecSkinSSSShaderOp(
+		numPoints, error, maxPointsPerNode, maxDepth, irrad_scale,
+		*pShader, cache,
+		thickness_SC, thickness_epidermis, thickness_papillary, thickness_reticular,
+		ior_SC, ior_epidermis, ior_papillary, ior_reticular,
+		concentration_eumelanin, concentration_pheomelanin,
+		melanosomes_in_epidermis, hb_ratio,
+		whole_blood_papillary, whole_blood_reticular,
+		bilirubin_concentration,
+		betacarotene_SC, betacarotene_epidermis, betacarotene_dermis,
+		pOffMel, pOffBP, pOffBR );
+	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "biospec skin sss shaderop" );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
