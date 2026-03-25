@@ -82,6 +82,14 @@ namespace RISE
 			const Scalar		ior_dermis;
 			const Scalar		blood_oxygenation;
 
+			// --- Optional offset painters (null = uniform, no spatial variation) ---
+			// Each offset adds to its base scalar at the shading point:
+			//   effective_value = base_scalar + offset_painter.GetColor(ri)[0]
+			IPainter*			pOffsetMelanin;			///< Adds to melanin_fraction
+			IPainter*			pOffsetHbEpidermis;		///< Adds to hemoglobin_epidermis
+			IPainter*			pOffsetHbDermis;		///< Adds to hemoglobin_dermis
+			bool				m_has_offset_painters;	///< true if any offset painter is non-null
+
 			// --- Chromophore LUTs ---
 			IFunction1D*		pEumelaninExt;
 			IFunction1D*		pPheomelaninExt;
@@ -90,12 +98,30 @@ namespace RISE
 			IFunction1D*		pBetaCaroteneExt;
 			Scalar				hb_concentration;
 
-			// --- Tabulated profile ---
+		public:
+			// --- Tabulated profile (base, used when no offset painters) ---
 			static const int TABLE_SIZE = 1024;
+		protected:
 			Scalar				m_table_r2_max;
 			Scalar				m_table_r2_step;
 			RISEPel				m_Rd_table[TABLE_SIZE];
 			Scalar				m_max_distance;
+
+			// --- Profile LUT for spatially-varying parameters ---
+			// A 3D grid over (melanin_fraction, hemoglobin_epidermis, hemoglobin_dermis).
+			// Each grid point stores a full TABLE_SIZE Rd(r) table.
+			// At render time, trilinear interpolation selects the per-pixel profile.
+			// Only allocated when offset painters are present.
+			static const int N_MEL = 10;		///< Grid points for melanin axis
+			static const int N_HBE = 6;			///< Grid points for hemoglobin_epidermis axis
+			static const int N_HBD = 8;			///< Grid points for hemoglobin_dermis axis
+			static const int LUT_TOTAL = N_MEL * N_HBE * N_HBD;	///< Total grid points (480)
+
+			RISEPel*			m_lut_tables;	///< LUT_TOTAL × TABLE_SIZE, heap-allocated (null if uniform)
+			Scalar				m_mel_grid[N_MEL];
+			Scalar				m_hbe_grid[N_HBE];
+			Scalar				m_hbd_grid[N_HBD];
+			Scalar				m_max_distance_lut;		///< Conservative max distance across all grid points
 
 			// --- Per-object octrees (lazy init) ---
 			typedef std::map<const IObject*, PointSetOctree*> PointSetMap;
@@ -121,6 +147,34 @@ namespace RISE
 				const int channel
 				);
 
+			/// Overload for LUT: tabulate into a caller-provided table.
+			void TabulateProfileAtWavelengthInto(
+				const Scalar nm,
+				const int channel,
+				const Scalar mel_frac,
+				const Scalar hb_epi,
+				const Scalar hb_derm,
+				RISEPel* table_out,
+				Scalar table_r2_max,
+				Scalar table_r2_step
+				) const;
+
+			/// Precompute the 3D profile LUT (called only when offset painters exist).
+			void PrecomputeLUT();
+
+			/// Trilinear interpolation of the LUT into caller's stack buffer.
+			/// Thread-safe: reads only immutable LUT data, writes to caller's buffer.
+			void InterpolateProfile(
+				Scalar mel, Scalar hbe, Scalar hbd,
+				RISEPel* table_out
+				) const;
+
+			/// Flattened index into m_lut_tables.
+			int LUTIndex( int i_mel, int i_hbe, int i_hbd ) const
+			{
+				return (i_mel * N_HBE * N_HBD + i_hbe * N_HBD + i_hbd) * TABLE_SIZE;
+			}
+
 		public:
 			DonnerJensenSkinSSSShaderOp(
 				const unsigned int numPoints_,
@@ -138,7 +192,10 @@ namespace RISE
 				const Scalar epidermis_thickness_,
 				const Scalar ior_epidermis_,
 				const Scalar ior_dermis_,
-				const Scalar blood_oxygenation_
+				const Scalar blood_oxygenation_,
+				IPainter* pOffsetMelanin_ = 0,
+				IPainter* pOffsetHbEpidermis_ = 0,
+				IPainter* pOffsetHbDermis_ = 0
 				);
 
 			// --- IShaderOp interface ---

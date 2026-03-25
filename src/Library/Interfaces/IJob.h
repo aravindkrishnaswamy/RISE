@@ -1091,7 +1091,10 @@ namespace RISE
 			const double epidermis_thickness,
 			const double ior_epidermis,
 			const double ior_dermis,
-			const double blood_oxygenation
+			const double blood_oxygenation,
+			const char* melanin_fraction_offset,
+			const char* hemoglobin_epidermis_offset,
+			const char* hemoglobin_dermis_offset
 			) = 0;
 
 		virtual bool AddAreaLightShaderOp(

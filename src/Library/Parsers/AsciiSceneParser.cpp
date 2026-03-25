@@ -4340,6 +4340,9 @@ namespace RISE
 					double ior_epidermis = 1.4;
 					double ior_dermis = 1.38;
 					double blood_oxygenation = 0.7;
+					String melanin_fraction_offset = "";
+					String hemoglobin_epidermis_offset = "";
+					String hemoglobin_dermis_offset = "";
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -4383,6 +4386,12 @@ namespace RISE
 							ior_dermis = pvalue.toDouble();
 						} else if( pname == "blood_oxygenation" ) {
 							blood_oxygenation = pvalue.toDouble();
+						} else if( pname == "melanin_fraction_offset" ) {
+							melanin_fraction_offset = pvalue;
+						} else if( pname == "hemoglobin_epidermis_offset" ) {
+							hemoglobin_epidermis_offset = pvalue;
+						} else if( pname == "hemoglobin_dermis_offset" ) {
+							hemoglobin_dermis_offset = pvalue;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -4394,7 +4403,10 @@ namespace RISE
 						shader.c_str(), cache,
 						melanin_fraction, melanin_blend, hemoglobin_epidermis,
 						carotene_fraction, hemoglobin_dermis, epidermis_thickness,
-						ior_epidermis, ior_dermis, blood_oxygenation );
+						ior_epidermis, ior_dermis, blood_oxygenation,
+						melanin_fraction_offset.c_str(),
+						hemoglobin_epidermis_offset.c_str(),
+						hemoglobin_dermis_offset.c_str() );
 				}
 			};
 

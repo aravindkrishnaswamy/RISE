@@ -3255,7 +3255,10 @@ bool Job::AddDonnerJensenSkinSSSShaderOp(
 	const double epidermis_thickness,
 	const double ior_epidermis,
 	const double ior_dermis,
-	const double blood_oxygenation
+	const double blood_oxygenation,
+	const char* melanin_fraction_offset,
+	const char* hemoglobin_epidermis_offset,
+	const char* hemoglobin_dermis_offset
 	)
 {
 	IShader* pShader = pShaderManager->GetItem( shader );
@@ -3264,12 +3267,21 @@ bool Job::AddDonnerJensenSkinSSSShaderOp(
 		return false;
 	}
 
+	// Resolve optional offset painters (null if not found or empty string)
+	IPainter* pOffMel = (melanin_fraction_offset && melanin_fraction_offset[0]) ?
+		pPntManager->GetItem( melanin_fraction_offset ) : 0;
+	IPainter* pOffHbEpi = (hemoglobin_epidermis_offset && hemoglobin_epidermis_offset[0]) ?
+		pPntManager->GetItem( hemoglobin_epidermis_offset ) : 0;
+	IPainter* pOffHbDerm = (hemoglobin_dermis_offset && hemoglobin_dermis_offset[0]) ?
+		pPntManager->GetItem( hemoglobin_dermis_offset ) : 0;
+
 	IShaderOp* pShaderOp = new Implementation::DonnerJensenSkinSSSShaderOp(
 		numPoints, error, maxPointsPerNode, maxDepth, irrad_scale,
 		*pShader, cache,
 		melanin_fraction, melanin_blend, hemoglobin_epidermis,
 		carotene_fraction, hemoglobin_dermis, epidermis_thickness,
-		ior_epidermis, ior_dermis, blood_oxygenation );
+		ior_epidermis, ior_dermis, blood_oxygenation,
+		pOffMel, pOffHbEpi, pOffHbDerm );
 	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "donner jensen skin sss shaderop" );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
