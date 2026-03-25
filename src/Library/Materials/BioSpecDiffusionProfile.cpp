@@ -382,7 +382,22 @@ void BioSpecDiffusionProfile::PrecomputeProfileAtWavelength(
 	double composite_R[N_FREQ];
 	ComputeCompositeProfileHankel( layers, 4, grid.s, N_FREQ, N_MULTIPOLE, composite_R );
 
-	// Inverse Hankel transform to tabulated Rd(r)
+	// Inverse Hankel transform to tabulated Rd(r), with hybrid
+	// Hankel+dipole correction to eliminate J0 ringing artifacts.
+	//
+	// The inverse Hankel transform of the 4-layer composite profile
+	// produces J0 Bessel function ringing at medium-large r due to
+	// finite quadrature on the log-spaced frequency grid.  We correct
+	// this by computing a reference single-layer dipole profile (using
+	// the reticular dermis, the deepest and most spatially extended
+	// layer) scaled by Beer-Lambert absorption through the 3 upper
+	// layers and Fresnel coupling at all internal boundaries.
+	//
+	// Near-field (r < 2/sigma_tr): use max(Hankel, reference) to
+	//   preserve inter-layer coupling captured by the Hankel composite
+	// Far-field (r >= 2/sigma_tr): use reference only to avoid ringing
+	// Monotone decrease enforcement past the profile peak
+
 	static const int N_RADIAL = 256;
 	double r_samples[N_RADIAL];
 	double Rd_samples[N_RADIAL];
@@ -393,13 +408,67 @@ void BioSpecDiffusionProfile::PrecomputeProfileAtWavelength(
 	const double log_r_max = log( r_max );
 	const double log_r_step = (log_r_max - log_r_min) / (N_RADIAL - 1);
 
+	// Reference: reticular dermis (layer 3) single-layer dipole,
+	// scaled by Beer-Lambert transmission through upper 3 layers
+	// and Fresnel coupling at all internal boundaries.
+	const LayerParams& ret = layers[3];
+
+	const double T_upper = exp(
+		-layers[0].sigma_a * layers[0].thickness
+		- layers[1].sigma_a * layers[1].thickness
+		- layers[2].sigma_a * layers[2].thickness );
+
+	double Ft_composite = 1.0;
+	for( int L = 0; L < 3; L++ )
+	{
+		const double eta_down = layers[L].ior / layers[L+1].ior;
+		const double eta_up = layers[L+1].ior / layers[L].ior;
+		Ft_composite *= (1.0 - ComputeFdr(eta_down)) * (1.0 - ComputeFdr(eta_up));
+	}
+
+	const double reference_scale = T_upper * Ft_composite;
+	const double r_crossover = (ret.sigma_tr > 1e-10) ? (2.0 / ret.sigma_tr) : r_max;
+
 	for( int i = 0; i < N_RADIAL; i++ )
 	{
 		r_samples[i] = exp( log_r_min + i * log_r_step );
-		Rd_samples[i] = grid.InverseTransform( composite_R, r_samples[i] ) / (2.0 * PI);
+		const double r = r_samples[i];
+		const double r2 = r * r;
 
-		// Clamp negative values (numerical noise)
-		if( Rd_samples[i] < 0 ) Rd_samples[i] = 0;
+		// Hankel inverse
+		double Rd_hankel = grid.InverseTransform( composite_R, r ) / (2.0 * PI);
+		if( Rd_hankel < 0 ) Rd_hankel = 0;
+
+		// Reference dipole (reticular dermis)
+		const double d_r = sqrt( r2 + ret.z_r * ret.z_r );
+		const double d_v = sqrt( r2 + ret.z_v * ret.z_v );
+		const double term_r = ret.z_r * (1.0 + ret.sigma_tr * d_r) *
+			exp( -ret.sigma_tr * d_r ) / (d_r * d_r * d_r);
+		const double term_v = ret.z_v * (1.0 + ret.sigma_tr * d_v) *
+			exp( -ret.sigma_tr * d_v ) / (d_v * d_v * d_v);
+		double Rd_ref = reference_scale * (ret.alpha_prime / (4.0 * PI)) * (term_r + term_v);
+		if( Rd_ref < 0 ) Rd_ref = 0;
+
+		// Hybrid correction
+		if( r < r_crossover )
+			Rd_samples[i] = (Rd_hankel > Rd_ref) ? Rd_hankel : Rd_ref;
+		else
+			Rd_samples[i] = Rd_ref;
+	}
+
+	// Enforce monotone decrease past the peak
+	{
+		int peak = 0;
+		for( int i = 1; i < N_RADIAL; i++ )
+		{
+			if( Rd_samples[i] > Rd_samples[peak] )
+				peak = i;
+		}
+		for( int i = peak + 1; i < N_RADIAL; i++ )
+		{
+			if( Rd_samples[i] > Rd_samples[i - 1] )
+				Rd_samples[i] = Rd_samples[i - 1];
+		}
 	}
 
 	// Determine rate range from per-layer sigma_tr
