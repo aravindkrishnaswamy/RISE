@@ -148,6 +148,71 @@ void EllipsoidGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Poin
 	}
 }
 
+SurfaceDerivatives EllipsoidGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+
+	// Semi-axes: m_vRadius stores diameters
+	const Scalar a = m_vRadius.x * 0.5;
+	const Scalar b = m_vRadius.y * 0.5;
+	const Scalar c = m_vRadius.z * 0.5;
+
+	// Recover surface parameters from object-space point
+	// P(theta,phi) = (a*sin(theta)*cos(phi), b*cos(theta), c*sin(theta)*sin(phi))
+	// phi = atan2(z/c, x/a)
+	const Scalar xn = (a > NEARZERO) ? objSpacePoint.x / a : 0.0;
+	const Scalar zn = (c > NEARZERO) ? objSpacePoint.z / c : 0.0;
+	const Scalar phi = atan2( zn, xn );
+
+	// theta = acos(clamp(y/b, -1, 1))
+	const Scalar yn = (b > NEARZERO) ? objSpacePoint.y / b : 0.0;
+	const Scalar clampedYn = yn > 1.0 ? 1.0 : (yn < -1.0 ? -1.0 : yn);
+	const Scalar theta = acos( clampedYn );
+	const Scalar sinTheta = sin( theta );
+	const Scalar cosTheta = clampedYn;  // cos(acos(x)) = x
+
+	const Scalar cosPhi = cos(phi);
+	const Scalar sinPhi = sin(phi);
+
+	// Position partial derivatives
+	// dpdu = dP/dphi
+	sd.dpdu = Vector3( -a * sinTheta * sinPhi, 0.0, c * sinTheta * cosPhi );
+	// dpdv = dP/dtheta
+	sd.dpdv = Vector3( a * cosTheta * cosPhi, -b * sinTheta, c * cosTheta * sinPhi );
+
+	// Normal derivatives via the gradient of the implicit surface
+	// N_unnorm = (2x/a^2, 2y/b^2, 2z/c^2) = gradient of (x/a)^2+(y/b)^2+(z/c)^2
+	// Equivalently N_unnorm = (Q._00*x, Q._11*y, Q._22*z) since Q._ii = 1/semi_i^2
+	//
+	// dN_unnorm/dphi = (Q._00 * dpdu.x, Q._11 * dpdu.y, Q._22 * dpdu.z)
+	// dN_unnorm/dtheta = (Q._00 * dpdv.x, Q._11 * dpdv.y, Q._22 * dpdv.z)
+	//
+	// For the normalized normal N = N_unnorm / |N_unnorm|, we use:
+	// dN/du = (dN_unnorm/du - N * dot(N, dN_unnorm/du)) / |N_unnorm|
+	const Vector3 Nu( Q._00 * sd.dpdu.x, Q._11 * sd.dpdu.y, Q._22 * sd.dpdu.z );
+	const Vector3 Nv( Q._00 * sd.dpdv.x, Q._11 * sd.dpdv.y, Q._22 * sd.dpdv.z );
+
+	const Vector3 Nunnorm( Q._00 * objSpacePoint.x, Q._11 * objSpacePoint.y, Q._22 * objSpacePoint.z );
+	const Scalar lenN = Vector3Ops::Magnitude( Nunnorm );
+
+	if( lenN > NEARZERO )
+	{
+		const Scalar invLen = 1.0 / lenN;
+		const Vector3 N = Nunnorm * invLen;
+
+		const Scalar dotNNu = Vector3Ops::Dot( N, Nu );
+		const Scalar dotNNv = Vector3Ops::Dot( N, Nv );
+
+		sd.dndu = (Nu - N * dotNNu) * invLen;
+		sd.dndv = (Nv - N * dotNNv) * invLen;
+	}
+
+	sd.uv = Point2( phi, theta );
+	sd.valid = true;
+
+	return sd;
+}
+
 Scalar EllipsoidGeometry::GetArea( ) const
 {
 	// This is an approximation taken from:

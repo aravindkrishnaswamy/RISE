@@ -83,6 +83,8 @@ namespace RISE
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			Scalar GetArea() const;
 
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+
 			// Functions special to this class
 
 			// Adds a triangle to the existing list of triangles

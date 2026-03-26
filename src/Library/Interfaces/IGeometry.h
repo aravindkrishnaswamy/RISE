@@ -21,9 +21,29 @@
 
 namespace RISE
 {
+	//! Surface derivative data for specular manifold sampling.
+	//! Contains position and normal partial derivatives at a surface point,
+	//! needed for the Newton solver's constraint Jacobian.
+	struct SurfaceDerivatives
+	{
+		Vector3 dpdu;		///< Position partial derivative w.r.t. first surface parameter
+		Vector3 dpdv;		///< Position partial derivative w.r.t. second surface parameter
+		Vector3 dndu;		///< Normal partial derivative w.r.t. first surface parameter
+		Vector3 dndv;		///< Normal partial derivative w.r.t. second surface parameter
+		Point2  uv;			///< Surface parameters at this point
+		bool    valid;		///< True if derivatives were successfully computed
+
+		SurfaceDerivatives() :
+		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
+		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
+		uv( Point2(0,0) ), valid( false )
+		{
+		}
+	};
+
 	//! Geometry represents the basic geometry of a scene object
 	//! It needs only to provide basic geometric intersection details
-	class IGeometry : 
+	class IGeometry :
 		public virtual IReference,
 		public virtual IKeyframable
 	{
@@ -91,6 +111,21 @@ namespace RISE
 		//! Gets the area of the geometry.  Needed for luminaries.
 		/// \return Area of the geometry in Meters Squared
 		virtual Scalar GetArea( ) const = 0;
+
+		//! Computes surface derivatives at a point on the geometry.
+		//! Used by specular manifold sampling for the Newton solver's
+		//! constraint Jacobian.  All inputs and outputs are in object space.
+		//!
+		//! Default implementation returns invalid (valid=false).
+		//! Geometry subclasses should override with analytical derivatives.
+		/// \return SurfaceDerivatives struct with dpdu, dpdv, dndu, dndv
+		virtual SurfaceDerivatives ComputeSurfaceDerivatives(
+			const Point3& objSpacePoint,		///< [in] Point on the surface in object space
+			const Vector3& objSpaceNormal		///< [in] Normal at the point in object space
+			) const
+		{
+			return SurfaceDerivatives();
+		}
 	};
 }
 
