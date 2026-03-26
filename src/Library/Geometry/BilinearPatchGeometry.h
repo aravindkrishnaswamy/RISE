@@ -72,6 +72,8 @@ namespace RISE
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			Scalar GetArea( ) const;
 
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+
 			// From TreeElementProcessor
 			typedef const BilinearPatch*		MYOBJ;
 				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;

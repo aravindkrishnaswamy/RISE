@@ -240,6 +240,36 @@ void CircularDiskGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 	}
 }
 
+SurfaceDerivatives CircularDiskGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+	sd.dndu = Vector3( 0, 0, 0 );
+	sd.dndv = Vector3( 0, 0, 0 );
+	sd.valid = true;
+
+	switch( chAxis )
+	{
+	case 'x':
+		sd.dpdu = Vector3( 0, 0, 1 );
+		sd.dpdv = Vector3( 0, 1, 0 );
+		sd.uv = Point2( objSpacePoint.z * OVRadius, objSpacePoint.y * OVRadius );
+		break;
+	case 'y':
+		sd.dpdu = Vector3( 1, 0, 0 );
+		sd.dpdv = Vector3( 0, 0, 1 );
+		sd.uv = Point2( objSpacePoint.x * OVRadius, objSpacePoint.z * OVRadius );
+		break;
+	default:
+	case 'z':
+		sd.dpdu = Vector3( 1, 0, 0 );
+		sd.dpdv = Vector3( 0, 1, 0 );
+		sd.uv = Point2( objSpacePoint.x * OVRadius, objSpacePoint.y * OVRadius );
+		break;
+	}
+
+	return sd;
+}
+
 Scalar CircularDiskGeometry::GetArea( ) const
 {
 	return PI*sqrRadius;
