@@ -5421,6 +5421,12 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
+					bool smsEnabled = true;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 30;
+					bool smsBiased = true;
+					unsigned int smsBernoulliTrials = 100;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5479,6 +5485,18 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else if( pname == "sms_bernoulli_trials" ) {
+							smsBernoulliTrials = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5491,7 +5509,8 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight );
+						showLuminaires, useiorstack, onlyonelight,
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
 				}
 			};
 
@@ -5526,6 +5545,12 @@ namespace RISE
 					double nmend = 780.0;
 					unsigned int num_wavelengths = 80;
 					unsigned int spectral_samples = 16;
+					bool smsEnabled = true;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 30;
+					bool smsBiased = true;
+					unsigned int smsBernoulliTrials = 100;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5592,6 +5617,18 @@ namespace RISE
 							num_wavelengths = pvalue.toUInt();
 						} else if( pname == "spectral_samples" ) {
 							spectral_samples = pvalue.toUInt();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else if( pname == "sms_bernoulli_trials" ) {
+							smsBernoulliTrials = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5605,7 +5642,8 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						nmbegin, nmend, num_wavelengths, spectral_samples );
+						nmbegin, nmend, num_wavelengths, spectral_samples,
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
 				}
 			};
 

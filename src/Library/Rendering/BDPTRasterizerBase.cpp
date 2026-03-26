@@ -39,19 +39,29 @@ using namespace RISE::Implementation;
 BDPTRasterizerBase::BDPTRasterizerBase(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
-	unsigned int maxLightDepth
+	unsigned int maxLightDepth,
+	const ManifoldSolverConfig& smsConfig
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   pIntegrator( 0 ),
+  pManifoldSolver( 0 ),
   pSplatFilm( 0 )
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
 	pIntegrator->addref();
+
+	if( smsConfig.enabled )
+	{
+		pManifoldSolver = new ManifoldSolver( smsConfig );
+		pManifoldSolver->addref();
+		pIntegrator->SetManifoldSolver( pManifoldSolver );
+	}
 }
 
 BDPTRasterizerBase::~BDPTRasterizerBase()
 {
 	safe_release( pIntegrator );
+	safe_release( pManifoldSolver );
 	safe_release( pSplatFilm );
 }
 

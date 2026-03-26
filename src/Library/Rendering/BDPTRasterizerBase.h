@@ -26,6 +26,7 @@
 #include "PixelBasedRasterizerHelper.h"
 #include "SplatFilm.h"
 #include "../Shaders/BDPTIntegrator.h"
+#include "../Utilities/ManifoldSolver.h"
 
 namespace RISE
 {
@@ -35,6 +36,7 @@ namespace RISE
 		{
 		protected:
 			BDPTIntegrator*			pIntegrator;
+			ManifoldSolver*			pManifoldSolver;
 			mutable SplatFilm*		pSplatFilm;
 
 			virtual ~BDPTRasterizerBase();
@@ -50,7 +52,8 @@ namespace RISE
 			BDPTRasterizerBase(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
-				unsigned int maxLightDepth
+				unsigned int maxLightDepth,
+				const ManifoldSolverConfig& smsConfig
 				);
 
 			void RasterizeScene(

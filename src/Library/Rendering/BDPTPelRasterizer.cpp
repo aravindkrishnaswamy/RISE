@@ -28,10 +28,11 @@ static const Scalar BDPT_MAX_CONTRIBUTION = 1000.0;
 BDPTPelRasterizer::BDPTPelRasterizer(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
-	unsigned int maxLightDepth
+	unsigned int maxLightDepth,
+	const ManifoldSolverConfig& smsConfig
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth ),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig ),
   PixelBasedPelRasterizer( pCaster_ )
 {
 }
@@ -103,6 +104,25 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 		}
 		else
 		{
+			sampleColor = sampleColor + weighted;
+		}
+	}
+
+	// SMS contributions for specular caustic chains
+	if( pIntegrator ) {
+		std::vector<BDPTIntegrator::ConnectionResult> smsResults =
+			pIntegrator->EvaluateSMSStrategies(
+				eyeVerts, pScene, *pCaster, camera, rc.random );
+
+		for( unsigned int r=0; r<smsResults.size(); r++ ) {
+			const BDPTIntegrator::ConnectionResult& cr = smsResults[r];
+			if( !cr.valid ) continue;
+
+			RISEPel weighted = cr.contribution * cr.misWeight;
+			const Scalar maxVal = ColorMath::MaxValue( weighted );
+			if( maxVal > BDPT_MAX_CONTRIBUTION ) {
+				weighted = weighted * (BDPT_MAX_CONTRIBUTION / maxVal);
+			}
 			sampleColor = sampleColor + weighted;
 		}
 	}

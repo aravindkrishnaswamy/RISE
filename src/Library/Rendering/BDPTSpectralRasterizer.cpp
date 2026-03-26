@@ -42,10 +42,11 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const Scalar lambda_begin_,
 	const Scalar lambda_end_,
 	const unsigned int num_wavelengths_,
-	const unsigned int spectralSamples
+	const unsigned int spectralSamples,
+	const ManifoldSolverConfig& smsConfig
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth ),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig ),
   PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples )
 {
 }
@@ -121,6 +122,24 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 		}
 		else
 		{
+			sampleValue += weighted;
+		}
+	}
+
+	// SMS contributions for specular caustic chains (spectral)
+	if( pIntegrator ) {
+		std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
+			pIntegrator->EvaluateSMSStrategiesNM(
+				eyeVerts, pScene, *pCaster, camera, rc.random, nm );
+
+		for( unsigned int r=0; r<smsResults.size(); r++ ) {
+			const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
+			if( !cr.valid ) continue;
+
+			Scalar weighted = cr.contribution * cr.misWeight;
+			if( fabs(weighted) > BDPT_MAX_CONTRIBUTION ) {
+				weighted = (weighted > 0) ? BDPT_MAX_CONTRIBUTION : -BDPT_MAX_CONTRIBUTION;
+			}
 			sampleValue += weighted;
 		}
 	}

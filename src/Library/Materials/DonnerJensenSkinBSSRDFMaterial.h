@@ -43,12 +43,15 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			DonnerJensenSkinDiffusionProfile*		pProfile;
+			const IPainter&							iorPainter;
+			const Scalar							surfaceRoughness;
 
 			virtual ~DonnerJensenSkinBSSRDFMaterial()
 			{
 				safe_release( pBSDF );
 				safe_release( pSPF );
 				safe_release( pProfile );
+				iorPainter.release();
 			}
 
 		public:
@@ -63,8 +66,11 @@ namespace RISE
 				const IPainter& ior_dermis_,
 				const IPainter& blood_oxygenation_,
 				const Scalar roughness
-				)
+				) :
+			iorPainter( ior_epidermis_ ),
+			surfaceRoughness( roughness )
 			{
+				iorPainter.addref();
 				// Surface BSDF/SPF use epidermis IOR for Fresnel reflection.
 				// The absorption and scattering painters are not used by the
 				// surface BSDF/SPF for BSSRDF materials, so we pass the IOR
@@ -107,6 +113,33 @@ namespace RISE
 
 			/// \return The diffusion profile for BSSRDF importance sampling.
 			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return pProfile; };
+
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
+				info.canRefract = true;
+				info.ior = iorPainter.GetColor( ri )[0];
+				info.valid = true;
+				return info;
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack,
+				const Scalar nm
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
+				info.canRefract = true;
+				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.valid = true;
+				return info;
+			}
 		};
 	}
 }

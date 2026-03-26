@@ -4229,6 +4229,7 @@ namespace RISE
 #include "Rendering/BDPTPelRasterizer.h"
 #include "Rendering/BDPTSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
+#include "Utilities/ManifoldSolver.h"
 
 namespace RISE
 {
@@ -4240,14 +4241,30 @@ namespace RISE
 								ISampling2D* pSamples,
 								IPixelFilter* pFilter,
 								const unsigned int maxEyeDepth,
-								const unsigned int maxLightDepth
+								const unsigned int maxLightDepth,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth );
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+		}
+
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4270,16 +4287,32 @@ namespace RISE
 								const Scalar lambda_begin,
 								const Scalar lambda_end,
 								const unsigned int num_wavelengths,
-								const unsigned int spectral_samples
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+		}
+
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );

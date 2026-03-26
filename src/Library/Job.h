@@ -1408,7 +1408,13 @@ namespace RISE
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
+			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
+			const double smsThreshold,								///< [in] SMS convergence threshold
+			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
+			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
+			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
 			);
 
 		//! Sets the rasterizer type to be spectral BDPT
@@ -1439,7 +1445,13 @@ namespace RISE
 			const double nmbegin,									///< [in] Start wavelength (nm)
 			const double nmend,										///< [in] End wavelength (nm)
 			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
-			const unsigned int spectral_samples						///< [in] Spectral samples per pixel
+			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
+			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
+			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
+			const double smsThreshold,								///< [in] SMS convergence threshold
+			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
+			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
+			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
 			);
 
 		bool SetMLTRasterizer(

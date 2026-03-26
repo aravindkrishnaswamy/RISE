@@ -2010,7 +2010,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
-								const unsigned int maxLightDepth	///< [in] Maximum light subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2025,7 +2031,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
 								const Scalar lambda_end,			///< [in] End wavelength (nm)
 								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
-								const unsigned int spectral_samples	///< [in] Spectral samples per pixel
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer

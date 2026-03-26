@@ -1356,6 +1356,9 @@
 		F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
 		F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
 		F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */; };
+		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
+		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
+		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2063,6 +2066,8 @@
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinSSSShaderOp.h; sourceTree = "<group>"; };
 		F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
+		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
+		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2887,6 +2892,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */,
+				F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */,
 				F2C5D5D62F70D4D000546C97 /* HankelTransform.h */,
 				F2C5D5D72F70D4D000546C97 /* SumOfExponentialsFit.h */,
 				F2C5D57D2F6EA5B300546C97 /* PSSMLTSampler.h */,
@@ -3478,6 +3485,7 @@
 				F27F0CAE069C42910069C9E5 /* VolumeOp_LMIP.h in Headers */,
 				F27F0CAF069C42910069C9E5 /* VolumeOp_MIP.h in Headers */,
 				F27F0CB0069C42910069C9E5 /* ZuckerHummelOperator.h in Headers */,
+				F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */,
 				F2C5D5752F6E44DE00546C97 /* LightSampler.h in Headers */,
 				F298C65407B14247007CDF08 /* StandardShader.h in Headers */,
 				F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */,
@@ -3659,6 +3667,7 @@
 				F27F0B12069C42910069C9E5 /* RayBilinearPatchIntersection.cpp in Sources */,
 				F27F0B13069C42910069C9E5 /* RayBoxIntersection.cpp in Sources */,
 				F27F0B14069C42910069C9E5 /* RayCylinderIntersection.cpp in Sources */,
+				F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */,
 				F27F0B17069C42910069C9E5 /* RayPlaneIntersection.cpp in Sources */,
 				F27F0B19069C42910069C9E5 /* RayQuadricIntersection.cpp in Sources */,
 				F27F0B1A069C42910069C9E5 /* RaySphereIntersection.cpp in Sources */,
@@ -4295,6 +4304,7 @@
 				F24B738C2F52A632008304C4 /* LuminaryManager.h in Sources */,
 				F24B738D2F52A632008304C4 /* PixelBasedPelRasterizer.cpp in Sources */,
 				F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */,
+				F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */,
 				F24B738F2F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */,
 				F24B73902F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.h in Sources */,
 				F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */,

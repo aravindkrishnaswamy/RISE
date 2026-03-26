@@ -60,7 +60,8 @@ namespace RISE
 			BDPTPelRasterizer(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
-				unsigned int maxLightDepth
+				unsigned int maxLightDepth,
+				const ManifoldSolverConfig& smsConfig
 				);
 		};
 	}

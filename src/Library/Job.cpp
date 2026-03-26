@@ -4112,7 +4112,13 @@ bool Job::SetBDPTPelRasterizer(
 	const double pixelFilterParamB,
 	const bool bShowLuminaires,
 	const bool bUseIORStack,
-	const bool bChooseOnlyOneLight
+	const bool bChooseOnlyOneLight,
+	const bool smsEnabled,
+	const unsigned int smsMaxIterations,
+	const double smsThreshold,
+	const unsigned int smsMaxChainDepth,
+	const bool smsBiased,
+	const unsigned int smsBernoulliTrials
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4154,7 +4160,8 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth );
+	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4194,7 +4201,13 @@ bool Job::SetBDPTSpectralRasterizer(
 	const double nmbegin,
 	const double nmend,
 	const unsigned int num_wavelengths,
-	const unsigned int spectral_samples
+	const unsigned int spectral_samples,
+	const bool smsEnabled,
+	const unsigned int smsMaxIterations,
+	const double smsThreshold,
+	const unsigned int smsMaxChainDepth,
+	const bool smsBiased,
+	const unsigned int smsBernoulliTrials
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4237,7 +4250,8 @@ bool Job::SetBDPTSpectralRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		nmbegin, nmend, num_wavelengths, spectral_samples );
+		nmbegin, nmend, num_wavelengths, spectral_samples,
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );

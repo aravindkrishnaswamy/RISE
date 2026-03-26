@@ -43,12 +43,15 @@ namespace RISE
 			SubSurfaceScatteringBSDF*		pBSDF;
 			SubSurfaceScatteringSPF*		pSPF;
 			BioSpecDiffusionProfile*		pProfile;
+			const IPainter&					iorPainter;
+			const Scalar					surfaceRoughness;
 
 			virtual ~BioSpecSkinBSSRDFMaterial()
 			{
 				safe_release( pBSDF );
 				safe_release( pSPF );
 				safe_release( pProfile );
+				iorPainter.release();
 			}
 
 		public:
@@ -74,8 +77,11 @@ namespace RISE
 				const IPainter& folds_aspect_ratio_,
 				const bool bSubdermalLayer,
 				const Scalar roughness
-				)
+				) :
+			iorPainter( ior_SC_ ),
+			surfaceRoughness( roughness )
 			{
+				iorPainter.addref();
 				// The BSDF and SPF need IOR, absorption, and scattering painters.
 				// For the surface boundary, we use the SC IOR.  The absorption and
 				// scattering painters are not used by the surface BSDF/SPF for
@@ -130,6 +136,33 @@ namespace RISE
 
 			/// \return The diffusion profile for BSSRDF importance sampling.
 			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return pProfile; };
+
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
+				info.canRefract = true;
+				info.ior = iorPainter.GetColor( ri )[0];
+				info.valid = true;
+				return info;
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack,
+				const Scalar nm
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
+				info.canRefract = true;
+				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.valid = true;
+				return info;
+			}
 		};
 	}
 }

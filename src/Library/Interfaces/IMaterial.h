@@ -15,6 +15,7 @@
 #define IMATERIAL_
 
 #include "IReference.h"
+#include "SpecularInfo.h"
 
 namespace RISE
 {
@@ -22,6 +23,8 @@ namespace RISE
 	class IBSDF;
 	class IEmitter;
 	class ISubSurfaceDiffusionProfile;
+	class RayIntersectionGeometric;
+	class IORStack;
 
 	//! The IMaterial interface is basically an aggregate of other interfaces.  Though we don't actually
 	//! aggregate the interfaces, in essense what is all it does
@@ -61,6 +64,31 @@ namespace RISE
 		/// probe ray casting to find entry points on the surface, using
 		/// this profile's Rd(r) for weighting and sampling.
 		virtual ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return 0; }
+
+		/// \return Information about this material's specular (delta) behavior.
+		/// Used by the specular manifold sampling solver to determine constraint
+		/// type and IOR at each specular vertex in the chain.
+		/// Default returns non-specular.  Materials with delta interactions
+		/// (DielectricMaterial, PerfectReflectorMaterial, etc.) override this.
+		virtual SpecularInfo GetSpecularInfo(
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack
+			) const
+		{
+			return SpecularInfo();
+		}
+
+		/// \return Spectral variant of GetSpecularInfo for wavelength-dependent IOR.
+		/// Default delegates to GetSpecularInfo.  DielectricMaterial overrides
+		/// to use wavelength-specific IOR for dispersion.
+		virtual SpecularInfo GetSpecularInfoNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack,
+			const Scalar nm
+			) const
+		{
+			return GetSpecularInfo( ri, ior_stack );
+		}
 	};
 }
 

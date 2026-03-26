@@ -34,6 +34,19 @@ namespace RISE
 		public:
 			PerfectReflectorSPF( const IPainter& R_ );
 
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = true;
+				info.canRefract = false;
+				info.ior = 1.0;
+				info.valid = true;
+				return info;
+			}
+
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
 			void	Scatter(

@@ -50,6 +50,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
 	$(PATHLIBRARY)Utilities/MemoryBuffer.cpp					\
 	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
+	$(PATHLIBRARY)Utilities/ManifoldSolver.cpp					\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\

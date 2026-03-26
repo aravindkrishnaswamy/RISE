@@ -76,6 +76,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Lights/LightSampler.h"
+#include "../Utilities/ManifoldSolver.h"
 #include "BDPTVertex.h"
 #include <vector>
 
@@ -93,6 +94,7 @@ namespace RISE
 			unsigned int		maxEyeDepth;
 			unsigned int		maxLightDepth;
 			LightSampler*		pLightSampler;
+			ManifoldSolver*		pManifoldSolver;
 
 			virtual ~BDPTIntegrator();
 
@@ -103,6 +105,7 @@ namespace RISE
 				);
 
 			void SetLightSampler( LightSampler* pSampler );
+			void SetManifoldSolver( ManifoldSolver* pSolver );
 
 			/// Result of connecting a single (s,t) strategy
 			struct ConnectionResult
@@ -231,6 +234,28 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
+				const Scalar nm
+				) const;
+
+			/// Evaluates SMS strategies for specular caustic paths (RGB).
+			/// For each non-delta eye vertex, traces toward emitters to find
+			/// specular object chains, then uses ManifoldSolver to find valid
+			/// specular paths.
+			std::vector<ConnectionResult> EvaluateSMSStrategies(
+				const std::vector<BDPTVertex>& eyeVerts,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const ICamera& camera,
+				const RandomNumberGenerator& rng
+				) const;
+
+			/// Spectral variant of EvaluateSMSStrategies.
+			std::vector<ConnectionResultNM> EvaluateSMSStrategiesNM(
+				const std::vector<BDPTVertex>& eyeVerts,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const ICamera& camera,
+				const RandomNumberGenerator& rng,
 				const Scalar nm
 				) const;
 

@@ -50,12 +50,15 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			BurleyNormalizedDiffusionProfile*		pProfile;
+			const IPainter&							iorPainter;
+			const Scalar							surfaceRoughness;
 
 			virtual ~SubSurfaceScatteringMaterial()
 			{
 				safe_release( pBSDF );
 				safe_release( pSPF );
 				safe_release( pProfile );
+				iorPainter.release();
 			}
 
 		public:
@@ -65,8 +68,11 @@ namespace RISE
 				const IPainter& scattering,
 				const Scalar g,
 				const Scalar roughness
-				)
+				) :
+			iorPainter( ior ),
+			surfaceRoughness( roughness )
 			{
+				iorPainter.addref();
 				pBSDF = new SubSurfaceScatteringBSDF( ior, absorption, scattering, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
@@ -97,6 +103,33 @@ namespace RISE
 
 			/// \return The diffusion profile for BSSRDF importance sampling.
 			inline ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return pProfile; };
+
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
+				info.canRefract = true;
+				info.ior = iorPainter.GetColor( ri )[0];
+				info.valid = true;
+				return info;
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack,
+				const Scalar nm
+				) const
+			{
+				SpecularInfo info;
+				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
+				info.canRefract = true;
+				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.valid = true;
+				return info;
+			}
 		};
 	}
 }
