@@ -1093,6 +1093,24 @@ namespace RISE
 			const bool translucents									///< [in] Should translucent rays be traced?
 			);
 
+		bool AddSMSShaderOp(
+			const char* name,
+			const unsigned int maxIterations,
+			const double threshold,
+			const unsigned int maxChainDepth,
+			const bool biased
+			);
+
+		bool AddMISPathTracingShaderOp(
+			const char* name,
+			const bool branch,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased
+			);
+
 		bool AddAmbientOcclusionShaderOp(
 			const char* name,										///< [in] Name of the shaderop
 			const unsigned int numtheta,							///< [in] Number of samples in the theta direction

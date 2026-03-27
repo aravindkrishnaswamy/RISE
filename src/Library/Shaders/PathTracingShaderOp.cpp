@@ -125,6 +125,7 @@ void PathTracingShaderOp::PerformOperation(
 					if( scatmaxv > 0.0 ) {
 						RISEPel		cthis(0,0,0);
 						rs2.importance = rs.importance * scatmaxv;
+						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
 						if( !bFinalGather ) {
 							rs2.type = scat.type==ScatteredRay::eRayDiffuse ? IRayCaster::RAY_STATE::eRayDiffuse : IRayCaster::RAY_STATE::eRaySpecular;
 						}
@@ -142,10 +143,11 @@ void PathTracingShaderOp::PerformOperation(
 				if( !bFinalGather ) {
 					rs2.type = pScat->type==ScatteredRay::eRayDiffuse ? IRayCaster::RAY_STATE::eRayDiffuse : IRayCaster::RAY_STATE::eRaySpecular;
 				}
-				
+
 				Ray ray = pScat->ray;
 				ray.Advance( 1e-8 );
 				rs2.importance = rs.importance * ColorMath::MaxValue(pScat->kray);
+				rs2.bsdfPdf = pScat->isDelta ? 0 : pScat->pdf;
 				caster.CastRay( rc, ri.geometric.rast, ray, c, rs2, 0, ri.pRadianceMap, pScat->ior_stack?pScat->ior_stack:ior_stack );
 				c = c * pScat->kray;
 			}

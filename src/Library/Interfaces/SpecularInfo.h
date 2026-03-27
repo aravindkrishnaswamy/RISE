@@ -17,6 +17,7 @@
 #define SPECULAR_INFO_
 
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/Color/Color.h"
 
 namespace RISE
 {
@@ -28,12 +29,14 @@ namespace RISE
 		bool    isSpecular;		///< True if this material has delta (specular) interactions
 		bool    canRefract;		///< True if refraction is possible (not a pure mirror)
 		Scalar  ior;			///< Index of refraction at this point (for refraction; 1.0 if reflection-only)
+		RISEPel attenuation;	///< Color attenuation for transmitted/reflected light (e.g., colored glass refractance)
 		bool    valid;			///< True if this info was successfully computed
 
 		SpecularInfo() :
 		isSpecular( false ),
 		canRefract( false ),
 		ior( 1.0 ),
+		attenuation( 1.0, 1.0, 1.0 ),
 		valid( false )
 		{
 		}

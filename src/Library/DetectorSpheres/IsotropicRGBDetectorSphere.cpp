@@ -60,7 +60,7 @@ void IsotropicRGBDetectorSphere::InitPatches(
 	m_pTopPatches = new PATCH[numPatches];
 	GlobalLog()->PrintNew( m_pTopPatches, __FILE__, __LINE__, "top patches" );
 
-	memset( m_pTopPatches, 0, sizeof( PATCH ) * numPatches );
+    memset( (void*)m_pTopPatches, 0, sizeof( PATCH ) * numPatches );
 
 	m_numPatches = numPatches;
 
@@ -128,7 +128,7 @@ void IsotropicRGBDetectorSphere::InitPatches(
 	m_pBottomPatches = new PATCH[m_numPatches];
 	GlobalLog()->PrintNew( m_pBottomPatches, __FILE__, __LINE__, "bottom patches" );
 
-	memcpy( m_pBottomPatches, m_pTopPatches, sizeof( PATCH ) * m_numPatches );
+    memcpy( (void*)m_pBottomPatches, m_pTopPatches, sizeof( PATCH ) * m_numPatches );
 
 	// Now go through and adjust the thetas
 	for( i=0; i<m_numPatches; i++ ) {

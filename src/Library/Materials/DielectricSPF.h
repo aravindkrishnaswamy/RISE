@@ -76,6 +76,7 @@ namespace RISE
 				info.isSpecular = true;
 				info.canRefract = true;
 				info.ior = rIndex.GetColor( ri )[0];
+				info.attenuation = tau.GetColor( ri );
 				info.valid = true;
 				return info;
 			}

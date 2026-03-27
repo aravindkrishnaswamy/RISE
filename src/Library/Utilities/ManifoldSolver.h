@@ -63,6 +63,7 @@ namespace RISE
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
 			Point2				uv;				///< Surface parameters
 			Scalar				eta;			///< IOR ratio (n_incoming / n_outgoing) at this vertex
+			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance)
 			bool				isReflection;	///< True if this vertex uses reflection, false for refraction
 			const IObject*		pObject;		///< Object this vertex lies on
 			const IMaterial*	pMaterial;		///< Material at this vertex
@@ -75,6 +76,7 @@ namespace RISE
 			dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
 			uv( Point2(0,0) ),
 			eta( 1.0 ),
+			attenuation( 1.0, 1.0, 1.0 ),
 			isReflection( false ),
 			pObject( 0 ),
 			pMaterial( 0 ),
@@ -131,12 +133,15 @@ namespace RISE
 		/// Given two non-specular endpoints (a shading point and an emitter),
 		/// finds a valid path through a chain of specular surfaces using Newton
 		/// iteration on the specular constraint manifold.
+		class LightSampler;
+
 		class ManifoldSolver :
 			public virtual IReference,
 			public virtual Reference
 		{
 		protected:
 			ManifoldSolverConfig config;
+			LightSampler* pLightSampler;
 
 			virtual ~ManifoldSolver();
 
@@ -199,6 +204,66 @@ namespace RISE
 				) const;
 
 			const ManifoldSolverConfig& GetConfig() const { return config; }
+
+			/// Result of a single SMS evaluation at a shading point.
+			struct SMSContribution
+			{
+				RISEPel		contribution;	///< Total SMS contribution (BSDF * G * throughput * Le / pdf)
+				Scalar		misWeight;		///< MIS weight for this contribution
+				bool		valid;			///< True if a valid specular path was found
+
+				SMSContribution() : contribution( RISEPel(0,0,0) ), misWeight( 1.0 ), valid( false ) {}
+			};
+
+			/// Standalone SMS evaluation at a single shading point.
+			///
+			/// Samples a light, builds a seed chain toward it, solves the
+			/// manifold, evaluates the BSDF at the shading point, and
+			/// assembles the full caustic contribution.
+			///
+			/// This is the reusable core that both BDPTIntegrator and
+			/// SMSShaderOp call.
+			///
+			/// \param pos          Shading point position (non-specular surface)
+			/// \param normal       Surface normal at shading point
+			/// \param onb          Orthonormal basis at shading point
+			/// \param pMaterial    Material at shading point (must have a BSDF)
+			/// \param woOutgoing   Direction toward the viewer/previous vertex
+			/// \param scene        Scene for ray casting and light access
+			/// \param caster       Ray caster
+			/// \param rng          Random number generator
+			SMSContribution EvaluateAtShadingPoint(
+				const Point3& pos,
+				const Vector3& normal,
+				const OrthonormalBasis3D& onb,
+				const IMaterial* pMaterial,
+				const Vector3& woOutgoing,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const RandomNumberGenerator& rng
+				) const;
+
+			/// Spectral variant of SMS evaluation.
+			struct SMSContributionNM
+			{
+				Scalar		contribution;
+				Scalar		misWeight;
+				bool		valid;
+
+				SMSContributionNM() : contribution( 0 ), misWeight( 1.0 ), valid( false ) {}
+			};
+
+			SMSContributionNM EvaluateAtShadingPointNM(
+				const Point3& pos,
+				const Vector3& normal,
+				const OrthonormalBasis3D& onb,
+				const IMaterial* pMaterial,
+				const Vector3& woOutgoing,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const RandomNumberGenerator& rng,
+				const Scalar nm
+				) const;
 
 		protected:
 			/// Runs Newton iteration to solve C(x) = 0.

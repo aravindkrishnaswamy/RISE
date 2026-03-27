@@ -99,6 +99,7 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 			const IObject& pObject,
 			const Point2& ptLum,
 			const IBSDF& pBRDF,
+			const IMaterial* pMaterial,
 			const RandomNumberGenerator& random,
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const bool bShadowRays
@@ -119,7 +120,7 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 	lumri.onb.CreateFromW( lumNormal );
 
 	Vector3	vToLight = Vector3Ops::mkVector3( ptLocationOnLuminary, ri.ptIntersection );
-	const Scalar		fDistFromLight = Vector3Ops::NormalizeMag(vToLight);	
+	const Scalar		fDistFromLight = Vector3Ops::NormalizeMag(vToLight);
 	const Scalar		fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
 
 	const Vector3		vFromLight = -vToLight;
@@ -141,8 +142,27 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 		}
 	}
 
-	const Scalar	attenuation_size_factor = pObject.GetArea() / (fDistFromLight * fDistFromLight);
-	return pObject.GetMaterial()->GetEmitter()->emittedRadiance( lumri, vFromLight, lumNormal ) * fDot * fDotLight * attenuation_size_factor * pBRDF.value(vToLight,ri);
+	const Scalar	area = pObject.GetArea();
+	const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
+	RISEPel contrib = pObject.GetMaterial()->GetEmitter()->emittedRadiance( lumri, vFromLight, lumNormal ) * fDot * fDotLight * attenuation_size_factor * pBRDF.value(vToLight,ri);
+
+	// MIS weight (power heuristic, exponent = 2)
+	// p_light in solid angle measure = (1/Area) * (dist² / cos_light)
+	// p_bsdf in solid angle measure = material->Pdf(vToLight, ri)
+	if( pMaterial && area > 0 && fDotLight > 0 )
+	{
+		const Scalar p_light = (fDistFromLight * fDistFromLight) / (area * fDotLight);
+		const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
+
+		if( p_bsdf > 0 )
+		{
+			const Scalar w_light = (p_light * p_light) / (p_light * p_light + p_bsdf * p_bsdf);
+			contrib = contrib * w_light;
+		}
+		// else p_bsdf=0 → w_light=1.0 (no change)
+	}
+
+	return contrib;
 }
 
 RISEPel LuminaryManager::ComputeDirectLighting( 
@@ -167,14 +187,14 @@ RISEPel LuminaryManager::ComputeDirectLighting(
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
 				const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
-				pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, random, caster, true );
+				pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, random, caster, true );
 			}
 		}
 		else
 		{
 			const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
 			const Point2	ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-			pelRet = ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, random, caster, true );
+			pelRet = ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, random, caster, true );
 		}
 	}
 	else
@@ -220,14 +240,14 @@ RISEPel LuminaryManager::ComputeDirectLighting(
 					ISampling2D::SamplesList2D::const_iterator m, n;
 					RISEPel pelThisLum;
 					for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-						pelThisLum = pelThisLum + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, (*m), pBRDF, random, caster, bShadowRays );
+						pelThisLum = pelThisLum + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, random, caster, bShadowRays );
 					}
 					pelRet = pelRet + (pelThisLum * dOVcSamples);
 				}
 				else
 				{
 					const Point2 ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-					pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, ptRand, pBRDF, random, caster, bShadowRays );
+					pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, random, caster, bShadowRays );
 				}
 			}
 		}
@@ -236,19 +256,18 @@ RISEPel LuminaryManager::ComputeDirectLighting(
 	return pelRet;
 }
 
-Scalar LuminaryManager::ComputeDirectLightingForLuminaryNM( 
+Scalar LuminaryManager::ComputeDirectLightingForLuminaryNM(
 			const RayIntersectionGeometric& ri,
 			const IObject& pObject,
 			const Point2& ptLum,
 			const IBSDF& pBRDF,
+			const IMaterial* pMaterial,
 			const Scalar nm,
 			const RandomNumberGenerator& random,
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const bool bShadowRays
 			) const
 {
-	// To compute the direct lighting, get a sample point on the luminary
-	// and use that to compute the amount of direct lighting
 	const Point3	ptRand( ptLum.x, ptLum.y, random.CanonicalRandom() );
 	Point3	ptLocationOnLuminary;
 	Vector3 lumNormal;
@@ -277,15 +296,30 @@ Scalar LuminaryManager::ComputeDirectLightingForLuminaryNM(
 	}
 
 	if( pObject.DoesReceiveShadows() && bShadowRays ) {
-		// Check to see if there is a shadow
 		const Ray		rayToLight( ri.ptIntersection, vToLight );
 		if( caster.CastShadowRay( rayToLight, fDistFromLight-0.001 ) ) {
 			return 0;
 		}
 	}
 
-	const Scalar	attenuation_size_factor = pObject.GetArea() / (fDistFromLight * fDistFromLight);
-	return pObject.GetMaterial()->GetEmitter()->emittedRadianceNM( lumri, vFromLight, lumNormal, nm ) * fDot * fDotLight * attenuation_size_factor * pBRDF.valueNM(vToLight,ri,nm);
+	const Scalar	area = pObject.GetArea();
+	const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
+	Scalar contrib = pObject.GetMaterial()->GetEmitter()->emittedRadianceNM( lumri, vFromLight, lumNormal, nm ) * fDot * fDotLight * attenuation_size_factor * pBRDF.valueNM(vToLight,ri,nm);
+
+	// MIS weight (power heuristic)
+	if( pMaterial && area > 0 && fDotLight > 0 )
+	{
+		const Scalar p_light = (fDistFromLight * fDistFromLight) / (area * fDotLight);
+		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
+
+		if( p_bsdf > 0 )
+		{
+			const Scalar w_light = (p_light * p_light) / (p_light * p_light + p_bsdf * p_bsdf);
+			contrib = contrib * w_light;
+		}
+	}
+
+	return contrib;
 }
 
 Scalar LuminaryManager::ComputeDirectLightingNM(
@@ -311,12 +345,12 @@ Scalar LuminaryManager::ComputeDirectLightingNM(
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
 				const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
-				ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, nm, random, caster, true );
+				ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, nm, random, caster, true );
 			}
 		} else {
 			const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
 			const Point2 ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-			ret = ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, nm, random, caster, true );
+			ret = ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, nm, random, caster, true );
 		}
 	}
 	else 
@@ -358,12 +392,12 @@ Scalar LuminaryManager::ComputeDirectLightingNM(
 					ISampling2D::SamplesList2D::const_iterator m, n;
 					Scalar thisLum = 0;
 					for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-						thisLum = thisLum + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, (*m), pBRDF, nm, random, caster, bShadowRays );
+						thisLum = thisLum + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, nm, random, caster, bShadowRays );
 					}
 					ret = (thisLum*dOVcSamples);
 				} else {
 					const Point2 ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-					ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, ptRand, pBRDF, nm, random, caster, bShadowRays );
+					ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, nm, random, caster, bShadowRays );
 				}
 			}
 		}

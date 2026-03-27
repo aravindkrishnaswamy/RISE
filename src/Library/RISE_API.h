@@ -1800,6 +1800,26 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool translucents			///< [in] Should translucent rays be traced?
 								);
 
+	//! Creates an SMS shaderop
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSMSShaderOp(
+								IShaderOp** pShaderOp,
+								const unsigned int maxIterations,
+								const double threshold,
+								const unsigned int maxChainDepth,
+								const bool biased
+								);
+
+	bool RISE_API_CreateMISPathTracingShaderOp(
+								IShaderOp** pShaderOp,
+								const bool branch,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased
+								);
+
 	//! Creates a simple SSS shaderop
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSimpleSubSurfaceScatteringShaderOp(

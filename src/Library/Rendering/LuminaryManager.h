@@ -51,16 +51,18 @@ namespace RISE
 				const IObject& pObject,
 				const Point2& ptLum,
 				const IBSDF& pBRDF,
+				const IMaterial* pMaterial,										///< [in] Material at shading point (for MIS PDF)
 				const RandomNumberGenerator& random,
 				const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 				const bool bShadowRays
 				) const;
 
-			Scalar ComputeDirectLightingForLuminaryNM( 
+			Scalar ComputeDirectLightingForLuminaryNM(
 				const RayIntersectionGeometric& ri,
 				const IObject& pObject,
 				const Point2& ptLum,
 				const IBSDF& pBRDF,
+				const IMaterial* pMaterial,										///< [in] Material at shading point (for MIS PDF)
 				const Scalar nm,
 				const RandomNumberGenerator& random,
 				const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks

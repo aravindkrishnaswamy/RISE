@@ -53,6 +53,7 @@ namespace RISE
 				info.isSpecular = true;
 				info.canRefract = true;
 				info.ior = Nt.GetColor( ri )[0];
+				info.attenuation = refractivity.GetColor( ri );
 				info.valid = true;
 				return info;
 			}

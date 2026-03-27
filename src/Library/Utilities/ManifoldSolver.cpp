@@ -16,11 +16,15 @@
 #include "pch.h"
 #include "ManifoldSolver.h"
 #include "Optics.h"
+#include "BDPTUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IBSDF.h"
 #include "../Intersection/RayIntersection.h"
+#include "../Lights/LightSampler.h"
 #include <cmath>
 
 using namespace RISE;
@@ -31,12 +35,16 @@ using namespace RISE::Implementation;
 //////////////////////////////////////////////////////////////////////
 
 ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg ) :
-config( cfg )
+config( cfg ),
+pLightSampler( 0 )
 {
+	pLightSampler = new LightSampler();
+	pLightSampler->addref();
 }
 
 ManifoldSolver::~ManifoldSolver()
 {
+	safe_release( pLightSampler );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1197,6 +1205,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		mv.pObject = ri.pObject;
 		mv.pMaterial = pMat;
 		mv.eta = specInfo.ior;
+		mv.attenuation = specInfo.attenuation;
 		mv.isReflection = !specInfo.canRefract;
 		mv.valid = false;  // Derivatives not yet computed; Solve will handle it
 
@@ -1306,23 +1315,17 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		Vector3 wo = Vector3Ops::mkVector3( nextPos, v.position );
 		wo = Vector3Ops::Normalize( wo );
 
+		const Scalar cos_i = fabs( Vector3Ops::Dot( wi, v.normal ) );
+		const Scalar r0 = ((v.eta - 1.0) * (v.eta - 1.0)) / ((v.eta + 1.0) * (v.eta + 1.0));
+		const Scalar fr = r0 + (1.0 - r0) * pow( 1.0 - cos_i, 5.0 );
+
 		if( v.isReflection )
 		{
-			// Fresnel reflectance (Schlick approximation)
-			const Scalar cos_i = fabs( Vector3Ops::Dot( wi, v.normal ) );
-			// Schlick approximation for dielectric
-			const Scalar r0 = ((v.eta - 1.0) * (v.eta - 1.0)) / ((v.eta + 1.0) * (v.eta + 1.0));
-			const Scalar fr = r0 + (1.0 - r0) * pow( 1.0 - cos_i, 5.0 );
-			throughput = throughput * fr;
+			throughput = throughput * v.attenuation * fr;
 		}
 		else
 		{
-			// Fresnel transmittance = 1 - reflectance
-			const Scalar cos_i = fabs( Vector3Ops::Dot( wi, v.normal ) );
-			const Scalar r0 = ((v.eta - 1.0) * (v.eta - 1.0)) / ((v.eta + 1.0) * (v.eta + 1.0));
-			const Scalar fr = r0 + (1.0 - r0) * pow( 1.0 - cos_i, 5.0 );
-			const Scalar ft = 1.0 - fr;
-			throughput = throughput * ft;
+			throughput = throughput * v.attenuation * (1.0 - fr);
 		}
 	}
 
@@ -1582,14 +1585,18 @@ ManifoldResult ManifoldSolver::Solve(
 		}
 	}
 
-	// Evaluate constraint with minimal tangent frames
+	// Evaluate constraint with minimal tangent frames.
+	// Early-out if the seed is too far from any valid path.
+	// Use a generous threshold — reflection seeds can be further
+	// from the solution than refraction seeds because the straight-line
+	// seed direction doesn't follow the reflected path.
 	{
 		std::vector<Scalar> C0;
 		EvaluateConstraint( specularChain, shadingPoint, emitterPoint, C0 );
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < C0.size(); i++ )
 			norm2 += C0[i] * C0[i];
-		if( sqrt(norm2) > 1.0 )
+		if( sqrt(norm2) > 2.0 )
 			return result;  // Seed too far from valid path
 	}
 
@@ -1653,6 +1660,270 @@ ManifoldResult ManifoldSolver::Solve(
 			result.pdf = 1.0;
 		}
 	}
+
+	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateAtShadingPoint
+//
+//   Standalone SMS evaluation at a single shading point.
+//   Samples a light, builds a seed chain, solves the manifold,
+//   evaluates the BSDF, and assembles the full contribution.
+//
+//   This is the reusable core that both BDPTIntegrator and
+//   SMSShaderOp call.
+//////////////////////////////////////////////////////////////////////
+
+ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
+	const Point3& pos,
+	const Vector3& normal,
+	const OrthonormalBasis3D& onb,
+	const IMaterial* pMaterial,
+	const Vector3& woOutgoing,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const RandomNumberGenerator& rng
+	) const
+{
+	SMSContribution result;
+
+	if( !pMaterial ) return result;
+
+	const IBSDF* pBSDF = pMaterial->GetBSDF();
+	if( !pBSDF ) return result;
+
+	// Sample a light
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	LuminaryManager::LuminariesList emptyList;
+	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
+
+	LightSample lightSample;
+	if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) )
+		return result;
+
+	// Build seed chain
+	std::vector<ManifoldVertex> seedChain;
+	unsigned int chainLen = BuildSeedChain(
+		pos, lightSample.position,
+		scene, caster, seedChain );
+
+	if( chainLen == 0 || seedChain.empty() )
+		return result;
+
+	// Run manifold solve
+	ManifoldResult mResult = Solve(
+		pos, normal,
+		lightSample.position, lightSample.normal,
+		seedChain, rng );
+
+	if( !mResult.valid )
+		return result;
+
+	// Direction from shading point toward first specular vertex
+	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
+		mResult.specularChain[0].position, pos );
+	Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+	if( distToSpec < 1e-8 ) return result;
+	dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
+
+	const Vector3 wiAtShading = dirToFirstSpec;
+
+	// Evaluate BSDF at shading point
+	// RISE convention: ri.ray.Dir() is toward the surface (negate woOutgoing)
+	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
+	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
+	rig.bHit = true;
+	rig.ptIntersection = pos;
+	rig.vNormal = normal;
+	rig.onb = onb;
+
+	RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
+	if( ColorMath::MaxValue( fBSDF ) <= 0 )
+		return result;
+
+	// Cosine at shading point (from rendering equation)
+	const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+	if( cosAtShading <= 0 ) return result;
+
+	// Cosine at light surface and distance from last specular vertex
+	// to light (for area-to-solid-angle conversion at the light end)
+	const ManifoldVertex& lastSpec = mResult.specularChain.back();
+	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+		lastSpec.position, lightSample.position );
+	Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
+	if( distSpecToLight < 1e-8 ) return result;
+	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
+
+	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+	if( cosAtLight <= 0 ) return result;
+
+	// SMS contribution for one specific light:
+	//   Le * BSDF * cos_shading * T_chain * cos_light * Area / dist²
+	//
+	// This matches what LuminaryManager::ComputeDirectLightingForLuminary
+	// computes for one luminary (Le * cos * cos_light * Area/dist² * BSDF).
+	// We do NOT divide by pdfSelect because NEE iterates all luminaries
+	// without selection probability, and SMS fills in for the specific
+	// light that was blocked by glass.
+	//
+	// pdfPosition = 1/Area, so dividing by it gives * Area.
+	// No intermediate geometric terms — delta BSDFs at specular vertices
+	// cancel with the geometric terms in the path integral.
+	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
+
+	// Match the NEE formula exactly:
+	//   LuminaryManager computes: Le * cos_shading * cos_light * (Area / dist²) * BSDF
+	//   It iterates all luminaries, no pdfSelect division.
+	//
+	// SMS picks ONE light via LightSampler. To match, we compute the
+	// same per-luminary contribution (no pdfSelect). Over many samples,
+	// SMS will pick each light 1/N of the time, so the expected SMS
+	// contribution per light is 1/N of the single-light value — but
+	// that's correct because NEE already contributes for the N-1 lights
+	// that AREN'T blocked by glass. SMS only fills in for the one that IS.
+	//
+	// pdfPosition = 1/Area for mesh lights, so 1/pdfPosition = Area.
+	result.contribution = fBSDF * cosAtShading
+		* mResult.contribution
+		* lightSample.Le * lightGeom
+		/ lightSample.pdfPosition;
+
+	result.misWeight = 1.0 / mResult.pdf;
+	result.valid = true;
+
+	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateAtShadingPointNM
+//
+//   Spectral variant of EvaluateAtShadingPoint.
+//   Uses per-wavelength IOR for dispersion and scalar evaluation
+//   throughout.
+//////////////////////////////////////////////////////////////////////
+
+ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
+	const Point3& pos,
+	const Vector3& normal,
+	const OrthonormalBasis3D& onb,
+	const IMaterial* pMaterial,
+	const Vector3& woOutgoing,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const RandomNumberGenerator& rng,
+	const Scalar nm
+	) const
+{
+	SMSContributionNM result;
+
+	if( !pMaterial ) return result;
+
+	const IBSDF* pBSDF = pMaterial->GetBSDF();
+	if( !pBSDF ) return result;
+
+	// Sample a light
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	LuminaryManager::LuminariesList emptyList;
+	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
+
+	LightSample lightSample;
+	if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) )
+		return result;
+
+	// Build seed chain (uses RGB IOR for approximate positions)
+	std::vector<ManifoldVertex> seedChain;
+	unsigned int chainLen = BuildSeedChain(
+		pos, lightSample.position,
+		scene, caster, seedChain );
+
+	if( chainLen == 0 || seedChain.empty() )
+		return result;
+
+	// Override each vertex's IOR with the wavelength-dependent value.
+	// This is what makes dispersion work — the Newton solver will find
+	// a different position for each wavelength due to the different IOR.
+	for( unsigned int i = 0; i < seedChain.size(); i++ )
+	{
+		if( seedChain[i].pMaterial )
+		{
+			// Build a minimal RayIntersectionGeometric for the query
+			Ray dummyRay( seedChain[i].position, seedChain[i].normal );
+			RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
+			rig.bHit = true;
+			rig.ptIntersection = seedChain[i].position;
+			rig.vNormal = seedChain[i].normal;
+
+			SpecularInfo specNM = seedChain[i].pMaterial->GetSpecularInfoNM(
+				rig, 0, nm );
+			seedChain[i].eta = specNM.ior;
+		}
+	}
+
+	// Run manifold solve with wavelength-dependent IOR
+	ManifoldResult mResult = Solve(
+		pos, normal,
+		lightSample.position, lightSample.normal,
+		seedChain, rng );
+
+	if( !mResult.valid )
+		return result;
+
+	// Direction from shading point toward first specular vertex
+	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
+		mResult.specularChain[0].position, pos );
+	Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+	if( distToSpec < 1e-8 ) return result;
+	dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
+
+	const Vector3 wiAtShading = dirToFirstSpec;
+
+	// Evaluate BSDF at shading point (spectral)
+	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
+	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
+	rig.bHit = true;
+	rig.ptIntersection = pos;
+	rig.vNormal = normal;
+	rig.onb = onb;
+
+	Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+	if( fBSDF <= 0 )
+		return result;
+
+	Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+	if( cosAtShading <= 0 ) return result;
+
+	// Chain throughput (spectral — per-wavelength Fresnel)
+	Scalar chainThroughput = EvaluateChainThroughputNM(
+		pos, lightSample.position, mResult.specularChain, nm );
+
+	// Cosine at light surface
+	const ManifoldVertex& lastSpec = mResult.specularChain.back();
+	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+		lastSpec.position, lightSample.position );
+	Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
+	if( distSpecToLight < 1e-8 ) return result;
+	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
+
+	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+	if( cosAtLight <= 0 ) return result;
+
+	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
+
+	// Emitted radiance (spectral)
+	Scalar Le = ColorMath::MaxValue( lightSample.Le );  // approximate
+
+	result.contribution = fBSDF * cosAtShading
+		* chainThroughput
+		* Le * lightGeom
+		/ lightSample.pdfPosition;
+
+	result.misWeight = 1.0 / mResult.pdf;
+	result.valid = true;
 
 	return result;
 }

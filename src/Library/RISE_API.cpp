@@ -3519,6 +3519,8 @@ namespace RISE
 #include "Shaders/AmbientOcclusionShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
+#include "Shaders/SMSShaderOp.h"
+#include "Shaders/MISPathTracingShaderOp.h"
 #include "Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "Shaders/SSS/SimpleExtinction.h"
 #include "Shaders/SSS/DiffusionApproximationExtinction.h"
@@ -3791,6 +3793,60 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "path tracing shaderop" );
+		return true;
+	}
+
+	//! Creates an SMS shaderop
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSMSShaderOp(
+								IShaderOp** pShaderOp,
+								const unsigned int maxIterations,
+								const double threshold,
+								const unsigned int maxChainDepth,
+								const bool biased
+								)
+	{
+		if( !pShaderOp ) {
+			return false;
+		}
+
+		ManifoldSolverConfig config;
+		config.enabled = true;
+		config.maxIterations = maxIterations;
+		config.solverThreshold = threshold;
+		config.maxChainDepth = maxChainDepth;
+		config.biased = biased;
+
+		*pShaderOp = new SMSShaderOp( config );
+		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "SMS shaderop" );
+		return true;
+	}
+
+	bool RISE_API_CreateMISPathTracingShaderOp(
+								IShaderOp** pShaderOp,
+								const bool branch,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased
+								)
+	{
+		if( !pShaderOp ) {
+			return false;
+		}
+
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+		}
+
+		*pShaderOp = new MISPathTracingShaderOp( branch, smsConfig );
+		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "ShaderOp" );
 		return true;
 	}
 

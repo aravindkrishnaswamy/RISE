@@ -3160,6 +3160,38 @@ bool Job::AddPathTracingShaderOp(
 	return true;
 }
 
+bool Job::AddSMSShaderOp(
+	const char* name,
+	const unsigned int maxIterations,
+	const double threshold,
+	const unsigned int maxChainDepth,
+	const bool biased
+	)
+{
+	IShaderOp* pShaderOp = 0;
+	RISE_API_CreateSMSShaderOp( &pShaderOp, maxIterations, threshold, maxChainDepth, biased );
+	pShaderOpManager->AddItem( pShaderOp, name );
+	safe_release( pShaderOp );
+	return true;
+}
+
+bool Job::AddMISPathTracingShaderOp(
+	const char* name,
+	const bool branch,
+	const bool smsEnabled,
+	const unsigned int smsMaxIterations,
+	const double smsThreshold,
+	const unsigned int smsMaxChainDepth,
+	const bool smsBiased
+	)
+{
+	IShaderOp* pShaderOp = 0;
+	RISE_API_CreateMISPathTracingShaderOp( &pShaderOp, branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+	pShaderOpManager->AddItem( pShaderOp, name );
+	safe_release( pShaderOp );
+	return true;
+}
+
 bool Job::AddAmbientOcclusionShaderOp(
 	const char* name,										///< [in] Name of the shaderop
 	const unsigned int numtheta,							///< [in] Number of samples in the theta direction

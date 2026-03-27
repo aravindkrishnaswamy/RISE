@@ -438,7 +438,7 @@ void DonnerJensenSkinSSSShaderOp::PrecomputeLUT()
 
 	// Allocate LUT storage
 	m_lut_tables = new RISEPel[ LUT_TOTAL * TABLE_SIZE ];
-	memset( m_lut_tables, 0, sizeof(RISEPel) * LUT_TOTAL * TABLE_SIZE );
+    memset( (void*)m_lut_tables, 0, sizeof(RISEPel) * LUT_TOTAL * TABLE_SIZE );
 
 	static const Scalar rgb_wavelengths[3] = { 615.0, 550.0, 465.0 };
 

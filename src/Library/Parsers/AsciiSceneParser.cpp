@@ -3981,6 +3981,88 @@ namespace RISE
 				}
 			};
 
+			struct SMSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					unsigned int maxIterations = 20;
+					double threshold = 1e-5;
+					unsigned int maxChainDepth = 10;
+					bool biased = true;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "max_iterations" ) {
+							maxIterations = pvalue.toUInt();
+						} else if( pname == "threshold" ) {
+							threshold = pvalue.toDouble();
+						} else if( pname == "max_chain_depth" ) {
+							maxChainDepth = pvalue.toUInt();
+						} else if( pname == "biased" ) {
+							biased = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddSMSShaderOp( name.c_str(), maxIterations, threshold, maxChainDepth, biased );
+				}
+			};
+
+			struct MISPathTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					bool branch = false;
+					bool smsEnabled = true;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 10;
+					bool smsBiased = true;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "branch" ) {
+							branch = pvalue.toBoolean();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddMISPathTracingShaderOp( name.c_str(), branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+				}
+			};
+
 			struct DistributionTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -6684,6 +6766,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["ambientocclusion_shaderop"] = new AmbientOcclusionShaderOpAsciiChunkParser();
 	chunks["directlighting_shaderop"] = new DirectLightingShaderOpAsciiChunkParser();
 	chunks["pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();
+	chunks["sms_shaderop"] = new SMSShaderOpAsciiChunkParser();
+	chunks["mis_pathtracing_shaderop"] = new MISPathTracingShaderOpAsciiChunkParser();
 	chunks["distributiontracing_shaderop"] = new DistributionTracingShaderOpAsciiChunkParser();
 	chunks["finalgather_shaderop"] = new FinalGatherShaderOpAsciiChunkParser();
 	chunks["simple_sss_shaderop"] = new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser();

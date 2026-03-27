@@ -3721,18 +3721,8 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrateg
 	std::vector<ConnectionResult> results;
 
 	if( !pManifoldSolver ) return results;
-	if( !pLightSampler ) return results;
-
-	// Get luminaries list from the caster
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
-		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	// Limit SMS to the first few diffuse eye vertices.
-	// Deeper vertices contribute diminishing caustic energy and the
-	// cost of BuildSeedChain (one ray-trace per vertex) adds up.
 	const unsigned int maxSMSDepth = (eyeVerts.size() < 4) ?
 		static_cast<unsigned int>(eyeVerts.size()) : 4;
 	for( unsigned int t = 1; t < maxSMSDepth; t++ )
@@ -3743,92 +3733,27 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrateg
 		if( eyeVertex.isDelta || !eyeVertex.isConnectible ) continue;
 		if( eyeVertex.type != BDPTVertex::SURFACE || !eyeVertex.pMaterial ) continue;
 
-		// Sample a light
-		LightSample lightSample;
-		if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) ) continue;
-
-		// Build seed chain using ManifoldSolver's BuildSeedChain
-		std::vector<ManifoldVertex> seedChain;
-		unsigned int chainLen = pManifoldSolver->BuildSeedChain(
-			eyeVertex.position, lightSample.position,
-			scene, caster, seedChain );
-
-		if( chainLen == 0 || seedChain.empty() ) continue;
-
-		// Run manifold solve
-		ManifoldResult mResult = pManifoldSolver->Solve(
-			eyeVertex.position, eyeVertex.normal,
-			lightSample.position, lightSample.normal,
-			seedChain, rng );
-
-		if( !mResult.valid ) continue;
-
-		// Compute contribution
-		// BSDF at eye vertex toward first specular vertex
-		// mkVector3(b, a) = b - a, so mkVector3(spec, eye) points from eye to spec
-		Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
-			mResult.specularChain[0].position, eyeVertex.position );
-		Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
-		if( distToSpec < 1e-8 ) continue;
-		dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
-
-		// wi at eye = direction toward specular chain
-		const Vector3 wiAtEye = dirToFirstSpec;
-
-		// wo at eye = direction toward previous eye vertex
+		// Outgoing direction at eye vertex (toward previous vertex)
 		Vector3 woAtEye;
 		if( t >= 2 ) {
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[t-2].position, eyeVertex.position );
 			woAtEye = Vector3Ops::Normalize( woAtEye );
 		} else {
-			// Camera vertex - use camera ray direction
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[0].position, eyeVertex.position );
 			woAtEye = Vector3Ops::Normalize( woAtEye );
 		}
 
-		RISEPel fEye = EvalBSDFAtVertex( eyeVertex, wiAtEye, woAtEye );
-		if( ColorMath::MaxValue( fEye ) <= 0 ) continue;
+		// Delegate to the standalone EvaluateAtShadingPoint
+		ManifoldSolver::SMSContribution sms = pManifoldSolver->EvaluateAtShadingPoint(
+			eyeVertex.position, eyeVertex.normal, eyeVertex.onb,
+			eyeVertex.pMaterial, woAtEye,
+			scene, caster, rng );
 
-		// Emitter radiance
-		RISEPel Le = lightSample.Le;
+		if( !sms.valid ) continue;
 
-		// Geometric term: eye vertex to first specular vertex
-		const ManifoldVertex& firstSpec = mResult.specularChain[0];
-		Scalar G_eyeToSpec = BDPTUtilities::GeometricTerm(
-			eyeVertex.position, eyeVertex.normal,
-			firstSpec.position, firstSpec.normal );
-
-		if( G_eyeToSpec <= 0 ) continue;
-
-		// Geometric term: last specular vertex to emitter
-		const ManifoldVertex& lastSpec = mResult.specularChain.back();
-		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
-			lastSpec.position, lightSample.position );
-		Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
-		if( distSpecToLight < 1e-8 ) continue;
-		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
-
-		Scalar cosAtLastSpec = fabs( Vector3Ops::Dot( lastSpec.normal, dirSpecToLight ) );
-		Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-		Scalar G_specToLight = cosAtLastSpec * cosAtLight / (distSpecToLight * distSpecToLight);
-
-		if( G_specToLight <= 0 ) continue;
-
-		// mResult.contribution contains the Fresnel throughput along the
-		// specular chain.  The geometric terms at the chain endpoints
-		// are computed explicitly above.
-
-		// Full contribution
 		ConnectionResult cr;
-		cr.contribution = eyeVertex.throughput * fEye
-			* RISEPel( G_eyeToSpec, G_eyeToSpec, G_eyeToSpec )
-			* mResult.contribution
-			* RISEPel( G_specToLight, G_specToLight, G_specToLight )
-			* Le
-			/ (lightSample.pdfSelect * lightSample.pdfPosition);
-
-		// MIS weight = 1.0 (standard BDPT has zero probability for delta chains)
-		cr.misWeight = 1.0 / mResult.pdf;
+		cr.contribution = eyeVertex.throughput * sms.contribution;
+		cr.misWeight = sms.misWeight;
 		cr.needsSplat = false;
 		cr.valid = true;
 

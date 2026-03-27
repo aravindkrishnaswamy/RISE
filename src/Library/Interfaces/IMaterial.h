@@ -89,11 +89,33 @@ namespace RISE
 		{
 			return GetSpecularInfo( ri, ior_stack );
 		}
+
+		/// \return The PDF (probability density function) for scattering from
+		/// the incoming direction (given by ri.ray.Dir()) to the outgoing
+		/// direction wo, in solid angle measure [1/sr].
+		/// Delegates to the SPF's Pdf() method.  Materials whose SPF implements
+		/// Pdf() (e.g. LambertianSPF) will participate in MIS automatically.
+		/// Materials whose SPF returns 0 (the default) effectively disable MIS,
+		/// falling back to unweighted NEE — a safe default.
+		virtual Scalar Pdf(
+			const Vector3& wo,
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack
+			) const;
+
+		/// Spectral variant of Pdf.
+		virtual Scalar PdfNM(
+			const Vector3& wo,
+			const RayIntersectionGeometric& ri,
+			const Scalar nm,
+			const IORStack* ior_stack
+			) const;
 	};
 }
 
 #include "IBSDF.h"
 #include "ISPF.h"
 #include "IEmitter.h"
+
 
 #endif

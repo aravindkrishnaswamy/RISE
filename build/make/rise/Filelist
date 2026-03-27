@@ -246,6 +246,8 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/GlobalPelPhotonMapShaderOp.cpp					\
 	$(PATHLIBRARY)Shaders/GlobalSpectralPhotonMapShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/PathTracingShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/SMSShaderOp.cpp								\
+	$(PATHLIBRARY)Shaders/MISPathTracingShaderOp.cpp					\
 	$(PATHLIBRARY)Shaders/ReflectionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\
@@ -314,8 +316,12 @@ SRCLIBMISC =\
 	$(PATHLIBRARY)DetectorSpheres/DetectorSphere.cpp				\
 	$(PATHLIBRARY)DetectorSpheres/IsotropicRGBDetectorSphere.cpp
 
+SRCLIBINTERFACES =\
+	$(PATHLIBRARY)Materials/IMaterial.cpp
+
 # We assemble the final list of sources here
 SRCLIB =\
+	$(SRCLIBINTERFACES)				\
 	$(SRCLIBUTILITIES)				\
 	$(SRCLIBNOISE)					\
 	$(SRCLIBPAINTERS)				\
