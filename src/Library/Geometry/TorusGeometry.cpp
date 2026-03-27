@@ -118,14 +118,123 @@ BoundingBox TorusGeometry::GenerateBoundingBox() const
 		Point3( m_dMajorRadius+m_dMinorRadius, m_dMajorRadius+m_dMinorRadius, m_dMajorRadius+m_dMinorRadius ) );
 }
 
-void TorusGeometry::UniformRandomPoint( Point3* /*point*/, Vector3* /*normal*/, Point2* /*coord*/, const Point3& /*prand*/ ) const
+void TorusGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	// !@ Implement this!
+	// R = m_p0 (center of tube ring), r = m_p1 (tube radius)
+	const Scalar R = m_p0;
+	const Scalar r = m_p1;
+
+	// Sample u uniformly on [0, 2*PI)
+	const Scalar u = TWO_PI * prand.x;
+
+	// Sample v with probability proportional to (R + r*cos(v)) using rejection sampling
+	// The maximum of (R + r*cos(v)) is (R + r), so we accept with prob (R + r*cos(v)) / (R + r)
+	Scalar v;
+	{
+		// Use prand.y and prand.z to drive the rejection sampler deterministically.
+		// If the first attempt is rejected, we iterate using a simple hash to
+		// generate subsequent candidates, preserving the contract that same prand
+		// yields same output.
+		Scalar vy = prand.y;
+		Scalar vz = prand.z;
+		for( ;; )
+		{
+			v = TWO_PI * vy;
+			const Scalar acceptance = (R + r * cos(v)) / (R + r);
+			if( vz <= acceptance ) {
+				break;
+			}
+			// Generate new candidates by fractional hashing
+			vy = vy * 2.3283064365386963e-10 + 0.61803398875;  // golden ratio offset
+			if( vy >= 1.0 ) vy -= 1.0;
+			vz = vz * 2.3283064365386963e-10 + 0.41421356237;  // sqrt(2)-1 offset
+			if( vz >= 1.0 ) vz -= 1.0;
+		}
+	}
+
+	const Scalar cosU = cos(u);
+	const Scalar sinU = sin(u);
+	const Scalar cosV = cos(v);
+	const Scalar sinV = sin(v);
+
+	if( point ) {
+		point->x = (R + r * cosV) * cosU;
+		point->y = r * sinV;
+		point->z = (R + r * cosV) * sinU;
+	}
+
+	if( normal ) {
+		normal->x = cosV * cosU;
+		normal->y = sinV;
+		normal->z = cosV * sinU;
+		*normal = Vector3Ops::Normalize(*normal);
+	}
+
+	if( coord ) {
+		// Compute normal for texture coord lookup (needed even if normal output not requested)
+		Vector3 nrm;
+		nrm.x = cosV * cosU;
+		nrm.y = sinV;
+		nrm.z = cosV * sinU;
+		nrm = Vector3Ops::Normalize(nrm);
+
+		Point3 pt;
+		pt.x = (R + r * cosV) * cosU;
+		pt.y = r * sinV;
+		pt.z = (R + r * cosV) * sinU;
+
+		GeometricUtilities::TorusTextureCoord(
+			Vector3Ops::Normalize( Vector3( 0.0, 1.0/m_dMajorRadius, 0.0 ) ),
+			Vector3Ops::Normalize( Vector3( -1.0/m_dMajorRadius, 0.0, 0.0 ) ),
+			pt,
+			nrm,
+			*coord
+			);
+	}
+}
+
+SurfaceDerivatives TorusGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+
+	const Scalar R = m_p0;
+	const Scalar r = m_p1;
+
+	// Recover surface parameters from object-space point
+	// u = azimuthal angle around Y axis
+	const Scalar u = atan2( objSpacePoint.z, objSpacePoint.x );
+
+	// d = distance from point to Y axis minus R = signed radial offset
+	const Scalar dXZ = sqrt( objSpacePoint.x * objSpacePoint.x + objSpacePoint.z * objSpacePoint.z );
+	const Scalar d = dXZ - R;
+
+	// v = angle in the tube cross-section
+	const Scalar v = atan2( objSpacePoint.y, d );
+
+	const Scalar cosU = cos(u);
+	const Scalar sinU = sin(u);
+	const Scalar cosV = cos(v);
+	const Scalar sinV = sin(v);
+	const Scalar Rr = R + r * cosV;
+
+	// Position partial derivatives
+	sd.dpdu = Vector3( -Rr * sinU, 0.0, Rr * cosU );
+	sd.dpdv = Vector3( -r * sinV * cosU, r * cosV, -r * sinV * sinU );
+
+	// Normal partial derivatives
+	// Unit normal on torus: N = (cosV*cosU, sinV, cosV*sinU)
+	sd.dndu = Vector3( -cosV * sinU, 0.0, cosV * cosU );
+	sd.dndv = Vector3( -sinV * cosU, cosV, -sinV * sinU );
+
+	sd.uv = Point2( u, v );
+	sd.valid = true;
+
+	return sd;
 }
 
 Scalar TorusGeometry::GetArea( ) const
 {
-	return 4.0*m_dMinorRadius * (m_dMajorRadius-m_dMinorRadius) * PI*PI;
+	return 4.0 * PI * PI * m_p0 * m_p1;
 }
 
 static const unsigned int MAJORRADIUS_ID = 100;

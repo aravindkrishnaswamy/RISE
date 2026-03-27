@@ -15,6 +15,7 @@
 #define IMATERIAL_
 
 #include "IReference.h"
+#include "SpecularInfo.h"
 
 namespace RISE
 {
@@ -22,6 +23,8 @@ namespace RISE
 	class IBSDF;
 	class IEmitter;
 	class ISubSurfaceDiffusionProfile;
+	class RayIntersectionGeometric;
+	class IORStack;
 
 	//! The IMaterial interface is basically an aggregate of other interfaces.  Though we don't actually
 	//! aggregate the interfaces, in essense what is all it does
@@ -46,9 +49,7 @@ namespace RISE
 		virtual IEmitter* GetEmitter() const  = 0;
 
 		/// \return True if light can pass through this material (e.g.
-		/// glass, translucent, SSS).  Used by BDPT visibility tests
-		/// so that camera connections (t=0, t=1) aren't blocked by
-		/// transparent surfaces.
+		/// glass or other transmissive media).
 		virtual bool CouldLightPassThrough() const { return false; }
 
 		/// \return True if this material has volumetric transport (e.g. SSS).
@@ -63,11 +64,58 @@ namespace RISE
 		/// probe ray casting to find entry points on the surface, using
 		/// this profile's Rd(r) for weighting and sampling.
 		virtual ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return 0; }
+
+		/// \return Information about this material's specular (delta) behavior.
+		/// Used by the specular manifold sampling solver to determine constraint
+		/// type and IOR at each specular vertex in the chain.
+		/// Default returns non-specular.  Materials with delta interactions
+		/// (DielectricMaterial, PerfectReflectorMaterial, etc.) override this.
+		virtual SpecularInfo GetSpecularInfo(
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack
+			) const
+		{
+			return SpecularInfo();
+		}
+
+		/// \return Spectral variant of GetSpecularInfo for wavelength-dependent IOR.
+		/// Default delegates to GetSpecularInfo.  DielectricMaterial overrides
+		/// to use wavelength-specific IOR for dispersion.
+		virtual SpecularInfo GetSpecularInfoNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack,
+			const Scalar nm
+			) const
+		{
+			return GetSpecularInfo( ri, ior_stack );
+		}
+
+		/// \return The PDF (probability density function) for scattering from
+		/// the incoming direction (given by ri.ray.Dir()) to the outgoing
+		/// direction wo, in solid angle measure [1/sr].
+		/// Delegates to the SPF's Pdf() method.  Materials whose SPF implements
+		/// Pdf() (e.g. LambertianSPF) will participate in MIS automatically.
+		/// Materials whose SPF returns 0 (the default) effectively disable MIS,
+		/// falling back to unweighted NEE — a safe default.
+		virtual Scalar Pdf(
+			const Vector3& wo,
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack
+			) const;
+
+		/// Spectral variant of Pdf.
+		virtual Scalar PdfNM(
+			const Vector3& wo,
+			const RayIntersectionGeometric& ri,
+			const Scalar nm,
+			const IORStack* ior_stack
+			) const;
 	};
 }
 
 #include "IBSDF.h"
 #include "ISPF.h"
 #include "IEmitter.h"
+
 
 #endif

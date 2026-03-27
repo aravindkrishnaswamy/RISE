@@ -34,8 +34,6 @@ pathtracing_shaderop
 advanced_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting		0 10		+
-	shaderop		DefaultEmission			0 10		+
 	shaderop		pathtracer			0 1		+
 	shaderop		pathtracer_noreflections	1 10		+
 }

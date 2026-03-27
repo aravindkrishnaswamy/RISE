@@ -20,3 +20,5 @@ extlib/
 *.lib
 build/VS2022/UpgradeLog.htm
 *.exe
+/scenes/Internal
+/models/risemesh/internal

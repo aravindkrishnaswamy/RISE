@@ -25,11 +25,10 @@ pathtracing_shaderop
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
 	shaderop	pt
 }
 
-bdpt_rasterizer
+bdpt_pel_rasterizer
 {
 	max_recursion		12
 	min_importance		0.0005

@@ -56,6 +56,7 @@ PSSMLTSampler::PSSMLTSampler(
 	) :
   sampleIndex( 0 ),
   currentIteration( 0 ),
+  streamIndex( 0 ),
   largeStepProb( largeStepProb_ ),
   isLargeStep( true ),
   lastLargeStepIteration( 0 ),
@@ -123,7 +124,11 @@ Scalar PSSMLTSampler::Mutate( const Scalar value )
 
 Scalar PSSMLTSampler::Get1D()
 {
-	const unsigned int idx = sampleIndex++;
+	// Interleaved stream indexing: each stream gets its own contiguous
+	// region of the primary sample vector so mutations to one stream
+	// don't disturb others.  idx = streamIndex + kNumStreams * sampleIndex
+	const unsigned int idx = streamIndex + kNumStreams * sampleIndex;
+	sampleIndex++;
 
 	// Lazy initialization: grow the vector if needed
 	while( idx >= X.size() )
@@ -158,8 +163,16 @@ Scalar PSSMLTSampler::Get1D()
 			sample.lastModIteration = lastLargeStepIteration;
 		}
 
-		// Now apply the small perturbation
-		sample.value = Mutate( sample.value );
+		// Apply accumulated small mutations for all iterations this
+		// sample was skipped.  If nSmall > 1, the sample wasn't
+		// consumed for nSmall-1 prior iterations and needs catch-up
+		// mutations to maintain the correct stationary distribution.
+		const unsigned int nSmall = currentIteration - sample.lastModIteration;
+		const unsigned int nMutations = nSmall > 0 ? nSmall : 1;
+		for( unsigned int i = 0; i < nMutations; i++ )
+		{
+			sample.value = Mutate( sample.value );
+		}
 	}
 
 	sample.lastModIteration = currentIteration;
@@ -173,11 +186,10 @@ Point2 PSSMLTSampler::Get2D()
 	return Point2( Get1D(), Get1D() );
 }
 
-void PSSMLTSampler::StartStream( int /*streamIndex*/ )
+void PSSMLTSampler::StartStream( int stream )
 {
-	// In basic PSSMLT, streams share the same primary sample vector.
-	// A multiplexed variant could offset sampleIndex here to give
-	// each stream its own contiguous block of samples.
+	streamIndex = stream;
+	sampleIndex = 0;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -192,6 +204,7 @@ void PSSMLTSampler::StartStream( int /*streamIndex*/ )
 void PSSMLTSampler::StartIteration()
 {
 	isLargeStep = ( rng.CanonicalRandom() < largeStepProb );
+	streamIndex = 0;
 	sampleIndex = 0;
 	modifiedIndices.clear();
 }

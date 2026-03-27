@@ -53,8 +53,9 @@ namespace RISE
 			Scalar importance;					///< Importance of this ray
 			bool considerEmission;				///< Should shader consider direct emission
 			RayType type;						///< The type of ray
+			Scalar bsdfPdf;						///< BSDF sampling PDF for MIS weighting (0 = not set / delta)
 
-			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ) {}
+			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ) {}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene

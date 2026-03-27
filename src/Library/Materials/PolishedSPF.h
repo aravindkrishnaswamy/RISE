@@ -54,6 +54,35 @@ namespace RISE
 				const bool hg
 				);
 
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				SpecularInfo info;
+				const Scalar s = scat.GetColor( ri )[0];
+				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
+				info.canRefract = true;
+				info.ior = Nt.GetColor( ri )[0];
+				info.valid = true;
+				return info;
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack,
+				const Scalar nm
+				) const
+			{
+				SpecularInfo info;
+				const Scalar s = scat.GetColorNM( ri, nm );
+				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
+				info.canRefract = true;
+				info.ior = Nt.GetColorNM( ri, nm );
+				info.valid = true;
+				return info;
+			}
+
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.
 			void	Scatter(

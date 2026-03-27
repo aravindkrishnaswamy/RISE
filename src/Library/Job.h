@@ -539,6 +539,48 @@ namespace RISE
 			const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 			);
 
+		//! Adds a BioSpec skin BSSRDF material (BDPT-compatible)
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddBioSpecSkinBSSRDFMaterial(
+			const char* name,
+			const char* thickness_SC_,
+			const char* thickness_epidermis_,
+			const char* thickness_papillary_dermis_,
+			const char* thickness_reticular_dermis_,
+			const char* ior_SC_,
+			const char* ior_epidermis_,
+			const char* ior_papillary_dermis_,
+			const char* ior_reticular_dermis_,
+			const char* concentration_eumelanin_,
+			const char* concentration_pheomelanin_,
+			const char* melanosomes_in_epidermis_,
+			const char* hb_ratio_,
+			const char* whole_blood_in_papillary_dermis_,
+			const char* whole_blood_in_reticular_dermis_,
+			const char* bilirubin_concentration_,
+			const char* betacarotene_concentration_SC_,
+			const char* betacarotene_concentration_epidermis_,
+			const char* betacarotene_concentration_dermis_,
+			const char* folds_aspect_ratio_,
+			const bool bSubdermalLayer,
+			const char* roughness
+			);
+
+		//! Adds a Donner & Jensen 2008 spectral skin BSSRDF material
+		bool AddDonnerJensenSkinBSSRDFMaterial(
+			const char* name,
+			const char* melanin_fraction_,
+			const char* melanin_blend_,
+			const char* hemoglobin_epidermis_,
+			const char* carotene_fraction_,
+			const char* hemoglobin_dermis_,
+			const char* epidermis_thickness_,
+			const char* ior_epidermis_,
+			const char* ior_dermis_,
+			const char* blood_oxygenation_,
+			const char* roughness
+			);
+
 		//! Adds a generic human tissue material based on BioSpec
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddGenericHumanTissueMaterial(
@@ -1041,14 +1083,21 @@ namespace RISE
 			);
 
 		bool AddPathTracingShaderOp(
-			const char* name,										///< [in] Name of the shaderop
-			const bool branch,										///< [in] Should we branch the rays ?
-			const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-			const bool bFinalGather,								///< [in] Should the path tracer co-operate and act as final gather?
-			const bool reflections,									///< [in] Should reflections be traced?
-			const bool refractions,									///< [in] Should refractions be traced?
-			const bool diffuse,										///< [in] Should diffuse rays be traced?
-			const bool translucents									///< [in] Should translucent rays be traced?
+			const char* name,
+			const bool branch,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased
+			);
+
+		bool AddSMSShaderOp(
+			const char* name,
+			const unsigned int maxIterations,
+			const double threshold,
+			const unsigned int maxChainDepth,
+			const bool biased
 			);
 
 		bool AddAmbientOcclusionShaderOp(
@@ -1092,6 +1141,54 @@ namespace RISE
 			const double absorption[3],								///< [in] Absorption coefficient in mm^-1
 			const double ior,										///< [in] Index of refraction ratio
 			const double g											///< [in] Scattering asymmetry
+			);
+
+		bool AddDonnerJensenSkinSSSShaderOp(
+			const char* name,
+			const unsigned int numPoints,
+			const double error,
+			const unsigned int maxPointsPerNode,
+			const unsigned char maxDepth,
+			const double irrad_scale,
+			const char* shader,
+			const bool cache,
+			const double melanin_fraction,
+			const double melanin_blend,
+			const double hemoglobin_epidermis,
+			const double carotene_fraction,
+			const double hemoglobin_dermis,
+			const double epidermis_thickness,
+			const double ior_epidermis,
+			const double ior_dermis,
+			const double blood_oxygenation,
+			const char* melanin_fraction_offset,
+			const char* hemoglobin_epidermis_offset,
+			const char* hemoglobin_dermis_offset
+			);
+
+		bool AddBioSpecSkinSSSShaderOp(
+			const char* name,
+			const unsigned int numPoints,
+			const double error,
+			const unsigned int maxPointsPerNode,
+			const unsigned char maxDepth,
+			const double irrad_scale,
+			const char* shader,
+			const bool cache,
+			const double thickness_SC, const double thickness_epidermis,
+			const double thickness_papillary, const double thickness_reticular,
+			const double ior_SC, const double ior_epidermis,
+			const double ior_papillary, const double ior_reticular,
+			const double concentration_eumelanin, const double concentration_pheomelanin,
+			const double melanosomes_in_epidermis,
+			const double hb_ratio,
+			const double whole_blood_papillary, const double whole_blood_reticular,
+			const double bilirubin_concentration,
+			const double betacarotene_SC, const double betacarotene_epidermis,
+			const double betacarotene_dermis,
+			const char* melanosomes_offset,
+			const char* blood_papillary_offset,
+			const char* blood_reticular_offset
 			);
 
 		bool AddAreaLightShaderOp(
@@ -1294,8 +1391,8 @@ namespace RISE
 			);
 
 
-		//! Sets the rasterizer type to be BDPT (bidirectional path tracing)
-		bool SetBDPTRasterizer(
+		//! Sets the rasterizer type to be Pel (RGB) BDPT
+		bool SetBDPTPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
@@ -1319,11 +1416,49 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool bSpectral = false,							///< [in] Enable spectral rendering
-			const double nmbegin = 380.0,							///< [in] Start wavelength (nm)
-			const double nmend = 780.0,								///< [in] End wavelength (nm)
-			const unsigned int num_wavelengths = 10,				///< [in] Number of wavelength bins
-			const unsigned int spectral_samples = 1					///< [in] Spectral samples per pixel
+			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
+			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
+			const double smsThreshold,								///< [in] SMS convergence threshold
+			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
+			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
+			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
+			);
+
+		//! Sets the rasterizer type to be spectral BDPT
+		bool SetBDPTSpectralRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
+			const unsigned int maxRecur,							///< [in] Maximum recursion level
+			const double minImportance,								///< [in] Minimum importance to stop at
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const char* shader,										///< [in] The default shader
+			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+			const bool bBackground,									///< [in] Is the radiance map a background object
+			const double scale,										///< [in] How much to scale the radiance values
+			const double orient[3],									///< [in] Euler angles for orienting the radiance map
+			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
+			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
+			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const double nmbegin,									///< [in] Start wavelength (nm)
+			const double nmend,										///< [in] End wavelength (nm)
+			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
+			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
+			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
+			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
+			const double smsThreshold,								///< [in] SMS convergence threshold
+			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
+			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
+			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
 			);
 
 		bool SetMLTRasterizer(

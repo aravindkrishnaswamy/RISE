@@ -50,18 +50,37 @@ void EmissionShaderOp::PerformOperation(
 	if( pEmitter && rs.considerEmission ) {
 		c = pEmitter->emittedRadiance( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
 
-		// For view rays, scale their values down, to help out the AA
-		if( rs.type == rs.eRayView ) {
-			ColorMath::Scale( c );
+		// MIS weight for BSDF-sampled emission.
+		// When bsdfPdf > 0, this ray was traced via BSDF importance sampling.
+		// We weight the emission by w_bsdf = p_bsdf² / (p_bsdf² + p_light²).
+		// When bsdfPdf == 0 (view ray or delta), full weight (no MIS).
+		if( rs.bsdfPdf > 0 && ri.pObject )
+		{
+			const Scalar area = ri.pObject->GetArea();
+			if( area > 0 )
+			{
+				// cos at light surface
+				const Scalar cosLight = fabs( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+				if( cosLight > 0 )
+				{
+					const Scalar dist = Vector3Ops::Magnitude(
+						Vector3Ops::mkVector3( ri.geometric.ptIntersection, ri.geometric.ray.origin ) );
+					const Scalar p_light = (dist * dist) / (area * cosLight);
+					const Scalar p_bsdf = rs.bsdfPdf;
+					const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+					c = c * w_bsdf;
+				}
+			}
 		}
+
 	}
 }
 
 //! Tells the shader to apply shade to the given intersection point for the given wavelength
-/// \return Amplitude of spectral function 
+/// \return Amplitude of spectral function
 Scalar EmissionShaderOp::PerformOperationNM(
 	const RuntimeContext& rc,					///< [in] Runtime context
-	const RayIntersection& ri,					///< [in] Intersection information 
+	const RayIntersection& ri,					///< [in] Intersection information
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
@@ -81,6 +100,25 @@ Scalar EmissionShaderOp::PerformOperationNM(
 
 	if( pEmitter && rs.considerEmission ) {
 		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
+
+		// MIS weight for BSDF-sampled emission (spectral)
+		if( rs.bsdfPdf > 0 && ri.pObject )
+		{
+			const Scalar area = ri.pObject->GetArea();
+			if( area > 0 )
+			{
+				const Scalar cosLight = fabs( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+				if( cosLight > 0 )
+				{
+					const Scalar dist = Vector3Ops::Magnitude(
+						Vector3Ops::mkVector3( ri.geometric.ptIntersection, ri.geometric.ray.origin ) );
+					const Scalar p_light = (dist * dist) / (area * cosLight);
+					const Scalar p_bsdf = rs.bsdfPdf;
+					const Scalar w_bsdf = (p_bsdf * p_bsdf) / (p_bsdf * p_bsdf + p_light * p_light);
+					c = c * w_bsdf;
+				}
+			}
+		}
 	}
 
 	return c;

@@ -140,6 +140,40 @@ Scalar SphereGeometry::GetArea( ) const
 	return (FOUR_PI * m_dSqrRadius);
 }
 
+SurfaceDerivatives SphereGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+
+	const Scalar r = m_dRadius;
+
+	// Recover spherical coordinates
+	// phi = azimuthal angle (around Y axis, in XZ plane)
+	const Scalar phi = atan2( objSpacePoint.z, objSpacePoint.x );
+
+	// theta = polar angle from +Y axis
+	const Scalar cosTheta = r > NEARZERO ? objSpacePoint.y / r : 0.0;
+	const Scalar clampedCosTheta = cosTheta > 1.0 ? 1.0 : (cosTheta < -1.0 ? -1.0 : cosTheta);
+	const Scalar theta = acos( clampedCosTheta );
+	const Scalar sinTheta = sin( theta );
+
+	const Scalar cosPhi = cos(phi);
+	const Scalar sinPhi = sin(phi);
+
+	// Position partial derivatives
+	// dpdu = dP/dphi, dpdv = dP/dtheta
+	sd.dpdu = Vector3( -r * sinTheta * sinPhi, 0.0, r * sinTheta * cosPhi );
+	sd.dpdv = Vector3( r * clampedCosTheta * cosPhi, -r * sinTheta, r * clampedCosTheta * sinPhi );
+
+	// Normal = (x,y,z)/r, so dN/d* = (dP/d*)/r
+	sd.dndu = Vector3( -sinTheta * sinPhi, 0.0, sinTheta * cosPhi );
+	sd.dndv = Vector3( clampedCosTheta * cosPhi, -sinTheta, clampedCosTheta * sinPhi );
+
+	sd.uv = Point2( phi, theta );
+	sd.valid = true;
+
+	return sd;
+}
+
 static const unsigned int RADIUS_ID = 100;
 
 IKeyframeParameter* SphereGeometry::KeyframeFromParameters( const String& name, const String& value )

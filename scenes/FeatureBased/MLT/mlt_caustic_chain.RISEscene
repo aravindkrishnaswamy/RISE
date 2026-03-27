@@ -34,7 +34,6 @@ pathtracing_shaderop
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
 	shaderop	pt
 }
 
@@ -65,11 +64,11 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			278 350 -600
-	lookat				278 60 300
+	location			278 500 -600
+	lookat				278 200 300
 	up					0 1 0
-	width				800
-	height				800
+	width				400
+	height				400
 	fov					40.0
 }
 

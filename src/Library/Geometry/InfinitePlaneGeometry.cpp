@@ -141,6 +141,19 @@ void InfinitePlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, 
 	}
 }
 
+SurfaceDerivatives InfinitePlaneGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+	// Plane is at z=0 in object space, normal is (0,0,1)
+	sd.dpdu = Vector3( 1, 0, 0 );
+	sd.dpdv = Vector3( 0, 1, 0 );
+	sd.dndu = Vector3( 0, 0, 0 );
+	sd.dndv = Vector3( 0, 0, 0 );
+	sd.uv = Point2( objSpacePoint.x, objSpacePoint.y );
+	sd.valid = true;
+	return sd;
+}
+
 Scalar InfinitePlaneGeometry::GetArea( ) const
 {
 	return RISE_INFINITY;

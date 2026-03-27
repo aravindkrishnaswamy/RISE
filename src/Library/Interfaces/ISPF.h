@@ -24,6 +24,7 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/Ray.h"
 #include "IReference.h"
+#include "SpecularInfo.h"
 #include <vector>
 
 namespace RISE
@@ -163,6 +164,27 @@ namespace RISE
 			const Scalar nm,											///< [in] Wavelength
 			const IORStack* const ior_stack								///< [in] Index of refraction stack
 			) const { return 0; }
+
+		//! Returns specular (delta distribution) information for this SPF.
+		//! Default: non-specular.  Overridden by DielectricSPF, PerfectRefractorSPF,
+		//! PerfectReflectorSPF, PolishedSPF to report their specular nature and IOR.
+		virtual SpecularInfo GetSpecularInfo(
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack
+			) const
+		{
+			return SpecularInfo();
+		}
+
+		//! Spectral variant of GetSpecularInfo.
+		virtual SpecularInfo GetSpecularInfoNM(
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack,
+			const Scalar nm
+			) const
+		{
+			return GetSpecularInfo( ri, ior_stack );
+		}
 	};
 }
 

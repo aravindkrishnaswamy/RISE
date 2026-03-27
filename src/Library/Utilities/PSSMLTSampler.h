@@ -100,8 +100,14 @@ namespace RISE
 
 			std::vector<PrimarySample>		X;					///< The primary sample vector
 			std::vector<unsigned int>		modifiedIndices;	///< Indices modified in current proposal (for fast rollback)
-			unsigned int					sampleIndex;		///< Current consumption position in X
+			unsigned int					sampleIndex;		///< Current consumption position within current stream
 			unsigned int					currentIteration;	///< Global mutation counter
+
+			// Stream multiplexing: separate film, light subpath, and eye
+			// subpath/connection samples into independent streams so that
+			// small mutations to one part of the path don't disturb others.
+			static const int				kNumStreams = 3;	///< Number of sample streams
+			int								streamIndex;		///< Current active stream
 
 			// Mutation parameters
 			Scalar							largeStepProb;		///< Probability of a large (independent) step
@@ -152,10 +158,9 @@ namespace RISE
 			/// Returns a 2D uniform random sample in [0,1)^2.
 			Point2 Get2D();
 
-			/// Resets the consumption index for a new stream.
-			/// In PSSMLT this is used by multiplexed variants to
-			/// separate different parts of the path (film, light
-			/// subpath, eye subpath, connection).
+			/// Switch to a new sample stream and reset the within-stream
+			/// sample index.  Stream 0 = film position, stream 1 = light
+			/// subpath, stream 2 = eye subpath / connections.
 			void StartStream( int streamIndex );
 
 			//////////////////////////////////////////////////////////////

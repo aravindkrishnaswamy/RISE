@@ -50,6 +50,14 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				return pSPF->GetSpecularInfo( ri, ior_stack );
+			}
 		};
 	}
 }

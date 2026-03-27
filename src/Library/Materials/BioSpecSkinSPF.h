@@ -308,8 +308,9 @@ namespace RISE
 				const Scalar abs_eumelanin = ComputeEumelaninAbsorptionCoefficient( nm );
 				const Scalar abs_pheomelanin = ComputePheomelaninAbsorptionCoefficient( nm );
 				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientEpidermis( nm );
+				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_eumelanin+abs_pheomelanin)*melanosomes_in_epidermis)+abs_carotene*(1.0-melanosomes_in_epidermis);
+				return ((abs_eumelanin+abs_pheomelanin)*melanosomes_in_epidermis)+(abs_carotene+abs_baseline)*(1.0-melanosomes_in_epidermis);
 			}
 
 			//! Computes the absorption coefficient for hemoglobin
@@ -319,7 +320,7 @@ namespace RISE
 				const Scalar concentration								///< [in] Concentration of hemoglobin (in g/L)
 				)
 			{
-				return ( (pFunc->Evaluate(nm) * concentration) / 66500.0);		// 66,500 g/mole is the gram molecular weight of hemoglobin
+				return ( (pFunc->Evaluate(nm) * concentration) / 66500.0) * log(10.0);		// 66,500 g/mole is the gram molecular weight of hemoglobin, ln(10) converts decadic to Napierian
 			}
 
 			// Computes the absorption coefficient for oxyhemoglobin
@@ -343,7 +344,7 @@ namespace RISE
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return pBilirubinExt->Evaluate(nm) * bilirubin_concentration / 585.0;
+				return pBilirubinExt->Evaluate(nm) * bilirubin_concentration / 585.0 * log(10.0);
 			}
 
 			// Computes the absorption coefficient for beta-carotene in generate
@@ -352,7 +353,7 @@ namespace RISE
 				const Scalar concentration								///< [in] Concentration
 				) const
 			{
-				return pBetaCaroteneExt->Evaluate(nm) * concentration / 537.0;
+				return pBetaCaroteneExt->Evaluate(nm) * concentration / 537.0 * log(10.0);
 			}
 
 			// Computes the absorption coefficient for beta-carotene in the stratum corneum
@@ -380,29 +381,31 @@ namespace RISE
 			}
 
 			// Computes the absorption coefficient for the papillary dermis
-			inline Scalar ComputeReticularDermisAbsorptionCoefficient(
+			inline Scalar ComputePapillaryDermisAbsorptionCoefficient(
 				const Scalar nm											///< [in] Wavelength of light to consider
-				) const 
+				) const
 			{
 				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * hb_ratio;
 				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-hb_ratio);
 				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( nm );
 				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( nm );
+				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_papillary_dermis)+abs_carotene;
+				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_papillary_dermis)+(abs_carotene+abs_baseline)*(1.0-whole_blood_in_papillary_dermis);
 			}
 
 			// Computes the absorption coefficient for the reticular dermis
-			inline Scalar ComputePapillaryDermisAbsorptionCoefficient(
+			inline Scalar ComputeReticularDermisAbsorptionCoefficient(
 				const Scalar nm											///< [in] Wavelength of light to consider
-				) const 
+				) const
 			{
 				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * hb_ratio;
 				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-hb_ratio);
 				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( nm );
 				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( nm );
+				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_reticular_dermis)+abs_carotene;
+				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_reticular_dermis)+(abs_carotene+abs_baseline)*(1.0-whole_blood_in_reticular_dermis);
 			}
 
 			static inline Scalar ComputeBeta( 
@@ -411,8 +414,8 @@ namespace RISE
 				)
 			{
 				static const double ior_collangen = 1.5;
-				static const double ior_diff = ior_collangen/ior_medium;
-				static const double ior_factor = pow( ior_diff*ior_diff-1.0, 2.0 );
+				const double ior_diff = ior_collangen/ior_medium;
+				const double ior_factor = pow( ior_diff*ior_diff-1.0, 2.0 );
 
 				static const double PI_3 = ::pow( PI, 3.0 );  
 
@@ -434,7 +437,7 @@ namespace RISE
 				const Scalar distance									///< [in] Amount travellened in the pigment (in cm)	
 				) const
 			{
-				return ComputeTransmittance( ComputeTotalExtinction( ComputeBeta( nm*1e-6, ior_medium ), distance ) );
+				return ComputeTransmittance( ComputeTotalExtinction( ComputeBeta( nm*1e-7, ior_medium ), distance ) );
 			}
 
 

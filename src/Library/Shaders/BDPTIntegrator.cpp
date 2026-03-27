@@ -74,6 +74,7 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Rendering/RayCaster.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -88,6 +89,36 @@ static const Scalar BDPT_RAY_EPSILON = 1e-6;
 //
 static const Scalar BDPT_RR_THRESHOLD = 0.05;
 
+namespace
+{
+	inline const IORStack* BuildVertexIORStack(
+		const BDPTVertex& vertex,
+		IORStack& stack
+		)
+	{
+		if( !vertex.pObject ) {
+			return 0;
+		}
+
+		if( vertex.insideObject ) {
+			stack = IORStack( 1.0 );
+			stack.SetCurrentObject( vertex.pObject );
+			stack.push( vertex.mediumIOR );
+		} else {
+			stack = IORStack( vertex.mediumIOR );
+			stack.SetCurrentObject( vertex.pObject );
+		}
+
+		return &stack;
+	}
+
+	inline bool BDPTUsesIORStack( const IRayCaster& caster )
+	{
+		const RayCaster* pConcrete = dynamic_cast<const RayCaster*>( &caster );
+		return pConcrete ? pConcrete->UsesIORStack() : false;
+	}
+}
+
 //////////////////////////////////////////////////////////////////////
 // Construction / Destruction
 //////////////////////////////////////////////////////////////////////
@@ -98,13 +129,20 @@ BDPTIntegrator::BDPTIntegrator(
 	) :
   maxEyeDepth( maxEye ),
   maxLightDepth( maxLight ),
-  pLightSampler( 0 )
+  pLightSampler( 0 ),
+  pManifoldSolver( 0 )
 {
 }
 
 BDPTIntegrator::~BDPTIntegrator()
 {
 	safe_release( pLightSampler );
+	// pManifoldSolver is owned externally (by BDPTRasterizerBase), do not release here
+}
+
+void BDPTIntegrator::SetManifoldSolver( ManifoldSolver* pSolver )
+{
+	pManifoldSolver = pSolver;
 }
 
 void BDPTIntegrator::SetLightSampler( LightSampler* pSampler )
@@ -150,8 +188,9 @@ RISEPel BDPTIntegrator::EvalBSDFAtVertex(
 	if( vertex.isBSSRDFEntry ) {
 		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
 		if( pProfile ) {
-			// wi is the direction into the surface (from outside)
-			const Scalar cosTheta = fabs( Vector3Ops::Dot( wi, vertex.normal ) );
+			// wi is the direction into the surface (from outside).
+			// No fabs: back-face connections (cosTheta < 0) return zero.
+			const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
 			if( cosTheta <= NEARZERO ) {
 				return RISEPel( 0, 0, 0 );
 			}
@@ -236,7 +275,8 @@ Scalar BDPTIntegrator::EvalPdfAtVertex(
 	ri.vNormal = vertex.normal;
 	ri.onb = vertex.onb;
 
-	return pSPF->Pdf( ri, wo, 0 );
+	IORStack stack( 1.0 );
+	return pSPF->Pdf( ri, wo, BuildVertexIORStack( vertex, stack ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -263,65 +303,6 @@ bool BDPTIntegrator::IsVisible(
 
 	// CastShadowRay returns TRUE if something is hit (i.e. NOT visible)
 	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
-}
-
-//////////////////////////////////////////////////////////////////////
-// Helper: visibility test that passes through dielectric objects.
-//
-// Instead of a simple shadow ray, this traces full intersections
-// and skips objects whose material has no BSDF (i.e. dielectrics).
-// This allows caustic splats behind glass to be visible to the camera.
-//////////////////////////////////////////////////////////////////////
-
-bool BDPTIntegrator::IsVisibleThroughTransparents(
-	const IScene& scene,
-	const Point3& p1,
-	const Point3& p2
-	) const
-{
-	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
-	Scalar remainDist = Vector3Ops::Magnitude( d );
-
-	if( remainDist < BDPT_RAY_EPSILON ) {
-		return true;
-	}
-
-	d = d * (1.0 / remainDist);
-
-	Point3 origin = p1;
-	Scalar traveled = 0;
-
-	for( int bounce = 0; bounce < 64; bounce++ )
-	{
-		Ray ray( origin, d );
-		ray.Advance( BDPT_RAY_EPSILON );
-		traveled += BDPT_RAY_EPSILON;
-
-		const Scalar maxDist = remainDist - traveled - BDPT_RAY_EPSILON;
-		if( maxDist <= 0 ) {
-			return true;
-		}
-
-		RayIntersection ri( ray, nullRasterizerState );
-		scene.GetObjects()->IntersectRay( ri, true, true, false );
-
-		if( !ri.geometric.bHit || ri.geometric.range > maxDist ) {
-			return true;
-		}
-
-		// Check if the hit material allows light to pass through
-		if( ri.pMaterial && ri.pMaterial->CouldLightPassThrough() ) {
-			// Transparent/translucent — advance past this object
-			origin = ri.geometric.ptIntersection;
-			traveled += ri.geometric.range;
-			continue;
-		}
-
-		// Opaque hit
-		return false;
-	}
-
-	return false;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -456,7 +437,9 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	};
 	std::vector<ProbeHit> hits;
 	hits.reserve( 8 );
-	const Scalar probeMaxDist = 1000.0;
+	// Limit probe distance to the profile's effective range — hits
+	// beyond this contribute negligible energy and may cross voids.
+	const Scalar probeMaxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
 	const int maxProbeHits = 64;  // safety cap
 
 	// Trace all intersections along +axis and -axis
@@ -513,6 +496,14 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	const Vector3 offset = Vector3Ops::mkVector3( exitPoint, entryPoint );
 	const Scalar rActual = Vector3Ops::Magnitude( offset );
 	if( rActual < BDPT_RAY_EPSILON ) {
+		return result;
+	}
+
+	// Skip entry points beyond the profile's effective range.
+	// This prevents probe rays from finding distant entry points
+	// across voids (e.g., mouth cavity between lips).
+	const Scalar maxDist = pProfile->GetMaximumDistanceForError( 1e-4 );
+	if( rActual > maxDist ) {
 		return result;
 	}
 
@@ -672,6 +663,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	// For now, since LightSampler expects RandomNumberGenerator, we use
 	// the existing RNG interface.  The sampler's Get1D is used for bounces.
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	LightSample ls;
 	if( !pLightSampler->SampleLight( scene, luminaries, rng, ls ) ) {
@@ -763,6 +756,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -794,7 +792,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, rng, scattered, 0 );
+		pSPF->Scatter( ri.geometric, rng, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -828,6 +826,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
 			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
+			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
 
@@ -842,8 +843,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			// No fabs: back-face hits (cosIn < 0) skip BSSRDF,
+			// preventing artifacts on thin geometry (lips, eyelids).
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
@@ -945,13 +948,22 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// accounting for lobe selection probability.
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		// Update the previous vertex's pdfRev
 		// pdfRev of vertex[n-1] = pdf of sampling the reverse direction at vertex[n]
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertex(
+			// Reverse PDF: EvalPdfAtVertex returns 0 for delta interactions
+			// (SPF::Pdf() returns 0 for Dirac distributions).  This is correct;
+			// remap0 in MISWeight maps the zero to 1 so the ratio chain
+			// propagates through delta vertices without dying.
+			const Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
 				pScat->ray.Dir(),
 				-currentRay.Dir()
@@ -964,11 +976,15 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, d2 );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		// Advance to next ray
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -1042,6 +1058,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 	Scalar pdfFwdPrev = pdfCamDir;
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -1068,6 +1086,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
@@ -1097,7 +1120,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, rng, scattered, 0 );
+		pSPF->Scatter( ri.geometric, rng, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -1128,6 +1151,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
 			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
+			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
 
@@ -1138,8 +1164,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
@@ -1226,12 +1252,18 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// accounting for lobe selection probability.
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		// Update previous vertex's pdfRev
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertex(
+			// Reverse PDF: returns 0 for delta interactions, handled by remap0 in MISWeight.
+			const Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
 				pScat->ray.Dir(),
 				-currentRay.Dir()
@@ -1243,11 +1275,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		// Advance to next ray
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -1424,10 +1460,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Check visibility from camera to light vertex
-		// Use transparent-aware visibility so glass doesn't block caustic splats
+		// Check visibility from camera to light vertex using standard shadow ray.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, camPos, lightEnd.position ) ) {
+		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -1709,10 +1744,12 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Check visibility — use transparent-aware test so glass doesn't
-		// block caustic splats from reaching the camera
+		// This strategy is only valid for a direct camera connection.
+		// Refractive blockers must be sampled as explicit specular eye
+		// vertices; treating them as transparent here produces invalid
+		// splats and severe caustic fireflies.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
+		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
 			return result;
 		}
 
@@ -2098,22 +2135,22 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 }
 
 //////////////////////////////////////////////////////////////////////
-// MISWeight - balance heuristic (power = 1)
+// MISWeight - power heuristic (exponent = 2)
 //
 // Uses the technique from Veach's thesis: compute the weight by
 // walking along the path and computing ratios of PDFs for adjacent
 // strategies.
 //
-// For a path of length k = s + t - 1, the balance heuristic weight
+// For a path of length k = s + t - 1, the power heuristic weight
 // for strategy (s,t) is:
 //
-//   w(s,t) = 1 / sum_{i} (p_i / p_{s})
+//   w(s,t) = p_s^2 / sum_{i} p_i^2 = 1 / sum_{i} (p_i / p_s)^2
 //
 // where p_i is the probability of generating this path using
 // strategy i.  The ratios p_i/p_{s} can be computed incrementally
 // using the stored forward and reverse PDFs at each vertex.
 //////////////////////////////////////////////////////////////////////
-
+//#define MISWEIGHT_BALANCE_HEURISTIC 1
 Scalar BDPTIntegrator::MISWeight(
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<BDPTVertex>& eyeVerts,
@@ -2139,20 +2176,18 @@ Scalar BDPTIntegrator::MISWeight(
 	// and the eye subpath has t vertices.  The connection is between
 	// lightVerts[s-1] and eyeVerts[t-1].
 
-	// We compute the MIS weight using the power heuristic with exponent 1
-	// (balance heuristic).
+	// We compute the MIS weight using the power heuristic with exponent 2.
+	// The power heuristic concentrates weight on the strategy with the
+	// highest sampling probability, which provides provably lower variance
+	// than the balance heuristic (exponent 1) for scenes with caustics and
+	// other difficult light transport paths (Veach thesis, Section 9.2.4).
 	//
-	// The key insight is that the ratio of the PDF for strategy (s',t')
-	// to strategy (s,t) can be computed as a product of ratios of
-	// forward/reverse PDFs at each vertex along the path.
+	// w(s,t) = p_s^2 / sum_i p_i^2 = 1 / sum_i (p_i / p_s)^2
+	//
+	// The ratios p_i/p_s are computed incrementally by walking along the
+	// path and accumulating forward/reverse PDF ratios at each vertex.
 
-	// For simplicity and robustness, we accumulate the sum of PDF ratios
-	// by walking in both directions from the connection point.
-
-	// ri = p_{s-i} / p_{s} for i = 1, 2, ..., s (walking toward light)
-	// rj = p_{s+j} / p_{s} for j = 1, 2, ..., t (walking toward camera)
-
-	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself contributes 1
+	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself contributes 1^2 = 1
 
 	// Temporarily clear isDelta on the two connection vertices (PBRT convention).
 	// The connection always evaluates the full BSDF (non-delta), so these
@@ -2185,13 +2220,17 @@ Scalar BDPTIntegrator::MISWeight(
 			const BDPTVertex& vi = (static_cast<unsigned int>(i) < lightVerts.size()) ?
 				lightVerts[i] : eyeVerts[0];
 
-			// Compute the ratio: pdfRev / pdfFwd at this vertex
-			if( vi.pdfFwd > 0 ) {
-				ri *= vi.pdfRev / vi.pdfFwd;
-			} else {
-				// If pdfFwd == 0, this strategy has zero probability
-				ri = 0;
-			}
+			// Compute the ratio: pdfRev / pdfFwd at this vertex.
+			// Use remap0 (Veach/PBRT convention): map zero PDFs to 1
+			// so that the ratio chain propagates through delta vertices.
+			// Delta vertices have pdfRev=0 (since SPF::Pdf returns 0
+			// for Dirac distributions), but they are always skipped in
+			// the sum below.  Without remap0, the zero kills the chain
+			// and prevents subsequent non-delta strategies from being
+			// properly weighted, causing fireflies on caustic paths.
+			const Scalar pdfR = (vi.pdfRev != 0) ? vi.pdfRev : Scalar(1);
+			const Scalar pdfF = (vi.pdfFwd != 0) ? vi.pdfFwd : Scalar(1);
+			ri *= pdfR / pdfF;
 
 			// Skip non-connectible vertices — they can only be generated by
 			// exactly one strategy, so their contribution to the sum is 0.
@@ -2206,8 +2245,14 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
-			// Strategy (i, s+t-i) contributes ri to the sum
+			#if MISWEIGHT_BALANCE_HEURISTIC
+			// Strategy (i, s+t-i) contributes ri to the sum (balance heuristic)
 			sumWeights += ri;
+			#else
+			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
+			sumWeights += ri * ri;
+			#endif
+
 		}
 	}
 
@@ -2218,18 +2263,16 @@ Scalar BDPTIntegrator::MISWeight(
 	{
 		Scalar ri = 1.0;
 
-		for( int j = static_cast<int>(t) - 1; j >= 0; j-- )
+		for( int j = static_cast<int>(t) - 1; j > 0; j-- )
 		{
 			// Vertex at position j in the eye subpath
 			const BDPTVertex& vj = (static_cast<unsigned int>(j) < eyeVerts.size()) ?
 				eyeVerts[j] : lightVerts[0];
 
-			// Compute the ratio: pdfRev / pdfFwd at this vertex
-			if( vj.pdfFwd > 0 ) {
-				ri *= vj.pdfRev / vj.pdfFwd;
-			} else {
-				ri = 0;
-			}
+			// Compute the ratio with remap0 (see light-side walk above)
+			const Scalar pdfR = (vj.pdfRev != 0) ? vj.pdfRev : Scalar(1);
+			const Scalar pdfF = (vj.pdfFwd != 0) ? vj.pdfFwd : Scalar(1);
+			ri *= pdfR / pdfF;
 
 			// Skip non-connectible vertices.
 			// Both vertices at the proposed connection must be non-delta.
@@ -2240,8 +2283,13 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
-			// Strategy (s+t-j, j) contributes ri to the sum
+			#if MISWEIGHT_BALANCE_HEURISTIC
+			// Strategy (i, s+t-i) contributes ri to the sum (balance heuristic)
 			sumWeights += ri;
+			#else
+			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
+			sumWeights += ri * ri;
+			#endif
 		}
 	}
 
@@ -2290,7 +2338,8 @@ Scalar BDPTIntegrator::EvalBSDFAtVertexNM(
 	if( vertex.isBSSRDFEntry ) {
 		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
 		if( pProfile ) {
-			const Scalar cosTheta = fabs( Vector3Ops::Dot( wi, vertex.normal ) );
+			// No fabs: back-face connections (cosTheta < 0) return zero.
+			const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
 			if( cosTheta <= NEARZERO ) {
 				return 0;
 			}
@@ -2363,7 +2412,8 @@ Scalar BDPTIntegrator::EvalPdfAtVertexNM(
 	ri.vNormal = vertex.normal;
 	ri.onb = vertex.onb;
 
-	return pSPF->PdfNM( ri, wo, nm, 0 );
+	IORStack stack( 1.0 );
+	return pSPF->PdfNM( ri, wo, nm, BuildVertexIORStack( vertex, stack ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2419,6 +2469,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	LightSample ls;
 	if( !pLightSampler->SampleLight( scene, luminaries, rng, ls ) ) {
@@ -2519,6 +2571,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
@@ -2544,7 +2601,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, 0 );
+		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2574,6 +2631,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
 			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
+			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
 
@@ -2583,48 +2643,48 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-				const Scalar R = 1.0 - Ft;
+			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+			const Scalar R = 1.0 - Ft;
 
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+
+				if( bssrdf.valid )
 				{
-					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+					vertices.back().isDelta = true;
+					betaNM = betaNM * bssrdf.weightNM / Ft;
 
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-						betaNM = betaNM * bssrdf.weightNM / Ft;
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = false;
+					entryV.isConnectible = true;
+					entryV.isBSSRDFEntry = true;
+					entryV.throughputNM = betaNM;
+					entryV.pdfFwd = bssrdf.pdfSurface;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
 
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.isDelta = false;
-						entryV.isConnectible = true;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughputNM = betaNM;
-						entryV.pdfFwd = bssrdf.pdfSurface;
-						entryV.pdfRev = 0;
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
 				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
+				break;
+			}
+			if( R > NEARZERO ) {
+				bssrdfReflectCompensation = 1.0 / R;
+			}
 			}
 		}
 		// --- End BSSRDF sampling ---
@@ -2667,20 +2727,30 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		// Update previous vertex's pdfRev
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertexNM(
+			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
+			const Scalar revPdfSA = EvalPdfAtVertexNM(
 				curr, pScat->ray.Dir(), -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -2741,6 +2811,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 	Scalar pdfFwdPrev = pdfCamDir;
 	RandomNumberGenerator rng;
+	const bool useIORStack = BDPTUsesIORStack( caster );
+	IORStack iorStack( 1.0 );
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -2764,6 +2836,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		if( useIORStack && ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+			v.mediumIOR = iorStack.top();
+			v.insideObject = iorStack.containsCurrent();
+		}
 
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
@@ -2789,7 +2866,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, 0 );
+		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2819,6 +2896,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
 			}
+			if( !ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = false;
+			}
 			vertices.back().isConnectible = hasNonDelta;
 		}
 
@@ -2828,48 +2908,48 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = fabs( Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) );
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
 			if( cosIn > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-				const Scalar R = 1.0 - Ft;
+			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+			const Scalar R = 1.0 - Ft;
 
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			if( Ft > NEARZERO && sampler.Get1D() < Ft )
+			{
+				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
+					ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+
+				if( bssrdf.valid )
 				{
-					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+					vertices.back().isDelta = true;
+					betaNM = betaNM * bssrdf.weightNM / Ft;
 
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-						betaNM = betaNM * bssrdf.weightNM / Ft;
+					BDPTVertex entryV;
+					entryV.type = BDPTVertex::SURFACE;
+					entryV.position = bssrdf.entryPoint;
+					entryV.normal = bssrdf.entryNormal;
+					entryV.onb = bssrdf.entryONB;
+					entryV.pMaterial = ri.pMaterial;
+					entryV.pObject = ri.pObject;
+					entryV.isDelta = false;
+					entryV.isConnectible = true;
+					entryV.isBSSRDFEntry = true;
+					entryV.throughputNM = betaNM;
+					entryV.pdfFwd = bssrdf.pdfSurface;
+					entryV.pdfRev = 0;
+					vertices.push_back( entryV );
 
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.isDelta = false;
-						entryV.isConnectible = true;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughputNM = betaNM;
-						entryV.pdfFwd = bssrdf.pdfSurface;
-						entryV.pdfRev = 0;
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
+					pdfFwdPrev = bssrdf.cosinePdf;
+					currentRay = bssrdf.scatteredRay;
+					continue;
 				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
+				break;
+			}
+			if( R > NEARZERO ) {
+				bssrdfReflectCompensation = 1.0 / R;
+			}
 			}
 		}
 		// --- End BSSRDF sampling ---
@@ -2911,11 +2991,17 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		pdfFwdPrev = selectProb * pdf;
 
+		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+		if( pScat->isDelta ) {
+			pdfFwdPrev = 0;
+		}
+
 		if( vertices.size() >= 2 ) {
 			const BDPTVertex& curr = vertices.back();
 			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
 
-			Scalar revPdfSA = EvalPdfAtVertexNM(
+			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
+			const Scalar revPdfSA = EvalPdfAtVertexNM(
 				curr, pScat->ray.Dir(), -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
@@ -2923,10 +3009,14 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
 		currentRay = pScat->ray;
 		currentRay.Advance( BDPT_RAY_EPSILON );
+		if( useIORStack && pScat->ior_stack ) {
+			iorStack = *pScat->ior_stack;
+		}
 	}
 
 	return static_cast<unsigned int>( vertices.size() );
@@ -3054,7 +3144,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, camPos, lightEnd.position ) ) {
+		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -3280,8 +3370,10 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
+		// Same validity rule as the RGB path above: t == 1 only handles a
+		// direct camera connection, not a refracted one through glass.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisibleThroughTransparents( scene, lightEnd.position, camPos ) ) {
+		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
 			return result;
 		}
 
@@ -3606,6 +3698,193 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 		if( cr.valid ) {
 			results.push_back( cr );
 		}
+	}
+
+	return results;
+}
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateSMSStrategies - SMS (Specular Manifold Sampling) for RGB.
+// For each non-delta eye vertex, samples a light, traces toward it
+// to find specular object chains, then uses ManifoldSolver to find
+// valid specular paths.
+//////////////////////////////////////////////////////////////////////
+
+std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrategies(
+	const std::vector<BDPTVertex>& eyeVerts,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera,
+	const RandomNumberGenerator& rng
+	) const
+{
+	std::vector<ConnectionResult> results;
+
+	if( !pManifoldSolver ) return results;
+
+	// Limit SMS to the first few diffuse eye vertices.
+	const unsigned int maxSMSDepth = (eyeVerts.size() < 4) ?
+		static_cast<unsigned int>(eyeVerts.size()) : 4;
+	for( unsigned int t = 1; t < maxSMSDepth; t++ )
+	{
+		const BDPTVertex& eyeVertex = eyeVerts[t];
+
+		// Skip delta vertices (they can't receive caustics on their surface)
+		if( eyeVertex.isDelta || !eyeVertex.isConnectible ) continue;
+		if( eyeVertex.type != BDPTVertex::SURFACE || !eyeVertex.pMaterial ) continue;
+
+		// Outgoing direction at eye vertex (toward previous vertex)
+		Vector3 woAtEye;
+		if( t >= 2 ) {
+			woAtEye = Vector3Ops::mkVector3( eyeVerts[t-2].position, eyeVertex.position );
+			woAtEye = Vector3Ops::Normalize( woAtEye );
+		} else {
+			woAtEye = Vector3Ops::mkVector3( eyeVerts[0].position, eyeVertex.position );
+			woAtEye = Vector3Ops::Normalize( woAtEye );
+		}
+
+		// Delegate to the standalone EvaluateAtShadingPoint
+		ManifoldSolver::SMSContribution sms = pManifoldSolver->EvaluateAtShadingPoint(
+			eyeVertex.position, eyeVertex.normal, eyeVertex.onb,
+			eyeVertex.pMaterial, woAtEye,
+			scene, caster, rng );
+
+		if( !sms.valid ) continue;
+
+		ConnectionResult cr;
+		cr.contribution = eyeVertex.throughput * sms.contribution;
+		cr.misWeight = sms.misWeight;
+		cr.needsSplat = false;
+		cr.valid = true;
+
+		results.push_back( cr );
+	}
+
+	return results;
+}
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateSMSStrategiesNM - SMS for spectral (single wavelength).
+//////////////////////////////////////////////////////////////////////
+
+std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrategiesNM(
+	const std::vector<BDPTVertex>& eyeVerts,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera,
+	const RandomNumberGenerator& rng,
+	const Scalar nm
+	) const
+{
+	std::vector<ConnectionResultNM> results;
+
+	if( !pManifoldSolver ) return results;
+	if( !pLightSampler ) return results;
+
+	// Get luminaries list from the caster
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	LuminaryManager::LuminariesList emptyList;
+	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
+
+	// Limit SMS to the first few diffuse eye vertices.
+	// Deeper vertices contribute diminishing caustic energy and the
+	// cost of BuildSeedChain (one ray-trace per vertex) adds up.
+	const unsigned int maxSMSDepth = (eyeVerts.size() < 4) ?
+		static_cast<unsigned int>(eyeVerts.size()) : 4;
+	for( unsigned int t = 1; t < maxSMSDepth; t++ )
+	{
+		const BDPTVertex& eyeVertex = eyeVerts[t];
+
+		// Skip delta vertices (they can't receive caustics on their surface)
+		if( eyeVertex.isDelta || !eyeVertex.isConnectible ) continue;
+		if( eyeVertex.type != BDPTVertex::SURFACE || !eyeVertex.pMaterial ) continue;
+
+		// Sample a light
+		LightSample lightSample;
+		if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) ) continue;
+
+		// Build seed chain using ManifoldSolver's BuildSeedChain
+		std::vector<ManifoldVertex> seedChain;
+		unsigned int chainLen = pManifoldSolver->BuildSeedChain(
+			eyeVertex.position, lightSample.position,
+			scene, caster, seedChain );
+
+		if( chainLen == 0 || seedChain.empty() ) continue;
+
+		// Run manifold solve
+		ManifoldResult mResult = pManifoldSolver->Solve(
+			eyeVertex.position, eyeVertex.normal,
+			lightSample.position, lightSample.normal,
+			seedChain, rng );
+
+		if( !mResult.valid ) continue;
+
+		// Compute contribution
+		// BSDF at eye vertex toward first specular vertex
+		// mkVector3(b, a) = b - a, so mkVector3(spec, eye) points from eye to spec
+		Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
+			mResult.specularChain[0].position, eyeVertex.position );
+		Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+		if( distToSpec < 1e-8 ) continue;
+		dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
+
+		const Vector3 wiAtEye = dirToFirstSpec;
+
+		Vector3 woAtEye;
+		if( t >= 2 ) {
+			woAtEye = Vector3Ops::mkVector3( eyeVerts[t-2].position, eyeVertex.position );
+			woAtEye = Vector3Ops::Normalize( woAtEye );
+		} else {
+			woAtEye = Vector3Ops::mkVector3( eyeVerts[0].position, eyeVertex.position );
+			woAtEye = Vector3Ops::Normalize( woAtEye );
+		}
+
+		Scalar fEye = EvalBSDFAtVertexNM( eyeVertex, wiAtEye, woAtEye, nm );
+		if( fEye <= 0 ) continue;
+
+		// Emitter radiance (use max component as scalar approximation for spectral)
+		Scalar Le = ColorMath::MaxValue( lightSample.Le );
+
+		// Geometric term: eye vertex to first specular vertex
+		const ManifoldVertex& firstSpec = mResult.specularChain[0];
+		Scalar G_eyeToSpec = BDPTUtilities::GeometricTerm(
+			eyeVertex.position, eyeVertex.normal,
+			firstSpec.position, firstSpec.normal );
+
+		if( G_eyeToSpec <= 0 ) continue;
+
+		// Geometric term: last specular vertex to emitter
+		const ManifoldVertex& lastSpec = mResult.specularChain.back();
+		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+			lastSpec.position, lightSample.position );
+		Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
+		if( distSpecToLight < 1e-8 ) continue;
+		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
+
+		Scalar cosAtLastSpec = fabs( Vector3Ops::Dot( lastSpec.normal, dirSpecToLight ) );
+		Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		Scalar G_specToLight = cosAtLastSpec * cosAtLight / (distSpecToLight * distSpecToLight);
+
+		if( G_specToLight <= 0 ) continue;
+
+		// Visibility: skip for now (same rationale as RGB variant above)
+
+		// Chain throughput (Fresnel factors)
+		Scalar smsChainContrib = ColorMath::MaxValue( mResult.contribution );
+
+		// Full contribution
+		ConnectionResultNM cr;
+		cr.contribution = eyeVertex.throughputNM * fEye
+			* G_eyeToSpec * smsChainContrib * G_specToLight * Le
+			/ (lightSample.pdfSelect * lightSample.pdfPosition);
+
+		cr.misWeight = 1.0 / mResult.pdf;
+		cr.needsSplat = false;
+		cr.valid = true;
+
+		results.push_back( cr );
 	}
 
 	return results;

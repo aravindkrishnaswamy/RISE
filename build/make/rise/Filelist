@@ -50,6 +50,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
 	$(PATHLIBRARY)Utilities/MemoryBuffer.cpp					\
 	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
+	$(PATHLIBRARY)Utilities/ManifoldSolver.cpp					\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
@@ -93,6 +94,9 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
+	$(PATHLIBRARY)Materials/BioSpecDiffusionProfile.cpp					\
+	$(PATHLIBRARY)Materials/DonnerJensenSkinDiffusionProfile.cpp			\
+	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
 	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\
 	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\
@@ -220,13 +224,17 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
-	$(PATHLIBRARY)Rendering/BDPTRasterizer.cpp								\
+	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
+	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
+	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
 	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
+	$(PATHLIBRARY)Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp			\
+	$(PATHLIBRARY)Shaders/SSS/BioSpecSkinSSSShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\
@@ -238,6 +246,7 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/GlobalPelPhotonMapShaderOp.cpp					\
 	$(PATHLIBRARY)Shaders/GlobalSpectralPhotonMapShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/PathTracingShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/SMSShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/ReflectionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\
@@ -306,8 +315,12 @@ SRCLIBMISC =\
 	$(PATHLIBRARY)DetectorSpheres/DetectorSphere.cpp				\
 	$(PATHLIBRARY)DetectorSpheres/IsotropicRGBDetectorSphere.cpp
 
+SRCLIBINTERFACES =\
+	$(PATHLIBRARY)Materials/IMaterial.cpp
+
 # We assemble the final list of sources here
 SRCLIB =\
+	$(SRCLIBINTERFACES)				\
 	$(SRCLIBUTILITIES)				\
 	$(SRCLIBNOISE)					\
 	$(SRCLIBPAINTERS)				\

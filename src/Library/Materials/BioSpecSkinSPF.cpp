@@ -330,10 +330,10 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 			return false;
 		}
 
-		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm );
+		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
 
-		if( path_length <=  thickness_papillary_dermis ) {
+		if( path_length <=  thickness_SC ) {
 			return true;
 		}
 
@@ -398,10 +398,10 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				true );
 		}
 
-		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm );
+		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
 
-		if( path_length <=  thickness_papillary_dermis ) {
+		if( path_length <=  thickness_SC ) {
 			return true;
 		}
 
@@ -436,7 +436,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 			}
 
 			// Otherwise, the photon escapes the skin and we return the result
-			photon_out = photon_temp;
+			photon_out = leaving_skin;
 			return false;
 		}
 	}
@@ -900,21 +900,26 @@ void BioSpecSkinSPF::Scatter(
 			photon_out,
 			ri.onb,
 			random,
-			true, 
-			true, 
+			true,
+			true,
 			true );
-	} else {
-		// From bottom, so send it to the reticular dermis
+	} else if( !subdermal_layer ) {
+		// From bottom, and there is no subdermal reflecting layer,
+		// so light can transmit through the skin
 		bAbsorbed = ProcessReticularDermisInteraction(
 			random.CanonicalRandom()*400.0+380.0,
 			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
 			random,
-			false, 
+			false,
 			true );
+	} else {
+		// From bottom, but the subdermal layer reflects all light back,
+		// so a ray entering from this side is not physically valid
+		bAbsorbed = true;
 	}
-	
+
 	if( !bAbsorbed ) {
 		ScatteredRay remmitted;
 		remmitted.ray.origin = ri.ptIntersection;
@@ -925,7 +930,7 @@ void BioSpecSkinSPF::Scatter(
 	}
 }
 
-void BioSpecSkinSPF::ScatterNM( 
+void BioSpecSkinSPF::ScatterNM(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		const RandomNumberGenerator& random,				///< [in] Random number generator
 		const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
@@ -977,21 +982,26 @@ void BioSpecSkinSPF::ScatterNM(
 			photon_out,
 			ri.onb,
 			random,
-			true, 
-			true, 
+			true,
+			true,
 			true );
-	} else {
-		// From bottom, so send it to the reticular dermis
+	} else if( !subdermal_layer ) {
+		// From bottom, and there is no subdermal reflecting layer,
+		// so light can transmit through the skin
 		bAbsorbed = ProcessReticularDermisInteraction(
-			nm, 
-			ri.ray.Dir(), 
+			nm,
+			ri.ray.Dir(),
 			photon_out,
-			ri.onb, 
-			random, 
+			ri.onb,
+			random,
 			false,
 			true );
+	} else {
+		// From bottom, but the subdermal layer reflects all light back,
+		// so a ray entering from this side is not physically valid
+		bAbsorbed = true;
 	}
-	
+
 	if( !bAbsorbed ) {
 		ScatteredRay remmitted;
 		remmitted.ray.origin = ri.ptIntersection;

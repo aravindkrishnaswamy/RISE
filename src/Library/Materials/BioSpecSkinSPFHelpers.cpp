@@ -28,11 +28,9 @@ Vector3 BioSpecSkinSPF::TrowbridgeReitz_Scattering(
 	)
 {
 	const Scalar a = aspect_ratio*aspect_ratio;
-	const Scalar b = a*a;
-	const Scalar c = 1/(a-1);
 	const Scalar d = random.CanonicalRandom();
 
-	const Scalar alpha = acos(sqrt(((a/sqrt(b-b*d+d))-1)*c));		// polar angle perturbation
+	const Scalar alpha = acos(sqrt((1.0 - d) / (d * (a - 1.0) + 1.0)));		// polar angle perturbation
 	const Scalar beta = random.CanonicalRandom() * TWO_PI;			// azimuthal angle perturbation
 	
 	return Vector3Ops::Normalize(GeometricUtilities::Perturb( incoming, alpha, beta ));
@@ -76,7 +74,7 @@ Vector3 BioSpecSkinSPF::Dermis_Scattering(
 	const Vector3& incoming								///< [in] The direction of the incoming ray
 	)
 {
-	// Dermal scattering is merely diffuse
+	// Dermal scattering uses cosine-weighted distribution around the layer normal (BioSpec paper Eq. 6)
 	const Scalar alpha = acos( sqrt(random.CanonicalRandom()) );
 	const Scalar beta = random.CanonicalRandom() * TWO_PI;
 
@@ -90,13 +88,16 @@ Vector3 BioSpecSkinSPF::Rayleigh_Phase_Function_Scattering(
 	)
 {
 	// Use rejection sampling to compute the phase function
-	Scalar alpha = 0;
+	// We must sample a uniform direction on the sphere (uniform cos_alpha)
+	// and then reject based on the Rayleigh phase function probability.
+	Scalar cos_alpha = 0;
 	Scalar ran = 0;
 	do {
-		alpha = random.CanonicalRandom() * PI;
+		cos_alpha = 1.0 - 2.0 * random.CanonicalRandom();
 		ran = random.CanonicalRandom() * 1.5;
-	} while (ran > 0.75 * (1.0+cos(alpha)*cos(alpha)));
+	} while (ran > 0.75 * (1.0 + cos_alpha*cos_alpha));
 
+	const Scalar alpha = acos(cos_alpha);
 	const Scalar beta = random.CanonicalRandom() * TWO_PI;
 
 	return GeometricUtilities::Perturb( incoming, alpha, beta );

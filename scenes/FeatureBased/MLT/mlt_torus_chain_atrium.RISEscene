@@ -1,0 +1,466 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_torus_chain_atrium.RISEscene                                                       #
+#   Description:    BDPT torture test: a helical chain of 30 interlocking dielectric (glass) toruses        #
+#                   spiraling through a procedurally generated columned atrium.  Each torus                 #
+#                   has a unique colored Tau with at least one RGB component >= 0.999.  Light must          #
+#                   traverse dozens of refractive boundaries to illuminate the scene.                       #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 21, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Bidirectional Path Tracing
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+mlt_rasterizer
+{
+	max_recursion		20
+	min_importance		0.0001
+	max_eye_depth		10
+	max_light_depth		10
+	bootstrap_samples	1000000
+	chains				64
+	mutations_per_pixel	1000
+	large_step_prob		0.25
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_torus_chain_atrium
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 5.5 19.0
+	lookat				0 3.5 4.0
+	up					0 1 0
+	width				300
+	height				300
+	fov					50.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+# Atrium surfaces
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall
+	color				0.75 0.72 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_ceiling
+	color				0.80 0.78 0.75
+}
+
+uniformcolor_painter
+{
+	name				pnt_column
+	color				0.92 0.89 0.84
+}
+
+# Area light colors
+uniformcolor_painter
+{
+	name				pnt_warm_light
+	color				1.0 0.75 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_cool_light
+	color				0.65 0.75 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_neutral_light
+	color				0.95 0.95 0.95
+}
+
+# Checker pattern for floor (to catch caustics nicely)
+uniformcolor_painter
+{
+	name				pnt_checker_dark
+	color				0.55 0.52 0.48
+}
+
+checker_painter
+{
+	name				pnt_floor_checker
+	colora				pnt_floor
+	colorb				pnt_checker_dark
+	size				1.0
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor_checker
+}
+
+lambertian_material
+{
+	name				wall_mat
+	reflectance			pnt_wall
+}
+
+lambertian_material
+{
+	name				ceiling_mat
+	reflectance			pnt_ceiling
+}
+
+lambertian_material
+{
+	name				column_mat
+	reflectance			pnt_column
+}
+
+# Area light luminaire materials
+lambertian_luminaire_material
+{
+	name				warm_lum
+	exitance			pnt_warm_light
+	scale				200.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				cool_lum
+	exitance			pnt_cool_light
+	scale				200.0
+	material			none
+}
+
+lambertian_luminaire_material
+{
+	name				neutral_lum
+	exitance			pnt_neutral_light
+	scale				2000.0
+	material			none
+}
+
+##################################################
+# Atrium Geometry
+##################################################
+
+# Floor
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-10.0 0.0 -2.0
+	ptb					-10.0 0.0 14.0
+	ptc					10.0 0.0 14.0
+	ptd					10.0 0.0 -2.0
+}
+
+# Ceiling
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					-10.0 0.0 14.0
+	ptb					-10.0 0.0 -2.0
+	ptc					10.0 0.0 -2.0
+	ptd					10.0 0.0 14.0
+}
+
+# Back wall
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-10.0 8.0 -2.0
+	ptb					-10.0 0.0 -2.0
+	ptc					10.0 0.0 -2.0
+	ptd					10.0 8.0 -2.0
+}
+
+# Side wall panel (reused for left and right)
+clippedplane_geometry
+{
+	name				sidewallgeom
+	pta					0.0 8.0 14.0
+	ptb					0.0 0.0 14.0
+	ptc					0.0 0.0 -2.0
+	ptd					0.0 8.0 -2.0
+}
+
+# Area light panels
+clippedplane_geometry
+{
+	name				lightpanel_large
+	pta					-1.8 0.0 -0.8
+	ptb					-1.8 0.0 0.8
+	ptc					1.8 0.0 0.8
+	ptd					1.8 0.0 -0.8
+}
+
+clippedplane_geometry
+{
+	name				lightpanel_small
+	pta					-1.0 0.0 -0.5
+	ptb					-1.0 0.0 0.5
+	ptc					1.0 0.0 0.5
+	ptd					1.0 0.0 -0.5
+}
+
+# Column geometry
+cylinder_geometry
+{
+	name				columngeom
+	axis				y
+	radius				0.35
+	height				8.0
+}
+
+##################################################
+# Place Atrium Structure
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	position			0 8.0 0
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			wall_mat
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			sidewallgeom
+	position			-10.0 0 0
+	material			wall_mat
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			sidewallgeom
+	position			10.0 0 0
+	material			wall_mat
+}
+
+##################################################
+# Procedural columns -- 5 per side
+##################################################
+
+FOR C 0 4 1
+
+	standard_object
+	{
+		name			col_left_!C
+		geometry		columngeom
+		position		-8.5 4.0 $(@C*3.5-0.5)
+		material		column_mat
+	}
+
+	standard_object
+	{
+		name			col_right_!C
+		geometry		columngeom
+		position		8.5 4.0 $(@C*3.5-0.5)
+		material		column_mat
+	}
+
+ENDFOR
+
+##################################################
+# Ceiling Area Lights -- 4 panels
+##################################################
+
+# Two large warm lights flanking center
+standard_object
+{
+	name				light_warm_left
+	geometry			lightpanel_large
+	position			-3.5 7.98 4.0
+	material			warm_lum
+}
+
+standard_object
+{
+	name				light_warm_right
+	geometry			lightpanel_large
+	position			3.5 7.98 4.0
+	material			warm_lum
+}
+
+# Two smaller cool lights further forward
+standard_object
+{
+	name				light_cool_left
+	geometry			lightpanel_small
+	position			-2.0 7.98 8.0
+	material			cool_lum
+}
+
+standard_object
+{
+	name				light_cool_right
+	geometry			lightpanel_small
+	position			2.0 7.98 8.0
+	material			cool_lum
+}
+
+# Central neutral fill light
+standard_object
+{
+	name				light_neutral
+	geometry			lightpanel_small
+	position			0 7.98 2.0
+	material			neutral_lum
+}
+
+# Accent spot light aimed down at the chain center
+spot_light
+{
+	name				center_spot
+	position			0 7.5 4.0
+	target				0 3.5 4.0
+	color				1.0 0.98 0.94
+	power				4.0
+	inner				10
+	outer				25
+}
+
+##################################################
+# Torus Chain -- 30 interlocking glass links
+#
+# The chain follows a helix (2 full turns) around
+# the Y axis, centered at (0, -, 4).  Helix
+# radius 2.5, rising from y=1.5 to y=5.4.
+# Angular step per link: 4*pi/29 = 0.4333 rad
+# (24.83 deg).  Chord distance between adjacent
+# links ~1.07, matched to torus majorradius 1.0
+# so they interlock.
+#
+# Even links: ring vertical, yawed to follow helix
+# Odd links:  ring horizontal, yawed to follow helix
+#
+# Tau colors cycle R-B-G using cos^2 at 120-degree
+# phase offsets, guaranteeing one component = 0.999
+# at every link.
+##################################################
+
+# Shared torus geometry for all chain links
+torus_geometry
+{
+	name				chain_torus_geom
+	majorradius			1.0
+	minorratio			0.18
+}
+
+# Generate 15 pairs (30 links total)
+# Helix params:  R_h=2.5, center_z=4.0
+#   angle per I step = 2 * 4*pi/29 = 0.8666 rad = 49.66 deg
+#   angle offset for odd = 4*pi/29 = 0.4333 rad = 24.83 deg
+#   y step per I = 2 * 3.9/29 = 0.2690
+
+FOR I 0 14 1
+
+	# ==== EVEN LINK (K = 2*I) ====
+	uniformcolor_painter
+	{
+		name			pnt_tau_e!I
+		color			$(0.15+0.849*cos(@I*4.1888)*cos(@I*4.1888)) $(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888))
+		colorspace		RISERGB
+	}
+
+	dielectric_material
+	{
+		name			glass_e!I
+		tau				pnt_tau_e!I
+		ior				$(1.33+@I*0.06)
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_e!I
+		geometry		chain_torus_geom
+		position		$(2.5*cos(@I*0.8666)) $(1.5+@I*0.2690) $(4.0+2.5*sin(@I*0.8666))
+		orientation		90 $(@I*49.66) 0
+		material		glass_e!I
+	}
+
+	# ==== ODD LINK (K = 2*I + 1) ====
+	uniformcolor_painter
+	{
+		name			pnt_tau_o!I
+		color			$(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888)) $(0.15+0.849*cos(@I*4.1888+6.2832)*cos(@I*4.1888+6.2832))
+		colorspace		RISERGB
+	}
+
+	dielectric_material
+	{
+		name			glass_o!I
+		tau				pnt_tau_o!I
+		ior				$(1.36+@I*0.06)
+		scattering		100000.0
+	}
+
+	standard_object
+	{
+		name			link_o!I
+		geometry		chain_torus_geom
+		position		$(2.5*cos(@I*0.8666+0.4333)) $(1.6345+@I*0.2690) $(4.0+2.5*sin(@I*0.8666+0.4333))
+		orientation		0 $(@I*49.66+24.83) 0
+		material		glass_o!I
+	}
+
+ENDFOR

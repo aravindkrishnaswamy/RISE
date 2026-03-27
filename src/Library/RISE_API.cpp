@@ -782,6 +782,8 @@ namespace RISE
 #include "Materials/IsotropicPhongMaterial.h"
 #include "Materials/TranslucentMaterial.h"
 #include "Materials/BioSpecSkinMaterial.h"
+#include "Materials/BioSpecSkinBSSRDFMaterial.h"
+#include "Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "Materials/GenericHumanTissueMaterial.h"
 #include "Materials/CompositeMaterial.h"
 #include "Materials/WardIsotropicGaussianMaterial.h"
@@ -1026,6 +1028,98 @@ namespace RISE
 			bSubdermalLayer
 			);
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin material" );
+		return true;
+	}
+
+	//! Creates a BioSpec skin BSSRDF material (BDPT-compatible)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBioSpecSkinBSSRDFMaterial(
+								IMaterial** ppi,
+								const IPainter& thickness_SC_,
+								const IPainter& thickness_epidermis_,
+								const IPainter& thickness_papillary_dermis_,
+								const IPainter& thickness_reticular_dermis_,
+								const IPainter& ior_SC_,
+								const IPainter& ior_epidermis_,
+								const IPainter& ior_papillary_dermis_,
+								const IPainter& ior_reticular_dermis_,
+								const IPainter& concentration_eumelanin_,
+								const IPainter& concentration_pheomelanin_,
+								const IPainter& melanosomes_in_epidermis_,
+								const IPainter& hb_ratio_,
+								const IPainter& whole_blood_in_papillary_dermis_,
+								const IPainter& whole_blood_in_reticular_dermis_,
+								const IPainter& bilirubin_concentration_,
+								const IPainter& betacarotene_concentration_SC_,
+								const IPainter& betacarotene_concentration_epidermis_,
+								const IPainter& betacarotene_concentration_dermis_,
+								const IPainter& folds_aspect_ratio_,
+								const bool bSubdermalLayer,
+								const Scalar roughness
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new BioSpecSkinBSSRDFMaterial(
+			thickness_SC_,
+			thickness_epidermis_,
+			thickness_papillary_dermis_,
+			thickness_reticular_dermis_,
+			ior_SC_,
+			ior_epidermis_,
+			ior_papillary_dermis_,
+			ior_reticular_dermis_,
+			concentration_eumelanin_,
+			concentration_pheomelanin_,
+			melanosomes_in_epidermis_,
+			hb_ratio_,
+			whole_blood_in_papillary_dermis_,
+			whole_blood_in_reticular_dermis_,
+			bilirubin_concentration_,
+			betacarotene_concentration_SC_,
+			betacarotene_concentration_epidermis_,
+			betacarotene_concentration_dermis_,
+			folds_aspect_ratio_,
+			bSubdermalLayer,
+			roughness
+			);
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin bssrdf material" );
+		return true;
+	}
+
+	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
+								IMaterial** ppi,
+								const IPainter& melanin_fraction_,
+								const IPainter& melanin_blend_,
+								const IPainter& hemoglobin_epidermis_,
+								const IPainter& carotene_fraction_,
+								const IPainter& hemoglobin_dermis_,
+								const IPainter& epidermis_thickness_,
+								const IPainter& ior_epidermis_,
+								const IPainter& ior_dermis_,
+								const IPainter& blood_oxygenation_,
+								const Scalar roughness
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DonnerJensenSkinBSSRDFMaterial(
+			melanin_fraction_,
+			melanin_blend_,
+			hemoglobin_epidermis_,
+			carotene_fraction_,
+			hemoglobin_dermis_,
+			epidermis_thickness_,
+			ior_epidermis_,
+			ior_dermis_,
+			blood_oxygenation_,
+			roughness
+			);
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "donner jensen skin bssrdf material" );
 		return true;
 	}
 
@@ -3425,6 +3519,7 @@ namespace RISE
 #include "Shaders/AmbientOcclusionShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
+#include "Shaders/SMSShaderOp.h"
 #include "Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "Shaders/SSS/SimpleExtinction.h"
 #include "Shaders/SSS/DiffusionApproximationExtinction.h"
@@ -3679,24 +3774,56 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Creates a path tracing shaderop
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
-								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const bool branch,				///< [in] Should we branch the rays ?
-								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool bFinalGather,		///< [in] Should the path tracer co-operate and act as final gather?
-								const bool reflections,			///< [in] Should reflections be traced?
-								const bool refractions,			///< [in] Should refractions be traced?
-								const bool diffuse,				///< [in] Should diffuse rays be traced?
-								const bool translucents			///< [in] Should translucent rays be traced?
+								IShaderOp** pShaderOp,
+								const bool branch,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased
 								)
 	{
-		if( !ppi ) {
+		if( !pShaderOp ) {
 			return false;
 		}
 
-		PathTracingShaderOp* pShaderOp = new PathTracingShaderOp( branch, forcecheckemitters, bFinalGather, reflections, refractions, diffuse, translucents );
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+		}
 
-		(*ppi) = pShaderOp;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "path tracing shaderop" );
+		*pShaderOp = new PathTracingShaderOp( branch, smsConfig );
+		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "path tracing shaderop" );
+		return true;
+	}
+
+	//! Creates an SMS shaderop (standalone, for use with older shader chains)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSMSShaderOp(
+								IShaderOp** pShaderOp,
+								const unsigned int maxIterations,
+								const double threshold,
+								const unsigned int maxChainDepth,
+								const bool biased
+								)
+	{
+		if( !pShaderOp ) {
+			return false;
+		}
+
+		ManifoldSolverConfig config;
+		config.enabled = true;
+		config.maxIterations = maxIterations;
+		config.solverThreshold = threshold;
+		config.maxChainDepth = maxChainDepth;
+		config.biased = biased;
+
+		*pShaderOp = new SMSShaderOp( config );
+		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "SMS shaderop" );
 		return true;
 	}
 
@@ -4132,43 +4259,100 @@ namespace RISE
 	}
 }
 
-#include "Rendering/BDPTRasterizer.h"
+#include "Rendering/BDPTPelRasterizer.h"
+#include "Rendering/BDPTSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
+#include "Utilities/ManifoldSolver.h"
 
 namespace RISE
 {
-	//! Creates a BDPT (bidirectional path tracing) rasterizer
+	//! Creates a Pel (RGB) BDPT rasterizer
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBDPTRasterizer(
+	bool RISE_API_CreateBDPTPelRasterizer(
 								IRasterizer** ppi,
 								IRayCaster* caster,
 								ISampling2D* pSamples,
 								IPixelFilter* pFilter,
 								const unsigned int maxEyeDepth,
 								const unsigned int maxLightDepth,
-								const bool bSpectral,
-								const Scalar lambda_begin,
-								const Scalar lambda_end,
-								const unsigned int num_wavelengths,
-								const unsigned int spectral_samples
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		BDPTRasterizer* pRasterizer = new BDPTRasterizer( caster, maxEyeDepth, maxLightDepth );
-
-		if( bSpectral ) {
-			pRasterizer->SetSpectralMode( lambda_begin, lambda_end, num_wavelengths, spectral_samples );
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 		}
+
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
 		}
 
 		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT rasterizer" );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Pel rasterizer" );
+		return true;
+	}
+
+	//! Creates a spectral BDPT rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+		}
+
+		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
+			caster, maxEyeDepth, maxLightDepth,
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig );
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
 		return true;
 	}
 

@@ -175,33 +175,46 @@ BoundingBox BoxGeometry::GenerateBoundingBox() const
 
 void BoxGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	int idx = int(floor(prand.z * 5. + 0.5));
+	int idx = int(floor(prand.z * 6.0));
+	if( idx < 0 ) idx = 0;
+	if( idx > 5 ) idx = 5;
+
+	Point3 pt;
+	switch( idx ) {
+		default:
+		case 0:
+			// -X face
+			pt = Point3( -dWidthOV2, prand.x*dHeight-dHeightOV2, prand.y*dDepth-dDepthOV2 );
+			break;
+		case 1:
+			// +X face
+			pt = Point3( dWidthOV2, prand.x*dHeight-dHeightOV2, prand.y*dDepth-dDepthOV2 );
+			break;
+		case 2:
+			// -Y face
+			pt = Point3( prand.x*dWidth-dWidthOV2, -dHeightOV2, prand.y*dDepth-dDepthOV2 );
+			break;
+		case 3:
+			// +Y face
+			pt = Point3( prand.x*dWidth-dWidthOV2, dHeightOV2, prand.y*dDepth-dDepthOV2 );
+			break;
+		case 4:
+			// -Z face
+			pt = Point3( prand.x*dWidth-dWidthOV2, prand.y*dHeight-dHeightOV2, -dDepthOV2 );
+			break;
+		case 5:
+			// +Z face
+			pt = Point3( prand.x*dWidth-dWidthOV2, prand.y*dHeight-dHeightOV2, dDepthOV2 );
+			break;
+	}
 
 	if( point ) {
-		switch( idx ) {
-			case 0:
-				*point = Point3( -dWidthOV2, prand.x*dHeight-dHeightOV2, prand.y*dDepth-dDepthOV2 );
-				break;
-			case 1:
-				*point = Point3( dWidthOV2, prand.x-dHeightOV2, prand.y*dDepth-dDepthOV2 );
-				break;
-			case 2:
-				*point = Point3( prand.x*dWidth-dWidthOV2, -dHeightOV2, prand.y*dDepth-dDepthOV2 );
-				break;
-			case 3:
-				*point = Point3( prand.x*dWidth-dWidthOV2, dHeightOV2, prand.y*dDepth-dDepthOV2 );
-				break;
-			case 4:
-				*point = Point3( prand.x*dWidth-dWidthOV2, prand.y-dHeightOV2, -dDepthOV2 );
-				break;
-			case 5:
-				*point = Point3( prand.x*dWidth-dWidthOV2, prand.y-dHeightOV2, dDepthOV2 );
-				break;
-		}
+		*point = pt;
 	}
 
 	if( normal ) {
 		switch( idx ) {
+			default:
 			case 0:
 				*normal = Vector3( -1.0, 0.0, 0.0 );
 				break;
@@ -222,6 +235,97 @@ void BoxGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* co
 				break;
 		}
 	}
+
+	if( coord ) {
+		switch( idx ) {
+			default:
+			case 0:
+				// -X face: same as IntersectRay case 0
+				*coord = Point2( (pt.z+dDepthOV2)*dOVDepth, 1.0 - (pt.y+dHeightOV2)*dOVHeight );
+				break;
+			case 1:
+				// +X face: same as IntersectRay case 1
+				*coord = Point2( 1.0 - (pt.z+dDepthOV2)*dOVDepth, 1.0 - (pt.y+dHeightOV2)*dOVHeight );
+				break;
+			case 2:
+				// -Y face: same as IntersectRay case 2
+				*coord = Point2( (pt.x+dWidthOV2)*dOVWidth, 1.0 - (pt.z+dDepthOV2)*dOVDepth );
+				break;
+			case 3:
+				// +Y face: same as IntersectRay case 3
+				*coord = Point2( (pt.x+dWidthOV2)*dOVWidth, (pt.z+dDepthOV2)*dOVDepth );
+				break;
+			case 4:
+				// -Z face: same as IntersectRay case 4
+				*coord = Point2( 1.0 - (pt.x+dWidthOV2)*dOVWidth, 1.0 - (pt.y+dHeightOV2)*dOVHeight );
+				break;
+			case 5:
+				// +Z face: same as IntersectRay case 5
+				*coord = Point2( (pt.x+dWidthOV2)*dOVWidth, 1.0 - (pt.y+dHeightOV2)*dOVHeight );
+				break;
+		}
+	}
+}
+
+SurfaceDerivatives BoxGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+	sd.dndu = Vector3( 0, 0, 0 );
+	sd.dndv = Vector3( 0, 0, 0 );
+	sd.valid = true;
+
+	// Determine which face from the normal direction
+	const Scalar ax = fabs( objSpaceNormal.x );
+	const Scalar ay = fabs( objSpaceNormal.y );
+	const Scalar az = fabs( objSpaceNormal.z );
+
+	if( ax > ay && ax > az )
+	{
+		// X face
+		if( objSpaceNormal.x > 0 ) {
+			// +X face
+			sd.dpdu = Vector3( 0, 0, -1 );
+			sd.dpdv = Vector3( 0, 1, 0 );
+			sd.uv = Point2( 1.0 - (objSpacePoint.z + dDepthOV2) * dOVDepth, 1.0 - (objSpacePoint.y + dHeightOV2) * dOVHeight );
+		} else {
+			// -X face
+			sd.dpdu = Vector3( 0, 0, 1 );
+			sd.dpdv = Vector3( 0, 1, 0 );
+			sd.uv = Point2( (objSpacePoint.z + dDepthOV2) * dOVDepth, 1.0 - (objSpacePoint.y + dHeightOV2) * dOVHeight );
+		}
+	}
+	else if( ay > az )
+	{
+		// Y face
+		if( objSpaceNormal.y > 0 ) {
+			// +Y face
+			sd.dpdu = Vector3( 1, 0, 0 );
+			sd.dpdv = Vector3( 0, 0, 1 );
+			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, (objSpacePoint.z + dDepthOV2) * dOVDepth );
+		} else {
+			// -Y face
+			sd.dpdu = Vector3( 1, 0, 0 );
+			sd.dpdv = Vector3( 0, 0, -1 );
+			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, 1.0 - (objSpacePoint.z + dDepthOV2) * dOVDepth );
+		}
+	}
+	else
+	{
+		// Z face
+		if( objSpaceNormal.z > 0 ) {
+			// +Z face
+			sd.dpdu = Vector3( 1, 0, 0 );
+			sd.dpdv = Vector3( 0, 1, 0 );
+			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, 1.0 - (objSpacePoint.y + dHeightOV2) * dOVHeight );
+		} else {
+			// -Z face
+			sd.dpdu = Vector3( -1, 0, 0 );
+			sd.dpdv = Vector3( 0, 1, 0 );
+			sd.uv = Point2( 1.0 - (objSpacePoint.x + dWidthOV2) * dOVWidth, 1.0 - (objSpacePoint.y + dHeightOV2) * dOVHeight );
+		}
+	}
+
+	return sd;
 }
 
 Scalar BoxGeometry::GetArea( ) const

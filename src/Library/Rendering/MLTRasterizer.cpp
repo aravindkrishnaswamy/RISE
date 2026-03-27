@@ -127,11 +127,14 @@ MLTRasterizer::~MLTRasterizer()
 // 2. Generate a camera ray for that position
 // 3. Build light and eye subpaths using the sampler
 // 4. Evaluate all (s,t) connection strategies
-// 5. Sum contributions and return the aggregate result
+// 5. Collect per-strategy contributions with correct pixel positions
 //
-// The key insight: because PSSMLTSampler records/replays the sample
-// vector, the same sequence of Get1D()/Get2D() calls always maps
-// to the same path.  Mutating the vector explores nearby paths.
+// Each strategy's contribution is stored as a separate MLTStrategySplat
+// with its own rasterPos.  Strategies with t<=1 (light-to-camera
+// connections) produce contributions at pixel positions determined by
+// projecting the light vertex through the camera, NOT the camera ray's
+// pixel.  The aggregate luminance (over ALL strategies) is used for
+// the Metropolis acceptance ratio.
 //////////////////////////////////////////////////////////////////////
 
 MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
@@ -144,6 +147,9 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 {
 	MLTSample result;
 
+	// Stream 0: film position samples
+	sampler.StartStream( 0 );
+
 	// Use the first 2D sample to pick a film position.
 	// This means mutations to these two values move the path
 	// to a different pixel -- important for film coverage.
@@ -152,7 +158,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
 	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - 1 - py) );
 
-	result.rasterPos = Point2( static_cast<Scalar>(px), static_cast<Scalar>(py) );
+	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
 
 	// Generate camera ray for this pixel
 	RandomNumberGenerator localRNG( px * 65537 + py );
@@ -163,6 +169,9 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 		return result;
 	}
 
+	// Stream 1: light subpath samples
+	sampler.StartStream( 1 );
+
 	// Generate light and eye subpaths using the MLT sampler.
 	// BDPTIntegrator consumes samples from the sampler in a
 	// deterministic order, which is exactly what PSSMLT requires.
@@ -170,17 +179,22 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	std::vector<BDPTVertex> eyeVerts;
 
 	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts );
+
+	// Stream 2: eye subpath and connection samples
+	sampler.StartStream( 2 );
+
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts );
 
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =
 		pIntegrator->EvaluateAllStrategies( lightVerts, eyeVerts, scene, *pCaster, camera );
 
-	// Sum contributions from all strategies.
-	// For s<=1 strategies that naturally splat to different pixels,
-	// we still sum them here -- in MLT all contributions from a
-	// given sample vector are treated as one aggregate sample.
-	RISEPel totalColor( 0, 0, 0 );
+	// Collect per-strategy contributions, each with its correct pixel
+	// position.  Strategies with t<=1 (needsSplat=true) use the pixel
+	// position from the light-to-camera projection.  All others use
+	// the camera ray's pixel position.  The aggregate luminance across
+	// ALL strategies is used for the Metropolis acceptance ratio.
+	Scalar totalLuminance = 0;
 
 	for( unsigned int r = 0; r < results.size(); r++ )
 	{
@@ -189,23 +203,37 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 			continue;
 		}
 
-		const RISEPel weighted = cr.contribution * cr.misWeight;
-		totalColor = totalColor + weighted;
-	}
+		RISEPel weighted = cr.contribution * cr.misWeight;
 
-	// Clamp negative components that can arise from numerical precision
-	// issues in MIS weight calculations (extremely rare, very small values).
-	for( int ch = 0; ch < 3; ch++ ) {
-		if( totalColor[ch] < 0 ) {
-			totalColor[ch] = 0;
+		// Clamp negative components from numerical precision issues
+		for( int ch = 0; ch < 3; ch++ ) {
+			if( weighted[ch] < 0 ) {
+				weighted[ch] = 0;
+			}
 		}
+
+		const Scalar lum = 0.2126 * weighted[0] + 0.7152 * weighted[1] + 0.0722 * weighted[2];
+		if( lum <= 0 ) {
+			continue;
+		}
+
+		MLTStrategySplat splat;
+		splat.color = weighted;
+
+		if( cr.needsSplat ) {
+			// t<=1 strategies: use the strategy's own pixel position
+			splat.rasterPos = cr.rasterPos;
+		} else {
+			// t>=2 strategies: use the camera pixel position
+			splat.rasterPos = cameraRasterPos;
+		}
+
+		result.splats.push_back( splat );
+		totalLuminance += lum;
 	}
 
-	// Compute scalar luminance for the acceptance ratio.
-	// Using standard Rec.709 luminance weights.
-	result.luminance = 0.2126 * totalColor[0] + 0.7152 * totalColor[1] + 0.0722 * totalColor[2];
-	result.color = totalColor;
-	result.valid = ( result.luminance > 0 );
+	result.luminance = totalLuminance;
+	result.valid = ( totalLuminance > 0 );
 
 	return result;
 }
@@ -348,31 +376,44 @@ void MLTRasterizer::RunChainSegment(
 		}
 
 		// Splat with expected-value weights (Veach's technique).
-		// This contributes both paths proportionally to how much time
-		// the chain "spends" at each state, producing an unbiased image.
+		// Each strategy's contribution is splatted to its own pixel
+		// position, weighted by the acceptance probability (proposed)
+		// or its complement (current).  The weight includes 1/f(x)
+		// which cancels the visit frequency of the Markov chain,
+		// producing an unbiased image.
 		if( proposedSample.valid && proposedSample.luminance > 0 )
 		{
 			const Scalar proposedWeight = accept * invTotalMutations * normalization / proposedSample.luminance;
-			const RISEPel proposedSplat = proposedSample.color * proposedWeight;
 
-			const unsigned int sx = static_cast<unsigned int>( proposedSample.rasterPos.x );
-			const unsigned int sy = static_cast<unsigned int>( proposedSample.rasterPos.y );
+			for( unsigned int k = 0; k < proposedSample.splats.size(); k++ )
+			{
+				const MLTStrategySplat& s = proposedSample.splats[k];
+				const RISEPel splatColor = s.color * proposedWeight;
 
-			if( sx < width && sy < height ) {
-				splatFilm.Splat( sx, sy, proposedSplat );
+				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
+				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
+
+				if( sx < width && sy < height ) {
+					splatFilm.Splat( sx, sy, splatColor );
+				}
 			}
 		}
 
 		if( state.currentSample.valid && state.currentSample.luminance > 0 )
 		{
 			const Scalar currentWeight = ( 1.0 - accept ) * invTotalMutations * normalization / state.currentSample.luminance;
-			const RISEPel currentSplat = state.currentSample.color * currentWeight;
 
-			const unsigned int sx = static_cast<unsigned int>( state.currentSample.rasterPos.x );
-			const unsigned int sy = static_cast<unsigned int>( state.currentSample.rasterPos.y );
+			for( unsigned int k = 0; k < state.currentSample.splats.size(); k++ )
+			{
+				const MLTStrategySplat& s = state.currentSample.splats[k];
+				const RISEPel splatColor = s.color * currentWeight;
 
-			if( sx < width && sy < height ) {
-				splatFilm.Splat( sx, sy, currentSplat );
+				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
+				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
+
+				if( sx < width && sy < height ) {
+					splatFilm.Splat( sx, sy, splatColor );
+				}
 			}
 		}
 

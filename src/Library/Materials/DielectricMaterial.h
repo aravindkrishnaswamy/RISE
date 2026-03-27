@@ -52,6 +52,23 @@ namespace RISE
 			inline IEmitter* GetEmitter() const {	return 0; };
 
 			inline bool CouldLightPassThrough() const { return true; };
+
+			SpecularInfo GetSpecularInfo(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack
+				) const
+			{
+				return pSPF->GetSpecularInfo( ri, ior_stack );
+			}
+
+			SpecularInfo GetSpecularInfoNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack* ior_stack,
+				const Scalar nm
+				) const
+			{
+				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
+			}
 		};
 	}
 }

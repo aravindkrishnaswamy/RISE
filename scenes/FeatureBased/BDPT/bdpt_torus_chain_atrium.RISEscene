@@ -16,6 +16,12 @@ RISE ASCII SCENE 5
 
 ##################################################
 # Renderer -- Bidirectional Path Tracing
+#
+# BDPT uses the shader chain to shade each eye subpath vertex.
+# DefaultDirectLighting provides NEE at each bounce (the t>=2, s=1
+# strategy), and PathTracingShaderOp continues the eye subpath.
+# The BDPTIntegrator then adds its own light-subpath connections
+# and SMS strategies on top — those are separate from the shader.
 ##################################################
 
 pathtracing_shaderop
@@ -26,27 +32,73 @@ pathtracing_shaderop
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
 	shaderop	pt
 }
 
-bdpt_rasterizer
+bdpt_pel_rasterizer
 {
 	max_recursion		14
-	min_importance		0.0003
+	min_importance		0.003
 	max_eye_depth		14
-	max_light_depth		10
-	samples				1000
+	max_light_depth		12
+	samples				128
 	lum_samples			1
 	ior_stack			TRUE
+	sms_enabled			FALSE
+	sms_max_iterations	20
+	sms_threshold		1e-3
+	sms_max_chain_depth	20
+	sms_biased			TRUE
 }
+
+
+##################################################
+# Alternative: Unidirectional MIS Path Tracer
+#
+# MISPathTracingShaderOp is a self-contained integrator that
+# handles NEE (both mesh and non-mesh lights), BSDF sampling,
+# emission, and SMS all in one shaderop with proper MIS weights.
+# It replaces the entire DefaultDirectLighting + PathTracing chain.
+# Use with pixelpel_rasterizer instead of bdpt_pel_rasterizer.
+#
+# Note: for scenes like this one where all floor illumination must
+# pass through glass, BDPT is fundamentally superior — its light
+# subpaths directly carry energy through the glass, which the
+# unidirectional PT cannot do.
+##################################################
+/*
+pathtracing_shaderop
+{
+	name				mis_pt
+	branch				false
+	sms_enabled			TRUE
+	sms_max_iterations	20
+	sms_threshold		1e-5
+	sms_max_chain_depth	10
+	sms_biased			TRUE
+}
+
+standard_shader
+{
+	name		global
+	shaderop	mis_pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.00001
+	samples				128
+	lum_samples			1
+}
+*/
 
 file_rasterizeroutput
 {
 	pattern				rendered/bdpt_torus_chain_atrium
-	type				PNG
-	bpp					8
-	color_space			sRGB
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
 }
 
 ##################################################
@@ -55,12 +107,12 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 5.5 14.0
-	lookat				0 3.0 4.0
+	location			0 5.5 19.0
+	lookat				0 3.5 4.0
 	up					0 1 0
-	width				256
-	height				192
-	fov					55.0
+	width				800
+	height				800
+	fov					50.0
 }
 
 ##################################################
@@ -97,13 +149,13 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_warm_light
-	color				1.0 0.85 0.75
+	color				1.0 0.75 0.65
 }
 
 uniformcolor_painter
 {
 	name				pnt_cool_light
-	color				0.75 0.85 1.0
+	color				0.65 0.75 1.0
 }
 
 uniformcolor_painter
@@ -160,7 +212,7 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				1000.0
+	scale				200.0
 	material			none
 }
 
@@ -168,7 +220,7 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				1000.0
+	scale				200.0
 	material			none
 }
 
@@ -176,7 +228,7 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				10000.0
+	scale				2000.0
 	material			none
 }
 

@@ -1,12 +1,22 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PathTracingShaderOp.h - The path tracing shader op uses 
-//    Kajiya's path tracing algorithm to compute shading
+//  PathTracingShaderOp.h - Unified MIS path tracing shader
+//    operation with integrated SMS (Specular Manifold Sampling).
+//
+//    Combines next event estimation (NEE), BSDF sampling, emission,
+//    and optional SMS into a single shader op with proper MIS
+//    weighting to prevent double-counting.
+//
+//    At each diffuse surface hit:
+//    1. Emission: if surface is an emitter, add emission (MIS weighted)
+//    2. NEE: sample lights, shadow test, contribute with MIS weight
+//       - If blocked by glass and SMS enabled: attempt SMS
+//    3. BSDF sampling: trace scattered ray, recurse
+//       - If hits emitter: contribute with MIS weight w_bsdf
 //
 //  Author: Aravind Krishnaswamy
-//  Date of Birth: January 30, 2005
+//  Date of Birth: March 26, 2026
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -17,65 +27,52 @@
 
 #include "../Interfaces/IShaderOp.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/ManifoldSolver.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class PathTracingShaderOp : 
-			public virtual IShaderOp, 
+		class PathTracingShaderOp :
+			public virtual IShaderOp,
 			public virtual Reference
 		{
 		protected:
 			virtual ~PathTracingShaderOp();
 
-			const bool bBranch;
-			const bool bForceCheckEmitters;
-			const bool bFinalGather;
-			const bool bTraceReflection;
-			const bool bTraceRefraction;
-			const bool bTraceDiffuse;
-			const bool bTraceTranslucent;
-
-			bool ShouldTraceRay( const ScatteredRay::ScatRayType type ) const;
+			ManifoldSolver*		pSolver;		///< SMS solver (NULL if SMS disabled)
+			const bool			bBranch;		///< Branch vs Russian Roulette
+			const bool			bSMSEnabled;	///< Whether to attempt SMS for blocked NEE
 
 		public:
-			PathTracingShaderOp( 
-				const bool bBranch_,
-				const bool forcecheckemitters,
-				const bool bFinalGather_,
-				const bool reflections,
-				const bool refractions,
-				const bool diffuse,
-				const bool translucents
+			PathTracingShaderOp(
+				const bool branch,
+				const ManifoldSolverConfig& smsConfig
 				);
 
-			//! Tells the shader to apply shade to the given intersection point
-			void PerformOperation( 
-				const RuntimeContext& rc,					///< [in] Runtime context
-				const RayIntersection& ri,					///< [in] Intersection information 
-				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
-				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
-				RISEPel& c,									///< [in/out] Resultant color from op
-				const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
-				const ScatteredRayContainer* pScat			///< [in] Scattering information
+			void PerformOperation(
+				const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				RISEPel& c,
+				const IORStack* const ior_stack,
+				const ScatteredRayContainer* pScat
 				) const;
 
-			//! Tells the shader to apply shade to the given intersection point for the given wavelength
-			/// \return Amplitude of spectral function 
-			Scalar PerformOperationNM( 
-				const RuntimeContext& rc,					///< [in] Runtime context
-				const RayIntersection& ri,					///< [in] Intersection information 
-				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
-				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
-				const Scalar caccum,						///< [in] Current value for wavelength
-				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
-				const ScatteredRayContainer* pScat			///< [in] Scattering information
+			Scalar PerformOperationNM(
+				const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				const Scalar caccum,
+				const Scalar nm,
+				const IORStack* const ior_stack,
+				const ScatteredRayContainer* pScat
 				) const;
 
-			//! Asks if the shader op needs SPF data
-			bool RequireSPF() const { return true; };
+			bool RequireSPF() const { return true; }
+			bool HandlesEmission() const { return true; }
 		};
 	}
 }

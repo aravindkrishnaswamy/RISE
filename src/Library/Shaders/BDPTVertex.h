@@ -67,6 +67,8 @@ namespace RISE
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
+		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
+		bool					insideObject;	///< True if the current object was already in the IOR stack
 
 		// Light endpoint data (non-null only for type == LIGHT)
 		const ILight*			pLight;
@@ -86,6 +88,8 @@ namespace RISE
 		isDelta( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),
+		mediumIOR( 1.0 ),
+		insideObject( false ),
 		pLight( 0 ),
 		pLuminary( 0 ),
 		screenPos( Point2( 0, 0 ) )

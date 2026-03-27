@@ -31,14 +31,16 @@ SubSurfaceScatteringSPF::SubSurfaceScatteringSPF(
 	const IPainter& absorption_,
 	const IPainter& scattering_,
 	const Scalar g_,
-	const Scalar roughness_
+	const Scalar roughness_,
+	const bool bAbsorbBackFace_
 	) :
   ior( ior_ ),
   absorption( absorption_ ),
   scattering( scattering_ ),
   g( g_ ),
   roughness( roughness_ ),
-  alpha( roughness_ * roughness_ )
+  alpha( roughness_ * roughness_ ),
+  bAbsorbBackFace( bAbsorbBackFace_ )
 {
 	ior.addref();
 	absorption.addref();
@@ -201,6 +203,13 @@ void SubSurfaceScatteringSPF::Scatter(
 	}
 	else
 	{
+		// Back-face hit: for BSSRDF materials with no actual medium,
+		// absorb the ray (like BioSpecSPF) to prevent artifacts on
+		// thin geometry (lips, eyelids).
+		if( bAbsorbBackFace ) {
+			return;
+		}
+
 		//
 		// Back face hit (from inside): should not normally occur
 		// with BSSRDF (no volumetric random walk), but handle
@@ -333,6 +342,10 @@ void SubSurfaceScatteringSPF::ScatterNM(
 	}
 	else
 	{
+		if( bAbsorbBackFace ) {
+			return;
+		}
+
 		//
 		// Back face hit (from inside): delta reflection + exit refraction
 		//

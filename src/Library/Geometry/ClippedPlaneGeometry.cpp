@@ -257,6 +257,45 @@ void ClippedPlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 	}
 }
 
+SurfaceDerivatives ClippedPlaneGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+
+	// Use the first edge as dpdu direction, then derive dpdv from normal x dpdu
+	Vector3 edge = Vector3Ops::mkVector3( vP[1], vP[0] );
+	Scalar edgeLen = Vector3Ops::Magnitude( edge );
+	if( edgeLen > NEARZERO ) {
+		sd.dpdu = edge * (1.0 / edgeLen);
+	} else {
+		sd.dpdu = Vector3( 1, 0, 0 );
+	}
+
+	sd.dpdv = Vector3Ops::Cross( objSpaceNormal, sd.dpdu );
+	Scalar dpdvLen = Vector3Ops::Magnitude( sd.dpdv );
+	if( dpdvLen > NEARZERO ) {
+		sd.dpdv = sd.dpdv * (1.0 / dpdvLen);
+	}
+
+	sd.dndu = Vector3( 0, 0, 0 );
+	sd.dndv = Vector3( 0, 0, 0 );
+
+	// Compute UV from barycentric position on the quad
+	Vector3 toPoint = Vector3Ops::mkVector3( objSpacePoint, vP[0] );
+	Scalar uLen = Vector3Ops::Magnitude( vEdgesA[0] );
+	Scalar vLen = Vector3Ops::Magnitude( vEdgesB[1] );
+	if( uLen > NEARZERO && vLen > NEARZERO ) {
+		sd.uv = Point2(
+			Vector3Ops::Dot( toPoint, vEdgesA[0] ) / (uLen * uLen),
+			Vector3Ops::Dot( toPoint, vEdgesB[1] ) / (vLen * vLen)
+		);
+	} else {
+		sd.uv = Point2( 0, 0 );
+	}
+
+	sd.valid = true;
+	return sd;
+}
+
 Scalar ClippedPlaneGeometry::GetArea( ) const
 {
 	// The area is the area of the, which is width * height

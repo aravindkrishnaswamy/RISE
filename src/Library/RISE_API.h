@@ -562,6 +562,49 @@ namespace RISE
 								const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 								);
 
+	//! Creates a BioSpec skin BSSRDF material (BDPT-compatible)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBioSpecSkinBSSRDFMaterial(
+								IMaterial** ppi,											///< [out] Pointer to recieve the material
+								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+								const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+								const bool bSubdermalLayer,									///< Should the model simulate a perfectly reflecting subdermal layer?
+								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
+								);
+
+	//! Creates a Donner & Jensen 2008 spectral skin BSSRDF material (BDPT-compatible)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
+								IMaterial** ppi,											///< [out] Pointer to recieve the material
+								const IPainter& melanin_fraction_,							///< C_m: melanin volume fraction (0-0.5)
+								const IPainter& melanin_blend_,								///< beta_m: eumelanin vs pheomelanin blend (0-1)
+								const IPainter& hemoglobin_epidermis_,						///< C_he: hemoglobin fraction in epidermis (0-0.05)
+								const IPainter& carotene_fraction_,							///< C_bc: carotene fraction (0-0.05)
+								const IPainter& hemoglobin_dermis_,							///< C_hd: hemoglobin fraction in dermis (0-0.1)
+								const IPainter& epidermis_thickness_,						///< Epidermis thickness in cm (default 0.025)
+								const IPainter& ior_epidermis_,								///< Index of refraction of epidermis (default 1.4)
+								const IPainter& ior_dermis_,								///< Index of refraction of dermis (default 1.38)
+								const IPainter& blood_oxygenation_,							///< Blood oxygenation ratio (default 0.7)
+								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
+								);
+
 	//! Creates a generic human tissue material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGenericHumanTissueMaterial(
@@ -1744,17 +1787,26 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool cache				///< [in] Should the rasterizer state cache be used?
 								);
 
-	//! Creates a path tracing shaderop
+	//! Creates a path tracing shaderop with integrated MIS and optional SMS
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
-								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const bool branch,				///< [in] Should we branch the rays ?
-								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool bFinalGather,		///< [in] Should the path tracer co-operate and act as final gather?
-								const bool reflections,			///< [in] Should reflections be traced?
-								const bool refractions,			///< [in] Should refractions be traced?
-								const bool diffuse,				///< [in] Should diffuse rays be traced?
-								const bool translucents			///< [in] Should translucent rays be traced?
+								IShaderOp** pShaderOp,
+								const bool branch,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased
+								);
+
+	//! Creates a standalone SMS shaderop
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSMSShaderOp(
+								IShaderOp** pShaderOp,
+								const unsigned int maxIterations,
+								const double threshold,
+								const unsigned int maxChainDepth,
+								const bool biased
 								);
 
 	//! Creates a simple SSS shaderop
@@ -1959,20 +2011,42 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool bShowSamples				///< [in] Show the regions in which more samples were taken
 								);
 
-	//! Creates a BDPT (bidirectional path tracing) rasterizer
+	//! Creates a Pel (RGB) BDPT rasterizer
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBDPTRasterizer(
+	bool RISE_API_CreateBDPTPelRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
-								const bool bSpectral = false,		///< [in] Enable spectral rendering
-								const Scalar lambda_begin = 380.0,	///< [in] Start wavelength (nm)
-								const Scalar lambda_end = 780.0,	///< [in] End wavelength (nm)
-								const unsigned int num_wavelengths = 10,	///< [in] Number of wavelength bins
-								const unsigned int spectral_samples = 1	///< [in] Spectral samples per pixel
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
+								);
+
+	//! Creates a spectral BDPT rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
@@ -1982,10 +2056,10 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
-								const unsigned int nBootstrap = 100000,		///< [in] Number of bootstrap samples
-								const unsigned int nChains = 512,			///< [in] Number of Markov chains
-								const unsigned int nMutationsPerPixel = 100,///< [in] Mutations per pixel budget
-								const Scalar largeStepProb = 0.3			///< [in] Large step probability
+								const unsigned int nBootstrap,				///< [in] Number of bootstrap samples
+								const unsigned int nChains,					///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
+								const Scalar largeStepProb					///< [in] Large step probability
 								);
 
 	//////////////////////////////////////////////////////////

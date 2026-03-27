@@ -177,9 +177,83 @@ void CylinderGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point
 	}
 }
 
+SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+
+	const Scalar r = m_dRadius;
+
+	// Extract the two radial coordinates and the axial coordinate based on axis orientation
+	Scalar radA, radB, axial;
+	switch( m_chAxis )
+	{
+	case 'x':
+		radA = objSpacePoint.y;
+		radB = objSpacePoint.z;
+		axial = objSpacePoint.x;
+		break;
+	case 'z':
+		radA = objSpacePoint.x;
+		radB = objSpacePoint.y;
+		axial = objSpacePoint.z;
+		break;
+	case 'y':
+	default:
+		radA = objSpacePoint.x;
+		radB = objSpacePoint.z;
+		axial = objSpacePoint.y;
+		break;
+	}
+
+	const Scalar theta = atan2( radB, radA );
+	const Scalar cosT = cos(theta);
+	const Scalar sinT = sin(theta);
+
+	// Build derivatives then assign to the correct components based on axis
+	// For a Y-axis cylinder:
+	//   P(theta,h) = (r*cos(theta), h, r*sin(theta))
+	//   dpdu = (-r*sin(theta), 0, r*cos(theta))
+	//   dpdv = (0, 1, 0)
+	//   N = (cos(theta), 0, sin(theta))
+	//   dndu = (-sin(theta), 0, cos(theta))
+	//   dndv = (0, 0, 0)
+	// For other axes, permute accordingly.
+
+	switch( m_chAxis )
+	{
+	case 'x':
+		// P = (h, r*cos(theta), r*sin(theta)), radA=y, radB=z
+		sd.dpdu = Vector3( 0.0, -r * sinT, r * cosT );
+		sd.dpdv = Vector3( 1.0, 0.0, 0.0 );
+		sd.dndu = Vector3( 0.0, -sinT, cosT );
+		sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+		break;
+	case 'z':
+		// P = (r*cos(theta), r*sin(theta), h), radA=x, radB=y
+		sd.dpdu = Vector3( -r * sinT, r * cosT, 0.0 );
+		sd.dpdv = Vector3( 0.0, 0.0, 1.0 );
+		sd.dndu = Vector3( -sinT, cosT, 0.0 );
+		sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+		break;
+	case 'y':
+	default:
+		// P = (r*cos(theta), h, r*sin(theta)), radA=x, radB=z
+		sd.dpdu = Vector3( -r * sinT, 0.0, r * cosT );
+		sd.dpdv = Vector3( 0.0, 1.0, 0.0 );
+		sd.dndu = Vector3( -sinT, 0.0, cosT );
+		sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+		break;
+	}
+
+	sd.uv = Point2( theta, axial );
+	sd.valid = true;
+
+	return sd;
+}
+
 Scalar CylinderGeometry::GetArea( ) const
 {
-	return m_dRadius * m_dRadius * PI * m_dHeight;
+	return 2.0 * PI * m_dRadius * m_dHeight;
 }
 
 static const unsigned int RADIUS_ID = 100;

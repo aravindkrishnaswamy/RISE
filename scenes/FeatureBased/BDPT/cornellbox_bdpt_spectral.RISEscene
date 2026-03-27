@@ -21,11 +21,10 @@ pathtracing_shaderop
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
 	shaderop	pt
 }
 
-bdpt_rasterizer
+bdpt_spectral_rasterizer
 {
 	max_recursion		8
 	min_importance		0.001
@@ -33,7 +32,6 @@ bdpt_rasterizer
 	max_light_depth		8
 	samples				64
 	lum_samples			1
-	spectral			true
 	nmbegin				405
 	nmend				705
 	num_wavelengths		8

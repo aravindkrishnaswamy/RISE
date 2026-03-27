@@ -1771,7 +1771,7 @@ namespace RISE
 					String hb_ratio = "0.75";
 					String whole_blood_in_papillary_dermis = "0.012";			// 0.2 - 5%
 					String whole_blood_in_reticular_dermis = "0.0091";		// 0.2 - 5%
-					String bilirubin_concentration = "0.005";					// from 0.005 to 0.5 even 5.0 might be ok g/L
+					String bilirubin_concentration = "0.05";					// from 0.01 to 0.5 even 5.0 might be ok g/L
 					String betacarotene_concentration_SC = "2.1e-4";
 					String betacarotene_concentration_epidermis = "2.1e-4";
 					String betacarotene_concentration_dermis = "7.0e-5";
@@ -1844,6 +1844,162 @@ namespace RISE
 				}
 			};
 
+			struct BioSpecSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					// Same parameters as biospec_skin_material plus roughness
+					String name = "noname";
+					String thickness_SC = "0.001";
+					String thickness_epidermis = "0.01";
+					String thickness_papillary_dermis = "0.02";
+					String thickness_reticular_dermis = "0.18";
+					String ior_SC = "1.55";
+					String ior_epidermis = "1.4";
+					String ior_papillary_dermis = "1.36";
+					String ior_reticular_dermis = "1.38";
+					String concentration_eumelanin = "80.0";
+					String concentration_pheomelanin = "12.0";
+					String melanosomes_in_epidermis = "0.10";
+					String hb_ratio = "0.75";
+					String whole_blood_in_papillary_dermis = "0.012";
+					String whole_blood_in_reticular_dermis = "0.0091";
+					String bilirubin_concentration = "0.05";
+					String betacarotene_concentration_SC = "2.1e-4";
+					String betacarotene_concentration_epidermis = "2.1e-4";
+					String betacarotene_concentration_dermis = "7.0e-5";
+					String folds_aspect_ratio = "0.75";
+					bool bSubdermalLayer = true;
+					String roughness = "0.0";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "thickness_SC" ) {
+							thickness_SC = pvalue;
+						} else if( pname == "thickness_epidermis" ) {
+							thickness_epidermis = pvalue;
+						} else if( pname == "thickness_papillary_dermis" ) {
+							thickness_papillary_dermis = pvalue;
+						} else if( pname == "thickness_reticular_dermis" ) {
+							thickness_reticular_dermis = pvalue;
+						} else if( pname == "ior_SC" ) {
+							ior_SC = pvalue;
+						} else if( pname == "ior_epidermis" ) {
+							ior_epidermis = pvalue;
+						} else if( pname == "ior_papillary_dermis" ) {
+							ior_papillary_dermis = pvalue;
+						} else if( pname == "ior_reticular_dermis" ) {
+							ior_reticular_dermis = pvalue;
+						} else if( pname == "concentration_eumelanin" ) {
+							concentration_eumelanin = pvalue;
+						} else if( pname == "concentration_pheomelanin" ) {
+							concentration_pheomelanin = pvalue;
+						} else if( pname == "melanosomes_in_epidermis" ) {
+							melanosomes_in_epidermis = pvalue;
+						} else if( pname == "hb_ratio" ) {
+							hb_ratio = pvalue;
+						} else if( pname == "whole_blood_in_papillary_dermis" ) {
+							whole_blood_in_papillary_dermis = pvalue;
+						} else if( pname == "whole_blood_in_reticular_dermis" ) {
+							whole_blood_in_reticular_dermis = pvalue;
+						} else if( pname == "bilirubin_concentration" ) {
+							bilirubin_concentration = pvalue;
+						} else if( pname == "betacarotene_concentration_SC" ) {
+							betacarotene_concentration_SC = pvalue;
+						} else if( pname == "betacarotene_concentration_epidermis" ) {
+							betacarotene_concentration_epidermis = pvalue;
+						} else if( pname == "betacarotene_concentration_dermis" ) {
+							betacarotene_concentration_dermis = pvalue;
+						} else if( pname == "folds_aspect_ratio" ) {
+							folds_aspect_ratio = pvalue;
+						} else if( pname == "subdermal_layer" ) {
+							bSubdermalLayer = pvalue.toBoolean();
+						} else if( pname == "roughness" ) {
+							roughness = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddBioSpecSkinBSSRDFMaterial( name.c_str(), thickness_SC.c_str(), thickness_epidermis.c_str(), thickness_papillary_dermis.c_str(), thickness_reticular_dermis.c_str(),
+						ior_SC.c_str(), ior_epidermis.c_str(), ior_papillary_dermis.c_str(), ior_reticular_dermis.c_str(), concentration_eumelanin.c_str(), concentration_pheomelanin.c_str(),
+						melanosomes_in_epidermis.c_str(), hb_ratio.c_str(), whole_blood_in_papillary_dermis.c_str(), whole_blood_in_reticular_dermis.c_str(),
+						bilirubin_concentration.c_str(), betacarotene_concentration_SC.c_str(), betacarotene_concentration_epidermis.c_str(), betacarotene_concentration_dermis.c_str(),
+						folds_aspect_ratio.c_str(), bSubdermalLayer, roughness.c_str() );
+				}
+			};
+
+			struct DonnerJensenSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					// Donner et al. 2008 spectral skin model parameters
+					String name = "noname";
+					String melanin_fraction = "0.02";
+					String melanin_blend = "0.5";
+					String hemoglobin_epidermis = "0.002";
+					String carotene_fraction = "0.001";
+					String hemoglobin_dermis = "0.005";
+					String epidermis_thickness = "0.025";
+					String ior_epidermis = "1.4";
+					String ior_dermis = "1.38";
+					String blood_oxygenation = "0.7";
+					String roughness = "0.35";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "melanin_fraction" ) {
+							melanin_fraction = pvalue;
+						} else if( pname == "melanin_blend" ) {
+							melanin_blend = pvalue;
+						} else if( pname == "hemoglobin_epidermis" ) {
+							hemoglobin_epidermis = pvalue;
+						} else if( pname == "carotene_fraction" ) {
+							carotene_fraction = pvalue;
+						} else if( pname == "hemoglobin_dermis" ) {
+							hemoglobin_dermis = pvalue;
+						} else if( pname == "epidermis_thickness" ) {
+							epidermis_thickness = pvalue;
+						} else if( pname == "ior_epidermis" ) {
+							ior_epidermis = pvalue;
+						} else if( pname == "ior_dermis" ) {
+							ior_dermis = pvalue;
+						} else if( pname == "blood_oxygenation" ) {
+							blood_oxygenation = pvalue;
+						} else if( pname == "roughness" ) {
+							roughness = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddDonnerJensenSkinBSSRDFMaterial( name.c_str(),
+						melanin_fraction.c_str(), melanin_blend.c_str(),
+						hemoglobin_epidermis.c_str(), carotene_fraction.c_str(),
+						hemoglobin_dermis.c_str(), epidermis_thickness.c_str(),
+						ior_epidermis.c_str(), ior_dermis.c_str(),
+						blood_oxygenation.c_str(), roughness.c_str() );
+				}
+			};
+
 			struct GenericHumanTissueMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -1855,7 +2011,7 @@ namespace RISE
 					String sca = "0.85";
 					double hb_ratio = 0.75;
 					double whole_blood = 0.012;							// 0.2 - 7%
-					double bilirubin_concentration = 0.005;					// from 0.005 to 0.5 even 5.0 might be ok g/L
+					double bilirubin_concentration = 0.05;					// from 0.01 to 0.5 even 5.0 might be ok g/L
 					double betacarotene_concentration = 7.0e-5;
 					bool diffuse = true;
 
@@ -3778,50 +3934,88 @@ namespace RISE
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
 					String name = "noname";
 					bool branch = true;
-					bool forcecheckemitters = false;
-					bool finalgather = false;
-					bool reflections = true;
-					bool refractions = true;
-					bool diffuse = true;
-					bool translucents = true;
+					bool smsEnabled = false;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 10;
+					bool smsBiased = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
-						// Split the param
 						String pname;
 						String pvalue;
 						if( !string_split( *i, pname, pvalue, ' ' ) ) {
 							return false;
 						}
 
-						// Now search the parameter value names
 						if( pname == "name" ) {
 							name = pvalue;
 						} else if( pname == "branch" ) {
 							branch = pvalue.toBoolean();
-						} else if( pname == "force_check_emitters" ) {
-							forcecheckemitters = pvalue.toBoolean();
-						} else if( pname == "finalgather" ) {
-							finalgather = pvalue.toBoolean();
-						} else if( pname == "reflections" ) {
-							reflections = pvalue.toBoolean();
-						} else if( pname == "refractions" ) {
-							refractions = pvalue.toBoolean();
-						} else if( pname == "diffuse" ) {
-							diffuse = pvalue.toBoolean();
-						} else if( pname == "translucents" ) {
-							translucents = pvalue.toBoolean();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else if( pname == "force_check_emitters" ||
+								   pname == "finalgather" ||
+								   pname == "reflections" ||
+								   pname == "refractions" ||
+								   pname == "diffuse" ||
+								   pname == "translucents" ) {
+							// Legacy parameters — silently ignored
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddPathTracingShaderOp( name.c_str(), branch, forcecheckemitters, finalgather, reflections, refractions, diffuse, translucents );
+					return pJob.AddPathTracingShaderOp( name.c_str(), branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+				}
+			};
+
+			struct SMSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					unsigned int maxIterations = 20;
+					double threshold = 1e-5;
+					unsigned int maxChainDepth = 10;
+					bool biased = true;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "max_iterations" ) {
+							maxIterations = pvalue.toUInt();
+						} else if( pname == "threshold" ) {
+							threshold = pvalue.toDouble();
+						} else if( pname == "max_chain_depth" ) {
+							maxChainDepth = pvalue.toUInt();
+						} else if( pname == "biased" ) {
+							biased = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddSMSShaderOp( name.c_str(), maxIterations, threshold, maxChainDepth, biased );
 				}
 			};
 
@@ -4160,6 +4354,190 @@ namespace RISE
 					}
 
 					return pJob.AddDiffusionApproximationSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, scattering, absorption, ior, g );
+				}
+			};
+
+			struct DonnerJensenSkinSSSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					unsigned int numpoints = 10000;
+					double error = 0.001;
+					unsigned int maxPointsPerNode = 40;
+					unsigned char maxDepth = 8;
+					double irrad_scale = 1.0;
+					String shader = "none";
+					bool cache = true;
+					double melanin_fraction = 0.02;
+					double melanin_blend = 0.5;
+					double hemoglobin_epidermis = 0.002;
+					double carotene_fraction = 0.001;
+					double hemoglobin_dermis = 0.005;
+					double epidermis_thickness = 0.025;
+					double ior_epidermis = 1.4;
+					double ior_dermis = 1.38;
+					double blood_oxygenation = 0.7;
+					String melanin_fraction_offset = "";
+					String hemoglobin_epidermis_offset = "";
+					String hemoglobin_dermis_offset = "";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "numpoints" ) {
+							numpoints = pvalue.toUInt();
+						} else if( pname == "error" ) {
+							error = pvalue.toDouble();
+						} else if( pname == "maxpointspernode" ) {
+							maxPointsPerNode = pvalue.toUInt();
+						} else if( pname == "maxdepth" ) {
+							maxDepth = pvalue.toUChar();
+						} else if( pname == "irrad_scale" ) {
+							irrad_scale = pvalue.toDouble();
+						} else if( pname == "shader" ) {
+							shader = pvalue;
+						} else if( pname == "cache" ) {
+							cache = pvalue.toBoolean();
+						} else if( pname == "melanin_fraction" ) {
+							melanin_fraction = pvalue.toDouble();
+						} else if( pname == "melanin_blend" ) {
+							melanin_blend = pvalue.toDouble();
+						} else if( pname == "hemoglobin_epidermis" ) {
+							hemoglobin_epidermis = pvalue.toDouble();
+						} else if( pname == "carotene_fraction" ) {
+							carotene_fraction = pvalue.toDouble();
+						} else if( pname == "hemoglobin_dermis" ) {
+							hemoglobin_dermis = pvalue.toDouble();
+						} else if( pname == "epidermis_thickness" ) {
+							epidermis_thickness = pvalue.toDouble();
+						} else if( pname == "ior_epidermis" ) {
+							ior_epidermis = pvalue.toDouble();
+						} else if( pname == "ior_dermis" ) {
+							ior_dermis = pvalue.toDouble();
+						} else if( pname == "blood_oxygenation" ) {
+							blood_oxygenation = pvalue.toDouble();
+						} else if( pname == "melanin_fraction_offset" ) {
+							melanin_fraction_offset = pvalue;
+						} else if( pname == "hemoglobin_epidermis_offset" ) {
+							hemoglobin_epidermis_offset = pvalue;
+						} else if( pname == "hemoglobin_dermis_offset" ) {
+							hemoglobin_dermis_offset = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddDonnerJensenSkinSSSShaderOp( name.c_str(),
+						numpoints, error, maxPointsPerNode, maxDepth, irrad_scale,
+						shader.c_str(), cache,
+						melanin_fraction, melanin_blend, hemoglobin_epidermis,
+						carotene_fraction, hemoglobin_dermis, epidermis_thickness,
+						ior_epidermis, ior_dermis, blood_oxygenation,
+						melanin_fraction_offset.c_str(),
+						hemoglobin_epidermis_offset.c_str(),
+						hemoglobin_dermis_offset.c_str() );
+				}
+			};
+
+			struct BioSpecSkinSSSShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					unsigned int numpoints = 100000;
+					double error = 0.0001;
+					unsigned int maxPointsPerNode = 40;
+					unsigned char maxDepth = 8;
+					double irrad_scale = 0.3;
+					String shader = "none";
+					bool cache = true;
+					double thickness_SC = 0.001;
+					double thickness_epidermis = 0.01;
+					double thickness_papillary = 0.02;
+					double thickness_reticular = 0.18;
+					double ior_SC = 1.55;
+					double ior_epidermis = 1.4;
+					double ior_papillary = 1.36;
+					double ior_reticular = 1.38;
+					double concentration_eumelanin = 80.0;
+					double concentration_pheomelanin = 12.0;
+					double melanosomes_in_epidermis = 0.10;
+					double hb_ratio = 0.75;
+					double whole_blood_papillary = 0.012;
+					double whole_blood_reticular = 0.0091;
+					double bilirubin_concentration = 0.05;
+					double betacarotene_SC = 2.1e-4;
+					double betacarotene_epidermis = 2.1e-4;
+					double betacarotene_dermis = 7.0e-5;
+					String melanosomes_offset = "";
+					String blood_papillary_offset = "";
+					String blood_reticular_offset = "";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) { name = pvalue; }
+						else if( pname == "numpoints" ) { numpoints = pvalue.toUInt(); }
+						else if( pname == "error" ) { error = pvalue.toDouble(); }
+						else if( pname == "maxpointspernode" ) { maxPointsPerNode = pvalue.toUInt(); }
+						else if( pname == "maxdepth" ) { maxDepth = pvalue.toUChar(); }
+						else if( pname == "irrad_scale" ) { irrad_scale = pvalue.toDouble(); }
+						else if( pname == "shader" ) { shader = pvalue; }
+						else if( pname == "cache" ) { cache = pvalue.toBoolean(); }
+						else if( pname == "thickness_SC" ) { thickness_SC = pvalue.toDouble(); }
+						else if( pname == "thickness_epidermis" ) { thickness_epidermis = pvalue.toDouble(); }
+						else if( pname == "thickness_papillary_dermis" ) { thickness_papillary = pvalue.toDouble(); }
+						else if( pname == "thickness_reticular_dermis" ) { thickness_reticular = pvalue.toDouble(); }
+						else if( pname == "ior_SC" ) { ior_SC = pvalue.toDouble(); }
+						else if( pname == "ior_epidermis" ) { ior_epidermis = pvalue.toDouble(); }
+						else if( pname == "ior_papillary_dermis" ) { ior_papillary = pvalue.toDouble(); }
+						else if( pname == "ior_reticular_dermis" ) { ior_reticular = pvalue.toDouble(); }
+						else if( pname == "concentration_eumelanin" ) { concentration_eumelanin = pvalue.toDouble(); }
+						else if( pname == "concentration_pheomelanin" ) { concentration_pheomelanin = pvalue.toDouble(); }
+						else if( pname == "melanosomes_in_epidermis" ) { melanosomes_in_epidermis = pvalue.toDouble(); }
+						else if( pname == "hb_ratio" ) { hb_ratio = pvalue.toDouble(); }
+						else if( pname == "whole_blood_in_papillary_dermis" ) { whole_blood_papillary = pvalue.toDouble(); }
+						else if( pname == "whole_blood_in_reticular_dermis" ) { whole_blood_reticular = pvalue.toDouble(); }
+						else if( pname == "bilirubin_concentration" ) { bilirubin_concentration = pvalue.toDouble(); }
+						else if( pname == "betacarotene_concentration_SC" ) { betacarotene_SC = pvalue.toDouble(); }
+						else if( pname == "betacarotene_concentration_epidermis" ) { betacarotene_epidermis = pvalue.toDouble(); }
+						else if( pname == "betacarotene_concentration_dermis" ) { betacarotene_dermis = pvalue.toDouble(); }
+						else if( pname == "melanosomes_offset" ) { melanosomes_offset = pvalue; }
+						else if( pname == "blood_papillary_offset" ) { blood_papillary_offset = pvalue; }
+						else if( pname == "blood_reticular_offset" ) { blood_reticular_offset = pvalue; }
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddBioSpecSkinSSSShaderOp( name.c_str(),
+						numpoints, error, maxPointsPerNode, maxDepth, irrad_scale,
+						shader.c_str(), cache,
+						thickness_SC, thickness_epidermis, thickness_papillary, thickness_reticular,
+						ior_SC, ior_epidermis, ior_papillary, ior_reticular,
+						concentration_eumelanin, concentration_pheomelanin,
+						melanosomes_in_epidermis, hb_ratio,
+						whole_blood_papillary, whole_blood_reticular,
+						bilirubin_concentration,
+						betacarotene_SC, betacarotene_epidermis, betacarotene_dermis,
+						melanosomes_offset.c_str(),
+						blood_papillary_offset.c_str(),
+						blood_reticular_offset.c_str() );
 				}
 			};
 
@@ -5054,7 +5432,7 @@ namespace RISE
 				}
 			};
 
-			struct BDPTRasterizerAsciiChunkParser : public IAsciiChunkParser
+			struct BDPTPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
@@ -5081,11 +5459,12 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool spectral = false;
-					double nmbegin = 380.0;
-					double nmend = 780.0;
-					unsigned int num_wavelengths = 80;
-					unsigned int spectral_samples = 16;
+					bool smsEnabled = true;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 30;
+					bool smsBiased = true;
+					unsigned int smsBernoulliTrials = 100;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5144,8 +5523,130 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
-						} else if( pname == "spectral" ) {
-							spectral = pvalue.toBoolean();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else if( pname == "sms_bernoulli_trials" ) {
+							smsBernoulliTrials = pvalue.toUInt();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.SetBDPTPelRasterizer( numSamples, numLumSamples,
+						maxRecur, minImportance, maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
+						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
+						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
+						showLuminaires, useiorstack, onlyonelight,
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
+				}
+			};
+
+			struct BDPTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String defaultshader = "global";
+					unsigned int maxRecur = 10;
+					unsigned int numSamples = 1;
+					unsigned int numLumSamples = 1;
+					double minImportance = 0.01;
+					unsigned int maxEyeDepth = 8;
+					unsigned int maxLightDepth = 8;
+					String radiancemap = "none";
+					double radianceScale = 1.0;
+					double radorient[3] = {0};
+					bool radback = true;
+					String pixelFilter = "none";
+					String pixelSampler = "none";
+					String luminarySampler = "none";
+					double pixelSamplerParam = 1.0;
+					double luminarySamplerParam = 1.0;
+					double pixelFilterWidth = 1.0;
+					double pixelFilterHeight = 1.0;
+					double pixelFilterParamA = 1.0;
+					double pixelFilterParamB = 1.0;
+					bool showLuminaires = true;
+					bool useiorstack = false;
+					bool onlyonelight = false;
+					double nmbegin = 380.0;
+					double nmend = 780.0;
+					unsigned int num_wavelengths = 80;
+					unsigned int spectral_samples = 16;
+					bool smsEnabled = true;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 30;
+					bool smsBiased = true;
+					unsigned int smsBernoulliTrials = 100;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "defaultshader" ) {
+							defaultshader = pvalue;
+						} else if( pname == "max_recursion" ) {
+							maxRecur = pvalue.toUInt();
+						} else if( pname == "min_importance" ) {
+							minImportance = pvalue.toDouble();
+						} else if( pname == "max_eye_depth" ) {
+							maxEyeDepth = pvalue.toUInt();
+						} else if( pname == "max_light_depth" ) {
+							maxLightDepth = pvalue.toUInt();
+						} else if( pname == "samples" ) {
+							numSamples = pvalue.toUInt();
+						} else if( pname == "lum_samples" ) {
+							numLumSamples = pvalue.toUInt();
+						} else if( pname == "radiance_map" ) {
+							radiancemap = pvalue;
+						} else if( pname == "radiance_scale" ) {
+							radianceScale = pvalue.toDouble();
+						} else if( pname == "radiance_background" ) {
+							radback = pvalue.toBoolean();
+						} else if( pname == "radiance_orient" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
+							radorient[0] *= DEG_TO_RAD;
+							radorient[1] *= DEG_TO_RAD;
+							radorient[2] *= DEG_TO_RAD;
+						} else if( pname == "pixel_sampler" ) {
+							pixelSampler = pvalue;
+						} else if( pname == "pixel_sampler_param" ) {
+							pixelSamplerParam = pvalue.toDouble();
+						} else if( pname == "luminary_sampler" ) {
+							luminarySampler = pvalue;
+						} else if( pname == "luminary_sampler_param" ) {
+							luminarySamplerParam = pvalue.toDouble();
+						} else if( pname == "pixel_filter" ) {
+							pixelFilter = pvalue;
+						} else if( pname == "pixel_filter_width" ) {
+							pixelFilterWidth = pvalue.toDouble();
+						} else if( pname == "pixel_filter_height" ) {
+							pixelFilterHeight = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramA" ) {
+							pixelFilterParamA = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramB" ) {
+							pixelFilterParamB = pvalue.toDouble();
+						} else if( pname == "show_luminaires" ) {
+							showLuminaires = pvalue.toBoolean();
+						} else if( pname == "ior_stack" ) {
+							useiorstack = pvalue.toBoolean();
+						} else if( pname == "choose_one_light" ) {
+							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
 							nmbegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
@@ -5154,20 +5655,33 @@ namespace RISE
 							num_wavelengths = pvalue.toUInt();
 						} else if( pname == "spectral_samples" ) {
 							spectral_samples = pvalue.toUInt();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else if( pname == "sms_bernoulli_trials" ) {
+							smsBernoulliTrials = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.SetBDPTRasterizer( numSamples, numLumSamples,
+					return pJob.SetBDPTSpectralRasterizer( numSamples, numLumSamples,
 						maxRecur, minImportance, maxEyeDepth, maxLightDepth,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						spectral, nmbegin, nmend, num_wavelengths, spectral_samples );
+						nmbegin, nmend, num_wavelengths, spectral_samples,
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
 				}
 			};
 
@@ -6166,6 +6680,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["isotropic_phong_material"] = new IsotropicPhongMaterialAsciiChunkParser();
 	chunks["translucent_material"] = new TranslucentMaterialAsciiChunkParser();
 	chunks["biospec_skin_material"] = new BioSpecSkinMaterialAsciiChunkParser();
+	chunks["biospec_skin_bssrdf_material"] = new BioSpecSkinBSSRDFMaterialAsciiChunkParser();
+	chunks["donner_jensen_skin_bssrdf_material"] = new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser();
 	chunks["generic_human_tissue_material"] = new GenericHumanTissueMaterialAsciiChunkParser();
 	chunks["composite_material"] = new CompositeMaterialAsciiChunkParser();
 	chunks["ward_isotropic_material"] = new WardIsotropicGaussianMaterialAsciiChunkParser();
@@ -6206,10 +6722,14 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["ambientocclusion_shaderop"] = new AmbientOcclusionShaderOpAsciiChunkParser();
 	chunks["directlighting_shaderop"] = new DirectLightingShaderOpAsciiChunkParser();
 	chunks["pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();
+	chunks["mis_pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();  // Legacy alias
+	chunks["sms_shaderop"] = new SMSShaderOpAsciiChunkParser();
 	chunks["distributiontracing_shaderop"] = new DistributionTracingShaderOpAsciiChunkParser();
 	chunks["finalgather_shaderop"] = new FinalGatherShaderOpAsciiChunkParser();
 	chunks["simple_sss_shaderop"] = new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser();
 	chunks["diffusion_approximation_sss_shaderop"] = new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser();
+	chunks["donner_jensen_skin_sss_shaderop"] = new DonnerJensenSkinSSSShaderOpAsciiChunkParser();
+	chunks["biospec_skin_sss_shaderop"] = new BioSpecSkinSSSShaderOpAsciiChunkParser();
 	chunks["arealight_shaderop"] = new AreaLightShaderOpAsciiChunkParser();
 	chunks["transparency_shaderop"] = new TransparencyShaderOpAsciiChunkParser();
 
@@ -6222,7 +6742,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["pixelintegratingspectral_rasterizer"] = new PixelIntegratingSpectralRasterizerAsciiChunkParser();
 	chunks["adaptivepixelpel_rasterizer"] = new AdaptivePixelPelRasterizerAsciiChunkParser();
 	chunks["contrastAApixelpel_rasterizer"] = new PixelPelRasterizerContrastAAAsciiChunkParser();
-	chunks["bdpt_rasterizer"] = new BDPTRasterizerAsciiChunkParser();
+	chunks["bdpt_pel_rasterizer"] = new BDPTPelRasterizerAsciiChunkParser();
+	chunks["bdpt_spectral_rasterizer"] = new BDPTSpectralRasterizerAsciiChunkParser();
 	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();
 	chunks["file_rasterizeroutput"] = new FileRasterizerOutputAsciiChunkParser();
 

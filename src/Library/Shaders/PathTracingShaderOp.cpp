@@ -1,11 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PathTracingShaderOp.cpp - Implementation of the PathTracingShaderOp class
+//  PathTracingShaderOp.cpp - Unified MIS path tracer with SMS
 //
 //  Author: Aravind Krishnaswamy
-//  Date of Birth: January 30, 2005
+//  Date of Birth: March 26, 2026
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -13,200 +12,468 @@
 
 #include "pch.h"
 #include "PathTracingShaderOp.h"
-#include "../Utilities/GeometricUtilities.h"
+#include "../Rendering/LuminaryManager.h"
+#include "../Lights/LightSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
 
 PathTracingShaderOp::PathTracingShaderOp(
-	const bool bBranch_,
-	const bool forcecheckemitters,
-	const bool bFinalGather_,
-	const bool reflections,
-	const bool refractions,
-	const bool diffuse,
-	const bool translucents
-	) : 
-  bBranch( bBranch_ ),
-  bForceCheckEmitters( forcecheckemitters ),
-  bFinalGather( bFinalGather_ ),
-  bTraceReflection( reflections ),
-  bTraceRefraction( refractions ),
-  bTraceDiffuse( diffuse ),
-  bTraceTranslucent( translucents )
+	const bool branch,
+	const ManifoldSolverConfig& smsConfig
+	) :
+  pSolver( 0 ),
+  bBranch( branch ),
+  bSMSEnabled( smsConfig.enabled )
 {
-}
-
-PathTracingShaderOp::~PathTracingShaderOp( )
-{
-}
-
-bool PathTracingShaderOp::ShouldTraceRay( const ScatteredRay::ScatRayType type ) const
-{
-	if( (type == ScatteredRay::eRayReflection && !bTraceReflection) ||
-		(type == ScatteredRay::eRayRefraction && !bTraceRefraction) ||
-		(type == ScatteredRay::eRayDiffuse && !bTraceDiffuse) ||
-		(type == ScatteredRay::eRayTranslucent && !bTraceTranslucent)
-		)
+	if( smsConfig.enabled )
 	{
-		return false;
+		pSolver = new ManifoldSolver( smsConfig );
+		pSolver->addref();
 	}
-
-	return true;
 }
 
-//! Tells the shader to apply shade to the given intersection point
+PathTracingShaderOp::~PathTracingShaderOp()
+{
+	safe_release( pSolver );
+}
+
+/// Power heuristic weight: w = pa² / (pa² + pb²)
+static inline Scalar PowerHeuristic( const Scalar pa, const Scalar pb )
+{
+	const Scalar pa2 = pa * pa;
+	return pa2 / (pa2 + pb * pb);
+}
+
 void PathTracingShaderOp::PerformOperation(
-	const RuntimeContext& rc,					///< [in] Runtime context
-	const RayIntersection& ri,					///< [in] Intersection information 
-	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
-	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
-	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
-	const ScatteredRayContainer* pScat			///< [in] Scattering information
+	const RuntimeContext& rc,
+	const RayIntersection& ri,
+	const IRayCaster& caster,
+	const IRayCaster::RAY_STATE& rs,
+	RISEPel& c,
+	const IORStack* const ior_stack,
+	const ScatteredRayContainer* pScat
 	) const
 {
-	c = RISEPel(0.0);
+	c = RISEPel( 0.0 );
 
-	// Only do stuff on a normal pass or on final gather
 	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
 		return;
 	}
 
+	const IScene* pScene = caster.GetAttachedScene();
+	if( !pScene ) return;
+
 	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
-	if( rs.type == IRayCaster::RAY_STATE::eRayFinalGather && pBRDF )
+	// ================================================================
+	// PART 1: Emission
+	// ================================================================
+	// Check emission at ANY surface (including those with BSDFs like
+	// lambertian_luminaire_material which has both a BSDF and emitter).
 	{
-		const IScene* pScene = caster.GetAttachedScene();
-		const IPhotonMap* pGM = pScene->GetGlobalPelMap();
-		const ISpectralPhotonMap* pGSM = pScene->GetGlobalSpectralMap();
+		IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
+		if( pEmitter && rs.considerEmission )
+		{
+			RISEPel emission = pEmitter->emittedRadiance(
+				ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
 
-		if( pGM ) {
-			pGM->RadianceEstimate( c, ri.geometric, *pBRDF );
+			// MIS weight for BSDF-sampled emission hitting a mesh light
+			if( rs.bsdfPdf > 0 && ri.pObject )
+			{
+				const Scalar area = ri.pObject->GetArea();
+				if( area > 0 )
+				{
+					const Scalar cosLight = fabs( Vector3Ops::Dot(
+						ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+					if( cosLight > 0 )
+					{
+						const Scalar dist = Vector3Ops::Magnitude(
+							Vector3Ops::mkVector3(
+								ri.geometric.ptIntersection,
+								ri.geometric.ray.origin ) );
+						const Scalar p_nee = (dist * dist) / (area * cosLight);
+						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+						emission = emission * w_bsdf;
+					}
+				}
+			}
+
+			c = c + emission;
 		}
+	}
 
-		if( pGSM ) {
-			RISEPel cs;
-			pGSM->RadianceEstimate( cs, ri.geometric, *pBRDF );
-			c = c + cs;
+	// Specular surfaces (no BSDF) — trace scattered rays and return
+	if( !pBRDF ) {
+		// Still need to trace scattered rays for specular surfaces
+		if( pScat ) {
+			const ScatteredRayContainer& scattered = *pScat;
+			IRayCaster::RAY_STATE rs2;
+			rs2.depth = rs.depth + 1;
+			// Through specular surfaces, keep emission enabled.
+			// The double-counting prevention happens at DIFFUSE surfaces
+			// (Part 3) where SMS is the alternative to BSDF-sampled
+			// emission through glass.  At specular surfaces we must
+			// propagate emission visibility so that non-mesh lights
+			// (spot, point) can illuminate surfaces seen through glass.
+			rs2.considerEmission = true;
+
+			if( bBranch ) {
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					ScatteredRay& scat = scattered[i];
+					const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
+					if( scatmaxv > 0 ) {
+						RISEPel cthis( 0, 0, 0 );
+						rs2.importance = rs.importance * scatmaxv;
+						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						Ray ray = scat.ray;
+						ray.Advance( 1e-8 );
+						caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+							rs2, 0, ri.pRadianceMap,
+							scat.ior_stack ? scat.ior_stack : ior_stack );
+						c = c + (scat.kray * cthis);
+					}
+				}
+			} else {
+				const ScatteredRay* pS = scattered.RandomlySelect(
+					rc.random.CanonicalRandom(), false );
+				if( pS ) {
+					RISEPel cthis( 0, 0, 0 );
+					rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
+					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+					Ray ray = pS->ray;
+					ray.Advance( 1e-8 );
+					caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+						rs2, 0, ri.pRadianceMap,
+						pS->ior_stack ? pS->ior_stack : ior_stack );
+					c = c + (pS->kray * cthis);
+				}
+			}
 		}
 		return;
 	}
 
-	if( pScat ) {
-		const ScatteredRayContainer scattered = *pScat;
+	// ================================================================
+	// PART 2: NEE + SMS at diffuse/glossy surfaces
+	// ================================================================
+
+	// --- 2a: NEE for non-mesh lights (point, spot, directional) ---
+	// These have delta position, so MIS weight = 1.0 always.
+	const ILightManager* pLM = pScene->GetLights();
+	if( pLM ) {
+		RISEPel directNonMesh( 0, 0, 0 );
+		pLM->ComputeDirectLighting( ri.geometric, caster, *pBRDF,
+			ri.pObject->DoesReceiveShadows(), directNonMesh );
+		c = c + directNonMesh;
+	}
+
+	// --- 2b: NEE for mesh luminaries (with MIS weight) ---
+	// Use the existing LuminaryManager which iterates all luminaries,
+	// handles shadow testing, and applies MIS weights.
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	if( pLumMgr )
+	{
+		RISEPel directMesh( 0, 0, 0 );
+		directMesh = pLumMgr->ComputeDirectLighting(
+			ri, *pBRDF, rc.random, caster, pScene->GetShadowMap() );
+		c = c + directMesh;
+	}
+
+	// --- 2c: SMS for caustics through specular surfaces ---
+	// Attempt a single SMS evaluation using a randomly sampled light.
+	// EvaluateAtShadingPoint handles: light sampling, seed chain,
+	// Newton solve, BSDF evaluation, geometric terms.
+	if( pSolver )
+	{
+		const Vector3 woOutgoing = Vector3(
+			-ri.geometric.ray.Dir().x,
+			-ri.geometric.ray.Dir().y,
+			-ri.geometric.ray.Dir().z );
+
+		ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
+			ri.geometric.ptIntersection,
+			ri.geometric.vNormal,
+			ri.geometric.onb,
+			ri.pMaterial,
+			woOutgoing,
+			*pScene,
+			caster,
+			rc.random );
+
+		if( sms.valid )
+		{
+			c = c + sms.contribution * sms.misWeight;
+		}
+	}
+
+	// ================================================================
+	// PART 3: BSDF sampling (continue path)
+	// ================================================================
+	if( pScat )
+	{
+		const ScatteredRayContainer& scattered = *pScat;
 
 		IRayCaster::RAY_STATE rs2;
-		rs2.depth = rs.depth+1;
-		if( bForceCheckEmitters ) {
-			rs2.considerEmission = true;
-		} else {
-			rs2.considerEmission = ((pBRDF)||(caster.GetAttachedScene()->GetCausticSpectralMap()&&!rs.considerEmission))?false:true;
-		}
+		rs2.depth = rs.depth + 1;
+		// For BSDF-sampled rays at diffuse surfaces, enable emission
+		// so that direct light hits (non-specular paths) are counted
+		// with MIS weight.  The MIS weight is computed in PART 1 above
+		// when the next hit is an emitter.
+		rs2.considerEmission = true;
 
-		if( bFinalGather ) {
-			if( rs.type == IRayCaster::RAY_STATE::eRayView ) {
-				// If we are to shoot final gather rays and this is the view ray, then we
-				// shoot final gather rays which will look at the photon map
-				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
-			}
-
-			if( rs.type == IRayCaster::RAY_STATE::eRayFinalGather ) {
-				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
-			}
-		}
-
-		if( bBranch ) {
-			for( unsigned int i=0; i<scattered.Count(); i++ ) {
+		if( bBranch )
+		{
+			for( unsigned int i = 0; i < scattered.Count(); i++ )
+			{
 				ScatteredRay& scat = scattered[i];
+				const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
+				if( scatmaxv > 0 )
+				{
+					RISEPel cthis( 0, 0, 0 );
+					rs2.importance = rs.importance * scatmaxv;
+					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
 
-				if( ShouldTraceRay( scat.type ) ) {
-					const Scalar scatmaxv = ColorMath::MaxValue(scat.kray);
-					if( scatmaxv > 0.0 ) {
-						RISEPel		cthis(0,0,0);
-						rs2.importance = rs.importance * scatmaxv;
-						if( !bFinalGather ) {
-							rs2.type = scat.type==ScatteredRay::eRayDiffuse ? IRayCaster::RAY_STATE::eRayDiffuse : IRayCaster::RAY_STATE::eRaySpecular;
-						}
-
-						Ray ray = scat.ray;
-						ray.Advance( 1e-8 );
-						caster.CastRay( rc, ri.geometric.rast, ray, cthis, rs2, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
-						c = c + (scat.kray*cthis);
+					// For specular bounces, disable emission to
+					// prevent double-counting with SMS
+					if( scat.isDelta && bSMSEnabled ) {
+						rs2.considerEmission = false;
+					} else {
+						rs2.considerEmission = true;
 					}
+
+					Ray ray = scat.ray;
+					ray.Advance( 1e-8 );
+					caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+						rs2, 0, ri.pRadianceMap,
+						scat.ior_stack ? scat.ior_stack : ior_stack );
+					c = c + (scat.kray * cthis);
 				}
 			}
-		} else {
-			const ScatteredRay* pScat = scattered.RandomlySelect( rc.random.CanonicalRandom(), false );;
-			if( pScat && ShouldTraceRay( pScat->type ) ) {
-				if( !bFinalGather ) {
-					rs2.type = pScat->type==ScatteredRay::eRayDiffuse ? IRayCaster::RAY_STATE::eRayDiffuse : IRayCaster::RAY_STATE::eRaySpecular;
+		}
+		else
+		{
+			const ScatteredRay* pS = scattered.RandomlySelect(
+				rc.random.CanonicalRandom(), false );
+			if( pS )
+			{
+				RISEPel cthis( 0, 0, 0 );
+				rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
+				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+
+				if( pS->isDelta && bSMSEnabled ) {
+					rs2.considerEmission = false;
+				} else {
+					rs2.considerEmission = true;
 				}
-				
-				Ray ray = pScat->ray;
+
+				Ray ray = pS->ray;
 				ray.Advance( 1e-8 );
-				rs2.importance = rs.importance * ColorMath::MaxValue(pScat->kray);
-				caster.CastRay( rc, ri.geometric.rast, ray, c, rs2, 0, ri.pRadianceMap, pScat->ior_stack?pScat->ior_stack:ior_stack );
-				c = c * pScat->kray;
+				caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+					rs2, 0, ri.pRadianceMap,
+					pS->ior_stack ? pS->ior_stack : ior_stack );
+				c = c + (pS->kray * cthis);
 			}
 		}
 	}
 }
 
-//! Tells the shader to apply shade to the given intersection point for the given wavelength
-/// \return Amplitude of spectral function 
 Scalar PathTracingShaderOp::PerformOperationNM(
-	const RuntimeContext& rc,					///< [in] Runtime context
-	const RayIntersection& ri,					///< [in] Intersection information 
-	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
-	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
-	const Scalar caccum,						///< [in] Current value for wavelength
-	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
-	const ScatteredRayContainer* pScat			///< [in] Scattering information
+	const RuntimeContext& rc,
+	const RayIntersection& ri,
+	const IRayCaster& caster,
+	const IRayCaster::RAY_STATE& rs,
+	const Scalar caccum,
+	const Scalar nm,
+	const IORStack* const ior_stack,
+	const ScatteredRayContainer* pScat
 	) const
 {
-	Scalar c=0;
+	Scalar c = 0;
 
-	// Only do stuff on a normal pass or on final gather
 	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
 		return 0;
 	}
 
-	if( pScat ) {
-		const ScatteredRayContainer& scattered = *pScat;
+	const IScene* pScene = caster.GetAttachedScene();
+	if( !pScene ) return 0;
 
-		IRayCaster::RAY_STATE rs2;
-		rs2.depth = rs.depth+1;
-		rs2.considerEmission = ((ri.pMaterial->GetBSDF())||(caster.GetAttachedScene()->GetCausticSpectralMap()&&!rs.considerEmission))?false:true;
+	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
-		if( bBranch ) {
-			for( unsigned int i=0; i<scattered.Count(); i++ ) {
-				ScatteredRay& scat = scattered[i];
+	// ================================================================
+	// PART 1: Emission (spectral)
+	// ================================================================
+	{
+		IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
+		if( pEmitter && rs.considerEmission )
+		{
+			Scalar emission = pEmitter->emittedRadianceNM(
+				ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
 
-				if( ShouldTraceRay( scat.type ) ) {
-					if( scat.krayNM > 0.0 ) {
-						Scalar	cthis = 0;
-						rs2.importance = rs.importance * scat.krayNM;
-						rs2.type = scat.type==ScatteredRay::eRayDiffuse ? IRayCaster::RAY_STATE::eRayDiffuse : IRayCaster::RAY_STATE::eRaySpecular;
-
-						Ray ray = scat.ray;
-						ray.Advance( 1e-8 );
-						caster.CastRayNM( rc, ri.geometric.rast, ray, cthis, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
-						c += cthis * scat.krayNM;
+			if( rs.bsdfPdf > 0 && ri.pObject )
+			{
+				const Scalar area = ri.pObject->GetArea();
+				if( area > 0 )
+				{
+					const Scalar cosLight = fabs( Vector3Ops::Dot(
+						ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+					if( cosLight > 0 )
+					{
+						const Scalar dist = Vector3Ops::Magnitude(
+							Vector3Ops::mkVector3(
+								ri.geometric.ptIntersection,
+								ri.geometric.ray.origin ) );
+						const Scalar p_nee = (dist * dist) / (area * cosLight);
+						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+						emission = emission * w_bsdf;
 					}
 				}
 			}
-		} else {
-			const ScatteredRay* pScat = scattered.RandomlySelect( rc.random.CanonicalRandom(), true );;
-			if( pScat && ShouldTraceRay( pScat->type ) ) {
-				Scalar	cthis = 0;
-				Ray ray = pScat->ray;
+
+			c += emission;
+		}
+	}
+
+	// Specular surfaces — trace scattered rays
+	if( !pBRDF ) {
+		if( pScat ) {
+			const ScatteredRayContainer& scattered = *pScat;
+			IRayCaster::RAY_STATE rs2;
+			rs2.depth = rs.depth + 1;
+			rs2.considerEmission = true;
+
+			if( bBranch ) {
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					ScatteredRay& scat = scattered[i];
+					if( scat.krayNM > 0 ) {
+						Scalar cthis = 0;
+						rs2.importance = rs.importance * scat.krayNM;
+						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						Ray ray = scat.ray;
+						ray.Advance( 1e-8 );
+						caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+							rs2, nm, 0, ri.pRadianceMap,
+							scat.ior_stack ? scat.ior_stack : ior_stack );
+						c += cthis * scat.krayNM;
+					}
+				}
+			} else {
+				const ScatteredRay* pS = scattered.RandomlySelect(
+					rc.random.CanonicalRandom(), true );
+				if( pS ) {
+					Scalar cthis = 0;
+					rs2.importance = rs.importance * pS->krayNM;
+					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+					Ray ray = pS->ray;
+					ray.Advance( 1e-8 );
+					caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+						rs2, nm, 0, ri.pRadianceMap,
+						pS->ior_stack ? pS->ior_stack : ior_stack );
+					c += cthis * pS->krayNM;
+				}
+			}
+		}
+		return c;
+	}
+
+	// ================================================================
+	// PART 2: NEE (spectral)
+	// ================================================================
+
+	// 2a: Non-mesh lights — no spectral variant exists in ILightManager,
+	// skip for spectral rendering (matching DirectLightingShaderOp behavior)
+
+	// 2b: Mesh luminaries with MIS
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	if( pLumMgr )
+	{
+		c += pLumMgr->ComputeDirectLightingNM(
+			ri, *pBRDF, nm, rc.random, caster, pScene->GetShadowMap() );
+	}
+
+	// 2c: SMS (spectral — per-wavelength IOR for dispersion)
+	if( pSolver && rs.depth <= 1 )
+	{
+		const Vector3 woOutgoing = Vector3(
+			-ri.geometric.ray.Dir().x,
+			-ri.geometric.ray.Dir().y,
+			-ri.geometric.ray.Dir().z );
+
+		ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
+			ri.geometric.ptIntersection,
+			ri.geometric.vNormal,
+			ri.geometric.onb,
+			ri.pMaterial,
+			woOutgoing,
+			*pScene,
+			caster,
+			rc.random,
+			nm );
+
+		if( sms.valid )
+		{
+			c += sms.contribution * sms.misWeight;
+		}
+	}
+
+	// ================================================================
+	// PART 3: BSDF sampling (spectral)
+	// ================================================================
+	if( pScat )
+	{
+		const ScatteredRayContainer& scattered = *pScat;
+
+		IRayCaster::RAY_STATE rs2;
+		rs2.depth = rs.depth + 1;
+		rs2.considerEmission = true;
+
+		if( bBranch )
+		{
+			for( unsigned int i = 0; i < scattered.Count(); i++ )
+			{
+				ScatteredRay& scat = scattered[i];
+				if( scat.krayNM > 0 )
+				{
+					Scalar cthis = 0;
+					rs2.importance = rs.importance * scat.krayNM;
+					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+
+					if( scat.isDelta && bSMSEnabled ) {
+						rs2.considerEmission = false;
+					} else {
+						rs2.considerEmission = true;
+					}
+
+					Ray ray = scat.ray;
+					ray.Advance( 1e-8 );
+					caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+						rs2, nm, 0, ri.pRadianceMap,
+						scat.ior_stack ? scat.ior_stack : ior_stack );
+					c += cthis * scat.krayNM;
+				}
+			}
+		}
+		else
+		{
+			const ScatteredRay* pS = scattered.RandomlySelect(
+				rc.random.CanonicalRandom(), true );
+			if( pS )
+			{
+				Scalar cthis = 0;
+				rs2.importance = rs.importance * pS->krayNM;
+				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+
+				if( pS->isDelta && bSMSEnabled ) {
+					rs2.considerEmission = false;
+				} else {
+					rs2.considerEmission = true;
+				}
+
+				Ray ray = pS->ray;
 				ray.Advance( 1e-8 );
-				rs2.importance = rs.importance * ColorMath::MaxValue(pScat->kray);
-				rs2.type = pScat->type==ScatteredRay::eRayDiffuse ? IRayCaster::RAY_STATE::eRayDiffuse : IRayCaster::RAY_STATE::eRaySpecular;
-				caster.CastRayNM( rc, ri.geometric.rast, ray, cthis, rs2, nm, 0, ri.pRadianceMap, pScat->ior_stack?pScat->ior_stack:ior_stack );
-				c += cthis * pScat->krayNM;
+				caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+					rs2, nm, 0, ri.pRadianceMap,
+					pS->ior_stack ? pS->ior_stack : ior_stack );
+				c += cthis * pS->krayNM;
 			}
 		}
 	}

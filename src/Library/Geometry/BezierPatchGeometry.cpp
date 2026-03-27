@@ -15,6 +15,7 @@
 #include "BezierPatchGeometry.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/OrthonormalBasis3D.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/MRUCache.h"
 #include "../Utilities/stl_utils.h"
@@ -254,6 +255,20 @@ BoundingBox BezierPatchGeometry::GenerateBoundingBox() const
 void BezierPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	//@ To be implemented
+}
+
+SurfaceDerivatives BezierPatchGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	SurfaceDerivatives sd;
+	OrthonormalBasis3D onb;
+	onb.CreateFromW( objSpaceNormal );
+	sd.dpdu = onb.u();
+	sd.dpdv = onb.v();
+	sd.dndu = Vector3( 0, 0, 0 );
+	sd.dndv = Vector3( 0, 0, 0 );
+	sd.uv = Point2( 0, 0 );
+	sd.valid = true;
+	return sd;
 }
 
 Scalar BezierPatchGeometry::GetArea( ) const
