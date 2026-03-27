@@ -1020,14 +1020,13 @@ namespace RISE
 			) = 0;
 
 		virtual bool AddPathTracingShaderOp(
-			const char* name,										///< [in] Name of the shaderop
-			const bool branch,										///< [in] Should we branch the rays ?
-			const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-			const bool bFinalGather,								///< [in] Should the path tracer co-operate and act as final gather?
-			const bool reflections,									///< [in] Should reflections be traced?
-			const bool refractions,									///< [in] Should refractions be traced?
-			const bool diffuse,										///< [in] Should diffuse rays be traced?
-			const bool translucents									///< [in] Should translucent rays be traced?
+			const char* name,
+			const bool branch,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased
 			) = 0;
 
 		virtual bool AddSMSShaderOp(
@@ -1036,16 +1035,6 @@ namespace RISE
 			const double threshold,
 			const unsigned int maxChainDepth,
 			const bool biased
-			) = 0;
-
-		virtual bool AddMISPathTracingShaderOp(
-			const char* name,
-			const bool branch,
-			const bool smsEnabled,
-			const unsigned int smsMaxIterations,
-			const double smsThreshold,
-			const unsigned int smsMaxChainDepth,
-			const bool smsBiased
 			) = 0;
 
 		virtual bool AddAmbientOcclusionShaderOp(

@@ -21,7 +21,6 @@ pathtracing_shaderop
 standard_shader
 {
 	name		global
-	shaderop	DefaultDirectLighting
 	shaderop	pt
 }
 
@@ -29,7 +28,7 @@ pixelpel_rasterizer
 {
 	max_recursion		5
 	min_importance		0.001
-	samples				64
+	samples				16
 	lum_samples			1
 }
 

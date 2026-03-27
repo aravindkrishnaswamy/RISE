@@ -25,7 +25,6 @@ standard_shader
 {
 	name			global
 	shaderop		pt
-	shaderop		DefaultEmission
 }
 
 distributiontracing_shaderop

@@ -147,8 +147,12 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 	RISEPel contrib = pObject.GetMaterial()->GetEmitter()->emittedRadiance( lumri, vFromLight, lumNormal ) * fDot * fDotLight * attenuation_size_factor * pBRDF.value(vToLight,ri);
 
 	// MIS weight (power heuristic, exponent = 2)
-	// p_light in solid angle measure = (1/Area) * (dist² / cos_light)
-	// p_bsdf in solid angle measure = material->Pdf(vToLight, ri)
+	// This weights the NEE contribution against what the BSDF sampling
+	// strategy would have produced.  The complementary weight is applied
+	// in the emission ShaderOp when a BSDF-sampled ray hits an emitter.
+	//
+	// p_light: probability of sampling this point on the luminary (area measure → solid angle)
+	// p_bsdf: probability of the BSDF sampling this direction
 	if( pMaterial && area > 0 && fDotLight > 0 )
 	{
 		const Scalar p_light = (fDistFromLight * fDistFromLight) / (area * fDotLight);
@@ -159,7 +163,7 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 			const Scalar w_light = (p_light * p_light) / (p_light * p_light + p_bsdf * p_bsdf);
 			contrib = contrib * w_light;
 		}
-		// else p_bsdf=0 → w_light=1.0 (no change)
+		// else p_bsdf=0 → w_light=1.0 (no change needed)
 	}
 
 	return contrib;

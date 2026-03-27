@@ -66,6 +66,10 @@ namespace RISE
 
 		//! Asks if the shader op needs SPF data
 		virtual bool RequireSPF() const = 0;
+
+		//! Returns true if this shader op handles emission internally
+		//! (so DefaultEmission should NOT be auto-prepended).
+		virtual bool HandlesEmission() const { return false; }
 	};
 }
 

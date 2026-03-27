@@ -3142,19 +3142,17 @@ bool Job::AddFinalGatherShaderOp(
 }
 
 bool Job::AddPathTracingShaderOp(
-	const char* name,										///< [in] Name of the shaderop
-	const bool branch,										///< [in] Should we branch the rays ?
-	const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-	const bool bFinalGather,								///< [in] Should the path tracer co-operate and act as final gather?
-	const bool reflections,									///< [in] Should reflections be traced?
-	const bool refractions,									///< [in] Should refractions be traced?
-	const bool diffuse,										///< [in] Should diffuse rays be traced?
-	const bool translucents									///< [in] Should translucent rays be traced?
+	const char* name,
+	const bool branch,
+	const bool smsEnabled,
+	const unsigned int smsMaxIterations,
+	const double smsThreshold,
+	const unsigned int smsMaxChainDepth,
+	const bool smsBiased
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreatePathTracingShaderOp( &pShaderOp, branch, forcecheckemitters, bFinalGather, reflections, refractions, diffuse, translucents );
-
+	RISE_API_CreatePathTracingShaderOp( &pShaderOp, branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
 	return true;
@@ -3170,23 +3168,6 @@ bool Job::AddSMSShaderOp(
 {
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateSMSShaderOp( &pShaderOp, maxIterations, threshold, maxChainDepth, biased );
-	pShaderOpManager->AddItem( pShaderOp, name );
-	safe_release( pShaderOp );
-	return true;
-}
-
-bool Job::AddMISPathTracingShaderOp(
-	const char* name,
-	const bool branch,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased
-	)
-{
-	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateMISPathTracingShaderOp( &pShaderOp, branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
 	return true;
@@ -3449,6 +3430,31 @@ bool Job::AddStandardShader(
 	)
 {
 	std::vector<IShaderOp*> shops;
+
+	// Include DefaultEmission first so that emitters are visible in the
+	// rendered image.  Skip if:
+	// (a) the scene file already includes DefaultEmission explicitly, or
+	// (b) any shaderop in the chain handles emission internally
+	//     (e.g., MISPathTracingShaderOp has its own emission + MIS logic)
+	bool hasEmission = false;
+	for( unsigned int i=0; i<count; i++ ) {
+		if( strcmp( shaderops[i], "DefaultEmission" ) == 0 ) {
+			hasEmission = true;
+			break;
+		}
+		IShaderOp* pSO = pShaderOpManager->GetItem( shaderops[i] );
+		if( pSO && pSO->HandlesEmission() ) {
+			hasEmission = true;
+			break;
+		}
+	}
+
+	if( !hasEmission ) {
+		IShaderOp* pEmission = pShaderOpManager->GetItem( "DefaultEmission" );
+		if( pEmission ) {
+			shops.push_back( pEmission );
+		}
+	}
 
 	for( unsigned int i=0; i<count; i++ ) {
 		IShaderOp* pShaderOp = pShaderOpManager->GetItem( shaderops[i] );

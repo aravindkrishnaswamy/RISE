@@ -46,7 +46,6 @@ standard_shader
 {
 	name		global
 	shaderop	pathtracer
-	shaderop	DefaultEmission
 }
 
 pixelintegratingspectral_rasterizer

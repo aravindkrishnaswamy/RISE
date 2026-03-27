@@ -73,10 +73,6 @@ void EmissionShaderOp::PerformOperation(
 			}
 		}
 
-		// For view rays, scale their values down, to help out the AA
-		if( rs.type == rs.eRayView ) {
-			ColorMath::Scale( c );
-		}
 	}
 }
 

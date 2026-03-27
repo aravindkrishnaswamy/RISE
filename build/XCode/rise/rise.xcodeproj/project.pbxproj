@@ -1364,9 +1364,6 @@
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
 		F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
-		F2C7C8E12F76276F0030CB78 /* MISPathTracingShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E02F76276F0030CB78 /* MISPathTracingShaderOp.cpp */; };
-		F2C7C8E22F76276F0030CB78 /* MISPathTracingShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E02F76276F0030CB78 /* MISPathTracingShaderOp.cpp */; };
-		F2C7C8E32F76276F0030CB78 /* MISPathTracingShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8DF2F76276F0030CB78 /* MISPathTracingShaderOp.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2079,8 +2076,6 @@
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
-		F2C7C8DF2F76276F0030CB78 /* MISPathTracingShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MISPathTracingShaderOp.h; sourceTree = "<group>"; };
-		F2C7C8E02F76276F0030CB78 /* MISPathTracingShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MISPathTracingShaderOp.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2857,8 +2852,6 @@
 		F27F09D5069C42900069C9E5 /* Shaders */ = {
 			isa = PBXGroup;
 			children = (
-				F2C7C8DF2F76276F0030CB78 /* MISPathTracingShaderOp.h */,
-				F2C7C8E02F76276F0030CB78 /* MISPathTracingShaderOp.cpp */,
 				F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */,
 				F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */,
 				F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */,
@@ -3347,7 +3340,6 @@
 				F27F0BCD069C42910069C9E5 /* GlobalSpectralPhotonTracer.h in Headers */,
 				F27F0BCF069C42910069C9E5 /* IrradianceCache.h in Headers */,
 				F27F0BD0069C42910069C9E5 /* Photon.h in Headers */,
-				F2C7C8E32F76276F0030CB78 /* MISPathTracingShaderOp.h in Headers */,
 				F27F0BD1069C42910069C9E5 /* PhotonMap.h in Headers */,
 				F27F0BD2069C42910069C9E5 /* PhotonTracer.h in Headers */,
 				F27F0BD4069C42910069C9E5 /* ShadowPhotonMap.h in Headers */,
@@ -3599,7 +3591,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastSwiftUpdateCheck = 2630;
-				LastUpgradeCheck = 2630;
+				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					F24B71C52F52A211008304C4 = {
 						CreatedOnToolsVersion = 26.3;
@@ -3752,7 +3744,6 @@
 				F27F0BAF069C42910069C9E5 /* Voronoi2DPainter.cpp in Sources */,
 				F27F0BB1069C42910069C9E5 /* Voronoi3DPainter.cpp in Sources */,
 				F2C5D58E2F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp in Sources */,
-				F2C7C8E22F76276F0030CB78 /* MISPathTracingShaderOp.cpp in Sources */,
 				F2C5D58F2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp in Sources */,
 				F27F0BB3069C42910069C9E5 /* AsciiCommandParser.cpp in Sources */,
 				F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */,
@@ -4074,7 +4065,6 @@
 				F24B729A2F52A632008304C4 /* RayBilinearPatchIntersection.cpp in Sources */,
 				F24B729B2F52A632008304C4 /* RayBoxIntersection.cpp in Sources */,
 				F24B729C2F52A632008304C4 /* RayCylinderIntersection.cpp in Sources */,
-				F2C7C8E12F76276F0030CB78 /* MISPathTracingShaderOp.cpp in Sources */,
 				F24B729D2F52A632008304C4 /* RayIntersection.h in Sources */,
 				F24B729E2F52A632008304C4 /* RayIntersectionGeometric.h in Sources */,
 				F24B729F2F52A632008304C4 /* RayPlaneIntersection.cpp in Sources */,
@@ -4756,6 +4746,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Deployment;
 		};

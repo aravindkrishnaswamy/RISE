@@ -247,7 +247,6 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/GlobalSpectralPhotonMapShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/PathTracingShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/SMSShaderOp.cpp								\
-	$(PATHLIBRARY)Shaders/MISPathTracingShaderOp.cpp					\
 	$(PATHLIBRARY)Shaders/ReflectionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\

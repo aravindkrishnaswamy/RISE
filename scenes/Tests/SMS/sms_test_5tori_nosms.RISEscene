@@ -1,0 +1,198 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   SMS Multi-Object Chain Test: Five interlocking glass tori forming a short chain.
+#   Tests SMS ability to find specular paths through a longer chain of refractive objects.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+bdpt_pel_rasterizer
+{
+	max_recursion		8
+	min_importance		0.003
+	max_eye_depth		8
+	max_light_depth		6
+	samples				256
+	lum_samples			1
+	ior_stack			TRUE
+	sms_enabled			FALSE
+	sms_max_iterations	20
+	sms_threshold		1e-5
+	sms_max_chain_depth	10
+	sms_biased			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_test_5tori_nosms
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			1.8 5 10
+	lookat				1.8 0.5 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					45.0
+}
+
+# Painters
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.7 0.7 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.999 0.999 0.999
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_ior
+	color				1.5 1.5 1.5
+}
+
+uniformcolor_painter
+{
+	name				pnt_scatter
+	color				100000.0 100000.0 100000.0
+}
+
+# Materials
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				500.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass_mat
+	tau					pnt_glass_tau
+	ior					1.5
+	scattering			pnt_scatter
+}
+
+# Geometry
+torus_geometry
+{
+	name				torus_geom
+	majorradius			1.0
+	minorratio			0.2
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-8.0 0.0 -5.0
+	ptb					-8.0 0.0 5.0
+	ptc					8.0 0.0 5.0
+	ptd					8.0 0.0 -5.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-2.0 0.0 -1.5
+	ptb					-2.0 0.0 1.5
+	ptc					2.0 0.0 1.5
+	ptd					2.0 0.0 -1.5
+}
+
+# Objects
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+# Link 0: vertical ring
+standard_object
+{
+	name				glass_torus_0
+	geometry			torus_geom
+	position			0 1.5 0
+	orientation			90 0 0
+	material			glass_mat
+}
+
+# Link 1: horizontal ring
+standard_object
+{
+	name				glass_torus_1
+	geometry			torus_geom
+	position			0.9 1.5 0
+	orientation			0 0 0
+	material			glass_mat
+}
+
+# Link 2: vertical ring
+standard_object
+{
+	name				glass_torus_2
+	geometry			torus_geom
+	position			1.8 1.5 0
+	orientation			90 0 0
+	material			glass_mat
+}
+
+# Link 3: horizontal ring
+standard_object
+{
+	name				glass_torus_3
+	geometry			torus_geom
+	position			2.7 1.5 0
+	orientation			0 0 0
+	material			glass_mat
+}
+
+# Link 4: vertical ring
+standard_object
+{
+	name				glass_torus_4
+	geometry			torus_geom
+	position			3.6 1.5 0
+	orientation			90 0 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			1.8 5.0 0
+	material			light_mat
+}

@@ -3934,50 +3934,50 @@ namespace RISE
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
 					String name = "noname";
 					bool branch = true;
-					bool forcecheckemitters = false;
-					bool finalgather = false;
-					bool reflections = true;
-					bool refractions = true;
-					bool diffuse = true;
-					bool translucents = true;
+					bool smsEnabled = false;
+					unsigned int smsMaxIterations = 20;
+					double smsThreshold = 1e-5;
+					unsigned int smsMaxChainDepth = 10;
+					bool smsBiased = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
-						// Split the param
 						String pname;
 						String pvalue;
 						if( !string_split( *i, pname, pvalue, ' ' ) ) {
 							return false;
 						}
 
-						// Now search the parameter value names
 						if( pname == "name" ) {
 							name = pvalue;
 						} else if( pname == "branch" ) {
 							branch = pvalue.toBoolean();
-						} else if( pname == "force_check_emitters" ) {
-							forcecheckemitters = pvalue.toBoolean();
-						} else if( pname == "finalgather" ) {
-							finalgather = pvalue.toBoolean();
-						} else if( pname == "reflections" ) {
-							reflections = pvalue.toBoolean();
-						} else if( pname == "refractions" ) {
-							refractions = pvalue.toBoolean();
-						} else if( pname == "diffuse" ) {
-							diffuse = pvalue.toBoolean();
-						} else if( pname == "translucents" ) {
-							translucents = pvalue.toBoolean();
+						} else if( pname == "sms_enabled" ) {
+							smsEnabled = pvalue.toBoolean();
+						} else if( pname == "sms_max_iterations" ) {
+							smsMaxIterations = pvalue.toUInt();
+						} else if( pname == "sms_threshold" ) {
+							smsThreshold = pvalue.toDouble();
+						} else if( pname == "sms_max_chain_depth" ) {
+							smsMaxChainDepth = pvalue.toUInt();
+						} else if( pname == "sms_biased" ) {
+							smsBiased = pvalue.toBoolean();
+						} else if( pname == "force_check_emitters" ||
+								   pname == "finalgather" ||
+								   pname == "reflections" ||
+								   pname == "refractions" ||
+								   pname == "diffuse" ||
+								   pname == "translucents" ) {
+							// Legacy parameters — silently ignored
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddPathTracingShaderOp( name.c_str(), branch, forcecheckemitters, finalgather, reflections, refractions, diffuse, translucents );
+					return pJob.AddPathTracingShaderOp( name.c_str(), branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 				}
 			};
 
@@ -4016,50 +4016,6 @@ namespace RISE
 					}
 
 					return pJob.AddSMSShaderOp( name.c_str(), maxIterations, threshold, maxChainDepth, biased );
-				}
-			};
-
-			struct MISPathTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					String name = "noname";
-					bool branch = false;
-					bool smsEnabled = true;
-					unsigned int smsMaxIterations = 20;
-					double smsThreshold = 1e-5;
-					unsigned int smsMaxChainDepth = 10;
-					bool smsBiased = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
-						} else if( pname == "sms_enabled" ) {
-							smsEnabled = pvalue.toBoolean();
-						} else if( pname == "sms_max_iterations" ) {
-							smsMaxIterations = pvalue.toUInt();
-						} else if( pname == "sms_threshold" ) {
-							smsThreshold = pvalue.toDouble();
-						} else if( pname == "sms_max_chain_depth" ) {
-							smsMaxChainDepth = pvalue.toUInt();
-						} else if( pname == "sms_biased" ) {
-							smsBiased = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddMISPathTracingShaderOp( name.c_str(), branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 				}
 			};
 
@@ -6766,8 +6722,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["ambientocclusion_shaderop"] = new AmbientOcclusionShaderOpAsciiChunkParser();
 	chunks["directlighting_shaderop"] = new DirectLightingShaderOpAsciiChunkParser();
 	chunks["pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();
+	chunks["mis_pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();  // Legacy alias
 	chunks["sms_shaderop"] = new SMSShaderOpAsciiChunkParser();
-	chunks["mis_pathtracing_shaderop"] = new MISPathTracingShaderOpAsciiChunkParser();
 	chunks["distributiontracing_shaderop"] = new DistributionTracingShaderOpAsciiChunkParser();
 	chunks["finalgather_shaderop"] = new FinalGatherShaderOpAsciiChunkParser();
 	chunks["simple_sss_shaderop"] = new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser();

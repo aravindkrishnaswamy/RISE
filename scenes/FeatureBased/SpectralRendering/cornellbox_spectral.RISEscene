@@ -22,7 +22,6 @@ standard_shader
 {
 	name		global
 	shaderop	pathtracer
-	shaderop	DefaultDirectLighting
 }
 
 

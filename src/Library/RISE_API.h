@@ -1787,30 +1787,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool cache				///< [in] Should the rasterizer state cache be used?
 								);
 
-	//! Creates a path tracing shaderop
+	//! Creates a path tracing shaderop with integrated MIS and optional SMS
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
-								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const bool branch,				///< [in] Should we branch the rays ?
-								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool bFinalGather,		///< [in] Should the path tracer co-operate and act as final gather?
-								const bool reflections,			///< [in] Should reflections be traced?
-								const bool refractions,			///< [in] Should refractions be traced?
-								const bool diffuse,				///< [in] Should diffuse rays be traced?
-								const bool translucents			///< [in] Should translucent rays be traced?
-								);
-
-	//! Creates an SMS shaderop
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateSMSShaderOp(
-								IShaderOp** pShaderOp,
-								const unsigned int maxIterations,
-								const double threshold,
-								const unsigned int maxChainDepth,
-								const bool biased
-								);
-
-	bool RISE_API_CreateMISPathTracingShaderOp(
 								IShaderOp** pShaderOp,
 								const bool branch,
 								const bool smsEnabled,
@@ -1818,6 +1797,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const double smsThreshold,
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased
+								);
+
+	//! Creates a standalone SMS shaderop
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSMSShaderOp(
+								IShaderOp** pShaderOp,
+								const unsigned int maxIterations,
+								const double threshold,
+								const unsigned int maxChainDepth,
+								const bool biased
 								);
 
 	//! Creates a simple SSS shaderop

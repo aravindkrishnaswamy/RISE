@@ -3520,7 +3520,6 @@ namespace RISE
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
 #include "Shaders/SMSShaderOp.h"
-#include "Shaders/MISPathTracingShaderOp.h"
 #include "Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "Shaders/SSS/SimpleExtinction.h"
 #include "Shaders/SSS/DiffusionApproximationExtinction.h"
@@ -3775,54 +3774,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Creates a path tracing shaderop
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
-								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const bool branch,				///< [in] Should we branch the rays ?
-								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool bFinalGather,		///< [in] Should the path tracer co-operate and act as final gather?
-								const bool reflections,			///< [in] Should reflections be traced?
-								const bool refractions,			///< [in] Should refractions be traced?
-								const bool diffuse,				///< [in] Should diffuse rays be traced?
-								const bool translucents			///< [in] Should translucent rays be traced?
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		PathTracingShaderOp* pShaderOp = new PathTracingShaderOp( branch, forcecheckemitters, bFinalGather, reflections, refractions, diffuse, translucents );
-
-		(*ppi) = pShaderOp;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "path tracing shaderop" );
-		return true;
-	}
-
-	//! Creates an SMS shaderop
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateSMSShaderOp(
-								IShaderOp** pShaderOp,
-								const unsigned int maxIterations,
-								const double threshold,
-								const unsigned int maxChainDepth,
-								const bool biased
-								)
-	{
-		if( !pShaderOp ) {
-			return false;
-		}
-
-		ManifoldSolverConfig config;
-		config.enabled = true;
-		config.maxIterations = maxIterations;
-		config.solverThreshold = threshold;
-		config.maxChainDepth = maxChainDepth;
-		config.biased = biased;
-
-		*pShaderOp = new SMSShaderOp( config );
-		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "SMS shaderop" );
-		return true;
-	}
-
-	bool RISE_API_CreateMISPathTracingShaderOp(
 								IShaderOp** pShaderOp,
 								const bool branch,
 								const bool smsEnabled,
@@ -3845,8 +3796,34 @@ bool RISE_API_CreateFinalGatherShaderOp(
 			smsConfig.biased = smsBiased;
 		}
 
-		*pShaderOp = new MISPathTracingShaderOp( branch, smsConfig );
-		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "ShaderOp" );
+		*pShaderOp = new PathTracingShaderOp( branch, smsConfig );
+		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "path tracing shaderop" );
+		return true;
+	}
+
+	//! Creates an SMS shaderop (standalone, for use with older shader chains)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSMSShaderOp(
+								IShaderOp** pShaderOp,
+								const unsigned int maxIterations,
+								const double threshold,
+								const unsigned int maxChainDepth,
+								const bool biased
+								)
+	{
+		if( !pShaderOp ) {
+			return false;
+		}
+
+		ManifoldSolverConfig config;
+		config.enabled = true;
+		config.maxIterations = maxIterations;
+		config.solverThreshold = threshold;
+		config.maxChainDepth = maxChainDepth;
+		config.biased = biased;
+
+		*pShaderOp = new SMSShaderOp( config );
+		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "SMS shaderop" );
 		return true;
 	}
 

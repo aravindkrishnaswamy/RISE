@@ -361,18 +361,16 @@ namespace
 	bool configure_shader( RISE::IJobPriv& job, const rise_blender_render_settings& settings, char* error_message, const size_t error_message_size )
 	{
 		if( settings.use_path_tracing ) {
-			if( !job.AddPathTracingShaderOp( kPathTracingShaderOpName, false, true, false, true, true, true, true ) ) {
+			if( !job.AddPathTracingShaderOp( kPathTracingShaderOpName, false, false, 20, 1e-5, 10, true ) ) {
 				write_error( error_message, error_message_size, "Failed to create path tracing shader op" );
 				return false;
 			}
 
-			const char* shader_ops[3] = {
-				"DefaultDirectLighting",
-				"DefaultEmission",
+			const char* shader_ops[1] = {
 				kPathTracingShaderOpName
 			};
 
-			if( !job.AddStandardShader( kShaderName, 3, shader_ops ) ) {
+			if( !job.AddStandardShader( kShaderName, 1, shader_ops ) ) {
 				write_error( error_message, error_message_size, "Failed to assemble the RISE shader stack" );
 				return false;
 			}
