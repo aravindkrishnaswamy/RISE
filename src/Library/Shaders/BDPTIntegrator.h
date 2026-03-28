@@ -27,7 +27,8 @@
 //       to eyeVerts[t-1], check visibility, evaluate BSDFs, compute
 //       the geometric term, and return the unweighted contribution.
 //       Special cases: s=0 (eye path hits emitter), s=1 (next event
-//       estimation), t=0/t=1 (light path connects to camera/sensor).
+//       estimation), and t=1 (light path connects to the camera,
+//       with the camera stored as eye vertex 0).
 //
 //    3. MISWeight:
 //       Balance heuristic weight computed by walking along the full
@@ -113,7 +114,7 @@ namespace RISE
 				RISEPel		contribution;	///< Unweighted path contribution
 				Scalar		misWeight;		///< MIS weight for this (s,t) strategy
 				Point2		rasterPos;		///< Pixel position for splatting (valid if needsSplat)
-				bool		needsSplat;		///< True for light-side connections (s>=1, t<=1)
+				bool		needsSplat;		///< True for light-side camera connections (active case: t==1)
 				bool		valid;			///< False if connection is invalid
 
 				ConnectionResult() :

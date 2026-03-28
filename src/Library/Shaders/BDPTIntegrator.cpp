@@ -22,11 +22,11 @@
 //      needed).  Contribution = eyeThroughput * Le.
 //    - s=1, t>1: Next event estimation — connect the last eye
 //      vertex to the sampled light vertex.  Classic direct lighting.
-//    - t=1: Connect the last light vertex to the camera.  This
-//      produces contributions at arbitrary pixel positions, so the
-//      result must be splatted via the SplatFilm (needsSplat=true).
-//    - t=0: Pure light path reaches the camera sensor.  Also needs
-//      splatting.  Only evaluated for s>=2.
+//    - t=1: Connect the last light vertex to the camera.  Because
+//      the eye subpath already stores the camera as vertex 0, this
+//      is the full light-tracing/splat strategy.  The result lands
+//      at an arbitrary pixel position and is accumulated via the
+//      SplatFilm.
 //    - s>1, t>1: General case — connect the two subpath endpoints,
 //      evaluate BSDFs at both, multiply with the geometric term.
 //
@@ -1303,11 +1303,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 // Each case handles a different connection topology:
 //   s=0:       Eye path hits emitter.  No connection needed.
 //   s=1, t>1:  Next event estimation (direct lighting).
-//   t=0:       Light path reaches camera sensor.  Needs splatting.
 //   t=1:       Light endpoint connects to camera.  Needs splatting.
 //   s>1, t>1:  General connection between two interior vertices.
 //
-// For strategies that reach the camera from the light side (t<=1),
+// For strategies that reach the camera from the light side (t==1),
 // the contribution lands at an arbitrary pixel, so needsSplat=true
 // and rasterPos is computed via BDPTCameraUtilities::Rasterize().
 //
@@ -1450,8 +1449,11 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	}
 
 	//
-	// Case: s > 0, t == 0
-	// Pure light path hits camera -- extremely rare, skip for now
+	// Legacy t == 0 path-to-camera case.
+	// The active path enumeration in this file includes the camera as
+	// eye vertex 0, so the camera-connection strategy is t == 1.
+	// This branch is kept only for compatibility with any future caller
+	// that enumerates paths without an explicit camera vertex.
 	//
 	if( t == 0 )
 	{
@@ -2125,17 +2127,6 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 			if( cr.valid ) {
 				results.push_back( cr );
 			}
-		}
-	}
-
-	// Also handle t == 0 (pure light path to camera) for s >= 2
-	for( unsigned int s = 2; s <= nLight; s++ )
-	{
-		ConnectionResult cr = ConnectAndEvaluate(
-			lightVerts, eyeVerts, s, 0, scene, caster, camera );
-
-		if( cr.valid ) {
-			results.push_back( cr );
 		}
 	}
 
@@ -3144,7 +3135,11 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	}
 
 	//
-	// Case: t == 0 -- pure light path hits camera
+	// Legacy t == 0 path-to-camera case.
+	// The active path enumeration in this file includes the camera as
+	// eye vertex 0, so the camera-connection strategy is t == 1.
+	// This branch is kept only for compatibility with any future caller
+	// that enumerates paths without an explicit camera vertex.
 	//
 	if( t == 0 )
 	{
@@ -3702,16 +3697,6 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 			if( cr.valid ) {
 				results.push_back( cr );
 			}
-		}
-	}
-
-	for( unsigned int s = 2; s <= nLight; s++ )
-	{
-		ConnectionResultNM cr = ConnectAndEvaluateNM(
-			lightVerts, eyeVerts, s, 0, scene, caster, camera, nm );
-
-		if( cr.valid ) {
-			results.push_back( cr );
 		}
 	}
 

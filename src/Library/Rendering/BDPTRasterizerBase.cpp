@@ -9,7 +9,7 @@
 //       block-based).  Each pixel calls IntegratePixel(), which
 //       generates subpaths and evaluates all (s,t) strategies.
 //       - Strategies with t>=2 contribute directly to the pixel.
-//       - Strategies with t<=1 (needsSplat=true) are accumulated
+//       - Strategies with t==1 (needsSplat=true) are accumulated
 //         into the SplatFilm at the projected raster position.
 //    3. After all pixels are rendered, resolve the SplatFilm:
 //       divide accumulated splats by the total sample count
@@ -172,7 +172,7 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 	}
 
-	// Resolve splat film: add t<=1 strategy contributions to the primary
+	// Resolve splat film: add t==1 strategy contributions to the primary
 	// image.  Each pixel sample may have contributed one splat per (s,t)
 	// strategy with needsSplat=true, so we divide by the total number of
 	// pixel samples to get the correct per-pixel average.

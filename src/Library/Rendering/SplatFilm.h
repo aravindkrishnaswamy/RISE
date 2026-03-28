@@ -3,7 +3,7 @@
 //  SplatFilm.h - Thread-safe film buffer for accumulating
 //  contributions that land at arbitrary pixel positions.
 //
-//  In BDPT, connection strategies where t<=1 (light subpath
+//  In BDPT, connection strategies where t==1 (light subpath
 //  connects to camera) produce contributions at pixel positions
 //  determined by projecting the light vertex onto the camera,
 //  NOT the pixel currently being rendered.  These cannot be added

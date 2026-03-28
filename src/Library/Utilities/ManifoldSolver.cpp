@@ -1760,36 +1760,25 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 	if( cosAtLight <= 0 ) return result;
 
-	// SMS contribution for one specific light:
-	//   Le * BSDF * cos_shading * T_chain * cos_light * Area / dist²
+	// SMS contribution via standard Monte Carlo estimator:
+	//   f(x) / p(x)  where we sampled one light with probability pdfSelect.
 	//
-	// This matches what LuminaryManager::ComputeDirectLightingForLuminary
-	// computes for one luminary (Le * cos * cos_light * Area/dist² * BSDF).
-	// We do NOT divide by pdfSelect because NEE iterates all luminaries
-	// without selection probability, and SMS fills in for the specific
-	// light that was blocked by glass.
+	// pdfPosition = 1/Area for mesh lights, so 1/pdfPosition = Area.
+	// Dividing by pdfSelect is required because we sample ONE light
+	// from the full set — without it the expected contribution is
+	// attenuated by pdfSelect, causing systematic underestimation
+	// in multi-light scenes.  (Single-light scenes are unaffected
+	// since pdfSelect = 1.)  This matches the NM (spectral) SMS path
+	// in BDPTIntegrator::EvaluateSMSStrategiesNM.
 	//
-	// pdfPosition = 1/Area, so dividing by it gives * Area.
 	// No intermediate geometric terms — delta BSDFs at specular vertices
 	// cancel with the geometric terms in the path integral.
 	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
 
-	// Match the NEE formula exactly:
-	//   LuminaryManager computes: Le * cos_shading * cos_light * (Area / dist²) * BSDF
-	//   It iterates all luminaries, no pdfSelect division.
-	//
-	// SMS picks ONE light via LightSampler. To match, we compute the
-	// same per-luminary contribution (no pdfSelect). Over many samples,
-	// SMS will pick each light 1/N of the time, so the expected SMS
-	// contribution per light is 1/N of the single-light value — but
-	// that's correct because NEE already contributes for the N-1 lights
-	// that AREN'T blocked by glass. SMS only fills in for the one that IS.
-	//
-	// pdfPosition = 1/Area for mesh lights, so 1/pdfPosition = Area.
 	result.contribution = fBSDF * cosAtShading
 		* mResult.contribution
 		* lightSample.Le * lightGeom
-		/ lightSample.pdfPosition;
+		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
