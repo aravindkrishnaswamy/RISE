@@ -5459,7 +5459,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool smsEnabled = true;
+					bool smsEnabled = false;
 					unsigned int smsMaxIterations = 20;
 					double smsThreshold = 1e-5;
 					unsigned int smsMaxChainDepth = 30;
@@ -5583,7 +5583,7 @@ namespace RISE
 					double nmend = 780.0;
 					unsigned int num_wavelengths = 80;
 					unsigned int spectral_samples = 16;
-					bool smsEnabled = true;
+					bool smsEnabled = false;
 					unsigned int smsMaxIterations = 20;
 					double smsThreshold = 1e-5;
 					unsigned int smsMaxChainDepth = 30;
