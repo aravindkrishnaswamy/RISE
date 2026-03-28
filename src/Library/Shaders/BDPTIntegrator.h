@@ -114,6 +114,8 @@ namespace RISE
 				RISEPel		contribution;	///< Unweighted path contribution
 				Scalar		misWeight;		///< MIS weight for this (s,t) strategy
 				Point2		rasterPos;		///< Pixel position for splatting (valid if needsSplat)
+				unsigned int s;				///< Number of light subpath vertices
+				unsigned int t;				///< Number of eye subpath vertices
 				bool		needsSplat;		///< True for light-side camera connections (active case: t==1)
 				bool		valid;			///< False if connection is invalid
 
@@ -121,6 +123,8 @@ namespace RISE
 				contribution( RISEPel( 0, 0, 0 ) ),
 				misWeight( 0 ),
 				rasterPos( Point2( 0, 0 ) ),
+				s( 0 ),
+				t( 0 ),
 				needsSplat( false ),
 				valid( false )
 				{

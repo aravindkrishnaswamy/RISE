@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include "Utilities/MediaPathLocator.h"
 #include "Interfaces/IOptions.h"
+#include "Intersection/RayIntersectionGeometric.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1086,20 +1087,57 @@ bool Job::AddDielectricMaterial(
 	IPainter*		rindex = pPntManager->GetItem( rIndex );
 	IPainter*		sc = pPntManager->GetItem( scat );
 
+	// IOR and scattering are physical quantities, not perceptual colors.
+	// When specified as inline numeric values, create painters directly
+	// in native color space (ROMM RGB) to avoid sRGB conversion artifacts
+	// that introduce per-channel differences for uniform values.
+	// Support both single-value and 3-component inline specifications.
 	if( !sc )
 	{
-		double fScat = atof(scat);
-		RISE_API_CreateUniformColorPainter( &sc, RISEPel(fScat,fScat,fScat) );
+		double sv[3] = {0, 0, 0};
+		if( sscanf(scat, "%lf %lf %lf", &sv[0], &sv[1], &sv[2]) == 3 ) {
+			RISE_API_CreateUniformColorPainter( &sc, RISEPel(sv[0],sv[1],sv[2]) );
+		} else {
+			double fScat = atof(scat);
+			RISE_API_CreateUniformColorPainter( &sc, RISEPel(fScat,fScat,fScat) );
+		}
 	} else {
+		// Painter resolved by name — it may have gone through sRGB-to-ROMM
+		// color space conversion, which introduces per-channel differences
+		// for intentionally uniform physical quantities.  Detect this and
+		// normalize to exact grey to prevent false chromatic dispersion.
 		sc->addref();
+		RayIntersectionGeometric dummyRig( Ray(), nullRasterizerState );
+		const RISEPel scColor = sc->GetColor( dummyRig );
+		const Scalar scMax = r_max( r_max( scColor[0], scColor[1] ), scColor[2] );
+		const Scalar scMin = r_min( r_min( scColor[0], scColor[1] ), scColor[2] );
+		if( scMax > NEARZERO && (scMax - scMin) / scMax < 0.1 ) {
+			const Scalar avg = (scColor[0] + scColor[1] + scColor[2]) / 3.0;
+			safe_release( sc );
+			RISE_API_CreateUniformColorPainter( &sc, RISEPel(avg,avg,avg) );
+		}
 	}
 
 	if( !rindex )
 	{
-		double frindex = atof(rIndex);
-		RISE_API_CreateUniformColorPainter( &rindex, RISEPel(frindex,frindex,frindex) );
+		double iv[3] = {0, 0, 0};
+		if( sscanf(rIndex, "%lf %lf %lf", &iv[0], &iv[1], &iv[2]) == 3 ) {
+			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(iv[0],iv[1],iv[2]) );
+		} else {
+			double frindex = atof(rIndex);
+			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(frindex,frindex,frindex) );
+		}
 	} else {
 		rindex->addref();
+		RayIntersectionGeometric dummyRig( Ray(), nullRasterizerState );
+		const RISEPel iorColor = rindex->GetColor( dummyRig );
+		const Scalar iorMax = r_max( r_max( iorColor[0], iorColor[1] ), iorColor[2] );
+		const Scalar iorMin = r_min( r_min( iorColor[0], iorColor[1] ), iorColor[2] );
+		if( iorMax > NEARZERO && (iorMax - iorMin) / iorMax < 0.1 ) {
+			const Scalar avg = (iorColor[0] + iorColor[1] + iorColor[2]) / 3.0;
+			safe_release( rindex );
+			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(avg,avg,avg) );
+		}
 	}
 
 	IMaterial* pMaterial = 0;

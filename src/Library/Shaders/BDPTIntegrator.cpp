@@ -2124,6 +2124,9 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 			ConnectionResult cr = ConnectAndEvaluate(
 				lightVerts, eyeVerts, s, t, scene, caster, camera );
 
+			cr.s = s;
+			cr.t = t;
+
 			if( cr.valid ) {
 				results.push_back( cr );
 			}

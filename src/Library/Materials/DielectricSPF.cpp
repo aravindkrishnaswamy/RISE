@@ -224,8 +224,22 @@ void DielectricSPF::Scatter(
 	const RISEPel ior = rIndex.GetColor(ri);
 	const RISEPel scattering = scat.GetColor(ri);
 
-	// Check to see if we have any dispersion
-	const bool disperse = (ior[0] != ior[1]) || (ior[1] != ior[2]) || (scattering[0] != scattering[1]) || (scattering[1] != scattering[2]);
+	// Check to see if we have any dispersion.
+	// Use relative tolerance to avoid false positives from color space
+	// conversion artifacts.  Physical quantities like IOR and scattering
+	// are often specified through painters that undergo sRGB-to-ROMM
+	// conversion, which can introduce small per-channel differences
+	// even for intentionally uniform values.
+	const Scalar iorMax = r_max( r_max( ior[0], ior[1] ), ior[2] );
+	const Scalar scatMax = r_max( r_max( scattering[0], scattering[1] ), scattering[2] );
+	static const Scalar DISPERSE_REL_TOL = 1e-4;
+	const bool iorDisperse = iorMax > NEARZERO &&
+		(fabs(ior[0] - ior[1]) > iorMax * DISPERSE_REL_TOL ||
+		 fabs(ior[1] - ior[2]) > iorMax * DISPERSE_REL_TOL);
+	const bool scatDisperse = scatMax > NEARZERO &&
+		(fabs(scattering[0] - scattering[1]) > scatMax * DISPERSE_REL_TOL ||
+		 fabs(scattering[1] - scattering[2]) > scatMax * DISPERSE_REL_TOL);
+	const bool disperse = iorDisperse || scatDisperse;
 
 	if( !disperse ) {
 		// No dispersion
