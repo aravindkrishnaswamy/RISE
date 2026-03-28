@@ -165,7 +165,6 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
-	RISEPel df=0.0;
 
 	const RISEPel rho = Rs.GetColor(ri);
 

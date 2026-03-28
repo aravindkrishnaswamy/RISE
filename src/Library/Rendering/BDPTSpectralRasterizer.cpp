@@ -23,7 +23,8 @@
 
 #include "pch.h"
 #include "BDPTSpectralRasterizer.h"
-#include "../Utilities/IndependentSampler.h"
+#include "../Utilities/SobolSampler.h"
+#include "../Sampling/SobolSequence.h"
 #include "../Utilities/Color/ColorUtils.h"
 
 using namespace RISE;
@@ -65,7 +66,9 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	const Point2& ptOnScreen,
 	const IScene& pScene,
 	const ICamera& camera,
-	const Scalar nm
+	const Scalar nm,
+	uint32_t sampleIndex,
+	uint32_t pixelSeed
 	) const
 {
 	Ray cameraRay;
@@ -73,7 +76,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 		return 0;
 	}
 
-	IndependentSampler* pSampler = new IndependentSampler( rc.random );
+	SobolSampler* pSampler = new SobolSampler( sampleIndex, pixelSeed );
 
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
@@ -157,7 +160,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 	const RuntimeContext& rc,
 	const Point2& ptOnScreen,
 	const IScene& pScene,
-	const ICamera& camera
+	const ICamera& camera,
+	uint32_t pixelSampleIndex,
+	uint32_t pixelSeed
 	) const
 {
 	XYZPel spectralSum( 0, 0, 0 );
@@ -169,7 +174,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			(lambda_begin + int(rc.random.CanonicalRandom() * Scalar(num_wavelengths)) * wavelength_steps) :
 			(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
 
-		const Scalar nmvalue = IntegratePixelNM( rc, ptOnScreen, pScene, camera, nm );
+		// Each (pixel sample, spectral sample) pair gets a unique Sobol index
+		const uint32_t sampleIndex = pixelSampleIndex * nSpectralSamples + ss;
+		const Scalar nmvalue = IntegratePixelNM( rc, ptOnScreen, pScene, camera, nm, sampleIndex, pixelSeed );
 
 		if( nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
@@ -218,11 +225,17 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		samples.push_back( Point2( 0, 0 ) );
 	}
 
+	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
+	const uint32_t pixelSeed = SobolSequence::HashCombine(
+		static_cast<uint32_t>(x),
+		static_cast<uint32_t>(y) );
+
 	XYZPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 
+	uint32_t pixelSampleIndex = 0;
 	ISampling2D::SamplesList2D::const_iterator m, n;
-	for( m=samples.begin(), n=samples.end(); m!=n; m++ )
+	for( m=samples.begin(), n=samples.end(); m!=n; m++, pixelSampleIndex++ )
 	{
 		Point2 ptOnScreen;
 		Scalar weight = 1.0;
@@ -238,7 +251,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 		}
 
-		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera ) * weight;
+		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera, pixelSampleIndex, pixelSeed ) * weight;
 	}
 
 	if( weights > 0 ) {

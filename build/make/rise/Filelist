@@ -186,7 +186,8 @@ SRCLIBSAMPLINGFILTERING =\
 	$(PATHLIBRARY)Sampling/SincPixelFilter.cpp					\
 	$(PATHLIBRARY)Sampling/StratifiedSampling2D.cpp				\
 	$(PATHLIBRARY)Sampling/UniformSampling1D.cpp				\
-	$(PATHLIBRARY)Sampling/UniformSampling2D.cpp
+	$(PATHLIBRARY)Sampling/UniformSampling2D.cpp				\
+	$(PATHLIBRARY)Sampling/SobolSampling2D.cpp
 
 # Photon mapping
 SRCLIBPHOTONMAPPING =\

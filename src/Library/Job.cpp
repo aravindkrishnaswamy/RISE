@@ -3676,6 +3676,8 @@ bool GetSamplingAndFilterElements(
 				RISE_API_CreateMultiJitteredSampling2D( pPixelSampler, 1.0, 1.0 );
 			} else if( sPixelSampler == "halton" ) {
 				RISE_API_CreateHaltonPointsSampling2D( pPixelSampler, 1.0, 1.0 );
+			} else if( sPixelSampler == "sobol" ) {
+				RISE_API_CreateSobolSampling2D( pPixelSampler, 1.0, 1.0 );
 			} else {
 				GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", pixelSampler );
 				return false;
@@ -3750,6 +3752,8 @@ bool GetSamplingAndFilterElements(
 				RISE_API_CreateMultiJitteredSampling2D( pLumSampler, 1.0, 1.0 );
 			} else if( sLuminarySampler == "halton" ) {
 				RISE_API_CreateHaltonPointsSampling2D( pLumSampler, 1.0, 1.0 );
+			} else if( sLuminarySampler == "sobol" ) {
+				RISE_API_CreateSobolSampling2D( pLumSampler, 1.0, 1.0 );
 			} else {
 				GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", pixelSampler );
 				return false;

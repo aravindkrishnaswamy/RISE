@@ -1096,6 +1096,14 @@ namespace RISE
 								const Scalar height				///< [in] Height of the kernel
 								);
 
+	//! Creates an Owen-scrambled Sobol (0,2)-net sampling kernel
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSobolSampling2D(
+								ISampling2D** ppi,				///< [out] Pointer to recieve the sampling2D object
+								const Scalar width,				///< [in] Width of the kernel
+								const Scalar height				///< [in] Height of the kernel
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Managers

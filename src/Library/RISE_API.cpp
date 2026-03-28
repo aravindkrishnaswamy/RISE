@@ -2044,6 +2044,7 @@ namespace RISE
 #include "Sampling/UniformSampling2D.h"
 #include "Sampling/MultiJitteredSampling2D.h"
 #include "Sampling/HaltonPointsSampling2D.h"
+#include "Sampling/SobolSampling2D.h"
 
 namespace RISE
 {
@@ -2166,6 +2167,23 @@ namespace RISE
 
 		(*ppi) = new HaltonPointsSampling2D( width, height );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Halton points sampling" );
+		return true;
+	}
+
+	//! Creates an Owen-scrambled Sobol (0,2)-net sampling kernel
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSobolSampling2D(
+								ISampling2D** ppi,				///< [out] Pointer to recieve the sampling2D object
+								const Scalar width,				///< [in] Width of the kernel
+								const Scalar height				///< [in] Height of the kernel
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new SobolSampling2D( width, height );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Owen-scrambled Sobol sampling" );
 		return true;
 	}
 }

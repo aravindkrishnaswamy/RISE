@@ -102,12 +102,12 @@ namespace RISE
 	/// Ft_down = 1 - Fdr(n_top / n_bottom)  (light exiting top layer downward)
 	/// Ft_up   = 1 - Fdr(n_bottom / n_top)  (light exiting bottom layer upward)
 	///
-	/// \param R1, T1        Top layer Hankel R/T, length N_freq
-	/// \param R2, T2        Bottom layer Hankel R/T, length N_freq
+	/// \param R1 T1        Top layer Hankel R/T, length N_freq
+    /// \param R2 T2        Bottom layer Hankel R/T, length N_freq
 	/// \param Ft_down       Diffuse Fresnel transmission, top→bottom
 	/// \param Ft_up         Diffuse Fresnel transmission, bottom→top
 	/// \param N_freq        Number of frequency samples
-	/// \param R_out, T_out  Combined R/T output, length N_freq
+	/// \param R_out T_out  Combined R/T output, length N_freq
 	void StackLayersHankel(
 		const double* R1, const double* T1,
 		const double* R2, const double* T2,

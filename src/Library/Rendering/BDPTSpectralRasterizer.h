@@ -28,6 +28,7 @@
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Utilities/Color/CIE_XYZ.h"
+#include <stdint.h>
 
 namespace RISE
 {
@@ -59,21 +60,27 @@ namespace RISE
 			/// Spectral integration for a single pixel sample.
 			/// Samples nSpectralSamples wavelengths and returns accumulated XYZ.
 			/// Splats are XYZ-converted and written to pSplatFilm.
+			/// pixelSampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
 			XYZPel IntegratePixelSpectral(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
-				const ICamera& camera
+				const ICamera& camera,
+				uint32_t pixelSampleIndex,
+				uint32_t pixelSeed
 				) const;
 
 			/// Evaluates BDPT at a specific wavelength for a single camera ray.
 			/// Returns the scalar radiance estimate.
+			/// sampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
 			Scalar IntegratePixelNM(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
 				const ICamera& camera,
-				const Scalar nm
+				const Scalar nm,
+				uint32_t sampleIndex,
+				uint32_t pixelSeed
 				) const;
 
 		public:

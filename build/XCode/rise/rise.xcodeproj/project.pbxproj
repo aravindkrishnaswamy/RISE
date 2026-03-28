@@ -1364,6 +1364,9 @@
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
 		F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
+		F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
+		F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
+		F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2076,6 +2079,8 @@
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
+		F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SobolSampling2D.h; sourceTree = "<group>"; };
+		F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolSampling2D.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2810,6 +2815,8 @@
 		F27F09B2069C42900069C9E5 /* Sampling */ = {
 			isa = PBXGroup;
 			children = (
+				F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */,
+				F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */,
 				F277340807ECCB7300C0B600 /* HaltonPoints.h */,
 				F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */,
 				F277340A07ECCB7300C0B600 /* HaltonPointsSampling2D.h */,
@@ -3524,6 +3531,7 @@
 				6DBFAA6609C4D2A20048A09D /* GlobalPelPhotonMapShaderOp.h in Headers */,
 				6DBFAA6809C4D2A20048A09D /* GlobalSpectralPhotonMapShaderOp.h in Headers */,
 				6DBFAA6A09C4D2A20048A09D /* PathTracingShaderOp.h in Headers */,
+				F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */,
 				6DBFAA6C09C4D2A20048A09D /* ReflectionShaderOp.h in Headers */,
 				6DBFAA6E09C4D2A20048A09D /* RefractionShaderOp.h in Headers */,
 				6DBFAA7009C4D2A20048A09D /* ShadowPhotonMapShaderOp.h in Headers */,
@@ -3653,6 +3661,7 @@
 				F27F0A8B069C42910069C9E5 /* BezierPatchGeometry.cpp in Sources */,
 				F27F0A8D069C42910069C9E5 /* BezierTesselation.cpp in Sources */,
 				F27F0A90069C42910069C9E5 /* BilinearPatchGeometry.cpp in Sources */,
+				F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */,
 				F27F0A92069C42910069C9E5 /* BoxGeometry.cpp in Sources */,
 				F27F0A94069C42910069C9E5 /* BoxUVGenerator.cpp in Sources */,
 				F27F0A96069C42910069C9E5 /* CircularDiskGeometry.cpp in Sources */,
@@ -4214,6 +4223,7 @@
 				F24B73272F52A632008304C4 /* IridescentPainter.cpp in Sources */,
 				F24B73282F52A632008304C4 /* IridescentPainter.h in Sources */,
 				F24B73292F52A632008304C4 /* LinesPainter.cpp in Sources */,
+				F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */,
 				F24B732A2F52A632008304C4 /* LinesPainter.h in Sources */,
 				F24B732B2F52A632008304C4 /* MandelbrotPainter.cpp in Sources */,
 				F24B732C2F52A632008304C4 /* MandelbrotPainter.h in Sources */,

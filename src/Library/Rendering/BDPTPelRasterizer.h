@@ -21,6 +21,7 @@
 
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedPelRasterizer.h"
+#include <stdint.h>
 
 namespace RISE
 {
@@ -49,11 +50,14 @@ namespace RISE
 
 			/// RGB integration for a single pixel sample.
 			/// Returns the non-splat contribution; splats are written to pSplatFilm.
+			/// sampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
 			RISEPel IntegratePixelRGB(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
-				const ICamera& camera
+				const ICamera& camera,
+				uint32_t sampleIndex,
+				uint32_t pixelSeed
 				) const;
 
 		public:
