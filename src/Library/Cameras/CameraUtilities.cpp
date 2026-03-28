@@ -120,7 +120,13 @@ namespace {
 		}
 
 		const Scalar t = -E.z / dz;
-		if( t <= 0.0 ) {
+
+		// In screen space, E.z > 0 (camera) and visible world points have
+		// W.z > E.z (forward from camera).  The z=0 image plane is on the
+		// opposite side of the camera from the world, so the line E→W
+		// must be extended BACKWARD (t < 0) to reach z=0.  Points behind
+		// the camera have W.z < E.z, giving t > 0.
+		if( t >= 0.0 ) {
 			return false;	// Behind camera
 		}
 

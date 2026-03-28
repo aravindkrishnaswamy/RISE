@@ -87,6 +87,31 @@ void SplatFilm::Resolve(
 	}
 }
 
+void SplatFilm::Unresolve(
+	IRasterImage& target,
+	const Scalar sampleCount
+	) const
+{
+	if( sampleCount <= 0 ) {
+		return;
+	}
+
+	const Scalar invSamples = 1.0 / sampleCount;
+
+	for( unsigned int y=0; y<height; y++ ) {
+		for( unsigned int x=0; x<width; x++ ) {
+			const SplatPixel& pixel = pixels[y * width + x];
+
+			if( pixel.weight > 0 ) {
+				RISEColor existing = target.GetPEL( x, y );
+				RISEPel splatPel = pixel.color * invSamples;
+				RISEColor combined( existing.base - splatPel, existing.a );
+				target.SetPEL( x, y, combined );
+			}
+		}
+	}
+}
+
 void SplatFilm::Clear()
 {
 	for( unsigned int i=0; i<pixels.size(); i++ ) {

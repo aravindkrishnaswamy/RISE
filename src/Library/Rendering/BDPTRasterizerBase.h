@@ -38,6 +38,8 @@ namespace RISE
 			BDPTIntegrator*			pIntegrator;
 			ManifoldSolver*			pManifoldSolver;
 			mutable SplatFilm*		pSplatFilm;
+			mutable IRasterImage*	pScratchImage;		///< Scratch buffer for progressive output with splats
+			mutable Scalar			mSplatTotalSamples;	///< Cached for progressive resolve
 
 			virtual ~BDPTRasterizerBase();
 
@@ -47,6 +49,10 @@ namespace RISE
 
 			/// Returns the progress title string for this rasterizer variant.
 			virtual const char* GetProgressTitle() const = 0;
+
+			/// Returns a scratch image with resolved splats composited
+			/// on top of the current primary, for progressive display.
+			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
 
 		public:
 			BDPTRasterizerBase(

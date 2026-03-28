@@ -205,9 +205,13 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		}
 	}
 
+	// Get the image for intermediate output.  BDPT returns a scratch
+	// copy with resolved splats; other rasterizers return the primary.
+	IRasterImage& outputImage = GetIntermediateOutputImage( image );
+
 	// Also iterate through outputs and get them to intermediate rasterize
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputIntermediateImage( image, &rect );
+		(*r)->OutputIntermediateImage( outputImage, &rect );
 	}
 }
 

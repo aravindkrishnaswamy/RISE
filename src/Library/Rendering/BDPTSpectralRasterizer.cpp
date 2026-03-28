@@ -110,8 +110,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 			XYZPel thisXYZ( 0, 0, 0 );
 			if( weighted > 0 && ColorUtils::XYZFromNM( thisXYZ, nm ) ) {
 				thisXYZ = thisXYZ * weighted;
+				// Rasterize returns screen coordinates where y=0 is the
+				// image bottom.  Convert to image buffer y=0 at top.
 				const int sx = static_cast<int>( cr.rasterPos.x );
-				const int sy = static_cast<int>( cr.rasterPos.y );
+				const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
 
 				if( sx >= 0 && sy >= 0 &&
 					static_cast<unsigned int>(sx) < camera.GetWidth() &&

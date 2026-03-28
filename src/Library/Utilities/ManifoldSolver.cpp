@@ -1757,8 +1757,25 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( distSpecToLight < 1e-8 ) return result;
 	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
-	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-	if( cosAtLight <= 0 ) return result;
+	// For delta-position lights (point/spot), there is no surface at the
+	// light — the geometric coupling has no cosine term.  The emitted
+	// radiance must also be re-evaluated for the actual direction from the
+	// light toward the last specular vertex, since the LightSample's Le
+	// was evaluated at a random photon direction.
+	Scalar cosAtLight;
+	RISEPel actualLe;
+	if( lightSample.isDelta ) {
+		cosAtLight = 1.0;
+		if( lightSample.pLight ) {
+			actualLe = lightSample.pLight->emittedRadiance( dirSpecToLight );
+		} else {
+			actualLe = lightSample.Le;
+		}
+	} else {
+		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		if( cosAtLight <= 0 ) return result;
+		actualLe = lightSample.Le;
+	}
 
 	// SMS contribution via standard Monte Carlo estimator:
 	//   f(x) / p(x)  where we sampled one light with probability pdfSelect.
@@ -1777,7 +1794,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	result.contribution = fBSDF * cosAtShading
 		* mResult.contribution
-		* lightSample.Le * lightGeom
+		* actualLe * lightGeom
 		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
@@ -1898,18 +1915,33 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( distSpecToLight < 1e-8 ) return result;
 	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
-	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-	if( cosAtLight <= 0 ) return result;
+	// For delta-position lights (point/spot), there is no surface at the
+	// light — the geometric coupling has no cosine term.  The emitted
+	// radiance must also be re-evaluated for the actual direction from the
+	// light toward the last specular vertex, since the LightSample's Le
+	// was evaluated at a random photon direction.
+	Scalar cosAtLight;
+	Scalar Le;
+	if( lightSample.isDelta ) {
+		cosAtLight = 1.0;
+		if( lightSample.pLight ) {
+			Le = ColorMath::MaxValue(
+				lightSample.pLight->emittedRadiance( dirSpecToLight ) );
+		} else {
+			Le = ColorMath::MaxValue( lightSample.Le );
+		}
+	} else {
+		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		if( cosAtLight <= 0 ) return result;
+		Le = ColorMath::MaxValue( lightSample.Le );
+	}
 
 	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
-
-	// Emitted radiance (spectral)
-	Scalar Le = ColorMath::MaxValue( lightSample.Le );  // approximate
 
 	result.contribution = fBSDF * cosAtShading
 		* chainThroughput
 		* Le * lightGeom
-		/ lightSample.pdfPosition;
+		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;

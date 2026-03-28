@@ -41,14 +41,14 @@ bdpt_pel_rasterizer
 	min_importance		0.003
 	max_eye_depth		14
 	max_light_depth		12
-	samples				128
+	samples				64
 	lum_samples			1
 	ior_stack			TRUE
-	sms_enabled			FALSE
+	sms_enabled			TRUE
 	sms_max_iterations	20
 	sms_threshold		1e-3
 	sms_max_chain_depth	20
-	sms_biased			TRUE
+	sms_biased			FALSE
 }
 
 
@@ -168,7 +168,7 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_checker_dark
-	color				0.55 0.52 0.48
+	color				0.2 0.2 0.2
 }
 
 checker_painter
@@ -228,7 +228,7 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				400.0
+	scale				500.0
 	material			none
 }
 
@@ -373,7 +373,7 @@ ENDFOR
 ##################################################
 # Ceiling Area Lights -- 4 panels
 ##################################################
-/*
+
 # Two large warm lights flanking center
 standard_object
 {
@@ -421,14 +421,14 @@ standard_object
 	orientation			180 0 0
 	material			neutral_lum
 }
-*/
+
 # Accent spot light aimed down at the chain center
 spot_light
 {
 	name				center_spot
-	position			0 7.5 4.0
-	target				0 3.5 4.0
-	color				1.0 0.98 0.94
+	position			0 7.9 4.0
+	target				0 0 4.0
+	color				1.0 1.0 1.0
 	power				5000.0
 	inner				10
 	outer				25

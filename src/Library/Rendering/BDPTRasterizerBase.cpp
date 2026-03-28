@@ -45,7 +45,9 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   PixelBasedRasterizerHelper( pCaster_ ),
   pIntegrator( 0 ),
   pManifoldSolver( 0 ),
-  pSplatFilm( 0 )
+  pSplatFilm( 0 ),
+  pScratchImage( 0 ),
+  mSplatTotalSamples( 1.0 )
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
 	pIntegrator->addref();
@@ -63,6 +65,7 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 	safe_release( pIntegrator );
 	safe_release( pManifoldSolver );
 	safe_release( pSplatFilm );
+	safe_release( pScratchImage );
 }
 
 // Thread procedure for BDPT block rendering - mirrors RasterizeBlock_ThreadProc
@@ -98,9 +101,21 @@ void BDPTRasterizerBase::RasterizeScene(
 	pSplatFilm = new SplatFilm( width, height );
 	pSplatFilm->addref();
 
-	// Create the primary image
+	// Compute total sample count for splat film resolve/unresolve.
+	// Must be set before any blocks render so the progressive hooks work.
+	mSplatTotalSamples = 1.0;
+	if( pSampling ) {
+		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+	}
+	mSplatTotalSamples *= GetSplatSampleScale();
+
+	// Create the primary image and a scratch copy for progressive output
 	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
+
+	safe_release( pScratchImage );
+	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	pScratchImage->addref();
 
 	{
 		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
@@ -176,12 +191,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	// image.  Each pixel sample may have contributed one splat per (s,t)
 	// strategy with needsSplat=true, so we divide by the total number of
 	// pixel samples to get the correct per-pixel average.
-	Scalar totalSamples = 1.0;
-	if( pSampling ) {
-		totalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
-	}
-	totalSamples *= GetSplatSampleScale();
-	pSplatFilm->Resolve( *pImage, totalSamples );
+	pSplatFilm->Resolve( *pImage, mSplatTotalSamples );
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
@@ -195,4 +205,27 @@ void BDPTRasterizerBase::RasterizeScene(
 	safe_release( pImage );
 	safe_release( pSplatFilm );
 	pSplatFilm = 0;
+	safe_release( pScratchImage );
+	pScratchImage = 0;
+}
+
+IRasterImage& BDPTRasterizerBase::GetIntermediateOutputImage( IRasterImage& primary ) const
+{
+	if( !pSplatFilm || !pScratchImage ) {
+		return primary;
+	}
+
+	// Copy the current primary image into the scratch buffer
+	const unsigned int w = primary.GetWidth();
+	const unsigned int h = primary.GetHeight();
+	for( unsigned int y=0; y<h; y++ ) {
+		for( unsigned int x=0; x<w; x++ ) {
+			pScratchImage->SetPEL( x, y, primary.GetPEL( x, y ) );
+		}
+	}
+
+	// Resolve splats into the scratch copy (primary is untouched)
+	pSplatFilm->Resolve( *pScratchImage, mSplatTotalSamples );
+
+	return *pScratchImage;
 }

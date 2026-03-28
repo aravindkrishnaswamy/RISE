@@ -156,6 +156,13 @@ namespace RISE
 				}
 			}
 
+			/// Returns a reference to the image that should be sent to
+			/// OutputIntermediateImage.  The default just returns the
+			/// primary image.  BDPT overrides this to return a scratch
+			/// copy with resolved splats composited in, avoiding any
+			/// mutation of the primary accumulation buffer.
+			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const { return primary; }
+
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 

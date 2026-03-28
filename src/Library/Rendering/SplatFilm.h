@@ -84,6 +84,14 @@ namespace RISE
 				const Scalar sampleCount				///< [in] Total number of samples taken
 				) const;
 
+			//! Subtracts previously resolved splats from the image (inverse of Resolve).
+			//! Used for progressive display: Resolve before intermediate output,
+			//! Unresolve afterward to avoid double-counting.
+			void Unresolve(
+				IRasterImage& target,					///< [in/out] Target image to undo resolved splats
+				const Scalar sampleCount				///< [in] Same sample count used in Resolve
+				) const;
+
 			//! Clears all accumulated splat data
 			void Clear();
 		};

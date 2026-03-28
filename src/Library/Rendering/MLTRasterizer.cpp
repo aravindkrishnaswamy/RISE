@@ -221,8 +221,11 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 		splat.color = weighted;
 
 		if( cr.needsSplat ) {
-			// t<=1 strategies: use the strategy's own pixel position
-			splat.rasterPos = cr.rasterPos;
+			// t<=1 strategies: use the strategy's own pixel position.
+			// Rasterize returns screen coordinates (y=0 at bottom);
+			// convert to image buffer coordinates (y=0 at top).
+			splat.rasterPos = Point2( cr.rasterPos.x,
+				static_cast<Scalar>(height) - cr.rasterPos.y );
 		} else {
 			// t>=2 strategies: use the camera pixel position
 			splat.rasterPos = cameraRasterPos;

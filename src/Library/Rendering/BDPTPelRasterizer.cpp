@@ -93,8 +93,11 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 
 		if( cr.needsSplat && pSplatFilm )
 		{
+			// Rasterize returns screen coordinates where y=0 is the
+			// image bottom (matching ptOnScreen = Point2(x, height-y)).
+			// Convert to image buffer coordinates where y=0 is the top.
 			const int sx = static_cast<int>( cr.rasterPos.x );
-			const int sy = static_cast<int>( cr.rasterPos.y );
+			const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
 
 			if( sx >= 0 && sy >= 0 &&
 				static_cast<unsigned int>(sx) < camera.GetWidth() &&
