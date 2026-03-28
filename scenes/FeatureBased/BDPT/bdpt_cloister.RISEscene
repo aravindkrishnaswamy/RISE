@@ -489,6 +489,7 @@ FOR IX -1 1 1
 		name			ceilingdiskwarm@IX
 		geometry		lightdiskgeom
 		position		@LX 5.92 -2.2
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 
@@ -497,6 +498,7 @@ FOR IX -1 1 1
 		name			ceilingdiskcool@IX
 		geometry		lightdiskgeom
 		position		@LX 5.92 0.0
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 

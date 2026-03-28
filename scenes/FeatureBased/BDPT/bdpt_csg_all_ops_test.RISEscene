@@ -27,9 +27,10 @@ bdpt_pel_rasterizer
 	min_importance		0.001
 	max_eye_depth		10
 	max_light_depth		10
-	samples				256
+	samples				64
 	lum_samples			1
 	ior_stack			TRUE
+	sms_enabled			TRUE
 }
 
 file_rasterizeroutput
