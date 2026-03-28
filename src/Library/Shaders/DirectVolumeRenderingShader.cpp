@@ -18,6 +18,7 @@
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_NNB.h"
 #include "../Volume/VolumeAccessor_TRI.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Volume/VolumeAccessor_TriCubic.h"
 #include "../Volume/VolumeOp_Average.h"
 #include "../Volume/VolumeOp_Composite.h"
@@ -311,7 +312,9 @@ void DirectVolumeRenderingShader::Shade(
 						const ILuminaryManager* pLumManager = caster.GetLuminaries();
 						// Account for lighting from luminaries
 						if( pLumManager ) {
-							diffuse = diffuse + pLumManager->ComputeDirectLighting( myri, *pBRDF, rc.random, caster, pScene->GetShadowMap() );			
+							IndependentSampler fallbackSampler( rc.random );
+							ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+							diffuse = diffuse + pLumManager->ComputeDirectLighting( myri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
 						}
 
 						cPel.base = cPel.base * diffuse;
@@ -444,7 +447,9 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 						const ILuminaryManager* pLumManager = caster.GetLuminaries();
 						// Account for lighting from luminaries
 						if( pLumManager ) {
-							cPel.second *= pLumManager->ComputeDirectLightingNM( myri, *pBRDF, nm, rc.random, caster, pScene->GetShadowMap() );
+							IndependentSampler fallbackSamplerNM( rc.random );
+							ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+							cPel.second *= pLumManager->ComputeDirectLightingNM( myri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
 						}						
 					}
 				}

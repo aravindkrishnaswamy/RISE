@@ -540,12 +540,9 @@ void MLTRasterizer::RasterizeScene(
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
 		RandomNumberGenerator bootRNG( i );
-		IndependentSampler* pBootSampler = new IndependentSampler( bootRNG );
-		pBootSampler->addref();
+		IndependentSampler bootSampler( bootRNG );
 
-		MLTSample sample = EvaluateSample( pScene, *pCamera, *pBootSampler, width, height );
-
-		safe_release( pBootSampler );
+		MLTSample sample = EvaluateSample( pScene, *pCamera, bootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;

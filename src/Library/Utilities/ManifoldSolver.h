@@ -42,6 +42,7 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/ISampler.h"
 #include "../Utilities/IORStack.h"
 #include <vector>
 
@@ -165,7 +166,7 @@ namespace RISE
 				const Point3& emitterPoint,
 				const Vector3& emitterNormal,
 				std::vector<ManifoldVertex>& specularChain,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 
 			/// Traces a seed ray from start toward end, collecting intersections
@@ -240,7 +241,7 @@ namespace RISE
 				const Vector3& woOutgoing,
 				const IScene& scene,
 				const IRayCaster& caster,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 
 			/// Spectral variant of SMS evaluation.
@@ -261,7 +262,7 @@ namespace RISE
 				const Vector3& woOutgoing,
 				const IScene& scene,
 				const IRayCaster& caster,
-				const RandomNumberGenerator& rng,
+				ISampler& sampler,
 				const Scalar nm
 				) const;
 
@@ -368,7 +369,7 @@ namespace RISE
 				const Point3& shadingPoint,
 				const Point3& emitterPoint,
 				const std::vector<ManifoldVertex>& seedTemplate,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 		};
 	}

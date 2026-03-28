@@ -49,18 +49,24 @@ namespace RISE
 
 		//////////////////////////////////////////////////////////////
 		// ReverseBits32 - bit-reversal of a 32-bit integer.
-		// This is also the Van der Corput sequence in base 2
-		// (Sobol dimension 0) when interpreted as a fixed-point
-		// fraction in [0,1).
+		// Uses hardware RBIT on ARM64 (Apple Silicon) when available,
+		// otherwise falls back to a portable 5-step swap.
 		//////////////////////////////////////////////////////////////
 		static inline uint32_t ReverseBits32( uint32_t n )
 		{
+#if defined(__aarch64__) || defined(_M_ARM64)
+			// ARM64: single-cycle RBIT instruction
+			uint32_t result;
+			__asm__("rbit %w0, %w1" : "=r"(result) : "r"(n));
+			return result;
+#else
 			n = (n << 16) | (n >> 16);
 			n = ((n & 0x00ff00ff) << 8) | ((n & 0xff00ff00) >> 8);
 			n = ((n & 0x0f0f0f0f) << 4) | ((n & 0xf0f0f0f0) >> 4);
 			n = ((n & 0x33333333) << 2) | ((n & 0xcccccccc) >> 2);
 			n = ((n & 0x55555555) << 1) | ((n & 0xaaaaaaaa) >> 1);
 			return n;
+#endif
 		}
 
 		//////////////////////////////////////////////////////////////
@@ -107,17 +113,22 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////
-		// HashCombine - mix two 32-bit values.  Used to derive
-		// per-dimension Owen scramble seeds.
+		// HashCombine - mix two 32-bit values into a well-distributed
+		// hash.  Uses the MurmurHash3 32-bit finalizer (fmix32) for
+		// strong avalanche properties — every input bit affects
+		// every output bit with ~50% probability.
 		//////////////////////////////////////////////////////////////
 		static inline uint32_t HashCombine( uint32_t a, uint32_t b )
 		{
-			// MurmurHash3 finalizer-inspired mixing
-			a ^= b;
+			// Combine inputs with golden-ratio offset to avoid
+			// degenerate zero-seed when both inputs are zero
+			a ^= b + 0x9e3779b9u + (a << 6) + (a >> 2);
+
+			// MurmurHash3 fmix32 finalizer
 			a ^= a >> 16;
-			a *= 0x45d9f3bu;
-			a ^= a >> 16;
-			a *= 0x45d9f3bu;
+			a *= 0x85ebca6bu;
+			a ^= a >> 13;
+			a *= 0xc2b2ae35u;
 			a ^= a >> 16;
 			return a;
 		}
@@ -185,8 +196,9 @@ namespace RISE
 			uint32_t dimSeed = HashCombine( seed, dimension );
 			v = OwenScramble( v, dimSeed );
 
-			// Convert to [0, 1) double
-			return double(v) / double(0x100000000ull);
+			// Convert to [0, 1) — multiply is faster than division
+			static const double kToUnit = 1.0 / 4294967296.0;
+			return double(v) * kToUnit;
 		}
 	};
 }

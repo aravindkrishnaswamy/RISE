@@ -15,6 +15,7 @@
 #include "FinalGatherShaderOp.h"
 #include "FinalGatherInterpolation.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Intersection/RayIntersection.h"
 
 using namespace RISE;
@@ -641,7 +642,11 @@ void FinalGatherShaderOp::PerformOperation(
 					for( unsigned int i=0; i<final_gather_count; i++ )
 					{
 						ScatteredRayContainer scattered;
-						pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );
+						{
+							IndependentSampler fallbackSampler( rc.random );
+							ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+							pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
+						}
 
 						ScatteredRay* scat = scattered.RandomlySelectDiffuse( rc.random.CanonicalRandom(), false );
 						RISEPel sampleIrradiance( 0, 0, 0 );

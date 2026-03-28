@@ -14,6 +14,7 @@
 #include "PathTracingShaderOp.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Lights/LightSampler.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -173,9 +174,12 @@ void PathTracingShaderOp::PerformOperation(
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	if( pLumMgr )
 	{
+		IndependentSampler fallbackLumSampler( rc.random );
+		ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackLumSampler;
+
 		RISEPel directMesh( 0, 0, 0 );
 		directMesh = pLumMgr->ComputeDirectLighting(
-			ri, *pBRDF, rc.random, caster, pScene->GetShadowMap() );
+			ri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
 		c = c + directMesh;
 	}
 
@@ -190,6 +194,9 @@ void PathTracingShaderOp::PerformOperation(
 			-ri.geometric.ray.Dir().y,
 			-ri.geometric.ray.Dir().z );
 
+		IndependentSampler fallbackSampler( rc.random );
+		ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
 		ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 			ri.geometric.ptIntersection,
 			ri.geometric.vNormal,
@@ -198,7 +205,7 @@ void PathTracingShaderOp::PerformOperation(
 			woOutgoing,
 			*pScene,
 			caster,
-			rc.random );
+			smsSampler );
 
 		if( sms.valid )
 		{
@@ -386,8 +393,11 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	if( pLumMgr )
 	{
+		IndependentSampler fallbackLumSamplerNM( rc.random );
+		ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackLumSamplerNM;
+
 		c += pLumMgr->ComputeDirectLightingNM(
-			ri, *pBRDF, nm, rc.random, caster, pScene->GetShadowMap() );
+			ri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
 	}
 
 	// 2c: SMS (spectral — per-wavelength IOR for dispersion)
@@ -398,6 +408,9 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 			-ri.geometric.ray.Dir().y,
 			-ri.geometric.ray.Dir().z );
 
+		IndependentSampler fallbackSamplerNM( rc.random );
+		ISampler& smsSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+
 		ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 			ri.geometric.ptIntersection,
 			ri.geometric.vNormal,
@@ -406,7 +419,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 			woOutgoing,
 			*pScene,
 			caster,
-			rc.random,
+			smsSamplerNM,
 			nm );
 
 		if( sms.valid )

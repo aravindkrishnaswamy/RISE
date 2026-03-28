@@ -62,18 +62,16 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 		return RISEPel( 0, 0, 0 );
 	}
 
-	SobolSampler* pSampler = new SobolSampler( sampleIndex, pixelSeed );
+	SobolSampler sampler( sampleIndex, pixelSeed );
 
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
-	pIntegrator->GenerateLightSubpath( pScene, *pCaster, *pSampler, lightVerts );
-	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, *pSampler, eyeVerts );
+	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts );
+	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );
 
 	std::vector<BDPTIntegrator::ConnectionResult> results =
 		pIntegrator->EvaluateAllStrategies( lightVerts, eyeVerts, pScene, *pCaster, camera );
-
-	safe_release( pSampler );
 
 	RISEPel sampleColor( 0, 0, 0 );
 
@@ -113,9 +111,10 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 
 	// SMS contributions for specular caustic chains
 	if( pIntegrator ) {
+		sampler.StartStream( 31 );
 		std::vector<BDPTIntegrator::ConnectionResult> smsResults =
 			pIntegrator->EvaluateSMSStrategies(
-				eyeVerts, pScene, *pCaster, camera, rc.random );
+				eyeVerts, pScene, *pCaster, camera, sampler );
 
 		for( unsigned int r=0; r<smsResults.size(); r++ ) {
 			const BDPTIntegrator::ConnectionResult& cr = smsResults[r];

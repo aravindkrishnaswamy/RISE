@@ -52,7 +52,7 @@ TranslucentSPF::~TranslucentSPF( )
 
 void TranslucentSPF::Scatter( 
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-			const RandomNumberGenerator& random,				///< [in] Random number generator
+			ISampler& sampler,				///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 			) const
@@ -75,8 +75,8 @@ void TranslucentSPF::Scatter(
 
 		if( front.kray[0] > 0 ) {
 			rv = GeometricUtilities::Perturb( n,
-				acos( sqrt( random.CanonicalRandom() ) ),
-				TWO_PI * random.CanonicalRandom() );
+				acos( sqrt( sampler.Get1D() ) ),
+				TWO_PI * sampler.Get1D() );
 
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -93,8 +93,8 @@ void TranslucentSPF::Scatter(
 			const RISEPel Nfactor = N.GetColor(ri);
 			if( (Nfactor[0] == Nfactor[1]) && (Nfactor[1] == Nfactor[2]) ) {
 				rv = GeometricUtilities::Perturb( myonb.w(),
-					acos( pow(random.CanonicalRandom(), 1.0 / (Nfactor[0] + 1.0)) ),
-					TWO_PI * random.CanonicalRandom() );
+					acos( pow(sampler.Get1D(), 1.0 / (Nfactor[0] + 1.0)) ),
+					TWO_PI * sampler.Get1D() );
 
 				trans.ray.Set( ri.ptIntersection, rv );
 				// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
@@ -106,7 +106,7 @@ void TranslucentSPF::Scatter(
 				// Add a new ray for each color component
 				RISEPel p = trans.kray;
 				trans.kray = 0;
-				Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+				Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 				for( int i=0; i<3; i++ ) {
 					rv = GeometricUtilities::Perturb( myonb.w(),
 						acos( pow(ptrand.x, 1.0 / (Nfactor[i] + 1.0)) ),
@@ -148,8 +148,8 @@ void TranslucentSPF::Scatter(
 				const RISEPel Nfactor = N.GetColor(ri);
 				if( (Nfactor[0] == Nfactor[1]) && (Nfactor[1] == Nfactor[2]) ) {
 					rv = GeometricUtilities::Perturb( myonb.w(),
-						acos( pow(random.CanonicalRandom(), 1.0 / (Nfactor[0] + 1.0)) ),
-						TWO_PI * random.CanonicalRandom() );
+						acos( pow(sampler.Get1D(), 1.0 / (Nfactor[0] + 1.0)) ),
+						TWO_PI * sampler.Get1D() );
 
 					trans.ray.Set( ri.ptIntersection, rv );
 					// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
@@ -165,7 +165,7 @@ void TranslucentSPF::Scatter(
 					RISEPel p = trans.kray;
 					RISEPel f = front.kray;
 					trans.kray = 0;
-					Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+					Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 					for( int i=0; i<3; i++ ) {
 						rv = GeometricUtilities::Perturb( myonb.w(),
 							acos( pow(ptrand.x, 1.0 / (Nfactor[i] + 1.0)) ),
@@ -189,8 +189,8 @@ void TranslucentSPF::Scatter(
 		}
 
 		rv = GeometricUtilities::Perturb( n,
-				acos( sqrt(random.CanonicalRandom() ) ),
-				TWO_PI * random.CanonicalRandom() );
+				acos( sqrt(sampler.Get1D() ) ),
+				TWO_PI * sampler.Get1D() );
 
 		front.ray.Set( ri.ptIntersection, rv );
 		front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -201,7 +201,7 @@ void TranslucentSPF::Scatter(
 
 void TranslucentSPF::ScatterNM( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -224,8 +224,8 @@ void TranslucentSPF::ScatterNM(
 		
 		if( front.krayNM > 0 ) {
 			rv = GeometricUtilities::Perturb( n,
-				acos( sqrt(random.CanonicalRandom()) ),
-				TWO_PI * random.CanonicalRandom() );
+				acos( sqrt(sampler.Get1D()) ),
+				TWO_PI * sampler.Get1D() );
 
 			front.ray.Set( ri.ptIntersection, rv );
 			front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -241,8 +241,8 @@ void TranslucentSPF::ScatterNM(
 
 			const Scalar Nval = N.GetColorNM(ri,nm);
 			rv = GeometricUtilities::Perturb( myonb.w(),
-				acos( pow(random.CanonicalRandom(), 1.0 / (Nval + 1.0)) ),
-				TWO_PI * random.CanonicalRandom() );
+				acos( pow(sampler.Get1D(), 1.0 / (Nval + 1.0)) ),
+				TWO_PI * sampler.Get1D() );
 
 			trans.ray.Set( ri.ptIntersection, rv );
 			// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)
@@ -270,8 +270,8 @@ void TranslucentSPF::ScatterNM(
 				myonb.FlipW();
 				const Scalar Nval_scat = N.GetColorNM(ri,nm);
 				rv = GeometricUtilities::Perturb( myonb.w(),
-					acos( pow(random.CanonicalRandom(), 1.0 / (Nval_scat + 1.0)) ),
-					TWO_PI * random.CanonicalRandom() );
+					acos( pow(sampler.Get1D(), 1.0 / (Nval_scat + 1.0)) ),
+					TWO_PI * sampler.Get1D() );
 
 				trans.type = ScatteredRay::eRayTranslucent;
 				trans.krayNM *= scat;
@@ -291,8 +291,8 @@ void TranslucentSPF::ScatterNM(
 		{
 			const Scalar Nval_front = N.GetColorNM(ri,nm);
 			rv = GeometricUtilities::Perturb( n,
-				acos( pow(random.CanonicalRandom(), 1.0 / (Nval_front + 1.0)) ),
-				TWO_PI * random.CanonicalRandom() );
+				acos( pow(sampler.Get1D(), 1.0 / (Nval_front + 1.0)) ),
+				TWO_PI * sampler.Get1D() );
 
 			front.ray.Set( ri.ptIntersection, rv );
 			// Phong-lobe PDF: (N+1)/(2*pi) * cos^N(alpha)

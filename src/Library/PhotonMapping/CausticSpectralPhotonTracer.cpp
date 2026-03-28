@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "CausticSpectralPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -106,7 +107,8 @@ void CausticSpectralPhotonTracer::TracePhoton(
 			// Get information from the material as to what to do			
 			ScatteredRayContainer		scattered;
 
-			pSPF->ScatterNM( ri.geometric, random, nm, scattered, ior_stack );
+			IndependentSampler samplerWrapper( random );
+		pSPF->ScatterNM( ri.geometric, samplerWrapper, nm, scattered, ior_stack );
 		
 			// The material record will tell us what to do!
 

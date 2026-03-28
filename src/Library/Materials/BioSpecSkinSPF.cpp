@@ -284,7 +284,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
 	const OrthonormalBasis3D& onb,								///< The orthonormal basis
-	const RandomNumberGenerator& random,				///< Random number generator for the MC process
+	ISampler& sampler,				///< Sampler for the MC process
 	const bool bAtOutsideBoundary,								///< The photon is at the boundary with the outside of the skin,
 																///< if false, it is at the epidermal boundary
 	const bool bDoCellScattering,								///< Should we apply the Trowbridge cell scattering
@@ -302,9 +302,9 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				onb, 
 				1.0 );
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Take the reflectance and use the Trowbridge scattering
-				photon_out = StratumCorneum_Cell_Scattering( random, 
+				photon_out = StratumCorneum_Cell_Scattering( sampler, 
 								Optics::CalculateReflectedRay( photon_in, onb.w() ) );
 
 				if( Vector3Ops::Dot(onb.w(), photon_out) > 0.0 ) {
@@ -316,7 +316,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		}
 
 		// The ray continues into the stratum corneum, perturb it
-		photon_temp = StratumCorneum_Scattering( nm, random, photon_temp );
+		photon_temp = StratumCorneum_Scattering( nm, sampler, photon_temp );
 
 		// Continue the ray until the SC--Epidermis boundary
 		// We need this distance
@@ -331,7 +331,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		}
 
 		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
 		if( path_length <=  thickness_SC ) {
 			return true;
@@ -344,7 +344,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 			photon_temp, 
 			photon_out,
 			onb,
-			random,
+			sampler,
 			true, 
 			true
 			);
@@ -360,7 +360,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				onb );
 
 			if( ref > 0.0 ) {
-				if( random.CanonicalRandom() < ref ) {
+				if( sampler.Get1D() < ref ) {
 
 					photon_temp = Optics::CalculateReflectedRay( photon_in, -onb.w() );
 
@@ -371,7 +371,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 							photon_temp, 
 							photon_out,
 							onb, 
-							random, 
+							sampler, 
 							true, 
 							false );
 					}
@@ -380,7 +380,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		}
 
 		// Otherwise, the ray continues into the stratum corneum, perturb it
-		photon_temp = StratumCorneum_Scattering( nm, random, photon_temp );
+		photon_temp = StratumCorneum_Scattering( nm, sampler, photon_temp );
 
 		// Continue the ray until the Outside--SC boundary
 		// We need this distance
@@ -393,13 +393,13 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				photon_temp,
 				photon_out,
 				onb, 
-				random,
+				sampler,
 				true, 
 				true );
 		}
 
 		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
 		if( path_length <=  thickness_SC ) {
 			return true;
@@ -419,7 +419,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				1.0
 				);
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Ray is reflected back into the stratum corneum
 				leaving_skin = Optics::CalculateReflectedRay( photon_temp, -onb.w() );
 
@@ -429,7 +429,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 					leaving_skin, 
 					photon_out,
 					onb, 
-					random, 
+					sampler, 
 					true,
 					false,
 					false );
@@ -450,7 +450,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
 	const OrthonormalBasis3D& onb,								///< The orthonormal basis
-	const RandomNumberGenerator& random,				///< Random number generator for the MC process
+	ISampler& sampler,				///< Sampler for the MC process
 	const bool bAtSCBoundary,									///< The photon is at the boundary with the stratum corneum,
 																///< if false, it is at the dermal boundary
 	const bool bDoFresnel										///< Should we do a Fresnel check?
@@ -468,7 +468,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 				photon_temp, 
 				onb );
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Reflects back to the stratum corneum
 				photon_temp = Optics::CalculateReflectedRay( photon_in, onb.w() );
 
@@ -478,7 +478,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 						photon_temp, 
 						photon_out,
 						onb,
-						random,
+						sampler,
 						false,
 						false, 
 						false);
@@ -489,13 +489,13 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 		
 		Vector3 photon_scattered;
 		do {
-			photon_scattered = Epidermis_Scattering( nm, random, photon_temp );
+			photon_scattered = Epidermis_Scattering( nm, sampler, photon_temp );
 		} while( Vector3Ops::Dot(-onb.w(), photon_scattered) < 0 );
 		photon_temp = photon_scattered;
 		const Scalar cos_alpha = Vector3Ops::Dot(-onb.w(), photon_temp);
 		
 		const Scalar absorption = ComputeEpidermisAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
 		if( path_length <=  thickness_epidermis ) {
 			return true;
@@ -507,7 +507,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 			photon_temp,
 			photon_out,
 			onb,
-			random,
+			sampler,
 			true, 
 			true );
 	} 
@@ -522,7 +522,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 				photon_temp,
 				onb );
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Reflects back to the dermis
 				photon_temp = Optics::CalculateReflectedRay( photon_in, -onb.w() );
 
@@ -532,7 +532,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 						photon_temp,
 						photon_out,
 						onb, 
-						random,
+						sampler,
 						true, 
 						false );
 				}
@@ -542,13 +542,13 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 		
 		Vector3 photon_scattered;
 		do {
-			photon_scattered = Epidermis_Scattering( nm, random, photon_temp );
+			photon_scattered = Epidermis_Scattering( nm, sampler, photon_temp );
 		} while( Vector3Ops::Dot(onb.w(), photon_scattered) < 0 );
 		photon_temp = photon_scattered;
 		const Scalar cos_alpha = Vector3Ops::Dot(onb.w(), photon_scattered);
 		
 		const Scalar absorption = ComputeEpidermisAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * cos_alpha;
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
 		if( path_length <=  thickness_epidermis ) {
 			return true;
@@ -559,7 +559,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 			photon_temp,
 			photon_out,
 			onb, 
-			random,
+			sampler,
 			false, 
 			false, 
 			true );
@@ -574,7 +574,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
 	const OrthonormalBasis3D& onb,								///< The orthonormal basis
-	const RandomNumberGenerator& random,				///< Random number generator for the MC process
+	ISampler& sampler,				///< Sampler for the MC process
 	const bool bAtEpidermisBoundary,							///< The photon is at the boundary with the epidermis,
 																///< if false, it is at the reticular dermis boundary
 	const bool bDoFresnel										///< Should we do a Fresnel check?
@@ -592,7 +592,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 				photon_temp, 
 				onb );
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Reflects back to the epidermis
 				photon_temp = Optics::CalculateReflectedRay( photon_in, onb.w() );
 
@@ -602,7 +602,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 						photon_temp, 
 						photon_out,
 						onb,
-						random,
+						sampler,
 						false, 
 						false );
 				}
@@ -614,12 +614,12 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 		const Scalar prob_rayleigh = 1.0-ComputeRayleighScatteringProbability( nm, ior_papillary_dermis, distance_to_reticular );
 
 		// Check to see if the ray is scattered
-		if( random.CanonicalRandom() < prob_rayleigh ) {
+		if( sampler.Get1D() < prob_rayleigh ) {
 			// The ray is Rayleigh scattered, get the direction
-			photon_temp = Rayleigh_Phase_Function_Scattering( random, photon_temp );
+			photon_temp = Rayleigh_Phase_Function_Scattering( sampler, photon_temp );
 		} else {
 			// The ray continues into the dermis, perturb it
-			photon_temp = Dermis_Scattering( random, -onb.w() );
+			photon_temp = Dermis_Scattering( sampler, -onb.w() );
 		}
 
 		// Make sure the scattering didn't result in us throwing the ray back up to the epidermis
@@ -630,13 +630,13 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 				photon_temp,
 				photon_out,
 				onb,
-				random,
+				sampler,
 				false, 
 				true );
 		}
 
 		const Scalar absorption = ComputePapillaryDermisAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * Vector3Ops::Dot(-onb.w(), photon_temp );
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(-onb.w(), photon_temp );
 
 		if( path_length <=  thickness_papillary_dermis ) {
 			return true;
@@ -648,7 +648,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 			photon_temp,
 			photon_out,
 			onb, 
-			random, 
+			sampler, 
 			true, 
 			true );
 	}
@@ -664,7 +664,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 				photon_temp,
 				onb );
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Reflects back to the reticular dermis
 				photon_temp = Optics::CalculateReflectedRay( photon_in, -onb.w() );
 
@@ -674,7 +674,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 						photon_temp,
 						photon_out,
 						onb, 
-						random,
+						sampler,
 						true, 
 						false );
 				}
@@ -684,10 +684,10 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 		// We don't bother with the Rayleigh check, since it was already done on the 
 		// way down
 
-		photon_temp = Dermis_Scattering( random, onb.w() );
+		photon_temp = Dermis_Scattering( sampler, onb.w() );
 		
 		const Scalar absorption = ComputePapillaryDermisAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * Vector3Ops::Dot(onb.w(), photon_temp );
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(onb.w(), photon_temp );
 
 		if( path_length <=  thickness_papillary_dermis ) {
 			return true;
@@ -699,7 +699,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 			photon_temp,
 			photon_out,
 			onb, 
-			random,
+			sampler,
 			false,
 			true );
 	}
@@ -713,7 +713,7 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
 	const OrthonormalBasis3D& onb,								///< The orthonormal basis
-	const RandomNumberGenerator& random,				///< Random number generator for the MC process
+	ISampler& sampler,				///< Sampler for the MC process
 	const bool bAtPapillaryDermisBoundary,						///< The photon is at the boundary with the papillary dermis,
 																///< if false, it is at the subdermal boundary
 	const bool bDoFresnel										///< Should we do a Fresnel check?
@@ -730,7 +730,7 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 				photon_temp, 
 				onb );
 
-			if( ref > 0.0 && random.CanonicalRandom() < ref ) {
+			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Reflects back to the papillary dermis
 				photon_temp = Optics::CalculateReflectedRay( photon_in, onb.w() );
 
@@ -740,7 +740,7 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 						photon_temp, 
 						photon_out,
 						onb,
-						random,
+						sampler,
 						false, 
 						false );
 				}
@@ -752,12 +752,12 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 		const Scalar prob_rayleigh = 1.0-ComputeRayleighScatteringProbability( nm, ior_reticular_dermis, distance_to_subdermis );
 
 		// Check to see if the ray is scattered
-		if( random.CanonicalRandom() < prob_rayleigh ) {
+		if( sampler.Get1D() < prob_rayleigh ) {
 			// The ray is Rayleigh scattered, get the direction
-			photon_temp = Rayleigh_Phase_Function_Scattering( random, photon_temp );
+			photon_temp = Rayleigh_Phase_Function_Scattering( sampler, photon_temp );
 		} else {
 			// The ray continues into the dermis, perturb it
-			photon_temp = Dermis_Scattering( random, -onb.w() );
+			photon_temp = Dermis_Scattering( sampler, -onb.w() );
 		}
 
 		if( Vector3Ops::Dot(-onb.w(), photon_temp ) < 0.0 ) {
@@ -767,13 +767,13 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 				photon_temp,
 				photon_out,
 				onb,
-				random,
+				sampler,
 				false, 
 				true );
 		}
 
 		const Scalar absorption = ComputeReticularDermisAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * Vector3Ops::Dot(-onb.w(), photon_temp );
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(-onb.w(), photon_temp );
 
 		if( path_length <=  thickness_reticular_dermis ) {
 			return true;
@@ -785,7 +785,7 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 			photon_temp,
 			photon_out,
 			onb, 
-			random );
+			sampler );
 	}
 	else 
 	{
@@ -795,10 +795,10 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 		// We don't bother with the Rayleigh check, since it was already done on the 
 		// way down
 
-		photon_temp = Dermis_Scattering( random, onb.w() );
+		photon_temp = Dermis_Scattering( sampler, onb.w() );
 
 		const Scalar absorption = ComputeReticularDermisAbsorptionCoefficient( nm );
-		const Scalar path_length = (-1.0 / absorption) * log(random.CanonicalRandom()) * Vector3Ops::Dot(onb.w(), photon_temp);
+		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(onb.w(), photon_temp);
 
 		if( path_length <=  thickness_reticular_dermis ) {
 			return true;
@@ -810,7 +810,7 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 			photon_temp,
 			photon_out,
 			onb, 
-			random,
+			sampler,
 			false, 
 			true );
 	}
@@ -824,7 +824,7 @@ bool BioSpecSkinSPF::ProcessSubdermisInteraction(
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
 	const OrthonormalBasis3D& onb,								///< The orthonormal basis
-	const RandomNumberGenerator& random				///< Random number generator for the MC process
+	ISampler& sampler				///< Sampler for the MC process
 	) const
 {
 	if( subdermal_layer ) {
@@ -838,7 +838,7 @@ bool BioSpecSkinSPF::ProcessSubdermisInteraction(
 			vReflected,
 			photon_out,
 			onb,
-			random,
+			sampler,
 			false, 
 			true );
 	}
@@ -850,7 +850,7 @@ bool BioSpecSkinSPF::ProcessSubdermisInteraction(
 
 void BioSpecSkinSPF::Scatter( 
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-		const RandomNumberGenerator& random,				///< [in] Random number generator
+		ISampler& sampler,				///< [in] Sampler
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 		) const
@@ -895,11 +895,11 @@ void BioSpecSkinSPF::Scatter(
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) < 0 ) {
 		// From top, so send it to the stratum corneum
 		bAbsorbed = ProcessSCInteraction(
-			random.CanonicalRandom()*400.0+380.0,
+			sampler.Get1D()*400.0+380.0,
 			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
-			random,
+			sampler,
 			true,
 			true,
 			true );
@@ -907,11 +907,11 @@ void BioSpecSkinSPF::Scatter(
 		// From bottom, and there is no subdermal reflecting layer,
 		// so light can transmit through the skin
 		bAbsorbed = ProcessReticularDermisInteraction(
-			random.CanonicalRandom()*400.0+380.0,
+			sampler.Get1D()*400.0+380.0,
 			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
-			random,
+			sampler,
 			false,
 			true );
 	} else {
@@ -932,7 +932,7 @@ void BioSpecSkinSPF::Scatter(
 
 void BioSpecSkinSPF::ScatterNM(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-		const RandomNumberGenerator& random,				///< [in] Random number generator
+		ISampler& sampler,				///< [in] Sampler
 		const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -981,7 +981,7 @@ void BioSpecSkinSPF::ScatterNM(
 			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
-			random,
+			sampler,
 			true,
 			true,
 			true );
@@ -993,7 +993,7 @@ void BioSpecSkinSPF::ScatterNM(
 			ri.ray.Dir(),
 			photon_out,
 			ri.onb,
-			random,
+			sampler,
 			false,
 			true );
 	} else {

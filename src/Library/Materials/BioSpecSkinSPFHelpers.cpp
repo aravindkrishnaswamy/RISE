@@ -22,16 +22,16 @@ using namespace RISE::Implementation;
 
 //! Scatters according to a Trowbridge-Reitz PDF
 Vector3 BioSpecSkinSPF::TrowbridgeReitz_Scattering(
-	const RandomNumberGenerator& random,		///< [in] Random number generator
+	ISampler& sampler,		///< [in] Sampler
 	const Vector3& incoming,							///< [in] The direction of the incoming ray
 	const Scalar aspect_ratio							///< [in] Aspect ratio of the cells
 	)
 {
 	const Scalar a = aspect_ratio*aspect_ratio;
-	const Scalar d = random.CanonicalRandom();
+	const Scalar d = sampler.Get1D();
 
 	const Scalar alpha = acos(sqrt((1.0 - d) / (d * (a - 1.0) + 1.0)));		// polar angle perturbation
-	const Scalar beta = random.CanonicalRandom() * TWO_PI;			// azimuthal angle perturbation
+	const Scalar beta = sampler.Get1D() * TWO_PI;			// azimuthal angle perturbation
 	
 	return Vector3Ops::Normalize(GeometricUtilities::Perturb( incoming, alpha, beta ));
 }
@@ -39,51 +39,51 @@ Vector3 BioSpecSkinSPF::TrowbridgeReitz_Scattering(
 //! Scatters accoding to a lookup which is described in the function
 Vector3 BioSpecSkinSPF::Scattering_From_TableLookup( 
 	const Scalar nm,										///< [in] The wavelength to do the lookup for
-	const RandomNumberGenerator& random,			///< [in] Random number generator
+	ISampler& sampler,			///< [in] Sampler
 	const Vector3& incoming,								///< [in] The direction of the incoming ray
 	const IFunction2D& pFunc								///< [in] Function to use for doing the scattering
 	)
 {
 	// Get the angle back from the function and perturb
-	const Scalar alpha = pFunc.Evaluate( nm, random.CanonicalRandom() * 100.0 ) * DEG_TO_RAD;
-	const Scalar beta = random.CanonicalRandom() * TWO_PI;
+	const Scalar alpha = pFunc.Evaluate( nm, sampler.Get1D() * 100.0 ) * DEG_TO_RAD;
+	const Scalar beta = sampler.Get1D() * TWO_PI;
 
 	return Vector3Ops::Normalize(GeometricUtilities::Perturb( incoming, alpha, beta ));
 }
 
 //! Scatters according to the Henyey-Greenstein phase function
 Vector3 BioSpecSkinSPF::Scattering_From_HenyeyGreenstein(
-	const RandomNumberGenerator& random,			///< [in] Random number generator
+	ISampler& sampler,			///< [in] Sampler
 	const Vector3& incoming,								///< [in] The direction of the incoming ray
 	const Scalar g											///< [in] The asymmetry factor
 	)
 {
-	const Scalar inner = (1.0 - g*g) / (1 - g + 2*g*random.CanonicalRandom());
+	const Scalar inner = (1.0 - g*g) / (1 - g + 2*g*sampler.Get1D());
 	const Scalar hny_phase = acos( (1/(2.0*g)) * (1 + g*g - inner*inner) );
 
 	// Use the warping function to perturb the reflected ray using HG phase function
 	return Vector3Ops::Normalize(GeometricUtilities::Perturb(
 		incoming,
 		hny_phase,
-		TWO_PI * random.CanonicalRandom() ));
+		TWO_PI * sampler.Get1D() ));
 }
 
 //! Scatters a ray at the dermis (both papillary and reticular layer)
 Vector3 BioSpecSkinSPF::Dermis_Scattering( 
-	const RandomNumberGenerator& random,			///< [in] Random number generator
+	ISampler& sampler,			///< [in] Sampler
 	const Vector3& incoming								///< [in] The direction of the incoming ray
 	)
 {
 	// Dermal scattering uses cosine-weighted distribution around the layer normal (BioSpec paper Eq. 6)
-	const Scalar alpha = acos( sqrt(random.CanonicalRandom()) );
-	const Scalar beta = random.CanonicalRandom() * TWO_PI;
+	const Scalar alpha = acos( sqrt(sampler.Get1D()) );
+	const Scalar beta = sampler.Get1D() * TWO_PI;
 
 	return GeometricUtilities::Perturb( incoming, alpha, beta );
 }
 
 //! Scatters a ray by using the Rayleigh phase function
 Vector3 BioSpecSkinSPF::Rayleigh_Phase_Function_Scattering( 
-	const RandomNumberGenerator& random,			///< [in] Random number generator
+	ISampler& sampler,			///< [in] Sampler
 	const Vector3& incoming								///< [in] The direction of the incoming ray
 	)
 {
@@ -93,12 +93,12 @@ Vector3 BioSpecSkinSPF::Rayleigh_Phase_Function_Scattering(
 	Scalar cos_alpha = 0;
 	Scalar ran = 0;
 	do {
-		cos_alpha = 1.0 - 2.0 * random.CanonicalRandom();
-		ran = random.CanonicalRandom() * 1.5;
+		cos_alpha = 1.0 - 2.0 * sampler.Get1D();
+		ran = sampler.Get1D() * 1.5;
 	} while (ran > 0.75 * (1.0 + cos_alpha*cos_alpha));
 
 	const Scalar alpha = acos(cos_alpha);
-	const Scalar beta = random.CanonicalRandom() * TWO_PI;
+	const Scalar beta = sampler.Get1D() * TWO_PI;
 
 	return GeometricUtilities::Perturb( incoming, alpha, beta );
 }

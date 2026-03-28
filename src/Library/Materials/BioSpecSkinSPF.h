@@ -133,7 +133,7 @@ namespace RISE
 
 			//! Scatters according to a Trowbridge-Reitz PDF
 			static Vector3 TrowbridgeReitz_Scattering(
-				const RandomNumberGenerator& random,		///< [in] Random number generator
+				ISampler& sampler,							///< [in] Sampler
 				const Vector3& incoming,							///< [in] The direction of the incoming ray
 				const Scalar aspect_ratio							///< [in] Aspect ratio of the cells
 				);
@@ -141,24 +141,24 @@ namespace RISE
 			//! Scatters a ray at the stratum corneum 
 			/// \return The direction of the outgoing ray
 			inline Vector3 StratumCorneum_Cell_Scattering( 
-				const RandomNumberGenerator& random,		///< [in] Random number generator
+				ISampler& sampler,							///< [in] Sampler
 				const Vector3& incoming								///< [in] The direction of the incoming ray
 				) const
 			{
-				return TrowbridgeReitz_Scattering( random, incoming, folds_aspect_ratio );
+				return TrowbridgeReitz_Scattering( sampler, incoming, folds_aspect_ratio );
 			}
 
 			//! Scatters accoding to a lookup which is described in the function
 			static Vector3 Scattering_From_TableLookup( 
 				const Scalar nm,										///< [in] The wavelength to do the lookup for
-				const RandomNumberGenerator& random,			///< [in] Random number generator
+				ISampler& sampler,								///< [in] Sampler
 				const Vector3& incoming,								///< [in] The direction of the incoming ray
 				const IFunction2D& pFunc								///< [in] Function to use for doing the scattering
 				);
 
 			//! Scatters according to the Henyey-Greenstein phase function
 			static Vector3 Scattering_From_HenyeyGreenstein(
-				const RandomNumberGenerator& random,			///< [in] Random number generator
+				ISampler& sampler,								///< [in] Sampler
 				const Vector3& incoming,								///< [in] The direction of the incoming ray
 				const Scalar g											///< [in] The asymmetry factor
 				);
@@ -166,34 +166,34 @@ namespace RISE
 			//! Scatters a ray at the epidermis using a table lookup
 			inline Vector3 StratumCorneum_Scattering( 
 				const Scalar nm,										///< [in] The wavelength to do the lookup for
-				const RandomNumberGenerator& random,			///< [in] Random number generator
+				ISampler& sampler,								///< [in] Sampler
 				const Vector3& incoming									///< [in] The direction of the incoming ray
 				) const
 			{
-				return Scattering_From_TableLookup( nm, random, incoming, *pSCscattering );
-		//		return Scattering_From_HenyeyGreenstein( random, incoming, 0.917 );
+				return Scattering_From_TableLookup( nm, sampler, incoming, *pSCscattering );
+		//		return Scattering_From_HenyeyGreenstein( sampler, incoming, 0.917 );
 			}
 
 			//! Scatters a ray at the epidermis using a table lookup
 			inline Vector3 Epidermis_Scattering( 
 				const Scalar nm,										///< [in] The wavelength to do the lookup for
-				const RandomNumberGenerator& random,			///< [in] Random number generator
+				ISampler& sampler,								///< [in] Sampler
 				const Vector3& incoming									///< [in] The direction of the incoming ray
 				) const
 			{
-				return Scattering_From_TableLookup( nm, random, incoming, *pEpidermisScat );
-		//		return Scattering_From_HenyeyGreenstein( random, incoming, 0.781 );
+				return Scattering_From_TableLookup( nm, sampler, incoming, *pEpidermisScat );
+		//		return Scattering_From_HenyeyGreenstein( sampler, incoming, 0.781 );
 			}
 
 			//! Scatters a ray at the dermis (both papillary and reticular layer)
 			static Vector3 Dermis_Scattering( 
-				const RandomNumberGenerator& random,		///< [in] Random number generator
+				ISampler& sampler,							///< [in] Sampler
 				const Vector3& incoming								///< [in] The direction of the incoming ray
 				);
 
 			//! Scatters a ray by using the Rayleigh phase function
 			static Vector3 Rayleigh_Phase_Function_Scattering( 
-				const RandomNumberGenerator& random,		///< [in] Random number generator
+				ISampler& sampler,							///< [in] Sampler
 				const Vector3& incoming								///< [in] The direction of the incoming ray
 				);
 
@@ -560,7 +560,7 @@ namespace RISE
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
 				const OrthonormalBasis3D& onb,								///< The orthonormal basis
-				const RandomNumberGenerator& random,				///< Random number generator for the MC process
+				ISampler& sampler,									///< Sampler for the MC process
 				const bool bAtOutsideBoundary,								///< The photon is at the boundary with the outside of the skin,
 																			///< if false, it is at the epidermal boundary
 				const bool bDoCellScattering,								///< Should we apply the Trowbridge cell scattering
@@ -575,7 +575,7 @@ namespace RISE
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
 				const OrthonormalBasis3D& onb,								///< The orthonormal basis
-				const RandomNumberGenerator& random,				///< Random number generator for the MC process
+				ISampler& sampler,									///< Sampler for the MC process
 				const bool bAtSCBoundary,									///< The photon is at the boundary with the stratum corneum,
 																			///< if false, it is at the dermal boundary
 				const bool bDoFresnel										///< Should we do a Fresnel check?
@@ -589,7 +589,7 @@ namespace RISE
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
 				const OrthonormalBasis3D& onb,								///< The orthonormal basis
-				const RandomNumberGenerator& random,				///< Random number generator for the MC process
+				ISampler& sampler,									///< Sampler for the MC process
 				const bool bAtEpidermisBoundary,							///< The photon is at the boundary with the epidermis,
 																			///< if false, it is at the reticular dermis boundary
 				const bool bDoFresnel										///< Should we do a Fresnel check?
@@ -603,7 +603,7 @@ namespace RISE
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
 				const OrthonormalBasis3D& onb,								///< The orthonormal basis
-				const RandomNumberGenerator& random,				///< Random number generator for the MC process
+				ISampler& sampler,									///< Sampler for the MC process
 				const bool bAtPapillaryDermisBoundary,						///< The photon is at the boundary with the papillary dermis,
 																			///< if false, it is at the subdermal boundary
 				const bool bDoFresnel										///< Should we do a Fresnel check?
@@ -617,7 +617,7 @@ namespace RISE
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
 				const OrthonormalBasis3D& onb,								///< The orthonormal basis
-				const RandomNumberGenerator& random				///< Random number generator for the MC process
+				ISampler& sampler									///< Sampler for the MC process
 				) const;
 
 		public:
@@ -647,14 +647,14 @@ namespace RISE
 
 			void Scatter( 
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-				const RandomNumberGenerator& random,				///< [in] Random number generator
+				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			void ScatterNM( 
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-				const RandomNumberGenerator& random,				///< [in] Random number generator
+				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack

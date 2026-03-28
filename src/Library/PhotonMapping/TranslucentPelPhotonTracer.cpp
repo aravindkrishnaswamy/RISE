@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "TranslucentPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -105,7 +106,8 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			// Get information from the material as to what to do
 			ScatteredRayContainer		scattered;
 
-			pSPF->Scatter( ri.geometric, random, scattered, ior_stack );
+			IndependentSampler samplerWrapper( random );
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 		
 			RISEPel accum_scattered;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {

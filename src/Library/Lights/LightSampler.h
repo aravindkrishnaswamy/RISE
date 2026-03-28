@@ -40,6 +40,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/ISampler.h"
 #include "../Rendering/LuminaryManager.h"
 
 namespace RISE
@@ -78,7 +79,7 @@ namespace RISE
 			bool SampleLight(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
-				const RandomNumberGenerator& random,				///< [in] Random number generator
+				ISampler& sampler,									///< [in] Low-discrepancy sampler
 				LightSample& sample									///< [out] The generated light sample
 				) const;
 

@@ -214,7 +214,7 @@ void DielectricSPF::DoSingleRGBComponent(
 
 void DielectricSPF::Scatter( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
@@ -229,10 +229,10 @@ void DielectricSPF::Scatter(
 
 	if( !disperse ) {
 		// No dispersion
-		DoSingleRGBComponent( ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scattered, ior_stack, false, ior[0], scattering[0], cosine );
+		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, ior[0], scattering[0], cosine );
 	} else {
 		// We have dispersion, so we must process each component seperately
-		Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, ior[i], scattering[i], cosine );
 		}
@@ -241,7 +241,7 @@ void DielectricSPF::Scatter(
 
 void DielectricSPF::ScatterNM( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -266,7 +266,7 @@ void DielectricSPF::ScatterNM(
 	}
 
 	bool bDielectric, bFresnel;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scat.GetColorNM(ri,nm), rIndex.GetColorNM(ri,nm), ior_stack );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetColorNM(ri,nm), rIndex.GetColorNM(ri,nm), ior_stack );
 	
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);

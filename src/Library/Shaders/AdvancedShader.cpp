@@ -15,6 +15,7 @@
 #include "AdvancedShader.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -56,7 +57,9 @@ void AdvancedShader::Shade(
 
 	ScatteredRayContainer scattered;
 	if( pSPF && bComputeSPF ) {
-		pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );	
+		IndependentSampler fallbackSampler( rc.random );
+		ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+		pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
 	}
 
 	// Iterate through the shader ops and accumulate the results
@@ -116,7 +119,9 @@ Scalar AdvancedShader::ShadeNM(
 
 	ScatteredRayContainer scattered;
 	if( pSPF ) {
-		pSPF->ScatterNM( ri.geometric, rc.random, nm, scattered, ior_stack );	
+		IndependentSampler fallbackSampler( rc.random );
+		ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+		pSPF->ScatterNM( ri.geometric, scatterSampler, nm, scattered, ior_stack );
 	}
 
 	Scalar c = 0;

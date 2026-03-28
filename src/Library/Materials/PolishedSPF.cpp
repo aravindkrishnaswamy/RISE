@@ -122,7 +122,7 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 
 void PolishedSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
@@ -140,7 +140,7 @@ void PolishedSPF::Scatter(
 	if( scattering[0] == scattering[1] && scattering[1] == scattering[2] &&
 		ior[0] == ior[1] && ior[1] == ior[2] )
 	{
-		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scattering[0], ior[0], ior_stack );
+		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scattering[0], ior[0], ior_stack );
 		dielectric.kray = tau.GetColor(ri) * Rs;
 
 		if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
@@ -149,7 +149,7 @@ void PolishedSPF::Scatter(
 	}
 	else
 	{
-		Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			Rs[i] = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, ptrand, scattering[i], ior[i], ior_stack );
 			dielectric.kray = 0;
@@ -171,7 +171,7 @@ void PolishedSPF::Scatter(
 		diffuse.kray = Rd.GetColor(ri) * (1.0-Rs);
  		diffuse.ray.Set(
 			ri.ptIntersection,
-			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
+			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
 			);
 		// Cosine-weighted hemisphere: pdf = cos(theta) / PI
 		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
@@ -185,7 +185,7 @@ void PolishedSPF::Scatter(
 
 void PolishedSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -197,7 +197,7 @@ void PolishedSPF::ScatterNM(
 	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
-	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scat.GetColorNM(ri,nm), Nt.GetColorNM(ri,nm), ior_stack );
+	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetColorNM(ri,nm), Nt.GetColorNM(ri,nm), ior_stack );
 	dielectric.krayNM = tau.GetColorNM(ri,nm) * Rs;
 
 
@@ -215,7 +215,7 @@ void PolishedSPF::ScatterNM(
 		diffuse.krayNM = Rd.GetColorNM(ri,nm) * (1.0-Rs);
 		diffuse.ray.Set(
 			ri.ptIntersection,
-			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
+			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
 			);
 		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
 		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;

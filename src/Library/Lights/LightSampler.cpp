@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "LightSampler.h"
+#include "../Utilities/ISampler.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IEmitter.h"
@@ -74,7 +75,7 @@ Scalar LightSampler::ComputeTotalExitance(
 bool LightSampler::SampleLight(
 	const IScene& scene,
 	const LuminaryManager::LuminariesList& luminaries,
-	const RandomNumberGenerator& random,
+	ISampler& sampler,
 	LightSample& sample
 	) const
 {
@@ -96,7 +97,7 @@ bool LightSampler::SampleLight(
 	}
 
 	// Select a light proportional to its exitance
-	const Scalar xi = random.CanonicalRandom() * total_exitance;
+	const Scalar xi = sampler.Get1D() * total_exitance;
 	Scalar cumulative = 0;
 
 	// Try non-mesh lights first
@@ -122,9 +123,9 @@ bool LightSampler::SampleLight(
 
 					// Generate a random photon using the light's own method
 					const Point3 ptrand(
-						random.CanonicalRandom(),
-						random.CanonicalRandom(),
-						random.CanonicalRandom()
+						sampler.Get1D(),
+						sampler.Get1D(),
+						sampler.Get1D()
 						);
 					const Ray photonRay = l->generateRandomPhoton( ptrand );
 
@@ -171,9 +172,9 @@ bool LightSampler::SampleLight(
 
 			// Sample a uniform random point on the luminary surface
 			const Point3 prand(
-				random.CanonicalRandom(),
-				random.CanonicalRandom(),
-				random.CanonicalRandom()
+				sampler.Get1D(),
+				sampler.Get1D(),
+				sampler.Get1D()
 				);
 			Point2 coord;
 			i->pLum->UniformRandomPoint(
@@ -191,10 +192,7 @@ bool LightSampler::SampleLight(
 			OrthonormalBasis3D onb;
 			onb.CreateFromW( sample.normal );
 
-			const Point2 dirRand(
-				random.CanonicalRandom(),
-				random.CanonicalRandom()
-				);
+			const Point2 dirRand = sampler.Get2D();
 			sample.direction = GeometricUtilities::CreateDiffuseVector( onb, dirRand );
 
 			// pdfDirection = cos(theta) / pi for cosine-weighted hemisphere

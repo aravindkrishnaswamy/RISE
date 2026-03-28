@@ -100,14 +100,14 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 			const Point2& ptLum,
 			const IBSDF& pBRDF,
 			const IMaterial* pMaterial,
-			const RandomNumberGenerator& random,
+			ISampler& sampler,
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const bool bShadowRays
 			) const
 {
 	// To compute the direct lighting, get a sample point on the luminary
 	// and use that to compute the amount of direct lighting
-	const Point3	ptRand( ptLum.x, ptLum.y, random.CanonicalRandom() );
+	const Point3	ptRand( ptLum.x, ptLum.y, sampler.Get1D() );
 	Point3	ptLocationOnLuminary;
 	Vector3 lumNormal;
 	Point2	lumCoord;
@@ -169,16 +169,17 @@ RISEPel LuminaryManager::ComputeDirectLightingForLuminary(
 	return contrib;
 }
 
-RISEPel LuminaryManager::ComputeDirectLighting( 
+RISEPel LuminaryManager::ComputeDirectLighting(
 			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
 			const IBSDF& pBRDF,												///< [in] BRDF of the material
-			const RandomNumberGenerator& random,							///< [in] Random number generator
+			ISampler& sampler,												///< [in] Low-discrepancy sampler
 			const IRayCaster& caster,
 			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
 			) const
 {
 	// This computes the lighting that comes directly from a luminary incident on the
 	RISEPel	pelRet;
+	RandomNumberGenerator rng;  // For ISampling2D::GenerateSamplePoints (interface not yet converted)
 
 	if( bRandomlySelect )
 	{
@@ -186,26 +187,26 @@ RISEPel LuminaryManager::ComputeDirectLighting(
 		if( pLumSampling )
 		{
 			ISampling2D::SamplesList2D samples;
-			pLumSampling->GenerateSamplePoints(random,samples);
+			pLumSampling->GenerateSamplePoints(rng,samples);
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-				const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
-				pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, random, caster, true );
+				const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
+				pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, sampler, caster, true );
 			}
 		}
 		else
 		{
-			const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
-			const Point2	ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-			pelRet = ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, random, caster, true );
+			const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
+			const Point2	ptRand = sampler.Get2D();
+			pelRet = ComputeDirectLightingForLuminary( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, sampler, caster, true );
 		}
 	}
 	else
 	{
 		LuminariesList::const_iterator	i, e;
 		for( i=luminaries.begin(), e=luminaries.end(); i!=e; i++ )
-		{	
+		{
 			// Make sure a luminary isn't diffuse reflecting itself!
 			const LUM_ELEM& elem = *i;
 			if( elem.pLum != ri.pObject )
@@ -234,24 +235,24 @@ RISEPel LuminaryManager::ComputeDirectLighting(
 						bShadowRays = true;
 						break;
 					};
-				}		
+				}
 
 				if( pLumSampling )
 				{
 					ISampling2D::SamplesList2D samples;
-					pLumSampling->GenerateSamplePoints(random,samples);
+					pLumSampling->GenerateSamplePoints(rng,samples);
 
 					ISampling2D::SamplesList2D::const_iterator m, n;
 					RISEPel pelThisLum;
 					for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-						pelThisLum = pelThisLum + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, random, caster, bShadowRays );
+						pelThisLum = pelThisLum + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, sampler, caster, bShadowRays );
 					}
 					pelRet = pelRet + (pelThisLum * dOVcSamples);
 				}
 				else
 				{
-					const Point2 ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-					pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, random, caster, bShadowRays );
+					const Point2 ptRand = sampler.Get2D();
+					pelRet = pelRet + ComputeDirectLightingForLuminary( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, sampler, caster, bShadowRays );
 				}
 			}
 		}
@@ -267,12 +268,12 @@ Scalar LuminaryManager::ComputeDirectLightingForLuminaryNM(
 			const IBSDF& pBRDF,
 			const IMaterial* pMaterial,
 			const Scalar nm,
-			const RandomNumberGenerator& random,
+			ISampler& sampler,
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const bool bShadowRays
 			) const
 {
-	const Point3	ptRand( ptLum.x, ptLum.y, random.CanonicalRandom() );
+	const Point3	ptRand( ptLum.x, ptLum.y, sampler.Get1D() );
 	Point3	ptLocationOnLuminary;
 	Vector3 lumNormal;
 	Point2	lumCoord;
@@ -330,13 +331,14 @@ Scalar LuminaryManager::ComputeDirectLightingNM(
 			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
 			const IBSDF& pBRDF,												///< [in] BRDF of the material
 			const Scalar nm,												///< [in] Wavelength
-			const RandomNumberGenerator& random,							///< [in] Random number generator
+			ISampler& sampler,												///< [in] Low-discrepancy sampler
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
 			) const
 {
 	// This computes the lighting that comes directly from a luminary incident on the
 	Scalar	ret = 0;
+	RandomNumberGenerator rng;  // For ISampling2D::GenerateSamplePoints (interface not yet converted)
 
 	if( bRandomlySelect )
 	{
@@ -344,24 +346,24 @@ Scalar LuminaryManager::ComputeDirectLightingNM(
 		if( pLumSampling )
 		{
 			ISampling2D::SamplesList2D samples;
-			pLumSampling->GenerateSamplePoints(random,samples);
+			pLumSampling->GenerateSamplePoints(rng,samples);
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-				const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
-				ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, nm, random, caster, true );
+				const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
+				ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, (*m), pBRDF, ri.pMaterial, nm, sampler, caster, true );
 			}
 		} else {
-			const unsigned int lum = (unsigned int)floor(random.CanonicalRandom() * luminaries.size());
-			const Point2 ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-			ret = ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, nm, random, caster, true );
+			const unsigned int lum = (unsigned int)floor(sampler.Get1D() * luminaries.size());
+			const Point2 ptRand = sampler.Get2D();
+			ret = ComputeDirectLightingForLuminaryNM( ri.geometric, *luminaries[lum].pLum, ptRand, pBRDF, ri.pMaterial, nm, sampler, caster, true );
 		}
 	}
-	else 
+	else
 	{
 		LuminariesList::const_iterator	i, e;
 		for( i=luminaries.begin(), e=luminaries.end(); i!=e; i++ )
-		{	
+		{
 			// Make sure a luminary isn't diffuse reflecting itself!
 			const LUM_ELEM& elem = *i;
 			if( elem.pLum != ri.pObject )
@@ -386,22 +388,22 @@ Scalar LuminaryManager::ComputeDirectLightingNM(
 						bShadowRays = true;
 						break;
 					};
-				}	
+				}
 
 				if( pLumSampling )
 				{
 					ISampling2D::SamplesList2D samples;
-					pLumSampling->GenerateSamplePoints(random,samples);
+					pLumSampling->GenerateSamplePoints(rng,samples);
 
 					ISampling2D::SamplesList2D::const_iterator m, n;
 					Scalar thisLum = 0;
 					for( m=samples.begin(), n=samples.end(); m!=n; m++ ) {
-						thisLum = thisLum + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, nm, random, caster, bShadowRays );
+						thisLum = thisLum + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, (*m), pBRDF, ri.pMaterial, nm, sampler, caster, bShadowRays );
 					}
 					ret = (thisLum*dOVcSamples);
 				} else {
-					const Point2 ptRand( random.CanonicalRandom(), random.CanonicalRandom() );
-					ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, nm, random, caster, bShadowRays );
+					const Point2 ptRand = sampler.Get2D();
+					ret = ret + ComputeDirectLightingForLuminaryNM( ri.geometric, *elem.pLum, ptRand, pBRDF, ri.pMaterial, nm, sampler, caster, bShadowRays );
 				}
 			}
 		}

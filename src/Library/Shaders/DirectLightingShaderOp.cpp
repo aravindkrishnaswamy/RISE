@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "DirectLightingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -80,7 +81,9 @@ void DirectLightingShaderOp::PerformOperation(
 		// Account for lights from luminaries
 		const ILuminaryManager* pLumManager = caster.GetLuminaries();
 		if( pLumManager && meshlights) {
-			c = c + pLumManager->ComputeDirectLighting( ri, *pBRDF, rc.random, caster, pScene->GetShadowMap() );			
+			IndependentSampler fallbackSampler( rc.random );
+			ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+			c = c + pLumManager->ComputeDirectLighting( ri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
 		}
 
 		// Add the result to the rasterizer state cache
@@ -117,7 +120,9 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		// Account for lights from luminaries
 		const ILuminaryManager* pLumManager = caster.GetLuminaries();
 		if( pLumManager && meshlights ) {
-			c = pLumManager->ComputeDirectLightingNM( ri, *pBRDF, nm, rc.random, caster, pScene->GetShadowMap() );			
+			IndependentSampler fallbackSamplerNM( rc.random );
+			ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+			c = pLumManager->ComputeDirectLightingNM( ri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
 		}
 	}
 

@@ -80,7 +80,7 @@ bool CompositeSPF::ShouldScatteredRayBePropagated(
 void CompositeSPF::ProcessTopLayer(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				const RISEPel& importance,									///< [in] Importance from prevous pass
-				const RandomNumberGenerator& random,				///< Random number generator for the MC process
+				ISampler& sampler,				///< Sampler for the MC process
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const unsigned int steps,									///< [in] Number of steps taken in the random walk process
 				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -91,7 +91,7 @@ void CompositeSPF::ProcessTopLayer(
 	}
 
 	ScatteredRayContainer scat_top;
-	top.Scatter( ri, random, scat_top, ior_stack );
+	top.Scatter( ri, sampler, scat_top, ior_stack );
 
 	for( unsigned int i=0; i<scat_top.Count(); i++ )
 	{
@@ -113,7 +113,7 @@ void CompositeSPF::ProcessTopLayer(
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
-				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, random, scattered, steps+1, ior_stack );
+				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -122,7 +122,7 @@ void CompositeSPF::ProcessTopLayer(
 void CompositeSPF::ProcessBottomLayer(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		const RISEPel& importance,									///< [in] Importance from prevous pass
-		const RandomNumberGenerator& random,				///< Random number generator for the MC process
+		ISampler& sampler,				///< Sampler for the MC process
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const unsigned int steps,									///< [in] Number of steps taken in the random walk process
 		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -133,7 +133,7 @@ void CompositeSPF::ProcessBottomLayer(
 	}
 
 	ScatteredRayContainer scat_bottom;
-	bottom.Scatter( ri, random, scat_bottom, ior_stack );
+	bottom.Scatter( ri, sampler, scat_bottom, ior_stack );
 
 	for( unsigned int i=0; i<scat_bottom.Count(); i++ )
 	{
@@ -155,7 +155,7 @@ void CompositeSPF::ProcessBottomLayer(
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
-				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, random, scattered, steps+1, ior_stack );
+				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -164,7 +164,7 @@ void CompositeSPF::ProcessBottomLayer(
 void CompositeSPF::ProcessTopLayerNM(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				const Scalar importance,									///< [in] Importance from prevous pass
-				const RandomNumberGenerator& random,				///< Random number generator for the MC process
+				ISampler& sampler,				///< Sampler for the MC process
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const unsigned int steps,									///< [in] Number of steps taken in the random walk process
@@ -176,7 +176,7 @@ void CompositeSPF::ProcessTopLayerNM(
 	}
 
 	ScatteredRayContainer scat_top;
-	top.ScatterNM( ri, random, nm, scat_top, ior_stack );
+	top.ScatterNM( ri, sampler, nm, scat_top, ior_stack );
 
 	for( unsigned int i=0; i<scat_top.Count(); i++ )
 	{
@@ -199,7 +199,7 @@ void CompositeSPF::ProcessTopLayerNM(
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
-				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, random, nm, scattered, steps+1, ior_stack );
+				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -208,7 +208,7 @@ void CompositeSPF::ProcessTopLayerNM(
 void CompositeSPF::ProcessBottomLayerNM(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		const Scalar importance,									///< [in] Importance from prevous pass
-		const RandomNumberGenerator& random,				///< Random number generator for the MC process
+		ISampler& sampler,				///< Sampler for the MC process
 		const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const unsigned int steps,									///< [in] Number of steps taken in the random walk process
@@ -220,7 +220,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 	}
 
 	ScatteredRayContainer scat_bottom;
-	bottom.ScatterNM( ri, random, nm, scat_bottom, ior_stack );
+	bottom.ScatterNM( ri, sampler, nm, scat_bottom, ior_stack );
 
 	for( unsigned int i=0; i<scat_bottom.Count(); i++ )
 	{
@@ -243,7 +243,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
-				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, random, nm, scattered, steps+1, ior_stack );
+				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, ior_stack );
 			}
 		}
 	}
@@ -251,7 +251,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 
 void CompositeSPF::Scatter(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-			const RandomNumberGenerator& random,				///< [in] Random number generator
+			ISampler& sampler,				///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 			) const
@@ -260,9 +260,9 @@ void CompositeSPF::Scatter(
 	// either exit the bottom material from the bottom, or exit the
 	// top material from the top
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) {
-		ProcessTopLayer( ri, RISEPel(1,1,1), random, scattered, 0, ior_stack );
+		ProcessTopLayer( ri, RISEPel(1,1,1), sampler, scattered, 0, ior_stack );
 	} else {
-		ProcessBottomLayer( ri, RISEPel(1,1,1), random, scattered, 0, ior_stack );
+		ProcessBottomLayer( ri, RISEPel(1,1,1), sampler, scattered, 0, ior_stack );
 	}
 
 	for( unsigned int i=0; i<scattered.Count(); i++ ) {
@@ -273,7 +273,7 @@ void CompositeSPF::Scatter(
 
 void CompositeSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -283,9 +283,9 @@ void CompositeSPF::ScatterNM(
 	// either exit the bottom material from the bottom, or exit the
 	// top material from the top
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) {
-		ProcessTopLayerNM( ri, 1, random, nm, scattered, 0, ior_stack );
+		ProcessTopLayerNM( ri, 1, sampler, nm, scattered, 0, ior_stack );
 	} else {
-		ProcessBottomLayerNM( ri, 1, random, nm, scattered, 0, ior_stack );
+		ProcessBottomLayerNM( ri, 1, sampler, nm, scattered, 0, ior_stack );
 	}
 
 	for( unsigned int i=0; i<scattered.Count(); i++ ) {

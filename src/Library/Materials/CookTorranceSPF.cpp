@@ -50,12 +50,12 @@ CookTorranceSPF::~CookTorranceSPF( )
 
 void CookTorranceSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	const Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+	const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 
 	ScatteredRay	diffuse;
 	ScatteredRay	specular;
@@ -98,13 +98,13 @@ void CookTorranceSPF::Scatter(
 
 void CookTorranceSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	const Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+	const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 
 	ScatteredRay	diffuse;
 	ScatteredRay	specular;

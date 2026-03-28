@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "GlobalSpectralPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -101,7 +102,8 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 			// Get information from the material as to what to do			
 			ScatteredRayContainer		scattered;
 
-			pSPF->ScatterNM( ri.geometric, random, nm, scattered, ior_stack );
+			IndependentSampler samplerWrapper( random );
+		pSPF->ScatterNM( ri.geometric, samplerWrapper, nm, scattered, ior_stack );
 		
 			bool bDiffuseComponentAvailable = false;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {

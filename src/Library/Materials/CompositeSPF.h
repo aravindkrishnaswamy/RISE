@@ -48,7 +48,7 @@ namespace RISE
 			void	ProcessTopLayer(
 					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 					const RISEPel& importance,									///< [in] Importance from prevous pass
-					const RandomNumberGenerator& random,				///< Random number generator for the MC process
+					ISampler& sampler,									///< Sampler for the MC process
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
 					const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -57,7 +57,7 @@ namespace RISE
 			void	ProcessBottomLayer(
 					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 					const RISEPel& importance,									///< [in] Importance from prevous pass
-					const RandomNumberGenerator& random,				///< Random number generator for the MC process
+					ISampler& sampler,									///< Sampler for the MC process
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
 					const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -66,7 +66,7 @@ namespace RISE
 			void	ProcessTopLayerNM(
 					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 					const Scalar importance,									///< [in] Importance from prevous pass
-					const RandomNumberGenerator& random,				///< Random number generator for the MC process
+					ISampler& sampler,									///< Sampler for the MC process
 					const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
@@ -76,7 +76,7 @@ namespace RISE
 			void	ProcessBottomLayerNM(
 					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 					const Scalar importance,									///< [in] Importance from prevous pass
-					const RandomNumberGenerator& random,				///< Random number generator for the MC process
+					ISampler& sampler,									///< Sampler for the MC process
 					const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
@@ -100,7 +100,7 @@ namespace RISE
 			//! the reflected and transmitted rays along with attenuation factors.  
 			void	Scatter( 
 					const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-					const RandomNumberGenerator& random,				///< [in] Random number generator
+					ISampler& sampler,									///< [in] Sampler
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 					) const;
@@ -110,7 +110,7 @@ namespace RISE
 			//! account spectral affects.  
 			void	ScatterNM(
 				const RayIntersectionGeometric& ri,								///< [in] Geometric intersection details for point of intersection
-				const RandomNumberGenerator& random,					///< [in] Random number generator
+				ISampler& sampler,										///< [in] Sampler
 				const Scalar nm,												///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,								///< [out] The list of scattered rays from the surface
 				const IORStack* const ior_stack									///< [in/out] Index of refraction stack

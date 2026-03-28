@@ -16,6 +16,7 @@
 #include "DetectorSphere.h"
 #include "../Geometry/SphereGeometry.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/RTime.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
@@ -338,7 +339,8 @@ void DetectorSphere::PerformMeasurement(
 			// which detector it hits
 			ScatteredRayContainer scattered;
 
-			pSPF->Scatter( ri, random, scattered, 0 );
+			IndependentSampler samplerWrapper( random );
+			pSPF->Scatter( ri, samplerWrapper, scattered, 0 );
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 
 			if( pScat )

@@ -89,11 +89,11 @@ static Scalar GGX_G( const Scalar alpha, const Vector3& wi, const Vector3& wo, c
 static Vector3 GGX_SampleNormal(
 	const Vector3& n,							///< [in] Geometric normal
 	const Scalar alpha,							///< [in] GGX alpha parameter
-	const RandomNumberGenerator& random			///< [in] RNG
+	ISampler& sampler			///< [in] Sampler
 	)
 {
-	const Scalar xi1 = random.CanonicalRandom();
-	const Scalar xi2 = random.CanonicalRandom();
+	const Scalar xi1 = sampler.Get1D();
+	const Scalar xi2 = sampler.Get1D();
 
 	// Sample theta from GGX distribution: D(m) * cos(theta_m)
 	const Scalar a2 = alpha * alpha;
@@ -131,7 +131,7 @@ static Scalar ComputeGGXAcceptance( const RayIntersectionGeometric& ri, const Sc
 
 void SubSurfaceScatteringSPF::Scatter(
 	const RayIntersectionGeometric& ri,
-	const RandomNumberGenerator& random,
+	ISampler& sampler,
 	ScatteredRayContainer& scattered,
 	const IORStack* const ior_stack
 	) const
@@ -165,7 +165,7 @@ void SubSurfaceScatteringSPF::Scatter(
 		{
 			// Rough surface: GGX microfacet reflection (non-delta)
 			const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-			Vector3 m = GGX_SampleNormal( ri.onb.w(), alpha, random );
+			Vector3 m = GGX_SampleNormal( ri.onb.w(), alpha, sampler );
 			if( Vector3Ops::Dot( m, wi ) < 0 ) m = -m;
 
 			const Vector3 wo = Optics::CalculateReflectedRay( ri.ray.Dir(), (-m) );
@@ -278,7 +278,7 @@ void SubSurfaceScatteringSPF::Scatter(
 
 void SubSurfaceScatteringSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,
-	const RandomNumberGenerator& random,
+	ISampler& sampler,
 	const Scalar nm,
 	ScatteredRayContainer& scattered,
 	const IORStack* const ior_stack
@@ -309,7 +309,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		{
 			// Rough surface: GGX microfacet reflection (non-delta)
 			const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-			Vector3 m = GGX_SampleNormal( ri.onb.w(), alpha, random );
+			Vector3 m = GGX_SampleNormal( ri.onb.w(), alpha, sampler );
 			if( Vector3Ops::Dot( m, wi ) < 0 ) m = -m;
 
 			const Vector3 wo = Optics::CalculateReflectedRay( ri.ray.Dir(), (-m) );

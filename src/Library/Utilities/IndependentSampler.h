@@ -18,7 +18,6 @@
 #define INDEPENDENT_SAMPLER_
 
 #include "ISampler.h"
-#include "Reference.h"
 #include "RandomNumbers.h"
 
 namespace RISE
@@ -26,15 +25,14 @@ namespace RISE
 	namespace Implementation
 	{
 		class IndependentSampler :
-			public virtual ISampler,
-			public virtual Reference
+			public ISampler
 		{
 		protected:
 			const RandomNumberGenerator& random;
 
+		public:
 			virtual ~IndependentSampler(){};
 
-		public:
 			IndependentSampler( const RandomNumberGenerator& random_ ) :
 				random( random_ )
 			{

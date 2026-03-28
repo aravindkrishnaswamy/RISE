@@ -1481,7 +1481,7 @@ Scalar ManifoldSolver::EstimatePDF(
 	const Point3& shadingPoint,
 	const Point3& emitterPoint,
 	const std::vector<ManifoldVertex>& seedTemplate,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	if( !solution.valid )
@@ -1502,8 +1502,8 @@ Scalar ManifoldSolver::EstimatePDF(
 		for( unsigned int i = 0; i < testChain.size(); i++ )
 		{
 			// Random perturbation in tangent plane
-			const Scalar ru = rng.RandomScalar( -0.1, 0.1 );
-			const Scalar rv = rng.RandomScalar( -0.1, 0.1 );
+			const Scalar ru = sampler.Get1D() * 0.2 - 0.1;
+			const Scalar rv = sampler.Get1D() * 0.2 - 0.1;
 
 			testChain[i].position = Point3Ops::mkPoint3(
 				testChain[i].position,
@@ -1559,7 +1559,7 @@ ManifoldResult ManifoldSolver::Solve(
 	const Point3& emitterPoint,
 	const Vector3& emitterNormal,
 	std::vector<ManifoldVertex>& specularChain,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	ManifoldResult result;
@@ -1653,7 +1653,7 @@ ManifoldResult ManifoldSolver::Solve(
 		// PDF estimation
 		if( !config.biased )
 		{
-			result.pdf = EstimatePDF( result, shadingPoint, emitterPoint, seedTemplate, rng );
+			result.pdf = EstimatePDF( result, shadingPoint, emitterPoint, seedTemplate, sampler );
 		}
 		else
 		{
@@ -1683,7 +1683,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const Vector3& woOutgoing,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	SMSContribution result;
@@ -1701,7 +1701,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	LightSample lightSample;
-	if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) )
+	if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
 	// Build seed chain
@@ -1717,7 +1717,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	ManifoldResult mResult = Solve(
 		pos, normal,
 		lightSample.position, lightSample.normal,
-		seedChain, rng );
+		seedChain, sampler );
 
 	if( !mResult.valid )
 		return result;
@@ -1813,7 +1813,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const Vector3& woOutgoing,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const RandomNumberGenerator& rng,
+	ISampler& sampler,
 	const Scalar nm
 	) const
 {
@@ -1832,7 +1832,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	LightSample lightSample;
-	if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) )
+	if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
 	// Build seed chain (uses RGB IOR for approximate positions)
@@ -1868,7 +1868,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	ManifoldResult mResult = Solve(
 		pos, normal,
 		lightSample.position, lightSample.normal,
-		seedChain, rng );
+		seedChain, sampler );
 
 	if( !mResult.valid )
 		return result;

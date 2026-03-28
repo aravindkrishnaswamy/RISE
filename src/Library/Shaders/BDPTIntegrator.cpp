@@ -341,7 +341,7 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	const RayIntersectionGeometric& ri,
 	const IObject* pObject,
 	const IMaterial* pMaterial,
-	const RandomNumberGenerator& rng,
+	ISampler& sampler,
 	const Scalar nm
 	) const
 {
@@ -374,13 +374,13 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	//
 	// Step 1: Choose a color channel uniformly
 	//
-	const int channel = static_cast<int>( rng.CanonicalRandom() * 3.0 );
+	const int channel = static_cast<int>( sampler.Get1D() * 3.0 );
 	const int ch = (channel >= 3) ? 2 : channel;  // clamp
 
 	//
 	// Step 2: Choose a projection axis
 	//
-	const Scalar axisSample = rng.CanonicalRandom();
+	const Scalar axisSample = sampler.Get1D();
 	Vector3 probeAxis;
 	Vector3 perpU, perpV;
 
@@ -406,7 +406,7 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	//
 	// Step 3: Sample radius from profile CDF
 	//
-	const Scalar rSample = pProfile->SampleRadius( rng.CanonicalRandom(), ch, ri );
+	const Scalar rSample = pProfile->SampleRadius( sampler.Get1D(), ch, ri );
 	if( rSample <= 0 ) {
 		return result;
 	}
@@ -414,7 +414,7 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	//
 	// Step 4: Sample angle uniformly
 	//
-	const Scalar phi = TWO_PI * rng.CanonicalRandom();
+	const Scalar phi = TWO_PI * sampler.Get1D();
 
 	//
 	// Step 5: Compute probe origin offset in the perpendicular plane
@@ -485,7 +485,7 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 
 	// Select uniformly among all hits
 	const int selected = static_cast<int>(
-		rng.CanonicalRandom() * numHits );
+		sampler.Get1D() * numHits );
 	const int sel = (selected >= numHits) ? numHits - 1 : selected;
 
 	Point3 entryPoint = hits[sel].point;
@@ -571,8 +571,8 @@ BDPTIntegrator::BSSRDFSampleResult BDPTIntegrator::SampleBSSRDFEntryPoint(
 	OrthonormalBasis3D cosineONB;
 	cosineONB.CreateFromW( entryNormal );
 
-	const Scalar u1 = rng.CanonicalRandom();
-	const Scalar u2 = rng.CanonicalRandom();
+	const Scalar u1 = sampler.Get1D();
+	const Scalar u2 = sampler.Get1D();
 	const Scalar cosTheta = sqrt( u1 );
 	const Scalar sinTheta = sqrt( 1.0 - u1 );
 	const Scalar phiCosine = TWO_PI * u2;
@@ -659,15 +659,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
-	// Use a RandomNumberGenerator wrapper around the sampler
-	// For now, since LightSampler expects RandomNumberGenerator, we use
-	// the existing RNG interface.  The sampler's Get1D is used for bounces.
-	RandomNumberGenerator rng;
 	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
+	// Phase 0: light source sampling (position + direction)
+	sampler.StartStream( 0 );
+
 	LightSample ls;
-	if( !pLightSampler->SampleLight( scene, luminaries, rng, ls ) ) {
+	if( !pLightSampler->SampleLight( scene, luminaries, sampler, ls ) ) {
 		return 0;
 	}
 
@@ -733,6 +732,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 	for( unsigned int depth = 0; depth < maxLightDepth; depth++ )
 	{
+		// Align to fixed dimension range for this bounce so that
+		// cross-pixel Sobol stratification is preserved regardless
+		// of how many dimensions previous bounces consumed.
+		// Phases 1..15 = light bounces 0..14
+		sampler.StartStream( 1 + depth );
+
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
@@ -792,7 +797,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, rng, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->Scatter( ri.geometric, sampler, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -857,7 +862,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 				{
 					// Chose subsurface transmission (probability Ft)
 					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng );
+						ri.geometric, ri.pObject, ri.pMaterial, sampler );
 
 					if( bssrdf.valid )
 					{
@@ -1057,12 +1062,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	}
 
 	Scalar pdfFwdPrev = pdfCamDir;
-	RandomNumberGenerator rng;
 	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
+		// Align to fixed dimension range for this bounce.
+		// Phases 16..30 = eye bounces 0..14
+		sampler.StartStream( 16 + depth );
+
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
@@ -1120,7 +1128,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, rng, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->Scatter( ri.geometric, sampler, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -1175,7 +1183,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				if( Ft > NEARZERO && sampler.Get1D() < Ft )
 				{
 					BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, rng );
+						ri.geometric, ri.pObject, ri.pMaterial, sampler );
 
 					if( bssrdf.valid )
 					{
@@ -2468,12 +2476,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
-	RandomNumberGenerator rng;
 	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
+	// Phase 0: light source sampling
+	sampler.StartStream( 0 );
+
 	LightSample ls;
-	if( !pLightSampler->SampleLight( scene, luminaries, rng, ls ) ) {
+	if( !pLightSampler->SampleLight( scene, luminaries, sampler, ls ) ) {
 		return 0;
 	}
 
@@ -2551,6 +2561,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 	for( unsigned int depth = 0; depth < maxLightDepth; depth++ )
 	{
+		// Phases 1..15 = light bounces 0..14
+		sampler.StartStream( 1 + depth );
+
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
 
@@ -2601,7 +2614,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2654,7 +2667,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			if( Ft > NEARZERO && sampler.Get1D() < Ft )
 			{
 				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+					ri.geometric, ri.pObject, ri.pMaterial, sampler, nm );
 
 				if( bssrdf.valid )
 				{
@@ -2810,12 +2823,14 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	}
 
 	Scalar pdfFwdPrev = pdfCamDir;
-	RandomNumberGenerator rng;
 	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
+		// Phases 16..30 = eye bounces 0..14
+		sampler.StartStream( 16 + depth );
+
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
 
@@ -2866,7 +2881,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, rng, nm, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, useIORStack ? &iorStack : 0 );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2919,7 +2934,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			if( Ft > NEARZERO && sampler.Get1D() < Ft )
 			{
 				BSSRDFSampleResult bssrdf = SampleBSSRDFEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, rng, nm );
+					ri.geometric, ri.pObject, ri.pMaterial, sampler, nm );
 
 				if( bssrdf.valid )
 				{
@@ -3715,7 +3730,7 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrateg
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	std::vector<ConnectionResult> results;
@@ -3747,7 +3762,7 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrateg
 		ManifoldSolver::SMSContribution sms = pManifoldSolver->EvaluateAtShadingPoint(
 			eyeVertex.position, eyeVertex.normal, eyeVertex.onb,
 			eyeVertex.pMaterial, woAtEye,
-			scene, caster, rng );
+			scene, caster, sampler );
 
 		if( !sms.valid ) continue;
 
@@ -3772,7 +3787,7 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
-	const RandomNumberGenerator& rng,
+	ISampler& sampler,
 	const Scalar nm
 	) const
 {
@@ -3803,7 +3818,7 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 
 		// Sample a light
 		LightSample lightSample;
-		if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) ) continue;
+		if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) ) continue;
 
 		// Build seed chain using ManifoldSolver's BuildSeedChain
 		std::vector<ManifoldVertex> seedChain;
@@ -3817,7 +3832,7 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		ManifoldResult mResult = pManifoldSolver->Solve(
 			eyeVertex.position, eyeVertex.normal,
 			lightSample.position, lightSample.normal,
-			seedChain, rng );
+			seedChain, sampler );
 
 		if( !mResult.valid ) continue;
 

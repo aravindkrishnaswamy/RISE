@@ -17,18 +17,18 @@
 #ifndef ISAMPLER_
 #define ISAMPLER_
 
-#include "../Interfaces/IReference.h"
 #include "Math3D/Math3D.h"
 
 namespace RISE
 {
-	class ISampler : public virtual IReference
+	class ISampler
 	{
 	protected:
 		ISampler(){};
-		virtual ~ISampler(){};
 
 	public:
+		virtual ~ISampler(){};
+
 		//! Returns a single uniform random sample in [0,1)
 		virtual Scalar Get1D() = 0;
 

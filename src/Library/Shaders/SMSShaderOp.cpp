@@ -12,6 +12,7 @@
 
 #include "pch.h"
 #include "SMSShaderOp.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -63,6 +64,9 @@ void SMSShaderOp::PerformOperation(
 		-ri.geometric.ray.Dir().y,
 		-ri.geometric.ray.Dir().z );
 
+	IndependentSampler fallbackSampler( rc.random );
+	ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
 	ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 		ri.geometric.ptIntersection,
 		ri.geometric.vNormal,
@@ -71,7 +75,7 @@ void SMSShaderOp::PerformOperation(
 		woOutgoing,
 		*pScene,
 		caster,
-		rc.random );
+		smsSampler );
 
 	if( sms.valid )
 	{
@@ -110,6 +114,9 @@ Scalar SMSShaderOp::PerformOperationNM(
 		-ri.geometric.ray.Dir().y,
 		-ri.geometric.ray.Dir().z );
 
+	IndependentSampler fallbackSamplerNM( rc.random );
+	ISampler& smsSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+
 	ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 		ri.geometric.ptIntersection,
 		ri.geometric.vNormal,
@@ -118,7 +125,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 		woOutgoing,
 		*pScene,
 		caster,
-		rc.random );
+		smsSamplerNM );
 
 	if( sms.valid )
 	{

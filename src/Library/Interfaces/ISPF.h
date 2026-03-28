@@ -22,6 +22,7 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/IORStack.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/ISampler.h"
 #include "../Utilities/Ray.h"
 #include "IReference.h"
 #include "SpecularInfo.h"
@@ -127,9 +128,9 @@ namespace RISE
 
 		//! Given parameters describing the intersection of a ray with a surface, this will return
 		//! the reflected and transmitted rays along with attenuation factors.  
-		virtual void	Scatter( 
+		virtual void	Scatter(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-			const RandomNumberGenerator& random,				///< [in] Random number generator
+			ISampler& sampler,											///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 			) const = 0;
@@ -139,7 +140,7 @@ namespace RISE
 		//! account spectral affects.
 		virtual void	ScatterNM(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-			const RandomNumberGenerator& random,				///< [in] Random number generator
+			ISampler& sampler,											///< [in] Sampler
 			const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 			const IORStack* const ior_stack								///< [in/out] Index of refraction stack

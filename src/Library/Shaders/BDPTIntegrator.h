@@ -246,7 +246,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 
 			/// Spectral variant of EvaluateSMSStrategies.
@@ -255,7 +255,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const RandomNumberGenerator& rng,
+				ISampler& sampler,
 				const Scalar nm
 				) const;
 
@@ -346,7 +346,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,		///< [in] Exit point intersection
 				const IObject* pObject,					///< [in] Object to cast probe rays against
 				const IMaterial* pMaterial,				///< [in] Material with diffusion profile
-				const RandomNumberGenerator& rng,		///< [in] RNG
+				ISampler& sampler,						///< [in] Sampler for stochastic decisions
 				const Scalar nm = 0						///< [in] Wavelength for NM path (0 = RGB)
 				) const;
 		};

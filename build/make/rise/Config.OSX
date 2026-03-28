@@ -14,9 +14,9 @@
 CXX = c++ -arch arm64
 
 # options for the linker
-CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include
+CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include -flto
 
-CXXFLAGS = -O3 -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
+CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 
 # For debugging information
 # CXXFLAGS = -ggdb

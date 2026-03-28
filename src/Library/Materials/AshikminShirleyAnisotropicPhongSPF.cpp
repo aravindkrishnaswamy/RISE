@@ -150,7 +150,7 @@ static bool GenerateSpecularRay(
 
 void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-		const RandomNumberGenerator& random,				///< [in] Random number generator
+		ISampler& sampler,				///< [in] Sampler
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 		) const
@@ -173,7 +173,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		)
 	{
 		Scalar diffuseFactor_unused=0, specFactor=0;
-		if( GenerateSpecularRay( specular, diffuseFactor_unused, specFactor, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), NU[0], NV[0], ColorMath::MaxValue(rho) ) ) {
+		if( GenerateSpecularRay( specular, diffuseFactor_unused, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU[0], NV[0], ColorMath::MaxValue(rho) ) ) {
 			// specFactor = brdf_spec/pdf.  For correct IS: kray = BRDF*cos/pdf.
 			// specularFactor already includes Fresnel (which contains Rs),
 			// so no extra Rs multiplication.  Add cos_o for the missing cosine.
@@ -184,7 +184,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	}
 	else
 	{
-		const Point2 ptrand(random.CanonicalRandom(),random.CanonicalRandom());
+		const Point2 ptrand(sampler.Get1D(),sampler.Get1D());
 		for( int i=0; i<3; i++ ) {
 			Scalar specFactor=0;
 			Scalar df_unused=0;
@@ -202,7 +202,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	ScatteredRay	diffuse;
 	diffuse.type = ScatteredRay::eRayDiffuse;
 	diffuse.isDelta = false;
-	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) ) );
+	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(sampler.Get1D(),sampler.Get1D()) ) );
 
 	const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
 	diffuse.pdf = r_max( 0.0, cos_o_diff ) * INV_PI;
@@ -224,7 +224,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 
 void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -245,7 +245,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 
 	const Scalar rho = Rs.GetColorNM(ri,nm);
 
-	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), NU, NV, rho ) ) {
+	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU, NV, rho ) ) {
 		// specFactor already includes Fresnel (which contains Rs) — no extra rho.
 		// Add cos_o for correct IS weight.
 		const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
@@ -258,7 +258,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		ScatteredRay	diffuse;
 		diffuse.type = ScatteredRay::eRayDiffuse;
 		diffuse.isDelta = false;
-		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) ) );
+		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(sampler.Get1D(),sampler.Get1D()) ) );
 		const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
 		diffuse.pdf = r_max( 0.0, cos_o_diff ) * INV_PI;
 

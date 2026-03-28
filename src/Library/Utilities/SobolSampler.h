@@ -29,7 +29,6 @@
 #define SOBOL_SAMPLER_H
 
 #include "ISampler.h"
-#include "Reference.h"
 #include "../Sampling/SobolSequence.h"
 
 namespace RISE
@@ -37,21 +36,29 @@ namespace RISE
 	namespace Implementation
 	{
 		class SobolSampler :
-			public virtual ISampler,
-			public virtual Reference
+			public ISampler
 		{
 		protected:
 			uint32_t sampleIndex;		// Which sample in the sequence
 			uint32_t seed;				// Per-pixel base scramble seed
 			unsigned int dimension;		// Current dimension counter
 
-			// Dimensions are partitioned into streams so that
-			// light subpath, eye subpath, and connection logic
-			// each get their own independent dimension range.
-			// kStreamStride must be large enough to cover the
-			// maximum number of dimensions any single stream
-			// can consume (max path depth * dims per bounce).
-			static const unsigned int kStreamStride = 256;
+			// Dimensions are partitioned into fixed-size phases so
+			// that each bounce always starts at the same dimension
+			// offset regardless of how many dimensions previous
+			// bounces consumed (material-dependent).  This preserves
+			// cross-pixel Sobol stratification.
+			//
+			// Encoding: phase = streamBase + bounceIndex
+			//   Light source sampling: phase 0
+			//   Light bounces 0..14:   phases 1..15
+			//   Eye bounces 0..14:     phases 16..30
+			//   SMS:                   phases 31..46
+			//
+			// kStreamStride must be >= max dimensions consumed by
+			// any single phase (BioSpecSkinSPF uses ~20 + lobe
+			// selection + BSSRDF = ~25 max).
+			static const unsigned int kStreamStride = 32;
 
 		public:
 			virtual ~SobolSampler(){};

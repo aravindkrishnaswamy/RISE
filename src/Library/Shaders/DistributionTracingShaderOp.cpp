@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "DistributionTracingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -132,7 +133,11 @@ void DistributionTracingShaderOp::PerformOperation(
 				Scalar t = 0;
 
 				ScatteredRayContainer scattered;
-				pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );
+				{
+					IndependentSampler fallbackSampler( rc.random );
+					ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+					pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
+				}
 
 				if( bBranch ) {
 					// Branch
@@ -225,7 +230,11 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 			rs2.considerEmission = (pScene->GetCausticSpectralMap())?false:true;
 
 			ScatteredRayContainer scattered;
-			pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );
+			{
+				IndependentSampler fallbackSampler( rc.random );
+				ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+				pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
+			}
 
 			if( bBranch ) {
 				// Branch

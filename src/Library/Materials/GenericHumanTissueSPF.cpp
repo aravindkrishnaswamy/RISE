@@ -111,7 +111,7 @@ Scalar GenericHumanTissueSPF::ComputeTissueAbsorptionCoefficient(
 
 void GenericHumanTissueSPF::Scatter( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
 	) const
@@ -131,8 +131,8 @@ void GenericHumanTissueSPF::Scatter(
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 
 		// Check if it gets absorbed
-		const Scalar absorption = ComputeTissueAbsorptionCoefficient( random.CanonicalRandom()*400.0+380.0 );
-		const Scalar x = random.CanonicalRandom();
+		const Scalar absorption = ComputeTissueAbsorptionCoefficient( sampler.Get1D()*400.0+380.0 );
+		const Scalar x = sampler.Get1D();
 		const Scalar pa = (1.0-exp(-(absorption*distance)));
 
 		if( x < pa ) {
@@ -147,12 +147,12 @@ void GenericHumanTissueSPF::Scatter(
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
 				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
-					acos( sqrt(random.CanonicalRandom()) ),
-					random.CanonicalRandom() * TWO_PI 
+					acos( sqrt(sampler.Get1D()) ),
+					sampler.Get1D() * TWO_PI 
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColor(ri)[0] ));
+				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColor(ri)[0] ));
 			}
 		}
 		
@@ -162,12 +162,12 @@ void GenericHumanTissueSPF::Scatter(
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way
 			trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
-				acos( sqrt(random.CanonicalRandom()) ),
-				random.CanonicalRandom() * TWO_PI
+				acos( sqrt(sampler.Get1D()) ),
+				sampler.Get1D() * TWO_PI
 			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColor(ri)[0] ));
+			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColor(ri)[0] ));
 		}
 	}
 
@@ -176,7 +176,7 @@ void GenericHumanTissueSPF::Scatter(
 
 void GenericHumanTissueSPF::ScatterNM( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
@@ -197,7 +197,7 @@ void GenericHumanTissueSPF::ScatterNM(
 
 		// Check if it gets absorbed
 		const Scalar absorption = ComputeTissueAbsorptionCoefficient( nm );
-		const Scalar x = random.CanonicalRandom();
+		const Scalar x = sampler.Get1D();
 		const Scalar pa = (1.0-exp(-(absorption*distance)));
 		
 		if( x < pa ) {
@@ -212,12 +212,12 @@ void GenericHumanTissueSPF::ScatterNM(
 			if( diffuse ) {
 				// Just diffusely scatter the ray and send it on its way
 				trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(), 
-					acos( sqrt(random.CanonicalRandom()) ),
-					random.CanonicalRandom() * TWO_PI 
+					acos( sqrt(sampler.Get1D()) ),
+					sampler.Get1D() * TWO_PI 
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColor(ri)[0] ));
+				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColor(ri)[0] ));
 			}
 		}
 		
@@ -227,12 +227,12 @@ void GenericHumanTissueSPF::ScatterNM(
 		if( diffuse ) {
 			// Just diffusely scatter the ray and send it on its way
 			trans.ray.SetDir(GeometricUtilities::Perturb( ri.ray.Dir(),
-				acos( sqrt(random.CanonicalRandom()) ),
-				random.CanonicalRandom() * TWO_PI
+				acos( sqrt(sampler.Get1D()) ),
+				sampler.Get1D() * TWO_PI
 			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( random, ri.ray.Dir(), g.GetColorNM(ri,nm) ));
+			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColorNM(ri,nm) ));
 		}
 	}
 

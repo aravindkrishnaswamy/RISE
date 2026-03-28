@@ -76,18 +76,16 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 		return 0;
 	}
 
-	SobolSampler* pSampler = new SobolSampler( sampleIndex, pixelSeed );
+	SobolSampler sampler( sampleIndex, pixelSeed );
 
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
-	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, *pSampler, lightVerts, nm );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, *pSampler, eyeVerts, nm );
+	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, nm );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, nm );
 
 	std::vector<BDPTIntegrator::ConnectionResultNM> results =
 		pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, nm );
-
-	safe_release( pSampler );
 
 	Scalar sampleValue = 0;
 
@@ -131,9 +129,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 
 	// SMS contributions for specular caustic chains (spectral)
 	if( pIntegrator ) {
+		sampler.StartStream( 31 );
 		std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
 			pIntegrator->EvaluateSMSStrategiesNM(
-				eyeVerts, pScene, *pCaster, camera, rc.random, nm );
+				eyeVerts, pScene, *pCaster, camera, sampler, nm );
 
 		for( unsigned int r=0; r<smsResults.size(); r++ ) {
 			const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
