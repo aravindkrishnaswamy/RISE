@@ -4173,7 +4173,8 @@ namespace RISE
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter				///< [in] Pixel Filter for samples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								)
 	{
 		if( !ppi ) {
@@ -4181,6 +4182,14 @@ namespace RISE
 		}
 
 		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster );
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4200,7 +4209,8 @@ namespace RISE
 								const unsigned int specSamples,		///< [in] Number of spectral samples / pixel
 								const Scalar lambda_begin,			///< [in] nm to begin sampling at
 								const Scalar lambda_end,			///< [in] nm to end sampling at
-								const unsigned int num_wavelengths	///< [in] Number of wavelengths to sample
+								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								)
 	{
 		if( !ppi ) {
@@ -4208,6 +4218,14 @@ namespace RISE
 		}
 
 		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples );
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4229,7 +4247,8 @@ namespace RISE
 								unsigned int maxS,					///< [in] Maximum number of samples to take
 								Scalar var,							///< [in] Variance threshold
 								unsigned int numsteps,				///< [in] Number of steps to take from base sampling to max samples
-								bool bOutputSamples					///< [in] Should the renderer show how many samples rather than an image
+								bool bOutputSamples,				///< [in] Should the renderer show how many samples rather than an image
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								)
 	{
 		if( !ppi ) {
@@ -4237,6 +4256,14 @@ namespace RISE
 		}
 
 		PixelBasedPelRasterizerAdaptiveSampling* pRasterizer = new PixelBasedPelRasterizerAdaptiveSampling( maxS, var, numsteps, caster, bOutputSamples );
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4257,7 +4284,8 @@ namespace RISE
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const RISEPel& contrast_threshold,	///< [in] Contrast threhold for each color component
-								const bool bShowSamples				///< [in] Show the regions in which more samples were taken
+								const bool bShowSamples,			///< [in] Show the regions in which more samples were taken
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								)
 	{
 		if( !ppi ) {
@@ -4265,6 +4293,14 @@ namespace RISE
 		}
 
 		PixelBasedPelRasterizerContrastAA* pRasterizer = new PixelBasedPelRasterizerContrastAA( caster, contrast_threshold, bShowSamples );
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4298,7 +4334,8 @@ namespace RISE
 								const double smsThreshold,
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased,
-								const unsigned int smsBernoulliTrials
+								const unsigned int smsBernoulliTrials,
+								const bool oidnDenoise
 								)
 	{
 		if( !ppi ) {
@@ -4320,6 +4357,14 @@ namespace RISE
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
 		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Pel rasterizer" );
@@ -4344,7 +4389,8 @@ namespace RISE
 								const double smsThreshold,
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased,
-								const unsigned int smsBernoulliTrials
+								const unsigned int smsBernoulliTrials,
+								const bool oidnDenoise
 								)
 	{
 		if( !ppi ) {
@@ -4369,6 +4415,14 @@ namespace RISE
 			pRasterizer->SubSampleRays( pSamples, pFilter );
 		}
 
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
 		return true;
@@ -4382,7 +4436,8 @@ namespace RISE
 								const unsigned int nBootstrap,
 								const unsigned int nChains,
 								const unsigned int nMutationsPerPixel,
-								const Scalar largeStepProb
+								const Scalar largeStepProb,
+								const bool oidnDenoise
 								)
 	{
 		if( !ppi ) {
@@ -4391,6 +4446,14 @@ namespace RISE
 
 		MLTRasterizer* pRasterizer = new MLTRasterizer( caster, maxEyeDepth, maxLightDepth,
 			nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT rasterizer" );

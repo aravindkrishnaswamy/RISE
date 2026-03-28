@@ -23,6 +23,11 @@
 #include "BlockRasterizeSequence.h"
 #include "HilbertRasterizeSequence.h"
 
+#ifdef RISE_ENABLE_OIDN
+#include "AOVBuffers.h"
+#include "OIDNDenoiser.h"
+#endif
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -395,6 +400,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 
 	RISE_PROFILE_REPORT(GlobalLog());
+
+#ifdef RISE_ENABLE_OIDN
+	if( bDenoisingEnabled ) {
+		AOVBuffers aovBuffers( width, height );
+		OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+		OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
+	}
+#endif
 
 	if( blocks ) {
 		safe_release( blocks );

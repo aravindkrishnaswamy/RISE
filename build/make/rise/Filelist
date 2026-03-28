@@ -228,7 +228,9 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\
-	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp
+	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
+	$(PATHLIBRARY)Rendering/AOVBuffers.cpp									\
+	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\

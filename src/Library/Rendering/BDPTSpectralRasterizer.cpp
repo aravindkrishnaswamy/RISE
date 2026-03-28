@@ -23,9 +23,12 @@
 
 #include "pch.h"
 #include "BDPTSpectralRasterizer.h"
+#include "AOVBuffers.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Sampling/SobolSequence.h"
 #include "../Utilities/Color/ColorUtils.h"
+#include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -68,7 +71,8 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	const ICamera& camera,
 	const Scalar nm,
 	uint32_t sampleIndex,
-	uint32_t pixelSeed
+	uint32_t pixelSeed,
+	PixelAOV* pAOV
 	) const
 {
 	Ray cameraRay;
@@ -83,6 +87,27 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 
 	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, nm );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, nm );
+
+	// Extract first-hit AOV data for the denoiser (only on first wavelength)
+	if( pAOV ) {
+		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+				pAOV->normal = v.normal;
+				pAOV->albedo = RISEPel( 0, 0, 0 );
+				if( v.pMaterial->GetBSDF() ) {
+					Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
+					RayIntersectionGeometric rig( aovRay, nullRasterizerState );
+					rig.ptIntersection = v.position;
+					rig.vNormal = v.normal;
+					rig.onb = v.onb;
+					pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+				}
+				pAOV->valid = true;
+				break;
+			}
+		}
+	}
 
 	std::vector<BDPTIntegrator::ConnectionResultNM> results =
 		pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, nm );
@@ -163,7 +188,8 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 	const IScene& pScene,
 	const ICamera& camera,
 	uint32_t pixelSampleIndex,
-	uint32_t pixelSeed
+	uint32_t pixelSeed,
+	PixelAOV* pAOV
 	) const
 {
 	XYZPel spectralSum( 0, 0, 0 );
@@ -177,7 +203,10 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 		// Each (pixel sample, spectral sample) pair gets a unique Sobol index
 		const uint32_t sampleIndex = pixelSampleIndex * nSpectralSamples + ss;
-		const Scalar nmvalue = IntegratePixelNM( rc, ptOnScreen, pScene, camera, nm, sampleIndex, pixelSeed );
+
+		// Extract AOV only on the first wavelength sample
+		const Scalar nmvalue = IntegratePixelNM( rc, ptOnScreen, pScene, camera, nm,
+			sampleIndex, pixelSeed, (ss == 0) ? pAOV : 0 );
 
 		if( nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
@@ -252,8 +281,25 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 		}
 
-		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera, pixelSampleIndex, pixelSeed ) * weight;
+#ifdef RISE_ENABLE_OIDN
+		PixelAOV aov;
+		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
+			pixelSampleIndex, pixelSeed, pAOVBuffers ? &aov : 0 ) * weight;
+		if( pAOVBuffers && aov.valid ) {
+			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+			pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+		}
+#else
+		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
+			pixelSampleIndex, pixelSeed, 0 ) * weight;
+#endif
 	}
+
+#ifdef RISE_ENABLE_OIDN
+	if( pAOVBuffers && weights > 0 ) {
+		pAOVBuffers->Normalize( x, y, 1.0 / weights );
+	}
+#endif
 
 	if( weights > 0 ) {
 		colAccrued = colAccrued * (1.0 / weights);

@@ -14,8 +14,11 @@
 
 #include "pch.h"
 #include "BDPTPelRasterizer.h"
+#include "AOVBuffers.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Sampling/SobolSequence.h"
+#include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IMaterial.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -54,7 +57,8 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	const IScene& pScene,
 	const ICamera& camera,
 	uint32_t sampleIndex,
-	uint32_t pixelSeed
+	uint32_t pixelSeed,
+	PixelAOV* pAOV
 	) const
 {
 	Ray cameraRay;
@@ -69,6 +73,29 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );
+
+	// Extract first-hit AOV data for the denoiser
+	if( pAOV ) {
+		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+				pAOV->normal = v.normal;
+				pAOV->albedo = RISEPel( 0, 0, 0 );
+				if( v.pMaterial->GetBSDF() ) {
+					// Construct a synthetic intersection for BSDF evaluation
+					// at normal incidence to approximate material albedo.
+					Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
+					RayIntersectionGeometric rig( aovRay, nullRasterizerState );
+					rig.ptIntersection = v.position;
+					rig.vNormal = v.normal;
+					rig.onb = v.onb;
+					pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+				}
+				pAOV->valid = true;
+				break;
+			}
+		}
+	}
 
 	std::vector<BDPTIntegrator::ConnectionResult> results =
 		pIntegrator->EvaluateAllStrategies( lightVerts, eyeVerts, pScene, *pCaster, camera );
@@ -195,9 +222,26 @@ void BDPTPelRasterizer::IntegratePixel(
 			pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 		}
 
-		colAccrued = colAccrued + IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera, sampleIndex, pixelSeed ) * weight;
+#ifdef RISE_ENABLE_OIDN
+		PixelAOV aov;
+		colAccrued = colAccrued + IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
+			sampleIndex, pixelSeed, pAOVBuffers ? &aov : 0 ) * weight;
+		if( pAOVBuffers && aov.valid ) {
+			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+			pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+		}
+#else
+		colAccrued = colAccrued + IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
+			sampleIndex, pixelSeed, 0 ) * weight;
+#endif
 		alphas += weight;
 	}
+
+#ifdef RISE_ENABLE_OIDN
+	if( pAOVBuffers && alphas > 0 ) {
+		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
+	}
+#endif
 
 	if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);

@@ -51,13 +51,15 @@ namespace RISE
 			/// RGB integration for a single pixel sample.
 			/// Returns the non-splat contribution; splats are written to pSplatFilm.
 			/// sampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
+			/// When pAOV is non-null, extracts first-hit albedo and normal.
 			RISEPel IntegratePixelRGB(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
 				const ICamera& camera,
 				uint32_t sampleIndex,
-				uint32_t pixelSeed
+				uint32_t pixelSeed,
+				PixelAOV* pAOV
 				) const;
 
 		public:

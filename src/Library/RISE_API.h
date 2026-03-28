@@ -1979,7 +1979,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter				///< [in] Pixel Filter for samples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -1991,7 +1992,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int specSamples,		///< [in] Number of spectral samples / pixel
 								const Scalar lambda_begin,			///< [in] nm to begin sampling at
 								const Scalar lambda_end,			///< [in] nm to end sampling at
-								const unsigned int num_wavelengths	///< [in] Number of wavelengths to sample
+								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//! Creates an adaptive sampling pixel based rasterizer
@@ -2004,7 +2006,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								unsigned int maxS,					///< [in] Maximum number of samples to take
 								Scalar var,							///< [in] Variance threshold
 								unsigned int numsteps,				///< [in] Number of steps to take from base sampling to max samples
-								bool bOutputSamples					///< [in] Should the renderer show how many samples rather than an image
+								bool bOutputSamples,				///< [in] Should the renderer show how many samples rather than an image
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//! Creates a pixel based pel rasterizer that does adaptive sampling based on
@@ -2016,7 +2019,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const RISEPel& contrast_threshold,	///< [in] Contrast threhold for each color component
-								const bool bShowSamples				///< [in] Show the regions in which more samples were taken
+								const bool bShowSamples,			///< [in] Show the regions in which more samples were taken
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//! Creates a Pel (RGB) BDPT rasterizer
@@ -2033,7 +2037,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const double smsThreshold,			///< [in] SMS convergence threshold
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2054,7 +2059,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const double smsThreshold,			///< [in] SMS convergence threshold
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
@@ -2067,7 +2073,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nBootstrap,				///< [in] Number of bootstrap samples
 								const unsigned int nChains,					///< [in] Number of Markov chains
 								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
-								const Scalar largeStepProb					///< [in] Large step probability
+								const Scalar largeStepProb,					///< [in] Large step probability
+								const bool oidnDenoise						///< [in] Enable OIDN denoising post-process
 								);
 
 	//////////////////////////////////////////////////////////

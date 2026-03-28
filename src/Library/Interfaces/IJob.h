@@ -1234,7 +1234,8 @@ namespace RISE
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1269,7 +1270,8 @@ namespace RISE
 			const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
 			const double rgb_spd_r[],								///< [in] Array that contains the RGB SPD amplitudes for red
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
-			const double rgb_spd_b[]								///< [in] Array that contains the RGB SPD amplitudes for blue
+			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 		//! Sets the rasterizer type to be adaptive pixel based PEL
@@ -1298,7 +1300,8 @@ namespace RISE
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 		//! Sets the rasterizer type to be contrast AA pixel pel
@@ -1325,7 +1328,8 @@ namespace RISE
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const double contrast_threshold[3],						///< [in] Contrast threshold for each color component
-			const bool show_samples									///< [in] Should the number of samples be taken be shown?
+			const bool show_samples,								///< [in] Should the number of samples be taken be shown?
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 
@@ -1359,7 +1363,8 @@ namespace RISE
 			const double smsThreshold,								///< [in] SMS convergence threshold
 			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
 			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
+			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 		//! Sets the rasterizer type to be spectral BDPT
@@ -1396,7 +1401,8 @@ namespace RISE
 			const double smsThreshold,								///< [in] SMS convergence threshold
 			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
 			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
+			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer
@@ -1413,7 +1419,8 @@ namespace RISE
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
 			) = 0;
 
 		//

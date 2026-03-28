@@ -30,8 +30,21 @@
 
 namespace RISE
 {
+	/// First-hit AOV data extracted from an eye subpath sample.
+	/// Used to populate the denoiser's auxiliary buffers.
+	struct PixelAOV
+	{
+		RISEPel		albedo;
+		Vector3		normal;
+		bool		valid;
+
+		PixelAOV() : valid( false ) {}
+	};
+
 	namespace Implementation
 	{
+		class AOVBuffers;
+
 		class BDPTRasterizerBase : public virtual PixelBasedRasterizerHelper
 		{
 		protected:
@@ -40,6 +53,10 @@ namespace RISE
 			mutable SplatFilm*		pSplatFilm;
 			mutable IRasterImage*	pScratchImage;		///< Scratch buffer for progressive output with splats
 			mutable Scalar			mSplatTotalSamples;	///< Cached for progressive resolve
+
+#ifdef RISE_ENABLE_OIDN
+			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
+#endif
 
 			virtual ~BDPTRasterizerBase();
 

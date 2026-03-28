@@ -4943,6 +4943,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
+					bool oidnDenoise = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -4999,6 +5000,8 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5010,7 +5013,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight );
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise );
 				}
 			};
 
@@ -5045,6 +5048,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
+					bool oidnDenoise = false;
 					bool integrateRGB = false;
 					std::vector<double> spd_wavelengths;
 					std::vector<double> spd_r;
@@ -5198,6 +5202,8 @@ namespace RISE
 								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
 								return false;
 							}
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5209,7 +5215,8 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0
+						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
+						oidnDenoise
 						);
 				}
 			};
@@ -5245,6 +5252,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
+					bool oidnDenoise = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5313,6 +5321,8 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5323,7 +5333,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise
 						);
 				}
 			};
@@ -5357,6 +5367,7 @@ namespace RISE
 					bool onlyonelight = false;
 					double contrast_threshold[3] = {0.01, 0.01, 0.01};
 					bool show_samples = false;
+					bool oidnDenoise = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5417,6 +5428,8 @@ namespace RISE
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &contrast_threshold[0], &contrast_threshold[1], &contrast_threshold[2] );
 						} else if( pname == "show_samples" ) {
 							show_samples = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5428,7 +5441,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, contrast_threshold, show_samples );
+						showLuminaires, useiorstack, onlyonelight, contrast_threshold, show_samples, oidnDenoise );
 				}
 			};
 
@@ -5465,6 +5478,7 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
+					bool oidnDenoise = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5535,6 +5549,8 @@ namespace RISE
 							smsBiased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
 							smsBernoulliTrials = pvalue.toUInt();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5548,7 +5564,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise );
 				}
 			};
 
@@ -5589,6 +5605,7 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
+					bool oidnDenoise = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5667,6 +5684,8 @@ namespace RISE
 							smsBiased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
 							smsBernoulliTrials = pvalue.toUInt();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5681,7 +5700,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise );
 				}
 			};
 
@@ -5701,6 +5720,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
+					bool oidnDenoise = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5734,6 +5754,8 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5742,7 +5764,7 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxRecur, minImportance, maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight );
+						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight, oidnDenoise );
 				}
 			};
 

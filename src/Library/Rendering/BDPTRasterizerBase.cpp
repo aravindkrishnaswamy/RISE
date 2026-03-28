@@ -32,6 +32,8 @@
 #include "BlockRasterizeSequence.h"
 #include "RasterizeDispatchers.h"
 #include "../Utilities/Profiling.h"
+#include "AOVBuffers.h"
+#include "OIDNDenoiser.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -48,6 +50,9 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   pSplatFilm( 0 ),
   pScratchImage( 0 ),
   mSplatTotalSamples( 1.0 )
+#ifdef RISE_ENABLE_OIDN
+  ,pAOVBuffers( 0 )
+#endif
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
 	pIntegrator->addref();
@@ -66,6 +71,10 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 	safe_release( pManifoldSolver );
 	safe_release( pSplatFilm );
 	safe_release( pScratchImage );
+#ifdef RISE_ENABLE_OIDN
+	delete pAOVBuffers;
+	pAOVBuffers = 0;
+#endif
 }
 
 // Thread procedure for BDPT block rendering - mirrors RasterizeBlock_ThreadProc
@@ -100,6 +109,15 @@ void BDPTRasterizerBase::RasterizeScene(
 	safe_release( pSplatFilm );
 	pSplatFilm = new SplatFilm( width, height );
 	pSplatFilm->addref();
+
+#ifdef RISE_ENABLE_OIDN
+	// Allocate AOV buffers for denoiser auxiliary input
+	delete pAOVBuffers;
+	pAOVBuffers = 0;
+	if( bDenoisingEnabled ) {
+		pAOVBuffers = new AOVBuffers( width, height );
+	}
+#endif
 
 	// Compute total sample count for splat film resolve/unresolve.
 	// Must be set before any blocks render so the progressive hooks work.
@@ -195,6 +213,13 @@ void BDPTRasterizerBase::RasterizeScene(
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
+#ifdef RISE_ENABLE_OIDN
+	// Run OIDN denoiser as a post-process on the fully-resolved image
+	if( pAOVBuffers && bDenoisingEnabled ) {
+		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
+	}
+#endif
+
 	if( blocks ) {
 		safe_release( blocks );
 	}
@@ -207,6 +232,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	pSplatFilm = 0;
 	safe_release( pScratchImage );
 	pScratchImage = 0;
+#ifdef RISE_ENABLE_OIDN
+	delete pAOVBuffers;
+	pAOVBuffers = 0;
+#endif
 }
 
 IRasterImage& BDPTRasterizerBase::GetIntermediateOutputImage( IRasterImage& primary ) const

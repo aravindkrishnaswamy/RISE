@@ -33,7 +33,11 @@ CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-
 # Turn this on to enable mailboxing (avoids redundant triangle tests in BSP)
 DEF_MAILBOXING = -DRISE_ENABLE_MAILBOXING
 
-DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING)
+# Turn this on to enable Intel Open Image Denoise post-processing
+DEF_OIDN = -DRISE_ENABLE_OIDN
+
+DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN)
 
 # libraries to link with
-LDLIBS = -L/opt/homebrew/lib -lpng -lz
+LDLIBS_OIDN = -lOpenImageDenoise
+LDLIBS = -L/opt/homebrew/lib -lpng -lz $(LDLIBS_OIDN)

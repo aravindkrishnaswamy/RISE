@@ -61,18 +61,21 @@ namespace RISE
 			/// Samples nSpectralSamples wavelengths and returns accumulated XYZ.
 			/// Splats are XYZ-converted and written to pSplatFilm.
 			/// pixelSampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
+			/// When pAOV is non-null, extracts first-hit AOV from the first wavelength.
 			XYZPel IntegratePixelSpectral(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
 				const ICamera& camera,
 				uint32_t pixelSampleIndex,
-				uint32_t pixelSeed
+				uint32_t pixelSeed,
+				PixelAOV* pAOV
 				) const;
 
 			/// Evaluates BDPT at a specific wavelength for a single camera ray.
 			/// Returns the scalar radiance estimate.
 			/// sampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
+			/// When pAOV is non-null, extracts first-hit albedo and normal.
 			Scalar IntegratePixelNM(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
@@ -80,7 +83,8 @@ namespace RISE
 				const ICamera& camera,
 				const Scalar nm,
 				uint32_t sampleIndex,
-				uint32_t pixelSeed
+				uint32_t pixelSeed,
+				PixelAOV* pAOV
 				) const;
 
 		public:

@@ -3828,7 +3828,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-	const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -3870,7 +3871,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter );
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -3915,7 +3916,8 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
 	const double rgb_spd_r[],								///< [in] Array that contains the RGB SPD amplitudes for red
 	const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
-	const double rgb_spd_b[]								///< [in] Array that contains the RGB SPD amplitudes for blue
+	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
+	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -3986,7 +3988,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths );
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise );
 	}
 
 	safe_release( pPixelSampler );
@@ -4026,7 +4028,8 @@ bool Job::SetAdaptivePixelBasedPelRasterizer(
 	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-	const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4074,7 +4077,7 @@ bool Job::SetAdaptivePixelBasedPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateAdaptiveSamplingPixelBasedPelRasterizer(
-		&pRaster, pCaster, pPixelSampler, pPixelFilter, numMaxPixelSamples, threshold, numSteps, bOutputSamples );
+		&pRaster, pCaster, pPixelSampler, pPixelFilter, numMaxPixelSamples, threshold, numSteps, bOutputSamples, oidnDenoise );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4111,7 +4114,8 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const double contrast_threshold[3],						///< [in] Contrast threshold for each color component
-	const bool show_samples									///< [in] Should the number of samples be taken be shown?
+	const bool show_samples,								///< [in] Should the number of samples be taken be shown?
+	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
 	)
 {
 	GlobalLog()->PrintEasyWarning( "Job::SetContrastAAPixelBasedPelRasterizer:: This rasterizer is EXPERIMENTAL and not meant for actual use.  In fact it really doesn't work well at all.  You really should use it" );
@@ -4155,7 +4159,7 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizerContrastAA( &pRaster, pCaster, pPixelSampler, pPixelFilter, RISEPel(contrast_threshold), show_samples );
+	RISE_API_CreatePixelBasedPelRasterizerContrastAA( &pRaster, pCaster, pPixelSampler, pPixelFilter, RISEPel(contrast_threshold), show_samples, oidnDenoise );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4198,7 +4202,8 @@ bool Job::SetBDPTPelRasterizer(
 	const double smsThreshold,
 	const unsigned int smsMaxChainDepth,
 	const bool smsBiased,
-	const unsigned int smsBernoulliTrials
+	const unsigned int smsBernoulliTrials,
+	const bool oidnDenoise
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4241,7 +4246,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4287,7 +4292,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	const double smsThreshold,
 	const unsigned int smsMaxChainDepth,
 	const bool smsBiased,
-	const unsigned int smsBernoulliTrials
+	const unsigned int smsBernoulliTrials,
+	const bool oidnDenoise
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4331,7 +4337,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4356,7 +4362,8 @@ bool Job::SetMLTRasterizer(
 	const char* shader,
 	const bool bShowLuminaires,
 	const bool bUseIORStack,
-	const bool bChooseOnlyOneLight
+	const bool bChooseOnlyOneLight,
+	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
 	)
 {
 	IShader* pShader = pShaderManager->GetItem( shader );
@@ -4370,7 +4377,7 @@ bool Job::SetMLTRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
-		nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise );
 
 	safe_release( pCaster );
 	safe_release( pRasterizer );

@@ -1367,6 +1367,12 @@
 		F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
 		F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
 		F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */; };
+		F2C7C8ED2F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
+		F2C7C8EE2F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
+		F2C7C8EF2F7881E80030CB78 /* OIDNDenoiser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */; };
+		F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */; };
+		F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
+		F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2081,6 +2087,10 @@
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
 		F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SobolSampling2D.h; sourceTree = "<group>"; };
 		F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolSampling2D.cpp; sourceTree = "<group>"; };
+		F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AOVBuffers.h; sourceTree = "<group>"; };
+		F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AOVBuffers.cpp; sourceTree = "<group>"; };
+		F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OIDNDenoiser.h; sourceTree = "<group>"; };
+		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2774,6 +2784,10 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */,
+				F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */,
+				F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */,
+				F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */,
 				F2C5D5E42F716C5000546C97 /* BDPTPelRasterizer.h */,
 				F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */,
 				F2C5D5DA2F716BAA00546C97 /* BDPTRasterizerBase.h */,
@@ -3497,6 +3511,8 @@
 				F27F0CA7069C42910069C9E5 /* VolumeAccessor_TRI.h in Headers */,
 				F27F0CA8069C42910069C9E5 /* VolumeAccessorHelper.h in Headers */,
 				F27F0CA9069C42910069C9E5 /* VolumeOp_AlphaScaledComposite.h in Headers */,
+				F2C7C8EF2F7881E80030CB78 /* OIDNDenoiser.h in Headers */,
+				F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */,
 				F27F0CAA069C42910069C9E5 /* VolumeOp_Average.h in Headers */,
 				F27F0CAB069C42910069C9E5 /* VolumeOp_Composite.h in Headers */,
 				F27F0CAC069C42910069C9E5 /* VolumeOp_GradISO.h in Headers */,
@@ -3675,6 +3691,8 @@
 				F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */,
 				F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */,
 				F27F0AAA069C42910069C9E5 /* TorusGeometry.cpp in Sources */,
+				F2C7C8ED2F7881E80030CB78 /* AOVBuffers.cpp in Sources */,
+				F2C7C8EE2F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */,
 				F27F0AAC069C42910069C9E5 /* TriangleMeshGeometry.cpp in Sources */,
 				F27F0AAE069C42910069C9E5 /* TriangleMeshGeometryIndexed.cpp in Sources */,
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
@@ -4305,6 +4323,8 @@
 				F24B73772F52A632008304C4 /* RasterImage.h in Sources */,
 				F24B73782F52A632008304C4 /* ReadOnlyRasterImage.h in Sources */,
 				F24B73792F52A632008304C4 /* RGBEAWriter.cpp in Sources */,
+				F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */,
+				F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */,
 				F24B737A2F52A632008304C4 /* RGBEAWriter.h in Sources */,
 				F24B737B2F52A632008304C4 /* TGAReader.cpp in Sources */,
 				F24B737C2F52A632008304C4 /* TGAReader.h in Sources */,
@@ -4585,6 +4605,7 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4628,6 +4649,7 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4670,6 +4692,7 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4887,6 +4910,7 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -4897,6 +4921,7 @@
 					"-lImath",
 					"-lIex",
 					"-lIlmThread",
+					"-lOpenImageDenoise",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -4996,6 +5021,7 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -5006,6 +5032,7 @@
 					"-lImath",
 					"-lIex",
 					"-lIlmThread",
+					"-lOpenImageDenoise",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -5105,6 +5132,7 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -5115,6 +5143,7 @@
 					"-lImath",
 					"-lIex",
 					"-lIlmThread",
+					"-lOpenImageDenoise",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";

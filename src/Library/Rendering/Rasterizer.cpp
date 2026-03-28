@@ -21,6 +21,9 @@ using namespace RISE::Implementation;
 
 Rasterizer::Rasterizer() :
   pProgressFunc( 0 )
+#ifdef RISE_ENABLE_OIDN
+  ,bDenoisingEnabled( false )
+#endif
 {
 }
 
