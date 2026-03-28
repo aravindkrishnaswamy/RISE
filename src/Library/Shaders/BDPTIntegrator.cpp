@@ -1358,8 +1358,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		// The eye path naturally arrived at an emitter
-		// Direction from the surface is the reverse of how we arrived
-		// We need the direction *from* the emitter surface (outgoing toward camera)
+		// The outgoing emission direction is from the emitter toward the
+		// predecessor eye vertex (the reverse of the eye ray's travel).
 		Vector3 woFromEmitter;
 		if( t >= 2 ) {
 			woFromEmitter = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
@@ -1421,8 +1421,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			if( eyeEnd.pMaterial ) {
 				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
 				if( pEm ) {
-					// Cosine-weighted hemisphere emission
-					const Scalar cosAtEmitter = fabs( Vector3Ops::Dot( eyeEnd.normal, woFromEmitter ) );
+					// Cosine-weighted hemisphere emission (one-sided)
+					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.normal, woFromEmitter );
 					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
 				}
 			}
@@ -1688,8 +1688,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		{
 			Scalar emissionPdfDir = 0;
 			if( lightStart.pLuminary ) {
-				// Mesh luminary: cosine-weighted hemisphere emission
-				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, -dirToLight ) );
+				// Mesh luminary: cosine-weighted hemisphere emission (one-sided)
+				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.normal, -dirToLight );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
@@ -1843,7 +1843,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			{
 				Scalar emPdfDir = 0;
 				if( lightEnd.pLuminary ) {
-					const Scalar cosEmit = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+					// One-sided emission PDF
+					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.normal, dirToCam );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
 					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
@@ -3113,7 +3114,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			if( eyeEnd.pMaterial ) {
 				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
 				if( pEm ) {
-					const Scalar cosAtEmitter = fabs( Vector3Ops::Dot( eyeEnd.normal, woFromEmitter ) );
+					// One-sided emission PDF
+					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.normal, woFromEmitter );
 					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
 				}
 			}
@@ -3325,7 +3327,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		{
 			Scalar emissionPdfDir = 0;
 			if( lightStart.pLuminary ) {
-				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, -dirToLight ) );
+				// One-sided emission PDF
+				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.normal, -dirToLight );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
@@ -3457,7 +3460,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			{
 				Scalar emPdfDir = 0;
 				if( lightEnd.pLuminary ) {
-					const Scalar cosEmit = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+					// One-sided emission PDF
+					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.normal, dirToCam );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
 					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );

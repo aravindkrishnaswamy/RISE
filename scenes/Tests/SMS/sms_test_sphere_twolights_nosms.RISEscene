@@ -1,8 +1,8 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#   SMS Multi-Object Chain Test: Mixed reflection/refraction chain.
-#   Three spheres in a line: mirror, glass, mirror.
-#   Tests SMS ability to find specular paths through mixed specular interaction types.
+#   SMS Test (no-SMS reference): Glass sphere on diffuse floor with TWO area lights.
+#   Purpose: Reference render without SMS for comparison with sms_test_sphere_twolights.
+#   At convergence, this and the SMS variant should produce the same image.
 #############################################################################################################
 
 > set accelerator B 10 8
@@ -28,15 +28,11 @@ bdpt_pel_rasterizer
 	lum_samples			1
 	ior_stack			TRUE
 	sms_enabled			FALSE
-	sms_max_iterations	20
-	sms_threshold		1e-5
-	sms_max_chain_depth	10
-	sms_biased			TRUE
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_test_mixed_chain_nosms
+	pattern				rendered/sms_test_sphere_twolights_nosms
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -61,14 +57,14 @@ uniformcolor_painter
 
 uniformcolor_painter
 {
-	name				pnt_light
-	color				1.0 1.0 1.0
+	name				pnt_light_warm
+	color				1.0 0.95 0.85
 }
 
 uniformcolor_painter
 {
-	name				pnt_mirror
-	color				0.95 0.95 0.95
+	name				pnt_light_cool
+	color				0.85 0.92 1.0
 }
 
 uniformcolor_painter
@@ -98,16 +94,18 @@ lambertian_material
 
 lambertian_luminaire_material
 {
-	name				light_mat
-	exitance			pnt_light
+	name				light_warm_mat
+	exitance			pnt_light_warm
 	scale				500.0
 	material			none
 }
 
-perfectreflector_material
+lambertian_luminaire_material
 {
-	name				mirror_mat
-	reflectance			pnt_mirror
+	name				light_cool_mat
+	exitance			pnt_light_cool
+	scale				350.0
+	material			none
 }
 
 dielectric_material
@@ -128,19 +126,28 @@ sphere_geometry
 clippedplane_geometry
 {
 	name				floor_geom
-	pta					-8.0 0.0 -5.0
-	ptb					-8.0 0.0 5.0
-	ptc					8.0 0.0 5.0
-	ptd					8.0 0.0 -5.0
+	pta					-5.0 0.0 -5.0
+	ptb					-5.0 0.0 5.0
+	ptc					5.0 0.0 5.0
+	ptd					5.0 0.0 -5.0
 }
 
 clippedplane_geometry
 {
-	name				light_geom
-	pta					-2.0 0.0 -1.5
-	ptb					2.0 0.0 -1.5
-	ptc					2.0 0.0 1.5
-	ptd					-2.0 0.0 1.5
+	name				light_warm_geom
+	pta					-1.5 0.0 -1.5
+	ptb					1.5 0.0 -1.5
+	ptc					1.5 0.0 1.5
+	ptd					-1.5 0.0 1.5
+}
+
+clippedplane_geometry
+{
+	name				light_cool_geom
+	pta					-1.0 0.0 -1.0
+	ptb					1.0 0.0 -1.0
+	ptc					1.0 0.0 1.0
+	ptd					-1.0 0.0 1.0
 }
 
 # Objects
@@ -151,16 +158,6 @@ standard_object
 	material			floor_mat
 }
 
-# Mirror sphere 1 (left)
-standard_object
-{
-	name				mirror_sphere_1
-	geometry			sphere_geom
-	position			-2 1.5 0
-	material			mirror_mat
-}
-
-# Glass sphere (center)
 standard_object
 {
 	name				glass_sphere
@@ -169,19 +166,20 @@ standard_object
 	material			glass_mat
 }
 
-# Mirror sphere 2 (right)
+# Warm area light (directly above, larger and brighter)
 standard_object
 {
-	name				mirror_sphere_2
-	geometry			sphere_geom
-	position			2 1.5 0
-	material			mirror_mat
+	name				warm_light
+	geometry			light_warm_geom
+	position			0 5.0 0
+	material			light_warm_mat
 }
 
+# Cool area light (offset to the right, smaller and dimmer)
 standard_object
 {
-	name				area_light
-	geometry			light_geom
-	position			0 5.0 0
-	material			light_mat
+	name				cool_light
+	geometry			light_cool_geom
+	position			2.5 4.5 -1.0
+	material			light_cool_mat
 }

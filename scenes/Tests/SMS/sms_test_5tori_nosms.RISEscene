@@ -126,9 +126,9 @@ clippedplane_geometry
 {
 	name				light_geom
 	pta					-2.0 0.0 -1.5
-	ptb					-2.0 0.0 1.5
+	ptb					2.0 0.0 -1.5
 	ptc					2.0 0.0 1.5
-	ptd					2.0 0.0 -1.5
+	ptd					-2.0 0.0 1.5
 }
 
 # Objects

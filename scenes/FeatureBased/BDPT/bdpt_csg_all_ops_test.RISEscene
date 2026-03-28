@@ -245,6 +245,7 @@ standard_object
 	name				ceiling_light
 	geometry			lightdiskgeom
 	position			0 5.5 -0.5
+	orientation			180 0 0
 	material			light_mat
 }
 

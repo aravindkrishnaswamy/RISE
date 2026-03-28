@@ -158,7 +158,7 @@ namespace RISE
 			/// \param emitterPoint   Light sample point
 			/// \param emitterNormal  Normal at light sample
 			/// \param specularChain  Initial seed vertices on specular surfaces
-			/// \param rng            Random number generator (for Bernoulli trials)
+			/// \param sampler            Sampler with dimensional management (for Bernoulli trials)
 			/// \return ManifoldResult with converged chain and contribution info
 			ManifoldResult Solve(
 				const Point3& shadingPoint,
@@ -232,7 +232,7 @@ namespace RISE
 			/// \param woOutgoing   Direction toward the viewer/previous vertex
 			/// \param scene        Scene for ray casting and light access
 			/// \param caster       Ray caster
-			/// \param rng          Random number generator
+			/// \param sampler          Sampler with proper dimensional seperation
 			SMSContribution EvaluateAtShadingPoint(
 				const Point3& pos,
 				const Vector3& normal,

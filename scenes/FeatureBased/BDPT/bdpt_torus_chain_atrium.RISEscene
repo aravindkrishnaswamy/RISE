@@ -110,8 +110,8 @@ pinhole_camera
 	location			0 5.5 19.0
 	lookat				0 3.5 4.0
 	up					0 1 0
-	width				800
-	height				800
+	width				400
+	height				400
 	fov					50.0
 }
 
@@ -212,7 +212,7 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				200.0
+	scale				100.0
 	material			none
 }
 
@@ -220,7 +220,7 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				200.0
+	scale				100.0
 	material			none
 }
 
@@ -228,7 +228,7 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				2000.0
+	scale				400.0
 	material			none
 }
 
@@ -373,13 +373,14 @@ ENDFOR
 ##################################################
 # Ceiling Area Lights -- 4 panels
 ##################################################
-
+/*
 # Two large warm lights flanking center
 standard_object
 {
 	name				light_warm_left
 	geometry			lightpanel_large
 	position			-3.5 7.98 4.0
+	orientation			180 0 0
 	material			warm_lum
 }
 
@@ -388,6 +389,7 @@ standard_object
 	name				light_warm_right
 	geometry			lightpanel_large
 	position			3.5 7.98 4.0
+	orientation			180 0 0
 	material			warm_lum
 }
 
@@ -397,6 +399,7 @@ standard_object
 	name				light_cool_left
 	geometry			lightpanel_small
 	position			-2.0 7.98 8.0
+	orientation			180 0 0
 	material			cool_lum
 }
 
@@ -405,6 +408,7 @@ standard_object
 	name				light_cool_right
 	geometry			lightpanel_small
 	position			2.0 7.98 8.0
+	orientation			180 0 0
 	material			cool_lum
 }
 
@@ -413,10 +417,11 @@ standard_object
 {
 	name				light_neutral
 	geometry			lightpanel_small
-	position			0 7.98 2.0
+	position			0 7.98 6.0
+	orientation			180 0 0
 	material			neutral_lum
 }
-
+*/
 # Accent spot light aimed down at the chain center
 spot_light
 {
@@ -424,10 +429,11 @@ spot_light
 	position			0 7.5 4.0
 	target				0 3.5 4.0
 	color				1.0 0.98 0.94
-	power				4.0
+	power				5000.0
 	inner				10
 	outer				25
 }
+
 
 ##################################################
 # Torus Chain -- 30 interlocking glass links
