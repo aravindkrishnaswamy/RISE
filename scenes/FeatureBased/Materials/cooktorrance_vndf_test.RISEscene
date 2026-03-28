@@ -1,0 +1,377 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           cooktorrance_vndf_test.RISEscene                                                        #
+#   Description:    Torture test for CookTorrance VNDF sampling. Six metallic spheres with varying           #
+#                   roughness (0.01 to 0.8) in a Cornell box. Tests VNDF at grazing angles, near-mirror,    #
+#                   and very rough configurations.                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 28, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+bdpt_pel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.001
+	max_eye_depth		10
+	max_light_depth		8
+	samples				64
+	lum_samples			1
+	ior_stack			true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cooktorrance_vndf_test
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				512
+	height				512
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold_spec
+	color				1.0 0.85 0.35
+}
+
+# Roughness painters for each sphere
+uniformcolor_painter
+{
+	name				facets_001
+	color				0.01 0.01 0.01
+}
+
+uniformcolor_painter
+{
+	name				facets_005
+	color				0.05 0.05 0.05
+}
+
+uniformcolor_painter
+{
+	name				facets_01
+	color				0.1 0.1 0.1
+}
+
+uniformcolor_painter
+{
+	name				facets_03
+	color				0.3 0.3 0.3
+}
+
+uniformcolor_painter
+{
+	name				facets_05
+	color				0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name				facets_08
+	color				0.8 0.8 0.8
+}
+
+##################################################
+# Materials - 6 CookTorrance at varying roughness
+##################################################
+
+cooktorrance_material
+{
+	name				mat_ct_001
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.01
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_005
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.05
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_01
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.1
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_03
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.3
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_05
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.5
+	ior					2.5
+	extinction			3.0
+}
+
+cooktorrance_material
+{
+	name				mat_ct_08
+	rd					pnt_black
+	rs					pnt_gold_spec
+	facets				0.8
+	ior					2.5
+	extinction			3.0
+}
+
+# Wall and light materials
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				70.0
+	material			none
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					393.0 548.7999 177.0
+	ptb					393.0 548.7999 382.0
+	ptc					163.0 548.7999 382.0
+	ptd					163.0 548.7999 177.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Sphere geometry
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				65.0
+}
+
+##################################################
+# Row 1 (back, y=380): alpha = 0.01, 0.05, 0.1
+##################################################
+
+standard_object
+{
+	name				sphere_001
+	geometry			spheregeom
+	position			140 380 350
+	material			mat_ct_001
+}
+
+standard_object
+{
+	name				sphere_005
+	geometry			spheregeom
+	position			278 380 350
+	material			mat_ct_005
+}
+
+standard_object
+{
+	name				sphere_01
+	geometry			spheregeom
+	position			416 380 350
+	material			mat_ct_01
+}
+
+##################################################
+# Row 2 (front, y=160): alpha = 0.3, 0.5, 0.8
+##################################################
+
+standard_object
+{
+	name				sphere_03
+	geometry			spheregeom
+	position			140 160 220
+	material			mat_ct_03
+}
+
+standard_object
+{
+	name				sphere_05
+	geometry			spheregeom
+	position			278 160 220
+	material			mat_ct_05
+}
+
+standard_object
+{
+	name				sphere_08
+	geometry			spheregeom
+	position			416 160 220
+	material			mat_ct_08
+}

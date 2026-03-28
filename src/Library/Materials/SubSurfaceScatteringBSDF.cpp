@@ -20,6 +20,7 @@
 
 #include "pch.h"
 #include "SubSurfaceScatteringBSDF.h"
+#include "../Utilities/MicrofacetUtils.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -48,29 +49,6 @@ SubSurfaceScatteringBSDF::~SubSurfaceScatteringBSDF()
 	ior.release();
 	absorption.release();
 	scattering.release();
-}
-
-/// GGX normal distribution function
-static Scalar GGX_D( const Scalar NdotH, const Scalar alpha )
-{
-	const Scalar a2 = alpha * alpha;
-	const Scalar cos2 = NdotH * NdotH;
-	const Scalar denom = cos2 * (a2 - 1.0) + 1.0;
-	return a2 / (PI * denom * denom);
-}
-
-/// Smith G1 for GGX
-static Scalar GGX_G1( const Scalar NdotV, const Scalar alpha )
-{
-	const Scalar a2 = alpha * alpha;
-	const Scalar cos2 = NdotV * NdotV;
-	return 2.0 * NdotV / (NdotV + sqrt(a2 + (1.0 - a2) * cos2));
-}
-
-/// Smith G masking-shadowing for GGX
-static Scalar GGX_G( const Scalar NdotV, const Scalar NdotL, const Scalar alpha )
-{
-	return GGX_G1( NdotV, alpha ) * GGX_G1( NdotL, alpha );
 }
 
 /// Exact dielectric Fresnel reflectance from cosine and IOR.
@@ -117,8 +95,8 @@ RISEPel SubSurfaceScatteringBSDF::value(
 		const Scalar OdotH = Vector3Ops::Dot( wo, h );
 		if( NdotH <= 0 || OdotH <= 0 ) return RISEPel(0,0,0);
 
-		const Scalar D = GGX_D( NdotH, alpha );
-		const Scalar G = GGX_G( NdotO, NdotI, alpha );
+		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
+		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
 		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
 
 		const Scalar val = D * F * G / (4.0 * NdotO * NdotI);
@@ -157,8 +135,8 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 		const Scalar OdotH = Vector3Ops::Dot( wo, h );
 		if( NdotH <= 0 || OdotH <= 0 ) return 0;
 
-		const Scalar D = GGX_D( NdotH, alpha );
-		const Scalar G = GGX_G( NdotO, NdotI, alpha );
+		const Scalar D = MicrofacetUtils::GGX_D<Scalar>( alpha, NdotH );
+		const Scalar G = MicrofacetUtils::GGX_G( alpha, NdotO, NdotI );
 		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
 		return D * F * G / (4.0 * NdotO * NdotI);
 	}

@@ -39,6 +39,7 @@
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -141,6 +142,7 @@ static FurnaceResult FurnaceTest(
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
     RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
 
     // ---- MC estimate via SPF importance sampling (branching mode) ----
     // In branching mode, we sum kray over ALL scattered rays per sample.
@@ -154,7 +156,7 @@ static FurnaceResult FurnaceTest(
     for( int i = 0; i < FURNACE_MC_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, rng, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, 0 );
 
         if( scattered.Count() == 0 ) continue;
 
@@ -276,13 +278,14 @@ static PointwiseResult PointwiseTest(
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     const Vector3 normal = ri.onb.w();
     RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
 
     double errSum = 0;
 
     for( int i = 0; i < POINTWISE_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, rng, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, 0 );
 
         if( scattered.Count() == 0 ) continue;
 
@@ -369,6 +372,7 @@ static DeltaResult DeltaDirectionTest(
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
 
     // Compute expected mirror reflection direction
     const Vector3 normal = ri.onb.w();
@@ -378,7 +382,7 @@ static DeltaResult DeltaDirectionTest(
     for( int i = 0; i < DELTA_DIRECTION_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, rng, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, 0 );
 
         for( unsigned int j = 0; j < scattered.Count(); j++ )
         {
@@ -458,13 +462,14 @@ static SanityResult SanityTest(
 
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
 
     const int N = 10000;
 
     for( int i = 0; i < N; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, rng, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, 0 );
 
         for( unsigned int j = 0; j < scattered.Count(); j++ )
         {

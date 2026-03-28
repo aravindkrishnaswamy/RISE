@@ -4,7 +4,7 @@
 //  scattering probability function for BSSRDF-based SSS materials.
 //
 //  With BSSRDF, the SPF only handles the surface boundary:
-//    - From outside: GGX reflection (rough) or perfect specular
+//    - From outside: GGX VNDF reflection (rough) or perfect specular
 //      reflection (smooth).  No refraction ray is emitted; the
 //      integrator handles subsurface entry via BSSRDF sampling.
 //    - From inside: delta Fresnel reflection (rare with BSSRDF).
@@ -22,9 +22,23 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
+#include "../Utilities/MicrofacetUtils.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+/// Dielectric Fresnel reflectance from cosine of incidence angle and IOR.
+static Scalar DielectricFresnelCos( const Scalar cosI, const Scalar eta_i, const Scalar eta_t )
+{
+	const Scalar sinI2 = 1.0 - cosI * cosI;
+	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
+	if( sinT2 >= 1.0 ) return 1.0;
+	const Scalar cosT = sqrt(1.0 - sinT2);
+
+	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
+	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
+	return (rs * rs + rp * rp) * 0.5;
+}
 
 SubSurfaceScatteringSPF::SubSurfaceScatteringSPF(
 	const IPainter& ior_,
@@ -53,77 +67,6 @@ SubSurfaceScatteringSPF::~SubSurfaceScatteringSPF()
 	absorption.release();
 	scattering.release();
 }
-
-//=============================================================
-// GGX microfacet helpers (for rough surface boundary)
-//=============================================================
-
-/// GGX (Trowbridge-Reitz) normal distribution function
-static Scalar GGX_D( const Scalar alpha, const Scalar cosThetaM )
-{
-	if( cosThetaM <= 0 ) return 0;
-	const Scalar a2 = alpha * alpha;
-	const Scalar cos2 = cosThetaM * cosThetaM;
-	const Scalar denom = cos2 * (a2 - 1.0) + 1.0;
-	return a2 / (PI * denom * denom);
-}
-
-/// Smith G1 masking function for GGX
-static Scalar GGX_G1( const Scalar alpha, const Vector3& v, const Vector3& n )
-{
-	const Scalar cosTheta = fabs( Vector3Ops::Dot( v, n ) );
-	if( cosTheta < 1e-10 ) return 0;
-	const Scalar cos2 = cosTheta * cosTheta;
-	const Scalar tan2 = (1.0 - cos2) / cos2;
-	return 2.0 / (1.0 + sqrt(1.0 + alpha*alpha*tan2));
-}
-
-/// Smith separable masking-shadowing function
-static Scalar GGX_G( const Scalar alpha, const Vector3& wi, const Vector3& wo, const Vector3& n )
-{
-	return GGX_G1( alpha, wi, n ) * GGX_G1( alpha, wo, n );
-}
-
-/// Importance-sample a microfacet normal from the GGX distribution
-/// Returns the sampled normal in world space
-static Vector3 GGX_SampleNormal(
-	const Vector3& n,							///< [in] Geometric normal
-	const Scalar alpha,							///< [in] GGX alpha parameter
-	ISampler& sampler			///< [in] Sampler
-	)
-{
-	const Scalar xi1 = sampler.Get1D();
-	const Scalar xi2 = sampler.Get1D();
-
-	// Sample theta from GGX distribution: D(m) * cos(theta_m)
-	const Scalar a2 = alpha * alpha;
-	Scalar cosThetaM = sqrt( (1.0 - xi1) / (1.0 + (a2 - 1.0) * xi1) );
-	if( cosThetaM > 1.0 ) cosThetaM = 1.0;
-	const Scalar sinThetaM = sqrt( r_max( 0.0, 1.0 - cosThetaM * cosThetaM ) );
-	const Scalar phiM = TWO_PI * xi2;
-
-	// Build ONB from geometric normal and convert to world space
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( n );
-	return Vector3Ops::Normalize(
-		onb.u() * (sinThetaM * cos(phiM)) +
-		onb.v() * (sinThetaM * sin(phiM)) +
-		onb.w() * cosThetaM
-	);
-}
-
-/// Reflection PDF: D(h) * |n.h| / (4 * |wo.h|)
-static Scalar GGX_ReflectionPdf( const Scalar alpha, const Vector3& h, const Vector3& wo, const Vector3& n )
-{
-	const Scalar cosThetaH = fabs( Vector3Ops::Dot( h, n ) );
-	const Scalar woH = fabs( Vector3Ops::Dot( wo, h ) );
-	if( woH < 1e-10 ) return 0;
-	return GGX_D( alpha, cosThetaH ) * cosThetaH / (4.0 * woH);
-}
-
-
-// Forward declaration
-static Scalar ComputeGGXAcceptance( const RayIntersectionGeometric& ri, const Scalar alpha );
 
 //=============================================================
 // Scatter (RGB path)
@@ -163,28 +106,36 @@ void SubSurfaceScatteringSPF::Scatter(
 
 		if( alpha > 1e-6 )
 		{
-			// Rough surface: GGX microfacet reflection (non-delta)
+			// Rough surface: VNDF microfacet reflection (non-delta)
 			const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-			Vector3 m = GGX_SampleNormal( ri.onb.w(), alpha, sampler );
-			if( Vector3Ops::Dot( m, wi ) < 0 ) m = -m;
 
-			const Vector3 wo = Optics::CalculateReflectedRay( ri.ray.Dir(), (-m) );
-			const Scalar nWi = fabs( Vector3Ops::Dot( ri.onb.w(), wi ) );
-			const Scalar nWo = fabs( Vector3Ops::Dot( ri.onb.w(), wo ) );
-			const Scalar woH = fabs( Vector3Ops::Dot( wo, m ) );
-			const Scalar cosThetaM = fabs( Vector3Ops::Dot( m, ri.onb.w() ) );
+			const Scalar u1 = sampler.Get1D();
+			const Scalar u2 = sampler.Get1D();
+			const Vector3 m = MicrofacetUtils::VNDF_Sample( wi, ri.onb, alpha, u1, u2 );
 
-			if( nWo > 1e-10 && woH > 1e-10 && cosThetaM > 1e-10 ) {
-				const Scalar G = GGX_G( alpha, wi, wo, ri.onb.w() );
-				const Scalar rawPdf = GGX_ReflectionPdf( alpha, m, wo, ri.onb.w() );
-				const Scalar weight = R * G * woH / (nWi * cosThetaM);
+			// Reflect wi around micronormal m
+			const Scalar wiDotM = Vector3Ops::Dot( wi, m );
+			if( wiDotM <= 0 ) return;
+			const Vector3 wo = Vector3Ops::Normalize( m * (2.0 * wiDotM) - wi );
 
-				if( weight > 1e-10 && rawPdf > 1e-10 ) {
-					// Normalize PDF by acceptance probability to account
-					// for rejected samples (reflections below hemisphere)
-					const Scalar q = ComputeGGXAcceptance( ri, alpha );
-					const Scalar pdf = (q > 1e-10) ? rawPdf / q : rawPdf;
+			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
+			if( nWo <= 1e-10 ) return;
 
+			// Fresnel at the microfacet normal (not geometric normal)
+			// Must match BSDF evaluation which uses F(OdotH)
+			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
+
+			// With VNDF sampling, the specular estimator simplifies to F * G1(wo)
+			// Derivation: f*cos/pdf = (F*D*G)/(4*cosI*cosO) * cosO * (4*cosI)/(G1_i*D) = F*G/G1_i = F*G1_o
+			const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, nWo );
+			const Scalar weight = F * G1wo;
+
+			if( weight > 1e-10 )
+			{
+				const Scalar pdf = MicrofacetUtils::VNDF_Pdf( wi, wo, ri.onb.w(), alpha );
+
+				if( pdf > 1e-10 )
+				{
 					ScatteredRay reflectedRay;
 					reflectedRay.type = ScatteredRay::eRayReflection;
 					reflectedRay.isDelta = false;
@@ -307,26 +258,31 @@ void SubSurfaceScatteringSPF::ScatterNM(
 
 		if( alpha > 1e-6 )
 		{
-			// Rough surface: GGX microfacet reflection (non-delta)
+			// Rough surface: VNDF microfacet reflection (non-delta)
 			const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-			Vector3 m = GGX_SampleNormal( ri.onb.w(), alpha, sampler );
-			if( Vector3Ops::Dot( m, wi ) < 0 ) m = -m;
 
-			const Vector3 wo = Optics::CalculateReflectedRay( ri.ray.Dir(), (-m) );
-			const Scalar nWi = fabs( Vector3Ops::Dot( ri.onb.w(), wi ) );
-			const Scalar woH = fabs( Vector3Ops::Dot( wo, m ) );
-			const Scalar cosThetaM = fabs( Vector3Ops::Dot( m, ri.onb.w() ) );
-			const Scalar nWo = fabs( Vector3Ops::Dot( ri.onb.w(), wo ) );
+			const Scalar u1 = sampler.Get1D();
+			const Scalar u2 = sampler.Get1D();
+			const Vector3 m = MicrofacetUtils::VNDF_Sample( wi, ri.onb, alpha, u1, u2 );
 
-			if( nWo > 1e-10 && woH > 1e-10 && cosThetaM > 1e-10 ) {
-				const Scalar G = GGX_G( alpha, wi, wo, ri.onb.w() );
-				const Scalar rawPdf = GGX_ReflectionPdf( alpha, m, wo, ri.onb.w() );
-				const Scalar weight = R * G * woH / (nWi * cosThetaM);
+			const Scalar wiDotM = Vector3Ops::Dot( wi, m );
+			if( wiDotM <= 0 ) return;
+			const Vector3 wo = Vector3Ops::Normalize( m * (2.0 * wiDotM) - wi );
 
-				if( weight > 1e-10 && rawPdf > 1e-10 ) {
-					const Scalar q = ComputeGGXAcceptance( ri, alpha );
-					const Scalar pdf = (q > 1e-10) ? rawPdf / q : rawPdf;
+			const Scalar nWo = Vector3Ops::Dot( ri.onb.w(), wo );
+			if( nWo <= 1e-10 ) return;
 
+			// Fresnel at the microfacet normal (matching BSDF)
+			const Scalar F = DielectricFresnelCos( wiDotM, Ni, n );
+			const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, nWo );
+			const Scalar weight = F * G1wo;
+
+			if( weight > 1e-10 )
+			{
+				const Scalar pdf = MicrofacetUtils::VNDF_Pdf( wi, wo, ri.onb.w(), alpha );
+
+				if( pdf > 1e-10 )
+				{
 					ScatteredRay reflectedRay;
 					reflectedRay.type = ScatteredRay::eRayReflection;
 					reflectedRay.isDelta = false;
@@ -409,44 +365,6 @@ void SubSurfaceScatteringSPF::ScatterNM(
 // PDF evaluation
 //=============================================================
 
-// Computes the GGX specular acceptance probability q = integral of
-// GGX reflection PDF over the upper hemisphere.  Uses numerical
-// quadrature to account for hemisphere truncation.
-static Scalar ComputeGGXAcceptance(
-	const RayIntersectionGeometric& ri,
-	const Scalar alpha
-	)
-{
-	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	const Vector3& n = ri.onb.w();
-
-	static const int NTHETA = 30;
-	static const int NPHI = 60;
-	Scalar integral = 0;
-
-	for( int t = 0; t < NTHETA; t++ )
-	{
-		const Scalar theta = (t + 0.5) * PI_OV_TWO / NTHETA;
-		const Scalar sin_t = sin(theta);
-		const Scalar cos_t = cos(theta);
-
-		for( int p = 0; p < NPHI; p++ )
-		{
-			const Scalar phi = (p + 0.5) * TWO_PI / NPHI;
-			const Vector3 wo_local( sin_t*cos(phi), sin_t*sin(phi), cos_t );
-			const Vector3 wo = ri.onb.u()*wo_local.x + ri.onb.v()*wo_local.y + ri.onb.w()*wo_local.z;
-
-			if( Vector3Ops::Dot( wo, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 ) {
-				const Vector3 h = Vector3Ops::Normalize( wi + wo );
-				integral += GGX_ReflectionPdf( alpha, h, wo, n )
-							* sin_t * (PI_OV_TWO / NTHETA) * (TWO_PI / NPHI);
-			}
-		}
-	}
-
-	return integral;
-}
-
 Scalar SubSurfaceScatteringSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
@@ -465,15 +383,8 @@ Scalar SubSurfaceScatteringSPF::Pdf(
 			const Vector3 woNorm = Vector3Ops::Normalize( wo );
 			const Vector3 n = ri.onb.w();
 
-			// Only reflection (same hemisphere as wi relative to n)
 			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 ) {
-				const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
-				const Scalar rawPdf = GGX_ReflectionPdf( alpha, h, woNorm, n );
-
-				// Normalize by acceptance probability to account for
-				// rejected samples (reflections below hemisphere)
-				const Scalar q = ComputeGGXAcceptance( ri, alpha );
-				return (q > 1e-10) ? rawPdf / q : rawPdf;
+				return MicrofacetUtils::VNDF_Pdf( wi, woNorm, n, alpha );
 			}
 		}
 		return 0;

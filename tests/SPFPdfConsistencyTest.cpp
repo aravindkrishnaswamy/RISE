@@ -36,6 +36,7 @@
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
@@ -173,6 +174,7 @@ static TestResult TestSPF(
     const Vector3 normal = ri.onb.w();
 
     RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
 
     // ================================================================
     //  Part 1: Cross-validation
@@ -191,7 +193,7 @@ static TestResult TestSPF(
     for( int i = 0; i < NUM_CROSS_VALIDATE; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, rng, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, 0 );
 
         if( scattered.Count() == 0 ) continue;
 
@@ -313,7 +315,7 @@ static TestResult TestSPF(
     for( int i = 0; i < NUM_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, rng, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, 0 );
 
         // Use RandomlySelect to pick one ray, as the path tracer does
         ScatteredRay* selected = scattered.RandomlySelect( rng.CanonicalRandom(), false );
