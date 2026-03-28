@@ -20,6 +20,7 @@
 
 #include "../Interfaces/IReference.h"
 #include "RandomNumbers.h"
+#include "ISampler.h"
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
 
@@ -39,6 +40,13 @@ namespace RISE
 		const PASS pass;										// The current pass
 		const bool bThreaded;									// Are we rendering with multiple threads
 
+		/// Optional low-discrepancy sampler for path decisions.
+		/// When non-NULL, shader ops should prefer pSampler->Get1D()
+		/// over random.CanonicalRandom() for Monte Carlo choices
+		/// (lobe selection, Russian roulette, etc.).
+		/// Lifetime is managed by the rasterizer; not ref-counted here.
+		mutable ISampler*										pSampler;
+
 		typedef std::map<const IReference*,RasterizerStateCache*> StateCacheMapType;
 		mutable StateCacheMapType								stateCaches;
 
@@ -46,10 +54,11 @@ namespace RISE
 			const RandomNumberGenerator& random_,
 			const PASS pass_,
 			const bool bThreaded_
-			) : 
+			) :
 		  random( random_ ),
 		  pass( pass_ ),
-		  bThreaded( bThreaded_ )
+		  bThreaded( bThreaded_ ),
+		  pSampler( 0 )
 		{}
 
 	    ~RuntimeContext()

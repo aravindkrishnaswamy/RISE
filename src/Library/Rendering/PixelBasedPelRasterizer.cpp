@@ -14,6 +14,8 @@
 
 #include "pch.h"
 #include "PixelBasedPelRasterizer.h"
+#include "../Utilities/SobolSampler.h"
+#include "../Sampling/SobolSequence.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -45,6 +47,11 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 	// If we have a sampling object, then we want to sub-sample each pixel, so
 	// do that
+	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
+	const uint32_t pixelSeed = SobolSequence::HashCombine(
+		static_cast<uint32_t>(x),
+		static_cast<uint32_t>(y) );
+
 	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
 	{
 		RISEPel			colAccrued( 0, 0, 0 );
@@ -55,17 +62,24 @@ void PixelBasedPelRasterizer::IntegratePixel(
 		Scalar weights = 0;
 		Scalar alphas = 0;
 
+		uint32_t sampleIndex = 0;
 		ISampling2D::SamplesList2D::const_iterator		m, n;
-		for( m=samples.begin(), n=samples.end(); m!=n; m++ )
+		for( m=samples.begin(), n=samples.end(); m!=n; m++, sampleIndex++ )
 		{
 			RISEPel			c;
-			Point2		ptOnScreen; 
+			Point2		ptOnScreen;
 			const Scalar weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
 			weights += weight;
 
 			if( temporal_samples ) {
 				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
+
+			// Install a Sobol sampler for this pixel sample so that
+			// shader ops (PathTracingShaderOp) can use low-discrepancy
+			// sampling across the full path recursion.
+			SobolSampler sobolSampler( sampleIndex, pixelSeed );
+			rc.pSampler = &sobolSampler;
 
 			Ray ray;
 			if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
@@ -74,6 +88,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 					alphas += weight;
 				}
 			}
+
+			rc.pSampler = 0;
 		}
 
 		// Divide out by the number of samples
@@ -82,6 +98,9 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	}
 	else
 	{
+		SobolSampler sobolSampler( 0, pixelSeed );
+		rc.pSampler = &sobolSampler;
+
 		RISEPel	c;
 		Ray ray;
 		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
@@ -89,6 +108,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				cret = RISEColor( c, 1.0 );
 			}
 		}
+
+		rc.pSampler = 0;
 	}
 }
 

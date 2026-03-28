@@ -135,8 +135,8 @@ void PathTracingShaderOp::PerformOperation(
 					}
 				}
 			} else {
-				const ScatteredRay* pS = scattered.RandomlySelect(
-					rc.random.CanonicalRandom(), false );
+				const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
 				if( pS ) {
 					RISEPel cthis( 0, 0, 0 );
 					rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
@@ -252,8 +252,8 @@ void PathTracingShaderOp::PerformOperation(
 		}
 		else
 		{
-			const ScatteredRay* pS = scattered.RandomlySelect(
-				rc.random.CanonicalRandom(), false );
+			const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+			const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
 			if( pS )
 			{
 				RISEPel cthis( 0, 0, 0 );
@@ -357,8 +357,8 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					}
 				}
 			} else {
-				const ScatteredRay* pS = scattered.RandomlySelect(
-					rc.random.CanonicalRandom(), true );
+				const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+				const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
 				if( pS ) {
 					Scalar cthis = 0;
 					rs2.importance = rs.importance * pS->krayNM;
@@ -454,8 +454,8 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		}
 		else
 		{
-			const ScatteredRay* pS = scattered.RandomlySelect(
-				rc.random.CanonicalRandom(), true );
+			const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+			const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
 			if( pS )
 			{
 				Scalar cthis = 0;

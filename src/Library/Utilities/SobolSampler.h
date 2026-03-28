@@ -53,6 +53,7 @@ namespace RISE
 			// can consume (max path depth * dims per bounce).
 			static const unsigned int kStreamStride = 256;
 
+		public:
 			virtual ~SobolSampler(){};
 
 		public:
