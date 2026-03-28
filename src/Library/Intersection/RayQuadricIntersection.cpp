@@ -54,8 +54,18 @@ namespace RISE
 
 		if( hit.bHit ) {
 			discriminant = sqrt( discriminant );
-			hit.dRange = (-k1 - discriminant) / (2.0*k2);
-			hit.dRange2 = (-k1 + discriminant) / (2.0*k2);
+			const Scalar t0 = (-k1 - discriminant) / (2.0*k2);
+			const Scalar t1 = (-k1 + discriminant) / (2.0*k2);
+
+			if( t0 > NEARZERO ) {
+				hit.dRange = t0;
+				hit.dRange2 = t1;
+			} else if( t1 > NEARZERO ) {
+				hit.dRange = t1;
+				hit.dRange2 = 0.0;
+			} else {
+				hit.bHit = false;
+			}
 		}
 	}
 
