@@ -212,8 +212,9 @@ void PerfectRefractorSPF::ScatterNM(
 		}
 
 		// Coming out, IOR becomes whatever was there before
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0 );
+		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, exitIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, exitIOR );
 		} else {
 			// TIR, so reflect
 			// We're still in the material

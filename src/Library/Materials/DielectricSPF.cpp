@@ -71,15 +71,25 @@ Scalar DielectricSPF::GenerateScatteredRay(
 
 	if( bFromInside )
 	{
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, ior_stack?ior_stack->top():1.0, refracted ) ) {
+		// Determine the exit IOR: the medium the ray enters after leaving
+		// this object.  Pop the current object from a temporary copy of
+		// the stack so that top() reveals the underlying medium's IOR.
+		Scalar exitIOR = 1.0;
+		if( ior_stack ) {
+			IORStack exitStack( *ior_stack );
+			exitStack.pop();
+			exitIOR = exitStack.top();
+		}
+
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
 			if( ior_stack ) {
 				dielectric.ior_stack = new IORStack( *ior_stack );
 				dielectric.ior_stack->pop();
 				GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
 			}
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, ior_stack?ior_stack->top():1.0 );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
 		} else {
-			// We're still in the material
+			// Total internal reflection
 			ref = 1.0;
 		}
 	}
