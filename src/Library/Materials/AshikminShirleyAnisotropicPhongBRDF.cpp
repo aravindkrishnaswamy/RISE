@@ -102,7 +102,9 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, Nu.GetColor(ri), Nv.GetColor(ri), pRs );
 
 	const RISEPel diffuse = (Rd.GetColor(ri) * OMRs * diffuseFactor);
-	const RISEPel specular = specularFactor * pRs;
+	// specularFactor already contains Fresnel F(h·k) = Rs + (1-Rs)(1-cos)^5,
+	// so no extra Rs multiplication is needed (per Ashikmin-Shirley 2000 paper)
+	const RISEPel specular = specularFactor;
 
 	return diffuse + specular;
 }
@@ -116,7 +118,8 @@ Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, co
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, Nu.GetColorNM(ri,nm), Nv.GetColorNM(ri,nm), pRs );
 
 	const Scalar diffuse = (Rd.GetColorNM(ri,nm) * OMRs * diffuseFactor);
-	const Scalar specular = specularFactor * pRs;
+	// specularFactor already contains Fresnel — no extra Rs multiplication
+	const Scalar specular = specularFactor;
 
 	return diffuse + specular;
 }

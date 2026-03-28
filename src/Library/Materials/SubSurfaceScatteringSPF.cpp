@@ -122,6 +122,9 @@ static Scalar GGX_ReflectionPdf( const Scalar alpha, const Vector3& h, const Vec
 }
 
 
+// Forward declaration
+static Scalar ComputeGGXAcceptance( const RayIntersectionGeometric& ri, const Scalar alpha );
+
 //=============================================================
 // Scatter (RGB path)
 //=============================================================
@@ -173,10 +176,15 @@ void SubSurfaceScatteringSPF::Scatter(
 
 			if( nWo > 1e-10 && woH > 1e-10 && cosThetaM > 1e-10 ) {
 				const Scalar G = GGX_G( alpha, wi, wo, ri.onb.w() );
-				const Scalar pdf = GGX_ReflectionPdf( alpha, m, wo, ri.onb.w() );
+				const Scalar rawPdf = GGX_ReflectionPdf( alpha, m, wo, ri.onb.w() );
 				const Scalar weight = R * G * woH / (nWi * cosThetaM);
 
-				if( weight > 1e-10 && pdf > 1e-10 ) {
+				if( weight > 1e-10 && rawPdf > 1e-10 ) {
+					// Normalize PDF by acceptance probability to account
+					// for rejected samples (reflections below hemisphere)
+					const Scalar q = ComputeGGXAcceptance( ri, alpha );
+					const Scalar pdf = (q > 1e-10) ? rawPdf / q : rawPdf;
+
 					ScatteredRay reflectedRay;
 					reflectedRay.type = ScatteredRay::eRayReflection;
 					reflectedRay.isDelta = false;
@@ -312,10 +320,13 @@ void SubSurfaceScatteringSPF::ScatterNM(
 
 			if( nWo > 1e-10 && woH > 1e-10 && cosThetaM > 1e-10 ) {
 				const Scalar G = GGX_G( alpha, wi, wo, ri.onb.w() );
-				const Scalar pdf = GGX_ReflectionPdf( alpha, m, wo, ri.onb.w() );
+				const Scalar rawPdf = GGX_ReflectionPdf( alpha, m, wo, ri.onb.w() );
 				const Scalar weight = R * G * woH / (nWi * cosThetaM);
 
-				if( weight > 1e-10 && pdf > 1e-10 ) {
+				if( weight > 1e-10 && rawPdf > 1e-10 ) {
+					const Scalar q = ComputeGGXAcceptance( ri, alpha );
+					const Scalar pdf = (q > 1e-10) ? rawPdf / q : rawPdf;
+
 					ScatteredRay reflectedRay;
 					reflectedRay.type = ScatteredRay::eRayReflection;
 					reflectedRay.isDelta = false;
@@ -398,6 +409,44 @@ void SubSurfaceScatteringSPF::ScatterNM(
 // PDF evaluation
 //=============================================================
 
+// Computes the GGX specular acceptance probability q = integral of
+// GGX reflection PDF over the upper hemisphere.  Uses numerical
+// quadrature to account for hemisphere truncation.
+static Scalar ComputeGGXAcceptance(
+	const RayIntersectionGeometric& ri,
+	const Scalar alpha
+	)
+{
+	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
+	const Vector3& n = ri.onb.w();
+
+	static const int NTHETA = 30;
+	static const int NPHI = 60;
+	Scalar integral = 0;
+
+	for( int t = 0; t < NTHETA; t++ )
+	{
+		const Scalar theta = (t + 0.5) * PI_OV_TWO / NTHETA;
+		const Scalar sin_t = sin(theta);
+		const Scalar cos_t = cos(theta);
+
+		for( int p = 0; p < NPHI; p++ )
+		{
+			const Scalar phi = (p + 0.5) * TWO_PI / NPHI;
+			const Vector3 wo_local( sin_t*cos(phi), sin_t*sin(phi), cos_t );
+			const Vector3 wo = ri.onb.u()*wo_local.x + ri.onb.v()*wo_local.y + ri.onb.w()*wo_local.z;
+
+			if( Vector3Ops::Dot( wo, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 ) {
+				const Vector3 h = Vector3Ops::Normalize( wi + wo );
+				integral += GGX_ReflectionPdf( alpha, h, wo, n )
+							* sin_t * (PI_OV_TWO / NTHETA) * (TWO_PI / NPHI);
+			}
+		}
+	}
+
+	return integral;
+}
+
 Scalar SubSurfaceScatteringSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
@@ -419,7 +468,12 @@ Scalar SubSurfaceScatteringSPF::Pdf(
 			// Only reflection (same hemisphere as wi relative to n)
 			if( Vector3Ops::Dot( woNorm, n ) > 0 && Vector3Ops::Dot( wi, n ) > 0 ) {
 				const Vector3 h = Vector3Ops::Normalize( wi + woNorm );
-				return GGX_ReflectionPdf( alpha, h, woNorm, n );
+				const Scalar rawPdf = GGX_ReflectionPdf( alpha, h, woNorm, n );
+
+				// Normalize by acceptance probability to account for
+				// rejected samples (reflections below hemisphere)
+				const Scalar q = ComputeGGXAcceptance( ri, alpha );
+				return (q > 1e-10) ? rawPdf / q : rawPdf;
 			}
 		}
 		return 0;

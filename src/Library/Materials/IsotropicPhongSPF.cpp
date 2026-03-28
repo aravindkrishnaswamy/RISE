@@ -100,7 +100,13 @@ void IsotropicPhongSPF::Scatter(
 
 	if( N[0] == N[1] && N[1] == N[2] ) {
 		GenerateSpecularRay( specular, n, reflected, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ), N[0] );
-		specular.kray = Rs.GetColor(ri);
+
+		// kray = BRDF * cos_o / pdf = Rs * (N+2)/(2*pi) * cos^N(alpha) * cos_o
+		//        / [(N+1)/(2*pi) * cos^N(alpha)]
+		//      = Rs * (N+2)/(N+1) * cos_o
+		// This is bounded since cos_o ∈ [0,1] and (N+2)/(N+1) ∈ (1,2]
+		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
+		specular.kray = Rs.GetColor(ri) * ((N[0]+2.0)/(N[0]+1.0)) * r_max(cos_o, 0.0);
 
 		// PDF for phong lobe: (N+1)/(2*pi) * cos^N(alpha), alpha = angle from reflection direction
 		const Scalar cosAlpha = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), Vector3Ops::Normalize(reflected) );
@@ -117,8 +123,10 @@ void IsotropicPhongSPF::Scatter(
 		const Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( specular, n, reflected, ri,  ptrand, N[i] );
+
+			const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
 			specular.kray = 0.0;
-			specular.kray[i] = spec[i];
+			specular.kray[i] = spec[i] * ((N[i]+2.0)/(N[i]+1.0)) * r_max(cos_o, 0.0);
 
 			// PDF for phong lobe per channel
 			const Scalar cosAlpha = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), Vector3Ops::Normalize(reflected) );
@@ -156,7 +164,10 @@ void IsotropicPhongSPF::ScatterNM(
 	GenerateSpecularRay( specular, n, reflected, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ),  N );
 
 	diffuse.krayNM = Rd.GetColorNM(ri,nm);
-	specular.krayNM = Rs.GetColorNM(ri,nm);
+	{
+		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
+		specular.krayNM = Rs.GetColorNM(ri,nm) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
+	}
 
 	// Set PDF for diffuse ray
 	{

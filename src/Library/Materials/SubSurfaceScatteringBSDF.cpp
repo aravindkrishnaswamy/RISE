@@ -73,13 +73,18 @@ static Scalar GGX_G( const Scalar NdotV, const Scalar NdotL, const Scalar alpha 
 	return GGX_G1( NdotV, alpha ) * GGX_G1( NdotL, alpha );
 }
 
-/// Schlick Fresnel from cosine and IOR
-static Scalar SchlickFresnel( const Scalar cosTheta, const Scalar eta_i, const Scalar eta_t )
+/// Exact dielectric Fresnel reflectance from cosine and IOR.
+/// Matches Optics::CalculateDielectricReflectance used in the SPF.
+static Scalar DielectricFresnel( const Scalar cosI, const Scalar eta_i, const Scalar eta_t )
 {
-	const Scalar R0 = ((eta_i - eta_t) / (eta_i + eta_t)) * ((eta_i - eta_t) / (eta_i + eta_t));
-	const Scalar c = 1.0 - cosTheta;
-	const Scalar c2 = c * c;
-	return R0 + (1.0 - R0) * c2 * c2 * c;
+	const Scalar sinI2 = 1.0 - cosI * cosI;
+	const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
+	if( sinT2 >= 1.0 ) return 1.0;  // total internal reflection
+	const Scalar cosT = sqrt(1.0 - sinT2);
+
+	const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
+	const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
+	return (rs * rs + rp * rp) * 0.5;
 }
 
 RISEPel SubSurfaceScatteringBSDF::value(
@@ -114,7 +119,7 @@ RISEPel SubSurfaceScatteringBSDF::value(
 
 		const Scalar D = GGX_D( NdotH, alpha );
 		const Scalar G = GGX_G( NdotO, NdotI, alpha );
-		const Scalar F = SchlickFresnel( OdotH, 1.0, n_ior );
+		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
 
 		const Scalar val = D * F * G / (4.0 * NdotO * NdotI);
 		return RISEPel( val, val, val );
@@ -154,7 +159,7 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 
 		const Scalar D = GGX_D( NdotH, alpha );
 		const Scalar G = GGX_G( NdotO, NdotI, alpha );
-		const Scalar F = SchlickFresnel( OdotH, 1.0, n_ior );
+		const Scalar F = DielectricFresnel( OdotH, 1.0, n_ior );
 		return D * F * G / (4.0 * NdotO * NdotI);
 	}
 

@@ -51,7 +51,7 @@ static void ComputeDiffuseSpecularFactors(
 	Scalar	nr = Vector3Ops::Dot(n,r);
 	const Scalar	nv = Vector3Ops::Dot(n,v);
 
-	if( (nr <= -NEARZERO) &&		// viewer is in front	
+	if( (nr <= -NEARZERO) &&		// viewer is in front
 		(nv <= -NEARZERO) )			// light is in front
 	{
 		nr = -nr;
