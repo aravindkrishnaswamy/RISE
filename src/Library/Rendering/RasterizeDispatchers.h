@@ -87,6 +87,7 @@ namespace RISE
 				// Create a runtime context for this thread
 				RandomNumberGenerator random;
 				RuntimeContext rc( random, pass, true );
+				rasterizer.PrepareRuntimeContext( rc );
 
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);
@@ -125,6 +126,7 @@ namespace RISE
 				// Create a runtime context for this thread
 				RandomNumberGenerator random;
 				RuntimeContext rc( random, pass, true );
+				rasterizer.PrepareRuntimeContext( rc );
 
 				// This thread will execute until we ask for another block and we're told there are no more
 				Rect rect(0,0,0,0);

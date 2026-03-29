@@ -1980,7 +1980,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer

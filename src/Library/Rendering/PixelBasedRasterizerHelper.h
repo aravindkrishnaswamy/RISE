@@ -169,6 +169,21 @@ namespace RISE
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ );
 
+			/// Called after a RuntimeContext is created, before any rendering
+			/// with it.  Subclasses can override to inject per-context state
+			/// (e.g. path guiding field pointers).  Default does nothing.
+			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const {}
+
+		/// Called at the beginning of RasterizeScene, before the main
+		/// render pass.  Subclasses can override to perform setup such
+		/// as path guiding training.  Default does nothing.
+		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
+
+		/// Called at the end of RasterizeScene, after the main render
+		/// pass and output flush.  Subclasses can override to perform
+		/// cleanup.  Default does nothing.
+		virtual void PostRenderCleanup() const {}
+
 			// Rasterizer interface implementations
 			virtual void AttachToScene( const IScene* ){};		// We don't need to do anything to attach
 			virtual void DetachFromScene( const IScene* ){};	// We don't need to do anything to detach

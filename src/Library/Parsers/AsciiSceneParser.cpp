@@ -4944,6 +4944,7 @@ namespace RISE
 					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = false;
+					PathGuidingConfig guidingConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5002,6 +5003,16 @@ namespace RISE
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "pathguiding" ) {
+							guidingConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "pathguiding_iterations" ) {
+							guidingConfig.trainingIterations = pvalue.toUInt();
+						} else if( pname == "pathguiding_spp" ) {
+							guidingConfig.trainingSPP = pvalue.toUInt();
+						} else if( pname == "pathguiding_alpha" ) {
+							guidingConfig.alpha = pvalue.toDouble();
+						} else if( pname == "pathguiding_max_depth" ) {
+							guidingConfig.maxGuidingDepth = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5013,7 +5024,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, oidnDenoise );
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig );
 				}
 			};
 

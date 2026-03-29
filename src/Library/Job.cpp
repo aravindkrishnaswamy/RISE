@@ -3829,7 +3829,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
+	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
+	const PathGuidingConfig& guidingConfig					///< [in] Path guiding configuration
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -3871,7 +3872,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise );
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );

@@ -1236,7 +1236,8 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const PathGuidingConfig& guidingConfig					///< [in] Path guiding configuration
 			) = 0;
 
 		//! Sets the rasterizer type to be pixel based spectral integrating

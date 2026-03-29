@@ -38,7 +38,7 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig ),
-  PixelBasedPelRasterizer( pCaster_ )
+  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig() )
 {
 }
 

@@ -320,6 +320,7 @@ void PixelBasedRasterizerHelper::RasterizeScenePass(
 		// Otherwise call the SP code
 		// Create a runtime context
 		RuntimeContext rc( GlobalRNG(), pass, false );
+		PrepareRuntimeContext( rc );
 
 		// Get all the parts of the scene we have to render in the order we have to
 		// render them
@@ -372,6 +373,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	pCaster->AttachScene( &pScene );
 
+	// Pre-render hook (e.g. path guiding training)
+	PreRenderSetup( pScene, pRect );
+
 	// If there is no raster sequence, create a default one
 	BlockRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
@@ -415,6 +419,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 	FlushToOutputs( *pImage, pRect, 0 );
+
+	// Post-render hook (e.g. path guiding cleanup)
+	PostRenderCleanup();
 
 	safe_release( pImage );
 }

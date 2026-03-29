@@ -24,6 +24,10 @@
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
 
+#ifdef RISE_ENABLE_OPENPGL
+namespace RISE { namespace Implementation { class PathGuidingField; } }
+#endif
+
 namespace RISE
 {
 	// This is this currently just a really simple POD, no reference counting
@@ -47,6 +51,15 @@ namespace RISE
 		/// Lifetime is managed by the rasterizer; not ref-counted here.
 		mutable ISampler*										pSampler;
 
+#ifdef RISE_ENABLE_OPENPGL
+		/// Path guiding field for guided directional sampling.
+		/// Set by the rasterizer before rendering.  NULL when guiding
+		/// is disabled or not yet initialized.
+		mutable Implementation::PathGuidingField*				pGuidingField;
+		Scalar													guidingAlpha;
+		unsigned int											maxGuidingDepth;
+#endif
+
 		typedef std::map<const IReference*,RasterizerStateCache*> StateCacheMapType;
 		mutable StateCacheMapType								stateCaches;
 
@@ -59,6 +72,11 @@ namespace RISE
 		  pass( pass_ ),
 		  bThreaded( bThreaded_ ),
 		  pSampler( 0 )
+#ifdef RISE_ENABLE_OPENPGL
+		  ,pGuidingField( 0 )
+		  ,guidingAlpha( 0 )
+		  ,maxGuidingDepth( 0 )
+#endif
 		{}
 
 	    ~RuntimeContext()

@@ -4174,20 +4174,27 @@ namespace RISE
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster );
+		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig );
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
+#ifndef RISE_ENABLE_OPENPGL
+		if( guidingConfig.enabled ) {
+			GlobalLog()->PrintEasyWarning( "Path guiding requested but RISE was compiled without RISE_ENABLE_OPENPGL support" );
 		}
 #endif
 
