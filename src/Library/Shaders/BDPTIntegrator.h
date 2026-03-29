@@ -78,6 +78,7 @@
 #include "../Utilities/ISampler.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/PathGuidingField.h"
 #include "BDPTVertex.h"
 #include <vector>
 
@@ -97,6 +98,12 @@ namespace RISE
 			LightSampler*		pLightSampler;
 			ManifoldSolver*		pManifoldSolver;
 
+#ifdef RISE_ENABLE_OPENPGL
+			PathGuidingField*	pGuidingField;
+			Scalar				guidingAlpha;
+			unsigned int		maxGuidingDepth;
+#endif
+
 			virtual ~BDPTIntegrator();
 
 		public:
@@ -107,6 +114,10 @@ namespace RISE
 
 			void SetLightSampler( LightSampler* pSampler );
 			void SetManifoldSolver( ManifoldSolver* pSolver );
+
+#ifdef RISE_ENABLE_OPENPGL
+			void SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth );
+#endif
 
 			/// Result of connecting a single (s,t) strategy
 			struct ConnectionResult

@@ -131,6 +131,11 @@ BDPTIntegrator::BDPTIntegrator(
   maxLightDepth( maxLight ),
   pLightSampler( 0 ),
   pManifoldSolver( 0 )
+#ifdef RISE_ENABLE_OPENPGL
+  ,pGuidingField( 0 ),
+  guidingAlpha( 0 ),
+  maxGuidingDepth( 3 )
+#endif
 {
 }
 
@@ -158,6 +163,15 @@ void BDPTIntegrator::SetLightSampler( LightSampler* pSampler )
 		pLightSampler->addref();
 	}
 }
+
+#ifdef RISE_ENABLE_OPENPGL
+void BDPTIntegrator::SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth )
+{
+	pGuidingField = pField;
+	guidingAlpha = alpha;
+	maxGuidingDepth = maxDepth;
+}
+#endif
 
 //////////////////////////////////////////////////////////////////////
 // Helper: evaluate BSDF at a vertex for given in/out directions.
@@ -906,34 +920,48 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 		// --- End BSSRDF sampling ---
 
-		// Compute throughput update: beta *= f * |cos| / pdf
-		const RISEPel f = EvalBSDFAtVertex(
-			vertices.back(),
-			-currentRay.Dir(),
-			pScat->ray.Dir()
-			);
+#ifdef RISE_ENABLE_OPENPGL
+		// Light subpath: training only (no guided sampling).
+		// Guiding the light subpath adds OpenPGL query cost at every
+		// non-delta vertex but provides little benefit because BDPT
+		// light subpaths contribute through connection strategies, not
+		// through following the scattered direction to termination.
+		if( pGuidingField && !pGuidingField->IsTrained() &&
+			!pScat->isDelta && pScat->pdf > NEARZERO )
+		{
+			pGuidingField->AddSample(
+				v.position,
+				pScat->ray.Dir(),
+				ri.geometric.range,
+				selectProb * pScat->pdf,
+				ColorMath::MaxValue( beta ),
+				false
+				);
+		}
+#endif
 
-		const Scalar cosTheta = fabs( Vector3Ops::Dot(
-			pScat->ray.Dir(),
-			ri.geometric.vNormal ) );
+		// Compute effective scatter direction and PDF.
+		Vector3 scatDir = pScat->ray.Dir();
+		Scalar effectivePdf = pScat->pdf;
 
-		Scalar pdf = pScat->pdf;
-		if( pdf <= 0 ) {
+		if( effectivePdf <= 0 ) {
 			break;
 		}
 
-		// For delta scattering, kray already incorporates the right factor
-		// but must be divided by the lobe selection probability.
-		// For standard non-delta, use the BSDF * cos / pdf formula with
-		// pdf scaled by the selection probability.
+		// Compute throughput update: beta *= f * |cos| / pdf
 		if( pScat->isDelta ) {
+			// For delta scattering, kray already incorporates the right factor
+			// but must be divided by the lobe selection probability.
 			beta = beta * pScat->kray * (bssrdfReflectCompensation / selectProb);
 		} else {
-			const Scalar maxF = ColorMath::MaxValue( f );
-			if( maxF <= 0 ) {
+			RISEPel f = EvalBSDFAtVertex( vertices.back(), -currentRay.Dir(), scatDir );
+			const Scalar cosTheta = fabs( Vector3Ops::Dot(
+				scatDir, ri.geometric.vNormal ) );
+
+			if( ColorMath::MaxValue( f ) <= 0 ) {
 				break;
 			}
-			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * pdf));
+			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf));
 		}
 
 		// Russian Roulette
@@ -951,7 +979,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 		// Store the forward pdf for the next vertex (solid angle measure),
 		// accounting for lobe selection probability.
-		pdfFwdPrev = selectProb * pdf;
+		pdfFwdPrev = selectProb * effectivePdf;
 
 		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 		if( pScat->isDelta ) {
@@ -970,7 +998,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			// propagates through delta vertices without dying.
 			const Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
-				pScat->ray.Dir(),
+				scatDir,
 				-currentRay.Dir()
 				);
 
@@ -1064,6 +1092,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	Scalar pdfFwdPrev = pdfCamDir;
 	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
+
+#ifdef RISE_ENABLE_OPENPGL
+	static thread_local GuidingDistributionHandle guideDist;
+#endif
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -1218,30 +1250,109 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		}
 		// --- End BSSRDF sampling ---
 
-		// Compute throughput update
-		const RISEPel f = EvalBSDFAtVertex(
-			vertices.back(),
-			pScat->ray.Dir(),
-			-currentRay.Dir()
-			);
+#ifdef RISE_ENABLE_OPENPGL
+		// --- Path guiding: one-sample MIS (eye subpath) ---
+		bool usedGuidedDirection = false;
+		Ray guidedRay;
+		RISEPel guidedF( 0, 0, 0 );
+		Scalar guidedCombinedPdf = 0;
+		Scalar bsdfCombinedPdf = 0;
 
-		const Scalar cosTheta = fabs( Vector3Ops::Dot(
-			pScat->ray.Dir(),
-			ri.geometric.vNormal ) );
+		if( pGuidingField && pGuidingField->IsTrained() &&
+			depth < maxGuidingDepth && !pScat->isDelta && vertices.back().isConnectible )
+		{
+			if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
+			{
+				pGuidingField->ApplyCosineProduct( guideDist, v.normal );
 
-		Scalar pdf = pScat->pdf;
-		if( pdf <= 0 ) {
+				const Scalar xi = sampler.Get1D();
+				const Scalar alpha = guidingAlpha;
+
+				if( xi < alpha )
+				{
+					Scalar guidePdf = 0;
+					const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+					const Vector3 guidedDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+					if( guidePdf > NEARZERO )
+					{
+						guidedF = EvalBSDFAtVertex(
+							vertices.back(), guidedDir, -currentRay.Dir() );
+						const Scalar bsdfPdf = EvalPdfAtVertex(
+							vertices.back(), guidedDir, -currentRay.Dir() );
+
+						guidedCombinedPdf = alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
+
+						if( guidedCombinedPdf > NEARZERO &&
+							ColorMath::MaxValue( guidedF ) > NEARZERO )
+						{
+							usedGuidedDirection = true;
+							guidedRay = Ray( pScat->ray.origin, guidedDir );
+						}
+					}
+				}
+
+				if( !usedGuidedDirection )
+				{
+					const Scalar guidePdfForBsdfDir =
+						pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
+					bsdfCombinedPdf = alpha * guidePdfForBsdfDir +
+						(1.0 - alpha) * pScat->pdf;
+				}
+			}
+		}
+
+		// Training sample collection (eye subpath)
+		if( pGuidingField && !pGuidingField->IsTrained() &&
+			!pScat->isDelta && pScat->pdf > NEARZERO )
+		{
+			pGuidingField->AddSample(
+				v.position,
+				pScat->ray.Dir(),
+				ri.geometric.range,
+				selectProb * pScat->pdf,
+				ColorMath::MaxValue( beta ),
+				false
+				);
+		}
+#endif
+		// --- End path guiding ---
+
+		// Compute effective scatter direction and PDF
+		Vector3 scatDir = pScat->ray.Dir();
+		Scalar effectivePdf = pScat->pdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			scatDir = guidedRay.Dir();
+			effectivePdf = guidedCombinedPdf;
+		} else if( bsdfCombinedPdf > NEARZERO ) {
+			effectivePdf = bsdfCombinedPdf;
+		}
+#endif
+
+		if( effectivePdf <= 0 ) {
 			break;
 		}
 
+		// Compute throughput update
 		if( pScat->isDelta ) {
 			beta = beta * pScat->kray * (bssrdfReflectCompensation / selectProb);
 		} else {
-			const Scalar maxF = ColorMath::MaxValue( f );
-			if( maxF <= 0 ) {
+			RISEPel f;
+#ifdef RISE_ENABLE_OPENPGL
+			f = usedGuidedDirection ? guidedF :
+				EvalBSDFAtVertex( vertices.back(), scatDir, -currentRay.Dir() );
+#else
+			f = EvalBSDFAtVertex( vertices.back(), scatDir, -currentRay.Dir() );
+#endif
+			const Scalar cosTheta = fabs( Vector3Ops::Dot(
+				scatDir, ri.geometric.vNormal ) );
+
+			if( ColorMath::MaxValue( f ) <= 0 ) {
 				break;
 			}
-			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * pdf));
+			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf));
 		}
 
 		// Russian Roulette after a few bounces
@@ -1258,7 +1369,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 		// Store the forward pdf for the next vertex,
 		// accounting for lobe selection probability.
-		pdfFwdPrev = selectProb * pdf;
+		pdfFwdPrev = selectProb * effectivePdf;
 
 		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 		if( pScat->isDelta ) {
@@ -1273,7 +1384,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			// Reverse PDF: returns 0 for delta interactions, handled by remap0 in MISWeight.
 			const Scalar revPdfSA = EvalPdfAtVertex(
 				curr,
-				pScat->ray.Dir(),
+				scatDir,
 				-currentRay.Dir()
 				);
 
@@ -1287,7 +1398,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		}
 
 		// Advance to next ray
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			currentRay = guidedRay;
+		} else {
+			currentRay = pScat->ray;
+		}
+#else
 		currentRay = pScat->ray;
+#endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
 		if( useIORStack && pScat->ior_stack ) {
 			iorStack = *pScat->ior_stack;
@@ -2697,28 +2816,44 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 		// --- End BSSRDF sampling ---
 
-		// Throughput update using valueNM
-		const Scalar fNM = EvalBSDFAtVertexNM(
-			vertices.back(),
-			-currentRay.Dir(),
-			pScat->ray.Dir(),
-			nm );
+#ifdef RISE_ENABLE_OPENPGL
+		// NM light subpath: training only (no guided sampling)
+		// Training sample collection (NM light subpath)
+		if( pGuidingField && !pGuidingField->IsTrained() &&
+			!pScat->isDelta && pScat->pdf > NEARZERO )
+		{
+			pGuidingField->AddSample(
+				v.position,
+				pScat->ray.Dir(),
+				ri.geometric.range,
+				selectProb * pScat->pdf,
+				fabs( betaNM ),
+				false
+				);
+		}
+#endif
+		// --- End path guiding ---
 
-		const Scalar cosTheta = fabs( Vector3Ops::Dot(
-			pScat->ray.Dir(), ri.geometric.vNormal ) );
+		// Compute effective scatter direction and PDF
+		Vector3 scatDir = pScat->ray.Dir();
+		Scalar effectivePdf = pScat->pdf;
 
-		Scalar pdf = pScat->pdf;
-		if( pdf <= 0 ) {
+		if( effectivePdf <= 0 ) {
 			break;
 		}
 
+		// Throughput update using valueNM
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
 		} else {
+			Scalar fNM = EvalBSDFAtVertexNM( vertices.back(), -currentRay.Dir(), scatDir, nm );
+			const Scalar cosTheta = fabs( Vector3Ops::Dot(
+				scatDir, ri.geometric.vNormal ) );
+
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * pdf);
+			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
 		}
 
 		// Russian Roulette
@@ -2733,7 +2868,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			}
 		}
 
-		pdfFwdPrev = selectProb * pdf;
+		pdfFwdPrev = selectProb * effectivePdf;
 
 		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 		if( pScat->isDelta ) {
@@ -2747,7 +2882,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
 			const Scalar revPdfSA = EvalPdfAtVertexNM(
-				curr, pScat->ray.Dir(), -currentRay.Dir(), nm );
+				curr, scatDir, -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
@@ -2820,6 +2955,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	Scalar pdfFwdPrev = pdfCamDir;
 	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
+
+#ifdef RISE_ENABLE_OPENPGL
+	static thread_local GuidingDistributionHandle guideDist;
+#endif
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -2964,28 +3103,108 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 		// --- End BSSRDF sampling ---
 
-		// Throughput update using valueNM
-		const Scalar fNM = EvalBSDFAtVertexNM(
-			vertices.back(),
-			pScat->ray.Dir(),
-			-currentRay.Dir(),
-			nm );
+#ifdef RISE_ENABLE_OPENPGL
+		// --- Path guiding: one-sample MIS (NM eye subpath) ---
+		bool usedGuidedDirection = false;
+		Ray guidedRay;
+		Scalar guidedFNM = 0;
+		Scalar guidedCombinedPdf = 0;
+		Scalar bsdfCombinedPdf = 0;
 
-		const Scalar cosTheta = fabs( Vector3Ops::Dot(
-			pScat->ray.Dir(), ri.geometric.vNormal ) );
+		if( pGuidingField && pGuidingField->IsTrained() &&
+			depth < maxGuidingDepth && !pScat->isDelta && vertices.back().isConnectible )
+		{
+			if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
+			{
+				pGuidingField->ApplyCosineProduct( guideDist, v.normal );
 
-		Scalar pdf = pScat->pdf;
-		if( pdf <= 0 ) {
+				const Scalar xi = sampler.Get1D();
+				const Scalar alpha = guidingAlpha;
+
+				if( xi < alpha )
+				{
+					Scalar guidePdf = 0;
+					const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+					const Vector3 guidedDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+					if( guidePdf > NEARZERO )
+					{
+						guidedFNM = EvalBSDFAtVertexNM(
+							vertices.back(), guidedDir, -currentRay.Dir(), nm );
+						const Scalar bsdfPdf = EvalPdfAtVertex(
+							vertices.back(), guidedDir, -currentRay.Dir() );
+
+						guidedCombinedPdf = alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
+
+						if( guidedCombinedPdf > NEARZERO && guidedFNM > NEARZERO )
+						{
+							usedGuidedDirection = true;
+							guidedRay = Ray( pScat->ray.origin, guidedDir );
+						}
+					}
+				}
+
+				if( !usedGuidedDirection )
+				{
+					const Scalar guidePdfForBsdfDir =
+						pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
+					bsdfCombinedPdf = alpha * guidePdfForBsdfDir +
+						(1.0 - alpha) * pScat->pdf;
+				}
+			}
+		}
+
+		// Training sample collection (NM eye subpath)
+		if( pGuidingField && !pGuidingField->IsTrained() &&
+			!pScat->isDelta && pScat->pdf > NEARZERO )
+		{
+			pGuidingField->AddSample(
+				v.position,
+				pScat->ray.Dir(),
+				ri.geometric.range,
+				selectProb * pScat->pdf,
+				fabs( betaNM ),
+				false
+				);
+		}
+#endif
+		// --- End path guiding ---
+
+		// Compute effective scatter direction and PDF
+		Vector3 scatDir = pScat->ray.Dir();
+		Scalar effectivePdf = pScat->pdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			scatDir = guidedRay.Dir();
+			effectivePdf = guidedCombinedPdf;
+		} else if( bsdfCombinedPdf > NEARZERO ) {
+			effectivePdf = bsdfCombinedPdf;
+		}
+#endif
+
+		if( effectivePdf <= 0 ) {
 			break;
 		}
 
+		// Throughput update using valueNM
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
 		} else {
+			Scalar fNM;
+#ifdef RISE_ENABLE_OPENPGL
+			fNM = usedGuidedDirection ? guidedFNM :
+				EvalBSDFAtVertexNM( vertices.back(), scatDir, -currentRay.Dir(), nm );
+#else
+			fNM = EvalBSDFAtVertexNM( vertices.back(), scatDir, -currentRay.Dir(), nm );
+#endif
+			const Scalar cosTheta = fabs( Vector3Ops::Dot(
+				scatDir, ri.geometric.vNormal ) );
+
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * pdf);
+			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
 		}
 
 		// Russian Roulette
@@ -2999,7 +3218,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			}
 		}
 
-		pdfFwdPrev = selectProb * pdf;
+		pdfFwdPrev = selectProb * effectivePdf;
 
 		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 		if( pScat->isDelta ) {
@@ -3012,7 +3231,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
 			const Scalar revPdfSA = EvalPdfAtVertexNM(
-				curr, pScat->ray.Dir(), -currentRay.Dir(), nm );
+				curr, scatDir, -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
 				Scalar(1.0) :
@@ -3022,7 +3241,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			currentRay = guidedRay;
+		} else {
+			currentRay = pScat->ray;
+		}
+#else
 		currentRay = pScat->ray;
+#endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
 		if( useIORStack && pScat->ior_stack ) {
 			iorStack = *pScat->ior_stack;

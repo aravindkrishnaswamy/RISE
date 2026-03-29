@@ -36,8 +36,12 @@ DEF_MAILBOXING = -DRISE_ENABLE_MAILBOXING
 # Turn this on to enable Intel Open Image Denoise post-processing
 DEF_OIDN = -DRISE_ENABLE_OIDN
 
-DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN)
+# Turn this on to enable Intel Open Path Guiding Library
+DEF_OPENPGL = -DRISE_ENABLE_OPENPGL
+
+DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN) $(DEF_OPENPGL)
 
 # libraries to link with
 LDLIBS_OIDN = -lOpenImageDenoise
-LDLIBS = -L/opt/homebrew/lib -lpng -lz $(LDLIBS_OIDN)
+LDLIBS_OPENPGL = -lopenpgl
+LDLIBS = -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_OIDN) $(LDLIBS_OPENPGL)

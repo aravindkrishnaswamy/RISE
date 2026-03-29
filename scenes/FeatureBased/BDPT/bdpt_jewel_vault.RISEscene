@@ -1,0 +1,955 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           bdpt_jewel_vault.RISEscene                                                              #
+#   Description:    Path guiding benchmark: "The Jewel Vault" — an enclosed gallery lit only                #
+#                   through a narrow horizontal slot window in the back wall.  Light enters                 #
+#                   as a thin band and must bounce multiple times off walls and objects to                  #
+#                   illuminate the space.  A partial divider wall creates a deep alcove where              #
+#                   objects receive 3+ bounce indirect light only.                                          #
+#                                                                                                           #
+#                   This scene is specifically designed to benefit from path guiding:                       #
+#                     - Tiny effective light source (narrow slot) = highly non-uniform illumination         #
+#                     - Lambertian walls = hemispherical BSDF sampling wastes ~90% of samples              #
+#                     - Divider alcove = 3+ bounce paths that are extremely hard to find                   #
+#                     - Glossy floor and metallic objects = complex indirect light transport                #
+#                                                                                                           #
+#                   Expected: path guiding gives 3-5x effective sample count improvement                   #
+#                   on the indirect illumination compared to unguided BDPT.                                 #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 28, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Bidirectional Path Tracing
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+bdpt_pel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.001
+	max_eye_depth		8
+	max_light_depth		6
+	samples				128
+	lum_samples			1
+	ior_stack			TRUE
+	sms_enabled			FALSE
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/bdpt_jewel_vault
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/bdpt_jewel_vault
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+#
+# Inside the vault, looking from the front-right
+# toward the back-left alcove.  The slot window
+# is visible as a bright band on the back wall,
+# with dramatic light spilling across the scene.
+##################################################
+
+pinhole_camera
+{
+	location			2.0 3.8 11.5
+	lookat				-1.0 2.0 3.5
+	up					0 1 0
+	width				512
+	height				384
+	fov					52.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# ---- Floor ----
+uniformcolor_painter
+{
+	name				pnt_floor_light
+	color				0.20 0.19 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_dark
+	color				0.07 0.07 0.08
+}
+
+checker_painter
+{
+	name				pnt_floor_checker
+	colora				pnt_floor_light
+	colorb				pnt_floor_dark
+	size				1.2
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_spec
+	color				0.05 0.05 0.06
+	colorspace			RISERGB
+}
+
+# ---- Room surfaces ----
+uniformcolor_painter
+{
+	name				pnt_ceiling
+	color				0.78 0.75 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_backwall
+	color				0.50 0.10 0.08
+}
+
+uniformcolor_painter
+{
+	name				pnt_leftwall
+	color				0.62 0.44 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_rightwall
+	color				0.15 0.33 0.44
+}
+
+uniformcolor_painter
+{
+	name				pnt_frontwall
+	color				0.38 0.36 0.33
+}
+
+# ---- Architectural elements ----
+uniformcolor_painter
+{
+	name				pnt_divider
+	color				0.52 0.50 0.46
+}
+
+uniformcolor_painter
+{
+	name				pnt_column
+	color				0.80 0.78 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_arch_trim
+	color				0.72 0.68 0.60
+}
+
+# ---- Pedestals ----
+uniformcolor_painter
+{
+	name				pnt_pedestal_white
+	color				0.85 0.83 0.78
+}
+
+uniformcolor_painter
+{
+	name				pnt_pedestal_dark
+	color				0.14 0.13 0.11
+}
+
+# ---- Copper metallic ----
+uniformcolor_painter
+{
+	name				pnt_copper_diff
+	color				0.10 0.04 0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_copper_spec
+	color				0.62 0.32 0.16
+	colorspace			RISERGB
+}
+
+# ---- Gold metallic ----
+uniformcolor_painter
+{
+	name				pnt_gold_diff
+	color				0.08 0.06 0.01
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold_spec
+	color				0.72 0.62 0.22
+	colorspace			RISERGB
+}
+
+# ---- Bronze metallic ----
+uniformcolor_painter
+{
+	name				pnt_bronze_diff
+	color				0.06 0.03 0.02
+}
+
+uniformcolor_painter
+{
+	name				pnt_bronze_spec
+	color				0.45 0.28 0.12
+	colorspace			RISERGB
+}
+
+# ---- Glass ----
+uniformcolor_painter
+{
+	name				pnt_clear_tau
+	color				0.998 0.998 0.998
+	colorspace			RISERGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_amber_tau
+	color				0.998 0.72 0.32
+	colorspace			RISERGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_sapphire_tau
+	color				0.35 0.55 0.998
+	colorspace			RISERGB
+}
+
+# ---- Light emitter (warm daylight through slot) ----
+uniformcolor_painter
+{
+	name				pnt_slot_light
+	color				1.0 0.93 0.82
+}
+
+##################################################
+# Materials
+##################################################
+
+# Floor: glossy dark polished stone
+ward_isotropic_material
+{
+	name				floor_mat
+	rd					pnt_floor_checker
+	rs					pnt_floor_spec
+	alpha				0.07
+}
+
+# Room surfaces
+lambertian_material
+{
+	name				ceiling_mat
+	reflectance			pnt_ceiling
+}
+
+orennayar_material
+{
+	name				backwall_mat
+	reflectance			pnt_backwall
+	roughness			0.25
+}
+
+lambertian_material
+{
+	name				leftwall_mat
+	reflectance			pnt_leftwall
+}
+
+lambertian_material
+{
+	name				rightwall_mat
+	reflectance			pnt_rightwall
+}
+
+lambertian_material
+{
+	name				frontwall_mat
+	reflectance			pnt_frontwall
+}
+
+lambertian_material
+{
+	name				divider_mat
+	reflectance			pnt_divider
+}
+
+lambertian_material
+{
+	name				column_mat
+	reflectance			pnt_column
+}
+
+lambertian_material
+{
+	name				arch_trim_mat
+	reflectance			pnt_arch_trim
+}
+
+# Pedestals
+lambertian_material
+{
+	name				pedestal_white_mat
+	reflectance			pnt_pedestal_white
+}
+
+lambertian_material
+{
+	name				pedestal_dark_mat
+	reflectance			pnt_pedestal_dark
+}
+
+# Copper: Ward isotropic, tight glossy
+ward_isotropic_material
+{
+	name				copper_mat
+	rd					pnt_copper_diff
+	rs					pnt_copper_spec
+	alpha				0.05
+}
+
+# Gold: Ashikmin-Shirley anisotropic (stretched highlights)
+ashikminshirley_anisotropicphong_material
+{
+	name				gold_mat
+	rd					pnt_gold_diff
+	rs					pnt_gold_spec
+	nu					250
+	nv					60
+}
+
+# Bronze: Ward isotropic, slightly rougher
+ward_isotropic_material
+{
+	name				bronze_mat
+	rd					pnt_bronze_diff
+	rs					pnt_bronze_spec
+	alpha				0.10
+}
+
+# Clear glass
+dielectric_material
+{
+	name				clear_glass_mat
+	tau					pnt_clear_tau
+	ior					1.52
+	scattering			100000.0
+}
+
+# Amber glass
+dielectric_material
+{
+	name				amber_glass_mat
+	tau					pnt_amber_tau
+	ior					1.58
+	scattering			100000.0
+}
+
+# Sapphire glass
+dielectric_material
+{
+	name				sapphire_glass_mat
+	tau					pnt_sapphire_tau
+	ior					1.77
+	scattering			100000.0
+}
+
+# Mirror
+perfectreflector_material
+{
+	name				mirror_mat
+	reflectance			color_white
+}
+
+# Slot window emitter -- very bright to compensate for tiny area
+lambertian_luminaire_material
+{
+	name				slot_light_mat
+	exitance			pnt_slot_light
+	scale				6000.0
+	material			none
+}
+
+##################################################
+# Geometry
+##################################################
+
+# Room: 14 wide x 8 tall x 14 deep
+# x: [-7, 7], y: [0, 8], z: [-1, 13]
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-7.0 0.0 -1.0
+	ptb					-7.0 0.0 13.0
+	ptc					7.0 0.0 13.0
+	ptd					7.0 0.0 -1.0
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					-7.0 0.0 13.0
+	ptb					-7.0 0.0 -1.0
+	ptc					7.0 0.0 -1.0
+	ptd					7.0 0.0 13.0
+}
+
+# Back wall: split into lower + upper panels with slot gap
+# Lower panel: y=0 to y=5.3 (full width)
+clippedplane_geometry
+{
+	name				backwall_lower_geom
+	pta					-7.0 5.3 -1.0
+	ptb					-7.0 0.0 -1.0
+	ptc					7.0 0.0 -1.0
+	ptd					7.0 5.3 -1.0
+}
+
+# Upper panel: y=5.8 to y=8 (full width)
+clippedplane_geometry
+{
+	name				backwall_upper_geom
+	pta					-7.0 8.0 -1.0
+	ptb					-7.0 5.8 -1.0
+	ptc					7.0 5.8 -1.0
+	ptd					7.0 8.0 -1.0
+}
+
+# Slot window gap: y=5.3 to y=5.8 at z=-1
+# Light enters here from the emitter behind the wall
+
+# Side wall (reused for left and right)
+clippedplane_geometry
+{
+	name				sidewallgeom
+	pta					0.0 8.0 13.0
+	ptb					0.0 0.0 13.0
+	ptc					0.0 0.0 -1.0
+	ptd					0.0 8.0 -1.0
+}
+
+# Front wall (behind camera)
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					7.0 8.0 13.0
+	ptb					7.0 0.0 13.0
+	ptc					-7.0 0.0 13.0
+	ptd					-7.0 8.0 13.0
+}
+
+# Slot window emitter: behind the back wall, shining through the gap
+# Panel at z=-1.5, spanning the gap height, angled to shine inward (+z)
+clippedplane_geometry
+{
+	name				slot_emitter_geom
+	pta					-5.5 5.35 -1.5
+	ptb					5.5 5.35 -1.5
+	ptc					5.5 5.75 -1.5
+	ptd					-5.5 5.75 -1.5
+}
+
+# Light channel walls: box above and below the slot to contain
+# light to the slot opening (prevents wrap-around leaking)
+box_geometry
+{
+	name				light_channel_top_geom
+	width				14.0
+	height				2.5
+	depth				0.6
+}
+
+box_geometry
+{
+	name				light_channel_bot_geom
+	width				14.0
+	height				5.5
+	depth				0.6
+}
+
+# Divider wall (thin box creating the alcove)
+box_geometry
+{
+	name				dividergeom
+	width				7.5
+	height				5.2
+	depth				0.12
+}
+
+# Columns
+cylinder_geometry
+{
+	name				columngeom
+	axis				y
+	radius				0.28
+	height				8.0
+}
+
+# Decorative arch trim (thin horizontal beam between column pairs)
+box_geometry
+{
+	name				archbeam_geom
+	width				0.22
+	height				0.22
+	depth				8.0
+}
+
+# ---- Object geometries ----
+
+sphere_geometry
+{
+	name				copper_sphere_geom
+	radius				0.75
+}
+
+torus_geometry
+{
+	name				glass_torus_geom
+	majorradius			0.80
+	minorratio			0.17
+}
+
+ellipsoid_geometry
+{
+	name				gold_ellipsoid_geom
+	radii				0.45 0.85 0.35
+}
+
+sphere_geometry
+{
+	name				mirror_sphere_geom
+	radius				0.45
+}
+
+sphere_geometry
+{
+	name				amber_sphere_geom
+	radius				0.55
+}
+
+sphere_geometry
+{
+	name				sapphire_sphere_geom
+	radius				0.38
+}
+
+# CSG lens: intersection of two spheres
+sphere_geometry
+{
+	name				lens_top_geom
+	radius				0.50
+}
+
+sphere_geometry
+{
+	name				lens_bot_geom
+	radius				0.50
+}
+
+standard_object
+{
+	name				lens_half_top
+	geometry			lens_top_geom
+	position			0 0.32 0
+	material			clear_glass_mat
+}
+
+standard_object
+{
+	name				lens_half_bot
+	geometry			lens_bot_geom
+	position			0 -0.32 0
+	material			clear_glass_mat
+}
+
+# Pedestal geometries
+box_geometry
+{
+	name				pedestal_tall_geom
+	width				1.1
+	height				1.2
+	depth				1.1
+}
+
+box_geometry
+{
+	name				pedestal_med_geom
+	width				0.9
+	height				0.9
+	depth				0.9
+}
+
+box_geometry
+{
+	name				pedestal_short_geom
+	width				0.7
+	height				0.65
+	depth				0.7
+}
+
+cylinder_geometry
+{
+	name				pedestal_round_geom
+	axis				y
+	radius				0.40
+	height				1.0
+}
+
+##################################################
+# Room structure
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	position			0 8.0 0
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				backwall_lower
+	geometry			backwall_lower_geom
+	material			backwall_mat
+}
+
+standard_object
+{
+	name				backwall_upper
+	geometry			backwall_upper_geom
+	material			backwall_mat
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			sidewallgeom
+	position			-7.0 0 0
+	material			leftwall_mat
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			sidewallgeom
+	position			7.0 0 0
+	material			rightwall_mat
+}
+
+standard_object
+{
+	name				frontwall
+	geometry			frontwallgeom
+	material			frontwall_mat
+}
+
+##################################################
+# Slot window light + channel
+#
+# The emitter sits behind the back wall (z=-1.5)
+# and shines through the 0.5-unit slot gap.
+# Channel walls above/below prevent light from
+# wrapping around the wall edges.
+##################################################
+
+standard_object
+{
+	name				slot_emitter
+	geometry			slot_emitter_geom
+	material			slot_light_mat
+}
+
+standard_object
+{
+	name				light_channel_top
+	geometry			light_channel_top_geom
+	position			0 6.85 -1.25
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				light_channel_bot
+	geometry			light_channel_bot_geom
+	position			0 2.65 -1.25
+	material			ceiling_mat
+}
+
+##################################################
+# Divider wall
+#
+# Partial-height wall creating a shadowed alcove.
+# Extends from x=-7 to x=0.5, y=0 to y=5.2,
+# positioned at z=6.
+# Objects behind this wall (z > 6) are lit only
+# by multi-bounce indirect light.
+##################################################
+
+standard_object
+{
+	name				divider
+	geometry			dividergeom
+	position			-3.25 2.6 6.0
+	material			divider_mat
+}
+
+##################################################
+# Columns (4 pairs framing the gallery)
+##################################################
+
+standard_object
+{
+	name				col_back_left
+	geometry			columngeom
+	position			-5.8 4.0 0.5
+	material			column_mat
+}
+
+standard_object
+{
+	name				col_back_right
+	geometry			columngeom
+	position			5.8 4.0 0.5
+	material			column_mat
+}
+
+standard_object
+{
+	name				col_mid_left
+	geometry			columngeom
+	position			-5.8 4.0 5.0
+	material			column_mat
+}
+
+standard_object
+{
+	name				col_mid_right
+	geometry			columngeom
+	position			5.8 4.0 5.0
+	material			column_mat
+}
+
+standard_object
+{
+	name				col_front_left
+	geometry			columngeom
+	position			-5.8 4.0 9.5
+	material			column_mat
+}
+
+standard_object
+{
+	name				col_front_right
+	geometry			columngeom
+	position			5.8 4.0 9.5
+	material			column_mat
+}
+
+# Horizontal beams connecting column pairs (architectural trim)
+standard_object
+{
+	name				beam_left
+	geometry			archbeam_geom
+	position			-5.8 7.6 4.75
+	material			arch_trim_mat
+}
+
+standard_object
+{
+	name				beam_right
+	geometry			archbeam_geom
+	position			5.8 7.6 4.75
+	material			arch_trim_mat
+}
+
+##################################################
+# Pedestals
+##################################################
+
+# Copper sphere pedestal (bright zone, near slot light)
+standard_object
+{
+	name				ped_copper
+	geometry			pedestal_tall_geom
+	position			2.5 0.6 3.0
+	material			pedestal_white_mat
+}
+
+# Glass torus: sits directly on the floor (no pedestal)
+
+# Gold ellipsoid pedestal (alcove, behind divider)
+standard_object
+{
+	name				ped_gold
+	geometry			pedestal_med_geom
+	position			-3.8 0.45 8.5
+	material			pedestal_dark_mat
+}
+
+# Amber sphere pedestal (deep in alcove)
+standard_object
+{
+	name				ped_amber
+	geometry			pedestal_round_geom
+	position			-5.2 0.5 7.0
+	material			pedestal_dark_mat
+}
+
+# CSG lens pedestal (bright zone)
+standard_object
+{
+	name				ped_lens
+	geometry			pedestal_short_geom
+	position			-2.5 0.325 2.5
+	material			pedestal_white_mat
+}
+
+# Bronze sphere pedestal (right side, moderate indirect)
+standard_object
+{
+	name				ped_bronze
+	geometry			pedestal_med_geom
+	position			4.0 0.45 7.5
+	material			pedestal_white_mat
+}
+
+##################################################
+# Display objects
+#
+# BRIGHT ZONE (z < 6, near slot window):
+#   - Copper sphere: large, glossy metallic, catches slot light
+#   - CSG glass lens: focuses caustics on the floor
+#   - Sapphire sphere: small accent, catches colored reflections
+#
+# ALCOVE ZONE (z > 6, behind divider):
+#   - Gold ellipsoid: anisotropic highlights, deep indirect
+#   - Amber glass sphere: warm colored glass in shadow
+#   - Bronze sphere: darker metal, picks up wall color bounces
+#
+# TRANSITION (near divider):
+#   - Glass torus: standing upright, creates refractive caustics
+#   - Mirror sphere: reflects both zones, creates visual connection
+##################################################
+
+# ---- Bright zone ----
+
+# Copper sphere on tall white pedestal
+standard_object
+{
+	name				copper_sphere
+	geometry			copper_sphere_geom
+	position			2.5 1.95 3.0
+	material			copper_mat
+}
+
+# CSG glass lens on short pedestal (focuses slot light into caustic)
+csg_object
+{
+	name				glass_lens
+	obja				lens_half_top
+	objb				lens_half_bot
+	operation			intersection
+	position			-2.5 1.0 2.5
+	orientation			15 0 10
+}
+
+# Small sapphire sphere directly on the floor (accent piece)
+standard_object
+{
+	name				sapphire_sphere
+	geometry			sapphire_sphere_geom
+	position			0.5 0.38 1.5
+	material			sapphire_glass_mat
+}
+
+# ---- Transition zone (near divider) ----
+
+# Glass torus standing upright, slight lean
+standard_object
+{
+	name				glass_torus
+	geometry			glass_torus_geom
+	position			-1.0 0.94 5.2
+	orientation			90 20 0
+	material			clear_glass_mat
+}
+
+# Mirror sphere on the floor (right side of divider gap)
+standard_object
+{
+	name				mirror_sphere
+	geometry			mirror_sphere_geom
+	position			2.0 0.45 5.8
+	material			mirror_mat
+}
+
+# ---- Alcove zone (behind divider, indirect light only) ----
+
+# Gold ellipsoid on dark pedestal
+standard_object
+{
+	name				gold_ellipsoid
+	geometry			gold_ellipsoid_geom
+	position			-3.8 1.75 8.5
+	material			gold_mat
+}
+
+# Amber glass sphere on round pedestal
+standard_object
+{
+	name				amber_sphere
+	geometry			amber_sphere_geom
+	position			-5.2 1.55 7.0
+	material			amber_glass_mat
+}
+
+# Bronze sphere on white pedestal (right side, moderate indirect)
+standard_object
+{
+	name				bronze_sphere
+	geometry			copper_sphere_geom
+	position			4.0 1.65 7.5
+	material			bronze_mat
+}

@@ -4335,7 +4335,8 @@ namespace RISE
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased,
 								const unsigned int smsBernoulliTrials,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								const PathGuidingConfig& guidingConfig
 								)
 	{
 		if( !ppi ) {
@@ -4352,7 +4353,7 @@ namespace RISE
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 		}
 
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig );
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4390,7 +4391,8 @@ namespace RISE
 								const unsigned int smsMaxChainDepth,
 								const bool smsBiased,
 								const unsigned int smsBernoulliTrials,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								const PathGuidingConfig& guidingConfig
 								)
 	{
 		if( !ppi ) {
@@ -4409,7 +4411,7 @@ namespace RISE
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );

@@ -1373,6 +1373,9 @@
 		F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */; };
 		F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
 		F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
+		F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
+		F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
+		F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2091,6 +2094,8 @@
 		F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AOVBuffers.cpp; sourceTree = "<group>"; };
 		F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OIDNDenoiser.h; sourceTree = "<group>"; };
 		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
+		F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathGuidingField.h; sourceTree = "<group>"; };
+		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2924,6 +2929,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */,
+				F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */,
 				F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */,
 				F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */,
 				F2C5D5D62F70D4D000546C97 /* HankelTransform.h */,
@@ -3301,6 +3308,7 @@
 				F27F0B62069C42910069C9E5 /* PerfectReflectorMaterial.h in Headers */,
 				F27F0B64069C42910069C9E5 /* PerfectReflectorSPF.h in Headers */,
 				F27F0B65069C42910069C9E5 /* PerfectRefractorMaterial.h in Headers */,
+				F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */,
 				F27F0B67069C42910069C9E5 /* PerfectRefractorSPF.h in Headers */,
 				F27F0B69069C42910069C9E5 /* PhongEmitter.h in Headers */,
 				F27F0B6A069C42910069C9E5 /* PhongLuminaireMaterial.h in Headers */,
@@ -3716,6 +3724,7 @@
 				F27F0B21069C42910069C9E5 /* DirectionalLight.cpp in Sources */,
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
 				F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */,
+				F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */,
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
 				F27F0B33069C42910069C9E5 /* ObjectManager.cpp in Sources */,
@@ -4127,6 +4136,7 @@
 				F24B72BC2F52A632008304C4 /* ShaderManager.h in Sources */,
 				F24B72BD2F52A632008304C4 /* DataDrivenBSDF.cpp in Sources */,
 				F24B72BE2F52A632008304C4 /* DataDrivenBSDF.h in Sources */,
+				F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F24B72BF2F52A632008304C4 /* DataDrivenMaterial.h in Sources */,
 				F24B72C02F52A632008304C4 /* TranslucentBSDF.cpp in Sources */,
 				F24B72C12F52A632008304C4 /* TranslucentBSDF.h in Sources */,
@@ -4606,6 +4616,7 @@
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
 					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4650,6 +4661,7 @@
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
 					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4693,6 +4705,7 @@
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
 					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4897,6 +4910,7 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+					/opt/homebrew/lib,
 				);
 				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -4911,6 +4925,7 @@
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
 					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -4922,6 +4937,7 @@
 					"-lIex",
 					"-lIlmThread",
 					"-lOpenImageDenoise",
+					"-lopenpgl",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -5008,6 +5024,7 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+					/opt/homebrew/lib,
 				);
 				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
@@ -5022,6 +5039,7 @@
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
 					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -5033,6 +5051,7 @@
 					"-lIex",
 					"-lIlmThread",
 					"-lOpenImageDenoise",
+					"-lopenpgl",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -5119,6 +5138,7 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+					/opt/homebrew/lib,
 				);
 				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
@@ -5133,6 +5153,7 @@
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
 					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -5144,6 +5165,7 @@
 					"-lIex",
 					"-lIlmThread",
 					"-lOpenImageDenoise",
+					"-lopenpgl",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";

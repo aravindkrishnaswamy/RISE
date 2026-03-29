@@ -27,6 +27,7 @@
 #include "SplatFilm.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/PathGuidingField.h"
 
 namespace RISE
 {
@@ -58,6 +59,11 @@ namespace RISE
 			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
 #endif
 
+#ifdef RISE_ENABLE_OPENPGL
+			mutable PathGuidingField*	pGuidingField;	///< Learned radiance distribution for guided sampling
+#endif
+			PathGuidingConfig		guidingConfig;		///< Path guiding configuration
+
 			virtual ~BDPTRasterizerBase();
 
 			/// Returns a scaling factor for splat film resolution.
@@ -76,7 +82,8 @@ namespace RISE
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
-				const ManifoldSolverConfig& smsConfig
+				const ManifoldSolverConfig& smsConfig,
+				const PathGuidingConfig& guidingCfg
 				);
 
 			void RasterizeScene(

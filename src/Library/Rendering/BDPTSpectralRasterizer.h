@@ -96,7 +96,8 @@ namespace RISE
 				const Scalar lambda_end,
 				const unsigned int num_wavelengths,
 				const unsigned int spectralSamples,
-				const ManifoldSolverConfig& smsConfig
+				const ManifoldSolverConfig& smsConfig,
+				const PathGuidingConfig& guidingConfig
 				);
 		};
 	}

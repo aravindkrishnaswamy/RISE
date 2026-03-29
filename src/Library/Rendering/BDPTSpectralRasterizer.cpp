@@ -47,10 +47,11 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const Scalar lambda_end_,
 	const unsigned int num_wavelengths_,
 	const unsigned int spectralSamples,
-	const ManifoldSolverConfig& smsConfig
+	const ManifoldSolverConfig& smsConfig,
+	const PathGuidingConfig& guidingConfig
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig ),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig ),
   PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples )
 {
 }

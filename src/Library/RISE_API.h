@@ -2038,7 +2038,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2060,7 +2061,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer

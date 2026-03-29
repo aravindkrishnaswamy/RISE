@@ -34,6 +34,7 @@
 #include "../Utilities/Profiling.h"
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
+#include "../RISE_API.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -42,7 +43,8 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
-	const ManifoldSolverConfig& smsConfig
+	const ManifoldSolverConfig& smsConfig,
+	const PathGuidingConfig& guidingCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   pIntegrator( 0 ),
@@ -53,6 +55,10 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 #ifdef RISE_ENABLE_OIDN
   ,pAOVBuffers( 0 )
 #endif
+#ifdef RISE_ENABLE_OPENPGL
+  ,pGuidingField( 0 )
+#endif
+  ,guidingConfig( guidingCfg )
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
 	pIntegrator->addref();
@@ -74,6 +80,9 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 #ifdef RISE_ENABLE_OIDN
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
+#endif
+#ifdef RISE_ENABLE_OPENPGL
+	safe_release( pGuidingField );
 #endif
 }
 
@@ -126,6 +135,97 @@ void BDPTRasterizerBase::RasterizeScene(
 		mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
 	}
 	mSplatTotalSamples *= GetSplatSampleScale();
+
+#ifdef RISE_ENABLE_OPENPGL
+	// Path guiding: training phase
+	safe_release( pGuidingField );
+	if( guidingConfig.enabled )
+	{
+		// Scene bounds for the guiding field's spatial structure.
+		// OpenPGL's KD-tree adapts based on actual sample positions,
+		// so a generous default bounding box works fine.
+		Point3 boundsMin( -1e4, -1e4, -1e4 );
+		Point3 boundsMax( 1e4, 1e4, 1e4 );
+
+		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
+		pGuidingField->addref();
+
+		// Set the guiding field on the integrator (training mode: collect samples, no guiding)
+		pIntegrator->SetGuidingField( pGuidingField, guidingConfig.alpha, guidingConfig.maxGuidingDepth );
+
+		// Run training iterations
+		for( unsigned int trainIter = 0; trainIter < guidingConfig.trainingIterations; trainIter++ )
+		{
+			pGuidingField->BeginTrainingIteration();
+
+			// Use a temporary low-spp sampling object for training
+			ISampling2D* pTrainSampling = 0;
+			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
+			if( pTrainSampling ) {
+				pTrainSampling->SetNumSamples( guidingConfig.trainingSPP );
+			}
+
+			ISampling2D* pSavedSampling = pSampling;
+			const_cast<BDPTRasterizerBase*>(this)->pSampling = pTrainSampling;
+
+			// Create a temporary image for training (results are discarded)
+			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+
+			// Create a temporary splat film for training
+			SplatFilm* pTrainSplat = new SplatFilm( width, height );
+			pTrainSplat->addref();
+			SplatFilm* pSavedSplat = pSplatFilm;
+			pSplatFilm = pTrainSplat;
+			mSplatTotalSamples = static_cast<Scalar>( guidingConfig.trainingSPP ) * GetSplatSampleScale();
+
+			if( pProgressFunc ) {
+				char title[128];
+				snprintf( title, sizeof(title), "Path Guiding Training [%u/%u]: ", trainIter+1, guidingConfig.trainingIterations );
+				pProgressFunc->SetTitle( title );
+			}
+
+			// Single-threaded training to avoid thread-safety issues with AddSample
+			{
+				RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
+
+				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
+				pTrainBlocks->addref();
+				unsigned int startx, starty, endx, endy;
+				BoundsFromRect( startx, starty, endx, endy, pRect, width, height );
+				pTrainBlocks->Begin( startx, endx, starty, endy );
+
+				const unsigned int numseq = pTrainBlocks->NumRegions();
+				for( unsigned int i=0; i<numseq; i++ ) {
+					const Rect rect = pTrainBlocks->GetNextRegion();
+					if( pProgressFunc && i>0 ) {
+						pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) );
+					}
+					SPRasterizeSingleBlock( rc, *pTrainImage, pScene, rect, height );
+				}
+				safe_release( pTrainBlocks );
+			}
+
+			// Restore state
+			pSplatFilm = pSavedSplat;
+			safe_release( pTrainSplat );
+			safe_release( pTrainImage );
+			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
+			safe_release( pTrainSampling );
+
+			pGuidingField->EndTrainingIteration();
+		}
+
+		// Restore splat total samples for main render
+		mSplatTotalSamples = 1.0;
+		if( pSampling ) {
+			mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+		}
+		mSplatTotalSamples *= GetSplatSampleScale();
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"PathGuidingField:: Training phase complete" );
+	}
+#endif
 
 	// Create the primary image and a scratch copy for progressive output
 	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
@@ -235,6 +335,12 @@ void BDPTRasterizerBase::RasterizeScene(
 #ifdef RISE_ENABLE_OIDN
 	delete pAOVBuffers;
 	pAOVBuffers = 0;
+#endif
+#ifdef RISE_ENABLE_OPENPGL
+	if( pGuidingField ) {
+		pIntegrator->SetGuidingField( 0, 0, 0 );
+	}
+	safe_release( pGuidingField );
 #endif
 }
 

@@ -67,7 +67,8 @@ namespace RISE
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
-				const ManifoldSolverConfig& smsConfig
+				const ManifoldSolverConfig& smsConfig,
+				const PathGuidingConfig& guidingConfig
 				);
 		};
 	}
