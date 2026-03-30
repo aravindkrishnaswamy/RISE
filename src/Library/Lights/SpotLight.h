@@ -36,8 +36,6 @@ namespace RISE
 			Scalar		dInnerAngle;		// angle for the core of the light
 			Scalar		dOuterAngle;		// angle for the very outside reaches of the light
 			RISEPel		cColor;
-			Scalar		linearAttenuation;
-			Scalar		quadraticAttenuation;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
 			Vector3		vDirection;
@@ -118,9 +116,7 @@ namespace RISE
 				const Scalar inner,
 				const Scalar outer,
 				const RISEPel& c,
-				const Scalar linearAtten,
-				const Scalar quadraticAtten,
-				const bool shootPhotons = true
+				const bool shootPhotons
 				);
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;

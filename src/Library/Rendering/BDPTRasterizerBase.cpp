@@ -270,18 +270,18 @@ void BDPTRasterizerBase::RasterizeScene(
 		return;
 	}
 
-	// Initialize the light sampler from the scene
-	LightSampler* pLS = new LightSampler();
-	pIntegrator->SetLightSampler( pLS );
-	safe_release( pLS );
-
 	// Acquire scene dimensions
 	const unsigned int width = pScene.GetCamera()->GetWidth();
 	const unsigned int height = pScene.GetCamera()->GetHeight();
 
 	// Training can cast probe rays to estimate incident radiance,
 	// so the ray caster needs the scene attached before training starts.
+	// AttachScene also creates and Prepare()s the unified LightSampler.
 	pCaster->AttachScene( &pScene );
+
+	// Share the RayCaster's prepared LightSampler with the integrator
+	const LightSampler* pLS = pCaster->GetLightSampler();
+	pIntegrator->SetLightSampler( pLS );
 
 	// Create the splat film for s<=1 strategies
 	safe_release( pSplatFilm );

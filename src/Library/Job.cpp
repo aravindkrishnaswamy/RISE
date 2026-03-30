@@ -2684,13 +2684,11 @@ bool Job::AddPointOmniLight(
 	const double power,										///< [in] Power of the light in watts
 	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
 	const double pos[3],									///< [in] Position of the light
-	const double linearAttenuation,							///< [in] Amount of linear attenuation
-	const double quadraticAttenuation,						///< [in] Amount of quadratic attenuation
 	const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 	)
 {
 	ILightPriv* pLight = 0;
-	RISE_API_CreatePointOmniLight( &pLight, power, sRGBPel(srgb), linearAttenuation, quadraticAttenuation, shootPhotons );
+	RISE_API_CreatePointOmniLight( &pLight, power, sRGBPel(srgb), shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
 	pLightManager->AddItem( pLight, name );
@@ -2708,13 +2706,11 @@ bool Job::AddPointSpotLight(
 	const double inner,										///< [in] Angle of the inner cone in radians
 	const double outer,										///< [in] Angle of the outer cone in radians
 	const double pos[3],									///< [in] Position of the light
-	const double linearAttenuation,							///< [in] Amount of linear attenuation
-	const double quadraticAttenuation,						///< [in] Amount of quadratic attenuation
 	const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 	)
 {
 	ILightPriv* pLight = 0;
-	RISE_API_CreatePointSpotLight( &pLight, power, sRGBPel(srgb),Point3(foc), inner, outer, linearAttenuation, quadraticAttenuation, shootPhotons );
+	RISE_API_CreatePointSpotLight( &pLight, power, sRGBPel(srgb), Point3(foc), inner, outer, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
 	pLightManager->AddItem( pLight, name );

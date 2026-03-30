@@ -520,12 +520,12 @@ void MLTRasterizer::RasterizeScene(
 	const unsigned int width = pCamera->GetWidth();
 	const unsigned int height = pCamera->GetHeight();
 
-	// Initialize the light sampler from the scene
-	LightSampler* pLS = new LightSampler();
-	pIntegrator->SetLightSampler( pLS );
-	safe_release( pLS );
-
+	// AttachScene creates and Prepare()s the unified LightSampler
 	pCaster->AttachScene( &pScene );
+
+	// Share the RayCaster's prepared LightSampler with the integrator
+	const LightSampler* pLS = pCaster->GetLightSampler();
+	pIntegrator->SetLightSampler( pLS );
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Starting PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap samples: %u, Chains: %u, Mutations/pixel: %u, Large step prob: %.2f",

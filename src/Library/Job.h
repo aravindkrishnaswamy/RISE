@@ -895,9 +895,7 @@ namespace RISE
 			const double power,										///< [in] Power of the light in watts
 			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
 			const double pos[3],									///< [in] Position of the light
-			const double linearAttenuation,							///< [in] Amount of linear attenuation
-			const double quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-			const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			);
 
 		//! Creates a infinite point spot light
@@ -910,9 +908,7 @@ namespace RISE
 			const double inner,										///< [in] Angle of the inner cone in radians
 			const double outer,										///< [in] Angle of the outer cone in radians
 			const double pos[3],									///< [in] Position of the light
-			const double linearAttenuation,							///< [in] Amount of linear attenuation
-			const double quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-			const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			);
 
 		//! Creates the ambient light

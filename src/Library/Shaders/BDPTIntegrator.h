@@ -97,7 +97,7 @@ namespace RISE
 		protected:
 			unsigned int		maxEyeDepth;
 			unsigned int		maxLightDepth;
-			LightSampler*		pLightSampler;
+			const LightSampler*	pLightSampler;
 			ManifoldSolver*		pManifoldSolver;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -142,7 +142,7 @@ namespace RISE
 				unsigned int maxLight
 				);
 
-			void SetLightSampler( LightSampler* pSampler );
+			void SetLightSampler( const LightSampler* pSampler );
 			void SetManifoldSolver( ManifoldSolver* pSolver );
 
 #ifdef RISE_ENABLE_OPENPGL

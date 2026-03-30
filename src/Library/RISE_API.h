@@ -211,9 +211,7 @@ namespace RISE
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
 		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
-		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-		const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		);
 
 	//! Creates a infinite point spot light
@@ -225,9 +223,7 @@ namespace RISE
 		const Point3& foc,										///< [in] Point the center of the light is focussing on
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
-		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-		const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		);
 
 	//! Creates the ambient light

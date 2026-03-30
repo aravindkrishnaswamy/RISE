@@ -558,7 +558,7 @@ void BDPTIntegrator::SetManifoldSolver( ManifoldSolver* pSolver )
 	pManifoldSolver = pSolver;
 }
 
-void BDPTIntegrator::SetLightSampler( LightSampler* pSampler )
+void BDPTIntegrator::SetLightSampler( const LightSampler* pSampler )
 {
 	if( pSampler == pLightSampler ) {
 		return;

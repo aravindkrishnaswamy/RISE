@@ -24,6 +24,8 @@ namespace RISE
 	class Ray;
 	class IScene;
 
+	namespace Implementation { class LightSampler; }
+
 	namespace Implementation
 	{
 		class RayCaster : 
@@ -34,6 +36,7 @@ namespace RISE
 			const IScene*				pScene;
 			const IShader&				pDefaultShader;
 			ILuminaryManager*			pLuminaryManager;
+			LightSampler*				pLightSampler;
 			ISampling2D*				pLumSampling;
 
 			bool						bConsiderRMapAsBackground;
@@ -132,6 +135,9 @@ namespace RISE
 
 			/// \return The luminary manager for the current scene
 			const ILuminaryManager* GetLuminaries() const { return pLuminaryManager; };
+
+			/// \return The unified light sampler for the current scene
+			const LightSampler* GetLightSampler() const { return pLightSampler; };
 
 			/// \return True when the ray caster tracks a per-ray IOR stack
 			inline bool UsesIORStack() const { return bIORStack; }

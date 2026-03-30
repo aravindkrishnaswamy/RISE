@@ -27,6 +27,8 @@ namespace RISE
 	class IORStack;
 	struct RuntimeContext;
 
+	namespace Implementation { class LightSampler; }
+
 	//! A ray caster traces a ray generated on the virtual screen and traces it through the 
 	//! scene
 	/// \sa IPixelTracer
@@ -134,6 +136,9 @@ namespace RISE
 
 		/// \return The luminary manager for the current scene
 		virtual const ILuminaryManager* GetLuminaries() const = 0;
+
+		/// \return The unified light sampler for the current scene, or NULL if not available
+		virtual const Implementation::LightSampler* GetLightSampler() const = 0;
 	};
 }
 

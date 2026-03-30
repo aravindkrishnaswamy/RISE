@@ -1,14 +1,21 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  LightSampler.h - Light source sampling with explicit PDFs for
-//  bidirectional path tracing.
+//  LightSampler.h - Unified light source sampling with explicit
+//  PDFs for path tracing and bidirectional path tracing.
 //
-//  BDPT requires explicit PDF values for every sampling decision
-//  (light selection, position on surface, emission direction) so
-//  that MIS weights can be computed.  The existing RISE light
-//  classes (SpotLight, PointLight, mesh luminaries) provide
-//  generateRandomPhoton() but no PDF queries.  LightSampler wraps
-//  these with explicit PDF computation.
+//  Provides two services:
+//
+//  1. EMISSION SAMPLING (SampleLight) — used by BDPT to start
+//     light subpaths.  Selects a light proportional to exitance,
+//     samples position and direction, returns explicit PDFs.
+//
+//  2. DIRECT LIGHTING (EvaluateDirectLighting) — used by both PT
+//     and BDPT for next-event estimation (NEE).  Selects one light
+//     (non-mesh or mesh) proportional to exitance, evaluates shadow
+//     visibility and BRDF, and applies MIS weights against BSDF
+//     sampling.  Lights with zero exitance (ambient, directional)
+//     are evaluated deterministically since they cannot participate
+//     in proportional selection.
 //
 //  LIGHT SELECTION:
 //  Lights are selected proportional to their radiant exitance
@@ -21,6 +28,17 @@
 //    pdfDirection queried from the light via pdfDirection().
 //  - Mesh luminaries: uniform position on surface (pdfPos=1/area),
 //    cosine-weighted hemisphere direction (pdfDir=cos/pi).
+//
+//  MIS FOR DIRECT LIGHTING:
+//  - Delta lights (point/spot): no MIS needed (only one sampling
+//    strategy can reach a delta position).
+//  - Area lights (mesh luminaries): power heuristic MIS weight
+//    using the combined PDF (pdfSelect * solid-angle PDF) vs the
+//    BSDF sampling PDF.
+//
+//  Call Prepare() once after the scene is attached to cache the
+//  light list, luminaries list, and total exitance.  All query
+//  methods then use the cached state.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -37,6 +55,7 @@
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
+#include "../Interfaces/IBSDF.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/Reference.h"
@@ -45,6 +64,9 @@
 
 namespace RISE
 {
+	class IRayCaster;
+	class IMaterial;
+
 	namespace Implementation
 	{
 		/// Describes a sampled emission event from a light or mesh luminary
@@ -62,16 +84,32 @@ namespace RISE
 			const IObject*	pLuminary;		///< Non-null for mesh lights
 		};
 
-		/// Wraps existing light/luminaire sampling with explicit PDF computation
-		/// for bidirectional path tracing.  Light selection is proportional to
-		/// radiant exitance, following the same strategy as PhotonTracer.
+		/// Unified light sampling utility shared by PT and BDPT.
+		///
+		/// Wraps existing light/luminaire sampling with explicit PDF
+		/// computation and provides a single-call NEE evaluator that
+		/// handles both non-mesh lights and mesh luminaries with
+		/// correct MIS weights.
 		class LightSampler : public virtual Reference
 		{
 		protected:
 			virtual ~LightSampler();
 
+			// Cached state set by Prepare()
+			const IScene*									pPreparedScene;
+			const LuminaryManager::LuminariesList*			pPreparedLuminaries;
+			Scalar											cachedTotalExitance;
+
 		public:
 			LightSampler();
+
+			/// Cache the scene and luminaries list for subsequent queries.
+			/// Must be called once after the scene is fully attached and
+			/// the luminary list is built (e.g. in RayCaster::AttachScene).
+			void Prepare(
+				const IScene& scene,								///< [in] The scene containing lights
+				const LuminaryManager::LuminariesList& luminaries	///< [in] List of mesh luminaries
+				);
 
 			/// Selects a light proportional to exitance, samples an emission
 			/// position and direction, and fills the LightSample struct.
@@ -96,6 +134,49 @@ namespace RISE
 			Scalar PdfSelectLuminary(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
+				const IObject& luminary								///< [in] The luminary to query
+				) const;
+
+			//
+			// Unified direct lighting evaluation (NEE)
+			//
+
+			/// Evaluates direct lighting at a shading point by selecting
+			/// one light source proportional to exitance and computing
+			/// the shadowed, BRDF-weighted, MIS-weighted contribution.
+			///
+			/// Lights with zero exitance (ambient, directional) are
+			/// evaluated deterministically outside the stochastic
+			/// selection to preserve backward compatibility.
+			///
+			/// \return Direct lighting contribution (RGB)
+			RISEPel EvaluateDirectLighting(
+				const RayIntersectionGeometric& ri,					///< [in] Geometric intersection at shading point
+				const IBSDF& brdf,									///< [in] BRDF at the shading point
+				const IMaterial* pMaterial,							///< [in] Material at shading point (for BSDF PDF query)
+				const IRayCaster& caster,							///< [in] Ray caster for shadow tests
+				ISampler& sampler,									///< [in] Low-discrepancy sampler
+				const IObject* pShadingObject						///< [in] Object being shaded (to skip self-illumination)
+				) const;
+
+			/// Spectral variant of EvaluateDirectLighting.
+			/// \return Direct lighting contribution for a single wavelength
+			Scalar EvaluateDirectLightingNM(
+				const RayIntersectionGeometric& ri,					///< [in] Geometric intersection at shading point
+				const IBSDF& brdf,									///< [in] BRDF at the shading point
+				const IMaterial* pMaterial,							///< [in] Material at shading point (for BSDF PDF query)
+				const Scalar nm,									///< [in] Wavelength in nanometers
+				const IRayCaster& caster,							///< [in] Ray caster for shadow tests
+				ISampler& sampler,									///< [in] Low-discrepancy sampler
+				const IObject* pShadingObject						///< [in] Object being shaded (to skip self-illumination)
+				) const;
+
+			/// Returns the exitance-proportional selection probability
+			/// for a given mesh luminary using cached total exitance.
+			/// Intended for MIS weight computation when a BSDF-sampled
+			/// ray hits an emitter (the "other strategy" PDF).
+			/// \return Selection probability, or 0 if luminary has no emitter
+			Scalar CachedPdfSelectLuminary(
 				const IObject& luminary								///< [in] The luminary to query
 				) const;
 

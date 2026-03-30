@@ -454,7 +454,10 @@ void PathTracingShaderOp::PerformOperation(
 			const RISEPel rawEmission = emission;
 			Scalar emissionMiWeight = 1.0;
 
-			// MIS weight for BSDF-sampled emission hitting a mesh light
+			// MIS weight for BSDF-sampled emission hitting a mesh light.
+			// The NEE strategy uses unified light selection with
+			// probability pdfSelect, so the combined NEE PDF in solid
+			// angle is:  p_nee = pdfSelect * dist^2 / (area * cosLight)
 			if( rs.bsdfPdf > 0 && ri.pObject )
 			{
 				const Scalar area = ri.pObject->GetArea();
@@ -468,7 +471,21 @@ void PathTracingShaderOp::PerformOperation(
 							Vector3Ops::mkVector3(
 								ri.geometric.ptIntersection,
 								ri.geometric.ray.origin ) );
-						const Scalar p_nee = (dist * dist) / (area * cosLight);
+
+						// Include the selection probability from the
+						// unified light sampler in the NEE PDF
+						Scalar pdfSelect = 1.0;
+						const LightSampler* pLS = caster.GetLightSampler();
+						if( pLS )
+						{
+							pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
+							if( pdfSelect <= 0 )
+							{
+								pdfSelect = 1.0;
+							}
+						}
+
+						const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
 						emissionMiWeight = w_bsdf;
 						emission = emission * w_bsdf;
@@ -563,41 +580,29 @@ void PathTracingShaderOp::PerformOperation(
 	// PART 2: NEE + SMS at diffuse/glossy surfaces
 	// ================================================================
 
-	// --- 2a: NEE for non-mesh lights (point, spot, directional) ---
-	// These have delta position, so MIS weight = 1.0 always.
-	const ILightManager* pLM = pScene->GetLights();
-	if( pLM ) {
-		RISEPel directNonMesh( 0, 0, 0 );
-		pLM->ComputeDirectLighting( ri.geometric, caster, *pBRDF,
-			ri.pObject->DoesReceiveShadows(), directNonMesh );
-		c = c + directNonMesh;
-
-#ifdef RISE_ENABLE_OPENPGL
-		if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
-			AddPTGuidingScatteredContribution( guidingSegment, directNonMesh );
-		}
-#endif
-	}
-
-	// --- 2b: NEE for mesh luminaries (with MIS weight) ---
-	// Use the existing LuminaryManager which iterates all luminaries,
-	// handles shadow testing, and applies MIS weights.
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	if( pLumMgr )
+	// --- 2a+2b: Unified NEE for all light sources ---
+	// Select one light (non-mesh or mesh) proportional to exitance
+	// via the unified LightSampler.  Delta lights (point/spot) get
+	// no MIS; area lights (mesh) get power-heuristic MIS against
+	// the BSDF sampling PDF.  Lights with zero exitance (ambient,
+	// directional) are evaluated deterministically.
 	{
-		IndependentSampler fallbackLumSampler( rc.random );
-		ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackLumSampler;
+		const LightSampler* pLS = caster.GetLightSampler();
+		if( pLS )
+		{
+			IndependentSampler fallbackSampler( rc.random );
+			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
-		RISEPel directMesh( 0, 0, 0 );
-		directMesh = pLumMgr->ComputeDirectLighting(
-			ri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
-		c = c + directMesh;
+			RISEPel directAll = pLS->EvaluateDirectLighting(
+				ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler, ri.pObject );
+			c = c + directAll;
 
 #ifdef RISE_ENABLE_OPENPGL
-		if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
-			AddPTGuidingScatteredContribution( guidingSegment, directMesh );
-		}
+			if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
+				AddPTGuidingScatteredContribution( guidingSegment, directAll );
+			}
 #endif
+		}
 	}
 
 	// --- 2c: SMS for caustics through specular surfaces ---
@@ -926,7 +931,21 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							Vector3Ops::mkVector3(
 								ri.geometric.ptIntersection,
 								ri.geometric.ray.origin ) );
-						const Scalar p_nee = (dist * dist) / (area * cosLight);
+
+						// Include the selection probability from the
+						// unified light sampler in the NEE PDF
+						Scalar pdfSelect = 1.0;
+						const LightSampler* pLS = caster.GetLightSampler();
+						if( pLS )
+						{
+							pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
+							if( pdfSelect <= 0 )
+							{
+								pdfSelect = 1.0;
+							}
+						}
+
+						const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
 						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
 						emission = emission * w_bsdf;
 					}
@@ -980,21 +999,18 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 	}
 
 	// ================================================================
-	// PART 2: NEE (spectral)
+	// PART 2: NEE (spectral) — unified light sampler
 	// ================================================================
-
-	// 2a: Non-mesh lights — no spectral variant exists in ILightManager,
-	// skip for spectral rendering (matching DirectLightingShaderOp behavior)
-
-	// 2b: Mesh luminaries with MIS
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	if( pLumMgr )
 	{
-		IndependentSampler fallbackLumSamplerNM( rc.random );
-		ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackLumSamplerNM;
+		const LightSampler* pLS = caster.GetLightSampler();
+		if( pLS )
+		{
+			IndependentSampler fallbackSamplerNM( rc.random );
+			ISampler& neeSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
 
-		c += pLumMgr->ComputeDirectLightingNM(
-			ri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
+			c += pLS->EvaluateDirectLightingNM(
+				ri.geometric, *pBRDF, ri.pMaterial, nm, caster, neeSamplerNM, ri.pObject );
+		}
 	}
 
 	// 2c: SMS (spectral — per-wavelength IOR for dispersion)

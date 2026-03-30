@@ -3791,8 +3791,6 @@ namespace RISE
 					double position[3] = {0};
 					double color[3] = {0};
 					double power = 1.0;
-					double linearAttenuation = 0;
-					double quadraticAttenuation = 0;
 					bool shootphotons = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -3813,10 +3811,6 @@ namespace RISE
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &position[0], &position[1], &position[2] );
 						} else if( pname == "color" ) {
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else if( pname == "linear_attenuation" ) {
-							linearAttenuation = pvalue.toDouble();
-						} else if( pname == "quadratic_attenuation" ) {
-							quadraticAttenuation = pvalue.toDouble();
 						} else if( pname == "shootphotons" ) {
 							shootphotons = pvalue.toBoolean();
 						} else {
@@ -3825,7 +3819,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddPointOmniLight( name.c_str(), power, color, position, linearAttenuation, quadraticAttenuation, shootphotons );
+					return pJob.AddPointOmniLight( name.c_str(), power, color, position, shootphotons );
 				}
 			};
 
@@ -3843,8 +3837,6 @@ namespace RISE
 					double power = 1.0;
 					double inner = PI_OV_FOUR;
 					double outer = PI_OV_TWO;
-					double linearAttenuation = 0;
-					double quadraticAttenuation = 0;
 					bool shootphotons = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -3871,10 +3863,6 @@ namespace RISE
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &target[0], &target[1], &target[2] );
 						} else if( pname == "color" ) {
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else if( pname == "linear_attenuation" ) {
-							linearAttenuation = pvalue.toDouble();
-						} else if( pname == "quadratic_attenuation" ) {
-							quadraticAttenuation = pvalue.toDouble();
 						} else if( pname == "shootphotons" ) {
 							shootphotons = pvalue.toBoolean();
 						} else {
@@ -3883,7 +3871,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, linearAttenuation, quadraticAttenuation, shootphotons );
+					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, shootphotons );
 				}
 			};
 

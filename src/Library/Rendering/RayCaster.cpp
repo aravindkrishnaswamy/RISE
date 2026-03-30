@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "RayCaster.h"
 #include "LuminaryManager.h"
+#include "../Lights/LightSampler.h"
 #include "../Utilities/RandomNumbers.h"
 
 #define ENABLE_MAX_RECURSION
@@ -40,6 +41,7 @@ RayCaster::RayCaster(
   pScene( 0 ),
   pDefaultShader( pDefaultShader_ ),
   pLuminaryManager( 0 ),
+  pLightSampler( 0 ),
   pLumSampling( 0 ),
   bConsiderRMapAsBackground( seeRadianceMap ),
   nMaxRecursions( maxR ),
@@ -58,6 +60,7 @@ RayCaster::~RayCaster( )
 	pDefaultShader.release();
 
 	safe_release( pLumSampling );
+	safe_release( pLightSampler );
 	safe_release( pLuminaryManager );
 }
 
@@ -75,13 +78,20 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 
 		safe_release( pLuminaryManager );
 
-		pLuminaryManager = new LuminaryManager( bChooseOnlyOneLuminaire );
+		LuminaryManager* pConcreteLumMgr = new LuminaryManager( bChooseOnlyOneLuminaire );
+		pLuminaryManager = pConcreteLumMgr;
 		GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
 		pLuminaryManager->AttachScene( pScene );
 
 		if( pLumSampling ) {
 			pLuminaryManager->SetLuminaireSampling( pLumSampling );
 		}
+
+		// Create and prepare the unified light sampler
+		safe_release( pLightSampler );
+		pLightSampler = new LightSampler();
+		GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
+		pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
 	}
 }
 

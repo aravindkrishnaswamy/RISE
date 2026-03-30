@@ -283,8 +283,6 @@ namespace RISE
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
 		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
-		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
 		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		)
 	{
@@ -292,7 +290,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new PointLight( power, color, linearAttenuation, quadraticAttenuation, shootPhotons );
+		(*ppi) = new PointLight( power, color, shootPhotons );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "point light" );
 		return true;
 	}
@@ -306,8 +304,6 @@ namespace RISE
 		const Point3& foc,										///< [in] Point the center of the light is focussing on
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
-		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
 		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		)
 	{
@@ -315,7 +311,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new SpotLight( power, foc, inner, outer, color, linearAttenuation, quadraticAttenuation, shootPhotons );
+		(*ppi) = new SpotLight( power, foc, inner, outer, color, shootPhotons );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "spot light" );
 		return true;
 	}

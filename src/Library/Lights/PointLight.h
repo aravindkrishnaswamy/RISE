@@ -32,8 +32,6 @@ namespace RISE
 			Scalar		radiantEnergy;
 			Point3		ptPosition;
 			RISEPel		cColor;
-			Scalar		linearAttenuation;
-			Scalar		quadraticAttenuation;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
 			virtual ~PointLight( );
@@ -72,9 +70,7 @@ namespace RISE
 			PointLight(
 				const Scalar radiantEnergy_,
 				const RISEPel& c,
-				const Scalar linearAtten,
-				const Scalar quadraticAtten,
-				const bool shootPhotons = true
+				const bool shootPhotons
 				);
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
