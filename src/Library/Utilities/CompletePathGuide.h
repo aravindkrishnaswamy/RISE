@@ -14,6 +14,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/Threads/Threads.h"
 #include <stdint.h>
 #include <unordered_map>
 #include <vector>
@@ -87,6 +88,7 @@ namespace RISE
 			std::vector<TechniqueStats>			aggregateTechniqueStats;
 			std::unordered_map<uint64_t, BucketStats> iterationBuckets;
 			std::unordered_map<uint64_t, BucketStats> aggregateBuckets;
+			RMutex								mutex;
 
 			virtual ~CompletePathGuide();
 

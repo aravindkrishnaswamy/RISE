@@ -166,6 +166,20 @@ namespace RISE
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 
+			/// Reuses the normal block dispatcher for internal passes such as
+			/// path-guiding training, so derived rasterizers can run those
+			/// passes multithreaded without duplicating dispatch logic.
+			void RasterizeBlocksForPass(
+				const RuntimeContext::PASS pass,
+				const IScene& scene,
+				IRasterImage& image,
+				const Rect* pRect,
+				IRasterizeSequence& seq
+				) const
+			{
+				RasterizeScenePass( pass, scene, image, pRect, seq );
+			}
+
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ );
 

@@ -109,8 +109,10 @@ namespace RISE
 				);
 
 			//
-			// Training API — NOT thread-safe, call from single thread
-			// or use external synchronization for AddSample.
+			// Training API — Begin/End must be serialized per iteration.
+			// OpenPGL sample storage itself supports concurrent sample adds,
+			// so AddSample/AddZeroValueSample/AddPathSegments may be called
+			// from multiple render threads during an active training pass.
 			//
 			void BeginTrainingIteration();
 

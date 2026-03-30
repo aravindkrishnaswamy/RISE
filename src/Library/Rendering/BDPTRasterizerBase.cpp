@@ -42,6 +42,85 @@ using namespace RISE::Implementation;
 #ifdef RISE_ENABLE_OPENPGL
 namespace
 {
+	inline void CopyRasterImage(
+		IRasterImage& dest,
+		const IRasterImage& src
+		)
+	{
+		const unsigned int w = src.GetWidth();
+		const unsigned int h = src.GetHeight();
+		for( unsigned int y = 0; y < h; y++ ) {
+			for( unsigned int x = 0; x < w; x++ ) {
+				dest.SetPEL( x, y, src.GetPEL( x, y ) );
+			}
+		}
+	}
+
+	inline Scalar ComputeCoarseImageDeltaRMSE(
+		const IRasterImage& a,
+		const IRasterImage& b,
+		const unsigned int coarseResolution
+		)
+	{
+		const unsigned int w = a.GetWidth();
+		const unsigned int h = a.GetHeight();
+		if( w == 0 || h == 0 ) {
+			return 0;
+		}
+
+		const unsigned int binsX = r_min( coarseResolution, w );
+		const unsigned int binsY = r_min( coarseResolution, h );
+
+		Scalar error = 0;
+		size_t samples = 0;
+		for( unsigned int by = 0; by < binsY; by++ )
+		{
+			const unsigned int y0 = (by * h) / binsY;
+			const unsigned int y1 = ((by + 1) * h) / binsY;
+
+			for( unsigned int bx = 0; bx < binsX; bx++ )
+			{
+				const unsigned int x0 = (bx * w) / binsX;
+				const unsigned int x1 = ((bx + 1) * w) / binsX;
+
+				Scalar accumA[3] = { 0, 0, 0 };
+				Scalar accumB[3] = { 0, 0, 0 };
+				size_t pixelCount = 0;
+
+				for( unsigned int y = y0; y < y1; y++ ) {
+					for( unsigned int x = x0; x < x1; x++ ) {
+						const RISEColor colorA = a.GetPEL( x, y );
+						const RISEColor colorB = b.GetPEL( x, y );
+						accumA[0] += colorA.base[0];
+						accumA[1] += colorA.base[1];
+						accumA[2] += colorA.base[2];
+						accumB[0] += colorB.base[0];
+						accumB[1] += colorB.base[1];
+						accumB[2] += colorB.base[2];
+						pixelCount++;
+					}
+				}
+
+				if( pixelCount == 0 ) {
+					continue;
+				}
+
+				for( unsigned int c = 0; c < 3; c++ )
+				{
+					const Scalar avgA = accumA[c] / static_cast<Scalar>( pixelCount );
+					const Scalar avgB = accumB[c] / static_cast<Scalar>( pixelCount );
+					const Scalar diff = avgA - avgB;
+					error += diff * diff;
+					samples++;
+				}
+			}
+		}
+
+		return samples > 0 ?
+			std::sqrt( error / static_cast<Scalar>( samples ) ) :
+			0;
+	}
+
 	inline bool IsFiniteBoundingBox( const BoundingBox& bbox )
 	{
 		return
@@ -247,11 +326,18 @@ void BDPTRasterizerBase::RasterizeScene(
 			guidingConfig.maxGuidingDepth );
 		pIntegrator->SetCompletePathGuide( pCompletePathGuide, false, 0 );
 
-			const unsigned int bootstrapTrainingSPP = 1;
-			unsigned int currentTrainingSPP = bootstrapTrainingSPP;
-			Scalar previousPositiveSampleDensity = 0;
-			Scalar previousIndirectEnergyDensity = 0;
-			unsigned int lowGainPasses = 0;
+				const unsigned int bootstrapTrainingSPP = 1;
+				unsigned int currentTrainingSPP = bootstrapTrainingSPP;
+				Scalar previousPositiveSampleDensity = 0;
+				Scalar previousIndirectEnergyDensity = 0;
+				unsigned int lowGainPasses = 0;
+				IRasterImage* pPreviousTrainingImage = 0;
+
+				static const unsigned int kTrainingConvergenceGridResolution = 32;
+				static const Scalar kTrainingConvergenceDeltaThreshold = 0.01;
+				static const Scalar kTrainingConvergenceSampleGainThreshold = 0.05;
+				static const Scalar kStrategySelectionMinTopBucketShare = 0.05;
+				static const Scalar kStrategySelectionMinTopTechniqueShare = 0.85;
 
 		// Run training iterations
 			for( unsigned int trainIter = 0; trainIter < guidingConfig.trainingIterations; trainIter++ )
@@ -288,26 +374,43 @@ void BDPTRasterizerBase::RasterizeScene(
 				pProgressFunc->SetTitle( title );
 			}
 
-			// Single-threaded training to avoid thread-safety issues with AddSample
-			{
-				RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
-
-				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
-				pTrainBlocks->addref();
-				unsigned int startx, starty, endx, endy;
-				BoundsFromRect( startx, starty, endx, endy, pRect, width, height );
-				pTrainBlocks->Begin( startx, endx, starty, endy );
-
-				const unsigned int numseq = pTrainBlocks->NumRegions();
-				for( unsigned int i=0; i<numseq; i++ ) {
-					const Rect rect = pTrainBlocks->GetNextRegion();
-					if( pProgressFunc && i>0 ) {
-						pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) );
-					}
-					SPRasterizeSingleBlock( rc, *pTrainImage, pScene, rect, height );
+				{
+					BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
+					pTrainBlocks->addref();
+					RasterizeBlocksForPass(
+						RuntimeContext::PASS_NORMAL,
+					pScene,
+					*pTrainImage,
+					pRect,
+						*pTrainBlocks );
+					safe_release( pTrainBlocks );
 				}
-				safe_release( pTrainBlocks );
-			}
+
+				pTrainSplat->Resolve( *pTrainImage, mSplatTotalSamples );
+
+				Scalar coarseImageDelta = 0;
+				if( pPreviousTrainingImage )
+				{
+					coarseImageDelta = ComputeCoarseImageDeltaRMSE(
+						*pPreviousTrainingImage,
+						*pTrainImage,
+						kTrainingConvergenceGridResolution );
+
+					GlobalLog()->PrintEx( eLog_Event,
+						"PathGuidingField:: BDPT training iteration %u coarse image delta %.6f (%ux%u RMSE)",
+						trainIter + 1,
+						coarseImageDelta,
+						kTrainingConvergenceGridResolution,
+						kTrainingConvergenceGridResolution );
+				}
+				else
+				{
+					pPreviousTrainingImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+				}
+
+				if( pPreviousTrainingImage ) {
+					CopyRasterImage( *pPreviousTrainingImage, *pTrainImage );
+				}
 
 			// Restore state
 			pSplatFilm = pSavedSplat;
@@ -434,6 +537,19 @@ void BDPTRasterizerBase::RasterizeScene(
 							lowGainPasses );
 						break;
 					}
+
+					if( coarseImageDelta > NEARZERO &&
+						trainIter >= 2 &&
+						coarseImageDelta < kTrainingConvergenceDeltaThreshold &&
+						relativeGain < kTrainingConvergenceSampleGainThreshold )
+					{
+						GlobalLog()->PrintEx( eLog_Event,
+							"PathGuidingField:: Stopping BDPT training after iteration %u (coarse image delta %.6f, relative gain %.3f)",
+							trainIter + 1,
+							coarseImageDelta,
+							relativeGain );
+						break;
+					}
 				}
 
 				previousPositiveSampleDensity = positiveSampleDensity;
@@ -453,11 +569,35 @@ void BDPTRasterizerBase::RasterizeScene(
 			}
 		}
 
+		safe_release( pPreviousTrainingImage );
+
 		pIntegrator->SetGuidingField(
 			pGuidingField,
 			guidingConfig.alpha * guidingAlphaScale,
 			guidingConfig.maxGuidingDepth );
-		if( pCompletePathGuide && guidingConfig.completePathStrategySelection )
+		bool enableCompletePathStrategySelection =
+			pCompletePathGuide &&
+			guidingConfig.completePathStrategySelection;
+		if( enableCompletePathStrategySelection )
+		{
+			const CompletePathGuide::IterationSummary& summary =
+				pCompletePathGuide->GetLastSummary();
+			const Scalar topTechniqueEnergyShare =
+				summary.totalEnergy > NEARZERO ?
+					summary.topTechniqueEnergy / summary.totalEnergy :
+					0;
+
+			if( summary.topBucketEnergyShare < kStrategySelectionMinTopBucketShare &&
+				topTechniqueEnergyShare < kStrategySelectionMinTopTechniqueShare )
+			{
+				enableCompletePathStrategySelection = false;
+				GlobalLog()->PrintEx( eLog_Event,
+					"CompletePathGuide:: Final render strategy selection disabled (top bucket share %.3f, top technique share %.3f indicate a broad learned distribution)",
+					summary.topBucketEnergyShare,
+					topTechniqueEnergyShare );
+			}
+		}
+		if( enableCompletePathStrategySelection )
 		{
 			pIntegrator->SetCompletePathGuide(
 				pCompletePathGuide,

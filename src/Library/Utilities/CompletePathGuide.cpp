@@ -105,6 +105,7 @@ uint64_t CompletePathGuide::MakeBucketKey(
 
 void CompletePathGuide::BeginIteration()
 {
+	mutex.lock();
 	iteration++;
 	collecting = true;
 	lastSummary = IterationSummary();
@@ -113,6 +114,7 @@ void CompletePathGuide::BeginIteration()
 		iterationTechniqueStats.end(),
 		TechniqueStats() );
 	iterationBuckets.clear();
+	mutex.unlock();
 }
 
 void CompletePathGuide::AddSample(
@@ -134,6 +136,7 @@ void CompletePathGuide::AddSample(
 		return;
 	}
 
+	mutex.lock();
 	lastSummary.sampleCount++;
 	lastSummary.totalEnergy += energy;
 
@@ -154,10 +157,12 @@ void CompletePathGuide::AddSample(
 	BucketStats& aggBucket = aggregateBuckets[key];
 	aggBucket.count++;
 	aggBucket.energy += energy;
+	mutex.unlock();
 }
 
 void CompletePathGuide::EndIteration()
 {
+	mutex.lock();
 	collecting = false;
 	lastSummary.uniqueBucketCount = iterationBuckets.size();
 	lastSummary.persistentBucketCount = aggregateBuckets.size();
@@ -200,6 +205,7 @@ void CompletePathGuide::EndIteration()
 		lastSummary.topTechniqueT,
 		lastSummary.topTechniqueEnergy,
 		lastSummary.topBucketEnergyShare );
+	mutex.unlock();
 }
 
 Scalar CompletePathGuide::QueryStrategyWeight(

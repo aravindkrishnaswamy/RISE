@@ -174,25 +174,15 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 				pProgressFunc->SetTitle( title );
 			}
 
-			// Single-threaded training to avoid thread-safety issues with AddSample
 			{
-				RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
-				PrepareRuntimeContext( rc );
-
 				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
 				pTrainBlocks->addref();
-				unsigned int startx, starty, endx, endy;
-				BoundsFromRect( startx, starty, endx, endy, pRect, width, height );
-				pTrainBlocks->Begin( startx, endx, starty, endy );
-
-				const unsigned int numseq = pTrainBlocks->NumRegions();
-				for( unsigned int i=0; i<numseq; i++ ) {
-					const Rect rect = pTrainBlocks->GetNextRegion();
-					if( pProgressFunc && i>0 ) {
-						pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) );
-					}
-					SPRasterizeSingleBlock( rc, *pTrainImage, pScene, rect, height );
-				}
+				RasterizeBlocksForPass(
+					RuntimeContext::PASS_NORMAL,
+					pScene,
+					*pTrainImage,
+					pRect,
+					*pTrainBlocks );
 				safe_release( pTrainBlocks );
 			}
 

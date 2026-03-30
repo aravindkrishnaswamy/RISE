@@ -160,11 +160,6 @@ void PathGuidingField::AddSample(
 	sample.flags = isDirect ? PGLSampleData::EDirectLight : 0;
 
 	pglSampleStorageAddSample( sampleStorage, sample );
-	sampleCount++;
-	sampleEnergy += luminance;
-	if( isDirect ) {
-		directSampleEnergy += luminance;
-	}
 }
 
 void PathGuidingField::AddZeroValueSample(
@@ -190,7 +185,6 @@ void PathGuidingField::AddZeroValueSample(
 	sample.volume = false;
 
 	pglSampleStorageAddZeroValueSample( sampleStorage, sample );
-	zeroValueSampleCount++;
 }
 
 void PathGuidingField::AddPathSegments(
@@ -215,15 +209,6 @@ void PathGuidingField::AddPathSegments(
 		pglPathSegmentStorageGetSamples( pathSegments, numSamples );
 	if( samples && numSamples > 0 ) {
 		pglSampleStorageAddSamples( sampleStorage, samples, numSamples );
-		sampleCount += numSamples;
-		for( size_t i = 0; i < numSamples; i++ )
-		{
-			const Scalar energy = GuidingSampleEnergy( samples[i] );
-			sampleEnergy += energy;
-			if( samples[i].flags & PGLSampleData::EDirectLight ) {
-				directSampleEnergy += energy;
-			}
-		}
 	}
 
 	size_t numZeroValueSamples = 0;
@@ -234,7 +219,6 @@ void PathGuidingField::AddPathSegments(
 			sampleStorage,
 			zeroValueSamples,
 			numZeroValueSamples );
-		zeroValueSampleCount += numZeroValueSamples;
 	}
 }
 
@@ -247,6 +231,21 @@ void PathGuidingField::EndTrainingIteration()
 	const size_t numSamples = pglSampleStorageGetSizeSurface( sampleStorage );
 	const size_t numZeroValueSamples =
 		pglSampleStorageGetSizeZeroValueSurface( sampleStorage );
+
+	sampleCount = numSamples;
+	zeroValueSampleCount = numZeroValueSamples;
+	sampleEnergy = 0;
+	directSampleEnergy = 0;
+	for( size_t i = 0; i < numSamples; i++ )
+	{
+		const PGLSampleData sample =
+			pglSampleStorageGetSampleSurface( sampleStorage, static_cast<int>( i ) );
+		const Scalar energy = GuidingSampleEnergy( sample );
+		sampleEnergy += energy;
+		if( sample.flags & PGLSampleData::EDirectLight ) {
+			directSampleEnergy += energy;
+		}
+	}
 
 	pglFieldUpdate( field, sampleStorage );
 	trained = true;
