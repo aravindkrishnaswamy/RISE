@@ -5013,6 +5013,12 @@ namespace RISE
 							guidingConfig.alpha = pvalue.toDouble();
 						} else if( pname == "pathguiding_max_depth" ) {
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
+						} else if( pname == "pathguiding_complete_paths" ) {
+							guidingConfig.completePathGuiding = pvalue.toBoolean();
+						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
+							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
+						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
+							guidingConfig.completePathStrategySamples = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5573,6 +5579,12 @@ namespace RISE
 							guidingConfig.alpha = pvalue.toDouble();
 						} else if( pname == "pathguiding_max_depth" ) {
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
+						} else if( pname == "pathguiding_complete_paths" ) {
+							guidingConfig.completePathGuiding = pvalue.toBoolean();
+						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
+							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
+						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
+							guidingConfig.completePathStrategySamples = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5719,6 +5731,8 @@ namespace RISE
 							guidingConfig.alpha = pvalue.toDouble();
 						} else if( pname == "pathguiding_max_depth" ) {
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
+						} else if( pname == "pathguiding_complete_paths" ) {
+							guidingConfig.completePathGuiding = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;

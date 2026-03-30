@@ -696,6 +696,9 @@
 		F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E032F54FB56005DA46B /* AVFoundation.framework */; };
 		F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E052F54FB5E005DA46B /* CoreMedia.framework */; };
 		F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E072F54FB64005DA46B /* CoreVideo.framework */; };
+		F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54322F79FFF1009AF16D /* CompletePathGuide.h */; };
+		F24C54352F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
+		F24C54362F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1441,6 +1444,8 @@
 		F24C3E032F54FB56005DA46B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		F24C3E052F54FB5E005DA46B /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		F24C3E072F54FB64005DA46B /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
+		F24C54322F79FFF1009AF16D /* CompletePathGuide.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompletePathGuide.h; sourceTree = "<group>"; };
+		F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompletePathGuide.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2929,6 +2934,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54322F79FFF1009AF16D /* CompletePathGuide.h */,
+				F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */,
 				F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */,
 				F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */,
 				F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */,
@@ -3215,6 +3222,7 @@
 				F27F0AE8069C42910069C9E5 /* IOptions.h in Headers */,
 				F27F0AE9069C42910069C9E5 /* IPainter.h in Headers */,
 				F27F0AEA069C42910069C9E5 /* IPainterManager.h in Headers */,
+				F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */,
 				F27F0AEB069C42910069C9E5 /* IParametricSurface.h in Headers */,
 				F2C7C8DA2F75DF1C0030CB78 /* SMSShaderOp.h in Headers */,
 				F27F0AEC069C42910069C9E5 /* IPhotonMap.h in Headers */,
@@ -3896,6 +3904,7 @@
 				6DBFAA6F09C4D2A20048A09D /* ShadowPhotonMapShaderOp.cpp in Sources */,
 				6DBFAA7209C4D2A20048A09D /* PointSetOctree.cpp in Sources */,
 				6DBFAA7509C4D2A20048A09D /* SubSurfaceScatteringShaderOp.cpp in Sources */,
+				F24C54352F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */,
 				6DBFAA7709C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.cpp in Sources */,
 				6DBFAA7909C4D2A20048A09D /* TransparencyShaderOp.cpp in Sources */,
 				6DBFAA8209C4D2CD0048A09D /* commandconsole.cpp in Sources */,
@@ -3984,6 +3993,7 @@
 				F24B72252F52A632008304C4 /* CylindricalUVGenerator.h in Sources */,
 				F24B72262F52A632008304C4 /* EllipsoidGeometry.cpp in Sources */,
 				F24B72272F52A632008304C4 /* EllipsoidGeometry.h in Sources */,
+				F24C54362F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */,
 				F24B72282F52A632008304C4 /* Geometry.cpp in Sources */,
 				F24B72292F52A632008304C4 /* Geometry.h in Sources */,
 				F24B722A2F52A632008304C4 /* GeometryUtilities.cpp in Sources */,

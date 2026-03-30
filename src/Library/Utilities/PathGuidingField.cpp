@@ -21,6 +21,19 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+namespace
+{
+	static const size_t kGuidingMaxSamplesPerLeaf = 64000;
+
+	inline Scalar GuidingSampleEnergy( const PGLSampleData& sample )
+	{
+		const Scalar energy =
+			static_cast<Scalar>( sample.weight ) *
+			static_cast<Scalar>( sample.pdf );
+		return (std::isfinite( energy ) && energy > 0) ? energy : 0;
+	}
+}
+
 PathGuidingField::PathGuidingField(
 	const PathGuidingConfig& cfg,
 	const Point3& boundsMin,
@@ -30,8 +43,12 @@ PathGuidingField::PathGuidingField(
   field( 0 ),
   sampleStorage( 0 ),
   trained( false ),
+  collectingTraining( false ),
   config( cfg ),
-  sampleCount( 0 )
+  sampleCount( 0 ),
+  zeroValueSampleCount( 0 ),
+  sampleEnergy( 0 ),
+  directSampleEnergy( 0 )
 {
 	// Create the OpenPGL device (CPU, 8-wide VMM)
 	device = pglNewDevice( PGL_DEVICE_TYPE_CPU_8, 0 );
@@ -48,7 +65,7 @@ PathGuidingField::PathGuidingField(
 		PGL_SPATIAL_STRUCTURE_KDTREE,
 		PGL_DIRECTIONAL_DISTRIBUTION_PARALLAX_AWARE_VMM,
 		false,	// non-deterministic (faster)
-		32000	// max samples per leaf
+		kGuidingMaxSamplesPerLeaf	// slightly coarser spatial field for smoother transport
 		);
 
 	field = pglDeviceNewField( device, fieldArgs );
@@ -69,10 +86,10 @@ PathGuidingField::PathGuidingField(
 	sampleStorage = pglNewSampleStorage();
 
 	GlobalLog()->PrintEx( eLog_Event,
-		"PathGuidingField:: Initialized (bounds [%.1f,%.1f,%.1f]-[%.1f,%.1f,%.1f], %u training iterations, %u spp, alpha=%.2f)",
+		"PathGuidingField:: Initialized (bounds [%.1f,%.1f,%.1f]-[%.1f,%.1f,%.1f], %u training iterations, %u spp, alpha=%.2f, maxSamplesPerLeaf=%zu)",
 		boundsMin.x, boundsMin.y, boundsMin.z,
 		boundsMax.x, boundsMax.y, boundsMax.z,
-		config.trainingIterations, config.trainingSPP, config.alpha );
+		config.trainingIterations, config.trainingSPP, config.alpha, kGuidingMaxSamplesPerLeaf );
 }
 
 PathGuidingField::~PathGuidingField()
@@ -94,7 +111,10 @@ PathGuidingField::~PathGuidingField()
 void PathGuidingField::BeginTrainingIteration()
 {
 	sampleCount = 0;
-	trained = false;
+	zeroValueSampleCount = 0;
+	sampleEnergy = 0;
+	directSampleEnergy = 0;
+	collectingTraining = true;
 	if( sampleStorage ) {
 		pglSampleStorageClear( sampleStorage );
 	}
@@ -141,6 +161,81 @@ void PathGuidingField::AddSample(
 
 	pglSampleStorageAddSample( sampleStorage, sample );
 	sampleCount++;
+	sampleEnergy += luminance;
+	if( isDirect ) {
+		directSampleEnergy += luminance;
+	}
+}
+
+void PathGuidingField::AddZeroValueSample(
+	const Point3& position,
+	const Vector3& direction
+	)
+{
+	if( !sampleStorage || !field ) {
+		return;
+	}
+
+	PGLZeroValueSampleData sample;
+	pglPoint3f( sample.position,
+		static_cast<float>( position.x ),
+		static_cast<float>( position.y ),
+		static_cast<float>( position.z ) );
+
+	pglVec3f( sample.direction,
+		static_cast<float>( direction.x ),
+		static_cast<float>( direction.y ),
+		static_cast<float>( direction.z ) );
+
+	sample.volume = false;
+
+	pglSampleStorageAddZeroValueSample( sampleStorage, sample );
+	zeroValueSampleCount++;
+}
+
+void PathGuidingField::AddPathSegments(
+	PGLPathSegmentStorage pathSegments,
+	bool useNEEMiWeights,
+	bool guideDirectLight,
+	bool rrAffectsDirectContribution
+	)
+{
+	if( !sampleStorage || !field || !pathSegments ) {
+		return;
+	}
+
+	pglPathSegmentStoragePrepareSamples(
+		pathSegments,
+		useNEEMiWeights,
+		guideDirectLight,
+		rrAffectsDirectContribution );
+
+	size_t numSamples = 0;
+	const PGLSampleData* samples =
+		pglPathSegmentStorageGetSamples( pathSegments, numSamples );
+	if( samples && numSamples > 0 ) {
+		pglSampleStorageAddSamples( sampleStorage, samples, numSamples );
+		sampleCount += numSamples;
+		for( size_t i = 0; i < numSamples; i++ )
+		{
+			const Scalar energy = GuidingSampleEnergy( samples[i] );
+			sampleEnergy += energy;
+			if( samples[i].flags & PGLSampleData::EDirectLight ) {
+				directSampleEnergy += energy;
+			}
+		}
+	}
+
+	size_t numZeroValueSamples = 0;
+	const PGLZeroValueSampleData* zeroValueSamples =
+		pglPathSegmentStorageGetZeroValueSamples( pathSegments, numZeroValueSamples );
+	if( zeroValueSamples && numZeroValueSamples > 0 ) {
+		pglSampleStorageAddZeroValueSamples(
+			sampleStorage,
+			zeroValueSamples,
+			numZeroValueSamples );
+		zeroValueSampleCount += numZeroValueSamples;
+	}
 }
 
 void PathGuidingField::EndTrainingIteration()
@@ -150,14 +245,23 @@ void PathGuidingField::EndTrainingIteration()
 	}
 
 	const size_t numSamples = pglSampleStorageGetSizeSurface( sampleStorage );
+	const size_t numZeroValueSamples =
+		pglSampleStorageGetSizeZeroValueSurface( sampleStorage );
 
 	pglFieldUpdate( field, sampleStorage );
 	trained = true;
+	collectingTraining = false;
 
 	const size_t iteration = pglFieldGetIteration( field );
 	GlobalLog()->PrintEx( eLog_Event,
-		"PathGuidingField:: Training iteration %zu complete (%zu surface samples, %zu added)",
-		iteration, numSamples, sampleCount );
+		"PathGuidingField:: Training iteration %zu complete (%zu surface samples, %zu zero-value, %zu added, %zu zero-value added, energy %.6f, direct %.6f)",
+		iteration,
+		numSamples,
+		numZeroValueSamples,
+		sampleCount,
+		zeroValueSampleCount,
+		sampleEnergy,
+		directSampleEnergy );
 }
 
 GuidingDistributionHandle* PathGuidingField::NewDistributionHandle() const

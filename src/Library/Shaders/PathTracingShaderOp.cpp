@@ -22,6 +22,363 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+static inline Scalar GuidingTrainingLuminance( const RISEPel& pel )
+{
+	return 0.212671 * pel[0] + 0.715160 * pel[1] + 0.072169 * pel[2];
+}
+
+static inline bool GuidingWantsDeepSignalTraining( const unsigned int pathDepth )
+{
+	// Depth 1 is the first camera hit, depth 2 is one bounce away from it.
+	// Bias the guide toward transport that required at least two bounces.
+	return pathDepth >= 3;
+}
+
+static inline Vector3 GuidingCosineNormal( const RayIntersectionGeometric& rig )
+{
+	Vector3 normal = rig.vNormal;
+	if( Vector3Ops::Dot( rig.ray.Dir(), normal ) > NEARZERO ) {
+		normal = -normal;
+	}
+	return normal;
+}
+
+static inline bool GuidingSupportsSurfaceSampling( const ScatteredRay& scat )
+{
+	return !scat.isDelta && scat.type == ScatteredRay::eRayDiffuse;
+}
+
+static inline IRayCaster::RAY_STATE::RayType PathTracingRayType( const ScatteredRay& scat )
+{
+	return (scat.type == ScatteredRay::eRayDiffuse && !scat.isDelta) ?
+		IRayCaster::RAY_STATE::eRayDiffuse :
+		IRayCaster::RAY_STATE::eRaySpecular;
+}
+
+static inline Scalar GuidingSelectionWeight( const ScatteredRay& scat )
+{
+	return ColorMath::MaxValue( scat.kray );
+}
+
+static inline Scalar GuidingSelectionWeightNM( const ScatteredRay& scat )
+{
+	return fabs( scat.krayNM );
+}
+
+static inline Scalar GuidingEffectiveAlpha(
+	const Scalar baseAlpha,
+	const ScatteredRayContainer& scattered,
+	const IMaterial* const pMaterial,
+	const IRayCaster::RAY_STATE& rs,
+	const bool bNM
+	)
+{
+	if( baseAlpha <= NEARZERO ) {
+		return 0;
+	}
+
+	Scalar totalWeight = 0;
+	Scalar diffuseWeight = 0;
+	bool hasNonDiffuse = false;
+	bool hasTransmissive = pMaterial && pMaterial->CouldLightPassThrough();
+
+	for( unsigned int i=0; i<scattered.Count(); i++ )
+	{
+		const ScatteredRay& scat = scattered[i];
+		const Scalar w = bNM ? GuidingSelectionWeightNM( scat ) : GuidingSelectionWeight( scat );
+
+		if( w <= NEARZERO ) {
+			continue;
+		}
+
+		totalWeight += w;
+
+		if( GuidingSupportsSurfaceSampling( scat ) ) {
+			diffuseWeight += w;
+		} else {
+			hasNonDiffuse = true;
+		}
+
+		if( scat.isDelta ||
+			scat.type == ScatteredRay::eRayRefraction ||
+			scat.type == ScatteredRay::eRayTranslucent )
+		{
+			hasTransmissive = true;
+		}
+	}
+
+	if( totalWeight <= NEARZERO || diffuseWeight <= NEARZERO ) {
+		return 0;
+	}
+
+	const Scalar diffuseFraction = diffuseWeight / totalWeight;
+	if( rs.type == IRayCaster::RAY_STATE::eRaySpecular || hasTransmissive ) {
+		return 0;
+	}
+
+	if( hasNonDiffuse && diffuseFraction < 0.8 ) {
+		return 0;
+	}
+
+	Scalar alpha = baseAlpha;
+	if( hasNonDiffuse ) {
+		alpha *= diffuseFraction * diffuseFraction;
+		if( alpha > 0.2 ) {
+			alpha = 0.2;
+		}
+	}
+
+	return alpha >= 0.05 ? alpha : 0;
+}
+
+#ifdef RISE_ENABLE_OPENPGL
+namespace
+{
+	static inline void SetPGLVec3FromRISEPel( pgl_vec3f& dst, const RISEPel& src )
+	{
+		dst.x = static_cast<float>( src[0] );
+		dst.y = static_cast<float>( src[1] );
+		dst.z = static_cast<float>( src[2] );
+	}
+
+	static inline void AddRISEPelToPGLVec3( pgl_vec3f& dst, const RISEPel& src )
+	{
+		dst.x += static_cast<float>( src[0] );
+		dst.y += static_cast<float>( src[1] );
+		dst.z += static_cast<float>( src[2] );
+	}
+
+	struct PTGuidingPathRecorder
+	{
+		PGLPathSegmentStorage storage;
+		bool active;
+
+		PTGuidingPathRecorder() :
+			storage( 0 ),
+			active( false )
+		{
+		}
+
+		~PTGuidingPathRecorder()
+		{
+			if( storage ) {
+				pglReleasePathSegmentStorage( storage );
+				storage = 0;
+			}
+		}
+
+		void Begin()
+		{
+			if( !storage ) {
+				storage = pglNewPathSegmentStorage();
+				if( storage ) {
+					pglPathSegmentStorageReserve( storage, 64 );
+				}
+			}
+
+			if( storage ) {
+				pglPathSegmentStorageClear( storage );
+				active = true;
+			} else {
+				active = false;
+			}
+		}
+
+			void End( PathGuidingField* field )
+			{
+				if( active && field && storage && pglPathSegmentGetNumSegments( storage ) > 0 ) {
+					field->AddPathSegments( storage, false, false, false );
+				}
+
+			active = false;
+		}
+	};
+
+	struct PTGuidingPathScope
+	{
+		PTGuidingPathRecorder* recorder;
+		PathGuidingField* field;
+		bool isRoot;
+
+		PTGuidingPathScope(
+			PTGuidingPathRecorder* recorder_,
+			PathGuidingField* field_,
+			const bool isRoot_
+			) :
+			recorder( recorder_ ),
+			field( field_ ),
+			isRoot( isRoot_ )
+		{
+		}
+
+		~PTGuidingPathScope()
+		{
+			if( isRoot && recorder ) {
+				recorder->End( field );
+			}
+		}
+	};
+
+	static inline PTGuidingPathRecorder& GetPTGuidingPathRecorder()
+	{
+		static thread_local PTGuidingPathRecorder recorder;
+		return recorder;
+	}
+
+	static inline bool UsePTPathSegmentTraining(
+		const RuntimeContext& rc,
+		const bool branch
+		)
+	{
+		return !branch && rc.pGuidingField && rc.pGuidingField->IsCollectingTrainingSamples();
+	}
+
+	static inline bool IsPTTrainingRootRay( const IRayCaster::RAY_STATE& rs )
+	{
+		return rs.type == IRayCaster::RAY_STATE::eRayView && rs.depth == 1;
+	}
+
+	static inline PGLPathSegmentData* BeginPTGuidingSegment(
+		PTGuidingPathRecorder& recorder,
+		const RayIntersectionGeometric& rig
+		)
+	{
+		if( !recorder.active || !recorder.storage ) {
+			return 0;
+		}
+
+		PGLPathSegmentData* segment = pglPathSegmentStorageNextSegment( recorder.storage );
+		if( !segment ) {
+			return 0;
+		}
+
+		pglPoint3f( segment->position,
+			static_cast<float>( rig.ptIntersection.x ),
+			static_cast<float>( rig.ptIntersection.y ),
+			static_cast<float>( rig.ptIntersection.z ) );
+
+		pglVec3f( segment->directionOut,
+			static_cast<float>( -rig.ray.Dir().x ),
+			static_cast<float>( -rig.ray.Dir().y ),
+			static_cast<float>( -rig.ray.Dir().z ) );
+
+		const Vector3 normal = GuidingCosineNormal( rig );
+		pglVec3f( segment->normal,
+			static_cast<float>( normal.x ),
+			static_cast<float>( normal.y ),
+			static_cast<float>( normal.z ) );
+
+		pglVec3f( segment->directionIn, 0.0f, 0.0f, 0.0f );
+		segment->volumeScatter = false;
+		segment->pdfDirectionIn = 0.0f;
+		segment->isDelta = false;
+		pglVec3f( segment->scatteringWeight, 0.0f, 0.0f, 0.0f );
+		pglVec3f( segment->transmittanceWeight, 1.0f, 1.0f, 1.0f );
+		pglVec3f( segment->directContribution, 0.0f, 0.0f, 0.0f );
+		segment->miWeight = 1.0f;
+		pglVec3f( segment->scatteredContribution, 0.0f, 0.0f, 0.0f );
+		segment->russianRouletteSurvivalProbability = 1.0f;
+		segment->eta = 1.0f;
+		segment->roughness = 1.0f;
+		segment->regionPtr = 0;
+
+		return segment;
+	}
+
+	static inline void SetPTGuidingDirectContribution(
+		PGLPathSegmentData* segment,
+		const RISEPel& contribution,
+		const Scalar miWeight
+		)
+	{
+		if( !segment ) {
+			return;
+		}
+
+		SetPGLVec3FromRISEPel( segment->directContribution, contribution );
+		segment->miWeight = static_cast<float>( miWeight );
+	}
+
+	static inline void AddPTGuidingScatteredContribution(
+		PGLPathSegmentData* segment,
+		const RISEPel& contribution
+		)
+	{
+		if( !segment ) {
+			return;
+		}
+
+		AddRISEPelToPGLVec3( segment->scatteredContribution, contribution );
+	}
+
+	static inline void SetPTGuidingContinuation(
+		PGLPathSegmentData* segment,
+		const Vector3& direction,
+		const Scalar pdf,
+		const RISEPel& scatteringWeight,
+		const bool isDelta
+		)
+	{
+		if( !segment ) {
+			return;
+		}
+
+		pglVec3f( segment->directionIn,
+			static_cast<float>( direction.x ),
+			static_cast<float>( direction.y ),
+			static_cast<float>( direction.z ) );
+		segment->pdfDirectionIn = static_cast<float>( pdf );
+		SetPGLVec3FromRISEPel( segment->scatteringWeight, scatteringWeight );
+		segment->isDelta = isDelta;
+		segment->roughness = isDelta ? 0.0f : 1.0f;
+	}
+
+	static inline void AddPTGuidingBackgroundSegment(
+		PTGuidingPathRecorder& recorder,
+		const Ray& ray,
+		const RISEPel& radiance
+		)
+	{
+		if( !recorder.active || !recorder.storage ) {
+			return;
+		}
+
+		PGLPathSegmentData* segment = pglPathSegmentStorageNextSegment( recorder.storage );
+		if( !segment ) {
+			return;
+		}
+
+		const Point3 farPoint(
+			ray.origin.x + ray.Dir().x * 1.0e6,
+			ray.origin.y + ray.Dir().y * 1.0e6,
+			ray.origin.z + ray.Dir().z * 1.0e6 );
+
+		pglPoint3f( segment->position,
+			static_cast<float>( farPoint.x ),
+			static_cast<float>( farPoint.y ),
+			static_cast<float>( farPoint.z ) );
+		pglVec3f( segment->directionOut,
+			static_cast<float>( -ray.Dir().x ),
+			static_cast<float>( -ray.Dir().y ),
+			static_cast<float>( -ray.Dir().z ) );
+		pglVec3f( segment->normal, 0.0f, 0.0f, 1.0f );
+		pglVec3f( segment->directionIn, 0.0f, 0.0f, 0.0f );
+		segment->volumeScatter = false;
+		segment->pdfDirectionIn = 0.0f;
+		segment->isDelta = false;
+		pglVec3f( segment->scatteringWeight, 0.0f, 0.0f, 0.0f );
+		pglVec3f( segment->transmittanceWeight, 1.0f, 1.0f, 1.0f );
+		SetPGLVec3FromRISEPel( segment->directContribution, radiance );
+		segment->miWeight = 1.0f;
+		pglVec3f( segment->scatteredContribution, 0.0f, 0.0f, 0.0f );
+		segment->russianRouletteSurvivalProbability = 1.0f;
+		segment->eta = 1.0f;
+		segment->roughness = 1.0f;
+		segment->regionPtr = 0;
+	}
+}
+#endif
+
 PathTracingShaderOp::PathTracingShaderOp(
 	const bool branch,
 	const ManifoldSolverConfig& smsConfig
@@ -70,6 +427,19 @@ void PathTracingShaderOp::PerformOperation(
 
 	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
+#ifdef RISE_ENABLE_OPENPGL
+	const bool useGuidingPathSegments = UsePTPathSegmentTraining( rc, bBranch );
+	PTGuidingPathRecorder* guidingRecorder = useGuidingPathSegments ? &GetPTGuidingPathRecorder() : 0;
+	const bool guidingRootRay = guidingRecorder && IsPTTrainingRootRay( rs );
+	if( guidingRootRay ) {
+		guidingRecorder->Begin();
+	}
+	PTGuidingPathScope guidingPathScope( guidingRecorder, rc.pGuidingField, guidingRootRay );
+	PGLPathSegmentData* guidingSegment =
+		(guidingRecorder && guidingRecorder->active) ?
+			BeginPTGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
+#endif
+
 	// ================================================================
 	// PART 1: Emission
 	// ================================================================
@@ -81,6 +451,8 @@ void PathTracingShaderOp::PerformOperation(
 		{
 			RISEPel emission = pEmitter->emittedRadiance(
 				ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+			const RISEPel rawEmission = emission;
+			Scalar emissionMiWeight = 1.0;
 
 			// MIS weight for BSDF-sampled emission hitting a mesh light
 			if( rs.bsdfPdf > 0 && ri.pObject )
@@ -98,12 +470,20 @@ void PathTracingShaderOp::PerformOperation(
 								ri.geometric.ray.origin ) );
 						const Scalar p_nee = (dist * dist) / (area * cosLight);
 						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+						emissionMiWeight = w_bsdf;
 						emission = emission * w_bsdf;
 					}
 				}
 			}
 
 			c = c + emission;
+
+#ifdef RISE_ENABLE_OPENPGL
+			if( guidingSegment && GuidingWantsDeepSignalTraining( rs.depth ) &&
+				ColorMath::MaxValue( rawEmission ) > 0 ) {
+				SetPTGuidingDirectContribution( guidingSegment, rawEmission, emissionMiWeight );
+			}
+#endif
 		}
 	}
 
@@ -130,6 +510,7 @@ void PathTracingShaderOp::PerformOperation(
 						RISEPel cthis( 0, 0, 0 );
 						rs2.importance = rs.importance * scatmaxv;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						rs2.type = PathTracingRayType( scat );
 						Ray ray = scat.ray;
 						ray.Advance( 1e-8 );
 						caster.CastRay( rc, ri.geometric.rast, ray, cthis,
@@ -145,12 +526,33 @@ void PathTracingShaderOp::PerformOperation(
 					RISEPel cthis( 0, 0, 0 );
 					rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
 					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+					rs2.type = PathTracingRayType( *pS );
 					Ray ray = pS->ray;
+
+#ifdef RISE_ENABLE_OPENPGL
+					if( guidingSegment ) {
+						SetPTGuidingContinuation(
+							guidingSegment,
+							ray.Dir(),
+							pS->pdf,
+							pS->kray,
+							pS->isDelta );
+					}
+#endif
+
 					ray.Advance( 1e-8 );
-					caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+					const bool hit = caster.CastRay( rc, ri.geometric.rast, ray, cthis,
 						rs2, 0, ri.pRadianceMap,
 						pS->ior_stack ? pS->ior_stack : ior_stack );
 					c = c + (pS->kray * cthis);
+
+#ifdef RISE_ENABLE_OPENPGL
+					if( guidingRecorder && guidingRecorder->active && !hit &&
+						GuidingTrainingLuminance( cthis ) > 0 )
+					{
+						AddPTGuidingBackgroundSegment( *guidingRecorder, ray, cthis );
+					}
+#endif
 				}
 			}
 		}
@@ -169,6 +571,12 @@ void PathTracingShaderOp::PerformOperation(
 		pLM->ComputeDirectLighting( ri.geometric, caster, *pBRDF,
 			ri.pObject->DoesReceiveShadows(), directNonMesh );
 		c = c + directNonMesh;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
+			AddPTGuidingScatteredContribution( guidingSegment, directNonMesh );
+		}
+#endif
 	}
 
 	// --- 2b: NEE for mesh luminaries (with MIS weight) ---
@@ -184,6 +592,12 @@ void PathTracingShaderOp::PerformOperation(
 		directMesh = pLumMgr->ComputeDirectLighting(
 			ri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
 		c = c + directMesh;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
+			AddPTGuidingScatteredContribution( guidingSegment, directMesh );
+		}
+#endif
 	}
 
 	// --- 2c: SMS for caustics through specular surfaces ---
@@ -213,6 +627,14 @@ void PathTracingShaderOp::PerformOperation(
 		if( sms.valid )
 		{
 			c = c + sms.contribution * sms.misWeight;
+
+#ifdef RISE_ENABLE_OPENPGL
+			if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
+				AddPTGuidingScatteredContribution(
+					guidingSegment,
+					sms.contribution * sms.misWeight );
+			}
+#endif
 		}
 	}
 
@@ -261,10 +683,10 @@ void PathTracingShaderOp::PerformOperation(
 
 #ifdef RISE_ENABLE_OPENPGL
 					// Collect training samples in branching mode
-					if( rc.pGuidingField && !rc.pGuidingField->IsTrained() &&
-						!scat.isDelta && scat.pdf > NEARZERO )
+					if( rc.pGuidingField && rc.pGuidingField->IsCollectingTrainingSamples() &&
+						GuidingSupportsSurfaceSampling( scat ) && scat.pdf > NEARZERO )
 					{
-						const Scalar lum = ColorMath::MaxValue( cthis );
+						const Scalar lum = GuidingTrainingLuminance( cthis );
 						if( lum > 0 )
 						{
 							rc.pGuidingField->AddSample(
@@ -274,6 +696,12 @@ void PathTracingShaderOp::PerformOperation(
 								scat.pdf,
 								lum,
 								false );
+						}
+						else
+						{
+							rc.pGuidingField->AddZeroValueSample(
+								ri.geometric.ptIntersection,
+								ray.Dir() );
 						}
 					}
 #endif
@@ -289,6 +717,7 @@ void PathTracingShaderOp::PerformOperation(
 				Ray traceRay = pS->ray;
 				RISEPel throughput = pS->kray;
 				Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
+				const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : ior_stack;
 
 #ifdef RISE_ENABLE_OPENPGL
 				// --------------------------------------------------------
@@ -304,15 +733,19 @@ void PathTracingShaderOp::PerformOperation(
 				static thread_local GuidingDistributionHandle guideDist;
 
 				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-					rs.depth <= rc.maxGuidingDepth && !pS->isDelta )
+					rs.depth <= rc.maxGuidingDepth && GuidingSupportsSurfaceSampling( *pS ) )
 				{
-					if( rc.pGuidingField->InitDistribution( guideDist,
+					const Scalar alpha = GuidingEffectiveAlpha(
+						rc.guidingAlpha, scattered, ri.pMaterial, rs, false );
+
+					if( alpha > NEARZERO && rc.pGuidingField->InitDistribution( guideDist,
 						ri.geometric.ptIntersection,
 						rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() ) )
 					{
-						rc.pGuidingField->ApplyCosineProduct( guideDist, ri.geometric.vNormal );
+						if( pS->type == ScatteredRay::eRayDiffuse ) {
+							rc.pGuidingField->ApplyCosineProduct( guideDist, GuidingCosineNormal( ri.geometric ) );
+						}
 
-						const Scalar alpha = rc.guidingAlpha;
 						const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 
 						if( xiG < alpha )
@@ -339,6 +772,7 @@ void PathTracingShaderOp::PerformOperation(
 									throughput = fGuided * (cosTheta / combinedPdf);
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
+									traceIorStack = ior_stack;
 								}
 								else
 								{
@@ -369,12 +803,16 @@ void PathTracingShaderOp::PerformOperation(
 				// Training sample collection: record incident radiance
 				// samples for the guiding field during training passes.
 				const bool collectTrainingSample =
-					rc.pGuidingField && !rc.pGuidingField->IsTrained() &&
-					!pS->isDelta && pS->pdf > NEARZERO;
+					!useGuidingPathSegments &&
+					rc.pGuidingField && rc.pGuidingField->IsCollectingTrainingSamples() &&
+					GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif // RISE_ENABLE_OPENPGL
+
+				const bool skipContinuation = ColorMath::MaxValue( throughput ) <= NEARZERO;
 
 				rs2.importance = rs.importance * ColorMath::MaxValue( throughput );
 				rs2.bsdfPdf = effectiveBsdfPdf;
+				rs2.type = PathTracingRayType( *pS );
 
 				if( pS->isDelta && bSMSEnabled ) {
 					rs2.considerEmission = false;
@@ -384,25 +822,57 @@ void PathTracingShaderOp::PerformOperation(
 
 				RISEPel cthis( 0, 0, 0 );
 				Scalar hitDist = 0;
-				traceRay.Advance( 1e-8 );
-				caster.CastRay( rc, ri.geometric.rast, traceRay, cthis,
-					rs2, &hitDist, ri.pRadianceMap,
-					pS->ior_stack ? pS->ior_stack : ior_stack );
-				c = c + (throughput * cthis);
+				bool hit = false;
+
+#ifdef RISE_ENABLE_OPENPGL
+				if( guidingSegment && !skipContinuation )
+				{
+					SetPTGuidingContinuation(
+						guidingSegment,
+						traceRay.Dir(),
+						effectiveBsdfPdf,
+						throughput,
+						pS->isDelta );
+				}
+#endif
+
+				if( !skipContinuation )
+				{
+					traceRay.Advance( 1e-8 );
+					hit = caster.CastRay( rc, ri.geometric.rast, traceRay, cthis,
+						rs2, &hitDist, ri.pRadianceMap,
+						traceIorStack );
+					c = c + (throughput * cthis);
+				}
+
+#ifdef RISE_ENABLE_OPENPGL
+				if( guidingRecorder && guidingRecorder->active && !hit && !skipContinuation &&
+					GuidingWantsDeepSignalTraining( rs2.depth ) &&
+					GuidingTrainingLuminance( cthis ) > 0 )
+				{
+					AddPTGuidingBackgroundSegment( *guidingRecorder, traceRay, cthis );
+				}
+#endif
 
 #ifdef RISE_ENABLE_OPENPGL
 				if( collectTrainingSample )
 				{
-					const Scalar lum = ColorMath::MaxValue( cthis );
+					const Scalar lum = GuidingTrainingLuminance( cthis );
 					if( lum > 0 )
 					{
 						rc.pGuidingField->AddSample(
 							ri.geometric.ptIntersection,
 							traceRay.Dir(),
 							hitDist > 0 ? hitDist : 1.0,
-							pS->pdf,
+							effectiveBsdfPdf,
 							lum,
 							false );
+					}
+					else
+					{
+						rc.pGuidingField->AddZeroValueSample(
+							ri.geometric.ptIntersection,
+							traceRay.Dir() );
 					}
 				}
 #endif
@@ -568,14 +1038,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 		if( bBranch )
 		{
-			for( unsigned int i = 0; i < scattered.Count(); i++ )
-			{
-				ScatteredRay& scat = scattered[i];
-				if( scat.krayNM > 0 )
+				for( unsigned int i = 0; i < scattered.Count(); i++ )
 				{
-					Scalar cthis = 0;
-					rs2.importance = rs.importance * scat.krayNM;
-					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+					ScatteredRay& scat = scattered[i];
+					if( scat.krayNM > 0 )
+					{
+						Scalar cthis = 0;
+						rs2.importance = rs.importance * scat.krayNM;
+						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						rs2.type = PathTracingRayType( scat );
 
 					if( scat.isDelta && bSMSEnabled ) {
 						rs2.considerEmission = false;
@@ -601,21 +1072,26 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 				Ray traceRay = pS->ray;
 				Scalar throughputNM = pS->krayNM;
 				Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
+				const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : ior_stack;
 
 #ifdef RISE_ENABLE_OPENPGL
 				// Path guiding (spectral): same one-sample MIS logic
 				static thread_local GuidingDistributionHandle guideDistNM;
 
 				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-					rs.depth <= rc.maxGuidingDepth && !pS->isDelta )
+					rs.depth <= rc.maxGuidingDepth && GuidingSupportsSurfaceSampling( *pS ) )
 				{
-					if( rc.pGuidingField->InitDistribution( guideDistNM,
+					const Scalar alpha = GuidingEffectiveAlpha(
+						rc.guidingAlpha, scattered, ri.pMaterial, rs, true );
+
+					if( alpha > NEARZERO && rc.pGuidingField->InitDistribution( guideDistNM,
 						ri.geometric.ptIntersection,
 						rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() ) )
 					{
-						rc.pGuidingField->ApplyCosineProduct( guideDistNM, ri.geometric.vNormal );
+						if( pS->type == ScatteredRay::eRayDiffuse ) {
+							rc.pGuidingField->ApplyCosineProduct( guideDistNM, GuidingCosineNormal( ri.geometric ) );
+						}
 
-						const Scalar alpha = rc.guidingAlpha;
 						const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 
 						if( xiG < alpha )
@@ -641,6 +1117,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 									throughputNM = fGuided * cosTheta / combinedPdf;
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
+									traceIorStack = ior_stack;
 								}
 								else
 								{
@@ -667,12 +1144,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 				}
 
 				const bool collectTrainingSampleNM =
-					rc.pGuidingField && !rc.pGuidingField->IsTrained() &&
-					!pS->isDelta && pS->pdf > NEARZERO;
+					rc.pGuidingField && rc.pGuidingField->IsCollectingTrainingSamples() &&
+					GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif
 
 				rs2.importance = rs.importance * fabs( throughputNM );
 				rs2.bsdfPdf = effectiveBsdfPdf;
+				rs2.type = PathTracingRayType( *pS );
 
 				if( pS->isDelta && bSMSEnabled ) {
 					rs2.considerEmission = false;
@@ -685,7 +1163,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 				traceRay.Advance( 1e-8 );
 				caster.CastRayNM( rc, ri.geometric.rast, traceRay, cthis,
 					rs2, nm, &hitDist, ri.pRadianceMap,
-					pS->ior_stack ? pS->ior_stack : ior_stack );
+					traceIorStack );
 				c += cthis * throughputNM;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -697,9 +1175,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							ri.geometric.ptIntersection,
 							traceRay.Dir(),
 							hitDist > 0 ? hitDist : 1.0,
-							pS->pdf,
+							effectiveBsdfPdf,
 							fabs( cthis ),
 							false );
+					}
+					else
+					{
+						rc.pGuidingField->AddZeroValueSample(
+							ri.geometric.ptIntersection,
+							traceRay.Dir() );
 					}
 				}
 #endif

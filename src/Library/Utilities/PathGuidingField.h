@@ -37,13 +37,19 @@ namespace RISE
 		unsigned int	trainingSPP;			///< Samples per pixel during each training pass
 		Scalar			alpha;					///< MIS blending weight: P(sample from guide)
 		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling
+		bool			completePathGuiding;	///< Experimental BDPT complete-path recorder/guide
+		bool			completePathStrategySelection;	///< Experimental BDPT strategy selection
+		unsigned int	completePathStrategySamples;	///< Techniques to evaluate per path
 
 		PathGuidingConfig() :
 		enabled( false ),
 		trainingIterations( 4 ),
 		trainingSPP( 4 ),
 		alpha( 0.5 ),
-		maxGuidingDepth( 3 )
+		maxGuidingDepth( 3 ),
+		completePathGuiding( false ),
+		completePathStrategySelection( false ),
+		completePathStrategySamples( 2 )
 		{
 		}
 	};
@@ -86,8 +92,12 @@ namespace RISE
 			PGLField				field;
 			PGLSampleStorage		sampleStorage;
 			bool					trained;
+			bool					collectingTraining;
 			PathGuidingConfig		config;
 			mutable size_t			sampleCount;
+			mutable size_t			zeroValueSampleCount;
+			mutable Scalar			sampleEnergy;
+			mutable Scalar			directSampleEnergy;
 
 			virtual ~PathGuidingField();
 
@@ -111,6 +121,18 @@ namespace RISE
 				Scalar pdf,
 				Scalar luminance,
 				bool isDirect
+				);
+
+			void AddZeroValueSample(
+				const Point3& position,
+				const Vector3& direction
+				);
+
+			void AddPathSegments(
+				PGLPathSegmentStorage pathSegments,
+				bool useNEEMiWeights,
+				bool guideDirectLight,
+				bool rrAffectsDirectContribution
 				);
 
 			void EndTrainingIteration();
@@ -151,6 +173,17 @@ namespace RISE
 				) const;
 
 			bool IsTrained() const { return trained; }
+			bool IsCollectingTrainingSamples() const { return collectingTraining; }
+			size_t GetLastAddedSurfaceSampleCount() const { return sampleCount; }
+			size_t GetLastAddedZeroValueSurfaceSampleCount() const { return zeroValueSampleCount; }
+			Scalar GetLastAddedSurfaceSampleEnergy() const { return sampleEnergy; }
+			Scalar GetLastAddedDirectSurfaceSampleEnergy() const { return directSampleEnergy; }
+			Scalar GetLastAddedIndirectSurfaceSampleEnergy() const
+			{
+				return sampleEnergy > directSampleEnergy ?
+					sampleEnergy - directSampleEnergy :
+					0;
+			}
 
 			Scalar GetAlpha() const { return config.alpha; }
 		};

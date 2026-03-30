@@ -28,6 +28,7 @@
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/PathGuidingField.h"
+#include "../Utilities/CompletePathGuide.h"
 
 namespace RISE
 {
@@ -61,6 +62,8 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;	///< Learned radiance distribution for guided sampling
+			mutable CompletePathGuide*	pCompletePathGuide;	///< Experimental BDPT complete-path recorder
+			mutable Scalar				guidingAlphaScale;
 #endif
 			PathGuidingConfig		guidingConfig;		///< Path guiding configuration
 

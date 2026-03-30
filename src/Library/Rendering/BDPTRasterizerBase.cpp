@@ -39,6 +39,73 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+#ifdef RISE_ENABLE_OPENPGL
+namespace
+{
+	inline bool IsFiniteBoundingBox( const BoundingBox& bbox )
+	{
+		return
+			std::isfinite( bbox.ll.x ) && std::isfinite( bbox.ll.y ) && std::isfinite( bbox.ll.z ) &&
+			std::isfinite( bbox.ur.x ) && std::isfinite( bbox.ur.y ) && std::isfinite( bbox.ur.z ) &&
+			bbox.ll.x <= bbox.ur.x &&
+			bbox.ll.y <= bbox.ur.y &&
+			bbox.ll.z <= bbox.ur.z;
+	}
+
+	class SceneBoundsEnumerator :
+		public IEnumCallback<IObject>
+	{
+	public:
+		BoundingBox bounds;
+		bool hasBounds;
+
+		SceneBoundsEnumerator() :
+			bounds(
+				Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+				Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) ),
+			hasBounds( false )
+		{
+		}
+
+		virtual bool operator() ( const IObject& object )
+		{
+			const BoundingBox bbox = object.getBoundingBox();
+			if( IsFiniteBoundingBox( bbox ) ) {
+				if( hasBounds ) {
+					bounds.Include( bbox );
+				} else {
+					bounds = bbox;
+					hasBounds = true;
+				}
+			}
+			return true;
+		}
+	};
+
+	inline void ComputeGuidingSceneBounds(
+		const IScene& scene,
+		Point3& boundsMin,
+		Point3& boundsMax
+		)
+	{
+		SceneBoundsEnumerator enumerator;
+		if( scene.GetObjects() ) {
+			scene.GetObjects()->EnumerateObjects( enumerator );
+		}
+
+		if( enumerator.hasBounds ) {
+			enumerator.bounds.SanityCheck();
+			enumerator.bounds.EnsureBoxHasVolume();
+			boundsMin = enumerator.bounds.ll;
+			boundsMax = enumerator.bounds.ur;
+		} else {
+			boundsMin = Point3( -1e4, -1e4, -1e4 );
+			boundsMax = Point3( 1e4, 1e4, 1e4 );
+		}
+	}
+}
+#endif
+
 BDPTRasterizerBase::BDPTRasterizerBase(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
@@ -57,6 +124,8 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 #endif
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 )
+  ,pCompletePathGuide( 0 )
+  ,guidingAlphaScale( 1.0 )
 #endif
   ,guidingConfig( guidingCfg )
 {
@@ -83,6 +152,7 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 #endif
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
+	safe_release( pCompletePathGuide );
 #endif
 }
 
@@ -114,6 +184,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	const unsigned int width = pScene.GetCamera()->GetWidth();
 	const unsigned int height = pScene.GetCamera()->GetHeight();
 
+	// Training can cast probe rays to estimate incident radiance,
+	// so the ray caster needs the scene attached before training starts.
+	pCaster->AttachScene( &pScene );
+
 	// Create the splat film for s<=1 strategies
 	safe_release( pSplatFilm );
 	pSplatFilm = new SplatFilm( width, height );
@@ -139,30 +213,60 @@ void BDPTRasterizerBase::RasterizeScene(
 #ifdef RISE_ENABLE_OPENPGL
 	// Path guiding: training phase
 	safe_release( pGuidingField );
+	safe_release( pCompletePathGuide );
+	pIntegrator->SetCompletePathGuide( 0, false, 0 );
+	guidingAlphaScale = 1.0;
 	if( guidingConfig.enabled )
 	{
-		// Scene bounds for the guiding field's spatial structure.
-		// OpenPGL's KD-tree adapts based on actual sample positions,
-		// so a generous default bounding box works fine.
-		Point3 boundsMin( -1e4, -1e4, -1e4 );
-		Point3 boundsMax( 1e4, 1e4, 1e4 );
+		Point3 boundsMin;
+		Point3 boundsMax;
+		ComputeGuidingSceneBounds( pScene, boundsMin, boundsMax );
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
 		pGuidingField->addref();
 
+		if( guidingConfig.completePathGuiding )
+		{
+			pCompletePathGuide = new CompletePathGuide(
+				boundsMin,
+				boundsMax,
+				pIntegrator->GetMaxLightDepth(),
+				pIntegrator->GetMaxEyeDepth() );
+			pCompletePathGuide->addref();
+
+			GlobalLog()->PrintEx( eLog_Event,
+				"CompletePathGuide:: Enabled for BDPT training (maxLightDepth=%u, maxEyeDepth=%u)",
+				pIntegrator->GetMaxLightDepth(),
+				pIntegrator->GetMaxEyeDepth() );
+		}
+
 		// Set the guiding field on the integrator (training mode: collect samples, no guiding)
-		pIntegrator->SetGuidingField( pGuidingField, guidingConfig.alpha, guidingConfig.maxGuidingDepth );
+		pIntegrator->SetGuidingField(
+			pGuidingField,
+			guidingConfig.alpha * guidingAlphaScale,
+			guidingConfig.maxGuidingDepth );
+		pIntegrator->SetCompletePathGuide( pCompletePathGuide, false, 0 );
+
+			const unsigned int bootstrapTrainingSPP = 1;
+			unsigned int currentTrainingSPP = bootstrapTrainingSPP;
+			Scalar previousPositiveSampleDensity = 0;
+			Scalar previousIndirectEnergyDensity = 0;
+			unsigned int lowGainPasses = 0;
 
 		// Run training iterations
-		for( unsigned int trainIter = 0; trainIter < guidingConfig.trainingIterations; trainIter++ )
-		{
-			pGuidingField->BeginTrainingIteration();
+			for( unsigned int trainIter = 0; trainIter < guidingConfig.trainingIterations; trainIter++ )
+			{
+				pIntegrator->ResetGuidingTrainingStats();
+				pGuidingField->BeginTrainingIteration();
+				if( pCompletePathGuide ) {
+					pCompletePathGuide->BeginIteration();
+				}
 
 			// Use a temporary low-spp sampling object for training
 			ISampling2D* pTrainSampling = 0;
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
-				pTrainSampling->SetNumSamples( guidingConfig.trainingSPP );
+				pTrainSampling->SetNumSamples( currentTrainingSPP );
 			}
 
 			ISampling2D* pSavedSampling = pSampling;
@@ -176,7 +280,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			pTrainSplat->addref();
 			SplatFilm* pSavedSplat = pSplatFilm;
 			pSplatFilm = pTrainSplat;
-			mSplatTotalSamples = static_cast<Scalar>( guidingConfig.trainingSPP ) * GetSplatSampleScale();
+			mSplatTotalSamples = static_cast<Scalar>( currentTrainingSPP ) * GetSplatSampleScale();
 
 			if( pProgressFunc ) {
 				char title[128];
@@ -213,6 +317,162 @@ void BDPTRasterizerBase::RasterizeScene(
 			safe_release( pTrainSampling );
 
 			pGuidingField->EndTrainingIteration();
+			if( pCompletePathGuide ) {
+				pCompletePathGuide->EndIteration();
+			}
+
+			const Scalar cameraSamples =
+				static_cast<Scalar>( width ) *
+				static_cast<Scalar>( height ) *
+				static_cast<Scalar>( currentTrainingSPP ) *
+				GetSplatSampleScale();
+				const size_t positiveSamples = pGuidingField->GetLastAddedSurfaceSampleCount();
+				const Scalar totalSampleEnergy = pGuidingField->GetLastAddedSurfaceSampleEnergy();
+				const Scalar indirectSampleEnergy =
+					pGuidingField->GetLastAddedIndirectSurfaceSampleEnergy();
+				const Scalar positiveSampleDensity =
+					cameraSamples > NEARZERO ?
+						static_cast<Scalar>( positiveSamples ) / cameraSamples :
+						0.0;
+				const BDPTIntegrator::GuidingTrainingStats& guidingStats =
+					pIntegrator->GetGuidingTrainingStats();
+				const Scalar deepEyeEnergyDensity =
+					cameraSamples > NEARZERO ?
+						guidingStats.deepEyeConnectionEnergy / cameraSamples :
+						0.0;
+				const Scalar indirectEnergyDensity =
+					cameraSamples > NEARZERO ?
+						indirectSampleEnergy / cameraSamples :
+						0.0;
+				const Scalar deepEyeEnergyFraction =
+					guidingStats.totalEnergy > NEARZERO ?
+						guidingStats.deepEyeConnectionEnergy / guidingStats.totalEnergy :
+						0.0;
+				const Scalar indirectEnergyFraction =
+					totalSampleEnergy > NEARZERO ?
+						indirectSampleEnergy / totalSampleEnergy :
+						0.0;
+				const Scalar strategyScale =
+					totalSampleEnergy > NEARZERO ?
+						std::sqrt( std::min( Scalar( 1.0 ),
+							deepEyeEnergyFraction * indirectEnergyFraction ) ) :
+						0.0;
+
+				if( positiveSampleDensity < 1.0 )
+				{
+					const Scalar densityScale =
+						positiveSampleDensity <= 0.35 ?
+							0.0 :
+							positiveSampleDensity * positiveSampleDensity;
+					guidingAlphaScale = densityScale * strategyScale;
+
+					GlobalLog()->PrintEx( eLog_Event,
+						"PathGuidingField:: BDPT alpha scaled to %.3f (positive sample density %.3f, indirect energy density %.6f, indirect fraction %.3f, deep-eye energy density %.6f, deep fraction %.3f, first-surface energy %.6f)",
+						guidingAlphaScale,
+						positiveSampleDensity,
+						indirectEnergyDensity,
+						indirectEnergyFraction,
+						deepEyeEnergyDensity,
+						deepEyeEnergyFraction,
+						guidingStats.firstSurfaceConnectionEnergy );
+				}
+				else
+				{
+					guidingAlphaScale = strategyScale;
+				}
+
+			pIntegrator->SetGuidingField(
+				pGuidingField,
+				guidingConfig.alpha * guidingAlphaScale,
+				guidingConfig.maxGuidingDepth );
+
+				if( trainIter == 0 && positiveSampleDensity >= 0.85 &&
+					indirectEnergyFraction < 0.35 )
+				{
+					GlobalLog()->PrintEx( eLog_Event,
+						"PathGuidingField:: Stopping BDPT training after bootstrap (density %.3f is already high enough for the coarse field and indirect fraction %.3f is low)",
+						positiveSampleDensity,
+						indirectEnergyFraction );
+					break;
+				}
+
+			if( positiveSampleDensity < 0.5 )
+			{
+				GlobalLog()->PrintEx( eLog_Event,
+					"PathGuidingField:: Stopping BDPT training after iteration %u (%zu positive samples, density %.3f)",
+					trainIter + 1,
+					positiveSamples,
+					positiveSampleDensity );
+				break;
+			}
+
+				if( previousPositiveSampleDensity > NEARZERO ||
+					previousIndirectEnergyDensity > NEARZERO )
+				{
+					const Scalar relativeGain =
+						previousPositiveSampleDensity > NEARZERO ?
+							positiveSampleDensity / previousPositiveSampleDensity - 1.0 :
+							0.0;
+					const Scalar relativeEnergyGain =
+						previousIndirectEnergyDensity > NEARZERO ?
+							indirectEnergyDensity / previousIndirectEnergyDensity - 1.0 :
+							0.0;
+
+					if( relativeGain < 0.08 && relativeEnergyGain < 0.02 ) {
+						lowGainPasses++;
+					} else {
+						lowGainPasses = 0;
+					}
+
+					if( trainIter >= 3 && lowGainPasses >= 2 )
+					{
+						GlobalLog()->PrintEx( eLog_Event,
+							"PathGuidingField:: Stopping BDPT training after iteration %u (relative gain %.3f, energy gain %.3f, %u low-gain passes)",
+							trainIter + 1,
+							relativeGain,
+							relativeEnergyGain,
+							lowGainPasses );
+						break;
+					}
+				}
+
+				previousPositiveSampleDensity = positiveSampleDensity;
+				previousIndirectEnergyDensity = indirectEnergyDensity;
+
+			if( positiveSampleDensity >= 1.0 )
+			{
+				currentTrainingSPP = guidingConfig.trainingSPP;
+			}
+			else if( positiveSampleDensity >= 0.6 )
+			{
+				currentTrainingSPP = std::min( guidingConfig.trainingSPP, bootstrapTrainingSPP + 1 );
+			}
+			else
+			{
+				currentTrainingSPP = bootstrapTrainingSPP;
+			}
+		}
+
+		pIntegrator->SetGuidingField(
+			pGuidingField,
+			guidingConfig.alpha * guidingAlphaScale,
+			guidingConfig.maxGuidingDepth );
+		if( pCompletePathGuide && guidingConfig.completePathStrategySelection )
+		{
+			pIntegrator->SetCompletePathGuide(
+				pCompletePathGuide,
+				true,
+				r_max( static_cast<unsigned int>( 1 ),
+					guidingConfig.completePathStrategySamples ) );
+
+			GlobalLog()->PrintEx( eLog_Event,
+				"CompletePathGuide:: Final render strategy selection enabled (%u techniques per path, Sobol stream 47)",
+				r_max( static_cast<unsigned int>( 1 ),
+					guidingConfig.completePathStrategySamples ) );
+		}
+		else
+		{
+			pIntegrator->SetCompletePathGuide( 0, false, 0 );
 		}
 
 		// Restore splat total samples for main render
@@ -244,8 +504,6 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 	}
 
-	pCaster->AttachScene( &pScene );
-
 	// If there is no raster sequence, create a default one
 	BlockRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
@@ -256,6 +514,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	if( pProgressFunc ) {
 		pProgressFunc->SetTitle( GetProgressTitle() );
 	}
+
+#ifdef RISE_ENABLE_OPENPGL
+	pIntegrator->ResetStrategySelectionStats();
+#endif
 
 	// Render pass: dispatch blocks to threads
 	{
@@ -320,6 +582,27 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 #endif
 
+#ifdef RISE_ENABLE_OPENPGL
+	{
+		unsigned long long pathCount = 0;
+		unsigned long long candidateCount = 0;
+		unsigned long long evaluatedCount = 0;
+		pIntegrator->GetStrategySelectionStats(
+			pathCount,
+			candidateCount,
+			evaluatedCount );
+
+		if( pathCount > 0 )
+		{
+			GlobalLog()->PrintEx( eLog_Event,
+				"CompletePathGuide:: Strategy selection evaluated %.3f / %.3f average BDPT techniques per path over %llu paths",
+				static_cast<double>( evaluatedCount ) / static_cast<double>( pathCount ),
+				static_cast<double>( candidateCount ) / static_cast<double>( pathCount ),
+				pathCount );
+		}
+	}
+#endif
+
 	if( blocks ) {
 		safe_release( blocks );
 	}
@@ -337,10 +620,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	pAOVBuffers = 0;
 #endif
 #ifdef RISE_ENABLE_OPENPGL
-	if( pGuidingField ) {
-		pIntegrator->SetGuidingField( 0, 0, 0 );
-	}
+	pIntegrator->SetGuidingField( 0, 0, 0 );
+	pIntegrator->SetCompletePathGuide( 0, false, 0 );
 	safe_release( pGuidingField );
+	safe_release( pCompletePathGuide );
 #endif
 }
 

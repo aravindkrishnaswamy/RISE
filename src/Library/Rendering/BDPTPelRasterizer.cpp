@@ -99,7 +99,13 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	}
 
 	std::vector<BDPTIntegrator::ConnectionResult> results =
-		pIntegrator->EvaluateAllStrategies( lightVerts, eyeVerts, pScene, *pCaster, camera );
+		pIntegrator->EvaluateAllStrategies(
+			lightVerts,
+			eyeVerts,
+			pScene,
+			*pCaster,
+			camera,
+			&sampler );
 
 	RISEPel sampleColor( 0, 0, 0 );
 

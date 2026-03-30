@@ -77,6 +77,18 @@ namespace RISE
 		// Camera endpoint data (valid only for type == CAMERA)
 		Point2					screenPos;
 
+		// Path-guiding training metadata for the sampled eye-path segment
+		Vector3					guidingDirectionOut;
+		Vector3					guidingDirectionIn;
+		Vector3					guidingNormal;
+		RISEPel					guidingScatteringWeight;
+		Scalar					guidingPdfDirectionIn;
+		Scalar					guidingRussianRouletteSurvivalProbability;
+		Scalar					guidingEta;
+		Scalar					guidingRoughness;
+		bool					guidingHasSegment;
+		bool					guidingHasDirectionIn;
+
 		BDPTVertex() :
 		type( SURFACE ),
 		pMaterial( 0 ),
@@ -92,7 +104,17 @@ namespace RISE
 		insideObject( false ),
 		pLight( 0 ),
 		pLuminary( 0 ),
-		screenPos( Point2( 0, 0 ) )
+		screenPos( Point2( 0, 0 ) ),
+		guidingDirectionOut( 0, 0, 0 ),
+		guidingDirectionIn( 0, 0, 0 ),
+		guidingNormal( 0, 0, 1 ),
+		guidingScatteringWeight( RISEPel( 0, 0, 0 ) ),
+		guidingPdfDirectionIn( 1.0 ),
+		guidingRussianRouletteSurvivalProbability( 1.0 ),
+		guidingEta( 1.0 ),
+		guidingRoughness( 1.0 ),
+		guidingHasSegment( false ),
+		guidingHasDirectionIn( false )
 		{
 		}
 	};

@@ -91,6 +91,18 @@ static const Scalar BDPT_RR_THRESHOLD = 0.05;
 
 namespace
 {
+	inline Vector3 GuidingCosineNormal(
+		const Vector3& normal,
+		const Vector3& incomingDir
+		)
+	{
+		Vector3 orientedNormal = normal;
+		if( Vector3Ops::Dot( incomingDir, orientedNormal ) > NEARZERO ) {
+			orientedNormal = -orientedNormal;
+		}
+		return orientedNormal;
+	}
+
 	inline const IORStack* BuildVertexIORStack(
 		const BDPTVertex& vertex,
 		IORStack& stack
@@ -117,6 +129,395 @@ namespace
 		const RayCaster* pConcrete = dynamic_cast<const RayCaster*>( &caster );
 		return pConcrete ? pConcrete->UsesIORStack() : false;
 	}
+
+	inline bool GuidingSupportsSurfaceSampling( const ScatteredRay& scat )
+	{
+		return !scat.isDelta && scat.type == ScatteredRay::eRayDiffuse;
+	}
+
+	inline bool GuidingWantsMultibounceTraining(
+		const unsigned int s,
+		const unsigned int t
+		)
+	{
+		// Ignore single-bounce direct-light-like strategies and favor
+		// connections that required at least two bounces overall.
+		return t >= 3 || (s >= 2 && t >= 2);
+	}
+
+	struct StrategySelectionCandidate
+	{
+		unsigned int	s;
+		unsigned int	t;
+		Scalar		probability;
+
+		StrategySelectionCandidate() :
+			s( 0 ),
+			t( 0 ),
+			probability( 0 )
+		{
+		}
+
+		StrategySelectionCandidate(
+			const unsigned int s_,
+			const unsigned int t_,
+			const Scalar probability_
+			) :
+			s( s_ ),
+			t( t_ ),
+			probability( probability_ )
+		{
+		}
+	};
+
+	struct StrategySelectionScratch
+	{
+		std::vector<Scalar> learnedWeights;
+		std::vector<StrategySelectionCandidate> candidates;
+		std::vector<Scalar> cdf;
+		size_t reservedCandidates;
+
+		StrategySelectionScratch() :
+			learnedWeights(),
+			candidates(),
+			cdf(),
+			reservedCandidates( 0 )
+		{
+		}
+	};
+
+#ifdef RISE_ENABLE_OPENPGL
+	struct GuidingTrainingPathScratch
+	{
+		std::vector<RISEPel> localContributions;
+		std::vector<RISEPel> directContributions;
+		std::vector<Scalar> directMiWeights;
+		std::vector<bool> hasDirectContribution;
+		PGLPathSegmentStorage pathSegments;
+		size_t reservedSegments;
+
+		GuidingTrainingPathScratch() :
+			pathSegments( pglNewPathSegmentStorage() ),
+			reservedSegments( 0 )
+		{
+		}
+
+		~GuidingTrainingPathScratch()
+		{
+			if( pathSegments ) {
+				pglReleasePathSegmentStorage( pathSegments );
+			}
+		}
+	};
+
+	inline void RecordGuidingTrainingSampleNM(
+		PathGuidingField* pGuidingField,
+		const RuntimeContext& rc,
+		const IRayCaster& caster,
+		const RayIntersection& ri,
+		const Ray& sampledRay,
+		const Scalar samplePdf,
+		const unsigned int rayDepth,
+		const Scalar nm,
+		const IORStack* const ior_stack
+		)
+	{
+		if( !pGuidingField || !pGuidingField->IsCollectingTrainingSamples() ||
+			samplePdf <= NEARZERO )
+		{
+			return;
+		}
+
+		RuntimeContext trainRc( rc.random, RuntimeContext::PASS_NORMAL, false );
+
+		IRayCaster::RAY_STATE rs;
+		rs.depth = rayDepth;
+		rs.considerEmission = true;
+		rs.bsdfPdf = samplePdf;
+
+		Scalar Li = 0;
+		Scalar hitDist = 0;
+		Ray traceRay = sampledRay;
+		traceRay.Advance( BDPT_RAY_EPSILON );
+
+		caster.CastRayNM(
+			trainRc,
+			nullRasterizerState,
+			traceRay,
+			Li,
+			rs,
+			nm,
+			&hitDist,
+			ri.pRadianceMap,
+			ior_stack );
+
+		if( fabs( Li ) > 0 )
+		{
+			pGuidingField->AddSample(
+				ri.geometric.ptIntersection,
+				traceRay.Dir(),
+				hitDist > 0 ? hitDist : 1.0,
+				samplePdf,
+				fabs( Li ),
+				false );
+		}
+		else
+		{
+			pGuidingField->AddZeroValueSample(
+				ri.geometric.ptIntersection,
+				traceRay.Dir() );
+		}
+	}
+
+	inline pgl_vec3f GuidingVec3f( const Vector3& v )
+	{
+		pgl_vec3f out;
+		pglVec3f( out,
+			static_cast<float>( v.x ),
+			static_cast<float>( v.y ),
+			static_cast<float>( v.z ) );
+		return out;
+	}
+
+	inline pgl_point3f GuidingPoint3f( const Point3& p )
+	{
+		pgl_point3f out;
+		pglPoint3f( out,
+			static_cast<float>( p.x ),
+			static_cast<float>( p.y ),
+			static_cast<float>( p.z ) );
+		return out;
+	}
+
+	inline pgl_vec3f GuidingColor3f( const RISEPel& c )
+	{
+		pgl_vec3f out;
+		pglVec3f( out,
+			static_cast<float>( c[0] ),
+			static_cast<float>( c[1] ),
+			static_cast<float>( c[2] ) );
+		return out;
+	}
+
+	inline RISEPel GuidingClampContribution( const RISEPel& contribution )
+	{
+		RISEPel clamped = contribution;
+		for( int i = 0; i < 3; i++ ) {
+			if( !std::isfinite( clamped[i] ) || clamped[i] < 0 ) {
+				clamped[i] = 0;
+			}
+		}
+		return clamped;
+	}
+
+	inline void RecordGuidingTrainingPath(
+		PathGuidingField* pGuidingField,
+		BDPTIntegrator::GuidingTrainingStats* pStats,
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<BDPTIntegrator::ConnectionResult>& results
+		)
+	{
+		if( !pGuidingField || !pGuidingField->IsCollectingTrainingSamples() ||
+			eyeVerts.size() <= 1 )
+		{
+			return;
+		}
+
+		bool hasSegments = false;
+		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
+			if( eyeVerts[i].type == BDPTVertex::SURFACE && eyeVerts[i].guidingHasSegment ) {
+				hasSegments = true;
+				break;
+			}
+		}
+
+		if( !hasSegments ) {
+			return;
+		}
+
+		static thread_local GuidingTrainingPathScratch scratch;
+		if( !scratch.pathSegments ) {
+			return;
+		}
+
+		scratch.localContributions.assign(
+			eyeVerts.size(),
+			RISEPel( 0, 0, 0 ) );
+		scratch.directContributions.assign(
+			eyeVerts.size(),
+			RISEPel( 0, 0, 0 ) );
+		scratch.directMiWeights.assign(
+			eyeVerts.size(),
+			Scalar( 1.0 ) );
+		scratch.hasDirectContribution.assign(
+			eyeVerts.size(),
+			false );
+
+		for( unsigned int i = 0; i < results.size(); i++ )
+		{
+			const BDPTIntegrator::ConnectionResult& cr = results[i];
+			if( !cr.valid || !cr.guidingValid || cr.needsSplat ||
+				cr.guidingEyeVertexIndex >= eyeVerts.size() ||
+				!GuidingWantsMultibounceTraining( cr.s, cr.t ) )
+				{
+					continue;
+				}
+
+			if( cr.guidingUseDirectContribution )
+			{
+				scratch.directContributions[cr.guidingEyeVertexIndex] =
+					scratch.directContributions[cr.guidingEyeVertexIndex] +
+					cr.guidingLocalContribution;
+				scratch.directMiWeights[cr.guidingEyeVertexIndex] = cr.misWeight;
+				scratch.hasDirectContribution[cr.guidingEyeVertexIndex] = true;
+			}
+			else
+			{
+				scratch.localContributions[cr.guidingEyeVertexIndex] =
+					scratch.localContributions[cr.guidingEyeVertexIndex] +
+					(cr.guidingLocalContribution * cr.misWeight);
+			}
+
+			if( pStats )
+			{
+				const RISEPel effectiveContribution =
+					cr.guidingLocalContribution * cr.misWeight;
+				const Scalar energy =
+					effectiveContribution[0] * Scalar( 0.2126 ) +
+					effectiveContribution[1] * Scalar( 0.7152 ) +
+					effectiveContribution[2] * Scalar( 0.0722 );
+				if( energy > 0 )
+				{
+					pStats->totalEnergy += energy;
+					if( cr.t >= 3 )
+					{
+						pStats->deepEyeConnectionEnergy += energy;
+						pStats->deepEyeConnectionCount++;
+					}
+					else if( cr.s >= 2 && cr.t >= 2 )
+					{
+						pStats->firstSurfaceConnectionEnergy += energy;
+						pStats->firstSurfaceConnectionCount++;
+					}
+				}
+			}
+		}
+
+		const size_t requiredSegments = eyeVerts.size() > 1 ? eyeVerts.size() - 1 : 0;
+		if( scratch.reservedSegments < requiredSegments ) {
+			pglPathSegmentStorageReserve( scratch.pathSegments, requiredSegments );
+			scratch.reservedSegments = requiredSegments;
+		}
+		pglPathSegmentStorageClear( scratch.pathSegments );
+
+		for( unsigned int i = 1; i < eyeVerts.size(); i++ )
+		{
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type != BDPTVertex::SURFACE || !v.guidingHasSegment ) {
+				continue;
+			}
+
+			const RISEPel scatteredContribution =
+				GuidingClampContribution( scratch.localContributions[i] );
+			const RISEPel directContribution =
+				GuidingClampContribution( scratch.directContributions[i] );
+			const bool hasTerminalContribution =
+				ColorMath::MaxValue( scatteredContribution ) > 0 ||
+				ColorMath::MaxValue( directContribution ) > 0;
+
+			// Only keep terminal vertices when they actually terminate with
+			// radiance. Otherwise they add a synthetic dangling segment.
+			if( !v.guidingHasDirectionIn && !hasTerminalContribution ) {
+				continue;
+			}
+
+			PGLPathSegmentData* segment =
+				pglPathSegmentStorageNextSegment( scratch.pathSegments );
+			if( !segment ) {
+				continue;
+			}
+
+			segment->position = GuidingPoint3f( v.position );
+			segment->directionOut = GuidingVec3f( v.guidingDirectionOut );
+			segment->normal = GuidingVec3f( v.guidingNormal );
+			segment->volumeScatter = false;
+			segment->transmittanceWeight = GuidingColor3f( RISEPel( 1, 1, 1 ) );
+			segment->directContribution = GuidingColor3f( directContribution );
+			segment->miWeight = static_cast<float>(
+				scratch.hasDirectContribution[i] ?
+					scratch.directMiWeights[i] :
+					Scalar( 1.0 ) );
+			segment->scatteredContribution = GuidingColor3f( scatteredContribution );
+			segment->eta = static_cast<float>(
+				v.guidingEta > NEARZERO ? v.guidingEta : 1.0 );
+
+			if( v.guidingHasDirectionIn )
+			{
+				segment->directionIn = GuidingVec3f( v.guidingDirectionIn );
+				segment->pdfDirectionIn = static_cast<float>(
+					v.guidingPdfDirectionIn > 0 ? v.guidingPdfDirectionIn : 0 );
+				segment->isDelta = v.isDelta;
+				segment->scatteringWeight =
+					GuidingColor3f( GuidingClampContribution( v.guidingScatteringWeight ) );
+				segment->russianRouletteSurvivalProbability = static_cast<float>(
+					v.guidingRussianRouletteSurvivalProbability > 0 ?
+						v.guidingRussianRouletteSurvivalProbability : 1.0 );
+				segment->roughness = static_cast<float>(
+					v.guidingRoughness >= 0 ? v.guidingRoughness : 1.0 );
+			}
+			else
+			{
+				segment->directionIn = GuidingVec3f( Vector3( 0, 0, 0 ) );
+				segment->pdfDirectionIn = 0.0f;
+				segment->isDelta = false;
+				segment->scatteringWeight = GuidingColor3f( RISEPel( 0, 0, 0 ) );
+				segment->russianRouletteSurvivalProbability = 1.0f;
+				segment->roughness = 1.0f;
+			}
+		}
+
+		pGuidingField->AddPathSegments(
+			scratch.pathSegments,
+			false,
+			false,
+			false );
+	}
+
+	inline void RecordCompletePathSamples(
+		CompletePathGuide* pCompletePathGuide,
+		const std::vector<BDPTVertex>& lightVerts,
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<BDPTIntegrator::ConnectionResult>& results
+		)
+	{
+		if( !pCompletePathGuide || !pCompletePathGuide->IsCollectingTrainingSamples() ) {
+			return;
+		}
+
+		for( unsigned int i = 0; i < results.size(); i++ )
+		{
+			const BDPTIntegrator::ConnectionResult& cr = results[i];
+			if( !cr.valid || cr.needsSplat || cr.t == 0 || cr.t > eyeVerts.size() ) {
+				continue;
+			}
+
+			const Point3& eyePosition = eyeVerts[cr.t - 1].position;
+			const Point3* pLightPosition = 0;
+			if( cr.s > 0 && cr.s <= lightVerts.size() ) {
+				pLightPosition = &lightVerts[cr.s - 1].position;
+			}
+
+			pCompletePathGuide->AddSample(
+				cr.s,
+				cr.t,
+				eyePosition,
+				pLightPosition,
+				cr.contribution * cr.misWeight,
+				cr.s == 0,
+				cr.needsSplat );
+		}
+	}
+#endif
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -133,8 +534,15 @@ BDPTIntegrator::BDPTIntegrator(
   pManifoldSolver( 0 )
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 ),
+  pCompletePathGuide( 0 ),
   guidingAlpha( 0 ),
-  maxGuidingDepth( 3 )
+  maxGuidingDepth( 3 ),
+  completePathStrategySelectionEnabled( false ),
+  completePathStrategySampleCount( 0 ),
+  strategySelectionPathCount( 0 ),
+  strategySelectionCandidateCount( 0 ),
+  strategySelectionEvaluatedCount( 0 ),
+  guidingTrainingStats()
 #endif
 {
 }
@@ -170,6 +578,45 @@ void BDPTIntegrator::SetGuidingField( PathGuidingField* pField, Scalar alpha, un
 	pGuidingField = pField;
 	guidingAlpha = alpha;
 	maxGuidingDepth = maxDepth;
+}
+
+void BDPTIntegrator::SetCompletePathGuide(
+	CompletePathGuide* pGuide,
+	bool enableStrategySelection,
+	unsigned int strategySamples )
+{
+	pCompletePathGuide = pGuide;
+	completePathStrategySelectionEnabled = enableStrategySelection;
+	completePathStrategySampleCount = strategySamples;
+}
+
+void BDPTIntegrator::ResetGuidingTrainingStats() const
+{
+	guidingTrainingStats = GuidingTrainingStats();
+}
+
+const BDPTIntegrator::GuidingTrainingStats&
+BDPTIntegrator::GetGuidingTrainingStats() const
+{
+	return guidingTrainingStats;
+}
+
+void BDPTIntegrator::ResetStrategySelectionStats() const
+{
+	strategySelectionPathCount.store( 0 );
+	strategySelectionCandidateCount.store( 0 );
+	strategySelectionEvaluatedCount.store( 0 );
+}
+
+void BDPTIntegrator::GetStrategySelectionStats(
+	unsigned long long& pathCount,
+	unsigned long long& candidateCount,
+	unsigned long long& evaluatedCount
+	) const
+{
+	pathCount = strategySelectionPathCount.load();
+	candidateCount = strategySelectionCandidateCount.load();
+	evaluatedCount = strategySelectionEvaluatedCount.load();
 }
 #endif
 
@@ -920,26 +1367,6 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 		// --- End BSSRDF sampling ---
 
-#ifdef RISE_ENABLE_OPENPGL
-		// Light subpath: training only (no guided sampling).
-		// Guiding the light subpath adds OpenPGL query cost at every
-		// non-delta vertex but provides little benefit because BDPT
-		// light subpaths contribute through connection strategies, not
-		// through following the scattered direction to termination.
-		if( pGuidingField && !pGuidingField->IsTrained() &&
-			!pScat->isDelta && pScat->pdf > NEARZERO )
-		{
-			pGuidingField->AddSample(
-				v.position,
-				pScat->ray.Dir(),
-				ri.geometric.range,
-				selectProb * pScat->pdf,
-				ColorMath::MaxValue( beta ),
-				false
-				);
-		}
-#endif
-
 		// Compute effective scatter direction and PDF.
 		Vector3 scatDir = pScat->ray.Dir();
 		Scalar effectivePdf = pScat->pdf;
@@ -1045,6 +1472,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	std::vector<BDPTVertex>& vertices
 	) const
 {
+	(void)rc;
+
 	vertices.clear();
 	vertices.reserve( maxEyeDepth + 1 );
 
@@ -1142,6 +1571,12 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.throughput = beta;
 		v.pdfRev = 0;
 		v.isDelta = false;
+#ifdef RISE_ENABLE_OPENPGL
+		v.guidingHasSegment = true;
+		v.guidingDirectionOut = -currentRay.Dir();
+		v.guidingNormal = GuidingCosineNormal( v.normal, currentRay.Dir() );
+		v.guidingEta = v.mediumIOR > NEARZERO ? v.mediumIOR : 1.0;
+#endif
 
 		if( !ri.pMaterial ) {
 			vertices.push_back( v );
@@ -1235,6 +1670,12 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						entryV.throughput = beta;
 						entryV.pdfFwd = bssrdf.pdfSurface;
 						entryV.pdfRev = 0;
+#ifdef RISE_ENABLE_OPENPGL
+						entryV.guidingHasSegment = true;
+						entryV.guidingDirectionOut = -bssrdf.scatteredRay.Dir();
+						entryV.guidingNormal = entryV.normal;
+						entryV.guidingEta = 1.0;
+#endif
 						vertices.push_back( entryV );
 
 						pdfFwdPrev = bssrdf.cosinePdf;
@@ -1259,11 +1700,16 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		Scalar bsdfCombinedPdf = 0;
 
 		if( pGuidingField && pGuidingField->IsTrained() &&
-			depth < maxGuidingDepth && !pScat->isDelta && vertices.back().isConnectible )
+			depth < maxGuidingDepth && GuidingSupportsSurfaceSampling( *pScat ) &&
+			vertices.back().isConnectible )
 		{
 			if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
 			{
-				pGuidingField->ApplyCosineProduct( guideDist, v.normal );
+				if( pScat->type == ScatteredRay::eRayDiffuse ) {
+					pGuidingField->ApplyCosineProduct(
+						guideDist,
+						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
+				}
 
 				const Scalar xi = sampler.Get1D();
 				const Scalar alpha = guidingAlpha;
@@ -1301,20 +1747,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				}
 			}
 		}
-
-		// Training sample collection (eye subpath)
-		if( pGuidingField && !pGuidingField->IsTrained() &&
-			!pScat->isDelta && pScat->pdf > NEARZERO )
-		{
-			pGuidingField->AddSample(
-				v.position,
-				pScat->ray.Dir(),
-				ri.geometric.range,
-				selectProb * pScat->pdf,
-				ColorMath::MaxValue( beta ),
-				false
-				);
-		}
 #endif
 		// --- End path guiding ---
 
@@ -1335,9 +1767,14 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			break;
 		}
 
+		const Scalar scatterPdf = selectProb * effectivePdf;
+		RISEPel localScatteringWeight( 0, 0, 0 );
+
 		// Compute throughput update
 		if( pScat->isDelta ) {
-			beta = beta * pScat->kray * (bssrdfReflectCompensation / selectProb);
+			localScatteringWeight =
+				pScat->kray * (bssrdfReflectCompensation / selectProb);
+			beta = beta * localScatteringWeight;
 		} else {
 			RISEPel f;
 #ifdef RISE_ENABLE_OPENPGL
@@ -1352,13 +1789,16 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			if( ColorMath::MaxValue( f ) <= 0 ) {
 				break;
 			}
-			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf));
+			localScatteringWeight =
+				f * (bssrdfReflectCompensation * cosTheta / scatterPdf);
+			beta = beta * localScatteringWeight;
 		}
 
 		// Russian Roulette after a few bounces
+		Scalar rrProb = 1.0;
 		if( depth > 2 ) {
 			const Scalar maxBeta = ColorMath::MaxValue( beta );
-			const Scalar rrProb = r_min( Scalar(1.0), maxBeta );
+			rrProb = r_min( Scalar(1.0), maxBeta );
 			if( sampler.Get1D() >= rrProb ) {
 				break;
 			}
@@ -1367,9 +1807,24 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			}
 		}
 
+#ifdef RISE_ENABLE_OPENPGL
+		vertices.back().guidingHasDirectionIn = true;
+		vertices.back().guidingDirectionIn = scatDir;
+		vertices.back().guidingPdfDirectionIn = scatterPdf;
+		vertices.back().guidingScatteringWeight = localScatteringWeight;
+		vertices.back().guidingRussianRouletteSurvivalProbability = rrProb;
+		vertices.back().guidingEta =
+			(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+				pScat->ior_stack->top() :
+				(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
+		vertices.back().guidingRoughness = pScat->isDelta ?
+			Scalar( 0.0 ) :
+			(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
+#endif
+
 		// Store the forward pdf for the next vertex,
 		// accounting for lobe selection probability.
-		pdfFwdPrev = selectProb * effectivePdf;
+		pdfFwdPrev = scatterPdf;
 
 		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
 		if( pScat->isDelta ) {
@@ -1408,7 +1863,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		currentRay = pScat->ray;
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
+	#ifdef RISE_ENABLE_OPENPGL
+		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+	#else
 		if( useIORStack && pScat->ior_stack ) {
+	#endif
 			iorStack = *pScat->ior_stack;
 		}
 	}
@@ -1504,6 +1963,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		result.contribution = eyeEnd.throughput * Le;
 		result.needsSplat = false;
 		result.valid = true;
+		result.guidingLocalContribution = Le;
+		result.guidingEyeVertexIndex = t - 1;
+		result.guidingUseDirectContribution = true;
+		result.guidingValid = true;
 
 		// --- Update pdfRev at emitter vertex for correct MIS ---
 		// eyeEnd.pdfRev should be the PDF that the light sampling process
@@ -1787,6 +2250,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		result.contribution = eyeEnd.throughput * fEye * Le * (G / pdfLight);
 		result.needsSplat = false;
 		result.valid = true;
+		result.guidingLocalContribution = fEye * Le * (G / pdfLight);
+		result.guidingEyeVertexIndex = t - 1;
+		result.guidingValid = true;
 
 		// --- Update pdfRev at connection vertices for correct MIS ---
 		const Scalar distSq_conn = dist * dist;
@@ -2121,12 +2587,16 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		// Full path contribution
-		result.contribution = lightEnd.throughput * fLight *
-			RISEPel( G, G, G ) * fEye * eyeEnd.throughput;
-		result.needsSplat = false;
-		result.valid = true;
+			result.contribution = lightEnd.throughput * fLight *
+				RISEPel( G, G, G ) * fEye * eyeEnd.throughput;
+			result.needsSplat = false;
+			result.valid = true;
+			result.guidingLocalContribution =
+				lightEnd.throughput * fLight * RISEPel( G, G, G ) * fEye;
+			result.guidingEyeVertexIndex = t - 1;
+			result.guidingValid = true;
 
-		// --- Update pdfRev at connection vertices for correct MIS ---
+			// --- Update pdfRev at connection vertices for correct MIS ---
 		// The connection introduces a new edge between lightEnd and eyeEnd.
 		// pdfRev at each endpoint must reflect the probability of generating
 		// the reverse direction through this connection edge, not the
@@ -2223,7 +2693,8 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 	const std::vector<BDPTVertex>& eyeVerts,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const ICamera& camera
+	const ICamera& camera,
+	ISampler* pSampler
 	) const
 {
 	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
@@ -2232,26 +2703,165 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 	std::vector<ConnectionResult> results;
 	results.reserve( (nLight + 1) * (nEye + 1) );
 
-	// Iterate over all valid (s,t) combinations where s + t >= 2
-	for( unsigned int t = 1; t <= nEye; t++ )
+	const bool useCompletePathStrategySelection =
+#ifdef RISE_ENABLE_OPENPGL
+		pCompletePathGuide &&
+		completePathStrategySelectionEnabled &&
+		!pCompletePathGuide->IsCollectingTrainingSamples() &&
+		pSampler &&
+		completePathStrategySampleCount > 0;
+#else
+		false;
+#endif
+
+#ifdef RISE_ENABLE_OPENPGL
+	if( useCompletePathStrategySelection )
 	{
-		for( unsigned int s = 0; s <= nLight; s++ )
+		static thread_local StrategySelectionScratch scratch;
+		const size_t maxCandidates = static_cast<size_t>( (nLight + 1) * (nEye + 1) );
+		if( scratch.reservedCandidates < maxCandidates ) {
+			scratch.candidates.reserve( maxCandidates );
+			scratch.learnedWeights.reserve( maxCandidates );
+			scratch.cdf.reserve( maxCandidates );
+			scratch.reservedCandidates = maxCandidates;
+		}
+
+		scratch.candidates.clear();
+		scratch.learnedWeights.clear();
+		scratch.cdf.clear();
+
+		Scalar learnedWeightSum = 0;
+		for( unsigned int t = 1; t <= nEye; t++ )
 		{
-			if( s + t < 2 ) {
-				continue;
+			for( unsigned int s = 0; s <= nLight; s++ )
+			{
+				if( s + t < 2 ) {
+					continue;
+				}
+
+				const Point3& eyePosition = eyeVerts[t - 1].position;
+				const Point3* pLightPosition =
+					(s > 0 && s <= nLight) ? &lightVerts[s - 1].position : 0;
+				const Scalar learnedWeight =
+					pCompletePathGuide->QueryStrategyWeight(
+						s,
+						t,
+						eyePosition,
+						pLightPosition,
+						s == 0 ) *
+					(GuidingWantsMultibounceTraining( s, t ) ? Scalar( 1.0 ) : Scalar( 0.25 ));
+
+				scratch.candidates.push_back( StrategySelectionCandidate( s, t, 0 ) );
+				scratch.learnedWeights.push_back( learnedWeight );
+				learnedWeightSum += learnedWeight;
+			}
+		}
+
+		const size_t candidateCount = scratch.candidates.size();
+		if( candidateCount > 0 )
+		{
+			const Scalar uniformProbability = Scalar( 1.0 ) / static_cast<Scalar>( candidateCount );
+			const Scalar guidedMix = learnedWeightSum > NEARZERO ? Scalar( 0.5 ) : Scalar( 0.0 );
+			const Scalar uniformMix = Scalar( 1.0 ) - guidedMix;
+
+			Scalar running = 0;
+			for( size_t i = 0; i < candidateCount; i++ )
+			{
+				Scalar probability = uniformMix * uniformProbability;
+				if( guidedMix > 0 ) {
+					probability += guidedMix * (scratch.learnedWeights[i] / learnedWeightSum);
+				}
+
+				scratch.candidates[i].probability = probability;
+				running += probability;
+				scratch.cdf.push_back( running );
 			}
 
-			ConnectionResult cr = ConnectAndEvaluate(
-				lightVerts, eyeVerts, s, t, scene, caster, camera );
+			if( running > NEARZERO ) {
+				scratch.cdf.back() = 1.0;
+			}
 
-			cr.s = s;
-			cr.t = t;
+			const unsigned int techniqueSamples =
+				r_max( static_cast<unsigned int>( 1 ), completePathStrategySampleCount );
 
-			if( cr.valid ) {
-				results.push_back( cr );
+			strategySelectionPathCount.fetch_add( 1 );
+			strategySelectionCandidateCount.fetch_add(
+				static_cast<unsigned long long>( candidateCount ) );
+			strategySelectionEvaluatedCount.fetch_add(
+				static_cast<unsigned long long>( techniqueSamples ) );
+
+			// Dedicated stream for (s,t) strategy choices so Sobol dimensions
+			// for subpath construction and SMS stay stable.
+			pSampler->StartStream( 47 );
+
+			results.reserve( techniqueSamples );
+			for( unsigned int i = 0; i < techniqueSamples; i++ )
+			{
+				const Scalar u = pSampler->Get1D();
+				std::vector<Scalar>::const_iterator it =
+					std::lower_bound( scratch.cdf.begin(), scratch.cdf.end(), u );
+				const size_t candidateIndex =
+					it != scratch.cdf.end() ?
+						static_cast<size_t>( it - scratch.cdf.begin() ) :
+						candidateCount - 1;
+				const StrategySelectionCandidate& candidate =
+					scratch.candidates[candidateIndex];
+
+				ConnectionResult cr = ConnectAndEvaluate(
+					lightVerts,
+					eyeVerts,
+					candidate.s,
+					candidate.t,
+					scene,
+					caster,
+					camera );
+
+				cr.s = candidate.s;
+				cr.t = candidate.t;
+
+				if( cr.valid && candidate.probability > NEARZERO )
+				{
+					cr.misWeight /=
+						static_cast<Scalar>( techniqueSamples ) * candidate.probability;
+					results.push_back( cr );
+				}
 			}
 		}
 	}
+	else
+#endif
+	{
+		// Iterate over all valid (s,t) combinations where s + t >= 2
+		for( unsigned int t = 1; t <= nEye; t++ )
+		{
+			for( unsigned int s = 0; s <= nLight; s++ )
+			{
+				if( s + t < 2 ) {
+					continue;
+				}
+
+				ConnectionResult cr = ConnectAndEvaluate(
+					lightVerts, eyeVerts, s, t, scene, caster, camera );
+
+				cr.s = s;
+				cr.t = t;
+
+				if( cr.valid ) {
+					results.push_back( cr );
+				}
+			}
+		}
+	}
+
+#ifdef RISE_ENABLE_OPENPGL
+	if( pCompletePathGuide && pCompletePathGuide->IsCollectingTrainingSamples() ) {
+		RecordCompletePathSamples( pCompletePathGuide, lightVerts, eyeVerts, results );
+	}
+
+	if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() ) {
+		RecordGuidingTrainingPath( pGuidingField, &guidingTrainingStats, eyeVerts, results );
+	}
+#endif
 
 	return results;
 }
@@ -2816,22 +3426,6 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 		// --- End BSSRDF sampling ---
 
-#ifdef RISE_ENABLE_OPENPGL
-		// NM light subpath: training only (no guided sampling)
-		// Training sample collection (NM light subpath)
-		if( pGuidingField && !pGuidingField->IsTrained() &&
-			!pScat->isDelta && pScat->pdf > NEARZERO )
-		{
-			pGuidingField->AddSample(
-				v.position,
-				pScat->ray.Dir(),
-				ri.geometric.range,
-				selectProb * pScat->pdf,
-				fabs( betaNM ),
-				false
-				);
-		}
-#endif
 		// --- End path guiding ---
 
 		// Compute effective scatter direction and PDF
@@ -3112,11 +3706,16 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		Scalar bsdfCombinedPdf = 0;
 
 		if( pGuidingField && pGuidingField->IsTrained() &&
-			depth < maxGuidingDepth && !pScat->isDelta && vertices.back().isConnectible )
+			depth < maxGuidingDepth && GuidingSupportsSurfaceSampling( *pScat ) &&
+			vertices.back().isConnectible )
 		{
 			if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
 			{
-				pGuidingField->ApplyCosineProduct( guideDist, v.normal );
+				if( pScat->type == ScatteredRay::eRayDiffuse ) {
+					pGuidingField->ApplyCosineProduct(
+						guideDist,
+						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
+				}
 
 				const Scalar xi = sampler.Get1D();
 				const Scalar alpha = guidingAlpha;
@@ -3154,18 +3753,26 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			}
 		}
 
-		// Training sample collection (NM eye subpath)
-		if( pGuidingField && !pGuidingField->IsTrained() &&
-			!pScat->isDelta && pScat->pdf > NEARZERO )
+		const Scalar trainingPdf = selectProb * (
+			usedGuidedDirection ? guidedCombinedPdf :
+			(bsdfCombinedPdf > NEARZERO ? bsdfCombinedPdf : pScat->pdf) );
+		if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() &&
+			GuidingSupportsSurfaceSampling( *pScat ) && trainingPdf > NEARZERO )
 		{
-			pGuidingField->AddSample(
-				v.position,
-				pScat->ray.Dir(),
-				ri.geometric.range,
-				selectProb * pScat->pdf,
-				fabs( betaNM ),
-				false
-				);
+			const Ray& trainingRay = usedGuidedDirection ? guidedRay : pScat->ray;
+			const IORStack* trainingIorStack = usedGuidedDirection ?
+				(useIORStack ? &iorStack : 0) :
+				(pScat->ior_stack ? pScat->ior_stack : (useIORStack ? &iorStack : 0));
+			RecordGuidingTrainingSampleNM(
+				pGuidingField,
+				rc,
+				caster,
+				ri,
+				trainingRay,
+				trainingPdf,
+				depth + 2,
+				nm,
+				trainingIorStack );
 		}
 #endif
 		// --- End path guiding ---
@@ -3251,7 +3858,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		currentRay = pScat->ray;
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
+	#ifdef RISE_ENABLE_OPENPGL
+		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+	#else
 		if( useIORStack && pScat->ior_stack ) {
+	#endif
 			iorStack = *pScat->ior_stack;
 		}
 	}

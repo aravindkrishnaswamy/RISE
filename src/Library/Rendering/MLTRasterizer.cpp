@@ -192,7 +192,13 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =
-		pIntegrator->EvaluateAllStrategies( lightVerts, eyeVerts, scene, *pCaster, camera );
+		pIntegrator->EvaluateAllStrategies(
+			lightVerts,
+			eyeVerts,
+			scene,
+			*pCaster,
+			camera,
+			&sampler );
 
 	// Collect per-strategy contributions, each with its correct pixel
 	// position.  Strategies with t<=1 (needsSplat=true) use the pixel

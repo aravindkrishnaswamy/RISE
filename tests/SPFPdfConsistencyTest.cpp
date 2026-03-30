@@ -159,6 +159,7 @@ static TestResult TestSPF(
     ISPF& spf,
     double incomingTheta,
     bool singleLobe,
+    bool exactSelectedPdf,
     bool skipCrossVal = false
     )
 {
@@ -178,14 +179,14 @@ static TestResult TestSPF(
 
     // ================================================================
     //  Part 1: Cross-validation
-    //  For single-lobe SPFs: scat.pdf should exactly match Pdf(ri, wo).
-    //  For multi-lobe SPFs: use RandomlySelect and verify that the
-    //    selected ray's effective PDF matches Pdf(ri, wo).
-    //    The effective PDF accounts for the selection probability:
-    //      effective_pdf = scat.pdf * (weight_selected / totalWeight)
-    //    ... but Pdf() returns the mixture over ALL lobes evaluated at wo.
-    //    Since we can't decompose the mixture, we just verify Pdf() > 0
-    //    and rely on chi2 for the definitive statistical test.
+    //  For SPFs that promise a single effective sampling distribution
+    //  (single-lobe or already-normalized multi-lobe), the PDF stored on
+    //  the selected sample must exactly match Pdf(ri, wo).  This is the
+    //  contract that MIS/path guiding rely on.
+    //
+    //  For legacy multi-ray SPFs that do not yet satisfy that contract,
+    //  we fall back to a weaker lower-bound check and rely on chi2 for
+    //  the statistical distribution test.
     // ================================================================
 
     if( skipCrossVal ) goto skip_crossval;
@@ -197,19 +198,21 @@ static TestResult TestSPF(
 
         if( scattered.Count() == 0 ) continue;
 
-        if( singleLobe )
+        if( exactSelectedPdf )
         {
-            // Single-lobe SPF: Scatter always produces exactly one ray.
-            // Its pdf should exactly match Pdf().
-            const ScatteredRay& scat = scattered[0];
-            if( scat.isDelta ) continue;
-            if( scat.pdf <= 0 ) continue;
+            ScatteredRay* pSelected = singleLobe ?
+                &scattered[0] :
+                scattered.RandomlySelect( rng.CanonicalRandom(), false );
 
-            Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
+            if( !pSelected ) continue;
+            if( pSelected->isDelta ) continue;
+            if( pSelected->pdf <= 0 ) continue;
+
+            Vector3 wo = Vector3Ops::Normalize( pSelected->ray.Dir() );
             Scalar pdfEval = spf.Pdf( ri, wo, 0 );
 
-            double err = fabs( scat.pdf - pdfEval );
-            double denom = r_max( fabs(scat.pdf), fabs(pdfEval) );
+            double err = fabs( pSelected->pdf - pdfEval );
+            double denom = r_max( fabs(pSelected->pdf), fabs(pdfEval) );
             double relErr = (denom > 1e-10) ? err / denom : err;
 
             if( relErr > CROSS_VAL_TOL )
@@ -491,22 +494,23 @@ int main()
         std::string name;
         ISPF* spf;
         bool singleLobe;
+        bool exactSelectedPdf;
         bool skipCrossVal;
     };
 
     SPFEntry spfs[] = {
-        { "Lambertian",                        lambertian,  true,  false },
-        { "OrenNayar",                         orenNayar,   true,  false },
-        { "IsotropicPhong",                    phong,       false, false },
-        { "CookTorrance",                      cookTorrance,false, false },
-        { "Schlick",                           schlick,     false, false },
-        { "WardIsotropicGaussian",             wardIso,     false, false },
-        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false },
-        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false },
-        { "Translucent",                       translucent, false, true },  // Pdf() only covers diffuse lobe, not translucent
-        { "Polished",                          polished,    false, false },
-        { "SubSurfaceScattering",              sss,         true,  false },
-        { "Composite",                         composite,   false, false },
+        { "Lambertian",                        lambertian,  true,  true,  false },
+        { "OrenNayar",                         orenNayar,   true,  true,  false },
+        { "IsotropicPhong",                    phong,       false, false, false },
+        { "CookTorrance",                      cookTorrance,false, true,  false },
+        { "Schlick",                           schlick,     false, false, false },
+        { "WardIsotropicGaussian",             wardIso,     false, false, false },
+        { "WardAnisotropicEllipticalGaussian", wardAniso,   false, false, false },
+        { "AshikminShirleyAnisotropicPhong",   ashikmin,    false, false, false },
+        { "Translucent",                       translucent, false, false, true },  // Pdf() only covers diffuse lobe, not translucent
+        { "Polished",                          polished,    false, false, false },
+        { "SubSurfaceScattering",              sss,         true,  true,  false },
+        { "Composite",                         composite,   false, false, false },
     };
 
     double incomingAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
@@ -524,7 +528,13 @@ int main()
             std::string fullName = spfs[s].name + " @ " + angleNames[a];
             std::cout << "Testing " << fullName << "..." << std::endl;
 
-            TestResult r = TestSPF( fullName, *spfs[s].spf, incomingAngles[a], spfs[s].singleLobe, spfs[s].skipCrossVal );
+            TestResult r = TestSPF(
+                fullName,
+                *spfs[s].spf,
+                incomingAngles[a],
+                spfs[s].singleLobe,
+                spfs[s].exactSelectedPdf,
+                spfs[s].skipCrossVal );
             results.push_back( r );
 
             // Report cross-validation

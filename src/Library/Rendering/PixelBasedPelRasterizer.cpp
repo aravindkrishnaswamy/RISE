@@ -26,15 +26,83 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+#ifdef RISE_ENABLE_OPENPGL
+namespace
+{
+	inline bool IsFiniteBoundingBox( const BoundingBox& bbox )
+	{
+		return
+			std::isfinite( bbox.ll.x ) && std::isfinite( bbox.ll.y ) && std::isfinite( bbox.ll.z ) &&
+			std::isfinite( bbox.ur.x ) && std::isfinite( bbox.ur.y ) && std::isfinite( bbox.ur.z ) &&
+			bbox.ll.x <= bbox.ur.x &&
+			bbox.ll.y <= bbox.ur.y &&
+			bbox.ll.z <= bbox.ur.z;
+	}
+
+	class SceneBoundsEnumerator :
+		public IEnumCallback<IObject>
+	{
+	public:
+		BoundingBox bounds;
+		bool hasBounds;
+
+		SceneBoundsEnumerator() :
+			bounds(
+				Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+				Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) ),
+			hasBounds( false )
+		{
+		}
+
+		virtual bool operator() ( const IObject& object )
+		{
+			const BoundingBox bbox = object.getBoundingBox();
+			if( IsFiniteBoundingBox( bbox ) ) {
+				if( hasBounds ) {
+					bounds.Include( bbox );
+				} else {
+					bounds = bbox;
+					hasBounds = true;
+				}
+			}
+			return true;
+		}
+	};
+
+	inline void ComputeGuidingSceneBounds(
+		const IScene& scene,
+		Point3& boundsMin,
+		Point3& boundsMax
+		)
+	{
+		SceneBoundsEnumerator enumerator;
+		if( scene.GetObjects() ) {
+			scene.GetObjects()->EnumerateObjects( enumerator );
+		}
+
+		if( enumerator.hasBounds ) {
+			enumerator.bounds.SanityCheck();
+			enumerator.bounds.EnsureBoxHasVolume();
+			boundsMin = enumerator.bounds.ll;
+			boundsMax = enumerator.bounds.ur;
+		} else {
+			boundsMin = Point3( -1e4, -1e4, -1e4 );
+			boundsMax = Point3( 1e4, 1e4, 1e4 );
+		}
+	}
+}
+#endif
+
 PixelBasedPelRasterizer::PixelBasedPelRasterizer(
 	IRayCaster* pCaster_,
 	const PathGuidingConfig& guidingCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  guidingConfig( guidingCfg )
 #ifdef RISE_ENABLE_OPENPGL
-  ,pGuidingField( 0 )
+  pGuidingField( 0 ),
+  guidingAlphaScale( 1.0 ),
 #endif
+  guidingConfig( guidingCfg )
 {
 }
 
@@ -50,7 +118,7 @@ void PixelBasedPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 #ifdef RISE_ENABLE_OPENPGL
 	if( pGuidingField ) {
 		rc.pGuidingField = pGuidingField;
-		rc.guidingAlpha = guidingConfig.alpha;
+		rc.guidingAlpha = guidingConfig.alpha * guidingAlphaScale;
 		rc.maxGuidingDepth = guidingConfig.maxGuidingDepth;
 	}
 #endif
@@ -63,20 +131,24 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 {
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
+	guidingAlphaScale = 1.0;
 
 	if( guidingConfig.enabled )
 	{
-		// Scene bounds for the guiding field's spatial structure.
-		// OpenPGL's KD-tree adapts based on actual sample positions,
-		// so a generous default bounding box works fine.
-		Point3 boundsMin( -1e4, -1e4, -1e4 );
-		Point3 boundsMax( 1e4, 1e4, 1e4 );
+		Point3 boundsMin;
+		Point3 boundsMax;
+		ComputeGuidingSceneBounds( pScene, boundsMin, boundsMax );
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
 		pGuidingField->addref();
 
 		const unsigned int width = pScene.GetCamera()->GetWidth();
 		const unsigned int height = pScene.GetCamera()->GetHeight();
+		const unsigned int bootstrapTrainingSPP = 1;
+		unsigned int currentTrainingSPP = bootstrapTrainingSPP;
+		Scalar previousPositiveSampleDensity = 0;
+		Scalar previousIndirectEnergyDensity = 0;
+		unsigned int lowGainPasses = 0;
 
 		// Run training iterations
 		for( unsigned int trainIter = 0; trainIter < guidingConfig.trainingIterations; trainIter++ )
@@ -87,7 +159,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			ISampling2D* pTrainSampling = 0;
 			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
 			if( pTrainSampling ) {
-				pTrainSampling->SetNumSamples( guidingConfig.trainingSPP );
+				pTrainSampling->SetNumSamples( currentTrainingSPP );
 			}
 
 			ISampling2D* pSavedSampling = pSampling;
@@ -130,6 +202,104 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			safe_release( pTrainImage );
 
 			pGuidingField->EndTrainingIteration();
+
+			const Scalar cameraSamples =
+				static_cast<Scalar>( width ) *
+				static_cast<Scalar>( height ) *
+				static_cast<Scalar>( currentTrainingSPP );
+			const size_t positiveSamples = pGuidingField->GetLastAddedSurfaceSampleCount();
+			const Scalar totalSampleEnergy = pGuidingField->GetLastAddedSurfaceSampleEnergy();
+			const Scalar indirectSampleEnergy =
+				pGuidingField->GetLastAddedIndirectSurfaceSampleEnergy();
+			const Scalar positiveSampleDensity =
+				cameraSamples > NEARZERO ?
+					static_cast<Scalar>( positiveSamples ) / cameraSamples :
+					0.0;
+			const Scalar indirectEnergyDensity =
+				cameraSamples > NEARZERO ?
+					indirectSampleEnergy / cameraSamples :
+					0.0;
+			const Scalar indirectEnergyFraction =
+				totalSampleEnergy > NEARZERO ?
+					indirectSampleEnergy / totalSampleEnergy :
+					0.0;
+			const Scalar energyScale =
+				totalSampleEnergy > NEARZERO ?
+					std::sqrt( std::min( Scalar( 1.0 ), indirectEnergyFraction ) ) :
+					0.0;
+
+			if( positiveSampleDensity < 1.0 )
+			{
+				const Scalar densityScale =
+					positiveSampleDensity < 0.5 ?
+						0.0 :
+						positiveSampleDensity * positiveSampleDensity;
+				guidingAlphaScale = densityScale * energyScale;
+
+				GlobalLog()->PrintEx( eLog_Event,
+					"PathGuidingField:: PT alpha scaled to %.3f (positive sample density %.3f, indirect energy density %.6f, indirect fraction %.3f)",
+					guidingAlphaScale, positiveSampleDensity, indirectEnergyDensity, indirectEnergyFraction );
+			}
+			else
+			{
+				guidingAlphaScale = energyScale;
+			}
+
+			if( positiveSampleDensity < 0.75 )
+			{
+				GlobalLog()->PrintEx( eLog_Event,
+					"PathGuidingField:: Stopping PT training after iteration %u (%zu positive samples, density %.3f)",
+					trainIter + 1,
+					positiveSamples,
+					positiveSampleDensity );
+				break;
+			}
+
+			if( previousPositiveSampleDensity > NEARZERO ||
+				previousIndirectEnergyDensity > NEARZERO )
+			{
+				const Scalar relativeGain =
+					previousPositiveSampleDensity > NEARZERO ?
+						positiveSampleDensity / previousPositiveSampleDensity - 1.0 :
+						0.0;
+				const Scalar relativeEnergyGain =
+					previousIndirectEnergyDensity > NEARZERO ?
+						indirectEnergyDensity / previousIndirectEnergyDensity - 1.0 :
+						0.0;
+
+				if( relativeGain < 0.08 && relativeEnergyGain < 0.02 ) {
+					lowGainPasses++;
+				} else {
+					lowGainPasses = 0;
+				}
+
+				if( trainIter >= 3 && lowGainPasses >= 2 )
+				{
+					GlobalLog()->PrintEx( eLog_Event,
+						"PathGuidingField:: Stopping PT training after iteration %u (relative gain %.3f, energy gain %.3f, %u low-gain passes)",
+						trainIter + 1,
+						relativeGain,
+						relativeEnergyGain,
+						lowGainPasses );
+					break;
+				}
+			}
+
+			previousPositiveSampleDensity = positiveSampleDensity;
+			previousIndirectEnergyDensity = indirectEnergyDensity;
+
+			if( positiveSampleDensity >= 1.5 )
+			{
+				currentTrainingSPP = guidingConfig.trainingSPP;
+			}
+			else if( positiveSampleDensity >= 1.0 )
+			{
+				currentTrainingSPP = std::min( guidingConfig.trainingSPP, bootstrapTrainingSPP + 1 );
+			}
+			else
+			{
+				currentTrainingSPP = bootstrapTrainingSPP;
+			}
 		}
 
 		if( pProgressFunc ) {

@@ -78,8 +78,10 @@
 #include "../Utilities/ISampler.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/CompletePathGuide.h"
 #include "../Utilities/PathGuidingField.h"
 #include "BDPTVertex.h"
+#include <atomic>
 #include <vector>
 
 namespace RISE
@@ -100,8 +102,36 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 			PathGuidingField*	pGuidingField;
+			CompletePathGuide*	pCompletePathGuide;
 			Scalar				guidingAlpha;
 			unsigned int		maxGuidingDepth;
+			bool				completePathStrategySelectionEnabled;
+			unsigned int		completePathStrategySampleCount;
+			mutable std::atomic<unsigned long long> strategySelectionPathCount;
+			mutable std::atomic<unsigned long long> strategySelectionCandidateCount;
+			mutable std::atomic<unsigned long long> strategySelectionEvaluatedCount;
+
+		public:
+			struct GuidingTrainingStats
+			{
+				Scalar	totalEnergy;
+				Scalar	firstSurfaceConnectionEnergy;
+				Scalar	deepEyeConnectionEnergy;
+				size_t	firstSurfaceConnectionCount;
+				size_t	deepEyeConnectionCount;
+
+				GuidingTrainingStats() :
+					totalEnergy( 0 ),
+					firstSurfaceConnectionEnergy( 0 ),
+					deepEyeConnectionEnergy( 0 ),
+					firstSurfaceConnectionCount( 0 ),
+					deepEyeConnectionCount( 0 )
+				{
+				}
+			};
+
+		protected:
+			mutable GuidingTrainingStats guidingTrainingStats;
 #endif
 
 			virtual ~BDPTIntegrator();
@@ -117,7 +147,22 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 			void SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth );
+			void SetCompletePathGuide(
+				CompletePathGuide* pGuide,
+				bool enableStrategySelection = false,
+				unsigned int strategySamples = 0 );
+			void ResetGuidingTrainingStats() const;
+			const GuidingTrainingStats& GetGuidingTrainingStats() const;
+			void ResetStrategySelectionStats() const;
+			void GetStrategySelectionStats(
+				unsigned long long& pathCount,
+				unsigned long long& candidateCount,
+				unsigned long long& evaluatedCount
+				) const;
 #endif
+
+			unsigned int GetMaxEyeDepth() const { return maxEyeDepth; }
+			unsigned int GetMaxLightDepth() const { return maxLightDepth; }
 
 			/// Result of connecting a single (s,t) strategy
 			struct ConnectionResult
@@ -129,6 +174,10 @@ namespace RISE
 				unsigned int t;				///< Number of eye subpath vertices
 				bool		needsSplat;		///< True for light-side camera connections (active case: t==1)
 				bool		valid;			///< False if connection is invalid
+				RISEPel		guidingLocalContribution;	///< Contribution at eye vertex before eye-prefix throughput
+				unsigned int guidingEyeVertexIndex;	///< Eye vertex receiving guidingLocalContribution
+				bool		guidingUseDirectContribution;	///< Store guidingLocalContribution as OpenPGL directContribution
+				bool		guidingValid;	///< True if the result contributes to an eye-path training segment
 
 				ConnectionResult() :
 				contribution( RISEPel( 0, 0, 0 ) ),
@@ -137,10 +186,14 @@ namespace RISE
 				s( 0 ),
 				t( 0 ),
 				needsSplat( false ),
-				valid( false )
+				valid( false ),
+				guidingLocalContribution( RISEPel( 0, 0, 0 ) ),
+				guidingEyeVertexIndex( 0 ),
+				guidingUseDirectContribution( false ),
+				guidingValid( false )
 				{
 				}
-			};
+		};
 
 			/// Generates a light subpath starting from a sampled light source.
 			/// \return Number of vertices stored
@@ -180,7 +233,8 @@ namespace RISE
 				const std::vector<BDPTVertex>& eyeVerts,
 				const IScene& scene,
 				const IRayCaster& caster,
-				const ICamera& camera
+				const ICamera& camera,
+				ISampler* pSampler
 				) const;
 
 			/// Computes MIS weight using the balance heuristic (power=1).

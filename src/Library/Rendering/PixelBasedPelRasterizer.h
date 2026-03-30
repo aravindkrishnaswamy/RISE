@@ -59,6 +59,7 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;
+			mutable Scalar				guidingAlphaScale;
 #endif
 			PathGuidingConfig			guidingConfig;
 
