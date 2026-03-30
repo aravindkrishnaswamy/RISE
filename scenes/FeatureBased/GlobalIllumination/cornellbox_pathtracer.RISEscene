@@ -27,9 +27,12 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		5
-	min_importance		0.001
+	min_importance		0.1
 	samples				16
 	lum_samples			1
+	adaptive_max_samples	64
+	adaptive_threshold		0.1
+	show_adaptive_map		FALSE
 }
 
 file_rasterizeroutput

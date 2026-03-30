@@ -3830,7 +3830,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const PathGuidingConfig& guidingConfig					///< [in] Path guiding configuration
+	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+	const AdaptiveSamplingConfig& adaptiveConfig				///< [in] Adaptive sampling configuration
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -3872,7 +3873,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig );
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4205,7 +4206,8 @@ bool Job::SetBDPTPelRasterizer(
 	const bool smsBiased,
 	const unsigned int smsBernoulliTrials,
 	const bool oidnDenoise,
-	const PathGuidingConfig& guidingConfig
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4248,7 +4250,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );

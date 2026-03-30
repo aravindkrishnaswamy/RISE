@@ -197,7 +197,8 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   pManifoldSolver( 0 ),
   pSplatFilm( 0 ),
   pScratchImage( 0 ),
-  mSplatTotalSamples( 1.0 )
+  mSplatTotalSamples( 1.0 ),
+  mTotalAdaptiveSamples( 0 )
 #ifdef RISE_ENABLE_OIDN
   ,pAOVBuffers( 0 )
 #endif
@@ -233,6 +234,21 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 	safe_release( pGuidingField );
 	safe_release( pCompletePathGuide );
 #endif
+}
+
+void BDPTRasterizerBase::AddAdaptiveSamples( uint64_t count ) const
+{
+	mTotalAdaptiveSamples.fetch_add( count, std::memory_order_relaxed );
+}
+
+Scalar BDPTRasterizerBase::GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const
+{
+	const uint64_t totalSamples = mTotalAdaptiveSamples.load( std::memory_order_relaxed );
+	if( totalSamples > 0 && width > 0 && height > 0 ) {
+		const Scalar avgSPP = static_cast<Scalar>(totalSamples) / static_cast<Scalar>(width * height);
+		return avgSPP * GetSplatSampleScale();
+	}
+	return mSplatTotalSamples;
 }
 
 // Thread procedure for BDPT block rendering - mirrors RasterizeBlock_ThreadProc
@@ -271,6 +287,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	safe_release( pSplatFilm );
 	pSplatFilm = new SplatFilm( width, height );
 	pSplatFilm->addref();
+
+	// Reset adaptive sample counter for this render
+	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 
 #ifdef RISE_ENABLE_OIDN
 	// Allocate AOV buffers for denoiser auxiliary input
@@ -711,7 +730,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	// image.  Each pixel sample may have contributed one splat per (s,t)
 	// strategy with needsSplat=true, so we divide by the total number of
 	// pixel samples to get the correct per-pixel average.
-	pSplatFilm->Resolve( *pImage, mSplatTotalSamples );
+	// When adaptive sampling is active, use the average SPP across all
+	// pixels rather than the fixed per-pixel count.
+	pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
@@ -783,7 +804,7 @@ IRasterImage& BDPTRasterizerBase::GetIntermediateOutputImage( IRasterImage& prim
 	}
 
 	// Resolve splats into the scratch copy (primary is untouched)
-	pSplatFilm->Resolve( *pScratchImage, mSplatTotalSamples );
+	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ) );
 
 	return *pScratchImage;
 }

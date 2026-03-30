@@ -4945,6 +4945,7 @@ namespace RISE
 					bool onlyonelight = false;
 					bool oidnDenoise = false;
 					PathGuidingConfig guidingConfig;
+					AdaptiveSamplingConfig adaptiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5019,6 +5020,12 @@ namespace RISE
 							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
 						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
 							guidingConfig.completePathStrategySamples = pvalue.toUInt();
+						} else if( pname == "adaptive_max_samples" ) {
+							adaptiveConfig.maxSamples = pvalue.toUInt();
+						} else if( pname == "adaptive_threshold" ) {
+							adaptiveConfig.threshold = pvalue.toDouble();
+						} else if( pname == "show_adaptive_map" ) {
+							adaptiveConfig.showMap = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5030,7 +5037,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig );
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig );
 				}
 			};
 
@@ -5497,6 +5504,7 @@ namespace RISE
 					unsigned int smsBernoulliTrials = 100;
 					bool oidnDenoise = false;
 					PathGuidingConfig guidingConfig;
+					AdaptiveSamplingConfig adaptiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5585,6 +5593,12 @@ namespace RISE
 							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
 						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
 							guidingConfig.completePathStrategySamples = pvalue.toUInt();
+						} else if( pname == "adaptive_max_samples" ) {
+							adaptiveConfig.maxSamples = pvalue.toUInt();
+						} else if( pname == "adaptive_threshold" ) {
+							adaptiveConfig.threshold = pvalue.toDouble();
+						} else if( pname == "show_adaptive_map" ) {
+							adaptiveConfig.showMap = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5598,7 +5612,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig );
 				}
 			};
 

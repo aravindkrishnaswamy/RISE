@@ -1981,7 +1981,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig	///< [in] Adaptive sampling configuration
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -2040,7 +2041,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig	///< [in] Adaptive sampling configuration
 								);
 
 	//! Creates a spectral BDPT rasterizer

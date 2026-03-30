@@ -34,11 +34,13 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
 	const ManifoldSolverConfig& smsConfig,
-	const PathGuidingConfig& guidingConfig
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig ),
-  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig() )
+  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig() ),
+  adaptiveConfig( adaptiveCfg )
 {
 }
 
@@ -191,57 +193,118 @@ void BDPTPelRasterizer::IntegratePixel(
 		return;
 	}
 
-	// Determine how many samples to take
-	ISampling2D::SamplesList2D samples;
-	bool bMultiSample = false;
-
-	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL ) {
-		pSampling->GenerateSamplePoints( rc.random, samples );
-		bMultiSample = true;
-	} else {
-		samples.push_back( Point2( 0, 0 ) );
-	}
+	const bool bMultiSample = pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL;
 
 	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
 	const uint32_t pixelSeed = SobolSequence::HashCombine(
 		static_cast<uint32_t>(x),
 		static_cast<uint32_t>(y) );
 
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample;
+	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
 
-	uint32_t sampleIndex = 0;
-	ISampling2D::SamplesList2D::const_iterator m, n;
-	for( m=samples.begin(), n=samples.end(); m!=n; m++, sampleIndex++ )
+	// Welford online variance state (luminance-based)
+	Scalar wMean = 0;
+	Scalar wM2 = 0;
+	unsigned int wN = 0;
+
+	uint32_t globalSampleIndex = 0;
+	bool converged = false;
+
+	while( globalSampleIndex < maxSamples && !converged )
 	{
-		Point2 ptOnScreen;
-		Scalar weight = 1.0;
-
+		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+			pSampling->GenerateSamplePoints( rc.random, samples );
 		} else {
-			ptOnScreen = Point2( x, height-y );
+			samples.push_back( Point2( 0, 0 ) );
 		}
-		weights += weight;
 
-		if( temporal_samples ) {
-			pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
-		}
+		ISampling2D::SamplesList2D::const_iterator m, n;
+		for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<maxSamples; m++, globalSampleIndex++ )
+		{
+			Point2 ptOnScreen;
+			Scalar weight = 1.0;
+
+			if( bMultiSample ) {
+				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+			} else {
+				ptOnScreen = Point2( x, height-y );
+			}
+			weights += weight;
+
+			if( temporal_samples ) {
+				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+			}
 
 #ifdef RISE_ENABLE_OIDN
-		PixelAOV aov;
-		colAccrued = colAccrued + IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-			sampleIndex, pixelSeed, pAOVBuffers ? &aov : 0 ) * weight;
-		if( pAOVBuffers && aov.valid ) {
-			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-			pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-		}
+			PixelAOV aov;
+			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
+				globalSampleIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
+			if( pAOVBuffers && aov.valid ) {
+				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+			}
 #else
-		colAccrued = colAccrued + IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-			sampleIndex, pixelSeed, 0 ) * weight;
+			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
+				globalSampleIndex, pixelSeed, 0 );
 #endif
-		alphas += weight;
+
+			colAccrued = colAccrued + sampleColor * weight;
+			alphas += weight;
+
+			// Welford update on luminance of non-splat contribution
+			if( adaptive ) {
+				const Scalar lum = ColorMath::MaxValue(sampleColor);
+				wN++;
+				const Scalar delta = lum - wMean;
+				wMean += delta / Scalar(wN);
+				const Scalar delta2 = lum - wMean;
+				wM2 += delta * delta2;
+			}
+		}
+
+		// Check convergence after enough batches for reliable statistics.
+		// Require at least 4 batches so the variance estimate has some
+		// stability (n >= 16 with typical batch sizes).
+		if( adaptive && globalSampleIndex >= batchSize * 4 && wN >= 16 )
+		{
+			const Scalar variance = wM2 / Scalar(wN - 1);
+			const Scalar stdError = sqrt( variance / Scalar(wN) );
+			const Scalar meanAbs = fabs( wMean );
+
+			if( meanAbs > NEARZERO ) {
+				// Apply a small-sample confidence correction: scale the
+				// threshold down when n is low so we are conservative
+				// about early stopping.  The factor approaches 1.0 as
+				// n grows and equals ~0.5 at n=16.
+				const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
+				if( stdError / meanAbs < adaptiveConfig.threshold * confidence ) {
+					converged = true;
+				}
+			} else if( wM2 < NEARZERO && wN >= batchSize * 8 ) {
+				// Near-zero pixel: require many more samples before
+				// declaring convergence, since rare bright contributions
+				// (e.g. caustics, indirect light) might not have appeared
+				// yet in a small sample set.
+				converged = true;
+			}
+		}
+
+		// For non-adaptive, the single batch covers everything
+		if( !bMultiSample ) {
+			break;
+		}
+	}
+
+	// Track total adaptive samples for splat film normalization
+	if( adaptive ) {
+		AddAdaptiveSamples( globalSampleIndex );
 	}
 
 #ifdef RISE_ENABLE_OIDN
@@ -250,7 +313,10 @@ void BDPTPelRasterizer::IntegratePixel(
 	}
 #endif
 
-	if( alphas > 0 ) {
+	if( adaptive && adaptiveConfig.showMap ) {
+		const Scalar t = Scalar(globalSampleIndex) / Scalar(maxSamples);
+		cret = RISEColor( RISEPel(t, t, t), 1.0 );
+	} else if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);
 		cret = RISEColor( colAccrued, alphas / weights );
 	}

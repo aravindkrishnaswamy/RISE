@@ -95,14 +95,16 @@ namespace
 
 PixelBasedPelRasterizer::PixelBasedPelRasterizer(
 	IRayCaster* pCaster_,
-	const PathGuidingConfig& guidingCfg
+	const PathGuidingConfig& guidingCfg,
+	const AdaptiveSamplingConfig& adaptiveCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
 #ifdef RISE_ENABLE_OPENPGL
   pGuidingField( 0 ),
   guidingAlphaScale( 1.0 ),
 #endif
-  guidingConfig( guidingCfg )
+  guidingConfig( guidingCfg ),
+  adaptiveConfig( adaptiveCfg )
 {
 }
 
@@ -323,8 +325,6 @@ void PixelBasedPelRasterizer::IntegratePixel(
 {
 	RasterizerState rast = {x,y};
 
-	// If we have a sampling object, then we want to sub-sample each pixel, so
-	// do that
 	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
 	const uint32_t pixelSeed = SobolSequence::HashCombine(
 		static_cast<uint32_t>(x),
@@ -332,47 +332,115 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
 	{
-		RISEPel			colAccrued( 0, 0, 0 );
+		const bool adaptive = adaptiveConfig.maxSamples > 0;
+		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
-		ISampling2D::SamplesList2D samples;
-		pSampling->GenerateSamplePoints(rc.random, samples);
+		RISEPel		colAccrued( 0, 0, 0 );
+		Scalar		weights = 0;
+		Scalar		alphas = 0;
 
-		Scalar weights = 0;
-		Scalar alphas = 0;
+		// Welford online variance state (luminance-based)
+		Scalar		wMean = 0;
+		Scalar		wM2 = 0;
+		unsigned int wN = 0;
 
-		uint32_t sampleIndex = 0;
-		ISampling2D::SamplesList2D::const_iterator		m, n;
-		for( m=samples.begin(), n=samples.end(); m!=n; m++, sampleIndex++ )
+		uint32_t globalSampleIndex = 0;
+		bool converged = false;
+
+		while( globalSampleIndex < maxSamples && !converged )
 		{
-			RISEPel			c;
-			Point2		ptOnScreen;
-			const Scalar weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
-			weights += weight;
+			ISampling2D::SamplesList2D samples;
+			pSampling->GenerateSamplePoints( rc.random, samples );
 
-			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+			ISampling2D::SamplesList2D::const_iterator m, n;
+			for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<maxSamples; m++, globalSampleIndex++ )
+			{
+				RISEPel		c;
+				Point2		ptOnScreen;
+				const Scalar weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				weights += weight;
+
+				if( temporal_samples ) {
+					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				}
+
+				// Install a Sobol sampler for this pixel sample so that
+				// shader ops (PathTracingShaderOp) can use low-discrepancy
+				// sampling across the full path recursion.
+				SobolSampler sobolSampler( globalSampleIndex, pixelSeed );
+				rc.pSampler = &sobolSampler;
+
+				Ray ray;
+				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
+					if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 ) ) {
+						colAccrued = colAccrued + c*weight;
+						alphas += weight;
+
+						// Welford update on luminance
+						if( adaptive ) {
+							const Scalar lum = ColorMath::MaxValue(c);
+							wN++;
+							const Scalar delta = lum - wMean;
+							wMean += delta / Scalar(wN);
+							const Scalar delta2 = lum - wMean;
+							wM2 += delta * delta2;
+						}
+					} else if( adaptive ) {
+						// Ray missed — count as zero-luminance sample for Welford
+						wN++;
+						const Scalar delta = -wMean;
+						wMean += delta / Scalar(wN);
+						const Scalar delta2 = -wMean;
+						wM2 += delta * delta2;
+					}
+				} else if( adaptive ) {
+					wN++;
+					const Scalar delta = -wMean;
+					wMean += delta / Scalar(wN);
+					const Scalar delta2 = -wMean;
+					wM2 += delta * delta2;
+				}
+
+				rc.pSampler = 0;
 			}
 
-			// Install a Sobol sampler for this pixel sample so that
-			// shader ops (PathTracingShaderOp) can use low-discrepancy
-			// sampling across the full path recursion.
-			SobolSampler sobolSampler( sampleIndex, pixelSeed );
-			rc.pSampler = &sobolSampler;
+			// Check convergence after enough batches for reliable statistics.
+			// Require at least 4 batches so the variance estimate has some
+			// stability (n >= 16 with typical batch sizes).
+			if( adaptive && globalSampleIndex >= batchSize * 4 && wN >= 16 )
+			{
+				const Scalar variance = wM2 / Scalar(wN - 1);
+				const Scalar stdError = sqrt( variance / Scalar(wN) );
+				const Scalar meanAbs = fabs( wMean );
 
-			Ray ray;
-			if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
-				if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 ) ) {
-					colAccrued = colAccrued + c*weight;
-					alphas += weight;
+				if( meanAbs > NEARZERO ) {
+					// Apply a small-sample confidence correction: scale the
+					// threshold down when n is low so we are conservative
+					// about early stopping.  The factor approaches 1.0 as
+					// n grows and equals ~0.5 at n=16.
+					const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
+					if( stdError / meanAbs < adaptiveConfig.threshold * confidence ) {
+						converged = true;
+					}
+				} else if( wM2 < NEARZERO && wN >= batchSize * 8 ) {
+					// Near-zero pixel: require many more samples before
+					// declaring convergence, since rare bright contributions
+					// (e.g. caustics, indirect light) might not have appeared
+					// yet in a small sample set.
+					converged = true;
 				}
 			}
-
-			rc.pSampler = 0;
 		}
 
-		// Divide out by the number of samples
-		colAccrued = colAccrued * (alphas>0?(1.0/alphas):0);
-		cret = RISEColor(colAccrued, alphas/weights);
+		if( adaptive && adaptiveConfig.showMap ) {
+			const Scalar t = Scalar(globalSampleIndex) / Scalar(maxSamples);
+			cret = RISEColor( RISEPel(t, t, t), 1.0 );
+		} else {
+			// Divide out by the number of samples
+			colAccrued = colAccrued * (alphas>0?(1.0/alphas):0);
+			cret = RISEColor(colAccrued, alphas/weights);
+		}
 	}
 	else
 	{

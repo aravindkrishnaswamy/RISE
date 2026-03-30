@@ -21,6 +21,7 @@
 
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedPelRasterizer.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
 #include <stdint.h>
 
 namespace RISE
@@ -62,13 +63,16 @@ namespace RISE
 				PixelAOV* pAOV
 				) const;
 
+			AdaptiveSamplingConfig		adaptiveConfig;
+
 		public:
 			BDPTPelRasterizer(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
 				const ManifoldSolverConfig& smsConfig,
-				const PathGuidingConfig& guidingConfig
+				const PathGuidingConfig& guidingConfig,
+				const AdaptiveSamplingConfig& adaptiveConfig
 				);
 		};
 	}

@@ -49,7 +49,10 @@ bdpt_pel_rasterizer
 	sms_threshold		1e-3
 	sms_max_chain_depth	20
 	sms_biased			TRUE
-	oidn_denoise		true
+	oidn_denoise		TRUE
+	adaptive_max_samples	1000
+	adaptive_threshold		0.01
+	show_adaptive_map		FALSE
 }
 
 
@@ -229,7 +232,7 @@ lambertian_luminaire_material
 {
 	name				neutral_lum
 	exitance			pnt_neutral_light
-	scale				1500.0
+	scale				2000.0
 	material			none
 }
 

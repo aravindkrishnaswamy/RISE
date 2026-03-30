@@ -20,6 +20,7 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IPixelFilter.h"
 #include "../Utilities/PathGuidingField.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
 #include "PixelBasedRasterizerHelper.h"
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -62,11 +63,13 @@ namespace RISE
 			mutable Scalar				guidingAlphaScale;
 #endif
 			PathGuidingConfig			guidingConfig;
+			AdaptiveSamplingConfig		adaptiveConfig;
 
 		public:
 			PixelBasedPelRasterizer(
 				IRayCaster* pCaster_,
-				const PathGuidingConfig& guidingCfg
+				const PathGuidingConfig& guidingCfg,
+				const AdaptiveSamplingConfig& adaptiveCfg
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

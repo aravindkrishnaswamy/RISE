@@ -24,6 +24,7 @@
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
 #include "../Utilities/PathGuidingField.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
 
 namespace RISE
 {
@@ -1237,7 +1238,8 @@ namespace RISE
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const PathGuidingConfig& guidingConfig					///< [in] Path guiding configuration
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig				///< [in] Adaptive sampling configuration
 			) = 0;
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1367,7 +1369,8 @@ namespace RISE
 			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
 			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const PathGuidingConfig& guidingConfig					///< [in] Path guiding configuration
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig				///< [in] Adaptive sampling configuration
 			) = 0;
 
 		//! Sets the rasterizer type to be spectral BDPT

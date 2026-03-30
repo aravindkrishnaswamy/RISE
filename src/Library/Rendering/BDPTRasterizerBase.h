@@ -29,6 +29,7 @@
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/CompletePathGuide.h"
+#include <atomic>
 
 namespace RISE
 {
@@ -55,6 +56,7 @@ namespace RISE
 			mutable SplatFilm*		pSplatFilm;
 			mutable IRasterImage*	pScratchImage;		///< Scratch buffer for progressive output with splats
 			mutable Scalar			mSplatTotalSamples;	///< Cached for progressive resolve
+			mutable std::atomic<uint64_t>	mTotalAdaptiveSamples;	///< Total camera samples across all pixels (adaptive)
 
 #ifdef RISE_ENABLE_OIDN
 			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
@@ -88,6 +90,13 @@ namespace RISE
 				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingCfg
 				);
+
+			/// Thread-safe: adds to the total adaptive sample counter
+			void AddAdaptiveSamples( uint64_t count ) const;
+
+			/// Returns the effective SPP for splat film resolution,
+			/// accounting for adaptive sampling if active
+			Scalar GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const;
 
 			void RasterizeScene(
 				const IScene& pScene,
