@@ -12,3 +12,4 @@ RISE_Log.txt
 .claude/
 /scenes/Internal
 /models/risemesh/internal
+*.md
