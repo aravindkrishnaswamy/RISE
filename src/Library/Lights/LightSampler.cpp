@@ -51,17 +51,11 @@ void LightSampler::Prepare(
 {
 	pPreparedScene = &scene;
 	pPreparedLuminaries = &luminaries;
-	cachedTotalExitance = ComputeTotalExitance( scene, luminaries );
-}
 
-Scalar LightSampler::ComputeTotalExitance(
-	const IScene& scene,
-	const LuminaryManager::LuminariesList& luminaries
-	) const
-{
-	Scalar total = 0;
+	// Build the combined light table from non-mesh lights and mesh luminaries
+	lightEntries.clear();
 
-	// Accumulate exitance from non-mesh lights
+	// Add non-mesh lights with nonzero exitance
 	const ILightManager* pLightMgr = scene.GetLights();
 	if( pLightMgr )
 	{
@@ -72,25 +66,48 @@ Scalar LightSampler::ComputeTotalExitance(
 			const ILightPriv* l = *m;
 			if( l->CanGeneratePhotons() )
 			{
-				total += ColorMath::MaxValue( l->radiantExitance() );
+				const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
+				if( exitance > 0 )
+				{
+					LightEntry entry;
+					entry.pLight = l;
+					entry.lumIndex = 0;
+					entry.exitance = exitance;
+					lightEntries.push_back( entry );
+				}
 			}
 		}
 	}
 
-	// Accumulate exitance from mesh luminaries
-	LuminaryManager::LuminariesList::const_iterator i, e;
-	for( i=luminaries.begin(), e=luminaries.end(); i!=e; i++ )
+	// Add mesh luminaries with nonzero exitance
+	for( unsigned int li = 0; li < luminaries.size(); li++ )
 	{
-		const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
+		const IEmitter* pEmitter = luminaries[li].pLum->GetMaterial()->GetEmitter();
 		if( pEmitter )
 		{
-			const Scalar area = i->pLum->GetArea();
+			const Scalar area = luminaries[li].pLum->GetArea();
 			const RISEPel power = pEmitter->averageRadiantExitance() * area;
-			total += ColorMath::MaxValue( power );
+			const Scalar exitance = ColorMath::MaxValue( power );
+			if( exitance > 0 )
+			{
+				LightEntry entry;
+				entry.pLight = 0;
+				entry.lumIndex = li;
+				entry.exitance = exitance;
+				lightEntries.push_back( entry );
+			}
 		}
 	}
 
-	return total;
+	// Build alias table from the exitance weights
+	std::vector<double> weights( lightEntries.size() );
+	for( unsigned int i = 0; i < lightEntries.size(); i++ )
+	{
+		weights[i] = static_cast<double>( lightEntries[i].exitance );
+	}
+
+	aliasTable.Build( weights );
+	cachedTotalExitance = static_cast<Scalar>( aliasTable.TotalWeight() );
 }
 
 bool LightSampler::SampleLight(
@@ -109,131 +126,93 @@ bool LightSampler::SampleLight(
 	sample.pdfDirection = 0;
 	sample.pdfSelect = 0;
 
-	// Compute total exitance across all light sources
-	const Scalar total_exitance = ComputeTotalExitance( scene, luminaries );
-
-	if( total_exitance <= 0 )
+	if( !aliasTable.IsValid() )
 	{
 		return false;
 	}
 
-	// Select a light proportional to its exitance
-	const Scalar xi = sampler.Get1D() * total_exitance;
-	Scalar cumulative = 0;
+	// O(1) selection proportional to exitance
+	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+	const LightEntry& entry = lightEntries[idx];
+	sample.pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 
-	// Try non-mesh lights first
-	const ILightManager* pLightMgr = scene.GetLights();
-	if( pLightMgr )
+	if( entry.pLight )
 	{
-		const ILightManager::LightsList& lights = pLightMgr->getLights();
-		ILightManager::LightsList::const_iterator m, n;
-		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
-		{
-			const ILightPriv* l = *m;
-			if( l->CanGeneratePhotons() )
-			{
-				const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-				cumulative += exitance;
+		// Non-mesh (delta) light
+		const ILightPriv* l = entry.pLight;
+		sample.pLight = l;
+		sample.isDelta = true;
 
-				if( cumulative >= xi )
-				{
-					// Selected this non-mesh light
-					sample.pLight = l;
-					sample.pdfSelect = exitance / total_exitance;
-					sample.isDelta = true;
+		// Generate a random photon using the light's own method
+		const Point3 ptrand(
+			sampler.Get1D(),
+			sampler.Get1D(),
+			sampler.Get1D()
+			);
+		const Ray photonRay = l->generateRandomPhoton( ptrand );
 
-					// Generate a random photon using the light's own method
-					const Point3 ptrand(
-						sampler.Get1D(),
-						sampler.Get1D(),
-						sampler.Get1D()
-						);
-					const Ray photonRay = l->generateRandomPhoton( ptrand );
+		sample.position = photonRay.origin;
+		sample.direction = photonRay.Dir();
+		sample.normal = photonRay.Dir();
 
-					sample.position = photonRay.origin;
-					sample.direction = photonRay.Dir();
-					sample.normal = photonRay.Dir();
+		// Emitted radiance in the sampled direction
+		sample.Le = l->emittedRadiance( photonRay.Dir() );
 
-					// Emitted radiance in the sampled direction
-					sample.Le = l->emittedRadiance( photonRay.Dir() );
+		// For delta-position lights, pdfPosition = 1
+		sample.pdfPosition = 1.0;
 
-					// For delta-position lights, pdfPosition = 1
-					sample.pdfPosition = 1.0;
+		// Query the light's own directional PDF
+		sample.pdfDirection = l->pdfDirection( photonRay.Dir() );
+	}
+	else
+	{
+		// Mesh luminary
+		const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
+		sample.pLuminary = lumEntry.pLum;
+		sample.isDelta = false;
 
-					// Query the light's own directional PDF
-					sample.pdfDirection = l->pdfDirection( photonRay.Dir() );
+		const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
+		const Scalar area = lumEntry.pLum->GetArea();
 
-					return true;
-				}
-			}
-		}
+		// Sample a uniform random point on the luminary surface
+		const Point3 prand(
+			sampler.Get1D(),
+			sampler.Get1D(),
+			sampler.Get1D()
+			);
+		Point2 coord;
+		lumEntry.pLum->UniformRandomPoint(
+			&sample.position,
+			&sample.normal,
+			&coord,
+			prand
+			);
+
+		// pdfPosition = 1 / area (uniform sampling on surface)
+		sample.pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
+
+		// Build an orthonormal basis around the surface normal
+		// and sample a cosine-weighted hemisphere direction
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( sample.normal );
+
+		const Point2 dirRand = sampler.Get2D();
+		sample.direction = GeometricUtilities::CreateDiffuseVector( onb, dirRand );
+
+		// pdfDirection = cos(theta) / pi for cosine-weighted hemisphere
+		const Scalar cosTheta = Vector3Ops::Dot( sample.direction, sample.normal );
+		sample.pdfDirection = (cosTheta > 0) ? (cosTheta * INV_PI) : 0;
+
+		// Compute emitted radiance at this point in this direction
+		RayIntersectionGeometric rig( Ray( sample.position, sample.direction ), nullRasterizerState );
+		rig.vNormal = sample.normal;
+		rig.ptCoord = coord;
+		rig.onb = onb;
+
+		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
 	}
 
-	// Try mesh luminaries
-	LuminaryManager::LuminariesList::const_iterator i, e;
-	for( i=luminaries.begin(), e=luminaries.end(); i!=e; i++ )
-	{
-		const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-		if( !pEmitter )
-		{
-			continue;
-		}
-
-		const Scalar area = i->pLum->GetArea();
-		const RISEPel power = pEmitter->averageRadiantExitance() * area;
-		const Scalar exitance = ColorMath::MaxValue( power );
-		cumulative += exitance;
-
-		if( cumulative >= xi )
-		{
-			// Selected this mesh luminary
-			sample.pLuminary = i->pLum;
-			sample.pdfSelect = exitance / total_exitance;
-			sample.isDelta = false;
-
-			// Sample a uniform random point on the luminary surface
-			const Point3 prand(
-				sampler.Get1D(),
-				sampler.Get1D(),
-				sampler.Get1D()
-				);
-			Point2 coord;
-			i->pLum->UniformRandomPoint(
-				&sample.position,
-				&sample.normal,
-				&coord,
-				prand
-				);
-
-			// pdfPosition = 1 / area (uniform sampling on surface)
-			sample.pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
-
-			// Build an orthonormal basis around the surface normal
-			// and sample a cosine-weighted hemisphere direction
-			OrthonormalBasis3D onb;
-			onb.CreateFromW( sample.normal );
-
-			const Point2 dirRand = sampler.Get2D();
-			sample.direction = GeometricUtilities::CreateDiffuseVector( onb, dirRand );
-
-			// pdfDirection = cos(theta) / pi for cosine-weighted hemisphere
-			const Scalar cosTheta = Vector3Ops::Dot( sample.direction, sample.normal );
-			sample.pdfDirection = (cosTheta > 0) ? (cosTheta * INV_PI) : 0;
-
-			// Compute emitted radiance at this point in this direction
-			RayIntersectionGeometric rig( Ray( sample.position, sample.direction ), nullRasterizerState );
-			rig.vNormal = sample.normal;
-			rig.ptCoord = coord;
-			rig.onb = onb;
-
-			sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
-
-			return true;
-		}
-	}
-
-	// Should not reach here if total_exitance > 0, but handle edge case
-	return false;
+	return true;
 }
 
 Scalar LightSampler::PdfSelectLight(
@@ -242,50 +221,66 @@ Scalar LightSampler::PdfSelectLight(
 	const ILight& light
 	) const
 {
-	const Scalar exitance = ColorMath::MaxValue( light.radiantExitance() );
-	if( exitance <= 0 )
+	// Find the matching entry in the light table
+	for( unsigned int i = 0; i < lightEntries.size(); i++ )
+	{
+		if( lightEntries[i].pLight == &light )
+		{
+			return static_cast<Scalar>( aliasTable.Pdf( i ) );
+		}
+	}
+
+	return 0;
+}
+
+Scalar LightSampler::PdfSelectLuminary(
+	const IScene& scene,
+	const LuminaryManager::LuminariesList& luminaries,
+	const IObject& luminary
+	) const
+{
+	if( !pPreparedLuminaries )
 	{
 		return 0;
 	}
 
-	const Scalar total_exitance = ComputeTotalExitance( scene, luminaries );
-	if( total_exitance <= 0 )
+	// Find the matching entry in the light table
+	for( unsigned int i = 0; i < lightEntries.size(); i++ )
 	{
-		return 0;
+		if( !lightEntries[i].pLight )
+		{
+			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
+			{
+				return static_cast<Scalar>( aliasTable.Pdf( i ) );
+			}
+		}
 	}
 
-	return exitance / total_exitance;
+	return 0;
 }
 
 Scalar LightSampler::CachedPdfSelectLuminary(
 	const IObject& luminary
 	) const
 {
-	if( cachedTotalExitance <= 0 )
+	if( !pPreparedLuminaries )
 	{
 		return 0;
 	}
 
-	const IMaterial* pMat = luminary.GetMaterial();
-	if( !pMat )
+	// Find the matching entry in the light table
+	for( unsigned int i = 0; i < lightEntries.size(); i++ )
 	{
-		return 0;
+		if( !lightEntries[i].pLight )
+		{
+			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
+			{
+				return static_cast<Scalar>( aliasTable.Pdf( i ) );
+			}
+		}
 	}
 
-	const IEmitter* pEmitter = pMat->GetEmitter();
-	if( !pEmitter )
-	{
-		return 0;
-	}
-
-	const Scalar area = luminary.GetArea();
-	const Scalar exitance = ColorMath::MaxValue( pEmitter->averageRadiantExitance() * area );
-	if( exitance <= 0 )
-	{
-		return 0;
-	}
-
-	return exitance / cachedTotalExitance;
+	return 0;
 }
 
 //
@@ -349,110 +344,69 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	}
 
 	// ----------------------------------------------------------------
-	// Step 2: Stochastic selection of one light with nonzero exitance
+	// Step 2: O(1) stochastic selection of one light with nonzero
+	// exitance using the alias table
 	// ----------------------------------------------------------------
-	if( cachedTotalExitance <= 0 )
+	if( !aliasTable.IsValid() )
 	{
 		return result;
 	}
 
-	const Scalar xi = sampler.Get1D() * cachedTotalExitance;
-	Scalar cumulative = 0;
+	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+	const LightEntry& entry = lightEntries[idx];
+	const Scalar pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 
-	// Try non-mesh lights first
-	if( pLightMgr )
+	if( entry.pLight )
 	{
-		const ILightManager::LightsList& lights = pLightMgr->getLights();
-		ILightManager::LightsList::const_iterator m, n;
-		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
-		{
-			const ILightPriv* l = *m;
-			if( !l->CanGeneratePhotons() )
-			{
-				continue;
-			}
-
-			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-			if( exitance <= 0 )
-			{
-				continue;
-			}
-
-			cumulative += exitance;
-
-			if( cumulative >= xi )
-			{
-				// Selected this non-mesh (delta) light.
-				// Delegate to the light's own direct-lighting method
-				// which handles position, shadow rays, attenuation,
-				// and BRDF evaluation.  Divide by selection probability.
-				const Scalar pdfSelect = exitance / cachedTotalExitance;
-				RISEPel amount( 0, 0, 0 );
-				l->ComputeDirectLighting( ri, caster, brdf,
-					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
-					amount );
-				result = result + amount * (1.0 / pdfSelect);
-				return result;
-			}
-		}
+		// Selected a non-mesh (delta) light.
+		// Delegate to the light's own direct-lighting method
+		// which handles position, shadow rays, and BRDF evaluation.
+		// Divide by selection probability.
+		RISEPel amount( 0, 0, 0 );
+		entry.pLight->ComputeDirectLighting( ri, caster, brdf,
+			pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
+			amount );
+		result = result + amount * (1.0 / pdfSelect);
 	}
-
-	// Try mesh luminaries
-	if( pPreparedLuminaries )
+	else
 	{
-		LuminaryManager::LuminariesList::const_iterator i, e;
-		for( i=pPreparedLuminaries->begin(), e=pPreparedLuminaries->end(); i!=e; i++ )
+		// Selected a mesh luminary
+		const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
+		const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
+
+		// Skip self-illumination
+		if( lumEntry.pLum == pShadingObject )
 		{
-			const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-			if( !pEmitter )
+			return result;
+		}
+
+		const Scalar area = lumEntry.pLum->GetArea();
+
+		// Sample a uniform random point on the luminary surface
+		const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
+		Point3 ptOnLum;
+		Vector3 lumNormal;
+		Point2 lumCoord;
+		lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
+
+		// Geometry
+		Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
+		const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+		const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
+
+		if( cosLight > 0 && cosSurface > 0 )
+		{
+			// Shadow test
+			bool shadowed = false;
+			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 			{
-				continue;
+				const Ray rayToLight( ri.ptIntersection, vToLight );
+				shadowed = caster.CastShadowRay( rayToLight, dist - 0.001 );
 			}
 
-			const Scalar area = i->pLum->GetArea();
-			const RISEPel power = pEmitter->averageRadiantExitance() * area;
-			const Scalar exitance = ColorMath::MaxValue( power );
-			cumulative += exitance;
-
-			if( cumulative >= xi )
+			if( !shadowed )
 			{
-				// Selected this mesh luminary
-				const Scalar pdfSelect = exitance / cachedTotalExitance;
-
-				// Skip self-illumination
-				if( i->pLum == pShadingObject )
-				{
-					return result;
-				}
-
-				// Sample a uniform random point on the luminary surface
-				const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
-				Point3 ptOnLum;
-				Vector3 lumNormal;
-				Point2 lumCoord;
-				i->pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
-
-				// Geometry
-				Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
-				const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-				const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
-				const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
-
-				if( cosLight <= 0 || cosSurface <= 0 )
-				{
-					return result;
-				}
-
-				// Shadow test
-				if( pShadingObject && pShadingObject->DoesReceiveShadows() )
-				{
-					const Ray rayToLight( ri.ptIntersection, vToLight );
-					if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
-					{
-						return result;
-					}
-				}
-
 				// Emitted radiance at sampled point
 				RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 				lumri.vNormal = lumNormal;
@@ -482,7 +436,6 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 				// Divide by pdfSelect to correct for random light selection
 				result = result + contrib * (1.0 / pdfSelect);
-				return result;
 			}
 		}
 	}
@@ -508,159 +461,92 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	}
 
 	// ----------------------------------------------------------------
-	// Spectral NEE: mesh luminaries only (non-mesh lights do not yet
-	// have spectral ComputeDirectLighting variants — matching existing
-	// PathTracingShaderOp behavior).
+	// Spectral NEE: uses alias table for O(1) selection.
+	// Non-mesh lights do not yet have spectral ComputeDirectLighting
+	// variants — matching existing PathTracingShaderOp behavior.
 	// ----------------------------------------------------------------
-	if( cachedTotalExitance <= 0 )
+	if( !aliasTable.IsValid() )
 	{
 		return result;
 	}
 
-	const Scalar xi = sampler.Get1D() * cachedTotalExitance;
-	Scalar cumulative = 0;
+	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+	const LightEntry& entry = lightEntries[idx];
+	const Scalar pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 
-	// Skip non-mesh lights in cumulative scan (they participate in
-	// selection weight but spectral evaluation is not yet available)
-	const ILightManager* pLightMgr = pPreparedScene->GetLights();
-	if( pLightMgr )
+	if( entry.pLight )
 	{
-		const ILightManager::LightsList& lights = pLightMgr->getLights();
-		ILightManager::LightsList::const_iterator m, n;
-		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
-		{
-			const ILightPriv* l = *m;
-			if( l->CanGeneratePhotons() )
-			{
-				const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-				cumulative += exitance;
-
-				if( cumulative >= xi )
-				{
-					// Selected a non-mesh light — no spectral evaluation
-					// available, return zero (energy is not lost; it is
-					// recovered by the BSDF-sampled continuation path).
-					return result;
-				}
-			}
-		}
+		// Selected a non-mesh light — no spectral evaluation
+		// available, return zero (energy is not lost; it is
+		// recovered by the BSDF-sampled continuation path).
+		return result;
 	}
 
-	// Try mesh luminaries
-	LuminaryManager::LuminariesList::const_iterator i, e;
-	for( i=pPreparedLuminaries->begin(), e=pPreparedLuminaries->end(); i!=e; i++ )
+	// Selected a mesh luminary
+	const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
+	const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
+
+	// Skip self-illumination
+	if( lumEntry.pLum == pShadingObject )
 	{
-		const IEmitter* pEmitter = i->pLum->GetMaterial()->GetEmitter();
-		if( !pEmitter )
+		return result;
+	}
+
+	const Scalar area = lumEntry.pLum->GetArea();
+
+	// Sample a uniform random point on the luminary surface
+	const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
+	Point3 ptOnLum;
+	Vector3 lumNormal;
+	Point2 lumCoord;
+	lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
+
+	// Geometry
+	Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
+	const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+	const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+	const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
+
+	if( cosLight <= 0 || cosSurface <= 0 )
+	{
+		return result;
+	}
+
+	// Shadow test
+	if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+	{
+		const Ray rayToLight( ri.ptIntersection, vToLight );
+		if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
 		{
-			continue;
-		}
-
-		const Scalar area = i->pLum->GetArea();
-		const RISEPel power = pEmitter->averageRadiantExitance() * area;
-		const Scalar exitance = ColorMath::MaxValue( power );
-		cumulative += exitance;
-
-		if( cumulative >= xi )
-		{
-			const Scalar pdfSelect = exitance / cachedTotalExitance;
-
-			// Skip self-illumination
-			if( i->pLum == pShadingObject )
-			{
-				return result;
-			}
-
-			// Sample a uniform random point on the luminary surface
-			const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
-			Point3 ptOnLum;
-			Vector3 lumNormal;
-			Point2 lumCoord;
-			i->pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
-
-			// Geometry
-			Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
-			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-			const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
-			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
-
-			if( cosLight <= 0 || cosSurface <= 0 )
-			{
-				return result;
-			}
-
-			// Shadow test
-			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
-			{
-				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
-				{
-					return result;
-				}
-			}
-
-			// Emitted radiance at sampled point (spectral)
-			RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
-			lumri.vNormal = lumNormal;
-			lumri.ptCoord = lumCoord;
-			lumri.onb.CreateFromW( lumNormal );
-
-			const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
-
-			// Unshadowed contribution
-			const Scalar geom = area * cosLight / (dist * dist);
-			Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
-
-			// MIS weight using combined selection + solid-angle PDF
-			if( pMaterial && area > 0 && cosLight > 0 )
-			{
-				const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
-				const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
-
-				if( p_bsdf > 0 )
-				{
-					const Scalar w = PowerHeuristic( p_light, p_bsdf );
-					contrib = contrib * w;
-				}
-			}
-
-			result = contrib * (1.0 / pdfSelect);
 			return result;
 		}
 	}
 
+	// Emitted radiance at sampled point (spectral)
+	RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
+	lumri.vNormal = lumNormal;
+	lumri.ptCoord = lumCoord;
+	lumri.onb.CreateFromW( lumNormal );
+
+	const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
+
+	// Unshadowed contribution
+	const Scalar geom = area * cosLight / (dist * dist);
+	Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
+
+	// MIS weight using combined selection + solid-angle PDF
+	if( pMaterial && area > 0 && cosLight > 0 )
+	{
+		const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
+		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
+
+		if( p_bsdf > 0 )
+		{
+			const Scalar w = PowerHeuristic( p_light, p_bsdf );
+			contrib = contrib * w;
+		}
+	}
+
+	result = contrib * (1.0 / pdfSelect);
 	return result;
-}
-Scalar LightSampler::PdfSelectLuminary(
-	const IScene& scene,
-	const LuminaryManager::LuminariesList& luminaries,
-	const IObject& luminary
-	) const
-{
-	const IMaterial* pMat = luminary.GetMaterial();
-	if( !pMat )
-	{
-		return 0;
-	}
-
-	const IEmitter* pEmitter = pMat->GetEmitter();
-	if( !pEmitter )
-	{
-		return 0;
-	}
-
-	const Scalar area = luminary.GetArea();
-	const Scalar exitance = ColorMath::MaxValue( pEmitter->averageRadiantExitance() * area );
-	if( exitance <= 0 )
-	{
-		return 0;
-	}
-
-	const Scalar total_exitance = ComputeTotalExitance( scene, luminaries );
-	if( total_exitance <= 0 )
-	{
-		return 0;
-	}
-
-	return exitance / total_exitance;
 }

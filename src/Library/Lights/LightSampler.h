@@ -18,9 +18,10 @@
 //     in proportional selection.
 //
 //  LIGHT SELECTION:
-//  Lights are selected proportional to their radiant exitance
-//  (MaxValue of RGB), matching PhotonTracer's strategy.  This
-//  means brighter lights get proportionally more subpath starts.
+//  An alias table (Vose's algorithm) is built during Prepare()
+//  over all lights weighted by radiant exitance.  This gives O(1)
+//  selection and O(1) PDF lookup regardless of light count,
+//  replacing the O(N) linear scan used previously.
 //
 //  EMISSION SAMPLING:
 //  - Non-mesh lights (point/spot): delta position (pdfPosition=1),
@@ -37,8 +38,8 @@
 //    BSDF sampling PDF.
 //
 //  Call Prepare() once after the scene is attached to cache the
-//  light list, luminaries list, and total exitance.  All query
-//  methods then use the cached state.
+//  light list, luminaries list, and build the alias table.  All
+//  query methods then use the cached state.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
@@ -60,12 +61,14 @@
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
+#include "../Utilities/AliasTable.h"
 #include "../Rendering/LuminaryManager.h"
 
 namespace RISE
 {
 	class IRayCaster;
 	class IMaterial;
+	class ILightPriv;
 
 	namespace Implementation
 	{
@@ -90,20 +93,34 @@ namespace RISE
 		/// computation and provides a single-call NEE evaluator that
 		/// handles both non-mesh lights and mesh luminaries with
 		/// correct MIS weights.
+		///
+		/// Uses an alias table for O(1) light selection and PDF queries.
 		class LightSampler : public virtual Reference
 		{
 		protected:
 			virtual ~LightSampler();
 
-			// Cached state set by Prepare()
+			/// Cached state set by Prepare()
 			const IScene*									pPreparedScene;
 			const LuminaryManager::LuminariesList*			pPreparedLuminaries;
 			Scalar											cachedTotalExitance;
+
+			/// A single entry in the combined light table
+			struct LightEntry
+			{
+				const ILightPriv*	pLight;		///< Non-null for non-mesh lights
+				unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
+				Scalar				exitance;	///< MaxValue of radiant exitance
+			};
+
+			std::vector<LightEntry>		lightEntries;	///< All selectable lights
+			AliasTable					aliasTable;		///< O(1) selection table
 
 		public:
 			LightSampler();
 
 			/// Cache the scene and luminaries list for subsequent queries.
+			/// Builds the alias table for O(1) light selection.
 			/// Must be called once after the scene is fully attached and
 			/// the luminary list is built (e.g. in RayCaster::AttachScene).
 			void Prepare(
@@ -178,13 +195,6 @@ namespace RISE
 			/// \return Selection probability, or 0 if luminary has no emitter
 			Scalar CachedPdfSelectLuminary(
 				const IObject& luminary								///< [in] The luminary to query
-				) const;
-
-		protected:
-			/// Computes the total exitance across all non-mesh lights and mesh luminaries
-			Scalar ComputeTotalExitance(
-				const IScene& scene,								///< [in] The scene
-				const LuminaryManager::LuminariesList& luminaries	///< [in] List of mesh luminaries
 				) const;
 		};
 	}
