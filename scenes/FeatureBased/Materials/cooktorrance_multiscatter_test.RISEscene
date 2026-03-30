@@ -29,13 +29,35 @@ standard_shader
 
 bdpt_pel_rasterizer
 {
-	max_recursion		10
-	min_importance		0.001
 	max_eye_depth		10
 	max_light_depth		8
-	samples				256
+	samples				16
 	lum_samples			1
 	ior_stack			true
+	pathguiding			true
+
+
+	pathguiding_iterations	6
+
+
+	pathguiding_spp			4
+
+
+	pathguiding_alpha		0.5
+
+
+	pathguiding_max_depth	8
+
+
+	pathguiding_complete_paths true
+
+
+	pathguiding_complete_path_strategy_selection true
+
+
+	pathguiding_complete_path_strategy_samples 2
+
+
 }
 
 file_rasterizeroutput

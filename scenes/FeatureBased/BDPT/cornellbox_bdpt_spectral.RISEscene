@@ -26,8 +26,6 @@ standard_shader
 
 bdpt_spectral_rasterizer
 {
-	max_recursion		8
-	min_importance		0.001
 	max_eye_depth		4
 	max_light_depth		4
 	samples				16

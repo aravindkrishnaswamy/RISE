@@ -1341,8 +1341,6 @@ namespace RISE
 		virtual bool SetBDPTPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
@@ -1377,8 +1375,6 @@ namespace RISE
 		virtual bool SetBDPTSpectralRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
@@ -1415,8 +1411,6 @@ namespace RISE
 		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTRasterizer(
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const unsigned int nBootstrap,							///< [in] Number of bootstrap samples

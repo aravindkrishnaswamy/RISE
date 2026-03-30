@@ -5474,10 +5474,8 @@ namespace RISE
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
 					String defaultshader = "global";
-					unsigned int maxRecur = 10;
 					unsigned int numSamples = 1;
 					unsigned int numLumSamples = 1;
-					double minImportance = 0.01;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
 					String radiancemap = "none";
@@ -5516,10 +5514,6 @@ namespace RISE
 
 						if( pname == "defaultshader" ) {
 							defaultshader = pvalue;
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "max_eye_depth" ) {
 							maxEyeDepth = pvalue.toUInt();
 						} else if( pname == "max_light_depth" ) {
@@ -5606,7 +5600,7 @@ namespace RISE
 					}
 
 					return pJob.SetBDPTPelRasterizer( numSamples, numLumSamples,
-						maxRecur, minImportance, maxEyeDepth, maxLightDepth,
+						maxEyeDepth, maxLightDepth,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
@@ -5621,10 +5615,8 @@ namespace RISE
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
 					String defaultshader = "global";
-					unsigned int maxRecur = 10;
 					unsigned int numSamples = 1;
 					unsigned int numLumSamples = 1;
-					double minImportance = 0.01;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
 					String radiancemap = "none";
@@ -5666,10 +5658,6 @@ namespace RISE
 
 						if( pname == "defaultshader" ) {
 							defaultshader = pvalue;
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "max_eye_depth" ) {
 							maxEyeDepth = pvalue.toUInt();
 						} else if( pname == "max_light_depth" ) {
@@ -5754,7 +5742,7 @@ namespace RISE
 					}
 
 					return pJob.SetBDPTSpectralRasterizer( numSamples, numLumSamples,
-						maxRecur, minImportance, maxEyeDepth, maxLightDepth,
+						maxEyeDepth, maxLightDepth,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
@@ -5770,8 +5758,6 @@ namespace RISE
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
 					String defaultshader = "global";
-					unsigned int maxRecur = 12;
-					double minImportance = 0.001;
 					unsigned int maxEyeDepth = 10;
 					unsigned int maxLightDepth = 10;
 					unsigned int bootstrapSamples = 100000;
@@ -5793,10 +5779,6 @@ namespace RISE
 
 						if( pname == "defaultshader" ) {
 							defaultshader = pvalue;
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "max_eye_depth" ) {
 							maxEyeDepth = pvalue.toUInt();
 						} else if( pname == "max_light_depth" ) {
@@ -5823,7 +5805,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetMLTRasterizer( maxRecur, minImportance, maxEyeDepth, maxLightDepth,
+					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight, oidnDenoise );
 				}

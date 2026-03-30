@@ -39,8 +39,6 @@ standard_shader
 
 mlt_rasterizer
 {
-	max_recursion		16
-	min_importance		0.0001
 	max_eye_depth		12
 	max_light_depth		12
 	bootstrap_samples	100000

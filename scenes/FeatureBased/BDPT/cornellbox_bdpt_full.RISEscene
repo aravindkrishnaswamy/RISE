@@ -26,8 +26,6 @@ standard_shader
 
 bdpt_pel_rasterizer
 {
-	max_recursion		12
-	min_importance		0.0001
 	max_eye_depth		10
 	max_light_depth		10
 	samples				64

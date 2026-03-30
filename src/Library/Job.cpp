@@ -4178,8 +4178,6 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 bool Job::SetBDPTPelRasterizer(
 	const unsigned int numPixelSamples,
 	const unsigned int numLumSamples,
-	const unsigned int maxRecur,
-	const double minImportance,
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
@@ -4227,7 +4225,7 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4266,8 +4264,6 @@ bool Job::SetBDPTPelRasterizer(
 bool Job::SetBDPTSpectralRasterizer(
 	const unsigned int numPixelSamples,
 	const unsigned int numLumSamples,
-	const unsigned int maxRecur,
-	const double minImportance,
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
@@ -4318,7 +4314,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4356,8 +4352,6 @@ bool Job::SetBDPTSpectralRasterizer(
 }
 
 bool Job::SetMLTRasterizer(
-	const unsigned int maxRecur,
-	const double minImportance,
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const unsigned int nBootstrap,
@@ -4378,7 +4372,7 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
