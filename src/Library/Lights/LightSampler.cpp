@@ -36,12 +36,20 @@ static inline Scalar PowerHeuristic( const Scalar pa, const Scalar pb )
 LightSampler::LightSampler() :
   pPreparedScene( 0 ),
   pPreparedLuminaries( 0 ),
-  cachedTotalExitance( 0 )
+  cachedTotalExitance( 0 ),
+  risCandidates( 0 )
 {
 }
 
 LightSampler::~LightSampler()
 {
+}
+
+void LightSampler::SetRISCandidates(
+	const unsigned int M
+	)
+{
+	risCandidates = M;
 }
 
 void LightSampler::Prepare(
@@ -73,6 +81,7 @@ void LightSampler::Prepare(
 					entry.pLight = l;
 					entry.lumIndex = 0;
 					entry.exitance = exitance;
+					entry.position = l->position();
 					lightEntries.push_back( entry );
 				}
 			}
@@ -80,6 +89,9 @@ void LightSampler::Prepare(
 	}
 
 	// Add mesh luminaries with nonzero exitance
+	// Use a fixed seed point (0.5, 0.5, 0.5) to get a representative
+	// surface position for distance estimates in RIS
+	const Point3 centerSeed( 0.5, 0.5, 0.5 );
 	for( unsigned int li = 0; li < luminaries.size(); li++ )
 	{
 		const IEmitter* pEmitter = luminaries[li].pLum->GetMaterial()->GetEmitter();
@@ -94,6 +106,15 @@ void LightSampler::Prepare(
 				entry.pLight = 0;
 				entry.lumIndex = li;
 				entry.exitance = exitance;
+
+				// Sample a representative position on the luminary surface
+				Point3 repPos;
+				Vector3 repNormal;
+				Point2 repCoord;
+				luminaries[li].pLum->UniformRandomPoint(
+					&repPos, &repNormal, &repCoord, centerSeed );
+				entry.position = repPos;
+
 				lightEntries.push_back( entry );
 			}
 		}
@@ -108,6 +129,121 @@ void LightSampler::Prepare(
 
 	aliasTable.Build( weights );
 	cachedTotalExitance = static_cast<Scalar>( aliasTable.TotalWeight() );
+
+	// Auto-enable RIS when there are enough lights that spatial
+	// selection matters.  With fewer lights, the alias table alone
+	// is sufficient and RIS overhead is wasted.
+	if( risCandidates == 0 && lightEntries.size() > 8 )
+	{
+		risCandidates = 8;
+	}
+}
+
+//
+// RIS light selection
+//
+// Draws M candidates from the global alias table (proposal q)
+// and resamples one proportional to a spatially-aware target
+// weight: w_i = exitance_i / max(dist_i^2, epsilon).
+//
+// Returns two values:
+//   pdfSelect  = alias-table PDF q(j) of the selected light
+//   risWeight  = RIS correction: (1/M) * sum(W_i) / W_j
+//
+// The caller's estimator should be:
+//   result = integrand(j) / pdfSelect * risWeight
+//
+// This gives the unbiased 1-sample RIS estimator:
+//   f(j) * (1/M) * sum(W_i) / target(j)
+//
+// Using the alias-table PDF for pdfSelect keeps MIS weights
+// consistent with CachedPdfSelectLuminary (which also returns
+// the alias-table PDF for the BSDF-hit evaluation path).
+//
+
+unsigned int LightSampler::SelectLightRIS(
+	const Point3& shadingPoint,
+	ISampler& sampler,
+	Scalar& pdfSelect,
+	Scalar& risWeight
+	) const
+{
+	const unsigned int M = risCandidates;
+	const unsigned int N = static_cast<unsigned int>( lightEntries.size() );
+
+	// Clamp M to available lights and stack array size
+	const unsigned int numCandidates = r_min( r_min( M, N ), 64u );
+
+	if( numCandidates <= 1 )
+	{
+		const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+		risWeight = 1.0;
+		return idx;
+	}
+
+	// Draw M candidates and compute resampling weights
+	unsigned int candidates[64];
+	Scalar resamplingWeights[64];
+	Scalar totalWeight = 0;
+
+	const Scalar minDistSq = 1e-4;
+
+	for( unsigned int c = 0; c < numCandidates; c++ )
+	{
+		const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+		candidates[c] = idx;
+
+		const LightEntry& entry = lightEntries[idx];
+		const Scalar proposal = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+
+		const Vector3 toLight = Vector3Ops::mkVector3(
+			entry.position, shadingPoint );
+		const Scalar distSq = r_max( Vector3Ops::Dot( toLight, toLight ), minDistSq );
+		const Scalar target = entry.exitance / distSq;
+
+		const Scalar W = (proposal > 0) ? (target / proposal) : 0;
+		resamplingWeights[c] = W;
+		totalWeight += W;
+	}
+
+	if( totalWeight <= 0 )
+	{
+		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( candidates[0] ) );
+		risWeight = 1.0;
+		return candidates[0];
+	}
+
+	// Select one candidate proportional to resampling weights
+	Scalar xi = sampler.Get1D() * totalWeight;
+	unsigned int selected = candidates[numCandidates - 1];
+	Scalar selectedWeight = resamplingWeights[numCandidates - 1];
+
+	for( unsigned int c = 0; c < numCandidates; c++ )
+	{
+		xi -= resamplingWeights[c];
+		if( xi <= 0 )
+		{
+			selected = candidates[c];
+			selectedWeight = resamplingWeights[c];
+			break;
+		}
+	}
+
+	// Alias-table PDF for MIS consistency
+	pdfSelect = static_cast<Scalar>( aliasTable.Pdf( selected ) );
+
+	// RIS correction factor: risWeight = (1/M) * sum(W_i) / W_j
+	//
+	// The caller computes: f(j) / q(j) * risWeight
+	//   = f(j) / q(j) * (1/M) * sum(W_i) / (target_j/q_j)
+	//   = f(j) * (1/M) * sum(W_i) / target_j
+	// which is the correct unbiased 1-sample RIS estimator.
+	risWeight = (selectedWeight > 0)
+		? (totalWeight / (static_cast<Scalar>(numCandidates) * selectedWeight))
+		: 1.0;
+
+	return selected;
 }
 
 bool LightSampler::SampleLight(
@@ -131,7 +267,7 @@ bool LightSampler::SampleLight(
 		return false;
 	}
 
-	// O(1) selection proportional to exitance
+	// O(1) selection proportional to exitance (no RIS for emission sampling)
 	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
 	const LightEntry& entry = lightEntries[idx];
 	sample.pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
@@ -300,6 +436,10 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 // strategy, so w = 1.  The contribution is the light's own
 // ComputeDirectLighting result divided by pdfSelect.
 //
+// When RIS is enabled (risCandidates > 0), pdfSelect is computed
+// by SelectLightRIS which draws M candidates from the alias table
+// and resamples one proportional to exitance/dist^2.
+//
 
 RISEPel LightSampler::EvaluateDirectLighting(
 	const RayIntersectionGeometric& ri,
@@ -344,29 +484,41 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	}
 
 	// ----------------------------------------------------------------
-	// Step 2: O(1) stochastic selection of one light with nonzero
-	// exitance using the alias table
+	// Step 2: Select one light with nonzero exitance.
+	// Uses RIS when enabled, otherwise plain alias table.
 	// ----------------------------------------------------------------
 	if( !aliasTable.IsValid() )
 	{
 		return result;
 	}
 
-	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+	unsigned int idx;
+	Scalar pdfSelect;
+	Scalar risWeight = 1.0;
+
+	if( risCandidates > 0 )
+	{
+		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfSelect, risWeight );
+	}
+	else
+	{
+		idx = aliasTable.Sample( sampler.Get1D() );
+		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+	}
+
 	const LightEntry& entry = lightEntries[idx];
-	const Scalar pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 
 	if( entry.pLight )
 	{
 		// Selected a non-mesh (delta) light.
 		// Delegate to the light's own direct-lighting method
 		// which handles position, shadow rays, and BRDF evaluation.
-		// Divide by selection probability.
+		// Divide by selection probability, multiply by RIS correction.
 		RISEPel amount( 0, 0, 0 );
 		entry.pLight->ComputeDirectLighting( ri, caster, brdf,
 			pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
 			amount );
-		result = result + amount * (1.0 / pdfSelect);
+		result = result + amount * (risWeight / pdfSelect);
 	}
 	else
 	{
@@ -421,6 +573,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
 
 				// MIS weight using combined selection + solid-angle PDF
+				// pdfSelect is the alias-table PDF (consistent with
+				// CachedPdfSelectLuminary used on the BSDF-hit side)
 				if( pMaterial && area > 0 && cosLight > 0 )
 				{
 					const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
@@ -434,8 +588,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// else p_bsdf=0 → w=1.0 (no change needed)
 				}
 
-				// Divide by pdfSelect to correct for random light selection
-				result = result + contrib * (1.0 / pdfSelect);
+				// Divide by pdfSelect and multiply by RIS correction
+				result = result + contrib * (risWeight / pdfSelect);
 			}
 		}
 	}
@@ -461,7 +615,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	}
 
 	// ----------------------------------------------------------------
-	// Spectral NEE: uses alias table for O(1) selection.
+	// Spectral NEE: uses RIS or alias table for selection.
 	// Non-mesh lights do not yet have spectral ComputeDirectLighting
 	// variants — matching existing PathTracingShaderOp behavior.
 	// ----------------------------------------------------------------
@@ -470,9 +624,21 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		return result;
 	}
 
-	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+	unsigned int idx;
+	Scalar pdfSelect;
+	Scalar risWeight = 1.0;
+
+	if( risCandidates > 0 )
+	{
+		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfSelect, risWeight );
+	}
+	else
+	{
+		idx = aliasTable.Sample( sampler.Get1D() );
+		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+	}
+
 	const LightEntry& entry = lightEntries[idx];
-	const Scalar pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 
 	if( entry.pLight )
 	{
@@ -547,6 +713,6 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		}
 	}
 
-	result = contrib * (1.0 / pdfSelect);
+	result = contrib * (risWeight / pdfSelect);
 	return result;
 }

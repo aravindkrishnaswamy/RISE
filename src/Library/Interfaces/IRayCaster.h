@@ -139,6 +139,12 @@ namespace RISE
 
 		/// \return The unified light sampler for the current scene, or NULL if not available
 		virtual const Implementation::LightSampler* GetLightSampler() const = 0;
+
+		/// Sets the number of RIS candidates for spatially-aware light
+		/// selection.  Must be called after AttachScene().
+		virtual void SetRISCandidates(
+			const unsigned int M								///< [in] Number of RIS candidates (0=disabled)
+			) = 0;
 	};
 }
 

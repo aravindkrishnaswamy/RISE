@@ -54,6 +54,11 @@ namespace RISE
 				return (cColor * radiantEnergy * TWO_PI * (TWO_PI*(dOuterAngle/TWO_PI)));
 			}
 
+			inline Point3 position() const
+			{
+				return ptPosition;
+			}
+
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
 			{
 				// Find the angle between the light out and vDirection

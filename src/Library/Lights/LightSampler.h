@@ -20,8 +20,18 @@
 //  LIGHT SELECTION:
 //  An alias table (Vose's algorithm) is built during Prepare()
 //  over all lights weighted by radiant exitance.  This gives O(1)
-//  selection and O(1) PDF lookup regardless of light count,
-//  replacing the O(N) linear scan used previously.
+//  selection and O(1) PDF lookup regardless of light count.
+//
+//  SPATIAL RESAMPLING (RIS):
+//  When SetRISCandidates(M) is called with M>0, direct lighting
+//  evaluation uses Resampled Importance Sampling: M candidates are
+//  drawn from the global alias table and reweighted by
+//  exitance/distance^2 at the shading point.  One candidate is
+//  then selected proportional to these spatially-aware weights.
+//  This concentrates samples on lights that contribute most from
+//  the current shading position, dramatically reducing variance
+//  in many-light scenes where distant lights dominate the global
+//  distribution but contribute negligibly to local illumination.
 //
 //  EMISSION SAMPLING:
 //  - Non-mesh lights (point/spot): delta position (pdfPosition=1),
@@ -111,10 +121,12 @@ namespace RISE
 				const ILightPriv*	pLight;		///< Non-null for non-mesh lights
 				unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
 				Scalar				exitance;	///< MaxValue of radiant exitance
+				Point3				position;	///< Representative position for distance estimates
 			};
 
 			std::vector<LightEntry>		lightEntries;	///< All selectable lights
 			AliasTable					aliasTable;		///< O(1) selection table
+			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 
 		public:
 			LightSampler();
@@ -195,6 +207,33 @@ namespace RISE
 			/// \return Selection probability, or 0 if luminary has no emitter
 			Scalar CachedPdfSelectLuminary(
 				const IObject& luminary								///< [in] The luminary to query
+				) const;
+
+			/// Sets the number of RIS candidates for spatially-aware
+			/// light selection.  When M>0, EvaluateDirectLighting draws
+			/// M candidates from the global alias table and resamples
+			/// one proportional to exitance/distance^2.  When M=0
+			/// (default), plain alias-table selection is used.
+			void SetRISCandidates(
+				const unsigned int M								///< [in] Number of RIS candidates (0=disabled)
+				);
+
+		protected:
+			/// Selects one light using RIS: draws M candidates from the
+			/// alias table, reweights by exitance/dist^2, and returns
+			/// the selected index.  Returns the alias-table PDF in
+			/// pdfSelect (for MIS computation) and an RIS correction
+			/// factor in risWeight.  The caller's estimator should be:
+			///   result = integrand / pdfSelect * risWeight
+			/// This keeps MIS weights consistent with CachedPdfSelectLuminary
+			/// (which also returns the alias-table PDF) while giving
+			/// the unbiased 1-sample RIS estimator.
+			/// \return Selected lightEntries index
+			unsigned int SelectLightRIS(
+				const Point3& shadingPoint,							///< [in] World-space shading position
+				ISampler& sampler,									///< [in] Sampler for candidate draws
+				Scalar& pdfSelect,									///< [out] Alias-table PDF of selected light (for MIS)
+				Scalar& risWeight									///< [out] RIS correction factor
 				) const;
 		};
 	}

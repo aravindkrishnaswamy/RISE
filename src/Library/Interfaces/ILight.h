@@ -49,6 +49,9 @@ namespace RISE
 		//! Asks the light for its emitted radiance in a particular direction
 		virtual RISEPel emittedRadiance( const Vector3& vLightOut ) const = 0;
 
+		//! Returns the light's world-space position (for spatial importance estimation)
+		virtual Point3 position() const = 0;
+
 		//! Asks the light to generate a random emitted photon
 		virtual Ray generateRandomPhoton( const Point3& ptrand ) const = 0;
 

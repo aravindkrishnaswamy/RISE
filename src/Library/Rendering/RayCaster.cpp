@@ -347,6 +347,14 @@ bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const
 	return pScene->GetObjects()->IntersectShadowRay( ray, dHowFar, true, true );
 }
 
+void RayCaster::SetRISCandidates( const unsigned int M )
+{
+	if( pLightSampler )
+	{
+		pLightSampler->SetRISCandidates( M );
+	}
+}
+
 //! Sets the luminaire sampler
 void RayCaster::SetLuminaireSampling(
 	ISampling2D* pLumSam							///< [in] Kernel to use for luminaire sampling

@@ -52,6 +52,11 @@ namespace RISE
 				return (cColor * radiantEnergy);
 			}
 
+			inline Point3 position() const
+			{
+				return ptPosition;
+			}
+
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
 				// Uniform sampling on the full sphere
