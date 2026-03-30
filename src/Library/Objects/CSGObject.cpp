@@ -460,6 +460,11 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		if( pRadianceMap ) {
 			ri.pRadianceMap = pRadianceMap;
 		}
+
+		// The composite CSG object is the refractive/shading identity seen by
+		// the rest of the renderer. Reporting a hidden child object here breaks
+		// IOR-stack tracking for dielectric CSG paths.
+		ri.pObject = this;
 	}
 
 	// Restore the old ray
