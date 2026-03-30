@@ -2127,7 +2127,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 			}
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, wiAtLightEnd );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -2493,7 +2493,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, -wiAtLightEnd );
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, wiAtLightEnd );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -2635,8 +2635,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const BDPTVertex& lightPred = lightVerts[s - 2];
 			savedLightPredPdfRev = lightPred.pdfRev;
 
-			// woAtLight = -dConnect (toward eye side), scatter toward pred = -wiAtLight
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, -wiAtLight );
+			// woAtLight already points toward the eye side; wiAtLight points toward the predecessor.
+			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, wiAtLight );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -4052,7 +4052,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, -wiAtLightEnd, nm );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, wiAtLightEnd, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -4359,7 +4359,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, -wiAtLightEnd, nm );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, wiAtLightEnd, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
@@ -4466,7 +4466,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const BDPTVertex& lightPred = lightVerts[s - 2];
 			savedLightPredPdfRevNM = lightPred.pdfRev;
 
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, woAtLight, -wiAtLight, nm );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, woAtLight, wiAtLight, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
