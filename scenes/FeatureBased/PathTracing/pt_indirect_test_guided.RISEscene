@@ -1,0 +1,441 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_indirect_test_guided.RISEscene                                                              #
+#   Description:    Two-room Cornell box for path guiding validation (GUIDED).                   #
+#                                                                                                           #
+#                   Room A (camera side, z=0..280) has NO light source.                                     #
+#                   Room B (far side, z=280..560) has an area light on the ceiling.                         #
+#                   A small 60x60 opening in the dividing wall at z=280 is the ONLY                        #
+#                   path for light to reach Room A.                                                         #
+#                                                                                                           #
+#                   All surfaces are Lambertian (no delta materials) so guiding applies                     #
+#                   at every bounce.  From any surface in Room A, the opening subtends                      #
+#                   ~1-2% of the hemisphere, so cosine-weighted BSDF sampling wastes                        #
+#                   ~98% of indirect bounce samples.  Path guiding should provide a                         #
+#                   dramatic variance reduction here.                                                        #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 29, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		8
+	min_importance		0.001
+	samples				256
+	lum_samples			1
+	ior_stack			TRUE
+	pathguiding			true
+	pathguiding_iterations	6
+	pathguiding_spp			4
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	8
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_indirect_test_guided
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_indirect_test_guided
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+#
+# Inside Room A, looking toward the dividing wall.
+# The small opening and the light spilling through
+# it should be visible.
+##################################################
+
+pinhole_camera
+{
+	location			278 273 500
+	lookat				278 200 200
+	up					0 1 0
+	width				512
+	height				512
+	fov					70.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.73 0.71 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.10 0.15 0.50
+}
+
+uniformcolor_painter
+{
+	name				pnt_yellow
+	color				0.65 0.55 0.10
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_warm_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			pnt_blue
+}
+
+lambertian_material
+{
+	name				yellow
+	reflectance			pnt_yellow
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				200.0
+	material			none
+}
+
+##################################################
+# Geometry -- Room shell (both rooms share walls)
+#
+# Full box: x=[0,556], y=[0,549], z=[0,560]
+# Dividing wall at z=280
+# Opening: x=[178,378], y=[175,375] (200x200 centered)
+##################################################
+
+# --- Floor ---
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 560
+	ptd					556 0 560
+}
+
+# --- Ceiling ---
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556 549 0
+	ptb					556 549 560
+	ptc					0 549 560
+	ptd					0 549 0
+}
+
+# --- Back wall (z=0, behind Room B light) ---
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					556 0 0
+	ptb					556 549 0
+	ptc					0 549 0
+	ptd					0 0 0
+}
+
+# --- Front wall (z=560, behind camera in Room A) ---
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					0 0 560
+	ptb					0 549 560
+	ptc					556 549 560
+	ptd					556 0 560
+}
+
+# --- Left wall (x=0) ---
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 560
+	ptb					0 0 0
+	ptc					0 549 0
+	ptd					0 549 560
+}
+
+# --- Right wall (x=556) ---
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 0
+	ptb					556 0 560
+	ptc					556 549 560
+	ptd					556 549 0
+}
+
+# --- Dividing wall at z=280, 4 panels around 60x60 opening ---
+# Opening: x=[248,308], y=[245,305]
+
+# Left panel: x=[0,178], full height
+clippedplane_geometry
+{
+	name				div_left_geom
+	pta					0 0 280
+	ptb					0 549 280
+	ptc					178 549 280
+	ptd					178 0 280
+}
+
+# Right panel: x=[378,556], full height
+clippedplane_geometry
+{
+	name				div_right_geom
+	pta					378 0 280
+	ptb					378 549 280
+	ptc					556 549 280
+	ptd					556 0 280
+}
+
+# Bottom panel: x=[178,378], y=[0,175]
+clippedplane_geometry
+{
+	name				div_bottom_geom
+	pta					178 0 280
+	ptb					178 175 280
+	ptc					378 175 280
+	ptd					378 0 280
+}
+
+# Top panel: x=[178,378], y=[375,549]
+clippedplane_geometry
+{
+	name				div_top_geom
+	pta					178 375 280
+	ptb					178 549 280
+	ptc					378 549 280
+	ptd					378 375 280
+}
+
+# --- Ceiling light in Room B ---
+# Area light on ceiling, pulled down slightly to avoid coplanar issues
+# Centered in Room B: x=[190,366], z=[70,210]
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					366 548.8 70
+	ptb					366 548.8 210
+	ptc					190 548.8 210
+	ptd					190 548.8 70
+}
+
+# --- Objects in Room A (all diffuse) ---
+
+sphere_geometry
+{
+	name				sphere_large_geom
+	radius				60
+}
+
+sphere_geometry
+{
+	name				sphere_small_geom
+	radius				40
+}
+
+box_geometry
+{
+	name				tallbox_geom
+	width				90
+	height				180
+	depth				90
+}
+
+##################################################
+# Room structure
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				frontwall
+	geometry			frontwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+##################################################
+# Dividing wall
+##################################################
+
+standard_object
+{
+	name				div_left
+	geometry			div_left_geom
+	material			white
+}
+
+standard_object
+{
+	name				div_right
+	geometry			div_right_geom
+	material			white
+}
+
+standard_object
+{
+	name				div_bottom
+	geometry			div_bottom_geom
+	material			white
+}
+
+standard_object
+{
+	name				div_top
+	geometry			div_top_geom
+	material			white
+}
+
+##################################################
+# Light source (Room B ceiling)
+##################################################
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}
+
+##################################################
+# Objects in Room A
+#
+# Three diffuse objects to show color bleeding
+# and indirect illumination quality.
+##################################################
+
+# Large blue sphere, left side of Room A
+standard_object
+{
+	name				sphere_large
+	geometry			sphere_large_geom
+	position			160 60 420
+	material			blue
+}
+
+# Small yellow sphere, right side near opening
+standard_object
+{
+	name				sphere_small
+	geometry			sphere_small_geom
+	position			400 40 350
+	material			yellow
+}
+
+# Tall white box, right-center of Room A
+standard_object
+{
+	name				tallbox
+	geometry			tallbox_geom
+	position			370 90 450
+	orientation			0 25 0
+	material			white
+}

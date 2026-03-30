@@ -1,0 +1,192 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Control: same corridor geometry as 100-light version, but only 3 nearby lights.                         #
+#   This simulates what spatial selection would achieve — 100% of samples go to                              #
+#   lights that actually contribute.  Compare noise against 100-light version.                              #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		5
+	min_importance		0.01
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/torture_3lights_corridor_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			100 100 200
+	lookat				100 80 5000
+	up					0 1 0
+	width				512
+	height				512
+	fov					70.0
+}
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.73 0.71 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_lightgray
+	color				0.6 0.6 0.6
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_warm_white
+}
+
+lambertian_material
+{
+	name				gray
+	reflectance			pnt_lightgray
+}
+
+# Only 3 lights near camera — simulates perfect spatial selection
+omni_light
+{
+	name				l001
+	power				80000.0
+	color				1.0 0.95 0.85
+	position			100 190 50
+}
+
+omni_light
+{
+	name				l002
+	power				80000.0
+	color				1.0 0.95 0.85
+	position			100 190 150
+}
+
+omni_light
+{
+	name				l003
+	power				80000.0
+	color				1.0 0.95 0.85
+	position			100 190 250
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					200 0 0
+	ptb					0 0 0
+	ptc					0 0 10000
+	ptd					200 0 10000
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					200 200 0
+	ptb					200 200 10000
+	ptc					0 200 10000
+	ptd					0 200 0
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 10000
+	ptb					0 0 0
+	ptc					0 200 0
+	ptd					0 200 10000
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					200 0 0
+	ptb					200 0 10000
+	ptc					200 200 10000
+	ptd					200 200 0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					200 0 0
+	ptb					200 200 0
+	ptc					0 200 0
+	ptd					0 0 0
+}
+
+clippedplane_geometry
+{
+	name				farwallgeom
+	pta					0 0 10000
+	ptb					0 200 10000
+	ptc					200 200 10000
+	ptd					200 0 10000
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			gray
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			gray
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				farwall
+	geometry			farwallgeom
+	material			white
+}

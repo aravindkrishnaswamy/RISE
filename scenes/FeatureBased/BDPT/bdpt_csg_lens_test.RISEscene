@@ -44,9 +44,9 @@ pinhole_camera
 	location			0 3.0 5.0
 	lookat				0 1.0 0
 	up					0 1 0
-	width				320
-	height				240
-	fov					45.0
+	width				640
+	height				480
+	fov					35.0
 }
 
 ##################################################
@@ -68,7 +68,7 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_glass_tau
-	color				0.998 0.998 0.998
+ 	color				0.998 0.998 0.998
 	colorspace			RISERGB
 }
 
@@ -86,7 +86,7 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_emit
-	scale				60.0
+	scale				60000.0
 	material			none
 }
 
@@ -195,7 +195,7 @@ csg_object
 	obja				lens_a
 	objb				lens_b
 	operation			intersection
-	position			-1.0 1.2 0
+	position			-1.0 0.5 0
 }
 
 # Reference: a plain sphere with same glass material (should be transparent)
@@ -203,6 +203,6 @@ standard_object
 {
 	name				ref_sphere
 	geometry			ref_sphere_geom
-	position			1.0 1.2 0
+	position			1.0 0.5 0
 	material			glass_mat
 }

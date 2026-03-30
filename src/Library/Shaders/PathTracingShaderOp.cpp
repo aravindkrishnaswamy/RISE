@@ -34,6 +34,13 @@ static inline bool GuidingWantsDeepSignalTraining( const unsigned int pathDepth 
 	return pathDepth >= 3;
 }
 
+//
+// Minimum throughput before Russian Roulette kicks in.
+// Matches BDPT_RR_THRESHOLD in BDPTIntegrator.cpp.
+//
+static const unsigned int PT_RR_MIN_DEPTH = 3;
+
+
 static inline Vector3 GuidingCosineNormal( const RayIntersectionGeometric& rig )
 {
 	Vector3 normal = rig.vNormal;
@@ -828,7 +835,26 @@ void PathTracingShaderOp::PerformOperation(
 					GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif // RISE_ENABLE_OPENPGL
 
-				const bool skipContinuation = ColorMath::MaxValue( throughput ) <= NEARZERO;
+				bool skipContinuation = ColorMath::MaxValue( throughput ) <= NEARZERO;
+
+				// Russian roulette: probabilistic path termination with
+				// throughput compensation to maintain unbiasedness.  Uses
+				// max-component of the current bounce's throughput as the
+				// survival probability.  Matches the BDPT integrator's
+				// proven RR logic.  Branching paths are excluded (they
+				// explore all lobes by design).
+				if( rs.depth >= PT_RR_MIN_DEPTH && !skipContinuation )
+				{
+					const Scalar rrProb = r_min( Scalar(1.0),
+						ColorMath::MaxValue( throughput ) );
+					const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
+						: rc.random.CanonicalRandom();
+					if( rrXi >= rrProb ) {
+						skipContinuation = true;
+					} else if( rrProb > 0 && rrProb < 1.0 ) {
+						throughput = throughput * (1.0 / rrProb);
+					}
+				}
 
 				rs2.importance = rs.importance * ColorMath::MaxValue( throughput );
 				rs2.bsdfPdf = effectiveBsdfPdf;
@@ -1188,6 +1214,21 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif
 
+				// Russian roulette (spectral path)
+				bool skipContinuationNM = fabs( throughputNM ) <= NEARZERO;
+				if( rs.depth >= PT_RR_MIN_DEPTH && !skipContinuationNM )
+				{
+					const Scalar rrProb = r_min( Scalar(1.0),
+						fabs( throughputNM ) );
+					const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
+						: rc.random.CanonicalRandom();
+					if( rrXi >= rrProb ) {
+						skipContinuationNM = true;
+					} else if( rrProb > 0 && rrProb < 1.0 ) {
+						throughputNM /= rrProb;
+					}
+				}
+
 				rs2.importance = rs.importance * fabs( throughputNM );
 				rs2.bsdfPdf = effectiveBsdfPdf;
 				rs2.type = PathTracingRayType( *pS );
@@ -1200,10 +1241,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 				Scalar cthis = 0;
 				Scalar hitDist = 0;
-				traceRay.Advance( 1e-8 );
-				caster.CastRayNM( rc, ri.geometric.rast, traceRay, cthis,
-					rs2, nm, &hitDist, ri.pRadianceMap,
-					traceIorStack );
+				if( !skipContinuationNM )
+				{
+					traceRay.Advance( 1e-8 );
+					caster.CastRayNM( rc, ri.geometric.rast, traceRay, cthis,
+						rs2, nm, &hitDist, ri.pRadianceMap,
+						traceIorStack );
+				}
 				c += cthis * throughputNM;
 
 #ifdef RISE_ENABLE_OPENPGL

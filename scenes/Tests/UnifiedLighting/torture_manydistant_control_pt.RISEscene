@@ -1,8 +1,13 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#   BDPT comparison render for mlt_reflected_caustic.RISEscene                                               #
-#   Same scene geometry, but using BDPT rasterizer with comparable sample budget.                            #
+#   Control scene: same as torture_manydistant but with ONLY the nearby light.                              #
+#   This shows what proper sampling looks like — 100% of NEE budget goes to the                             #
+#   dominant light.  Compare noise levels against the 51-light version.                                     #
 #############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
 
 pathtracing_shaderop
 {
@@ -15,18 +20,17 @@ standard_shader
 	shaderop	pt
 }
 
-bdpt_pel_rasterizer
+pixelpel_rasterizer
 {
-	max_eye_depth		10
-	max_light_depth		10
-	samples				200
+	max_recursion		5
+	min_importance		0.01
+	samples				64
 	lum_samples			1
-	ior_stack			true
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/mlt_reflected_caustic_bdpt
+	pattern				rendered/torture_manydistant_control_pt
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -34,27 +38,15 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			278 500 -600
-	lookat				278 200 300
+	location			278 273 -800
+	lookat				278 273 200
 	up					0 1 0
-	width				400
-	height				400
-	fov					40.0
+	width				512
+	height				512
+	fov					37.0
 }
 
 > run scenes/colors.RISEscript
-
-uniformcolor_painter
-{
-	name				pnt_light
-	color				1.0 0.95 0.85
-}
-
-uniformcolor_painter
-{
-	name				pnt_mirror
-	color				0.95 0.95 0.95
-}
 
 lambertian_material
 {
@@ -74,25 +66,13 @@ lambertian_material
 	reflectance			color_cornellred
 }
 
-lambertian_luminaire_material
+# Only the nearby light — all 64 samples go to it
+omni_light
 {
-	name				bright_lum
-	exitance			pnt_light
-	scale				250.0
-	material			none
-}
-
-perfectreflector_material
-{
-	name				mirror
-	reflectance			pnt_mirror
-}
-
-dielectric_material
-{
-	name				glass
-	tau					1.0
-	ior					1.5
+	name				nearby_light
+	power				100000.0
+	color				1.0 0.95 0.8
+	position			278 50 280
 }
 
 clippedplane_geometry
@@ -175,48 +155,34 @@ standard_object
 	material			red
 }
 
-clippedplane_geometry
+rawmesh_geometry
 {
-	name				lightgeom
-	pta					180.0 548.7999 200.0
-	ptb					180.0 548.7999 300.0
-	ptc					100.0 548.7999 300.0
-	ptd					100.0 548.7999 200.0
+	name				tallblockgeom
+	file				models/raw/cornellbox_tallblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp				true
+}
+
+rawmesh_geometry
+{
+	name				shortblockgeom
+	file				models/raw/cornellbox_shortblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp				true
 }
 
 standard_object
 {
-	name				light
-	geometry			lightgeom
-	material			bright_lum
-}
-
-clippedplane_geometry
-{
-	name				mirror_geom
-	pta					450 150 558.0
-	ptb					150 150 558.0
-	ptc					150 450 558.0
-	ptd					450 450 558.0
+	name				tallblock
+	geometry			tallblockgeom
+	material			white
 }
 
 standard_object
 {
-	name				mirror_panel
-	geometry			mirror_geom
-	material			mirror
-}
-
-sphere_geometry
-{
-	name				spheregeom
-	radius				80
-}
-
-standard_object
-{
-	name				glass_sphere
-	geometry			spheregeom
-	material			glass
-	position			300 80 350
+	name				shortblock
+	geometry			shortblockgeom
+	material			white
 }
