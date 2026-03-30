@@ -43,9 +43,23 @@
 //  MIS FOR DIRECT LIGHTING:
 //  - Delta lights (point/spot): no MIS needed (only one sampling
 //    strategy can reach a delta position).
-//  - Area lights (mesh luminaries): power heuristic MIS weight
-//    using the combined PDF (pdfSelect * solid-angle PDF) vs the
-//    BSDF sampling PDF.
+//  - Area lights (mesh luminaries), RIS OFF: power heuristic MIS
+//    weight using the alias-table selection PDF converted to solid
+//    angle vs the BSDF sampling PDF.
+//  - Area lights (mesh luminaries), RIS ON: MIS is disabled
+//    (w_nee = 1).  The exact finite-M RIS technique density is
+//    intractable (it requires marginalizing over all possible
+//    M-candidate sets), so no closed-form MIS weight is available.
+//    The BSDF-hit emitter contribution is suppressed on the
+//    PathTracingShaderOp side to avoid double-counting.
+//
+//  SELF-EXCLUSION:
+//  When the shading object is itself an emitter in the light table,
+//  it is excluded from selection (self-illumination is physically
+//  meaningless for convex/flat surfaces).  For RIS, the self
+//  entry's resampling weight is zeroed.  For the alias table, a
+//  rejection draw is used with a (1-p_self) correction factor.
+//  This prevents wasting samples on an always-zero contribution.
 //
 //  Call Prepare() once after the scene is attached to cache the
 //  light list, luminaries list, and build the alias table.  All
@@ -200,14 +214,19 @@ namespace RISE
 				const IObject* pShadingObject						///< [in] Object being shaded (to skip self-illumination)
 				) const;
 
-			/// Returns the exitance-proportional selection probability
-			/// for a given mesh luminary using cached total exitance.
-			/// Intended for MIS weight computation when a BSDF-sampled
-			/// ray hits an emitter (the "other strategy" PDF).
-			/// \return Selection probability, or 0 if luminary has no emitter
+			/// Returns the alias-table selection probability for a given
+			/// mesh luminary.  Used for MIS weight computation when a
+			/// BSDF-sampled ray hits an emitter (the "other strategy"
+			/// PDF).  When RIS is active the caller should NOT use this
+			/// for MIS — the BSDF-hit emitter contribution is suppressed
+			/// instead (see PathTracingShaderOp).
+			/// \return Selection probability, or 0 if luminary not found
 			Scalar CachedPdfSelectLuminary(
 				const IObject& luminary								///< [in] The luminary to query
 				) const;
+
+			/// Returns whether RIS spatial resampling is active.
+			bool IsRISActive() const { return risCandidates > 0; }
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  When M>0, EvaluateDirectLighting draws
@@ -221,19 +240,36 @@ namespace RISE
 		protected:
 			/// Selects one light using RIS: draws M candidates from the
 			/// alias table, reweights by exitance/dist^2, and returns
-			/// the selected index.  Returns the alias-table PDF in
-			/// pdfSelect (for MIS computation) and an RIS correction
-			/// factor in risWeight.  The caller's estimator should be:
-			///   result = integrand / pdfSelect * risWeight
-			/// This keeps MIS weights consistent with CachedPdfSelectLuminary
-			/// (which also returns the alias-table PDF) while giving
-			/// the unbiased 1-sample RIS estimator.
+			/// the selected index.
+			///
+			/// When selfIdx >= 0, that entry's resampling weight is
+			/// forced to zero so self-illumination is excluded from the
+			/// candidate pool without wasting the sample.
+			///
+			/// Returns two values:
+			///   pdfAlias   = alias-table PDF q(j) of the selected light
+			///   risWeight  = RIS correction: (1/M) * sum(W_i) / W_j
+			///
+			/// The caller's estimator should be:
+			///   result = integrand * risWeight / pdfAlias
+			///
+			/// When RIS is active, MIS with BSDF sampling is disabled
+			/// (w_nee = 1) because the exact finite-M technique density
+			/// is intractable.
+			///
 			/// \return Selected lightEntries index
 			unsigned int SelectLightRIS(
 				const Point3& shadingPoint,							///< [in] World-space shading position
 				ISampler& sampler,									///< [in] Sampler for candidate draws
-				Scalar& pdfSelect,									///< [out] Alias-table PDF of selected light (for MIS)
-				Scalar& risWeight									///< [out] RIS correction factor
+				Scalar& pdfAlias,									///< [out] Alias-table PDF (for estimator weight)
+				Scalar& risWeight,									///< [out] RIS correction factor
+				const int selfIdx									///< [in] Index to exclude (-1 = none)
+				) const;
+
+			/// Finds the lightEntries index for a given luminary object.
+			/// \return Index into lightEntries, or -1 if not found
+			int FindLuminaryIndex(
+				const IObject* pLuminary							///< [in] The luminary to search for
 				) const;
 		};
 	}

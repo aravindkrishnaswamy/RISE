@@ -472,23 +472,38 @@ void PathTracingShaderOp::PerformOperation(
 								ri.geometric.ptIntersection,
 								ri.geometric.ray.origin ) );
 
-						// Include the selection probability from the
-						// unified light sampler in the NEE PDF
-						Scalar pdfSelect = 1.0;
+						// MIS weight for BSDF-sampled emitter hit.
+						// When RIS is active the exact finite-M technique
+						// density is intractable, so MIS is disabled:
+						// NEE uses w_nee=1 and the BSDF-hit emitter
+						// contribution is suppressed here (w_bsdf=0).
+						// Specular paths (bsdfPdf==0) never enter this
+						// block and keep their full contribution.
 						const LightSampler* pLS = caster.GetLightSampler();
-						if( pLS )
+						if( pLS && pLS->IsRISActive() )
 						{
-							pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
-							if( pdfSelect <= 0 )
-							{
-								pdfSelect = 1.0;
-							}
+							// Suppress BSDF-hit emitter to avoid
+							// double-counting with RIS NEE (w=1).
+							emissionMiWeight = 0.0;
+							emission = emission * 0.0;
 						}
+						else
+						{
+							Scalar pdfSelect = 1.0;
+							if( pLS )
+							{
+								pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
+								if( pdfSelect <= 0 )
+								{
+									pdfSelect = 1.0;
+								}
+							}
 
-						const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
-						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
-						emissionMiWeight = w_bsdf;
-						emission = emission * w_bsdf;
+							const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
+							const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+							emissionMiWeight = w_bsdf;
+							emission = emission * w_bsdf;
+						}
 					}
 				}
 			}
@@ -932,22 +947,31 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 								ri.geometric.ptIntersection,
 								ri.geometric.ray.origin ) );
 
-						// Include the selection probability from the
-						// unified light sampler in the NEE PDF
-						Scalar pdfSelect = 1.0;
+						// MIS weight for BSDF-sampled emitter hit (spectral).
+						// See RGB variant above for full commentary.
 						const LightSampler* pLS = caster.GetLightSampler();
-						if( pLS )
+						if( pLS && pLS->IsRISActive() )
 						{
-							pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
-							if( pdfSelect <= 0 )
-							{
-								pdfSelect = 1.0;
-							}
+							// Suppress BSDF-hit emitter to avoid
+							// double-counting with RIS NEE (w=1).
+							emission = emission * 0.0;
 						}
+						else
+						{
+							Scalar pdfSelect = 1.0;
+							if( pLS )
+							{
+								pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
+								if( pdfSelect <= 0 )
+								{
+									pdfSelect = 1.0;
+								}
+							}
 
-						const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
-						const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
-						emission = emission * w_bsdf;
+							const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
+							const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+							emission = emission * w_bsdf;
+						}
 					}
 				}
 			}

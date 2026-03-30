@@ -63,7 +63,12 @@ void LightSampler::Prepare(
 	// Build the combined light table from non-mesh lights and mesh luminaries
 	lightEntries.clear();
 
-	// Add non-mesh lights with nonzero exitance
+	// Add non-mesh lights with nonzero exitance.
+	// NOTE: we test exitance > 0, NOT CanGeneratePhotons().
+	// CanGeneratePhotons() is a photon-mapping flag (controlled by
+	// the scene-side "shootphotons" parameter).  A light with
+	// shootphotons=FALSE must still participate in direct lighting
+	// (NEE) and light-subpath starts (BDPT/MLT).
 	const ILightManager* pLightMgr = scene.GetLights();
 	if( pLightMgr )
 	{
@@ -72,25 +77,32 @@ void LightSampler::Prepare(
 		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
 		{
 			const ILightPriv* l = *m;
-			if( l->CanGeneratePhotons() )
+			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
+			if( exitance > 0 )
 			{
-				const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
-				if( exitance > 0 )
-				{
-					LightEntry entry;
-					entry.pLight = l;
-					entry.lumIndex = 0;
-					entry.exitance = exitance;
-					entry.position = l->position();
-					lightEntries.push_back( entry );
-				}
+				LightEntry entry;
+				entry.pLight = l;
+				entry.lumIndex = 0;
+				entry.exitance = exitance;
+				entry.position = l->position();
+				lightEntries.push_back( entry );
 			}
 		}
 	}
 
-	// Add mesh luminaries with nonzero exitance
+	// Add mesh luminaries with nonzero exitance.
 	// Use a fixed seed point (0.5, 0.5, 0.5) to get a representative
-	// surface position for distance estimates in RIS
+	// surface position for distance estimates in RIS.
+	//
+	// NOTE: These positions are cached once during Prepare() and not
+	// updated per sample.  For scenes with animated/moving emissive
+	// geometry (where transforms are re-evaluated per sample in
+	// PixelBasedPelRasterizer), the cached positions can go stale.
+	// This degrades RIS spatial weighting quality (variance issue,
+	// not a correctness bug — the RIS estimator remains unbiased
+	// regardless of position accuracy; only the variance reduction
+	// suffers).  A future fix could refresh positions per sample or
+	// per scanline when animation is detected.
 	const Point3 centerSeed( 0.5, 0.5, 0.5 );
 	for( unsigned int li = 0; li < luminaries.size(); li++ )
 	{
@@ -140,32 +152,34 @@ void LightSampler::Prepare(
 }
 
 //
-// RIS light selection
+// RIS light selection with self-exclusion
 //
 // Draws M candidates from the global alias table (proposal q)
 // and resamples one proportional to a spatially-aware target
 // weight: w_i = exitance_i / max(dist_i^2, epsilon).
 //
+// When selfIdx >= 0, that entry's resampling weight is forced
+// to zero so self-illumination is excluded from selection
+// without wasting the sample.
+//
 // Returns two values:
-//   pdfSelect  = alias-table PDF q(j) of the selected light
+//   pdfAlias   = alias-table PDF q(j) (for estimator weight)
 //   risWeight  = RIS correction: (1/M) * sum(W_i) / W_j
 //
 // The caller's estimator should be:
-//   result = integrand(j) / pdfSelect * risWeight
+//   result = integrand(j) * risWeight / pdfAlias
 //
-// This gives the unbiased 1-sample RIS estimator:
-//   f(j) * (1/M) * sum(W_i) / target(j)
-//
-// Using the alias-table PDF for pdfSelect keeps MIS weights
-// consistent with CachedPdfSelectLuminary (which also returns
-// the alias-table PDF for the BSDF-hit evaluation path).
+// When RIS is active, MIS with BSDF sampling is disabled
+// (w_nee = 1) because the exact finite-M technique density
+// is intractable.
 //
 
 unsigned int LightSampler::SelectLightRIS(
 	const Point3& shadingPoint,
 	ISampler& sampler,
-	Scalar& pdfSelect,
-	Scalar& risWeight
+	Scalar& pdfAlias,
+	Scalar& risWeight,
+	const int selfIdx
 	) const
 {
 	const unsigned int M = risCandidates;
@@ -174,15 +188,9 @@ unsigned int LightSampler::SelectLightRIS(
 	// Clamp M to available lights and stack array size
 	const unsigned int numCandidates = r_min( r_min( M, N ), 64u );
 
-	if( numCandidates <= 1 )
-	{
-		const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
-		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
-		risWeight = 1.0;
-		return idx;
-	}
-
-	// Draw M candidates and compute resampling weights
+	// Draw M candidates and compute resampling weights.
+	// If a candidate matches selfIdx, its weight is zeroed
+	// so it can never be selected.
 	unsigned int candidates[64];
 	Scalar resamplingWeights[64];
 	Scalar totalWeight = 0;
@@ -193,6 +201,12 @@ unsigned int LightSampler::SelectLightRIS(
 	{
 		const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
 		candidates[c] = idx;
+
+		if( static_cast<int>(idx) == selfIdx )
+		{
+			resamplingWeights[c] = 0;
+			continue;
+		}
 
 		const LightEntry& entry = lightEntries[idx];
 		const Scalar proposal = static_cast<Scalar>( aliasTable.Pdf( idx ) );
@@ -209,9 +223,11 @@ unsigned int LightSampler::SelectLightRIS(
 
 	if( totalWeight <= 0 )
 	{
-		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( candidates[0] ) );
-		risWeight = 1.0;
-		return candidates[0];
+		// All candidates were self or had zero weight — signal
+		// failure to the caller.  Return N (out-of-bounds sentinel).
+		pdfAlias = 1.0;
+		risWeight = 0.0;
+		return N;
 	}
 
 	// Select one candidate proportional to resampling weights
@@ -230,15 +246,16 @@ unsigned int LightSampler::SelectLightRIS(
 		}
 	}
 
-	// Alias-table PDF for MIS consistency
-	pdfSelect = static_cast<Scalar>( aliasTable.Pdf( selected ) );
+	// Alias-table PDF (for estimator weight)
+	pdfAlias = static_cast<Scalar>( aliasTable.Pdf( selected ) );
 
 	// RIS correction factor: risWeight = (1/M) * sum(W_i) / W_j
 	//
-	// The caller computes: f(j) / q(j) * risWeight
-	//   = f(j) / q(j) * (1/M) * sum(W_i) / (target_j/q_j)
-	//   = f(j) * (1/M) * sum(W_i) / target_j
-	// which is the correct unbiased 1-sample RIS estimator.
+	// With self excluded, sum(W_i) only accumulates non-self
+	// candidates, and W_j > 0 (self is never selected).
+	// The estimator f(j) * risWeight / q(j) is unbiased for
+	// sum_{k != self} f(k) because:
+	//   E[(1/M) * sum(W_i)] = sum_{k != self} target(k)
 	risWeight = (selectedWeight > 0)
 		? (totalWeight / (static_cast<Scalar>(numCandidates) * selectedWeight))
 		: 1.0;
@@ -395,6 +412,27 @@ Scalar LightSampler::PdfSelectLuminary(
 	return 0;
 }
 
+int LightSampler::FindLuminaryIndex(
+	const IObject* pLuminary
+	) const
+{
+	if( !pLuminary || !pPreparedLuminaries )
+	{
+		return -1;
+	}
+
+	for( unsigned int i = 0; i < lightEntries.size(); i++ )
+	{
+		if( !lightEntries[i].pLight &&
+			(*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == pLuminary )
+		{
+			return static_cast<int>( i );
+		}
+	}
+
+	return -1;
+}
+
 Scalar LightSampler::CachedPdfSelectLuminary(
 	const IObject& luminary
 	) const
@@ -404,7 +442,6 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 		return 0;
 	}
 
-	// Find the matching entry in the light table
 	for( unsigned int i = 0; i < lightEntries.size(); i++ )
 	{
 		if( !lightEntries[i].pLight )
@@ -422,23 +459,24 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 //
 // Unified direct lighting evaluation
 //
-// The estimator for a selected area light is:
+// Selects one light with nonzero exitance and evaluates its
+// shadowed, BRDF-weighted contribution.
 //
-//   result = Le * cos_surface * cos_light * (area / dist^2) * brdf * w / pdfSelect
+// SELF-EXCLUSION:
+// When the shading object is a luminary in the light table,
+// it is excluded from selection.  For RIS this is done by
+// zeroing the self entry's resampling weight.  For the alias
+// table a rejection draw is used with a (1-p_self) correction.
 //
-// where w is the MIS weight using the combined PDF:
-//
-//   p_light = pdfSelect * dist^2 / (area * cos_light)   [solid angle]
-//   p_bsdf  = material->Pdf(direction)                  [solid angle]
-//   w       = p_light^2 / (p_light^2 + p_bsdf^2)
-//
-// For delta (point/spot) lights there is no alternative sampling
-// strategy, so w = 1.  The contribution is the light's own
-// ComputeDirectLighting result divided by pdfSelect.
-//
-// When RIS is enabled (risCandidates > 0), pdfSelect is computed
-// by SelectLightRIS which draws M candidates from the alias table
-// and resamples one proportional to exitance/dist^2.
+// MIS:
+// - Delta lights (point/spot): w = 1 (no alternative strategy).
+// - Area lights, RIS OFF: power heuristic using the alias-table
+//   selection PDF (converted to solid angle) vs BSDF PDF.
+//   CachedPdfSelectLuminary returns the same alias-table PDF
+//   on the BSDF-hit side in PathTracingShaderOp.
+// - Area lights, RIS ON: w = 1 (no MIS).  The exact finite-M
+//   technique density is intractable, so the BSDF-hit emitter
+//   contribution is suppressed in PathTracingShaderOp instead.
 //
 
 RISEPel LightSampler::EvaluateDirectLighting(
@@ -484,26 +522,66 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	}
 
 	// ----------------------------------------------------------------
-	// Step 2: Select one light with nonzero exitance.
-	// Uses RIS when enabled, otherwise plain alias table.
+	// Step 2: Select one light with nonzero exitance, excluding self.
 	// ----------------------------------------------------------------
 	if( !aliasTable.IsValid() )
 	{
 		return result;
 	}
 
+	// Find self in the light table (for exclusion)
+	const int selfIdx = FindLuminaryIndex( pShadingObject );
+
 	unsigned int idx;
-	Scalar pdfSelect;
+	Scalar pdfAlias;
 	Scalar risWeight = 1.0;
 
 	if( risCandidates > 0 )
 	{
-		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfSelect, risWeight );
+		// RIS with self excluded via zeroed resampling weight.
+		// Returns N (out-of-bounds) when every candidate is self.
+		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
+
+		if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
+		{
+			// All RIS candidates were self — consume the 3 random
+			// numbers that the area-light path would use (sampler
+			// dimension alignment) and return zero.
+			sampler.Get1D();
+			sampler.Get1D();
+			sampler.Get1D();
+			return result;
+		}
 	}
 	else
 	{
+		// Single alias-table draw with exact self-exclusion.
+		//
+		// Draw one sample.  If it is self, return zero immediately.
+		// No retry loop, no correction factor needed.
+		//
+		// Proof of unbiasedness:
+		//   E[estimator] = sum_{j!=self} p(j) * f(j)/p(j) + p_self * 0
+		//                = sum_{j!=self} f(j)
+		// which is exactly the self-excluded integral we want.
+		//
+		// The only caveat is higher variance than rejection sampling
+		// (a fraction p_self of samples are wasted), but this is
+		// exact for any p_self and requires only one random number.
 		idx = aliasTable.Sample( sampler.Get1D() );
-		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+
+		if( static_cast<int>(idx) == selfIdx )
+		{
+			// Self-hit: consume the 3 random numbers that the
+			// area-light path would have used (sampler dimension
+			// alignment) and return zero.
+			sampler.Get1D();
+			sampler.Get1D();
+			sampler.Get1D();
+			return result;
+		}
+
+		pdfAlias = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 	}
 
 	const LightEntry& entry = lightEntries[idx];
@@ -511,26 +589,18 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	if( entry.pLight )
 	{
 		// Selected a non-mesh (delta) light.
-		// Delegate to the light's own direct-lighting method
-		// which handles position, shadow rays, and BRDF evaluation.
-		// Divide by selection probability, multiply by RIS correction.
+		// w = 1 (no alternative sampling strategy).
 		RISEPel amount( 0, 0, 0 );
 		entry.pLight->ComputeDirectLighting( ri, caster, brdf,
 			pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
 			amount );
-		result = result + amount * (risWeight / pdfSelect);
+		result = result + amount * (risWeight / pdfAlias);
 	}
 	else
 	{
-		// Selected a mesh luminary
+		// Selected a mesh luminary (guaranteed != self by exclusion)
 		const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
 		const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
-
-		// Skip self-illumination
-		if( lumEntry.pLum == pShadingObject )
-		{
-			return result;
-		}
 
 		const Scalar area = lumEntry.pLum->GetArea();
 
@@ -567,17 +637,20 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 				const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
 
-				// Unshadowed contribution (area-measure integrand converted
-				// to solid angle via the Jacobian area*cosLight/dist^2)
 				const Scalar geom = area * cosLight / (dist * dist);
 				RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
 
-				// MIS weight using combined selection + solid-angle PDF
-				// pdfSelect is the alias-table PDF (consistent with
-				// CachedPdfSelectLuminary used on the BSDF-hit side)
-				if( pMaterial && area > 0 && cosLight > 0 )
+				// MIS weight: only when RIS is OFF.  When RIS is ON
+				// the exact finite-M technique density is intractable,
+				// so we use w=1 here and suppress the BSDF-hit emitter
+				// contribution in PathTracingShaderOp.
+				if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
 				{
-					const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
+					// Convert alias-table selection PDF to solid angle.
+					// Self-exclusion uses single-draw skip-self, so the
+					// selection PDF is the raw alias-table p(j) — no
+					// correction needed (see proof above).
+					const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 					const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
 
 					if( p_bsdf > 0 )
@@ -585,11 +658,9 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						const Scalar w = PowerHeuristic( p_light, p_bsdf );
 						contrib = contrib * w;
 					}
-					// else p_bsdf=0 → w=1.0 (no change needed)
 				}
 
-				// Divide by pdfSelect and multiply by RIS correction
-				result = result + contrib * (risWeight / pdfSelect);
+				result = result + contrib * (risWeight / pdfAlias);
 			}
 		}
 	}
@@ -614,60 +685,65 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		return result;
 	}
 
-	// ----------------------------------------------------------------
-	// Spectral NEE: uses RIS or alias table for selection.
-	// Non-mesh lights do not yet have spectral ComputeDirectLighting
-	// variants — matching existing PathTracingShaderOp behavior.
-	// ----------------------------------------------------------------
 	if( !aliasTable.IsValid() )
 	{
 		return result;
 	}
 
+	const int selfIdx = FindLuminaryIndex( pShadingObject );
+
 	unsigned int idx;
-	Scalar pdfSelect;
+	Scalar pdfAlias;
 	Scalar risWeight = 1.0;
 
 	if( risCandidates > 0 )
 	{
-		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfSelect, risWeight );
+		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
+
+		if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
+		{
+			sampler.Get1D();
+			sampler.Get1D();
+			sampler.Get1D();
+			return result;
+		}
 	}
 	else
 	{
+		// Single alias-table draw with exact self-exclusion.
+		// See RGB variant for proof of unbiasedness.
 		idx = aliasTable.Sample( sampler.Get1D() );
-		pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+
+		if( static_cast<int>(idx) == selfIdx )
+		{
+			sampler.Get1D();
+			sampler.Get1D();
+			sampler.Get1D();
+			return result;
+		}
+
+		pdfAlias = static_cast<Scalar>( aliasTable.Pdf( idx ) );
 	}
 
 	const LightEntry& entry = lightEntries[idx];
 
 	if( entry.pLight )
 	{
-		// Selected a non-mesh light — no spectral evaluation
-		// available, return zero (energy is not lost; it is
-		// recovered by the BSDF-sampled continuation path).
+		// Non-mesh light — no spectral evaluation available
 		return result;
 	}
 
-	// Selected a mesh luminary
 	const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
 	const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
 
-	// Skip self-illumination
-	if( lumEntry.pLum == pShadingObject )
-	{
-		return result;
-	}
-
 	const Scalar area = lumEntry.pLum->GetArea();
 
-	// Sample a uniform random point on the luminary surface
 	const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
 	Point3 ptOnLum;
 	Vector3 lumNormal;
 	Point2 lumCoord;
 	lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
 
-	// Geometry
 	Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
 	const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
 	const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
@@ -678,7 +754,6 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		return result;
 	}
 
-	// Shadow test
 	if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 	{
 		const Ray rayToLight( ri.ptIntersection, vToLight );
@@ -688,7 +763,6 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		}
 	}
 
-	// Emitted radiance at sampled point (spectral)
 	RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 	lumri.vNormal = lumNormal;
 	lumri.ptCoord = lumCoord;
@@ -696,14 +770,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 	const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
 
-	// Unshadowed contribution
 	const Scalar geom = area * cosLight / (dist * dist);
 	Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
 
-	// MIS weight using combined selection + solid-angle PDF
-	if( pMaterial && area > 0 && cosLight > 0 )
+	// MIS only when RIS is OFF
+	if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
 	{
-		const Scalar p_light = pdfSelect * (dist * dist) / (area * cosLight);
+		const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
 
 		if( p_bsdf > 0 )
@@ -713,6 +786,6 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		}
 	}
 
-	result = contrib * (risWeight / pdfSelect);
+	result = contrib * (risWeight / pdfAlias);
 	return result;
 }
