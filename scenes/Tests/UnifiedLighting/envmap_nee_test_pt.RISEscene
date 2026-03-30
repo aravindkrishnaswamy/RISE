@@ -1,0 +1,243 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Test scene for environment map importance sampling (Stage 1E).                                          #
+#   Multiple spheres with varying materials (diffuse, mirror, glossy, glass) on a reflective ground         #
+#   plane, lit purely by the Grace Cathedral HDR light probe.  Tests environment NEE + MIS against           #
+#   BSDF sampling across diffuse, specular, and transmissive transport.                                      #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+hdr_painter
+{
+	name				pnt_env
+	file				lightprobes/grace_probe.hdr
+}
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		8
+	min_importance		0.001
+	samples				256
+	lum_samples			1
+	radiance_map		pnt_env
+	radiance_scale		3.0
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/envmap_nee_test_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 3 -8
+	lookat				0 0.8 0
+	up					0 1 0
+	width				800
+	height				400
+	fov					50
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.8 0.8 0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_silver
+	color				0.95 0.95 0.95
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.83 0.69 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_copper
+	color				0.72 0.45 0.20
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.15 0.25 0.75
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.75 0.1 0.08
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.95 0.98 0.95
+}
+
+uniformcolor_painter
+{
+	name				pnt_checker_dark
+	color				0.15 0.15 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_checker_light
+	color				0.7 0.7 0.7
+}
+
+##################################################
+# Materials
+##################################################
+
+# 1. Diffuse blue
+lambertian_material
+{
+	name				mat_diffuse_blue
+	reflectance			pnt_blue
+}
+
+# 2. Perfect mirror
+perfectreflector_material
+{
+	name				mat_mirror
+	reflectance			pnt_silver
+}
+
+# 3. Cook-Torrance gold metallic (glossy)
+cooktorrance_material
+{
+	name				mat_gold
+	rd					pnt_gold
+	rs					pnt_gold
+	facets				0.08
+	ior					2.5
+	extinction			3.0
+}
+
+# 4. Dielectric glass sphere
+dielectric_material
+{
+	name				mat_glass
+	tau					pnt_glass_tau
+	ior					1.5
+	scattering			100000.0
+}
+
+# 5. Isotropic Phong - polished red
+isotropic_phong_material
+{
+	name				mat_phong_red
+	rd					pnt_red
+	rs					pnt_white
+	N					120.0
+}
+
+# Ground material: lambertian light gray
+lambertian_material
+{
+	name				mat_ground
+	reflectance			pnt_checker_light
+}
+
+##################################################
+# Geometry
+##################################################
+
+infiniteplane_geometry
+{
+	name				groundgeom
+	xtile				1
+	ytile				1
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				1
+}
+
+sphere_geometry
+{
+	name				smallspheregeom
+	radius				0.6
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				ground
+	geometry			groundgeom
+	material			mat_ground
+}
+
+# Left to right: diffuse blue, mirror, gold metallic, glass, polished red
+
+standard_object
+{
+	name				sphere_diffuse
+	geometry			spheregeom
+	position			-4.5 1 0
+	material			mat_diffuse_blue
+}
+
+standard_object
+{
+	name				sphere_mirror
+	geometry			spheregeom
+	position			-2 1 0
+	material			mat_mirror
+}
+
+standard_object
+{
+	name				sphere_gold
+	geometry			spheregeom
+	position			0.5 1 0
+	material			mat_gold
+}
+
+standard_object
+{
+	name				sphere_glass
+	geometry			spheregeom
+	position			3 1 0
+	material			mat_glass
+}
+
+standard_object
+{
+	name				sphere_phong
+	geometry			smallspheregeom
+	position			5 0.6 -0.5
+	material			mat_phong_red
+}

@@ -51,6 +51,14 @@ namespace RISE
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
 			) = 0;
 
+		//! Sets the light-sample Russian roulette threshold.
+		//! When > 0, weak mesh-luminary shadow samples are
+		//! probabilistically terminated before the shadow ray.
+		//! \return TRUE if successful, FALSE otherwise
+		virtual bool SetLightSampleRRThreshold(
+			const double threshold									///< [in] RR threshold (0=disabled)
+			) = 0;
+
 
 		//
 		// Setting cameras

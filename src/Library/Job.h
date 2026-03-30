@@ -60,6 +60,8 @@ namespace RISE
 
 		IProgressCallback*							pGlobalProgress;	// A global progress reporter
 
+		double										lightSampleRRThreshold;	// Light-sample RR threshold (0=disabled)
+
 		//
 		// Helper functions
 		//
@@ -119,6 +121,10 @@ namespace RISE
 			const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 			const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
+			);
+
+		bool SetLightSampleRRThreshold(
+			const double threshold									///< [in] RR threshold (0=disabled)
 			);
 
 		//

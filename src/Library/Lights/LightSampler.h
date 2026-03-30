@@ -87,6 +87,7 @@
 #include "../Utilities/ISampler.h"
 #include "../Utilities/AliasTable.h"
 #include "../Rendering/LuminaryManager.h"
+#include "../Rendering/EnvironmentSampler.h"
 
 namespace RISE
 {
@@ -141,6 +142,11 @@ namespace RISE
 			std::vector<LightEntry>		lightEntries;	///< All selectable lights
 			AliasTable					aliasTable;		///< O(1) selection table
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
+			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
+
+			/// Environment map importance sampler (null when no env map)
+			const EnvironmentSampler*	pEnvSampler;
+			const IRadianceMap*			pEnvironmentMap;
 
 		public:
 			LightSampler();
@@ -235,6 +241,28 @@ namespace RISE
 			/// (default), plain alias-table selection is used.
 			void SetRISCandidates(
 				const unsigned int M								///< [in] Number of RIS candidates (0=disabled)
+				);
+
+			/// Sets the environment map and its importance sampler for
+			/// environment NEE.  The EnvironmentSampler must already be
+			/// built (Build() called).  Ownership is NOT transferred.
+			void SetEnvironmentSampler(
+				const IRadianceMap* pEnvMap,							///< [in] The radiance map (for radiance queries)
+				const EnvironmentSampler* pSampler					///< [in] The importance sampler (for direction sampling/PDF)
+				);
+
+			/// \return The environment importance sampler, or NULL
+			const EnvironmentSampler* GetEnvironmentSampler() const { return pEnvSampler; }
+
+			/// Sets the threshold for light-sample Russian roulette.
+			/// When > 0, mesh luminary shadow samples whose estimated
+			/// geometric contribution (exitance * cos_surface * area *
+			/// cos_light / dist^2) falls below this threshold are
+			/// probabilistically terminated.  Survivors are divided
+			/// by the survival probability to maintain unbiasedness.
+			/// When 0 (default), all shadow samples are evaluated.
+			void SetLightSampleRRThreshold(
+				const Scalar threshold								///< [in] RR threshold (0=disabled)
 				);
 
 		protected:

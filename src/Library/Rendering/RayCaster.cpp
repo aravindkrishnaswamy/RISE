@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "RayCaster.h"
 #include "LuminaryManager.h"
+#include "EnvironmentSampler.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/RandomNumbers.h"
 
@@ -48,7 +49,8 @@ RayCaster::RayCaster(
   dMinImportance( minI ),
   bShowLuminaires( showLuminaires ),
   bIORStack( useiorstack ),
-  bChooseOnlyOneLuminaire( chooseonlyoneluminaire )
+  bChooseOnlyOneLuminaire( chooseonlyoneluminaire ),
+  dPendingLightRRThreshold( 0 )
 {
 	pDefaultShader.addref();
 }
@@ -92,6 +94,40 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		pLightSampler = new LightSampler();
 		GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
 		pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
+
+		// Apply any pending light-sample RR threshold
+		if( dPendingLightRRThreshold > 0 )
+		{
+			pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
+		}
+
+		// Build environment importance sampler if a global radiance map exists
+		const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
+		if( pEnvMap )
+		{
+			EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
+				pEnvMap->GetPainter(),
+				pEnvMap->GetScale(),
+				pEnvMap->GetTransform(),
+				64
+				);
+			GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
+			pEnvSampler->Build();
+
+			if( pEnvSampler->IsValid() )
+			{
+				pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
+				GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
+			}
+			else
+			{
+				GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
+			}
+
+			// LightSampler::SetEnvironmentSampler addrefs if valid, so
+			// release our local reference.
+			safe_release( pEnvSampler );
+		}
 	}
 }
 
@@ -197,6 +233,22 @@ bool RayCaster::CastRay(
 		c = pRadianceMap->GetRadiance( ray, rast );
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
+
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		if( pLightSampler && rs.bsdfPdf > 0 )
+		{
+			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
+			if( pES )
+			{
+				const Scalar envPdf = pES->Pdf( ray.Dir() );
+				if( envPdf > 0 )
+				{
+					const Scalar bsdfPdf2 = rs.bsdfPdf * rs.bsdfPdf;
+					const Scalar w_bsdf = bsdfPdf2 / (bsdfPdf2 + envPdf * envPdf);
+					c = c * w_bsdf;
+				}
+			}
+		}
 
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
@@ -322,6 +374,22 @@ bool RayCaster::CastRayNM(
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		if( pLightSampler && rs.bsdfPdf > 0 )
+		{
+			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
+			if( pES )
+			{
+				const Scalar envPdf = pES->Pdf( ray.Dir() );
+				if( envPdf > 0 )
+				{
+					const Scalar bsdfPdf2 = rs.bsdfPdf * rs.bsdfPdf;
+					const Scalar w_bsdf = bsdfPdf2 / (bsdfPdf2 + envPdf * envPdf);
+					c = c * w_bsdf;
+				}
+			}
+		}
+
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
 		}
@@ -352,6 +420,15 @@ void RayCaster::SetRISCandidates( const unsigned int M )
 	if( pLightSampler )
 	{
 		pLightSampler->SetRISCandidates( M );
+	}
+}
+
+void RayCaster::SetLightSampleRRThreshold( const Scalar threshold )
+{
+	dPendingLightRRThreshold = threshold;
+	if( pLightSampler )
+	{
+		pLightSampler->SetLightSampleRRThreshold( threshold );
 	}
 }
 

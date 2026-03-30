@@ -22,6 +22,8 @@
 
 namespace RISE
 {
+	class IPainter;
+
 	class IRadianceMap : public virtual IReference
 	{
 	protected:
@@ -45,14 +47,23 @@ namespace RISE
 			) const = 0;
 
 		//! Sets the orientation of this map
-		virtual void SetOrientation( 
+		virtual void SetOrientation(
 			const Vector3& orient			///< [in] Euler angles for the orientation
 			) = 0;
 
 		//! Sets the orientation of this map from the given matrix
-		virtual void SetTransformation( 
+		virtual void SetTransformation(
 			const Matrix4& mx				///< [in] Transformation matrix for the map
 			) = 0;
+
+		//! Returns the painter used by this radiance map
+		virtual const IPainter& GetPainter() const = 0;
+
+		//! Returns the radiance scale factor
+		virtual Scalar GetScale() const = 0;
+
+		//! Returns the world-to-map transformation matrix
+		virtual const Matrix4& GetTransform() const = 0;
 	};
 }
 

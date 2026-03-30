@@ -699,6 +699,9 @@
 		F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54322F79FFF1009AF16D /* CompletePathGuide.h */; };
 		F24C54352F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
 		F24C54362F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
+		F24C54392F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
+		F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */; };
+		F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1446,6 +1449,8 @@
 		F24C3E072F54FB64005DA46B /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
 		F24C54322F79FFF1009AF16D /* CompletePathGuide.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompletePathGuide.h; sourceTree = "<group>"; };
 		F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompletePathGuide.cpp; sourceTree = "<group>"; };
+		F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EnvironmentSampler.h; sourceTree = "<group>"; };
+		F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = EnvironmentSampler.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2794,6 +2799,8 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */,
+				F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */,
 				F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */,
 				F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */,
 				F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */,
@@ -3424,6 +3431,7 @@
 				F27F0C13069C42910069C9E5 /* CatmullRomPixelFilter.h in Headers */,
 				F27F0C14069C42910069C9E5 /* CookPixelFilter.h in Headers */,
 				F27F0C15069C42910069C9E5 /* CubicBSplinePixelFilter.h in Headers */,
+				F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */,
 				F27F0C16069C42910069C9E5 /* GaussianPixelFilter.h in Headers */,
 				F27F0C18069C42910069C9E5 /* JitteredSampling1D.h in Headers */,
 				F27F0C19069C42910069C9E5 /* LanczosPixelFilter.h in Headers */,
@@ -3775,6 +3783,7 @@
 				F27F0B92069C42910069C9E5 /* Object.cpp in Sources */,
 				F27F0B96069C42910069C9E5 /* Options.cpp in Sources */,
 				F27F0B98069C42910069C9E5 /* BlackBodyPainter.cpp in Sources */,
+				F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
 				F27F0B9B069C42910069C9E5 /* CheckerPainter.cpp in Sources */,
 				F27F0B9E069C42910069C9E5 /* IridescentPainter.cpp in Sources */,
 				F27F0BA0069C42910069C9E5 /* LinesPainter.cpp in Sources */,
@@ -4197,6 +4206,7 @@
 				F24B72EB2F52A632008304C4 /* OrenNayarSPF.cpp in Sources */,
 				F24B72EC2F52A632008304C4 /* OrenNayarSPF.h in Sources */,
 				F24B72ED2F52A632008304C4 /* PerfectReflectorMaterial.h in Sources */,
+				F24C54392F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
 				F24B72EE2F52A632008304C4 /* PerfectReflectorSPF.cpp in Sources */,
 				F24B72EF2F52A632008304C4 /* PerfectReflectorSPF.h in Sources */,
 				F24B72F02F52A632008304C4 /* PerfectRefractorMaterial.h in Sources */,

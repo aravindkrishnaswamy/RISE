@@ -224,7 +224,15 @@ bool AsciiCommandParser::ParseSet( String* tokens, unsigned int num_tokens, IJob
 	if( tokens[0] == "accelerator" ) {
 		return ParseSetAccelerator( &tokens[1], num_tokens-1, pJob );
 	}
-	
+
+	if( tokens[0] == "light_rr_threshold" ) {
+		if( num_tokens < 2 ) {
+			GlobalLog()->Print( eLog_Error, "AsciiCommandParser::ParseSet: light_rr_threshold requires a value" );
+			return false;
+		}
+		return pJob.SetLightSampleRRThreshold( tokens[1].toDouble() );
+	}
+
 	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseSet: Unknown element type: %s", tokens[0].c_str() );
 	return false;
 }

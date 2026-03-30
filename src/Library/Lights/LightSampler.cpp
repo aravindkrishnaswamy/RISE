@@ -37,12 +37,19 @@ LightSampler::LightSampler() :
   pPreparedScene( 0 ),
   pPreparedLuminaries( 0 ),
   cachedTotalExitance( 0 ),
-  risCandidates( 0 )
+  risCandidates( 0 ),
+  lightSampleRRThreshold( 0 ),
+  pEnvSampler( 0 ),
+  pEnvironmentMap( 0 )
 {
 }
 
 LightSampler::~LightSampler()
 {
+	if( pEnvSampler ) {
+		pEnvSampler->release();
+		pEnvSampler = 0;
+	}
 }
 
 void LightSampler::SetRISCandidates(
@@ -50,6 +57,28 @@ void LightSampler::SetRISCandidates(
 	)
 {
 	risCandidates = M;
+}
+
+void LightSampler::SetLightSampleRRThreshold(
+	const Scalar threshold
+	)
+{
+	lightSampleRRThreshold = threshold;
+}
+
+void LightSampler::SetEnvironmentSampler(
+	const IRadianceMap* pEnvMap,
+	const EnvironmentSampler* pSampler
+	)
+{
+	if( pEnvSampler ) {
+		pEnvSampler->release();
+	}
+	pEnvironmentMap = pEnvMap;
+	pEnvSampler = pSampler;
+	if( pEnvSampler ) {
+		pEnvSampler->addref();
+	}
 }
 
 void LightSampler::Prepare(
@@ -523,144 +552,216 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 	// ----------------------------------------------------------------
 	// Step 2: Select one light with nonzero exitance, excluding self.
+	// The light-table block is wrapped in do/while(false) so that
+	// early exits (empty table, self-hit, RR termination) break out
+	// to the environment NEE below rather than returning.
 	// ----------------------------------------------------------------
-	if( !aliasTable.IsValid() )
-	{
-		return result;
-	}
-
-	// Find self in the light table (for exclusion)
-	const int selfIdx = FindLuminaryIndex( pShadingObject );
-
-	unsigned int idx;
-	Scalar pdfAlias;
-	Scalar risWeight = 1.0;
-
-	if( risCandidates > 0 )
-	{
-		// RIS with self excluded via zeroed resampling weight.
-		// Returns N (out-of-bounds) when every candidate is self.
-		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
-
-		if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
+	do {
+		if( !aliasTable.IsValid() )
 		{
-			// All RIS candidates were self — consume the 3 random
-			// numbers that the area-light path would use (sampler
-			// dimension alignment) and return zero.
-			sampler.Get1D();
-			sampler.Get1D();
-			sampler.Get1D();
-			return result;
-		}
-	}
-	else
-	{
-		// Single alias-table draw with exact self-exclusion.
-		//
-		// Draw one sample.  If it is self, return zero immediately.
-		// No retry loop, no correction factor needed.
-		//
-		// Proof of unbiasedness:
-		//   E[estimator] = sum_{j!=self} p(j) * f(j)/p(j) + p_self * 0
-		//                = sum_{j!=self} f(j)
-		// which is exactly the self-excluded integral we want.
-		//
-		// The only caveat is higher variance than rejection sampling
-		// (a fraction p_self of samples are wasted), but this is
-		// exact for any p_self and requires only one random number.
-		idx = aliasTable.Sample( sampler.Get1D() );
-
-		if( static_cast<int>(idx) == selfIdx )
-		{
-			// Self-hit: consume the 3 random numbers that the
-			// area-light path would have used (sampler dimension
-			// alignment) and return zero.
-			sampler.Get1D();
-			sampler.Get1D();
-			sampler.Get1D();
-			return result;
+			break;
 		}
 
-		pdfAlias = static_cast<Scalar>( aliasTable.Pdf( idx ) );
-	}
+		// Find self in the light table (for exclusion)
+		const int selfIdx = FindLuminaryIndex( pShadingObject );
 
-	const LightEntry& entry = lightEntries[idx];
+		unsigned int idx;
+		Scalar pdfAlias;
+		Scalar risWeight = 1.0;
 
-	if( entry.pLight )
-	{
-		// Selected a non-mesh (delta) light.
-		// w = 1 (no alternative sampling strategy).
-		RISEPel amount( 0, 0, 0 );
-		entry.pLight->ComputeDirectLighting( ri, caster, brdf,
-			pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
-			amount );
-		result = result + amount * (risWeight / pdfAlias);
-	}
-	else
-	{
-		// Selected a mesh luminary (guaranteed != self by exclusion)
-		const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
-		const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
-
-		const Scalar area = lumEntry.pLum->GetArea();
-
-		// Sample a uniform random point on the luminary surface
-		const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
-		Point3 ptOnLum;
-		Vector3 lumNormal;
-		Point2 lumCoord;
-		lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
-
-		// Geometry
-		Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
-		const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-		const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
-		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
-
-		if( cosLight > 0 && cosSurface > 0 )
+		if( risCandidates > 0 )
 		{
-			// Shadow test
-			bool shadowed = false;
-			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			// RIS with self excluded via zeroed resampling weight.
+			// Returns N (out-of-bounds) when every candidate is self.
+			idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
+
+			if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
 			{
-				const Ray rayToLight( ri.ptIntersection, vToLight );
-				shadowed = caster.CastShadowRay( rayToLight, dist - 0.001 );
+				// All RIS candidates were self — consume the 3 random
+				// numbers that the area-light path would use (sampler
+				// dimension alignment) and break to env NEE.
+				sampler.Get1D();
+				sampler.Get1D();
+				sampler.Get1D();
+				break;
+			}
+		}
+		else
+		{
+			// Single alias-table draw with exact self-exclusion.
+			//
+			// Draw one sample.  If it is self, return zero for the
+			// light-table contribution.  No retry loop, no correction
+			// factor needed.
+			//
+			// Proof of unbiasedness:
+			//   E[estimator] = sum_{j!=self} p(j) * f(j)/p(j) + p_self * 0
+			//                = sum_{j!=self} f(j)
+			// which is exactly the self-excluded integral we want.
+			//
+			// The only caveat is higher variance than rejection sampling
+			// (a fraction p_self of samples are wasted), but this is
+			// exact for any p_self and requires only one random number.
+			idx = aliasTable.Sample( sampler.Get1D() );
+
+			if( static_cast<int>(idx) == selfIdx )
+			{
+				// Self-hit: consume the 3 random numbers that the
+				// area-light path would have used (sampler dimension
+				// alignment) and break to env NEE.
+				sampler.Get1D();
+				sampler.Get1D();
+				sampler.Get1D();
+				break;
 			}
 
-			if( !shadowed )
+			pdfAlias = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+		}
+
+		const LightEntry& entry = lightEntries[idx];
+
+		if( entry.pLight )
+		{
+			// Selected a non-mesh (delta) light.
+			// w = 1 (no alternative sampling strategy).
+			RISEPel amount( 0, 0, 0 );
+			entry.pLight->ComputeDirectLighting( ri, caster, brdf,
+				pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
+				amount );
+			result = result + amount * (risWeight / pdfAlias);
+		}
+		else
+		{
+			// Selected a mesh luminary (guaranteed != self by exclusion)
+			const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
+			const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
+
+			const Scalar area = lumEntry.pLum->GetArea();
+
+			// Sample a uniform random point on the luminary surface
+			const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
+			Point3 ptOnLum;
+			Vector3 lumNormal;
+			Point2 lumCoord;
+			lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
+
+			// Geometry
+			Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
+			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+			const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
+
+			if( cosLight > 0 && cosSurface > 0 )
 			{
-				// Emitted radiance at sampled point
-				RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
-				lumri.vNormal = lumNormal;
-				lumri.ptCoord = lumCoord;
-				lumri.onb.CreateFromW( lumNormal );
-
-				const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
-
-				const Scalar geom = area * cosLight / (dist * dist);
-				RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
-
-				// MIS weight: only when RIS is OFF.  When RIS is ON
-				// the exact finite-M technique density is intractable,
-				// so we use w=1 here and suppress the BSDF-hit emitter
-				// contribution in PathTracingShaderOp.
-				if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
+				// Light-sample Russian roulette: estimate the geometric
+				// contribution before the expensive shadow ray.  When
+				// the estimate is below the threshold, probabilistically
+				// terminate.  Survivors are divided by the survival
+				// probability to maintain unbiasedness.
+				Scalar rrSurvivalCompensation = 1.0;
+				if( lightSampleRRThreshold > 0 )
 				{
-					// Convert alias-table selection PDF to solid angle.
-					// Self-exclusion uses single-draw skip-self, so the
-					// selection PDF is the raw alias-table p(j) — no
-					// correction needed (see proof above).
-					const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
-					const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
-
-					if( p_bsdf > 0 )
+					const Scalar estimate = entry.exitance * cosSurface *
+						area * cosLight / (dist * dist);
+					const Scalar pSurvive = r_min(
+						estimate / lightSampleRRThreshold, Scalar(1.0) );
+					if( pSurvive < Scalar(1.0) )
 					{
-						const Scalar w = PowerHeuristic( p_light, p_bsdf );
-						contrib = contrib * w;
+						if( sampler.Get1D() >= pSurvive )
+						{
+							break;
+						}
+						rrSurvivalCompensation = Scalar(1.0) / pSurvive;
 					}
 				}
 
-				result = result + contrib * (risWeight / pdfAlias);
+				// Shadow test
+				bool shadowed = false;
+				if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+				{
+					const Ray rayToLight( ri.ptIntersection, vToLight );
+					shadowed = caster.CastShadowRay( rayToLight, dist - 0.001 );
+				}
+
+				if( !shadowed )
+				{
+					// Emitted radiance at sampled point
+					RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
+					lumri.vNormal = lumNormal;
+					lumri.ptCoord = lumCoord;
+					lumri.onb.CreateFromW( lumNormal );
+
+					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
+
+					const Scalar geom = area * cosLight / (dist * dist);
+					RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
+
+					// MIS weight: only when RIS is OFF.  When RIS is ON
+					// the exact finite-M technique density is intractable,
+					// so we use w=1 here and suppress the BSDF-hit emitter
+					// contribution in PathTracingShaderOp.
+					if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
+					{
+						// Convert alias-table selection PDF to solid angle.
+						// Self-exclusion uses single-draw skip-self, so the
+						// selection PDF is the raw alias-table p(j) — no
+						// correction needed (see proof above).
+						const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
+						const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
+
+						if( p_bsdf > 0 )
+						{
+							const Scalar w = PowerHeuristic( p_light, p_bsdf );
+							contrib = contrib * w;
+						}
+					}
+
+					result = result + contrib * (rrSurvivalCompensation * risWeight / pdfAlias);
+				}
+			}
+		}
+	} while( false );
+
+	// Environment map NEE: sample one direction from the HDR
+	// importance map and evaluate the shadowed, MIS-weighted
+	// contribution.  This is independent of the light-table NEE
+	// above (separate strategy with its own MIS against BSDF).
+	if( pEnvSampler && pEnvSampler->IsValid() && pEnvironmentMap )
+	{
+		Vector3 envDir;
+		Scalar envPdf;
+		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
+
+		const Scalar cosEnv = Vector3Ops::Dot( envDir, ri.vNormal );
+		if( cosEnv > 0 && envPdf > 0 )
+		{
+			// Shadow test: cast ray to infinity
+			bool envShadowed = false;
+			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			{
+				const Ray rayToEnv( ri.ptIntersection, envDir );
+				envShadowed = caster.CastShadowRay( rayToEnv, RISE_INFINITY );
+			}
+
+			if( !envShadowed )
+			{
+				const Ray envRay( ri.ptIntersection, envDir );
+				const RISEPel Le = pEnvironmentMap->GetRadiance( envRay, nullRasterizerState );
+				const RISEPel f = brdf.value( envDir, ri );
+				RISEPel envContrib = Le * f * (cosEnv / envPdf);
+
+				// MIS: power heuristic against BSDF PDF
+				if( pMaterial )
+				{
+					const Scalar pBsdf = pMaterial->Pdf( envDir, ri, 0 );
+					if( pBsdf > 0 )
+					{
+						const Scalar w = PowerHeuristic( envPdf, pBsdf );
+						envContrib = envContrib * w;
+					}
+				}
+
+				result = result + envContrib;
 			}
 		}
 	}
@@ -685,107 +786,169 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		return result;
 	}
 
-	if( !aliasTable.IsValid() )
-	{
-		return result;
-	}
-
-	const int selfIdx = FindLuminaryIndex( pShadingObject );
-
-	unsigned int idx;
-	Scalar pdfAlias;
-	Scalar risWeight = 1.0;
-
-	if( risCandidates > 0 )
-	{
-		idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
-
-		if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
+	// Light-table block wrapped in do/while(false) so early exits
+	// break to the environment NEE below rather than returning.
+	do {
+		if( !aliasTable.IsValid() )
 		{
-			sampler.Get1D();
-			sampler.Get1D();
-			sampler.Get1D();
-			return result;
-		}
-	}
-	else
-	{
-		// Single alias-table draw with exact self-exclusion.
-		// See RGB variant for proof of unbiasedness.
-		idx = aliasTable.Sample( sampler.Get1D() );
-
-		if( static_cast<int>(idx) == selfIdx )
-		{
-			sampler.Get1D();
-			sampler.Get1D();
-			sampler.Get1D();
-			return result;
+			break;
 		}
 
-		pdfAlias = static_cast<Scalar>( aliasTable.Pdf( idx ) );
-	}
+		const int selfIdx = FindLuminaryIndex( pShadingObject );
 
-	const LightEntry& entry = lightEntries[idx];
+		unsigned int idx;
+		Scalar pdfAlias;
+		Scalar risWeight = 1.0;
 
-	if( entry.pLight )
-	{
-		// Non-mesh light — no spectral evaluation available
-		return result;
-	}
-
-	const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
-	const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
-
-	const Scalar area = lumEntry.pLum->GetArea();
-
-	const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
-	Point3 ptOnLum;
-	Vector3 lumNormal;
-	Point2 lumCoord;
-	lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
-
-	Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
-	const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-	const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
-	const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
-
-	if( cosLight <= 0 || cosSurface <= 0 )
-	{
-		return result;
-	}
-
-	if( pShadingObject && pShadingObject->DoesReceiveShadows() )
-	{
-		const Ray rayToLight( ri.ptIntersection, vToLight );
-		if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+		if( risCandidates > 0 )
 		{
-			return result;
+			idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
+
+			if( idx >= static_cast<unsigned int>( lightEntries.size() ) )
+			{
+				sampler.Get1D();
+				sampler.Get1D();
+				sampler.Get1D();
+				break;
+			}
+		}
+		else
+		{
+			// Single alias-table draw with exact self-exclusion.
+			// See RGB variant for proof of unbiasedness.
+			idx = aliasTable.Sample( sampler.Get1D() );
+
+			if( static_cast<int>(idx) == selfIdx )
+			{
+				sampler.Get1D();
+				sampler.Get1D();
+				sampler.Get1D();
+				break;
+			}
+
+			pdfAlias = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+		}
+
+		const LightEntry& entry = lightEntries[idx];
+
+		if( entry.pLight )
+		{
+			// Non-mesh light — no spectral evaluation available
+			break;
+		}
+
+		const LuminaryManager::LUM_ELEM& lumEntry = (*pPreparedLuminaries)[entry.lumIndex];
+		const IEmitter* pEmitter = lumEntry.pLum->GetMaterial()->GetEmitter();
+
+		const Scalar area = lumEntry.pLum->GetArea();
+
+		const Point3 ptRand( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() );
+		Point3 ptOnLum;
+		Vector3 lumNormal;
+		Point2 lumCoord;
+		lumEntry.pLum->UniformRandomPoint( &ptOnLum, &lumNormal, &lumCoord, ptRand );
+
+		Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
+		const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+		const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
+
+		if( cosLight <= 0 || cosSurface <= 0 )
+		{
+			break;
+		}
+
+		// Light-sample Russian roulette (spectral path)
+		Scalar rrSurvivalCompensation = 1.0;
+		if( lightSampleRRThreshold > 0 )
+		{
+			const Scalar estimate = entry.exitance * cosSurface *
+				area * cosLight / (dist * dist);
+			const Scalar pSurvive = r_min(
+				estimate / lightSampleRRThreshold, Scalar(1.0) );
+			if( pSurvive < Scalar(1.0) )
+			{
+				if( sampler.Get1D() >= pSurvive )
+				{
+					break;
+				}
+				rrSurvivalCompensation = Scalar(1.0) / pSurvive;
+			}
+		}
+
+		if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+		{
+			const Ray rayToLight( ri.ptIntersection, vToLight );
+			if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+			{
+				break;
+			}
+		}
+
+		RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
+		lumri.vNormal = lumNormal;
+		lumri.ptCoord = lumCoord;
+		lumri.onb.CreateFromW( lumNormal );
+
+		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
+
+		const Scalar geom = area * cosLight / (dist * dist);
+		Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
+
+		// MIS only when RIS is OFF
+		if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
+		{
+			const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
+			const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
+
+			if( p_bsdf > 0 )
+			{
+				const Scalar w = PowerHeuristic( p_light, p_bsdf );
+				contrib = contrib * w;
+			}
+		}
+
+		result = contrib * (rrSurvivalCompensation * risWeight / pdfAlias);
+	} while( false );
+
+	// Environment map NEE (spectral path)
+	if( pEnvSampler && pEnvSampler->IsValid() && pEnvironmentMap )
+	{
+		Vector3 envDir;
+		Scalar envPdf;
+		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
+
+		const Scalar cosEnv = Vector3Ops::Dot( envDir, ri.vNormal );
+		if( cosEnv > 0 && envPdf > 0 )
+		{
+			bool envShadowed = false;
+			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			{
+				const Ray rayToEnv( ri.ptIntersection, envDir );
+				envShadowed = caster.CastShadowRay( rayToEnv, RISE_INFINITY );
+			}
+
+			if( !envShadowed )
+			{
+				const Ray envRay( ri.ptIntersection, envDir );
+				const Scalar Le = pEnvironmentMap->GetRadianceNM( envRay, nullRasterizerState, nm );
+				const Scalar f = brdf.valueNM( envDir, ri, nm );
+				Scalar envContrib = Le * f * cosEnv / envPdf;
+
+				if( pMaterial )
+				{
+					const Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, 0 );
+					if( pBsdf > 0 )
+					{
+						const Scalar w = PowerHeuristic( envPdf, pBsdf );
+						envContrib = envContrib * w;
+					}
+				}
+
+				result += envContrib;
+			}
 		}
 	}
 
-	RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
-	lumri.vNormal = lumNormal;
-	lumri.ptCoord = lumCoord;
-	lumri.onb.CreateFromW( lumNormal );
-
-	const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
-
-	const Scalar geom = area * cosLight / (dist * dist);
-	Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
-
-	// MIS only when RIS is OFF
-	if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
-	{
-		const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
-		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
-
-		if( p_bsdf > 0 )
-		{
-			const Scalar w = PowerHeuristic( p_light, p_bsdf );
-			contrib = contrib * w;
-		}
-	}
-
-	result = contrib * (risWeight / pdfAlias);
 	return result;
 }

@@ -145,6 +145,12 @@ namespace RISE
 		virtual void SetRISCandidates(
 			const unsigned int M								///< [in] Number of RIS candidates (0=disabled)
 			) = 0;
+
+		/// Sets the threshold for light-sample Russian roulette.
+		/// Must be called after AttachScene().
+		virtual void SetLightSampleRRThreshold(
+			const Scalar threshold								///< [in] RR threshold (0=disabled)
+			) = 0;
 	};
 }
 

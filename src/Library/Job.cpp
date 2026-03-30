@@ -73,6 +73,7 @@ void Job::InitializeContainers()
 	// Create empty internal objects
 	pRasterizer = 0;
 	pGlobalProgress = 0;
+	lightSampleRRThreshold = 0;
 
 	RISE_API_CreateScene( &pScene );
 	RISE_API_CreateGeometryManager( &pGeomManager );
@@ -157,6 +158,14 @@ bool Job::SetPrimaryAcceleration(
 	RISE_API_CreateObjectManager( &pObjectManager, bUseBSPtree, bUseOctree, nMaxObjectsPerNode, nMaxTreeDepth );
 	pScene->SetObjectManager( pObjectManager );
 
+	return true;
+}
+
+bool Job::SetLightSampleRRThreshold(
+	const double threshold
+	)
+{
+	lightSampleRRThreshold = threshold;
 	return true;
 }
 
@@ -3868,6 +3877,10 @@ bool Job::SetPixelBasedPelRasterizer(
 		pCaster->SetLuminaireSampling( pLumSampler );
 	}
 
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig );
 
@@ -3954,6 +3967,10 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 
 	if( pLumSampler ) {
 		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
 	IRasterizer* pRaster = 0;
@@ -4073,6 +4090,10 @@ bool Job::SetAdaptivePixelBasedPelRasterizer(
 		pCaster->SetLuminaireSampling( pLumSampler );
 	}
 
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateAdaptiveSamplingPixelBasedPelRasterizer(
 		&pRaster, pCaster, pPixelSampler, pPixelFilter, numMaxPixelSamples, threshold, numSteps, bOutputSamples, oidnDenoise );
@@ -4154,6 +4175,10 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 
 	if( pLumSampler ) {
 		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
 	IRasterizer* pRaster = 0;
@@ -4240,6 +4265,10 @@ bool Job::SetBDPTPelRasterizer(
 
 	if( pLumSampler ) {
 		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
 	IRasterizer* pRaster = 0;
@@ -4329,6 +4358,10 @@ bool Job::SetBDPTSpectralRasterizer(
 
 	if( pLumSampler ) {
 		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
 	IRasterizer* pRaster = 0;

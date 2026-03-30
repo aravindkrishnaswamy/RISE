@@ -49,6 +49,8 @@ namespace RISE
 
 			const bool					bChooseOnlyOneLuminaire;
 
+			Scalar						dPendingLightRRThreshold;
+
 			virtual ~RayCaster();
 
 		public:
@@ -142,6 +144,10 @@ namespace RISE
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  Must be called after AttachScene().
 			void SetRISCandidates( const unsigned int M );
+
+			/// Sets the threshold for light-sample Russian roulette.
+			/// Must be called after AttachScene().
+			void SetLightSampleRRThreshold( const Scalar threshold );
 
 			/// \return True when the ray caster tracks a per-ray IOR stack
 			inline bool UsesIORStack() const { return bIORStack; }
