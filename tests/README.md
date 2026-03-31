@@ -39,6 +39,48 @@ Built binaries land in `bin/tests/`.
 
 No makefile edit is needed for a new `tests/*.cpp` file because the existing wildcard-based rule discovers it automatically.
 
+## Transport Correctness Scenes (Roadmap Step 2)
+
+These scenes validate the spectral, SMS, and Russian roulette correctness fixes from `docs/PATH_TRANSPORT_ROADMAP.md` Step 2. They require visual or statistical comparison rather than deterministic assertions.
+
+### Russian Roulette (2A)
+
+```sh
+echo "render" | bin/rise scenes/Tests/RussianRoulette/cornellbox_highalbedo_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/RussianRoulette/cornellbox_highalbedo_bdpt.RISEscene
+```
+
+**Expected**: PT and BDPT produce images of comparable brightness. The high-albedo (0.9) walls amplify any bias in path termination. The PT scene uses `min_importance 0.0` to ensure the old biased cutoff does not mask the RR behavior. Compare mean luminance; PT should be within 5% of BDPT.
+
+### Spectral Non-Mesh Lights (2B)
+
+```sh
+echo "render" | bin/rise scenes/Tests/SpectralLights/cornellbox_pointlight_spectral.RISEscene
+```
+
+**Expected**: The scene is illuminated (not black). Before the fix, spectral rendering with point lights produced a completely black image because `EvaluateDirectLightingNM` skipped non-mesh lights.
+
+### SMS Visibility (2D)
+
+```sh
+echo "render" | bin/rise scenes/Tests/SMS/sms_visibility_unoccluded.RISEscene
+echo "render" | bin/rise scenes/Tests/SMS/sms_visibility_occluded.RISEscene
+```
+
+**Expected**: The unoccluded scene shows a caustic beneath the glass sphere. The occluded scene blocks the caustic with an opaque wall. Note: inter-specular visibility (occluders between glass vertices) is not checked; see `ManifoldSolver::CheckChainVisibility` documentation.
+
+### SMS Spectral Regression
+
+```sh
+echo "render" | bin/rise scenes/FeatureBased/SpectralRendering/spectral_dispersive_caustic_pt_sms.RISEscene
+```
+
+**Expected**: Dispersive glass caustic with per-wavelength evaluation. The sphere should show a slight chromatic tint from dispersion.
+
+### Output Location
+
+All renders write to `rendered/`. File names match the scene file base name.
+
 ## Relationship To Sample Scenes
 
 - Use `tests/` for deterministic logic and small subsystem checks.
