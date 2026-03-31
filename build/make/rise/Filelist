@@ -49,6 +49,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/GeometricUtilities.cpp				\
 	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
 	$(PATHLIBRARY)Utilities/MemoryBuffer.cpp					\
+	$(PATHLIBRARY)Utilities/BSSRDFSampling.cpp					\
 	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
 	$(PATHLIBRARY)Utilities/ManifoldSolver.cpp					\
 	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\

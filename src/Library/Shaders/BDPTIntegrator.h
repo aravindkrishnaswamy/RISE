@@ -81,6 +81,7 @@
 #include "../Utilities/CompletePathGuide.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/StabilityConfig.h"
+#include "../Utilities/BSSRDFSampling.h"
 #include "BDPTVertex.h"
 #include <atomic>
 #include <vector>
@@ -380,50 +381,9 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			/// Result of BSSRDF importance sampling at a surface vertex
-			struct BSSRDFSampleResult
-			{
-				Point3				entryPoint;		///< Entry point on the surface
-				Vector3				entryNormal;	///< Surface normal at entry point
-				OrthonormalBasis3D	entryONB;		///< ONB at entry point
-				Ray					scatteredRay;	///< Cosine-weighted ray from entry point
-				RISEPel				weight;			///< BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
-				Scalar				weightNM;		///< Scalar weight for spectral path
-				Scalar				cosinePdf;		///< PDF of the cosine-weighted direction
-				Scalar				pdfSurface;		///< Spatial sampling PDF in area measure
-				bool				valid;			///< True if sampling succeeded
-
-				BSSRDFSampleResult() :
-				weight( RISEPel(0,0,0) ), weightNM(0),
-				cosinePdf(0), pdfSurface(0), valid(false) {}
-			};
-
-			/// Attempts BSSRDF importance sampling at a front-face hit
-			/// on a material with a diffusion profile.
-			///
-			/// Uses the disk projection method (Christensen & Burley 2015):
-			///   1. Choose a spectral channel uniformly (R, G, B)
-			///   2. Choose a projection axis:
-			///      normal (50%), tangent (25%), bitangent (25%)
-			///   3. Sample radius r from the profile CDF for the channel
-			///   4. Sample angle phi uniformly on [0, 2pi)
-			///   5. Compute probe origin offset in the perpendicular plane
-			///   6. Cast a probe ray along +-axis through the object
-			///   7. If hit: evaluate Rd(r_actual), compute weight
-			///   8. Generate cosine-weighted scattered ray from entry normal
-			///
-			/// The probe ray is cast against the specific object (pObject),
-			/// not the whole scene, to ensure the entry point is on the
-			/// same translucent surface.
-			///
-			/// \return A BSSRDFSampleResult with valid=true on success
-			BSSRDFSampleResult SampleBSSRDFEntryPoint(
-				const RayIntersectionGeometric& ri,		///< [in] Exit point intersection
-				const IObject* pObject,					///< [in] Object to cast probe rays against
-				const IMaterial* pMaterial,				///< [in] Material with diffusion profile
-				ISampler& sampler,						///< [in] Sampler for stochastic decisions
-				const Scalar nm = 0						///< [in] Wavelength for NM path (0 = RGB)
-				) const;
+			// BSSRDF sampling is provided by the shared utility
+			// BSSRDFSampling::SampleEntryPoint() in
+			// ../Utilities/BSSRDFSampling.h
 		};
 	}
 }

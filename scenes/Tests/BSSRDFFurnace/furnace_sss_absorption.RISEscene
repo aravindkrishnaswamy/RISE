@@ -1,0 +1,179 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           furnace_sss_absorption.RISEscene                                                        #
+#   Description:    BSSRDF furnace test: large SSS sphere (R=10, ~40x mfp) in uniform                      #
+#                   emissive environment.  Output in HDR/ROMMRGB_Linear for accurate                        #
+#                   per-channel ratio measurement without color space crosstalk.                             #
+#                                                                                                           #
+#   Expected:       sphere/background ratio per channel should approach the flat-slab                       #
+#                   prediction R + Ft*A, where:                                                             #
+#                     R  = Fresnel reflectance at normal incidence ~ 0.017                                  #
+#                     Ft = 1 - R ~ 0.983                                                                    #
+#                     A  = sigma_s'/(sigma_s'+sigma_a) per channel:                                         #
+#                       Red:   2.0/(2.0+0.01) = 0.995                                                      #
+#                       Green: 2.0/(2.0+0.30) = 0.870                                                      #
+#                       Blue:  2.0/(2.0+1.00) = 0.667                                                      #
+#                   Expected ratios: (0.995, 0.872, 0.672)                                                  #
+#                   A systematic ~3-4% deficit from probe failures and recursion limits                     #
+#                   is expected; normalize against the zero-absorption baseline.                             #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 31, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		16
+	min_importance		0.001
+	samples				4000
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/furnace_sss_absorption
+	type				HDR
+	bpp					32
+	color_space			ROMMRGB_Linear
+}
+
+pinhole_camera
+{
+	location			0 0 60
+	lookat				0 0 0
+	up					0 1 0
+	width				200
+	height				150
+	fov					30.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_emit
+	color				0.31831 0.31831 0.31831
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_absorption
+	color				0.01 0.3 1.0
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_scattering
+	color				2.0 2.0 2.0
+	colorspace			ROMMRGB_Linear
+}
+
+lambertian_luminaire_material
+{
+	name				emit
+	exitance			pnt_emit
+	scale				1
+	material			none
+}
+
+subsurfacescattering_material
+{
+	name				wax
+	ior					1.3
+	absorption			pnt_absorption
+	scattering			pnt_scattering
+	g					0.0
+	roughness			0.0
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				10.0
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0 0
+	material			wax
+}
+
+clippedplane_geometry
+{
+	name				boxgeom
+	pta					-200 -200 0
+	ptb					200 -200 0
+	ptc					200 200 0
+	ptd					-200 200 0
+}
+
+standard_object
+{
+	name				top
+	geometry			boxgeom
+	position			0 100 0
+	orientation			90 0 0
+	material			emit
+}
+
+standard_object
+{
+	name				bottom
+	geometry			boxgeom
+	position			0 -100 0
+	orientation			-90 0 0
+	material			emit
+}
+
+standard_object
+{
+	name				back
+	geometry			boxgeom
+	position			0 0 -100
+	orientation			0 0 0
+	material			emit
+}
+
+standard_object
+{
+	name				front
+	geometry			boxgeom
+	position			0 0 100
+	orientation			0 180 0
+	material			emit
+}
+
+standard_object
+{
+	name				left
+	geometry			boxgeom
+	position			-100 0 0
+	orientation			0 90 0
+	material			emit
+}
+
+standard_object
+{
+	name				right
+	geometry			boxgeom
+	position			100 0 0
+	orientation			0 -90 0
+	material			emit
+}

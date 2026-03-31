@@ -15,6 +15,8 @@
 #include "../Rendering/LuminaryManager.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/BSSRDFSampling.h"
+#include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
 #endif
@@ -502,6 +504,130 @@ static inline Scalar ClampContributionNM( const Scalar contrib, const Scalar lim
 	return contrib;
 }
 
+//////////////////////////////////////////////////////////////////////
+// BSSRDFEntryBSDF — lightweight IBSDF adapter for BSSRDF entry
+// point NEE.
+//
+// At a BSSRDF re-emission point, the effective "BSDF" for incoming
+// light is the directional scattering function Sw:
+//
+//   Sw(wi) = Ft(cos_theta_i) / (c * PI)
+//
+// where c = (41 - 20*F0) / 42 and F0 = ((eta-1)/(eta+1))^2.
+// This adapter wraps that computation so it can be passed to
+// LightSampler::EvaluateDirectLighting().
+//
+// This is a stack-local transient object — reference counting is
+// stubbed out.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	// Stack-local adapter: must live in the same scope as entryRI.
+	// IReference stubs are safe because EvaluateDirectLighting never
+	// ref-counts its IBSDF argument — it only calls value()/valueNM().
+	// entryRI is a reference to a stack-local RayIntersectionGeometric
+	// in the caller; the adapter must not outlive that scope.
+	class BSSRDFEntryBSDF : public RISE::IBSDF
+	{
+		ISubSurfaceDiffusionProfile* pProfile;
+		const RayIntersectionGeometric& entryRI;
+		Scalar swScale;  // 1 / (c * PI), pre-computed
+
+	public:
+		BSSRDFEntryBSDF(
+			ISubSurfaceDiffusionProfile* profile,
+			const RayIntersectionGeometric& ri,
+			const Scalar eta
+			) : pProfile( profile ), entryRI( ri )
+		{
+			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
+			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+			swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
+		}
+
+		// IReference stubs — this object lives on the stack only
+		void addref() const {}
+		bool release() const { return false; }
+		unsigned int refcount() const { return 1; }
+
+		RISEPel value(
+			const Vector3& vLightIn,
+			const RayIntersectionGeometric& ri
+			) const
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( vLightIn, ri.vNormal );
+			if( cosTheta <= 0 ) {
+				return RISEPel( 0, 0, 0 );
+			}
+			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
+			const Scalar Sw = Ft * swScale;
+			return RISEPel( Sw, Sw, Sw );
+		}
+
+		Scalar valueNM(
+			const Vector3& vLightIn,
+			const RayIntersectionGeometric& ri,
+			const Scalar nm
+			) const
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( vLightIn, ri.vNormal );
+			if( cosTheta <= 0 ) {
+				return 0;
+			}
+			const Scalar Ft = pProfile->FresnelTransmission( cosTheta, ri );
+			return Ft * swScale;
+		}
+	};
+
+	//////////////////////////////////////////////////////////////////////
+	// BSSRDFEntryMaterial — lightweight IMaterial adapter for MIS at
+	// BSSRDF entry points.  EvaluateDirectLighting uses pMaterial->Pdf()
+	// to compute the BSDF sampling PDF for MIS.  At BSSRDF entry points
+	// the sampling strategy is cosine-weighted hemisphere, so Pdf returns
+	// cos(theta)/PI.  All other IMaterial methods return null — only
+	// Pdf/PdfNM are meaningful here.
+	//
+	// Stack-local adapter: IReference stubs are safe because
+	// EvaluateDirectLighting never ref-counts its IMaterial argument —
+	// it only calls Pdf()/PdfNM().
+	//////////////////////////////////////////////////////////////////////
+	class BSSRDFEntryMaterial : public RISE::IMaterial
+	{
+	public:
+		BSSRDFEntryMaterial() {}
+
+		// IReference stubs — this object lives on the stack only
+		void addref() const {}
+		bool release() const { return false; }
+		unsigned int refcount() const { return 1; }
+
+		// IMaterial interface — only Pdf/PdfNM are meaningful
+		IBSDF* GetBSDF() const { return 0; }
+		ISPF* GetSPF() const { return 0; }
+		IEmitter* GetEmitter() const { return 0; }
+
+		Scalar Pdf(
+			const Vector3& wo,
+			const RayIntersectionGeometric& ri,
+			const IORStack* ior_stack
+			) const
+		{
+			const Scalar cosTheta = Vector3Ops::Dot( wo, ri.vNormal );
+			return (cosTheta > 0) ? cosTheta * INV_PI : 0;
+		}
+
+		Scalar PdfNM(
+			const Vector3& wo,
+			const RayIntersectionGeometric& ri,
+			const Scalar nm,
+			const IORStack* ior_stack
+			) const
+		{
+			return Pdf( wo, ri, ior_stack );
+		}
+	};
+}
+
 void PathTracingShaderOp::PerformOperation(
 	const RuntimeContext& rc,
 	const RayIntersection& ri,
@@ -620,6 +746,153 @@ void PathTracingShaderOp::PerformOperation(
 				SetPTGuidingDirectContribution( guidingSegment, rawEmission, emissionMiWeight );
 			}
 #endif
+		}
+	}
+
+	// ================================================================
+	// BSSRDF: Subsurface scattering via diffusion profile
+	// ================================================================
+	// When the ray hits a front-face of a material with a diffusion
+	// profile, evaluate BOTH the subsurface and surface contributions
+	// without stochastic Fresnel branching:
+	//
+	//   - Subsurface: importance-sample a nearby entry point via the
+	//     disk projection method (Christensen & Burley 2015).  The
+	//     BSSRDF weight already includes Ft(exit), so no selection
+	//     probability compensation is needed.
+	//
+	//   - Surface reflection: handled by PART 2 (NEE) and PART 3
+	//     (continuation) using the material's BSDF/SPF, which already
+	//     include the Fresnel reflectance R in their weights.
+	//
+	// Energy conservation: R + Ft = 1, and each path is weighted by
+	// its respective Fresnel factor, so the sum is correct without
+	// any branching or compensation.  This avoids the high variance
+	// from 1/R compensation (~59x for IOR 1.3) and eliminates wasted
+	// samples when BSSRDF probe rays miss the object.
+	{
+		ISubSurfaceDiffusionProfile* pProfile =
+			ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
+
+		if( pProfile && pBRDF )
+		{
+			const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
+				Vector3Ops::Normalize( -ri.geometric.ray.Dir() ) );
+
+			// Only front-face hits can enter the subsurface
+			if( cosIn > NEARZERO )
+			{
+				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+
+				if( Ft > NEARZERO )
+				{
+					IndependentSampler fallbackSampler( rc.random );
+					ISampler& bssrdfSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
+					BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
+						ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, 0 );
+
+					if( bssrdf.valid )
+					{
+						// Full BSSRDF weight (for continuation): includes Sw
+						// for the cosine-sampled direction and Ft(exit).
+						const RISEPel bssrdfWeight = bssrdf.weight;
+
+						// Spatial-only weight (for NEE): Rd * Ft(exit) / pdfSurface.
+						// NEE evaluates Sw independently via BSSRDFEntryBSDF.
+						const RISEPel bssrdfWeightSpatial = bssrdf.weightSpatial;
+
+						// Build a synthetic intersection at the entry point
+						RayIntersectionGeometric entryRI(
+							Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
+							ri.geometric.rast );
+						entryRI.bHit = true;
+						entryRI.ptIntersection = bssrdf.entryPoint;
+						entryRI.vNormal = bssrdf.entryNormal;
+						entryRI.onb = bssrdf.entryONB;
+
+						const Scalar eta = pProfile->GetIOR( ri.geometric );
+						BSSRDFEntryBSDF entryBSDF( pProfile, entryRI, eta );
+						BSSRDFEntryMaterial entryMaterial;
+
+						// Per-type bounce limit: skip SSS contribution if
+						// exceeded, but still allow surface reflection in
+						// PART 2 + 3.
+						const unsigned int nextTranslucentBounces = rs.translucentBounces + 1;
+						const bool skipSSS = rc.pStabilityConfig &&
+							nextTranslucentBounces > rc.pStabilityConfig->maxTranslucentBounce;
+
+						if( !skipSSS )
+						{
+							const LightSampler* pLS = caster.GetLightSampler();
+							if( pLS )
+							{
+								RISEPel directSSS = pLS->EvaluateDirectLighting(
+									entryRI, entryBSDF, &entryMaterial, caster, bssrdfSampler, ri.pObject );
+								RISEPel sssDirectContrib = bssrdfWeightSpatial * directSSS;
+								if( rc.pStabilityConfig ) {
+									sssDirectContrib = ClampContribution( sssDirectContrib, rc.pStabilityConfig->directClamp );
+								}
+								c = c + sssDirectContrib;
+							}
+
+							// Continuation from the entry point
+							IRayCaster::RAY_STATE rs2;
+							rs2.depth = rs.depth + 1;
+							rs2.considerEmission = true;
+							rs2.importance = rs.importance * ColorMath::MaxValue( bssrdfWeight );
+							rs2.bsdfPdf = bssrdf.cosinePdf;
+							rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
+							rs2.diffuseBounces      = rs.diffuseBounces;
+							rs2.glossyBounces       = rs.glossyBounces;
+							rs2.transmissionBounces = rs.transmissionBounces;
+							rs2.translucentBounces  = nextTranslucentBounces;
+							rs2.glossyFilterWidth   = rs.glossyFilterWidth;
+
+							// Russian roulette on subsurface continuation
+							RISEPel throughput = bssrdfWeight;
+							bool skipContinuation = false;
+							{
+								const unsigned int rrMinDepth = rc.pStabilityConfig ?
+									rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
+								const Scalar rrThreshold = rc.pStabilityConfig ?
+									rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
+								if( rs.depth >= rrMinDepth )
+								{
+									const Scalar pathThroughput = rs.importance *
+										ColorMath::MaxValue( throughput );
+									const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
+									const Scalar rrProb = r_min( Scalar(1.0),
+										pathThroughput / prevThroughput );
+									const Scalar rrXi = bssrdfSampler.Get1D();
+									if( rrXi >= rrProb ) {
+										skipContinuation = true;
+									} else if( rrProb > 0 && rrProb < 1.0 ) {
+										throughput = throughput * (1.0 / rrProb);
+									}
+								}
+							}
+
+							if( !skipContinuation )
+							{
+								RISEPel cthis( 0, 0, 0 );
+								Ray continuationRay = bssrdf.scatteredRay;
+								caster.CastRay( rc, ri.geometric.rast,
+									continuationRay, cthis, rs2, 0,
+									ri.pRadianceMap, ior_stack );
+
+								RISEPel indirect = throughput * cthis;
+								if( rc.pStabilityConfig && rs.depth > 1 ) {
+									indirect = ClampContribution( indirect,
+										rc.pStabilityConfig->indirectClamp );
+								}
+								c = c + indirect;
+							}
+						}
+					}
+					// Continue to PART 2 + 3 for surface reflection
+				}
+			}
 		}
 	}
 
@@ -1158,6 +1431,124 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 			}
 
 			c += emission;
+		}
+	}
+
+	// ================================================================
+	// BSSRDF: Subsurface scattering via diffusion profile (spectral)
+	// ================================================================
+	// Same approach as the RGB path: evaluate both subsurface and
+	// surface contributions without Fresnel branching.
+	{
+		ISubSurfaceDiffusionProfile* pProfile =
+			ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
+
+		if( pProfile && pBRDF )
+		{
+			const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
+				Vector3Ops::Normalize( -ri.geometric.ray.Dir() ) );
+
+			if( cosIn > NEARZERO )
+			{
+				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+
+				if( Ft > NEARZERO )
+				{
+					IndependentSampler fallbackSampler( rc.random );
+					ISampler& bssrdfSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
+					BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
+						ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, nm );
+
+					if( bssrdf.valid )
+					{
+						const Scalar bssrdfWeightNM = bssrdf.weightNM;
+						const Scalar bssrdfWeightSpatialNM = bssrdf.weightSpatialNM;
+
+						RayIntersectionGeometric entryRI(
+							Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
+							ri.geometric.rast );
+						entryRI.bHit = true;
+						entryRI.ptIntersection = bssrdf.entryPoint;
+						entryRI.vNormal = bssrdf.entryNormal;
+						entryRI.onb = bssrdf.entryONB;
+
+						const Scalar eta = pProfile->GetIOR( ri.geometric );
+						BSSRDFEntryBSDF entryBSDF( pProfile, entryRI, eta );
+						BSSRDFEntryMaterial entryMaterial;
+
+						const unsigned int nextTranslucentBounces = rs.translucentBounces + 1;
+						const bool skipSSS = rc.pStabilityConfig &&
+							nextTranslucentBounces > rc.pStabilityConfig->maxTranslucentBounce;
+
+						if( !skipSSS )
+						{
+							const LightSampler* pLS = caster.GetLightSampler();
+							if( pLS )
+							{
+								Scalar directSSSNM = pLS->EvaluateDirectLightingNM(
+									entryRI, entryBSDF, &entryMaterial, nm, caster, bssrdfSampler, ri.pObject );
+								Scalar sssDirectContribNM = bssrdfWeightSpatialNM * directSSSNM;
+								if( rc.pStabilityConfig ) {
+									sssDirectContribNM = ClampContributionNM( sssDirectContribNM, rc.pStabilityConfig->directClamp );
+								}
+								c += sssDirectContribNM;
+							}
+
+							IRayCaster::RAY_STATE rs2;
+							rs2.depth = rs.depth + 1;
+							rs2.considerEmission = true;
+							rs2.importance = rs.importance * fabs( bssrdfWeightNM );
+							rs2.bsdfPdf = bssrdf.cosinePdf;
+							rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
+							rs2.diffuseBounces      = rs.diffuseBounces;
+							rs2.glossyBounces       = rs.glossyBounces;
+							rs2.transmissionBounces = rs.transmissionBounces;
+							rs2.translucentBounces  = nextTranslucentBounces;
+							rs2.glossyFilterWidth   = rs.glossyFilterWidth;
+
+							Scalar throughputNM = bssrdfWeightNM;
+							bool skipContinuation = false;
+							{
+								const unsigned int rrMinDepth = rc.pStabilityConfig ?
+									rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
+								const Scalar rrThreshold = rc.pStabilityConfig ?
+									rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
+								if( rs.depth >= rrMinDepth )
+								{
+									const Scalar pathThroughput = rs.importance * fabs( throughputNM );
+									const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
+									const Scalar rrProb = r_min( Scalar(1.0),
+										pathThroughput / prevThroughput );
+									const Scalar rrXi = bssrdfSampler.Get1D();
+									if( rrXi >= rrProb ) {
+										skipContinuation = true;
+									} else if( rrProb > 0 && rrProb < 1.0 ) {
+										throughputNM /= rrProb;
+									}
+								}
+							}
+
+							if( !skipContinuation )
+							{
+								Scalar cthis = 0;
+								Ray continuationRay = bssrdf.scatteredRay;
+								caster.CastRayNM( rc, ri.geometric.rast,
+									continuationRay, cthis, rs2, nm, 0,
+									ri.pRadianceMap, ior_stack );
+
+								Scalar indirectNM = cthis * throughputNM;
+								if( rc.pStabilityConfig && rs.depth > 1 ) {
+									indirectNM = ClampContributionNM( indirectNM,
+										rc.pStabilityConfig->indirectClamp );
+								}
+								c += indirectNM;
+							}
+						}
+					}
+					// Continue to surface reflection below
+				}
+			}
 		}
 	}
 

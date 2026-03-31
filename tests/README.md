@@ -15,6 +15,7 @@ Built binaries land in `bin/tests/`.
 
 ## Current Test Inventory
 
+- `BSSRDFSamplingTest.cpp`: BSSRDF diffusion profile normalization, sampling/PDF consistency, Fresnel conservation, Sw normalization, weight formula correctness, and flat-slab energy conservation
 - `ClippedPlaneGeometryTest.cpp`: clipped plane geometry behavior
 - `FinalGatherShaderOpTest.cpp`: final gather interpolation helpers and stability logic
 - `IrradianceCacheTest.cpp`: irradiance cache behavior
@@ -146,6 +147,29 @@ max_translucent_bounce   8       # default: unlimited
 ### Output Location
 
 All renders write to `rendered/`. File names match the scene file base name.
+
+## BSSRDF Furnace Tests (Energy Conservation)
+
+These scenes validate that the BSSRDF subsurface scattering implementation conserves energy. They use a large sphere (R=10, ~40x mean free path) in a uniform emissive box so the geometry approaches the flat-slab limit where analytical predictions are available.
+
+```sh
+echo "render" | bin/rise scenes/Tests/BSSRDFFurnace/furnace_sss_absorption.RISEscene
+echo "render" | bin/rise scenes/Tests/BSSRDFFurnace/furnace_sss_zero_absorption.RISEscene
+```
+
+**Output format**: HDR in ROMMRGB_Linear (no color space conversion, enabling accurate per-channel ratio analysis).
+
+**Verification procedure**:
+1. Render both scenes
+2. Measure sphere center vs background corner pixel values in each HDR image
+3. Compute `ratio_abs = sphere/bg` for the absorption scene and `ratio_zero = sphere/bg` for the zero-absorption scene
+4. The corrected ratio `ratio_abs / ratio_zero` should match the flat-slab prediction within 1%:
+   - Red: 0.995, Green: 0.872, Blue: 0.672
+5. The zero-absorption scene should have equal ratios across all channels (~0.96, deficit from probe failures/recursion limits)
+
+**What this catches**: Any regression in BSSRDF weight computation, Fresnel handling, profile evaluation, or importance sampling PDF that would break energy conservation.
+
+**Companion unit test**: `tests/BSSRDFSamplingTest.cpp` tests the same properties deterministically without rendering (profile normalization, sampling consistency, Fresnel conservation, Sw normalization, weight formula correctness, flat-slab energy balance).
 
 ## Relationship To Sample Scenes
 
