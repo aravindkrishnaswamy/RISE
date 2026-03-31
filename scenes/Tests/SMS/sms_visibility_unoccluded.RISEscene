@@ -1,0 +1,155 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   SMS Visibility Test: Glass sphere on floor with area light — NO occluder.
+#   Reference scene: caustic should appear normally beneath the sphere.
+#   Used to verify that the visibility check does not reject valid paths.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+	force_check_emitters	true
+}
+
+sms_shaderop
+{
+	name				sms
+	max_iterations		20
+	threshold			1e-5
+	max_chain_depth		10
+	biased				TRUE
+}
+
+standard_shader
+{
+	name		global
+	shaderop	sms
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		8
+	min_importance		0.003
+	samples				256
+	lum_samples			1
+	ior_stack			FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_visibility_unoccluded
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 4 8
+	lookat				0 0.5 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					45.0
+}
+
+# Painters
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.7 0.7 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.999 0.999 0.999
+}
+
+uniformcolor_painter
+{
+	name				pnt_scatter
+	color				100000.0 100000.0 100000.0
+}
+
+# Materials
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				500.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass_mat
+	tau					pnt_glass_tau
+	ior					1.5
+	scattering			pnt_scatter
+}
+
+# Geometry
+sphere_geometry
+{
+	name				sphere_geom
+	radius				1.0
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-5.0 0.0 -5.0
+	ptb					-5.0 0.0 5.0
+	ptc					5.0 0.0 5.0
+	ptd					5.0 0.0 -5.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-1.5 0.0 -1.5
+	ptb					1.5 0.0 -1.5
+	ptc					1.5 0.0 1.5
+	ptd					-1.5 0.0 1.5
+}
+
+# Objects
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				glass_sphere
+	geometry			sphere_geom
+	position			0 1.5 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			0 5.0 0
+	material			light_mat
+}

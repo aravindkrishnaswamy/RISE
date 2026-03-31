@@ -19,13 +19,23 @@
 #include "../Utilities/RandomNumbers.h"
 
 #define ENABLE_MAX_RECURSION
-#define ENABLE_MIN_IMPORTANCE
 
 //#define ENABLE_TERMINATION_MESSAGES
 
-//#define RUSSIAN_ROULETTE_TERMINATION
-//static const Scalar RR_GAMMA_THRESHOLD = 0.2;
-//static const Scalar OV_RR_GAMMA_THRESHOLD = 1.0 / RR_GAMMA_THRESHOLD;
+//
+// Unbiased Russian Roulette in the RayCaster.  When rs.importance
+// drops below this threshold, a proportional survival test fires
+// before the intersection/shading work.  Survivors have the
+// returned radiance scaled by 1/pSurvive to compensate for the
+// killed paths, maintaining an unbiased estimator.
+//
+// This is a secondary safety net; the primary RR lives in
+// PathTracingShaderOp.  The shader-level RR handles the common
+// case (throughput < 1 after a few bounces).  This catches
+// extreme low-importance rays that survive the shader RR.
+//
+#define ENABLE_RAYCASTER_RR
+static const RISE::Scalar RC_RR_THRESHOLD = 0.01;
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -172,21 +182,17 @@ bool RayCaster::CastRay(
 	}
 #endif
 
-#ifdef ENABLE_MIN_IMPORTANCE
-	if( rs.importance < dMinImportance )
+	// Unbiased Russian roulette: decide before the expensive
+	// intersection work, compensate the returned radiance after.
+	Scalar rrCompensation = 1.0;
+#ifdef ENABLE_RAYCASTER_RR
+	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
-#ifdef ENABLE_TERMINATION_MESSAGES
-		GlobalLog()->PrintEasyInfo( "NOT IMPORTANT ENOUGH" );
-#endif
-		return false;
-	}
-#endif
-
-#ifdef RUSSIAN_ROULETTE_TERMINATION
-	if( rs.importance < RR_GAMMA_THRESHOLD ) {
-		if( random.CanonicalRandom() > (rs.importance*OV_RR_GAMMA_THRESHOLD) ) {
+		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
+		if( rc.random.CanonicalRandom() >= pSurvive ) {
 			return false;
 		}
+		rrCompensation = 1.0 / pSurvive;
 	}
 #endif
 
@@ -262,6 +268,11 @@ bool RayCaster::CastRay(
 		c = pScene->GetGlobalAtmosphere()->ApplyAtmospherics( ray, ri.geometric.ptIntersection, rast, c, !bHit );
 	}
 
+	// Apply RR compensation to the returned radiance so the caller's
+	// estimator (throughput * c) remains unbiased.
+	if( rrCompensation != 1.0 ) {
+		c = c * rrCompensation;
+	}
 
 	return bReturn;
 }
@@ -311,21 +322,17 @@ bool RayCaster::CastRayNM(
 	}
 #endif
 
-#ifdef ENABLE_MIN_IMPORTANCE
-	if( rs.importance < dMinImportance )
+	// Unbiased Russian roulette: decide before the expensive
+	// intersection work, compensate the returned radiance after.
+	Scalar rrCompensation = 1.0;
+#ifdef ENABLE_RAYCASTER_RR
+	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
 	{
-#ifdef ENABLE_TERMINATION_MESSAGES
-		GlobalLog()->PrintEasyInfo( "NOT IMPORTANT ENOUGH" );
-#endif
-		return false;
-	}
-#endif
-
-#ifdef RUSSIAN_ROULETTE_TERMINATION
-	if( rs.importance < RR_GAMMA_THRESHOLD ) {
-		if( random.CanonicalRandom() > (rs.importance*OV_RR_GAMMA_THRESHOLD) ) {
+		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
+		if( rc.random.CanonicalRandom() >= pSurvive ) {
 			return false;
 		}
+		rrCompensation = 1.0 / pSurvive;
 	}
 #endif
 
@@ -400,6 +407,12 @@ bool RayCaster::CastRayNM(
 	// After everything else is done, apply atmospherics if its there
 	if( pScene->GetGlobalAtmosphere() && (bHit||pRadianceMap||pScene->GetGlobalRadianceMap()) ) {
 		c = pScene->GetGlobalAtmosphere()->ApplyAtmosphericsNM( ray, ri.geometric.ptIntersection, rast, nm, c, !bHit );
+	}
+
+	// Apply RR compensation to the returned radiance so the caller's
+	// estimator (throughput * c) remains unbiased.
+	if( rrCompensation != 1.0 ) {
+		c = c * rrCompensation;
 	}
 
 	return bReturn;

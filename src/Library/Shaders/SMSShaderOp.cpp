@@ -94,8 +94,8 @@ Scalar SMSShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat
 	) const
 {
-	// SMS spectral variant: use the RGB contribution's max component
-	// as an approximation for the spectral contribution.
+	// SMS spectral variant: uses per-wavelength IOR for dispersion
+	// and scalar (single-wavelength) evaluation throughout.
 	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
 		return 0;
 	}
@@ -117,7 +117,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 	IndependentSampler fallbackSamplerNM( rc.random );
 	ISampler& smsSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
 
-	ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
+	ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 		ri.geometric.ptIntersection,
 		ri.geometric.vNormal,
 		ri.geometric.onb,
@@ -125,11 +125,12 @@ Scalar SMSShaderOp::PerformOperationNM(
 		woOutgoing,
 		*pScene,
 		caster,
-		smsSamplerNM );
+		smsSamplerNM,
+		nm );
 
 	if( sms.valid )
 	{
-		return ColorMath::MaxValue( sms.contribution ) * sms.misWeight;
+		return sms.contribution * sms.misWeight;
 	}
 
 	return 0;

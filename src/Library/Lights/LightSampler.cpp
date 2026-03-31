@@ -786,8 +786,36 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		return result;
 	}
 
-	// Light-table block wrapped in do/while(false) so early exits
-	// break to the environment NEE below rather than returning.
+	// ----------------------------------------------------------------
+	// Step 1: Deterministic evaluation of lights with zero exitance
+	// (ambient, directional).  These cannot participate in
+	// proportional selection.  Mirrors the RGB path's deterministic
+	// pass.
+	// ----------------------------------------------------------------
+	const ILightManager* pLightMgr = pPreparedScene->GetLights();
+	if( pLightMgr )
+	{
+		const ILightManager::LightsList& lights = pLightMgr->getLights();
+		ILightManager::LightsList::const_iterator m, n;
+		for( m=lights.begin(), n=lights.end(); m!=n; m++ )
+		{
+			const ILightPriv* l = *m;
+			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
+			if( exitance <= 0 )
+			{
+				// Evaluate using luminance approximation of RGB contribution
+				RISEPel amount( 0, 0, 0 );
+				l->ComputeDirectLighting( ri, caster, brdf,
+					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
+					amount );
+				result += ColorMath::Luminance( amount );
+			}
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Step 2: Select one light with nonzero exitance, excluding self.
+	// ----------------------------------------------------------------
 	do {
 		if( !aliasTable.IsValid() )
 		{
@@ -833,7 +861,34 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		if( entry.pLight )
 		{
-			// Non-mesh light — no spectral evaluation available
+			// Non-mesh (delta-position) light — spectral approximation
+			// via CIE luminance of the RGB emitted radiance.  Matches
+			// the BDPT integrator's spectral handling of non-mesh lights.
+			const Point3 lightPos = entry.pLight->position();
+			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
+			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+			const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+
+			if( cosSurface <= 0 ) break;
+
+			// Shadow test
+			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			{
+				const Ray rayToLight( ri.ptIntersection, vToLight );
+				if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+					break;
+			}
+
+			// emittedRadiance expects the outgoing direction FROM the
+			// light; -vToLight is the light-to-surface direction.
+			const RISEPel LeRGB = entry.pLight->emittedRadiance( -vToLight );
+			const Scalar LeNM = ColorMath::Luminance( LeRGB );
+			const Scalar invDistSq = 1.0 / (dist * dist);
+			const Scalar fBSDF = brdf.valueNM( vToLight, ri, nm );
+
+			// Delta-position light: w = 1 (no MIS needed).
+			result = LeNM * fBSDF * cosSurface * invDistSq
+				   * (risWeight / pdfAlias);
 			break;
 		}
 

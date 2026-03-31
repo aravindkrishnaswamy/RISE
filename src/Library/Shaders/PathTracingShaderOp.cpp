@@ -35,10 +35,21 @@ static inline bool GuidingWantsDeepSignalTraining( const unsigned int pathDepth 
 }
 
 //
-// Minimum throughput before Russian Roulette kicks in.
+// Russian Roulette minimum depth and throughput floor.
 // Matches BDPT_RR_THRESHOLD in BDPTIntegrator.cpp.
 //
+// The survival probability is:
+//   rrProb = min(1, pathThroughput / max(prevThroughput, PT_RR_THRESHOLD))
+//
+// In the recursive PT, pathThroughput = rs.importance * MaxValue(throughput)
+// and prevThroughput = rs.importance, so the ratio reduces to:
+//   rrProb = min(1, MaxValue(throughput) / max(1, PT_RR_THRESHOLD / rs.importance))
+//
+// When rs.importance is large the floor has no effect and rrProb = MaxValue(throughput).
+// When rs.importance is small (deep paths) the floor prevents runaway compensation.
+//
 static const unsigned int PT_RR_MIN_DEPTH = 3;
+static const Scalar PT_RR_THRESHOLD = 0.05;
 
 
 static inline Vector3 GuidingCosineNormal( const RayIntersectionGeometric& rig )
@@ -838,15 +849,17 @@ void PathTracingShaderOp::PerformOperation(
 				bool skipContinuation = ColorMath::MaxValue( throughput ) <= NEARZERO;
 
 				// Russian roulette: probabilistic path termination with
-				// throughput compensation to maintain unbiasedness.  Uses
-				// max-component of the current bounce's throughput as the
-				// survival probability.  Matches the BDPT integrator's
-				// proven RR logic.  Branching paths are excluded (they
-				// explore all lobes by design).
+				// throughput compensation to maintain unbiasedness.
+				// Uses the BDPT's ratio formula:
+				//   rrProb = min(1, pathThroughput / max(prevThroughput, threshold))
+				// In the recursive PT, pathThroughput = rs.importance * MaxValue(throughput)
+				// and prevThroughput = rs.importance.
+				// Branching paths are excluded (they explore all lobes by design).
 				if( rs.depth >= PT_RR_MIN_DEPTH && !skipContinuation )
 				{
-					const Scalar rrProb = r_min( Scalar(1.0),
-						ColorMath::MaxValue( throughput ) );
+					const Scalar pathThroughput = rs.importance * ColorMath::MaxValue( throughput );
+					const Scalar prevThroughput = r_max( rs.importance, Scalar(PT_RR_THRESHOLD) );
+					const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
 					const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
 						: rc.random.CanonicalRandom();
 					if( rrXi >= rrProb ) {
@@ -1214,12 +1227,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif
 
-				// Russian roulette (spectral path)
+				// Russian roulette (spectral path) — BDPT ratio formula
 				bool skipContinuationNM = fabs( throughputNM ) <= NEARZERO;
 				if( rs.depth >= PT_RR_MIN_DEPTH && !skipContinuationNM )
 				{
-					const Scalar rrProb = r_min( Scalar(1.0),
-						fabs( throughputNM ) );
+					const Scalar pathThroughput = rs.importance * fabs( throughputNM );
+					const Scalar prevThroughput = r_max( rs.importance, Scalar(PT_RR_THRESHOLD) );
+					const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
 					const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
 						: rc.random.CanonicalRandom();
 					if( rrXi >= rrProb ) {

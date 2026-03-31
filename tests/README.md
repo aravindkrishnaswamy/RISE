@@ -43,4 +43,5 @@ No makefile edit is needed for a new `tests/*.cpp` file because the existing wil
 
 - Use `tests/` for deterministic logic and small subsystem checks.
 - Use `scenes/FeatureBased/` for authored end-to-end coverage of parser and renderer features.
+- Use `scenes/Tests/` for transport correctness validation that requires image comparison.
 - If a feature is user-visible and deterministically testable, it usually deserves both.

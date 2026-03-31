@@ -266,6 +266,33 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+			/// Tests whether the external segments of an SMS specular
+			/// chain are unoccluded.  Checks two segments:
+			///   1. shading point -> first specular vertex
+			///   2. last specular vertex -> light source
+			///
+			/// LIMITATION: Inter-specular segments (vertices inside
+			/// the glass body) are NOT tested.  CastShadowRay uses
+			/// the scene's acceleration structure which includes the
+			/// glass geometry itself, so any ray between two glass
+			/// vertices would report a false self-intersection.
+			/// Filtering specular objects from shadow tests would
+			/// require per-object exclusion lists, which is a more
+			/// invasive change.  This means an opaque object placed
+			/// entirely inside a glass body (between two specular
+			/// vertices) would not be caught.  In practice this is
+			/// rare; the common occlusion case (wall between the
+			/// floor and the glass, or between the glass and the
+			/// light) is handled by the external-segment checks.
+			///
+			/// \return True if both external segments are unoccluded.
+			bool CheckChainVisibility(
+				const Point3& shadingPoint,
+				const Point3& lightPoint,
+				const std::vector<ManifoldVertex>& chain,
+				const IRayCaster& caster
+				) const;
+
 		protected:
 			/// Runs Newton iteration to solve C(x) = 0.
 			/// Modifies chain in-place. Returns true if converged.

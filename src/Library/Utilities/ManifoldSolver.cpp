@@ -1722,6 +1722,11 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( !mResult.valid )
 		return result;
 
+	// Visibility: check external segments of the specular chain
+	if( !CheckChainVisibility( pos, lightSample.position,
+		mResult.specularChain, caster ) )
+		return result;
+
 	// Direction from shading point toward first specular vertex
 	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
 		mResult.specularChain[0].position, pos );
@@ -1879,6 +1884,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( !mResult.valid )
 		return result;
 
+	// Visibility: check external segments of the specular chain
+	if( !CheckChainVisibility( pos, lightSample.position,
+		mResult.specularChain, caster ) )
+		return result;
+
 	// Direction from shading point toward first specular vertex
 	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
 		mResult.specularChain[0].position, pos );
@@ -1925,15 +1935,15 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( lightSample.isDelta ) {
 		cosAtLight = 1.0;
 		if( lightSample.pLight ) {
-			Le = ColorMath::MaxValue(
+			Le = ColorMath::Luminance(
 				lightSample.pLight->emittedRadiance( dirSpecToLight ) );
 		} else {
-			Le = ColorMath::MaxValue( lightSample.Le );
+			Le = ColorMath::Luminance( lightSample.Le );
 		}
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return result;
-		Le = ColorMath::MaxValue( lightSample.Le );
+		Le = ColorMath::Luminance( lightSample.Le );
 	}
 
 	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
@@ -1947,4 +1957,61 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	result.valid = true;
 
 	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// CheckChainVisibility
+//
+//   Tests whether the external segments of an SMS specular chain
+//   are unoccluded.  Only the two external segments are tested:
+//
+//     1. Shading point  ->  first specular vertex
+//     2. Last specular vertex  ->  light source
+//
+//   Inter-specular segments (through refractive geometry) are not
+//   tested because CastShadowRay tests all objects, including the
+//   glass surfaces themselves, which would always report a hit.
+//   The external-segment checks catch the dominant occlusion cases
+//   (opaque walls between receiver and glass, or between glass
+//   and light).
+//////////////////////////////////////////////////////////////////////
+
+bool ManifoldSolver::CheckChainVisibility(
+	const Point3& shadingPoint,
+	const Point3& lightPoint,
+	const std::vector<ManifoldVertex>& chain,
+	const IRayCaster& caster
+	) const
+{
+	if( chain.empty() ) return true;
+
+	// Segment 1: shading point to first specular vertex
+	{
+		Vector3 dir = Vector3Ops::mkVector3(
+			chain.front().position, shadingPoint );
+		Scalar dist = Vector3Ops::NormalizeMag( dir );
+		if( dist > 1e-6 )
+		{
+			Ray ray( shadingPoint, dir );
+			ray.Advance( 1e-6 );
+			if( caster.CastShadowRay( ray, dist - 2e-6 ) )
+				return false;
+		}
+	}
+
+	// Segment 2: last specular vertex to light
+	{
+		Vector3 dir = Vector3Ops::mkVector3(
+			lightPoint, chain.back().position );
+		Scalar dist = Vector3Ops::NormalizeMag( dir );
+		if( dist > 1e-6 )
+		{
+			Ray ray( chain.back().position, dir );
+			ray.Advance( 1e-6 );
+			if( caster.CastShadowRay( ray, dist - 2e-6 ) )
+				return false;
+		}
+	}
+
+	return true;
 }

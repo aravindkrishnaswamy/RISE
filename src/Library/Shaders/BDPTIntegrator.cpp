@@ -4666,6 +4666,12 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 
 		if( !mResult.valid ) continue;
 
+		// Visibility: check external segments of the specular chain
+		if( !pManifoldSolver->CheckChainVisibility(
+			eyeVertex.position, lightSample.position,
+			mResult.specularChain, caster ) )
+			continue;
+
 		// Compute contribution
 		// BSDF at eye vertex toward first specular vertex
 		// mkVector3(b, a) = b - a, so mkVector3(spec, eye) points from eye to spec
@@ -4689,9 +4695,6 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		Scalar fEye = EvalBSDFAtVertexNM( eyeVertex, wiAtEye, woAtEye, nm );
 		if( fEye <= 0 ) continue;
 
-		// Emitter radiance (use max component as scalar approximation for spectral)
-		Scalar Le = ColorMath::MaxValue( lightSample.Le );
-
 		// Geometric term: eye vertex to first specular vertex
 		const ManifoldVertex& firstSpec = mResult.specularChain[0];
 		Scalar G_eyeToSpec = BDPTUtilities::GeometricTerm(
@@ -4708,16 +4711,38 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		if( distSpecToLight < 1e-8 ) continue;
 		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
+		// For delta-position lights (point/spot), there is no surface
+		// at the light — the geometric coupling has no cosine term.
+		// The emitted radiance must also be re-evaluated for the actual
+		// direction from the light toward the last specular vertex,
+		// since the LightSample's Le was evaluated at a random photon
+		// direction.  Matches ManifoldSolver::EvaluateAtShadingPointNM.
+		Scalar cosAtLight;
+		Scalar Le;
+		if( lightSample.isDelta ) {
+			cosAtLight = 1.0;
+			if( lightSample.pLight ) {
+				Le = ColorMath::Luminance(
+					lightSample.pLight->emittedRadiance( dirSpecToLight ) );
+			} else {
+				Le = ColorMath::Luminance( lightSample.Le );
+			}
+		} else {
+			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+			if( cosAtLight <= 0 ) continue;
+			Le = ColorMath::Luminance( lightSample.Le );
+		}
+
 		Scalar cosAtLastSpec = fabs( Vector3Ops::Dot( lastSpec.normal, dirSpecToLight ) );
-		Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		Scalar G_specToLight = cosAtLastSpec * cosAtLight / (distSpecToLight * distSpecToLight);
 
 		if( G_specToLight <= 0 ) continue;
 
-		// Visibility: skip for now (same rationale as RGB variant above)
-
-		// Chain throughput (Fresnel factors)
-		Scalar smsChainContrib = ColorMath::MaxValue( mResult.contribution );
+		// Chain throughput: per-wavelength Fresnel evaluation
+		// instead of MaxValue of the RGB contribution.
+		Scalar smsChainContrib = pManifoldSolver->EvaluateChainThroughputNM(
+			eyeVertex.position, lightSample.position,
+			mResult.specularChain, nm );
 
 		// Full contribution
 		ConnectionResultNM cr;

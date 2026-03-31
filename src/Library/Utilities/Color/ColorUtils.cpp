@@ -290,6 +290,11 @@ bool InterpSPDIndices(
 	min_index = (int)floor(nm);
 	max_index = min_index + 1;
 
+	const unsigned int last_index = (max_wavelength - min_wavelength) / wavelength_step;
+	if( max_index > last_index ) {
+		max_index = last_index;
+	}
+
 	weight = (nm - min_index);
 	return true;
 }
