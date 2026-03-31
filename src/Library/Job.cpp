@@ -3836,7 +3836,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
-	const AdaptiveSamplingConfig& adaptiveConfig				///< [in] Adaptive sampling configuration
+	const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -3882,7 +3883,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig );
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -3928,7 +3929,8 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_r[],								///< [in] Array that contains the RGB SPD amplitudes for red
 	const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
-	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
+	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
+	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4003,7 +4005,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise );
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise, stabilityConfig );
 	}
 
 	safe_release( pPixelSampler );
@@ -4226,7 +4228,8 @@ bool Job::SetBDPTPelRasterizer(
 	const unsigned int smsBernoulliTrials,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
-	const AdaptiveSamplingConfig& adaptiveConfig
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4273,7 +4276,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4319,7 +4322,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	const bool smsBiased,
 	const unsigned int smsBernoulliTrials,
 	const bool oidnDenoise,
-	const PathGuidingConfig& guidingConfig
+	const PathGuidingConfig& guidingConfig,
+	const StabilityConfig& stabilityConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4367,7 +4371,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );

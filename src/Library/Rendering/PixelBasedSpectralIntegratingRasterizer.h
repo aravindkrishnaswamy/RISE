@@ -18,6 +18,7 @@
 #include "../Interfaces/ISampling2D.h"
 #include "../Interfaces/IScene.h"
 #include "PixelBasedRasterizerHelper.h"
+#include "../Utilities/StabilityConfig.h"
 
 namespace RISE
 {
@@ -41,6 +42,8 @@ namespace RISE
 			const unsigned int						num_wavelengths;
 			const Scalar							wavelength_steps;
 			const unsigned int						nSpectralSamples;
+
+			StabilityConfig				stabilityConfig;
 
 			virtual ~PixelBasedSpectralIntegratingRasterizer();
 
@@ -77,13 +80,16 @@ namespace RISE
 				) const;
 
 		public:
-			PixelBasedSpectralIntegratingRasterizer( 
+			PixelBasedSpectralIntegratingRasterizer(
 				IRayCaster* pCaster_,
 				const Scalar lambda_begin_,
 				const Scalar lambda_end_,
 				const unsigned int num_wavelengths_,
-				const unsigned int specsamp
+				const unsigned int specsamp,
+				const StabilityConfig& stabilityCfg
 				);
+
+			void PrepareRuntimeContext( RuntimeContext& rc ) const;
 		};
 	}
 }

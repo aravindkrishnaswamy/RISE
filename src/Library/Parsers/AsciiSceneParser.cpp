@@ -4934,6 +4934,7 @@ namespace RISE
 					bool oidnDenoise = false;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
+					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5014,6 +5015,24 @@ namespace RISE
 							adaptiveConfig.threshold = pvalue.toDouble();
 						} else if( pname == "show_adaptive_map" ) {
 							adaptiveConfig.showMap = pvalue.toBoolean();
+						} else if( pname == "direct_clamp" ) {
+							stabilityConfig.directClamp = pvalue.toDouble();
+						} else if( pname == "indirect_clamp" ) {
+							stabilityConfig.indirectClamp = pvalue.toDouble();
+						} else if( pname == "filter_glossy" ) {
+							stabilityConfig.filterGlossy = pvalue.toDouble();
+						} else if( pname == "rr_min_depth" ) {
+							stabilityConfig.rrMinDepth = pvalue.toUInt();
+						} else if( pname == "rr_threshold" ) {
+							stabilityConfig.rrThreshold = pvalue.toDouble();
+						} else if( pname == "max_diffuse_bounce" ) {
+							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
+						} else if( pname == "max_glossy_bounce" ) {
+							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
+						} else if( pname == "max_transmission_bounce" ) {
+							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
+						} else if( pname == "max_translucent_bounce" ) {
+							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5025,7 +5044,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig );
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
 				}
 			};
 
@@ -5066,6 +5085,7 @@ namespace RISE
 					std::vector<double> spd_r;
 					std::vector<double> spd_g;
 					std::vector<double> spd_b;
+					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5216,6 +5236,24 @@ namespace RISE
 							}
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "direct_clamp" ) {
+							stabilityConfig.directClamp = pvalue.toDouble();
+						} else if( pname == "indirect_clamp" ) {
+							stabilityConfig.indirectClamp = pvalue.toDouble();
+						} else if( pname == "filter_glossy" ) {
+							stabilityConfig.filterGlossy = pvalue.toDouble();
+						} else if( pname == "rr_min_depth" ) {
+							stabilityConfig.rrMinDepth = pvalue.toUInt();
+						} else if( pname == "rr_threshold" ) {
+							stabilityConfig.rrThreshold = pvalue.toDouble();
+						} else if( pname == "max_diffuse_bounce" ) {
+							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
+						} else if( pname == "max_glossy_bounce" ) {
+							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
+						} else if( pname == "max_transmission_bounce" ) {
+							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
+						} else if( pname == "max_translucent_bounce" ) {
+							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5228,7 +5266,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
-						oidnDenoise
+						oidnDenoise, stabilityConfig
 						);
 				}
 			};
@@ -5491,6 +5529,7 @@ namespace RISE
 					bool oidnDenoise = false;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
+					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5581,6 +5620,22 @@ namespace RISE
 							adaptiveConfig.threshold = pvalue.toDouble();
 						} else if( pname == "show_adaptive_map" ) {
 							adaptiveConfig.showMap = pvalue.toBoolean();
+						} else if( pname == "direct_clamp" ) {
+							stabilityConfig.directClamp = pvalue.toDouble();
+						} else if( pname == "indirect_clamp" ) {
+							stabilityConfig.indirectClamp = pvalue.toDouble();
+						} else if( pname == "rr_min_depth" ) {
+							stabilityConfig.rrMinDepth = pvalue.toUInt();
+						} else if( pname == "rr_threshold" ) {
+							stabilityConfig.rrThreshold = pvalue.toDouble();
+						} else if( pname == "max_diffuse_bounce" ) {
+							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
+						} else if( pname == "max_glossy_bounce" ) {
+							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
+						} else if( pname == "max_transmission_bounce" ) {
+							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
+						} else if( pname == "max_translucent_bounce" ) {
+							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5594,7 +5649,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
 				}
 			};
 
@@ -5635,6 +5690,7 @@ namespace RISE
 					unsigned int smsBernoulliTrials = 100;
 					bool oidnDenoise = false;
 					PathGuidingConfig guidingConfig;
+					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5723,6 +5779,22 @@ namespace RISE
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
 						} else if( pname == "pathguiding_complete_paths" ) {
 							guidingConfig.completePathGuiding = pvalue.toBoolean();
+						} else if( pname == "direct_clamp" ) {
+							stabilityConfig.directClamp = pvalue.toDouble();
+						} else if( pname == "indirect_clamp" ) {
+							stabilityConfig.indirectClamp = pvalue.toDouble();
+						} else if( pname == "rr_min_depth" ) {
+							stabilityConfig.rrMinDepth = pvalue.toUInt();
+						} else if( pname == "rr_threshold" ) {
+							stabilityConfig.rrThreshold = pvalue.toDouble();
+						} else if( pname == "max_diffuse_bounce" ) {
+							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
+						} else if( pname == "max_glossy_bounce" ) {
+							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
+						} else if( pname == "max_transmission_bounce" ) {
+							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
+						} else if( pname == "max_translucent_bounce" ) {
+							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5737,7 +5809,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig );
 				}
 			};
 

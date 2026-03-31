@@ -22,26 +22,33 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer( 
+PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer(
 		IRayCaster* pCaster_,
 		const Scalar lambda_begin_,
 		const Scalar lambda_end_,
 		const unsigned int num_wavelengths_,
-		const unsigned int specsamp
-		) : 
+		const unsigned int specsamp,
+		const StabilityConfig& stabilityCfg
+		) :
   PixelBasedRasterizerHelper( pCaster_ ),
 	  lambda_begin( lambda_begin_ ),
 	  lambda_end( lambda_end_ ),
 	  lambda_diff( lambda_end_-lambda_begin_ ),
 	  num_wavelengths( num_wavelengths_ ),
 	  wavelength_steps( (lambda_diff)/Scalar(num_wavelengths) ),
-	  nSpectralSamples( specsamp )
+	  nSpectralSamples( specsamp ),
+	  stabilityConfig( stabilityCfg )
 {
 	vecSpectralSamples.reserve( nSpectralSamples );
 }
 
 PixelBasedSpectralIntegratingRasterizer::~PixelBasedSpectralIntegratingRasterizer( )
 {
+}
+
+void PixelBasedSpectralIntegratingRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+	rc.pStabilityConfig = &stabilityConfig;
 }
 
 bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample( 

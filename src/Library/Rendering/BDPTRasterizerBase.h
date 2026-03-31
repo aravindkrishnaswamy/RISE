@@ -29,6 +29,7 @@
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/CompletePathGuide.h"
+#include "../Utilities/StabilityConfig.h"
 #include <atomic>
 
 namespace RISE
@@ -68,6 +69,7 @@ namespace RISE
 			mutable Scalar				guidingAlphaScale;
 #endif
 			PathGuidingConfig		guidingConfig;		///< Path guiding configuration
+			StabilityConfig			stabilityConfig;	///< Production stability controls
 
 			virtual ~BDPTRasterizerBase();
 
@@ -88,7 +90,8 @@ namespace RISE
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
 				const ManifoldSolverConfig& smsConfig,
-				const PathGuidingConfig& guidingCfg
+				const PathGuidingConfig& guidingCfg,
+				const StabilityConfig& stabilityCfg
 				);
 
 			/// Thread-safe: adds to the total adaptive sample counter

@@ -68,7 +68,12 @@ void CookTorranceSPF::Scatter(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	const Scalar alpha = ColorMath::MaxValue( pMasking.GetColor(ri) );
+	Scalar alpha = ColorMath::MaxValue( pMasking.GetColor(ri) );
+
+	// Glossy filtering: increase effective roughness
+	if( ri.glossyFilterWidth > 0 ) {
+		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 
 	// 3-lobe mixture weights: diffuse + specular + multiscatter
 	const Scalar wd = ColorMath::MaxValue( pDiffuse.GetColor(ri) );
@@ -220,7 +225,12 @@ void CookTorranceSPF::ScatterNM(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	const Scalar alpha = pMasking.GetColorNM(ri,nm);
+	Scalar alpha = pMasking.GetColorNM(ri,nm);
+
+	// Glossy filtering: increase effective roughness
+	if( ri.glossyFilterWidth > 0 ) {
+		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 
 	// 3-lobe mixture weights
 	const Scalar wd = pDiffuse.GetColorNM(ri,nm);
@@ -362,7 +372,10 @@ Scalar CookTorranceSPF::Pdf(
 	if( cosTheta <= 0 ) return 0;
 
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	const Scalar alpha = ColorMath::MaxValue( pMasking.GetColor(ri) );
+	Scalar alpha = ColorMath::MaxValue( pMasking.GetColor(ri) );
+	if( ri.glossyFilterWidth > 0 ) {
+		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 
 	// 3-lobe mixture PDF weighted by painter albedos
 	const Scalar wd = ColorMath::MaxValue( pDiffuse.GetColor(ri) );

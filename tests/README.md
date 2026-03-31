@@ -77,6 +77,72 @@ echo "render" | bin/rise scenes/FeatureBased/SpectralRendering/spectral_dispersi
 
 **Expected**: Dispersive glass caustic with per-wavelength evaluation. The sphere should show a slight chromatic tint from dispersion.
 
+## Production Stability Controls (Roadmap Step 3)
+
+These scenes validate the stability controls from `docs/PATH_TRANSPORT_ROADMAP.md` Step 3. Each control is disabled by default (zero or UINT_MAX) so existing scenes are unaffected.
+
+### Sample Clamping (3A)
+
+```sh
+echo "render" | bin/rise scenes/Tests/StabilityControls/clamp_baseline_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/clamp_active_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/clamp_active_bdpt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/clamp_active_spectral_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/clamp_active_spectral_bdpt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/clamp_indirect_pt.RISEscene
+```
+
+**Expected**: The baseline (no clamps) shows firefly noise from the small bright light (scale 800). The clamped variants (`direct_clamp 10`, `indirect_clamp 5`) suppress fireflies with only mild darkening. The PT clamped scene also outputs HDR for quantitative comparison. The spectral PT and spectral BDPT variants validate that stability controls propagate through the `pixelintegratingspectral_rasterizer` and `bdpt_spectral_rasterizer` pipelines respectively. Spectral scenes use the reference Cornell box spectral painters and standard light (scale 10) with higher clamp values (`direct_clamp 500`, `indirect_clamp 250`) because single-wavelength scalar radiance is larger than per-channel RGB — CIE conversion and sample averaging happen after clamping. The `clamp_indirect_pt` scene uses a glass sphere and gold sphere to drive multi-bounce indirect paths that exercise `indirect_clamp` more heavily than the basic Cornell box.
+
+### Russian Roulette Tuning (3C)
+
+```sh
+echo "render" | bin/rise scenes/Tests/StabilityControls/rr_baseline_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/rr_tuning_pt.RISEscene
+```
+
+**Expected**: The baseline uses default RR settings (rr_min_depth 3, rr_threshold 0.05). The tuned variant uses `rr_min_depth 1` and `rr_threshold 0.5` for aggressive path termination. The tuned image should be noticeably noisier than the baseline but correctly illuminated. High-albedo walls (0.9) amplify any RR bias.
+
+### Per-Type Bounce Limits (3D)
+
+```sh
+echo "render" | bin/rise scenes/Tests/StabilityControls/bounce_limits_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/bounce_limits_bdpt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/bounce_limits_glossy_translucent_pt.RISEscene
+```
+
+**Expected**: Glass sphere renders with full transmission (`max_transmission_bounce 50`) while diffuse inter-reflection is limited (`max_diffuse_bounce 2`). The ceiling should appear slightly darker than unlimited bounces. The sphere should remain clear and refractive. PT and BDPT variants should produce comparable results. The `bounce_limits_glossy_translucent_pt` scene adds a glossy gold sphere (`max_glossy_bounce 2`) and two nested translucent spheres (`max_translucent_bounce 2`, `scattering 0.9`) to exercise the glossy and translucent bounce counters. The high scattering coefficient ensures back-face translucent events fire, and the nested geometry forces 4+ translucent bounces per through-path so the limit of 2 actively engages.
+
+### Glossy Filtering (3B)
+
+```sh
+echo "render" | bin/rise scenes/Tests/StabilityControls/glossy_filter_baseline_pt.RISEscene
+echo "render" | bin/rise scenes/Tests/StabilityControls/glossy_filter_pt.RISEscene
+```
+
+**Expected**: Both scenes feature a gold metallic sphere (Cook-Torrance, facets 0.15). The baseline has no glossy filtering. The filtered variant (`filter_glossy 0.5`) should show slightly softened secondary reflections from the sphere onto walls. The direct specular highlight on the sphere itself should be unaffected (filtering only applies after the first glossy bounce).
+
+### Scene File Keywords
+
+All keywords below are valid in `pixelpel_rasterizer`, `pixelintegratingspectral_rasterizer`, `bdpt_pel_rasterizer`, and `bdpt_spectral_rasterizer` blocks (except `filter_glossy` which is PT-only):
+
+```
+direct_clamp        10.0    # 0 = disabled (default)
+indirect_clamp      5.0     # 0 = disabled (default)
+filter_glossy       0.5     # 0 = disabled (default); PT blocks only
+rr_min_depth        3       # default: 3
+rr_threshold        0.05    # default: 0.05
+max_diffuse_bounce       4       # default: unlimited
+max_glossy_bounce        8       # default: unlimited
+max_transmission_bounce  32      # default: unlimited
+max_translucent_bounce   8       # default: unlimited
+```
+
+### Known Limitations
+
+- **Glossy filtering + BDPT**: The `filter_glossy` control only affects the PT shader path. BDPT connection evaluations construct synthetic intersection records and do not carry the accumulated filter width, so glossy filtering has no effect on BDPT-evaluated strategies.
+- **Spectral clamp scaling**: Spectral rasterizers clamp single-wavelength scalar radiance values before CIE color matching function multiplication and sample averaging. This means the same clamp threshold produces a much stronger effect in spectral mode than in RGB mode. Spectral scenes should use clamp values roughly 10–20× higher than equivalent RGB scenes.
+
 ### Output Location
 
 All renders write to `rendered/`. File names match the scene file base name.

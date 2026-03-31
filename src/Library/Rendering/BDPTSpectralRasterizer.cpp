@@ -33,11 +33,12 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-// Maximum per-strategy contribution to prevent fireflies from imperfect
-// MIS weights at volumetric vertices (SSS).  The value must be high
-// enough to preserve energy for caustic paths through glass where
-// individual contributions can legitimately reach several hundred.
-static const Scalar BDPT_MAX_CONTRIBUTION = 1000.0;
+// Default safety clamp for per-strategy contribution.  Used when no
+// user-specified stability clamp is active.  Prevents fireflies from
+// imperfect MIS weights at volumetric vertices (SSS).  High enough
+// to preserve energy for caustic paths through glass where individual
+// contributions can legitimately reach several hundred.
+
 
 BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	IRayCaster* pCaster_,
@@ -48,16 +49,26 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const unsigned int num_wavelengths_,
 	const unsigned int spectralSamples,
 	const ManifoldSolverConfig& smsConfig,
-	const PathGuidingConfig& guidingConfig
+	const PathGuidingConfig& guidingConfig,
+	const StabilityConfig& stabilityConfig
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig ),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples )
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityConfig ),
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig() )
 {
 }
 
 BDPTSpectralRasterizer::~BDPTSpectralRasterizer()
 {
+}
+
+void BDPTSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+	// The spectral rasterizer's pixel-based base does not set up
+	// stability config, so set it from the authoritative
+	// BDPTRasterizerBase copy here.
+	const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
+	rc.pStabilityConfig = &sc;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -124,9 +135,16 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 
 		Scalar weighted = cr.contribution * cr.misWeight;
 
-		// Clamp per-strategy contribution
-		if( fabs(weighted) > BDPT_MAX_CONTRIBUTION ) {
-			weighted = (weighted > 0) ? BDPT_MAX_CONTRIBUTION : -BDPT_MAX_CONTRIBUTION;
+		// Clamp per-strategy contribution.  Use directClamp for s==1
+		// (direct lighting connections), indirectClamp for others.
+		// A value of 0 means disabled (no clamping).
+		{
+			const Scalar clampVal = (cr.s == 1)
+				? BDPTRasterizerBase::stabilityConfig.directClamp
+				: BDPTRasterizerBase::stabilityConfig.indirectClamp;
+			if( clampVal > 0 && fabs(weighted) > clampVal ) {
+				weighted = (weighted > 0) ? clampVal : -clampVal;
+			}
 		}
 
 		if( cr.needsSplat && pSplatFilm )
@@ -167,8 +185,11 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 			if( !cr.valid ) continue;
 
 			Scalar weighted = cr.contribution * cr.misWeight;
-			if( fabs(weighted) > BDPT_MAX_CONTRIBUTION ) {
-				weighted = (weighted > 0) ? BDPT_MAX_CONTRIBUTION : -BDPT_MAX_CONTRIBUTION;
+			{
+				const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
+				if( clampVal > 0 && fabs(weighted) > clampVal ) {
+					weighted = (weighted > 0) ? clampVal : -clampVal;
+				}
 			}
 			sampleValue += weighted;
 		}

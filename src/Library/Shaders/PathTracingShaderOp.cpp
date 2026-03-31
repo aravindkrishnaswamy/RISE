@@ -73,6 +73,56 @@ static inline IRayCaster::RAY_STATE::RayType PathTracingRayType( const Scattered
 		IRayCaster::RAY_STATE::eRaySpecular;
 }
 
+/// Propagate per-type bounce counters and glossy filter width from
+/// the parent ray state to the child.  Increments the counter
+/// matching the scattered ray type and accumulates the glossy
+/// filter width for non-delta glossy bounces.
+/// Returns true if the bounce limit for this type has been exceeded.
+static inline bool PropagateBounceLimits(
+	const IRayCaster::RAY_STATE& parent,
+	IRayCaster::RAY_STATE& child,
+	const ScatteredRay& scat,
+	const StabilityConfig* pConfig )
+{
+	child.diffuseBounces      = parent.diffuseBounces;
+	child.glossyBounces       = parent.glossyBounces;
+	child.transmissionBounces = parent.transmissionBounces;
+	child.translucentBounces  = parent.translucentBounces;
+	child.glossyFilterWidth   = parent.glossyFilterWidth;
+
+	if( !pConfig ) {
+		return false;
+	}
+
+	// Accumulate glossy filter width for non-delta glossy bounces.
+	// Each glossy reflection adds filterGlossy to the accumulated
+	// width, which downstream SPFs use to increase their effective
+	// roughness, reducing secondary caustic noise.
+	if( scat.type == ScatteredRay::eRayReflection && !scat.isDelta &&
+		pConfig->filterGlossy > 0 )
+	{
+		child.glossyFilterWidth = parent.glossyFilterWidth + pConfig->filterGlossy;
+	}
+
+	switch( scat.type )
+	{
+		case ScatteredRay::eRayDiffuse:
+			child.diffuseBounces++;
+			return child.diffuseBounces > pConfig->maxDiffuseBounce;
+		case ScatteredRay::eRayReflection:
+			child.glossyBounces++;
+			return child.glossyBounces > pConfig->maxGlossyBounce;
+		case ScatteredRay::eRayRefraction:
+			child.transmissionBounces++;
+			return child.transmissionBounces > pConfig->maxTransmissionBounce;
+		case ScatteredRay::eRayTranslucent:
+			child.translucentBounces++;
+			return child.translucentBounces > pConfig->maxTranslucentBounce;
+		default:
+			return false;
+	}
+}
+
 static inline Scalar GuidingSelectionWeight( const ScatteredRay& scat )
 {
 	return ColorMath::MaxValue( scat.kray );
@@ -424,6 +474,34 @@ static inline Scalar PowerHeuristic( const Scalar pa, const Scalar pb )
 	return pa2 / (pa2 + pb * pb);
 }
 
+/// Clamp an RGB contribution so that its maximum channel does not
+/// exceed 'limit'.  Returns the original value when limit <= 0
+/// (disabled) or when the contribution is already within bounds.
+static inline RISEPel ClampContribution( const RISEPel& contrib, const Scalar limit )
+{
+	if( limit <= 0 ) {
+		return contrib;
+	}
+	const Scalar maxVal = ColorMath::MaxValue( contrib );
+	if( maxVal > limit ) {
+		return contrib * (limit / maxVal);
+	}
+	return contrib;
+}
+
+/// Scalar variant for the spectral (NM) path.
+static inline Scalar ClampContributionNM( const Scalar contrib, const Scalar limit )
+{
+	if( limit <= 0 ) {
+		return contrib;
+	}
+	const Scalar absVal = fabs( contrib );
+	if( absVal > limit ) {
+		return contrib * (limit / absVal);
+	}
+	return contrib;
+}
+
 void PathTracingShaderOp::PerformOperation(
 	const RuntimeContext& rc,
 	const RayIntersection& ri,
@@ -526,6 +604,14 @@ void PathTracingShaderOp::PerformOperation(
 				}
 			}
 
+			// Clamp BSDF-sampled emitter hits at depth > 1.  At depth 1
+			// the emitter is directly visible to the camera and should not
+			// be clamped.  At deeper bounces this is a direct-lighting
+			// contribution found via BSDF sampling (analogous to NEE).
+			if( rc.pStabilityConfig && rs.depth > 1 ) {
+				emission = ClampContribution( emission, rc.pStabilityConfig->directClamp );
+			}
+
 			c = c + emission;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -557,26 +643,38 @@ void PathTracingShaderOp::PerformOperation(
 					ScatteredRay& scat = scattered[i];
 					const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
 					if( scatmaxv > 0 ) {
-						RISEPel cthis( 0, 0, 0 );
 						rs2.importance = rs.importance * scatmaxv;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
 						rs2.type = PathTracingRayType( scat );
+						if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+							continue;
+						}
+						RISEPel cthis( 0, 0, 0 );
 						Ray ray = scat.ray;
 						ray.Advance( 1e-8 );
 						caster.CastRay( rc, ri.geometric.rast, ray, cthis,
 							rs2, 0, ri.pRadianceMap,
 							scat.ior_stack ? scat.ior_stack : ior_stack );
-						c = c + (scat.kray * cthis);
+						{
+							RISEPel indirect = scat.kray * cthis;
+							if( rc.pStabilityConfig && rs.depth > 1 ) {
+								indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+							}
+							c = c + indirect;
+						}
 					}
 				}
 			} else {
 				const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
 				if( pS ) {
-					RISEPel cthis( 0, 0, 0 );
 					rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
 					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 					rs2.type = PathTracingRayType( *pS );
+					if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
+						return;
+					}
+					RISEPel cthis( 0, 0, 0 );
 					Ray ray = pS->ray;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -594,7 +692,13 @@ void PathTracingShaderOp::PerformOperation(
 					const bool hit = caster.CastRay( rc, ri.geometric.rast, ray, cthis,
 						rs2, 0, ri.pRadianceMap,
 						pS->ior_stack ? pS->ior_stack : ior_stack );
-					c = c + (pS->kray * cthis);
+					{
+						RISEPel indirect = pS->kray * cthis;
+						if( rc.pStabilityConfig && rs.depth > 1 ) {
+							indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+						}
+						c = c + indirect;
+					}
 
 #ifdef RISE_ENABLE_OPENPGL
 					if( guidingRecorder && guidingRecorder->active && !hit &&
@@ -628,6 +732,9 @@ void PathTracingShaderOp::PerformOperation(
 
 			RISEPel directAll = pLS->EvaluateDirectLighting(
 				ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler, ri.pObject );
+			if( rc.pStabilityConfig ) {
+				directAll = ClampContribution( directAll, rc.pStabilityConfig->directClamp );
+			}
 			c = c + directAll;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -664,7 +771,11 @@ void PathTracingShaderOp::PerformOperation(
 
 		if( sms.valid )
 		{
-			c = c + sms.contribution * sms.misWeight;
+			RISEPel smsContrib = sms.contribution * sms.misWeight;
+			if( rc.pStabilityConfig ) {
+				smsContrib = ClampContribution( smsContrib, rc.pStabilityConfig->directClamp );
+			}
+			c = c + smsContrib;
 
 #ifdef RISE_ENABLE_OPENPGL
 			if( GuidingWantsDeepSignalTraining( rs.depth ) ) {
@@ -699,9 +810,13 @@ void PathTracingShaderOp::PerformOperation(
 				const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
 				if( scatmaxv > 0 )
 				{
-					RISEPel cthis( 0, 0, 0 );
 					rs2.importance = rs.importance * scatmaxv;
 					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+
+					// Per-type bounce limits
+					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+						continue;
+					}
 
 					// For specular bounces, disable emission to
 					// prevent double-counting with SMS
@@ -711,13 +826,20 @@ void PathTracingShaderOp::PerformOperation(
 						rs2.considerEmission = true;
 					}
 
+					RISEPel cthis( 0, 0, 0 );
 					Ray ray = scat.ray;
 					ray.Advance( 1e-8 );
 					Scalar hitDistBranch = 0;
 					caster.CastRay( rc, ri.geometric.rast, ray, cthis,
 						rs2, &hitDistBranch, ri.pRadianceMap,
 						scat.ior_stack ? scat.ior_stack : ior_stack );
-					c = c + (scat.kray * cthis);
+					{
+						RISEPel indirect = scat.kray * cthis;
+						if( rc.pStabilityConfig && rs.depth > 1 ) {
+							indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+						}
+						c = c + indirect;
+					}
 
 #ifdef RISE_ENABLE_OPENPGL
 					// Collect training samples in branching mode
@@ -855,23 +977,34 @@ void PathTracingShaderOp::PerformOperation(
 				// In the recursive PT, pathThroughput = rs.importance * MaxValue(throughput)
 				// and prevThroughput = rs.importance.
 				// Branching paths are excluded (they explore all lobes by design).
-				if( rs.depth >= PT_RR_MIN_DEPTH && !skipContinuation )
 				{
-					const Scalar pathThroughput = rs.importance * ColorMath::MaxValue( throughput );
-					const Scalar prevThroughput = r_max( rs.importance, Scalar(PT_RR_THRESHOLD) );
-					const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
-					const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
-						: rc.random.CanonicalRandom();
-					if( rrXi >= rrProb ) {
-						skipContinuation = true;
-					} else if( rrProb > 0 && rrProb < 1.0 ) {
-						throughput = throughput * (1.0 / rrProb);
+					const unsigned int rrMinDepth = rc.pStabilityConfig ? rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
+					const Scalar rrThreshold = rc.pStabilityConfig ? rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
+					if( rs.depth >= rrMinDepth && !skipContinuation )
+					{
+						const Scalar pathThroughput = rs.importance * ColorMath::MaxValue( throughput );
+						const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
+						const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
+						const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
+							: rc.random.CanonicalRandom();
+						if( rrXi >= rrProb ) {
+							skipContinuation = true;
+						} else if( rrProb > 0 && rrProb < 1.0 ) {
+							throughput = throughput * (1.0 / rrProb);
+						}
 					}
 				}
 
 				rs2.importance = rs.importance * ColorMath::MaxValue( throughput );
 				rs2.bsdfPdf = effectiveBsdfPdf;
 				rs2.type = PathTracingRayType( *pS );
+
+				// Per-type bounce limits: propagate counters and
+				// skip continuation if the limit for this scatter
+				// type has been exceeded.
+				if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
+					skipContinuation = true;
+				}
 
 				if( pS->isDelta && bSMSEnabled ) {
 					rs2.considerEmission = false;
@@ -901,7 +1034,11 @@ void PathTracingShaderOp::PerformOperation(
 					hit = caster.CastRay( rc, ri.geometric.rast, traceRay, cthis,
 						rs2, &hitDist, ri.pRadianceMap,
 						traceIorStack );
-					c = c + (throughput * cthis);
+					RISEPel indirect = throughput * cthis;
+					if( rc.pStabilityConfig && rs.depth > 1 ) {
+						indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+					}
+					c = c + indirect;
 				}
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -1015,6 +1152,11 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 				}
 			}
 
+			// Clamp BSDF-sampled emitter hits at depth > 1 (spectral).
+			if( rc.pStabilityConfig && rs.depth > 1 ) {
+				emission = ClampContributionNM( emission, rc.pStabilityConfig->directClamp );
+			}
+
 			c += emission;
 		}
 	}
@@ -1031,30 +1173,48 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					if( scat.krayNM > 0 ) {
-						Scalar cthis = 0;
 						rs2.importance = rs.importance * scat.krayNM;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+							continue;
+						}
+						Scalar cthis = 0;
 						Ray ray = scat.ray;
 						ray.Advance( 1e-8 );
 						caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
 							rs2, nm, 0, ri.pRadianceMap,
 							scat.ior_stack ? scat.ior_stack : ior_stack );
-						c += cthis * scat.krayNM;
+						{
+							Scalar indirectNM = cthis * scat.krayNM;
+							if( rc.pStabilityConfig && rs.depth > 1 ) {
+								indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+							}
+							c += indirectNM;
+						}
 					}
 				}
 			} else {
 				const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 				const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
 				if( pS ) {
-					Scalar cthis = 0;
 					rs2.importance = rs.importance * pS->krayNM;
 					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+					if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
+						return c;
+					}
+					Scalar cthis = 0;
 					Ray ray = pS->ray;
 					ray.Advance( 1e-8 );
 					caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
 						rs2, nm, 0, ri.pRadianceMap,
 						pS->ior_stack ? pS->ior_stack : ior_stack );
-					c += cthis * pS->krayNM;
+					{
+						Scalar indirectNM = cthis * pS->krayNM;
+						if( rc.pStabilityConfig && rs.depth > 1 ) {
+							indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+						}
+						c += indirectNM;
+					}
 				}
 			}
 		}
@@ -1071,8 +1231,12 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 			IndependentSampler fallbackSamplerNM( rc.random );
 			ISampler& neeSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
 
-			c += pLS->EvaluateDirectLightingNM(
+			Scalar directAllNM = pLS->EvaluateDirectLightingNM(
 				ri.geometric, *pBRDF, ri.pMaterial, nm, caster, neeSamplerNM, ri.pObject );
+			if( rc.pStabilityConfig ) {
+				directAllNM = ClampContributionNM( directAllNM, rc.pStabilityConfig->directClamp );
+			}
+			c += directAllNM;
 		}
 	}
 
@@ -1100,7 +1264,11 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 		if( sms.valid )
 		{
-			c += sms.contribution * sms.misWeight;
+			Scalar smsContribNM = sms.contribution * sms.misWeight;
+			if( rc.pStabilityConfig ) {
+				smsContribNM = ClampContributionNM( smsContribNM, rc.pStabilityConfig->directClamp );
+			}
+			c += smsContribNM;
 		}
 	}
 
@@ -1122,10 +1290,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					ScatteredRay& scat = scattered[i];
 					if( scat.krayNM > 0 )
 					{
-						Scalar cthis = 0;
 						rs2.importance = rs.importance * scat.krayNM;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
 						rs2.type = PathTracingRayType( scat );
+
+					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+						continue;
+					}
 
 					if( scat.isDelta && bSMSEnabled ) {
 						rs2.considerEmission = false;
@@ -1133,12 +1304,19 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						rs2.considerEmission = true;
 					}
 
+					Scalar cthis = 0;
 					Ray ray = scat.ray;
 					ray.Advance( 1e-8 );
 					caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
 						rs2, nm, 0, ri.pRadianceMap,
 						scat.ior_stack ? scat.ior_stack : ior_stack );
-					c += cthis * scat.krayNM;
+					{
+						Scalar indirectNM = cthis * scat.krayNM;
+						if( rc.pStabilityConfig && rs.depth > 1 ) {
+							indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+						}
+						c += indirectNM;
+					}
 				}
 			}
 		}
@@ -1229,23 +1407,32 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 				// Russian roulette (spectral path) — BDPT ratio formula
 				bool skipContinuationNM = fabs( throughputNM ) <= NEARZERO;
-				if( rs.depth >= PT_RR_MIN_DEPTH && !skipContinuationNM )
 				{
-					const Scalar pathThroughput = rs.importance * fabs( throughputNM );
-					const Scalar prevThroughput = r_max( rs.importance, Scalar(PT_RR_THRESHOLD) );
-					const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
-					const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
-						: rc.random.CanonicalRandom();
-					if( rrXi >= rrProb ) {
-						skipContinuationNM = true;
-					} else if( rrProb > 0 && rrProb < 1.0 ) {
-						throughputNM /= rrProb;
+					const unsigned int rrMinDepth = rc.pStabilityConfig ? rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
+					const Scalar rrThreshold = rc.pStabilityConfig ? rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
+					if( rs.depth >= rrMinDepth && !skipContinuationNM )
+					{
+						const Scalar pathThroughput = rs.importance * fabs( throughputNM );
+						const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
+						const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
+						const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
+							: rc.random.CanonicalRandom();
+						if( rrXi >= rrProb ) {
+							skipContinuationNM = true;
+						} else if( rrProb > 0 && rrProb < 1.0 ) {
+							throughputNM /= rrProb;
+						}
 					}
 				}
 
 				rs2.importance = rs.importance * fabs( throughputNM );
 				rs2.bsdfPdf = effectiveBsdfPdf;
 				rs2.type = PathTracingRayType( *pS );
+
+				// Per-type bounce limits
+				if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
+					skipContinuationNM = true;
+				}
 
 				if( pS->isDelta && bSMSEnabled ) {
 					rs2.considerEmission = false;
@@ -1262,7 +1449,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						rs2, nm, &hitDist, ri.pRadianceMap,
 						traceIorStack );
 				}
-				c += cthis * throughputNM;
+				{
+					Scalar indirectNM = cthis * throughputNM;
+					if( rc.pStabilityConfig && rs.depth > 1 ) {
+						indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+					}
+					c += indirectNM;
+				}
 
 #ifdef RISE_ENABLE_OPENPGL
 				if( collectTrainingSampleNM )

@@ -1,0 +1,198 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#  Stability Controls Test: RR Tuning - PT
+#
+#  High-albedo Cornell box to test rr_min_depth and rr_threshold effects.
+#  Uses rr_min_depth 1 (aggressive RR) and higher threshold.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		12
+	min_importance		0.001
+	samples				64
+	lum_samples			1
+	ior_stack			TRUE
+	rr_min_depth		1
+	rr_threshold		0.5
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rr_tuning_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					39.0
+}
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_bright_white
+	color				0.90 0.88 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_bright_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				100.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 556
+	ptd					556 0 556
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556 549 0
+	ptb					556 549 556
+	ptc					0 549 556
+	ptd					0 549 0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					556 0 556
+	ptb					556 549 556
+	ptc					0 549 556
+	ptd					0 0 556
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 556
+	ptb					0 0 0
+	ptc					0 549 0
+	ptd					0 549 556
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 0
+	ptb					556 0 556
+	ptc					556 549 556
+	ptd					556 549 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343 548.8 213
+	ptb					343 548.8 343
+	ptc					213 548.8 343
+	ptd					213 548.8 213
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}

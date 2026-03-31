@@ -96,7 +96,8 @@ namespace
 PixelBasedPelRasterizer::PixelBasedPelRasterizer(
 	IRayCaster* pCaster_,
 	const PathGuidingConfig& guidingCfg,
-	const AdaptiveSamplingConfig& adaptiveCfg
+	const AdaptiveSamplingConfig& adaptiveCfg,
+	const StabilityConfig& stabilityCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
 #ifdef RISE_ENABLE_OPENPGL
@@ -104,7 +105,8 @@ PixelBasedPelRasterizer::PixelBasedPelRasterizer(
   guidingAlphaScale( 1.0 ),
 #endif
   guidingConfig( guidingCfg ),
-  adaptiveConfig( adaptiveCfg )
+  adaptiveConfig( adaptiveCfg ),
+  stabilityConfig( stabilityCfg )
 {
 }
 
@@ -117,6 +119,7 @@ PixelBasedPelRasterizer::~PixelBasedPelRasterizer( )
 
 void PixelBasedPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
+	rc.pStabilityConfig = &stabilityConfig;
 #ifdef RISE_ENABLE_OPENPGL
 	if( pGuidingField ) {
 		rc.pGuidingField = pGuidingField;

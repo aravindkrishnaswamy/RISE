@@ -488,7 +488,7 @@ FOR L 0 3 1
 	omni_light
 	{
 		name			light@L
-		power			0.80
+		power			80
 		color			@LR @LG @LB
 		position		@LX 8.8 @LZ
 	}
@@ -505,7 +505,7 @@ ENDFOR
 omni_light
 {
 	name		fill
-	power		1.32
+	power		132
 	color		1.0 0.98 0.94
 	position	0.0 8.2 5.0
 }
@@ -513,7 +513,7 @@ omni_light
 omni_light
 {
 	name		fill_left
-	power		0.95
+	power		95
 	color		0.92 0.95 1.0
 	position	-6.5 6.0 7.5
 }
@@ -521,7 +521,7 @@ omni_light
 directional_light
 {
 	name		rim
-	power		0.35
+	power		35
 	color		0.92 0.95 1.0
 	direction	0.2 -1.0 -0.35
 }

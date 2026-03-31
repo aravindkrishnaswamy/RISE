@@ -240,8 +240,9 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 		double or[3] = {0,0,0};
 
 		pJob->SetPixelBasedPelRasterizer(
-			1, 1, 10, 0.01, 
-			"global", 0, true, 0, or, 0, 0, 0, 0, 0, 1.0, 1.0, 0.0, 0.0, true, false, false, true );
+			1, 1, 10, 0.01,
+			"global", 0, true, 0, or, 0, 0, 0, 0, 0, 1.0, 1.0, 0.0, 0.0, true, false, false, true,
+			RISE::PathGuidingConfig(), RISE::AdaptiveSamplingConfig(), RISE::StabilityConfig() );
 	} else {
 		prog->SetTitle( "Loading renderer settings and materials" );
 		if( !pJob->LoadAsciiScene( szRenderSettingsFile ) ) {

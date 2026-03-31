@@ -21,6 +21,7 @@
 #include "../Interfaces/IReference.h"
 #include "RandomNumbers.h"
 #include "ISampler.h"
+#include "StabilityConfig.h"
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
 
@@ -51,6 +52,11 @@ namespace RISE
 		/// Lifetime is managed by the rasterizer; not ref-counted here.
 		mutable ISampler*										pSampler;
 
+		/// Production stability controls (clamps, RR tuning, bounce
+		/// limits, glossy filtering).  Set by the rasterizer before
+		/// rendering.  NULL when no stability config is provided.
+		const StabilityConfig*									pStabilityConfig;
+
 #ifdef RISE_ENABLE_OPENPGL
 		/// Path guiding field for guided directional sampling.
 		/// Set by the rasterizer before rendering.  NULL when guiding
@@ -71,7 +77,8 @@ namespace RISE
 		  random( random_ ),
 		  pass( pass_ ),
 		  bThreaded( bThreaded_ ),
-		  pSampler( 0 )
+		  pSampler( 0 ),
+		  pStabilityConfig( 0 )
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )

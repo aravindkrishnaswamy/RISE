@@ -25,6 +25,7 @@
 #include "IJobRasterizerOutput.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Utilities/StabilityConfig.h"
 
 namespace RISE
 {
@@ -1243,7 +1244,8 @@ namespace RISE
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
-			const AdaptiveSamplingConfig& adaptiveConfig				///< [in] Adaptive sampling configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1279,7 +1281,8 @@ namespace RISE
 			const double rgb_spd_r[],								///< [in] Array that contains the RGB SPD amplitudes for red
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
-			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
 		//! Sets the rasterizer type to be adaptive pixel based PEL
@@ -1372,7 +1375,8 @@ namespace RISE
 			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
-			const AdaptiveSamplingConfig& adaptiveConfig				///< [in] Adaptive sampling configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
 		//! Sets the rasterizer type to be spectral BDPT
@@ -1409,7 +1413,8 @@ namespace RISE
 			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
 			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const PathGuidingConfig& guidingConfig					///< [in] Path guiding configuration
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
 		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer

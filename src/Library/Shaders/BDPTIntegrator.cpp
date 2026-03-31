@@ -84,11 +84,6 @@ using namespace RISE::Implementation;
 //
 static const Scalar BDPT_RAY_EPSILON = 1e-6;
 
-//
-// Minimum throughput before Russian Roulette kicks in
-//
-static const Scalar BDPT_RR_THRESHOLD = 0.05;
-
 namespace
 {
 	inline Vector3 GuidingCosineNormal(
@@ -526,12 +521,14 @@ namespace
 
 BDPTIntegrator::BDPTIntegrator(
 	unsigned int maxEye,
-	unsigned int maxLight
+	unsigned int maxLight,
+	const StabilityConfig& stabilityCfg
 	) :
   maxEyeDepth( maxEye ),
   maxLightDepth( maxLight ),
   pLightSampler( 0 ),
-  pManifoldSolver( 0 )
+  pManifoldSolver( 0 ),
+  stabilityConfig( stabilityCfg )
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 ),
   pCompletePathGuide( 0 ),
@@ -1191,6 +1188,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 	Scalar pdfFwdPrev = pdfDirArea;	// solid angle PDF of emission direction
 
+	// Per-type bounce counters for StabilityConfig limits
+	unsigned int diffuseBounces = 0;
+	unsigned int glossyBounces = 0;
+	unsigned int transmissionBounces = 0;
+	unsigned int translucentBounces = 0;
+
 	for( unsigned int depth = 0; depth < maxLightDepth; depth++ )
 	{
 		// Align to fixed dimension range for this bounce so that
@@ -1375,6 +1378,21 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			break;
 		}
 
+		// Per-type bounce limits
+		{
+			bool exceeded = false;
+			switch( pScat->type ) {
+				case ScatteredRay::eRayDiffuse:      exceeded = (++diffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
+				case ScatteredRay::eRayReflection:   exceeded = (++glossyBounces        > stabilityConfig.maxGlossyBounce);       break;
+				case ScatteredRay::eRayRefraction:   exceeded = (++transmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
+				case ScatteredRay::eRayTranslucent:  exceeded = (++translucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
+				default: break;
+			}
+			if( exceeded ) {
+				break;
+			}
+		}
+
 		// Compute throughput update: beta *= f * |cos| / pdf
 		if( pScat->isDelta ) {
 			// For delta scattering, kray already incorporates the right factor
@@ -1391,16 +1409,20 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf));
 		}
 
-		// Russian Roulette
-		const Scalar rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
-			r_max( ColorMath::MaxValue( vertices.back().throughput ), Scalar(BDPT_RR_THRESHOLD) ) );
+		// Russian Roulette — depth threshold and throughput floor
+		// are configurable via StabilityConfig.
+		{
+			const Scalar rrThreshold = stabilityConfig.rrThreshold;
+			const Scalar rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
+				r_max( ColorMath::MaxValue( vertices.back().throughput ), rrThreshold ) );
 
-		if( depth > 2 ) {
-			if( sampler.Get1D() >= rrProb ) {
-				break;
-			}
-			if( rrProb > 0 ) {
-				beta = beta * (1.0 / rrProb);
+			if( depth >= stabilityConfig.rrMinDepth ) {
+				if( sampler.Get1D() >= rrProb ) {
+					break;
+				}
+				if( rrProb > 0 ) {
+					beta = beta * (1.0 / rrProb);
+				}
 			}
 		}
 
@@ -1525,6 +1547,12 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 #ifdef RISE_ENABLE_OPENPGL
 	static thread_local GuidingDistributionHandle guideDist;
 #endif
+
+	// Per-type bounce counters for StabilityConfig limits
+	unsigned int eyeDiffuseBounces = 0;
+	unsigned int eyeGlossyBounces = 0;
+	unsigned int eyeTransmissionBounces = 0;
+	unsigned int eyeTranslucentBounces = 0;
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -1767,6 +1795,21 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			break;
 		}
 
+		// Per-type bounce limits
+		{
+			bool exceeded = false;
+			switch( pScat->type ) {
+				case ScatteredRay::eRayDiffuse:      exceeded = (++eyeDiffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
+				case ScatteredRay::eRayReflection:   exceeded = (++eyeGlossyBounces        > stabilityConfig.maxGlossyBounce);       break;
+				case ScatteredRay::eRayRefraction:   exceeded = (++eyeTransmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
+				case ScatteredRay::eRayTranslucent:  exceeded = (++eyeTranslucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
+				default: break;
+			}
+			if( exceeded ) {
+				break;
+			}
+		}
+
 		const Scalar scatterPdf = selectProb * effectivePdf;
 		RISEPel localScatteringWeight( 0, 0, 0 );
 
@@ -1794,11 +1837,13 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			beta = beta * localScatteringWeight;
 		}
 
-		// Russian Roulette after a few bounces
+		// Russian Roulette after a few bounces — depth threshold
+		// and throughput floor are configurable via StabilityConfig.
 		Scalar rrProb = 1.0;
-		if( depth > 2 ) {
-			const Scalar maxBeta = ColorMath::MaxValue( beta );
-			rrProb = r_min( Scalar(1.0), maxBeta );
+		if( depth >= stabilityConfig.rrMinDepth ) {
+			const Scalar rrThreshold = stabilityConfig.rrThreshold;
+			rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
+				r_max( ColorMath::MaxValue( vertices.back().throughput ), rrThreshold ) );
 			if( sampler.Get1D() >= rrProb ) {
 				break;
 			}
@@ -3283,6 +3328,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 	Scalar pdfFwdPrev = ls.pdfDirection;
 
+	// Per-type bounce counters for StabilityConfig limits
+	unsigned int nmLightDiffuseBounces = 0;
+	unsigned int nmLightGlossyBounces = 0;
+	unsigned int nmLightTransmissionBounces = 0;
+	unsigned int nmLightTranslucentBounces = 0;
+
 	for( unsigned int depth = 0; depth < maxLightDepth; depth++ )
 	{
 		// Phases 1..15 = light bounces 0..14
@@ -3436,6 +3487,21 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			break;
 		}
 
+		// Per-type bounce limits
+		{
+			bool exceeded = false;
+			switch( pScat->type ) {
+				case ScatteredRay::eRayDiffuse:      exceeded = (++nmLightDiffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
+				case ScatteredRay::eRayReflection:   exceeded = (++nmLightGlossyBounces        > stabilityConfig.maxGlossyBounce);       break;
+				case ScatteredRay::eRayRefraction:   exceeded = (++nmLightTransmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
+				case ScatteredRay::eRayTranslucent:  exceeded = (++nmLightTranslucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
+				default: break;
+			}
+			if( exceeded ) {
+				break;
+			}
+		}
+
 		// Throughput update using valueNM
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
@@ -3450,10 +3516,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
 		}
 
-		// Russian Roulette
-		if( depth > 2 ) {
+		// Russian Roulette — configurable depth and threshold
+		if( depth >= stabilityConfig.rrMinDepth ) {
 			const Scalar rrProb = r_min( Scalar(1.0), fabs(betaNM) /
-				r_max( fabs(vertices.back().throughputNM), Scalar(BDPT_RR_THRESHOLD) ) );
+				r_max( fabs(vertices.back().throughputNM), stabilityConfig.rrThreshold ) );
 			if( sampler.Get1D() >= rrProb ) {
 				break;
 			}
@@ -3553,6 +3619,12 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 #ifdef RISE_ENABLE_OPENPGL
 	static thread_local GuidingDistributionHandle guideDist;
 #endif
+
+	// Per-type bounce counters for StabilityConfig limits
+	unsigned int nmEyeDiffuseBounces = 0;
+	unsigned int nmEyeGlossyBounces = 0;
+	unsigned int nmEyeTransmissionBounces = 0;
+	unsigned int nmEyeTranslucentBounces = 0;
 
 	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
 	{
@@ -3794,6 +3866,21 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			break;
 		}
 
+		// Per-type bounce limits
+		{
+			bool exceeded = false;
+			switch( pScat->type ) {
+				case ScatteredRay::eRayDiffuse:      exceeded = (++nmEyeDiffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
+				case ScatteredRay::eRayReflection:   exceeded = (++nmEyeGlossyBounces        > stabilityConfig.maxGlossyBounce);       break;
+				case ScatteredRay::eRayRefraction:   exceeded = (++nmEyeTransmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
+				case ScatteredRay::eRayTranslucent:  exceeded = (++nmEyeTranslucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
+				default: break;
+			}
+			if( exceeded ) {
+				break;
+			}
+		}
+
 		// Throughput update using valueNM
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
@@ -3814,9 +3901,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
 		}
 
-		// Russian Roulette
-		if( depth > 2 ) {
-			const Scalar rrProb = r_min( Scalar(1.0), fabs(betaNM) );
+		// Russian Roulette — configurable depth and throughput floor
+		if( depth >= stabilityConfig.rrMinDepth ) {
+			const Scalar rrThreshold = stabilityConfig.rrThreshold;
+			const Scalar rrProb = r_min( Scalar(1.0), fabs(betaNM) /
+				r_max( fabs(vertices.back().throughputNM), rrThreshold ) );
 			if( sampler.Get1D() >= rrProb ) {
 				break;
 			}
@@ -3886,6 +3975,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	) const
 {
 	ConnectionResultNM result;
+	result.s = s;
 
 	if( s > lightVerts.size() || t > eyeVerts.size() ) {
 		return result;

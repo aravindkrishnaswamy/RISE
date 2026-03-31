@@ -57,7 +57,17 @@ namespace RISE
 			RayType type;						///< The type of ray
 			Scalar bsdfPdf;						///< BSDF sampling PDF for MIS weighting (0 = not set / delta)
 
-			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ) {}
+			// Per-type bounce counters for StabilityConfig bounce limits
+			unsigned int diffuseBounces;		///< Accumulated diffuse bounces
+			unsigned int glossyBounces;			///< Accumulated glossy/reflection bounces
+			unsigned int transmissionBounces;	///< Accumulated refraction/transmission bounces
+			unsigned int translucentBounces;	///< Accumulated translucent bounces
+
+			Scalar glossyFilterWidth;			///< Accumulated glossy filter roughness increase (0 = no filtering)
+
+			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
+				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
+				glossyFilterWidth( 0 ) {}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene

@@ -190,7 +190,8 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
 	const ManifoldSolverConfig& smsConfig,
-	const PathGuidingConfig& guidingCfg
+	const PathGuidingConfig& guidingCfg,
+	const StabilityConfig& stabilityCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   pIntegrator( 0 ),
@@ -208,8 +209,9 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   ,guidingAlphaScale( 1.0 )
 #endif
   ,guidingConfig( guidingCfg )
+  ,stabilityConfig( stabilityCfg )
 {
-	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
+	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, stabilityCfg );
 	pIntegrator->addref();
 
 	if( smsConfig.enabled )

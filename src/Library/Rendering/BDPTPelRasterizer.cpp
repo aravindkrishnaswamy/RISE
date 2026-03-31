@@ -23,11 +23,12 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-// Maximum per-strategy contribution to prevent fireflies from imperfect
-// MIS weights at volumetric vertices (SSS).  The value must be high
-// enough to preserve energy for caustic paths through glass where
-// individual contributions can legitimately reach several hundred.
-static const Scalar BDPT_MAX_CONTRIBUTION = 1000.0;
+// Default safety clamp for per-strategy contribution.  Used when no
+// user-specified stability clamp is active.  Prevents fireflies from
+// imperfect MIS weights at volumetric vertices (SSS).  High enough
+// to preserve energy for caustic paths through glass where individual
+// contributions can legitimately reach several hundred.
+
 
 BDPTPelRasterizer::BDPTPelRasterizer(
 	IRayCaster* pCaster_,
@@ -35,17 +36,29 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	unsigned int maxLightDepth,
 	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
-	const AdaptiveSamplingConfig& adaptiveCfg
+	const AdaptiveSamplingConfig& adaptiveCfg,
+	const StabilityConfig& stabilityCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig ),
-  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig() ),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityCfg ),
+  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig() ),
   adaptiveConfig( adaptiveCfg )
 {
 }
 
 BDPTPelRasterizer::~BDPTPelRasterizer()
 {
+}
+
+void BDPTPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+	// Delegate to PixelBasedPelRasterizer for guiding setup, then
+	// override the stability config pointer with the authoritative
+	// BDPTRasterizerBase copy (the PixelBasedPelRasterizer copy is
+	// default-constructed due to diamond inheritance).
+	PixelBasedPelRasterizer::PrepareRuntimeContext( rc );
+	const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
+	rc.pStabilityConfig = &sc;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -120,11 +133,20 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 
 		RISEPel weighted = cr.contribution * cr.misWeight;
 
-		// Clamp per-strategy contribution to prevent fireflies from
-		// imperfect MIS weights at volumetric vertices.
-		const Scalar maxVal = ColorMath::MaxValue( weighted );
-		if( maxVal > BDPT_MAX_CONTRIBUTION ) {
-			weighted = weighted * (BDPT_MAX_CONTRIBUTION / maxVal);
+		// Clamp per-strategy contribution.  Use directClamp for s==1
+		// (direct lighting connections) and indirectClamp for all
+		// other strategies.  A value of 0 means disabled (no clamping).
+		{
+			const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
+			const Scalar clampVal = (cr.s == 1)
+				? sc.directClamp
+				: sc.indirectClamp;
+			if( clampVal > 0 ) {
+				const Scalar maxVal = ColorMath::MaxValue( weighted );
+				if( maxVal > clampVal ) {
+					weighted = weighted * (clampVal / maxVal);
+				}
+			}
 		}
 
 		if( cr.needsSplat && pSplatFilm )
@@ -160,9 +182,15 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 			if( !cr.valid ) continue;
 
 			RISEPel weighted = cr.contribution * cr.misWeight;
-			const Scalar maxVal = ColorMath::MaxValue( weighted );
-			if( maxVal > BDPT_MAX_CONTRIBUTION ) {
-				weighted = weighted * (BDPT_MAX_CONTRIBUTION / maxVal);
+			{
+				const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
+				const Scalar clampVal = sc.directClamp;
+				if( clampVal > 0 ) {
+					const Scalar maxVal = ColorMath::MaxValue( weighted );
+					if( maxVal > clampVal ) {
+						weighted = weighted * (clampVal / maxVal);
+					}
+				}
 			}
 			sampleColor = sampleColor + weighted;
 		}

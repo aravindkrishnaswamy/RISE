@@ -21,6 +21,7 @@
 #include "../Interfaces/IPixelFilter.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Utilities/StabilityConfig.h"
 #include "PixelBasedRasterizerHelper.h"
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -64,12 +65,14 @@ namespace RISE
 #endif
 			PathGuidingConfig			guidingConfig;
 			AdaptiveSamplingConfig		adaptiveConfig;
+			StabilityConfig				stabilityConfig;
 
 		public:
 			PixelBasedPelRasterizer(
 				IRayCaster* pCaster_,
 				const PathGuidingConfig& guidingCfg,
-				const AdaptiveSamplingConfig& adaptiveCfg
+				const AdaptiveSamplingConfig& adaptiveCfg,
+				const StabilityConfig& stabilityCfg
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

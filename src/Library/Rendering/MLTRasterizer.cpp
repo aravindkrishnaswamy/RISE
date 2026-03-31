@@ -114,7 +114,7 @@ MLTRasterizer::MLTRasterizer(
 		pCaster->addref();
 	}
 
-	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
+	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, StabilityConfig() );
 	pIntegrator->addref();
 }
 

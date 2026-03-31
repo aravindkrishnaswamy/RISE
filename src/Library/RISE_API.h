@@ -1978,7 +1978,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
-								const AdaptiveSamplingConfig& adaptiveConfig	///< [in] Adaptive sampling configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -1991,7 +1992,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_begin,			///< [in] nm to begin sampling at
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
 								);
 
 	//! Creates an adaptive sampling pixel based rasterizer
@@ -2038,7 +2040,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
-								const AdaptiveSamplingConfig& adaptiveConfig	///< [in] Adaptive sampling configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2061,7 +2064,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const PathGuidingConfig& guidingConfig	///< [in] Path guiding configuration
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer

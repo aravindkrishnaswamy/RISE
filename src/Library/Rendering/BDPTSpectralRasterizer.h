@@ -43,6 +43,10 @@ namespace RISE
 
 			const char* GetProgressTitle() const { return "BDPT Spectral Rasterizing: "; }
 
+			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
+			/// the default from PixelBasedRasterizerHelper.
+			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
 			Scalar GetSplatSampleScale() const { return static_cast<Scalar>( nSpectralSamples ); }
 
 			void IntegratePixel(
@@ -97,7 +101,8 @@ namespace RISE
 				const unsigned int num_wavelengths,
 				const unsigned int spectralSamples,
 				const ManifoldSolverConfig& smsConfig,
-				const PathGuidingConfig& guidingConfig
+				const PathGuidingConfig& guidingConfig,
+				const StabilityConfig& stabilityConfig
 				);
 		};
 	}

@@ -200,6 +200,7 @@ bool RayCaster::CastRay(
 
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, rast );
+	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	bool bHit = ri.geometric.bHit;
@@ -338,6 +339,7 @@ bool RayCaster::CastRayNM(
 
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, rast );
+	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
 	pScene->GetObjects()->IntersectRay( ri, true, true, false );
 
 	bool bHit = ri.geometric.bHit;

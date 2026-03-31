@@ -37,6 +37,10 @@ namespace RISE
 
 			const char* GetProgressTitle() const { return "BDPT Rasterizing: "; }
 
+			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
+			/// the default-constructed PixelBasedPelRasterizer copy.
+			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
 			void IntegratePixel(
 				const RuntimeContext& rc,
 				const unsigned int x,
@@ -72,7 +76,8 @@ namespace RISE
 				unsigned int maxLightDepth,
 				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
-				const AdaptiveSamplingConfig& adaptiveConfig
+				const AdaptiveSamplingConfig& adaptiveConfig,
+				const StabilityConfig& stabilityConfig
 				);
 		};
 	}

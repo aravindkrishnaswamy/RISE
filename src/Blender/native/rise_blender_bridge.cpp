@@ -737,7 +737,11 @@ extern "C" int rise_blender_render_scene(
 		0.0,
 		settings->show_lights != 0,
 		settings->use_ior_stack != 0,
-		settings->choose_one_light != 0 ) )
+		settings->choose_one_light != 0,
+		false,
+		RISE::PathGuidingConfig(),
+		RISE::AdaptiveSamplingConfig(),
+		RISE::StabilityConfig() ) )
 	{
 		write_error( error_message, error_message_size, "Failed to create the pixel rasterizer" );
 		RISE::safe_release( job );

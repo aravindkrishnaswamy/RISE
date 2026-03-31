@@ -257,8 +257,16 @@ void SchlickSPF::Scatter(
 		scattered.AddScatteredRay( d );
 	}
 
-	const RISEPel roughness = pRoughness.GetColor(ri);
+	RISEPel roughness = pRoughness.GetColor(ri);
 	const RISEPel isotropy = pIsotropy.GetColor(ri);
+
+	// Glossy filtering: increase effective roughness to blur
+	// secondary glossy reflections, reducing caustic noise.
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			roughness[ch] = r_min( roughness[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
 
 	if( roughness[0] == roughness[1] && roughness[1] == roughness[2] &&
 		isotropy[0] == isotropy[1] && isotropy[1] == isotropy[2] )
@@ -309,8 +317,16 @@ void SchlickSPF::ScatterNM(
 
 	ScatteredRay d, s;
 	Scalar fresnel = 0;
+	Scalar roughnessNM = pRoughness.GetColorNM(ri,nm);
+	const Scalar isotropyNM = pIsotropy.GetColorNM(ri,nm);
+
+	// Glossy filtering: increase effective roughness
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), pRoughness.GetColorNM(ri,nm), pIsotropy.GetColorNM(ri,nm) );
+	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.krayNM = pDiffuse.GetColorNM(ri,nm);
@@ -323,7 +339,7 @@ void SchlickSPF::ScatterNM(
 	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		const Scalar rho = pSpecular.GetColorNM(ri,nm);
 		s.krayNM = rho + (1.0-rho) * fresnel;
-		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), pRoughness.GetColorNM(ri,nm), pIsotropy.GetColorNM(ri,nm) );
+		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughnessNM, isotropyNM );
 		s.isDelta = false;
 		scattered.AddScatteredRay( s );
 	}
@@ -350,8 +366,13 @@ Scalar SchlickSPF::Pdf(
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
 	// Specular PDF: Schlick half-vector sampling (use average roughness/isotropy)
-	const RISEPel roughness = pRoughness.GetColor(ri);
+	RISEPel roughness = pRoughness.GetColor(ri);
 	const RISEPel isotropy = pIsotropy.GetColor(ri);
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			roughness[ch] = r_min( roughness[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
 	const Scalar rAvg = (roughness[0] + roughness[1] + roughness[2]) / 3.0;
 	const Scalar pAvg = (isotropy[0] + isotropy[1] + isotropy[2]) / 3.0;
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, rAvg, pAvg );
@@ -392,8 +413,11 @@ Scalar SchlickSPF::PdfNM(
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
 	// Specular PDF
-	const Scalar r = pRoughness.GetColorNM(ri,nm);
+	Scalar r = pRoughness.GetColorNM(ri,nm);
 	const Scalar p = pIsotropy.GetColorNM(ri,nm);
+	if( ri.glossyFilterWidth > 0 ) {
+		r = r_min( r + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, r, p );
 
 	// Weight

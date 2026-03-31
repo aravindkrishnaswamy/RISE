@@ -80,6 +80,7 @@
 #include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/CompletePathGuide.h"
 #include "../Utilities/PathGuidingField.h"
+#include "../Utilities/StabilityConfig.h"
 #include "BDPTVertex.h"
 #include <atomic>
 #include <vector>
@@ -99,6 +100,7 @@ namespace RISE
 			unsigned int		maxLightDepth;
 			const LightSampler*	pLightSampler;
 			ManifoldSolver*		pManifoldSolver;
+			StabilityConfig		stabilityConfig;
 
 #ifdef RISE_ENABLE_OPENPGL
 			PathGuidingField*	pGuidingField;
@@ -139,7 +141,8 @@ namespace RISE
 		public:
 			BDPTIntegrator(
 				unsigned int maxEye,
-				unsigned int maxLight
+				unsigned int maxLight,
+				const StabilityConfig& stabilityCfg
 				);
 
 			void SetLightSampler( const LightSampler* pSampler );
@@ -255,6 +258,7 @@ namespace RISE
 				Scalar		contribution;
 				Scalar		misWeight;
 				Point2		rasterPos;
+				unsigned int s;				///< Number of light subpath vertices
 				bool		needsSplat;
 				bool		valid;
 
@@ -262,6 +266,7 @@ namespace RISE
 				contribution( 0 ),
 				misWeight( 0 ),
 				rasterPos( Point2( 0, 0 ) ),
+				s( 0 ),
 				needsSplat( false ),
 				valid( false )
 				{
