@@ -2989,6 +2989,73 @@ bool Job::AddHomogeneousMedium(
 	return true;
 }
 
+bool Job::AddHeterogeneousMedium(
+	const char* name,
+	const double max_sigma_a[3],
+	const double max_sigma_s[3],
+	const double emission[3],
+	const char* phase_type,
+	const double phase_g,
+	const char* szVolumeFilePattern,
+	const unsigned int volWidth,
+	const unsigned int volHeight,
+	const unsigned int volStartZ,
+	const unsigned int volEndZ,
+	const char accessor,
+	const double bboxMin[3],
+	const double bboxMax[3]
+	)
+{
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddHeterogeneousMedium:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium (with or without emission)
+	IMedium* pMedium = 0;
+	const RISEPel emissionPel( emission[0], emission[1], emission[2] );
+
+	if( ColorMath::MaxValue( emissionPel ) > 0 ) {
+		RISE_API_CreateHeterogeneousMediumWithEmission( &pMedium,
+			RISEPel( max_sigma_a[0], max_sigma_a[1], max_sigma_a[2] ),
+			RISEPel( max_sigma_s[0], max_sigma_s[1], max_sigma_s[2] ),
+			emissionPel, *pPhase,
+			szVolumeFilePattern, volWidth, volHeight, volStartZ, volEndZ,
+			accessor,
+			Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+			Point3( bboxMax[0], bboxMax[1], bboxMax[2] ) );
+	} else {
+		RISE_API_CreateHeterogeneousMedium( &pMedium,
+			RISEPel( max_sigma_a[0], max_sigma_a[1], max_sigma_a[2] ),
+			RISEPel( max_sigma_s[0], max_sigma_s[1], max_sigma_s[2] ),
+			*pPhase,
+			szVolumeFilePattern, volWidth, volHeight, volStartZ, volEndZ,
+			accessor,
+			Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+			Point3( bboxMax[0], bboxMax[1], bboxMax[2] ) );
+	}
+
+	safe_release( pPhase );
+
+	// Store in our map
+	MediumMap::iterator existing = mediaMap.find( name );
+	if( existing != mediaMap.end() ) {
+		safe_release( existing->second );
+		existing->second = pMedium;
+	} else {
+		mediaMap[name] = pMedium;
+	}
+
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)

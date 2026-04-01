@@ -4587,6 +4587,12 @@ namespace RISE
 #include "Materials/IsotropicPhaseFunction.h"
 #include "Materials/HenyeyGreensteinPhaseFunction.h"
 #include "Materials/HomogeneousMedium.h"
+#include "Materials/HeterogeneousMedium.h"
+#include "Volume/Volume.h"
+#include "Volume/VolumeAccessor_NNB.h"
+#include "Volume/VolumeAccessor_TRI.h"
+#include "Volume/VolumeAccessor_TriCubic.h"
+#include "Utilities/CubicInterpolator.h"
 
 namespace RISE
 {
@@ -4647,6 +4653,103 @@ namespace RISE
 
 		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission, phase );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium with emission" );
+		return true;
+	}
+
+	/// Helper to create a volume accessor from a type character
+	static IVolumeAccessor* MediumVolumeAccessorFromChar( const char accessor )
+	{
+		switch( accessor ) {
+			default:
+				GlobalLog()->PrintEasyWarning( "HeterogeneousMedium:: Invalid accessor specified, defaulting to trilinear" );
+			case 't':
+				return new VolumeAccessor_TRI();
+			case 'n':
+				return new VolumeAccessor_NNB();
+			case 'c':
+				{
+					ICubicInterpolator<Scalar>* interp = new CatmullRomCubicInterpolator<Scalar>();
+					IVolumeAccessor* pRet = new VolumeAccessor_TriCubic( *interp );
+					interp->release();
+					return pRet;
+				}
+		}
+	}
+
+	bool RISE_API_CreateHeterogeneousMedium(
+								IMedium** ppi,
+								const RISEPel& max_sigma_a,
+								const RISEPel& max_sigma_s,
+								const IPhaseFunction& phase,
+								const char* szVolumeFilePattern,
+								const unsigned int volWidth,
+								const unsigned int volHeight,
+								const unsigned int volStartZ,
+								const unsigned int volEndZ,
+								const char accessor,
+								const Point3& bboxMin,
+								const Point3& bboxMax
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Load the volume data
+		Volume<unsigned char>* pVol = new Volume<unsigned char>(
+			szVolumeFilePattern, volWidth, volHeight, volStartZ, volEndZ );
+
+		// Create the volume accessor
+		IVolumeAccessor* pAccessor = MediumVolumeAccessorFromChar( accessor );
+		pAccessor->BindVolume( pVol );
+		safe_release( pVol );
+
+		const unsigned int volDepth = volEndZ - volStartZ + 1;
+
+		(*ppi) = new HeterogeneousMedium(
+			max_sigma_a, max_sigma_s, phase, *pAccessor,
+			volWidth, volHeight, volDepth, bboxMin, bboxMax );
+		safe_release( pAccessor );
+
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "heterogeneous medium" );
+		return true;
+	}
+
+	bool RISE_API_CreateHeterogeneousMediumWithEmission(
+								IMedium** ppi,
+								const RISEPel& max_sigma_a,
+								const RISEPel& max_sigma_s,
+								const RISEPel& emission,
+								const IPhaseFunction& phase,
+								const char* szVolumeFilePattern,
+								const unsigned int volWidth,
+								const unsigned int volHeight,
+								const unsigned int volStartZ,
+								const unsigned int volEndZ,
+								const char accessor,
+								const Point3& bboxMin,
+								const Point3& bboxMax
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		Volume<unsigned char>* pVol = new Volume<unsigned char>(
+			szVolumeFilePattern, volWidth, volHeight, volStartZ, volEndZ );
+
+		IVolumeAccessor* pAccessor = MediumVolumeAccessorFromChar( accessor );
+		pAccessor->BindVolume( pVol );
+		safe_release( pVol );
+
+		const unsigned int volDepth = volEndZ - volStartZ + 1;
+
+		(*ppi) = new HeterogeneousMedium(
+			max_sigma_a, max_sigma_s, emission, phase, *pAccessor,
+			volWidth, volHeight, volDepth, bboxMin, bboxMax );
+		safe_release( pAccessor );
+
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "heterogeneous medium with emission" );
 		return true;
 	}
 }

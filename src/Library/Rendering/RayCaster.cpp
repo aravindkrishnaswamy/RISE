@@ -273,13 +273,18 @@ bool RayCaster::CastRay(
 			const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
 			RISEPel throughput( 0, 0, 0 );
 			if( sigma_t_max > 0 ) {
-				// Per-channel weight: Tr * sigma_s / (sigma_t_max * Tr_max)
-				// where Tr_max = exp(-sigma_t_max * t) is the sampling PDF's
-				// exponential factor.  Since Tr[ch] = exp(-sigma_t[ch] * t),
-				// the ratio Tr[ch] / Tr_max corrects for per-channel extinction.
-				const Scalar Tr_max = exp( -sigma_t_max * t_m );
-				if( Tr_max > 0 ) {
-					throughput = Tr * coeff.sigma_s * (1.0 / (sigma_t_max * Tr_max));
+				// Per-channel weight: Tr[ch] * sigma_s[ch] / (sigma_t_max * T_scalar)
+				// where T_scalar is the scalar tracking transmittance used by the
+				// distance sampling PDF.  For delta tracking with majorant
+				// sigma_t_majorant = MaxValue(max_sigma_t):
+				//   T_scalar = exp(-sigma_t_majorant * integral_density)
+				// Since Tr[ch] = exp(-max_sigma_t[ch] * integral_density), the
+				// channel with the highest max_sigma_t gives the lowest Tr.
+				// Therefore T_scalar = MinValue(Tr), which works correctly for
+				// both homogeneous and heterogeneous media.
+				const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+				if( Tr_scalar > 0 ) {
+					throughput = Tr * coeff.sigma_s * (1.0 / (sigma_t_max * Tr_scalar));
 				}
 			}
 
@@ -315,23 +320,32 @@ bool RayCaster::CastRay(
 			c = throughput * (Ld + Li);
 
 			// Volumetric emission contribution along segment [0, t_m].
-			// The correct integral for homogeneous emissive media is:
-			//   integral_0^t emission * exp(-sigma_t * s) ds
-			//     = emission * (1 - exp(-sigma_t * t)) / sigma_t
-			// Per-channel: emission[ch] * (1 - Tr[ch]) / sigma_t[ch]
+			// The integral is: Le * integral_0^t Tr(0->s) ds
+			//
+			// For homogeneous media (constant sigma_t):
+			//   = emission * (1 - exp(-sigma_t * t)) / sigma_t
+			//
+			// For heterogeneous media, sigma_t varies spatially.
+			// We use the effective optical depth tau = -ln(Tr) from
+			// the ray-marched transmittance and compute:
+			//   emission * (1 - Tr) * t / tau
+			// This is exact when sigma_t is constant along the segment
+			// and a reasonable approximation otherwise.
 			if( ColorMath::MaxValue( coeff.emission ) > 0 )
 			{
 				RISEPel emissionContrib( 0, 0, 0 );
 				for( int ch = 0; ch < 3; ch++ )
 				{
-					if( coeff.sigma_t[ch] > 0 )
+					if( Tr[ch] < 1.0 - 1e-10 )
 					{
+						// Use effective optical depth from ray-marched Tr
+						const Scalar tau = -log( fmax( Tr[ch], 1e-30 ) );
 						emissionContrib[ch] = coeff.emission[ch] *
-							(1.0 - Tr[ch]) / coeff.sigma_t[ch];
+							(1.0 - Tr[ch]) * t_m / tau;
 					}
 					else
 					{
-						// Zero extinction: emission accumulates linearly
+						// Nearly transparent: emission accumulates linearly
 						emissionContrib[ch] = coeff.emission[ch] * t_m;
 					}
 				}
@@ -357,19 +371,26 @@ bool RayCaster::CastRay(
 		// would never contribute emission since scatter events never occur.
 		if( !scattered )
 		{
-			const MediumCoefficients coeff = pMedium->GetCoefficients( ray.origin );
+			// Use midpoint of the segment for coefficient evaluation,
+			// which is a better approximation than ray origin for
+			// heterogeneous media where density varies spatially.
+			const Scalar segDist = bHit ? ri.geometric.range : Scalar(1000.0);
+			const Point3 midPt = ray.PointAtLength( segDist * 0.5 );
+			const MediumCoefficients coeff = pMedium->GetCoefficients( midPt );
 			if( ColorMath::MaxValue( coeff.emission ) > 0 )
 			{
-				const Scalar segDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				// Use ray-marched transmittance for the emission integral
+				// to handle heterogeneous extinction correctly.
+				const RISEPel Tr_seg = pMedium->EvalTransmittance( ray, segDist );
 				RISEPel emissionContrib( 0, 0, 0 );
 				for( int ch = 0; ch < 3; ch++ )
 				{
-					if( coeff.sigma_t[ch] > 0 )
+					if( Tr_seg[ch] < 1.0 - 1e-10 )
 					{
-						// Beer-Lambert emission integral: emission * (1 - exp(-sigma_t * d)) / sigma_t
-						const Scalar Tr_ch = exp( -coeff.sigma_t[ch] * segDist );
+						// Effective optical depth from ray-marched Tr
+						const Scalar tau = -log( fmax( Tr_seg[ch], 1e-30 ) );
 						emissionContrib[ch] = coeff.emission[ch] *
-							(1.0 - Tr_ch) / coeff.sigma_t[ch];
+							(1.0 - Tr_seg[ch]) * segDist / tau;
 					}
 					else
 					{
@@ -588,12 +609,13 @@ bool RayCaster::CastRayNM(
 
 			c = throughput * (Ld + Li);
 
-			// Volumetric emission: correct Beer-Lambert integral
+			// Volumetric emission: use effective optical depth
 			if( coeff.emission > 0 )
 			{
-				if( coeff.sigma_t > 0 )
+				if( Tr < 1.0 - 1e-10 )
 				{
-					c += coeff.emission * (1.0 - Tr) / coeff.sigma_t;
+					const Scalar tau = -log( fmax( Tr, 1e-30 ) );
+					c += coeff.emission * (1.0 - Tr) * t_m / tau;
 				}
 				else
 				{
@@ -614,14 +636,16 @@ bool RayCaster::CastRayNM(
 		// Non-scatter path: accumulate volumetric emission along segment
 		if( !scattered )
 		{
-			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( ray.origin, nm );
+			const Scalar segDist = bHit ? ri.geometric.range : Scalar(1000.0);
+			const Point3 midPt = ray.PointAtLength( segDist * 0.5 );
+			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( midPt, nm );
 			if( coeff.emission > 0 )
 			{
-				const Scalar segDist = bHit ? ri.geometric.range : RISE_INFINITY;
-				if( coeff.sigma_t > 0 )
+				const Scalar Tr_seg = pMedium->EvalTransmittanceNM( ray, segDist, nm );
+				if( Tr_seg < 1.0 - 1e-10 )
 				{
-					const Scalar Tr_seg = exp( -coeff.sigma_t * segDist );
-					c += coeff.emission * (1.0 - Tr_seg) / coeff.sigma_t;
+					const Scalar tau = -log( fmax( Tr_seg, 1e-30 ) );
+					c += coeff.emission * (1.0 - Tr_seg) * segDist / tau;
 				}
 				else
 				{

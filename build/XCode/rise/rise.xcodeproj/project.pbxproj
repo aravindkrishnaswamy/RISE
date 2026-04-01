@@ -717,6 +717,9 @@
 		F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544B2F7CAB67009AF16D /* MediumTracking.h */; };
 		F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544C2F7CAB67009AF16D /* MediumTransport.h */; };
 		F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
+		F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */; };
+		F24C54592F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
+		F24C545A2F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1477,6 +1480,8 @@
 		F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MediumTransport.cpp; sourceTree = "<group>"; };
 		F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetEnergyLUT.h; sourceTree = "<group>"; };
 		F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetUtils.h; sourceTree = "<group>"; };
+		F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HeterogeneousMedium.h; sourceTree = "<group>"; };
+		F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HeterogeneousMedium.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2558,6 +2563,8 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */,
+				F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */,
 				F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */,
 				F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */,
 				F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */,
@@ -3254,6 +3261,7 @@
 				F27F0ADA069C42910069C9E5 /* ILightPriv.h in Headers */,
 				F27F0ADB069C42910069C9E5 /* ILog.h in Headers */,
 				F27F0ADC069C42910069C9E5 /* ILogPrinter.h in Headers */,
+				F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */,
 				F2C5D57B2F6E450F00546C97 /* CameraUtilities.h in Headers */,
 				F27F0ADD069C42910069C9E5 /* ILogPriv.h in Headers */,
 				F27F0ADE069C42910069C9E5 /* ILuminaryManager.h in Headers */,
@@ -3723,6 +3731,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F24C54592F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */,
 				F27F0A5C069C42910069C9E5 /* Animator.cpp in Sources */,
 				F27F0A5E069C42910069C9E5 /* ElementTimeline.cpp in Sources */,
 				F27F0A60069C42910069C9E5 /* KeyframableHelper.cpp in Sources */,
@@ -4400,6 +4409,7 @@
 				F24B73732F52A632008304C4 /* PNGWriter.cpp in Sources */,
 				F24B73742F52A632008304C4 /* PNGWriter.h in Sources */,
 				F24B73752F52A632008304C4 /* PPMWriter.cpp in Sources */,
+				F24C545A2F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */,
 				F24B73762F52A632008304C4 /* PPMWriter.h in Sources */,
 				F24B73772F52A632008304C4 /* RasterImage.h in Sources */,
 				F24B73782F52A632008304C4 /* ReadOnlyRasterImage.h in Sources */,

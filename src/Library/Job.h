@@ -954,6 +954,25 @@ namespace RISE
 			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
 			);
 
+		//! Adds a heterogeneous participating medium driven by volume data
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddHeterogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double max_sigma_a[3],							///< [in] Max absorption coefficient (linear RGB)
+			const double max_sigma_s[3],							///< [in] Max scattering coefficient (linear RGB)
+			const double emission[3],								///< [in] Volumetric emission (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g,									///< [in] Asymmetry factor for HG
+			const char* szVolumeFilePattern,						///< [in] File pattern for volume slices
+			const unsigned int volWidth,							///< [in] Volume width in voxels
+			const unsigned int volHeight,							///< [in] Volume height in voxels
+			const unsigned int volStartZ,							///< [in] Starting z slice index
+			const unsigned int volEndZ,								///< [in] Ending z slice index
+			const char accessor,									///< [in] Volume accessor type: 'n', 't', or 'c'
+			const double bboxMin[3],								///< [in] World-space AABB minimum corner
+			const double bboxMax[3]									///< [in] World-space AABB maximum corner
+			);
+
 		//! Sets the scene's global participating medium
 		/// \return TRUE if successful, FALSE otherwise
 		bool SetGlobalMedium(

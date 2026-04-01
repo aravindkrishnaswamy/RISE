@@ -3624,6 +3624,89 @@ namespace RISE
 				}
 			};
 
+			struct HeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					double max_sigma_a[3] = {0};
+					double max_sigma_s[3] = {0};
+					double emission[3] = {0};
+					String phase_type = "isotropic";
+					double phase_g = 0.0;
+					String volume_pattern = "";
+					unsigned int vol_width = 0;
+					unsigned int vol_height = 0;
+					unsigned int vol_startz = 0;
+					unsigned int vol_endz = 0;
+					char accessor = 't';
+					double bbox_min[3] = {0};
+					double bbox_max[3] = {0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "absorption" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_a[0], &max_sigma_a[1], &max_sigma_a[2] );
+						} else if( pname == "scattering" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_s[0], &max_sigma_s[1], &max_sigma_s[2] );
+						} else if( pname == "emission" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &emission[0], &emission[1], &emission[2] );
+						} else if( pname == "phase" ) {
+							String ptype;
+							String pval;
+							if( string_split( pvalue, ptype, pval, ' ' ) ) {
+								phase_type = ptype;
+								phase_g = pval.toDouble();
+							} else {
+								phase_type = pvalue;
+							}
+						} else if( pname == "volume_pattern" ) {
+							volume_pattern = pvalue;
+						} else if( pname == "volume_width" ) {
+							vol_width = pvalue.toUInt();
+						} else if( pname == "volume_height" ) {
+							vol_height = pvalue.toUInt();
+						} else if( pname == "volume_startz" ) {
+							vol_startz = pvalue.toUInt();
+						} else if( pname == "volume_endz" ) {
+							vol_endz = pvalue.toUInt();
+						} else if( pname == "accessor" ) {
+							accessor = pvalue.c_str()[0];
+						} else if( pname == "bbox_min" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_min[0], &bbox_min[1], &bbox_min[2] );
+						} else if( pname == "bbox_max" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_max[0], &bbox_max[1], &bbox_max[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					if( volume_pattern.empty() || vol_width == 0 || vol_height == 0 ) {
+						GlobalLog()->PrintEasyError( "HeterogeneousMedium:: volume_pattern, volume_width, and volume_height are required" );
+						return false;
+					}
+
+					if( vol_endz < vol_startz ) {
+						GlobalLog()->PrintEasyError( "HeterogeneousMedium:: volume_endz must be >= volume_startz" );
+						return false;
+					}
+
+					return pJob.AddHeterogeneousMedium( name.c_str(),
+						max_sigma_a, max_sigma_s, emission, phase_type.c_str(), phase_g,
+						volume_pattern.c_str(), vol_width, vol_height, vol_startz, vol_endz,
+						accessor, bbox_min, bbox_max );
+				}
+			};
+
 
 			//////////////////////////////////////////
 			// Objects
@@ -6900,6 +6983,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["bumpmap_modifier"] = new BumpmapModifierAsciiChunkParser();
 
 	chunks["homogeneous_medium"] = new HomogeneousMediumAsciiChunkParser();
+	chunks["heterogeneous_medium"] = new HeterogeneousMediumAsciiChunkParser();
 
 	chunks["standard_object"] = new StandardObjectAsciiChunkParser();
 	chunks["csg_object"] = new CSGObjectAsciiChunkParser();

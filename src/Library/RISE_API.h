@@ -2154,6 +2154,44 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								);
 
 
+	//! Creates a heterogeneous participating medium driven by a volume dataset
+	/// Uses delta tracking for distance sampling and deterministic ray
+	/// marching for transmittance.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const char* szVolumeFilePattern,	///< [in] File pattern for volume slices
+								const unsigned int volWidth,		///< [in] Volume width in voxels
+								const unsigned int volHeight,		///< [in] Volume height in voxels
+								const unsigned int volStartZ,		///< [in] Starting z slice index
+								const unsigned int volEndZ,			///< [in] Ending z slice index
+								const char accessor,				///< [in] Volume accessor type: 'n'=NNB, 't'=trilinear
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+	//! Creates a heterogeneous participating medium with emission
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHeterogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const char* szVolumeFilePattern,	///< [in] File pattern for volume slices
+								const unsigned int volWidth,		///< [in] Volume width in voxels
+								const unsigned int volHeight,		///< [in] Volume height in voxels
+								const unsigned int volStartZ,		///< [in] Starting z slice index
+								const unsigned int volEndZ,			///< [in] Ending z slice index
+								const char accessor,				///< [in] Volume accessor type: 'n'=NNB, 't'=trilinear
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+
 	//////////////////////////////////////////////////////////
 	// Virtual measurement devices
 	//////////////////////////////////////////////////////////
