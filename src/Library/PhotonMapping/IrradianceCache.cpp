@@ -508,7 +508,7 @@ IrradianceCache::~IrradianceCache( )
 {
 }
 
-void IrradianceCache::FinishedPrecomputation()
+void IrradianceCache::FinishedPrecomputation() const
 {
 	#ifdef _DEBUG
 	assert( !bPreComputed );

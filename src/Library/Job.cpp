@@ -4787,7 +4787,7 @@ bool Job::SetCausticPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
-	IPhotonMap* pMap = pScene->GetCausticPelMap();
+	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
 
 	if( !pMap ) {
 		return false;
@@ -4806,7 +4806,7 @@ bool Job::SetGlobalPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
-	IPhotonMap* pMap = pScene->GetGlobalPelMap();
+	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
 
 	if( !pMap ) {
 		return false;
@@ -4825,7 +4825,7 @@ bool Job::SetTranslucentPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
-	IPhotonMap* pMap = pScene->GetTranslucentPelMap();
+	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
 
 	if( !pMap ) {
 		return false;
@@ -4845,7 +4845,7 @@ bool Job::SetCausticSpectralGatherParameters(
 	const double nm_range							///< [in] Range of wavelengths to search for a NM irradiance estimate
 	)
 {
-	ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMap();
+	ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMapMutable();
 
 	if( !pMap ) {
 		return false;
@@ -4865,7 +4865,7 @@ bool Job::SetGlobalSpectralGatherParameters(
 	const double nm_range							///< [in] Range of wavelengths to search for a NM irradiance estimate
 	)
 {
-	ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMap();
+	ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMapMutable();
 
 	if( !pMap ) {
 		return false;
@@ -4884,7 +4884,7 @@ bool Job::SetShadowGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
-	IShadowPhotonMap* pMap = pScene->GetShadowMap();
+	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
 
 	if( !pMap ) {
 		return false;
@@ -4926,7 +4926,7 @@ bool Job::SaveCausticPelPhotonmap(
 	IWriteBuffer* buffer = 0;
 	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
-	IPhotonMap* pMap = pScene->GetCausticPelMap();
+	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
 
 	if( !pMap ) {
 		GlobalLog()->PrintEasyError( "Scene doesn't contain a caustic pel photon map" );
@@ -4951,7 +4951,7 @@ bool Job::SaveGlobalPelPhotonmap(
 	IWriteBuffer* buffer = 0;
 	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
-	IPhotonMap* pMap = pScene->GetGlobalPelMap();
+	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
 
 	if( !pMap ) {
 		GlobalLog()->PrintEasyError( "Scene doesn't contain a global pel photon map" );
@@ -4976,7 +4976,7 @@ bool Job::SaveTranslucentPelPhotonmap(
 	IWriteBuffer* buffer = 0;
 	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
-	IPhotonMap* pMap = pScene->GetTranslucentPelMap();
+	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
 
 	if( !pMap ) {
 		GlobalLog()->PrintEasyError( "Scene doesn't contain a translucent pel photon map" );
@@ -5001,7 +5001,7 @@ bool Job::SaveCausticSpectralPhotonmap(
 	IWriteBuffer* buffer = 0;
 	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
-	IPhotonMap* pMap = pScene->GetCausticSpectralMap();
+	const ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMap();
 
 	if( !pMap ) {
 		GlobalLog()->PrintEasyError( "Scene doesn't contain a caustic spectral photon map" );
@@ -5026,7 +5026,7 @@ bool Job::SaveGlobalSpectralPhotonmap(
 	IWriteBuffer* buffer = 0;
 	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
-	IPhotonMap* pMap = pScene->GetGlobalSpectralMap();
+	const ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMap();
 
 	if( !pMap ) {
 		GlobalLog()->PrintEasyError( "Scene doesn't contain a global spectral photon map" );
@@ -5051,7 +5051,7 @@ bool Job::SaveShadowPhotonmap(
 	IWriteBuffer* buffer = 0;
 	RISE_API_CreateDiskFileWriteBuffer( &buffer, file_name );
 
-	IShadowPhotonMap* pMap = pScene->GetShadowMap();
+	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
 
 	if( !pMap ) {
 		GlobalLog()->PrintEasyError( "Scene doesn't contain a shadow photon map" );
@@ -5821,7 +5821,7 @@ bool Job::AddKeyframe(
 	if( type == "object" ) {
 		pkf = pObjectManager->GetItem( element );
 	} else if( type == "camera" ) {
-		pkf = pScene->GetCamera();
+		pkf = pScene->GetCameraMutable();
 	} else if( type == "geometry" ) {
 		pkf = pGeomManager->GetItem( element );
 	} else if( type == "painter" ) {

@@ -279,7 +279,8 @@ BioSpecSkinSPF::~BioSpecSkinSPF()
 	pnt_folds_aspect_ratio.release();
 }
 
-bool BioSpecSkinSPF::ProcessSCInteraction( 
+bool BioSpecSkinSPF::ProcessSCInteraction(
+	const SkinParams& sp,										///< Skin parameters
 	const Scalar nm,											///< The wavelength we are working in
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
@@ -296,15 +297,16 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 	if( bAtOutsideBoundary ) {
 		if( bDoCellScattering ) {
 			// Compute the Outside / stratum corneum boundary interaction
-			const Scalar ref = Outside_SC_Boundary_Refraction( 
+			const Scalar ref = Outside_SC_Boundary_Refraction(
+				sp,
 				photon_in,
-				photon_temp, 
-				onb, 
+				photon_temp,
+				onb,
 				1.0 );
 
 			if( ref > 0.0 && sampler.Get1D() < ref ) {
 				// Take the reflectance and use the Trowbridge scattering
-				photon_out = StratumCorneum_Cell_Scattering( sampler, 
+				photon_out = StratumCorneum_Cell_Scattering( sp, sampler,
 								Optics::CalculateReflectedRay( photon_in, onb.w() ) );
 
 				if( Vector3Ops::Dot(onb.w(), photon_out) > 0.0 ) {
@@ -330,22 +332,23 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 			return false;
 		}
 
-		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
+		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( sp, nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
-		if( path_length <=  thickness_SC ) {
+		if( path_length <=  sp.thickness_SC ) {
 			return true;
 		}
 
 		// No absorption
 
 		return ProcessEpidermisInteraction(
+			sp,
 			nm,
-			photon_temp, 
+			photon_temp,
 			photon_out,
 			onb,
 			sampler,
-			true, 
+			true,
 			true
 			);
 	} else {
@@ -355,6 +358,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		if( bDoFresnel ) {
 			// Compute the epidermis / SC boundary interaction
 			const Scalar ref = Epidermis_SC_Boundary_Refraction(
+				sp,
 				photon_in,
 				photon_temp,
 				onb );
@@ -366,13 +370,14 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 
 					if( Vector3Ops::Dot(onb.w(), photon_temp) < 0.0 ) {
 						// Ray is reflected back to the epidermis
-						return ProcessEpidermisInteraction( 
+						return ProcessEpidermisInteraction(
+							sp,
 							nm,
-							photon_temp, 
+							photon_temp,
 							photon_out,
-							onb, 
-							sampler, 
-							true, 
+							onb,
+							sampler,
+							true,
 							false );
 					}
 				}
@@ -389,19 +394,20 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 		if( cos_alpha < 0.0 ) {
 			// Bounced back into the epidermis
 			return ProcessEpidermisInteraction(
-				nm, 
+				sp,
+				nm,
 				photon_temp,
 				photon_out,
-				onb, 
+				onb,
 				sampler,
-				true, 
+				true,
 				true );
 		}
 
-		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
+		const Scalar absorption = ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum( sp, nm ) + ComputeSkinBaselineAbsorptionCoefficient( nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
-		if( path_length <=  thickness_SC ) {
+		if( path_length <=  sp.thickness_SC ) {
 			return true;
 		}
 
@@ -413,6 +419,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 
 			// Compute the SC / outside boundary interaction
 			const Scalar ref = SC_Outside_Boundary_Refraction(
+				sp,
 				photon_temp,
 				leaving_skin,
 				onb,
@@ -424,12 +431,13 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 				leaving_skin = Optics::CalculateReflectedRay( photon_temp, -onb.w() );
 
 				// Ray is reflected back to the stratum corneum
-				return ProcessSCInteraction( 
+				return ProcessSCInteraction(
+					sp,
 					nm,
-					leaving_skin, 
+					leaving_skin,
 					photon_out,
-					onb, 
-					sampler, 
+					onb,
+					sampler,
 					true,
 					false,
 					false );
@@ -446,6 +454,7 @@ bool BioSpecSkinSPF::ProcessSCInteraction(
 //! Can pass the photon off to the papillary dermis or to the stratum corneum
 //! \return TRUE if the photon was absorbed, FALSE otherwise
 bool BioSpecSkinSPF::ProcessEpidermisInteraction(
+	const SkinParams& sp,										///< Skin parameters
 	const Scalar nm,											///< The wavelength we are working in
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
@@ -463,9 +472,10 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 
 		if( bDoFresnel ) {
 			// Do the SC--Epidermis interaction
-			const Scalar ref = SC_Epidermis_Boundary_Refraction( 
+			const Scalar ref = SC_Epidermis_Boundary_Refraction(
+				sp,
 				photon_in,
-				photon_temp, 
+				photon_temp,
 				onb );
 
 			if( ref > 0.0 && sampler.Get1D() < ref ) {
@@ -474,43 +484,45 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 
 				if( Vector3Ops::Dot(-onb.w(), photon_temp) < 0.0 ) {
 					return ProcessSCInteraction(
+						sp,
 						nm,
-						photon_temp, 
+						photon_temp,
 						photon_out,
 						onb,
 						sampler,
 						false,
-						false, 
+						false,
 						false);
 				}
 			}
 		}
 
-		
+
 		Vector3 photon_scattered;
 		do {
 			photon_scattered = Epidermis_Scattering( nm, sampler, photon_temp );
 		} while( Vector3Ops::Dot(-onb.w(), photon_scattered) < 0 );
 		photon_temp = photon_scattered;
 		const Scalar cos_alpha = Vector3Ops::Dot(-onb.w(), photon_temp);
-		
-		const Scalar absorption = ComputeEpidermisAbsorptionCoefficient( nm );
+
+		const Scalar absorption = ComputeEpidermisAbsorptionCoefficient( sp, nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
-		if( path_length <=  thickness_epidermis ) {
+		if( path_length <=  sp.thickness_epidermis ) {
 			return true;
 		}
 
 		// Otherwise it makes it to the papillary dermis
 		return ProcessPapillaryDermisInteraction(
-			nm, 
+			sp,
+			nm,
 			photon_temp,
 			photon_out,
 			onb,
 			sampler,
-			true, 
+			true,
 			true );
-	} 
+	}
 	else
 	{
 		// Facing up, at the dermis boundary
@@ -518,6 +530,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 		if( bDoFresnel ) {
 			// Do the Dermis--Epidermis interaction
 			const Scalar ref = PapillaryDermis_Epidermis_Boundary_Refraction(
+				sp,
 				photon_in,
 				photon_temp,
 				onb );
@@ -528,40 +541,42 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 
 				if( Vector3Ops::Dot(onb.w(), photon_temp) < 0.0 ) {
 					return ProcessPapillaryDermisInteraction(
+						sp,
 						nm,
 						photon_temp,
 						photon_out,
-						onb, 
+						onb,
 						sampler,
-						true, 
+						true,
 						false );
 				}
 			}
 		}
 
-		
+
 		Vector3 photon_scattered;
 		do {
 			photon_scattered = Epidermis_Scattering( nm, sampler, photon_temp );
 		} while( Vector3Ops::Dot(onb.w(), photon_scattered) < 0 );
 		photon_temp = photon_scattered;
 		const Scalar cos_alpha = Vector3Ops::Dot(onb.w(), photon_scattered);
-		
-		const Scalar absorption = ComputeEpidermisAbsorptionCoefficient( nm );
+
+		const Scalar absorption = ComputeEpidermisAbsorptionCoefficient( sp, nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * cos_alpha;
 
-		if( path_length <=  thickness_epidermis ) {
+		if( path_length <=  sp.thickness_epidermis ) {
 			return true;
 		}
 
 		return ProcessSCInteraction(
+			sp,
 			nm,
 			photon_temp,
 			photon_out,
-			onb, 
+			onb,
 			sampler,
-			false, 
-			false, 
+			false,
+			false,
 			true );
 	}
 }
@@ -570,6 +585,7 @@ bool BioSpecSkinSPF::ProcessEpidermisInteraction(
 //! Can pass the photon off to the epidermis or reticular dermis
 //! \return TRUE if the photon was absorbed, FALSE otherwise
 bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
+	const SkinParams& sp,										///< Skin parameters
 	const Scalar nm,											///< The wavelength we are working in
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
@@ -587,9 +603,10 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 
 		if( bDoFresnel ) {
 			// Do the Epidermis--Dermis interaction
-			const Scalar ref = Epidermis_PapillaryDermis_Boundary_Refraction( 
+			const Scalar ref = Epidermis_PapillaryDermis_Boundary_Refraction(
+				sp,
 				photon_in,
-				photon_temp, 
+				photon_temp,
 				onb );
 
 			if( ref > 0.0 && sampler.Get1D() < ref ) {
@@ -598,20 +615,21 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 
 				if( Vector3Ops::Dot(-onb.w(), photon_temp ) < 0 ) {
 					return ProcessEpidermisInteraction(
+						sp,
 						nm,
-						photon_temp, 
+						photon_temp,
 						photon_out,
 						onb,
 						sampler,
-						false, 
+						false,
 						false );
 				}
 			}
 		}
 
 		// Do Rayleigh check
-		const Scalar distance_to_reticular = thickness_papillary_dermis / Vector3Ops::Dot(-onb.w(), photon_temp );
-		const Scalar prob_rayleigh = 1.0-ComputeRayleighScatteringProbability( nm, ior_papillary_dermis, distance_to_reticular );
+		const Scalar distance_to_reticular = sp.thickness_papillary_dermis / Vector3Ops::Dot(-onb.w(), photon_temp );
+		const Scalar prob_rayleigh = 1.0-ComputeRayleighScatteringProbability( nm, sp.ior_papillary_dermis, distance_to_reticular );
 
 		// Check to see if the ray is scattered
 		if( sampler.Get1D() < prob_rayleigh ) {
@@ -626,33 +644,35 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 		if( Vector3Ops::Dot(-onb.w(), photon_temp ) < 0.0 ) {
 			// bounced back to the epidermis
 			return ProcessEpidermisInteraction(
+				sp,
 				nm,
 				photon_temp,
 				photon_out,
 				onb,
 				sampler,
-				false, 
+				false,
 				true );
 		}
 
-		const Scalar absorption = ComputePapillaryDermisAbsorptionCoefficient( nm );
+		const Scalar absorption = ComputePapillaryDermisAbsorptionCoefficient( sp, nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(-onb.w(), photon_temp );
 
-		if( path_length <=  thickness_papillary_dermis ) {
+		if( path_length <=  sp.thickness_papillary_dermis ) {
 			return true;
 		}
 
 		// No scattering or absorption
 		return ProcessReticularDermisInteraction(
+			sp,
 			nm,
 			photon_temp,
 			photon_out,
-			onb, 
-			sampler, 
-			true, 
+			onb,
+			sampler,
+			true,
 			true );
 	}
-	else 
+	else
 	{
 		// Facing up, at the dermis boundary
 
@@ -660,6 +680,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 			// Do the Papillary--Reticular interaction
 			// Ray coming up from the reticular dermis
 			const Scalar ref = ReticularLayer_PapillaryDermis_Boundary_Refraction(
+				sp,
 				photon_in,
 				photon_temp,
 				onb );
@@ -670,35 +691,37 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 
 				if( Vector3Ops::Dot(onb.w(), photon_temp) < 0.0 ) {
 					return ProcessReticularDermisInteraction(
+						sp,
 						nm,
 						photon_temp,
 						photon_out,
-						onb, 
+						onb,
 						sampler,
-						true, 
+						true,
 						false );
 				}
 			}
 		}
 
-		// We don't bother with the Rayleigh check, since it was already done on the 
+		// We don't bother with the Rayleigh check, since it was already done on the
 		// way down
 
 		photon_temp = Dermis_Scattering( sampler, onb.w() );
-		
-		const Scalar absorption = ComputePapillaryDermisAbsorptionCoefficient( nm );
+
+		const Scalar absorption = ComputePapillaryDermisAbsorptionCoefficient( sp, nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(onb.w(), photon_temp );
 
-		if( path_length <=  thickness_papillary_dermis ) {
+		if( path_length <=  sp.thickness_papillary_dermis ) {
 			return true;
 		}
 
 		// No scattering or absorption
 		return ProcessEpidermisInteraction(
+			sp,
 			nm,
 			photon_temp,
 			photon_out,
-			onb, 
+			onb,
 			sampler,
 			false,
 			true );
@@ -709,6 +732,7 @@ bool BioSpecSkinSPF::ProcessPapillaryDermisInteraction(
 //! Can pass the photon off to the epidermis or reticular dermis
 //! \return TRUE if the photon was absorbed, FALSE otherwise
 bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
+	const SkinParams& sp,										///< Skin parameters
 	const Scalar nm,											///< The wavelength we are working in
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
@@ -725,9 +749,10 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 		// Facing down, at the papillary dermis boundary
 		if( bDoFresnel ) {
 			// Do the Epidermis--Dermis interaction
-			const Scalar ref = PapillaryDermis_ReticularLayer_Boundary_Refraction( 
+			const Scalar ref = PapillaryDermis_ReticularLayer_Boundary_Refraction(
+				sp,
 				photon_in,
-				photon_temp, 
+				photon_temp,
 				onb );
 
 			if( ref > 0.0 && sampler.Get1D() < ref ) {
@@ -736,20 +761,21 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 
 				if( Vector3Ops::Dot(-onb.w(), photon_temp ) < 0 ) {
 					return ProcessPapillaryDermisInteraction(
+						sp,
 						nm,
-						photon_temp, 
+						photon_temp,
 						photon_out,
 						onb,
 						sampler,
-						false, 
+						false,
 						false );
 				}
 			}
 		}
 
 		// Do Rayleigh check
-		const Scalar distance_to_subdermis = thickness_reticular_dermis / Vector3Ops::Dot(-onb.w(), photon_temp );
-		const Scalar prob_rayleigh = 1.0-ComputeRayleighScatteringProbability( nm, ior_reticular_dermis, distance_to_subdermis );
+		const Scalar distance_to_subdermis = sp.thickness_reticular_dermis / Vector3Ops::Dot(-onb.w(), photon_temp );
+		const Scalar prob_rayleigh = 1.0-ComputeRayleighScatteringProbability( nm, sp.ior_reticular_dermis, distance_to_subdermis );
 
 		// Check to see if the ray is scattered
 		if( sampler.Get1D() < prob_rayleigh ) {
@@ -763,55 +789,58 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 		if( Vector3Ops::Dot(-onb.w(), photon_temp ) < 0.0 ) {
 			// bounced back to the papillary derms
 			return ProcessPapillaryDermisInteraction(
+				sp,
 				nm,
 				photon_temp,
 				photon_out,
 				onb,
 				sampler,
-				false, 
+				false,
 				true );
 		}
 
-		const Scalar absorption = ComputeReticularDermisAbsorptionCoefficient( nm );
+		const Scalar absorption = ComputeReticularDermisAbsorptionCoefficient( sp, nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(-onb.w(), photon_temp );
 
-		if( path_length <=  thickness_reticular_dermis ) {
+		if( path_length <=  sp.thickness_reticular_dermis ) {
 			return true;
 		}
 
 		// No scattering or absorption
 		return ProcessSubdermisInteraction(
+			sp,
 			nm,
 			photon_temp,
 			photon_out,
-			onb, 
+			onb,
 			sampler );
 	}
-	else 
+	else
 	{
 		// Ray coming up from the subdermis
 		// Continue into the dermis towards the papillary dermis
 
-		// We don't bother with the Rayleigh check, since it was already done on the 
+		// We don't bother with the Rayleigh check, since it was already done on the
 		// way down
 
 		photon_temp = Dermis_Scattering( sampler, onb.w() );
 
-		const Scalar absorption = ComputeReticularDermisAbsorptionCoefficient( nm );
+		const Scalar absorption = ComputeReticularDermisAbsorptionCoefficient( sp, nm );
 		const Scalar path_length = (-1.0 / absorption) * log(sampler.Get1D()) * Vector3Ops::Dot(onb.w(), photon_temp);
 
-		if( path_length <=  thickness_reticular_dermis ) {
+		if( path_length <=  sp.thickness_reticular_dermis ) {
 			return true;
 		}
 
 		// No scattering or absorption
 		return ProcessPapillaryDermisInteraction(
+			sp,
 			nm,
 			photon_temp,
 			photon_out,
-			onb, 
+			onb,
 			sampler,
-			false, 
+			false,
 			true );
 	}
 }
@@ -820,6 +849,7 @@ bool BioSpecSkinSPF::ProcessReticularDermisInteraction(
 //! Can pass the photon off to the dermis
 //! \return TRUE if the photon was absorbed, FALSE otherwise
 bool BioSpecSkinSPF::ProcessSubdermisInteraction(
+	const SkinParams& sp,										///< Skin parameters
 	const Scalar nm,											///< The wavelength we are working in
 	const Vector3& photon_in,									///< The photon we are starting with
 	Vector3& photon_out,										///< The photon coming out of the layer
@@ -834,12 +864,13 @@ bool BioSpecSkinSPF::ProcessSubdermisInteraction(
 		const Vector3 vReflected = Optics::CalculateReflectedRay( photon_temp, onb.w() );
 
 		return ProcessReticularDermisInteraction(
-			nm, 
+			sp,
+			nm,
 			vReflected,
 			photon_out,
 			onb,
 			sampler,
-			false, 
+			false,
 			true );
 	}
 
@@ -857,34 +888,33 @@ void BioSpecSkinSPF::Scatter(
 {
 
 	// Setup the instance specific variables
-	{
-		thickness_SC = pnt_thickness_SC.GetColor(ri)[0];
-		thickness_epidermis = pnt_thickness_epidermis.GetColor(ri)[0];
-		thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColor(ri)[0];
-		thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColor(ri)[0];
+	SkinParams sp;
+	sp.thickness_SC = pnt_thickness_SC.GetColor(ri)[0];
+	sp.thickness_epidermis = pnt_thickness_epidermis.GetColor(ri)[0];
+	sp.thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColor(ri)[0];
+	sp.thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColor(ri)[0];
 
-		ior_SC = pnt_ior_SC.GetColor(ri)[0];
-		ior_epidermis = pnt_ior_epidermis.GetColor(ri)[0];
-		ior_papillary_dermis = pnt_ior_papillary_dermis.GetColor(ri)[0];
-		ior_reticular_dermis = pnt_ior_reticular_dermis.GetColor(ri)[0];
+	sp.ior_SC = pnt_ior_SC.GetColor(ri)[0];
+	sp.ior_epidermis = pnt_ior_epidermis.GetColor(ri)[0];
+	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetColor(ri)[0];
+	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetColor(ri)[0];
 
-		concentration_eumelanin = pnt_concentration_eumelanin.GetColor(ri)[0];
-		concentration_pheomelanin = pnt_concentration_pheomelanin.GetColor(ri)[0];
+	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetColor(ri)[0];
+	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetColor(ri)[0];
 
-		melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetColor(ri)[0];
+	sp.melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetColor(ri)[0];
 
-		hb_ratio = pnt_hb_ratio.GetColor(ri)[0];
-		whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetColor(ri)[0];
-		whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetColor(ri)[0];
+	sp.hb_ratio = pnt_hb_ratio.GetColor(ri)[0];
+	sp.whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetColor(ri)[0];
+	sp.whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetColor(ri)[0];
 
-		betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetColor(ri)[0];
-		betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetColor(ri)[0];
-		betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetColor(ri)[0];
+	sp.betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetColor(ri)[0];
+	sp.betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetColor(ri)[0];
+	sp.betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetColor(ri)[0];
 
-		bilirubin_concentration = pnt_bilirubin_concentration.GetColor(ri)[0];
+	sp.bilirubin_concentration = pnt_bilirubin_concentration.GetColor(ri)[0];
 
-		folds_aspect_ratio = pnt_folds_aspect_ratio.GetColor(ri)[0];
-	}
+	sp.folds_aspect_ratio = pnt_folds_aspect_ratio.GetColor(ri)[0];
 
 	Vector3 photon_out;
 
@@ -895,6 +925,7 @@ void BioSpecSkinSPF::Scatter(
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) < 0 ) {
 		// From top, so send it to the stratum corneum
 		bAbsorbed = ProcessSCInteraction(
+			sp,
 			sampler.Get1D()*400.0+380.0,
 			ri.ray.Dir(),
 			photon_out,
@@ -907,6 +938,7 @@ void BioSpecSkinSPF::Scatter(
 		// From bottom, and there is no subdermal reflecting layer,
 		// so light can transmit through the skin
 		bAbsorbed = ProcessReticularDermisInteraction(
+			sp,
 			sampler.Get1D()*400.0+380.0,
 			ri.ray.Dir(),
 			photon_out,
@@ -939,34 +971,33 @@ void BioSpecSkinSPF::ScatterNM(
 		) const
 {
 	// Setup the instance specific variables
-	{
-		thickness_SC = pnt_thickness_SC.GetColorNM(ri,nm);
-		thickness_epidermis = pnt_thickness_epidermis.GetColorNM(ri,nm);
-		thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColorNM(ri,nm);
-		thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColorNM(ri,nm);
+	SkinParams sp;
+	sp.thickness_SC = pnt_thickness_SC.GetColorNM(ri,nm);
+	sp.thickness_epidermis = pnt_thickness_epidermis.GetColorNM(ri,nm);
+	sp.thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColorNM(ri,nm);
+	sp.thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColorNM(ri,nm);
 
-		ior_SC = pnt_ior_SC.GetColorNM(ri,nm);
-		ior_epidermis = pnt_ior_epidermis.GetColorNM(ri,nm);
-		ior_papillary_dermis = pnt_ior_papillary_dermis.GetColorNM(ri,nm);
-		ior_reticular_dermis = pnt_ior_reticular_dermis.GetColorNM(ri,nm);
+	sp.ior_SC = pnt_ior_SC.GetColorNM(ri,nm);
+	sp.ior_epidermis = pnt_ior_epidermis.GetColorNM(ri,nm);
+	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetColorNM(ri,nm);
+	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetColorNM(ri,nm);
 
-		concentration_eumelanin = pnt_concentration_eumelanin.GetColorNM(ri,nm);
-		concentration_pheomelanin = pnt_concentration_pheomelanin.GetColorNM(ri,nm);
+	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetColorNM(ri,nm);
+	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetColorNM(ri,nm);
 
-		melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetColorNM(ri,nm);
+	sp.melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetColorNM(ri,nm);
 
-		hb_ratio = pnt_hb_ratio.GetColorNM(ri,nm);
-		whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetColorNM(ri,nm);
-		whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetColorNM(ri,nm);
+	sp.hb_ratio = pnt_hb_ratio.GetColorNM(ri,nm);
+	sp.whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetColorNM(ri,nm);
+	sp.whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetColorNM(ri,nm);
 
-		betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetColorNM(ri,nm);
-		betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetColorNM(ri,nm);
-		betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetColorNM(ri,nm);
+	sp.betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetColorNM(ri,nm);
+	sp.betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetColorNM(ri,nm);
+	sp.betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetColorNM(ri,nm);
 
-		bilirubin_concentration = pnt_bilirubin_concentration.GetColorNM(ri,nm);
+	sp.bilirubin_concentration = pnt_bilirubin_concentration.GetColorNM(ri,nm);
 
-		folds_aspect_ratio = pnt_folds_aspect_ratio.GetColorNM(ri,nm);
-	}
+	sp.folds_aspect_ratio = pnt_folds_aspect_ratio.GetColorNM(ri,nm);
 
 	Vector3 photon_out;
 
@@ -977,6 +1008,7 @@ void BioSpecSkinSPF::ScatterNM(
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) < 0 ) {
 		// From top, so send it to the stratum corneum
 		bAbsorbed = ProcessSCInteraction(
+			sp,
 			nm,
 			ri.ray.Dir(),
 			photon_out,
@@ -989,6 +1021,7 @@ void BioSpecSkinSPF::ScatterNM(
 		// From bottom, and there is no subdermal reflecting layer,
 		// so light can transmit through the skin
 		bAbsorbed = ProcessReticularDermisInteraction(
+			sp,
 			nm,
 			ri.ray.Dir(),
 			photon_out,

@@ -55,7 +55,7 @@ void AmbientOcclusionShaderOp::PerformOperation(
 	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
 	bool bComputeAmbOcc = true;
-	IIrradianceCache* pCache = caster.GetAttachedScene()->GetIrradianceCache();
+	const IIrradianceCache* pCache = caster.GetAttachedScene()->GetIrradianceCache();
 
 	// If we are to use irradiance caching and we are in a normal pass, look it up
 	if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {

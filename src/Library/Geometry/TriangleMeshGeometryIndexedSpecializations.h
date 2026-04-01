@@ -100,11 +100,14 @@ namespace RISE
 	{
 		// Mailboxing: skip triangles already tested for this ray
 #ifdef RISE_ENABLE_MAILBOXING
-		const unsigned int triIdx = static_cast<unsigned int>( elem - &ptr_polygons[0] );
-		if( mailbox[triIdx] == currentRayId ) {
-			return;
+		{
+			MailboxState& mb = GetMailbox(geometryId, ptr_polygons.size());
+			const unsigned int triIdx = static_cast<unsigned int>( elem - &ptr_polygons[0] );
+			if( mb.stamps[triIdx] == mb.rayId ) {
+				return;
+			}
+			mb.stamps[triIdx] = mb.rayId;
 		}
-		mailbox[triIdx] = currentRayId;
 #endif
 
 		TRIANGLE_HIT	h;
@@ -170,11 +173,14 @@ namespace RISE
 	{
 		// Mailboxing: skip triangles already tested for this ray
 #ifdef RISE_ENABLE_MAILBOXING
-		const unsigned int triIdx = static_cast<unsigned int>( elem - &ptr_polygons[0] );
-		if( mailbox[triIdx] == currentRayId ) {
-			return false;
+		{
+			MailboxState& mb = GetMailbox(geometryId, ptr_polygons.size());
+			const unsigned int triIdx = static_cast<unsigned int>( elem - &ptr_polygons[0] );
+			if( mb.stamps[triIdx] == mb.rayId ) {
+				return false;
+			}
+			mb.stamps[triIdx] = mb.rayId;
 		}
-		mailbox[triIdx] = currentRayId;
 #endif
 
 		const PointerTriangle&	thisTri = *elem;

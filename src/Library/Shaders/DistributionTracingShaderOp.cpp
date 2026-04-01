@@ -81,7 +81,7 @@ void DistributionTracingShaderOp::PerformOperation(
 	if( pScene && pSPF ) {
 
 		bool bComputeIrradiance = true;
-		IIrradianceCache* pCache = pScene->GetIrradianceCache();
+		const IIrradianceCache* pCache = pScene->GetIrradianceCache();
 
 		// If we are to use irradiance caching and we are in a normal pass, look it up
 		if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {

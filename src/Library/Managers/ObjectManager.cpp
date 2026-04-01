@@ -180,6 +180,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pBSPtree ) {
+			GlobalLog()->PrintEasyWarning( "ObjectManager: BSP tree built lazily during IntersectRay; call PrepareForRendering() before rendering" );
 			CreateBSPTree();
 		}
 
@@ -189,6 +190,7 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 		pBSPtree->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
+			GlobalLog()->PrintEasyWarning( "ObjectManager: Octree built lazily during IntersectRay; call PrepareForRendering() before rendering" );
 			CreateOctree();
 		}
 
@@ -288,5 +290,34 @@ void ObjectManager::ResetRuntimeData() const
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
 	for( i=items.begin(), e=items.end(); i!=e; i++ ) {
 		i->second.first->ResetRuntimeData();
+	}
+}
+
+void ObjectManager::PrepareForRendering() const
+{
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBSPtree ) {
+		CreateBSPTree();
+	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {
+		CreateOctree();
+	}
+
+	if( !shadowCache ) {
+		shadowCache = new ShadowCacheSlot[kShadowCacheSlots]();
+	}
+}
+
+void ObjectManager::InvalidateSpatialStructure() const
+{
+	if( pBSPtree ) {
+		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying BSP tree for rebuild" );
+		safe_release( pBSPtree );
+	}
+	if( pOctree ) {
+		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying octree for rebuild" );
+		safe_release( pOctree );
+	}
+	// Shadow cache slots are reset but not freed — the array persists.
+	if( shadowCache ) {
+		memset( shadowCache, 0, sizeof(ShadowCacheSlot) * kShadowCacheSlots );
 	}
 }

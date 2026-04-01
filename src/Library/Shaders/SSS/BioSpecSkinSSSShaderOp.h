@@ -124,6 +124,9 @@ namespace RISE
 
 			// --- Per-object octrees ---
 			typedef std::map<const IObject*, PointSetOctree*> PointSetMap;
+			// Known scene-immutability exception: pointsets are lazily built on first
+			// access because construction requires ray tracing the scene. Access is
+			// serialized by create_mutex (double-checked locking), so this is thread-safe.
 			mutable PointSetMap	pointsets;
 			const RMutex		create_mutex;
 

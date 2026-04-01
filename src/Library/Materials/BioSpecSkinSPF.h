@@ -28,6 +28,29 @@ namespace RISE
 		{
 			friend class GenericHumanTissueSPF;
 
+		public:
+			struct SkinParams {
+				Scalar thickness_SC;
+				Scalar thickness_epidermis;
+				Scalar thickness_papillary_dermis;
+				Scalar thickness_reticular_dermis;
+				Scalar ior_SC;
+				Scalar ior_epidermis;
+				Scalar ior_papillary_dermis;
+				Scalar ior_reticular_dermis;
+				Scalar concentration_eumelanin;
+				Scalar concentration_pheomelanin;
+				Scalar melanosomes_in_epidermis;
+				Scalar hb_ratio;
+				Scalar whole_blood_in_papillary_dermis;
+				Scalar whole_blood_in_reticular_dermis;
+				Scalar betacarotene_concentration_SC;
+				Scalar betacarotene_concentration_epidermis;
+				Scalar betacarotene_concentration_dermis;
+				Scalar bilirubin_concentration;
+				Scalar folds_aspect_ratio;
+			};
+
 		protected:
 			//////////////////////////////////////////////////////////////////////////
 			// Member variables
@@ -86,40 +109,6 @@ namespace RISE
 			IFunction1D*				pBetaCaroteneExt;				///< Lookup table for beta-carotene extinction (from absorption)
 
 
-			////////////////////////////////////////////////
-			// Run-time variables
-			////////////////////////////////////////////////
-			
-			// These variables are used in the runtime, they are basically
-			// instance specific values for the painters above
-			mutable Scalar					thickness_SC;							///< Thickness of the stratum corneum (in cm)
-			mutable Scalar					thickness_epidermis;					///< Thickness of the epidermis (in cm)
-			mutable Scalar					thickness_papillary_dermis;				///< Thickness of the papillary dermis (in cm)
-			mutable Scalar					thickness_reticular_dermis;				///< Thickness of the reticular layer (in cm)
-
-			mutable Scalar					ior_SC;									///< Index of refraction of the stratum corneum
-			mutable Scalar					ior_epidermis;							///< Index of refraction of the epidermis
-			mutable Scalar					ior_papillary_dermis;					///< Index of refraction of the papillary dermis
-			mutable Scalar					ior_reticular_dermis;					///< Index of refraction of the reticular layer
-
-			mutable Scalar					concentration_eumelanin;				///< Average Concentration of eumelanin in the melanosomes
-			mutable Scalar					concentration_pheomelanin;				///< Average Concentration of pheomelan in in the melanosomes
-
-			mutable Scalar					melanosomes_in_epidermis;				///< Percentage of the epidermis composed of melanosomes
-
-			mutable Scalar					hb_ratio;								///< Oxy/deoxy hemoglobin ratio
-			mutable Scalar					whole_blood_in_papillary_dermis;		///< Percentage of the papillary dermis composed of whole blood
-			mutable Scalar					whole_blood_in_reticular_dermis;		///< Percentage of the reticular layer composed of whole blood
-
-			mutable Scalar					betacarotene_concentration_SC;			///< Concentration of beta-carotene in the stratum corneum
-			mutable Scalar					betacarotene_concentration_epidermis;	///< Concentration of beta-carotene in the epidermis
-			mutable Scalar					betacarotene_concentration_dermis;		///< Concentration of beta-carotene in the dermis
-
-			mutable Scalar					bilirubin_concentration;				///< Concentration of bilirubin in whole blood
-
-			mutable Scalar					folds_aspect_ratio;						///< Aspect ratio of the skin wrinkles and folds
-
-
 			virtual ~BioSpecSkinSPF();
 
 			//////////////////////////////////////////////////////////////////////////
@@ -138,14 +127,15 @@ namespace RISE
 				const Scalar aspect_ratio							///< [in] Aspect ratio of the cells
 				);
 
-			//! Scatters a ray at the stratum corneum 
+			//! Scatters a ray at the stratum corneum
 			/// \return The direction of the outgoing ray
-			inline Vector3 StratumCorneum_Cell_Scattering( 
+			inline Vector3 StratumCorneum_Cell_Scattering(
+				const SkinParams& sp,							///< [in] Skin parameters
 				ISampler& sampler,							///< [in] Sampler
 				const Vector3& incoming								///< [in] The direction of the incoming ray
 				) const
 			{
-				return TrowbridgeReitz_Scattering( sampler, incoming, folds_aspect_ratio );
+				return TrowbridgeReitz_Scattering( sampler, incoming, sp.folds_aspect_ratio );
 			}
 
 			//! Scatters accoding to a lookup which is described in the function
@@ -267,50 +257,55 @@ namespace RISE
 			}
 
 			//! Computes the absorption coefficient for eumelanin
-			inline Scalar ComputeEumelaninAbsorptionCoefficient( 
+			inline Scalar ComputeEumelaninAbsorptionCoefficient(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return ComputeMelaninAbsorptionCoefficient( nm, pEumelaninExt, concentration_eumelanin );
+				return ComputeMelaninAbsorptionCoefficient( nm, pEumelaninExt, sp.concentration_eumelanin );
 			}
 
 			//! Computes the absorption coefficient for pheomelanin
-			inline Scalar ComputePheomelaninAbsorptionCoefficient( 
+			inline Scalar ComputePheomelaninAbsorptionCoefficient(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return ComputeMelaninAbsorptionCoefficient( nm, pPheomelaninExt, concentration_pheomelanin );
+				return ComputeMelaninAbsorptionCoefficient( nm, pPheomelaninExt, sp.concentration_pheomelanin );
 			}
 
 			//! Computes the total transmittance for eumelanin
-			inline Scalar ComputeEumelaninTransmittance( 
+			inline Scalar ComputeEumelaninTransmittance(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm,										///< [in] Wavelength of light to consider
 				const Scalar distance									///< [in] Amount travelled in pigment
 				) const
 			{
-				return ComputeMelaninTransmittance( nm, pEumelaninExt, distance, concentration_eumelanin );
+				return ComputeMelaninTransmittance( nm, pEumelaninExt, distance, sp.concentration_eumelanin );
 			}
 
 			//! Computes the total transmittance for pheomelanin
-			inline Scalar ComputePheomelaninTransmittance( 
+			inline Scalar ComputePheomelaninTransmittance(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm,										///< [in] Wavelength of light to consider
 				const Scalar distance									///< [in] Amount travelled in pigment
 				) const
 			{
-				return ComputeMelaninTransmittance( nm, pPheomelaninExt, distance, concentration_pheomelanin );
+				return ComputeMelaninTransmittance( nm, pPheomelaninExt, distance, sp.concentration_pheomelanin );
 			}
 
 			//! Computes the absorption coefficient for the epidermis
 			inline Scalar ComputeEpidermisAbsorptionCoefficient(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				const Scalar abs_eumelanin = ComputeEumelaninAbsorptionCoefficient( nm );
-				const Scalar abs_pheomelanin = ComputePheomelaninAbsorptionCoefficient( nm );
-				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientEpidermis( nm );
+				const Scalar abs_eumelanin = ComputeEumelaninAbsorptionCoefficient( sp, nm );
+				const Scalar abs_pheomelanin = ComputePheomelaninAbsorptionCoefficient( sp, nm );
+				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientEpidermis( sp, nm );
 				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_eumelanin+abs_pheomelanin)*melanosomes_in_epidermis)+(abs_carotene+abs_baseline)*(1.0-melanosomes_in_epidermis);
+				return ((abs_eumelanin+abs_pheomelanin)*sp.melanosomes_in_epidermis)+(abs_carotene+abs_baseline)*(1.0-sp.melanosomes_in_epidermis);
 			}
 
 			//! Computes the absorption coefficient for hemoglobin
@@ -341,10 +336,11 @@ namespace RISE
 
 			// Computes the absorption coefficient for bilirubin
 			inline Scalar ComputeBilirubinAbsorptionCoefficient(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return pBilirubinExt->Evaluate(nm) * bilirubin_concentration / 585.0 * log(10.0);
+				return pBilirubinExt->Evaluate(nm) * sp.bilirubin_concentration / 585.0 * log(10.0);
 			}
 
 			// Computes the absorption coefficient for beta-carotene in generate
@@ -358,54 +354,59 @@ namespace RISE
 
 			// Computes the absorption coefficient for beta-carotene in the stratum corneum
 			inline Scalar ComputeBetaCaroteneAbsorptionCoefficientStratumCorneum(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return ComputeBetaCaroteneAbsorptionCoefficient( nm, betacarotene_concentration_SC );
+				return ComputeBetaCaroteneAbsorptionCoefficient( nm, sp.betacarotene_concentration_SC );
 			}
 
 			// Computes the absorption coefficient for beta-carotene in the epidermis
 			inline Scalar ComputeBetaCaroteneAbsorptionCoefficientEpidermis(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return ComputeBetaCaroteneAbsorptionCoefficient( nm, betacarotene_concentration_epidermis );
+				return ComputeBetaCaroteneAbsorptionCoefficient( nm, sp.betacarotene_concentration_epidermis );
 			}
 
 			// Computes the absorption coefficient for beta-carotene in the epidermis
 			inline Scalar ComputeBetaCaroteneAbsorptionCoefficientDermis(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				return ComputeBetaCaroteneAbsorptionCoefficient( nm, betacarotene_concentration_dermis );
+				return ComputeBetaCaroteneAbsorptionCoefficient( nm, sp.betacarotene_concentration_dermis );
 			}
 
 			// Computes the absorption coefficient for the papillary dermis
 			inline Scalar ComputePapillaryDermisAbsorptionCoefficient(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * hb_ratio;
-				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-hb_ratio);
-				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( nm );
-				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( nm );
+				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * sp.hb_ratio;
+				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-sp.hb_ratio);
+				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( sp, nm );
+				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( sp, nm );
 				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_papillary_dermis)+(abs_carotene+abs_baseline)*(1.0-whole_blood_in_papillary_dermis);
+				return ((abs_hbo2+abs_hb+abs_bilirubin)*sp.whole_blood_in_papillary_dermis)+(abs_carotene+abs_baseline)*(1.0-sp.whole_blood_in_papillary_dermis);
 			}
 
 			// Computes the absorption coefficient for the reticular dermis
 			inline Scalar ComputeReticularDermisAbsorptionCoefficient(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Scalar nm											///< [in] Wavelength of light to consider
 				) const
 			{
-				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * hb_ratio;
-				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-hb_ratio);
-				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( nm );
-				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( nm );
+				const Scalar abs_hbo2 = ComputeOxyHemoglobinAbsorptionCoefficient( nm ) * sp.hb_ratio;
+				const Scalar abs_hb = ComputeDeoxyHemoglobinAbsorptionCoefficient( nm )* (1.0-sp.hb_ratio);
+				const Scalar abs_bilirubin = ComputeBilirubinAbsorptionCoefficient( sp, nm );
+				const Scalar abs_carotene = ComputeBetaCaroteneAbsorptionCoefficientDermis( sp, nm );
 				const Scalar abs_baseline = ComputeSkinBaselineAbsorptionCoefficient( nm );
 
-				return ((abs_hbo2+abs_hb+abs_bilirubin)*whole_blood_in_reticular_dermis)+(abs_carotene+abs_baseline)*(1.0-whole_blood_in_reticular_dermis);
+				return ((abs_hbo2+abs_hb+abs_bilirubin)*sp.whole_blood_in_reticular_dermis)+(abs_carotene+abs_baseline)*(1.0-sp.whole_blood_in_reticular_dermis);
 			}
 
 			static inline Scalar ComputeBeta( 
@@ -457,95 +458,104 @@ namespace RISE
 
 			//! Refraction between outside and stratum corneum
 			inline Scalar Outside_SC_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb,							///< [in] Orthonormal basis of the skin
 				const Scalar ior_outside								///< [in] Index of refraction of the outside of skin (ie. air)
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_outside, ior_SC );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_outside, sp.ior_SC );
 			}
 
 			//! Refraction between stratum corneum and outside
 			inline Scalar SC_Outside_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb,							///< [in] Orthonormal basis of the skin
 				const Scalar ior_outside								///< [in] Index of refraction of the outside of skin (ie. air)
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_SC, ior_outside );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_SC, ior_outside );
 			}
 
 			//! Refraction between stratum corneum and epidermis
-			inline Scalar SC_Epidermis_Boundary_Refraction( 
+			inline Scalar SC_Epidermis_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb							///< [in] Orthonormal basis of the skin
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_SC, ior_epidermis );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_SC, sp.ior_epidermis );
 			}
 
 			//! Refraction between epidermis and startum corneum
-			inline Scalar Epidermis_SC_Boundary_Refraction( 
+			inline Scalar Epidermis_SC_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb							///< [in] Orthonormal basis of the skin
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_epidermis, ior_SC );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_epidermis, sp.ior_SC );
 			}
 
 			//! Refraction between the epidermis and air
-			inline Scalar Epidermis_Outside_Boundary_Refraction( 
+			inline Scalar Epidermis_Outside_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb,							///< [in] Orthonormal basis of the skin
 				const Scalar ior_outside								///< [in] Index of refraction of the outside of skin (ie. air)
-				) const 
+				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_epidermis, ior_outside );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_epidermis, ior_outside );
 			}
 
 			//! Refraction between the epidermis and the papillary dermis
 			inline Scalar Epidermis_PapillaryDermis_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb							///< [in] Orthonormal basis of the skin
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_epidermis, ior_papillary_dermis );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_epidermis, sp.ior_papillary_dermis );
 			}
 
 			//! Refraction between the papillary dermis and the epidermis
 			inline Scalar PapillaryDermis_Epidermis_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb							///< [in] Orthonormal basis of the skin
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_papillary_dermis, ior_epidermis );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_papillary_dermis, sp.ior_epidermis );
 			}
 
 			//! Refraction between the papillary dermis and the reticular layer
 			inline Scalar PapillaryDermis_ReticularLayer_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb							///< [in] Orthonormal basis of the skin
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_papillary_dermis, ior_reticular_dermis );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_papillary_dermis, sp.ior_reticular_dermis );
 			}
 
 			//! Refraction between the reticular layer and the papillary dermis
 			inline Scalar ReticularLayer_PapillaryDermis_Boundary_Refraction(
+				const SkinParams& sp,									///< [in] Skin parameters
 				const Vector3& incoming,								///< [in] Direction of incoming ray
 				Vector3& outgoing,										///< [out] Direction of outgoing ray
 				const OrthonormalBasis3D& onb							///< [in] Orthonormal basis of the skin
 				) const
 			{
-				return Boundary_Refraction( incoming, outgoing, onb.w(), ior_reticular_dermis, ior_papillary_dermis );
+				return Boundary_Refraction( incoming, outgoing, onb.w(), sp.ior_reticular_dermis, sp.ior_papillary_dermis );
 			}
 
 			/////////////////////////////////////////////////
@@ -555,7 +565,8 @@ namespace RISE
 			//! Does stratum corneum interactions
 			//! Can pass the photon off to the epidermis, or can return the photon back
 			//! \return TRUE if the photon was absorbed, FALSE otherwise
-			bool ProcessSCInteraction( 
+			bool ProcessSCInteraction(
+				const SkinParams& sp,										///< Skin parameters
 				const Scalar nm,											///< The wavelength we are working in
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
@@ -571,6 +582,7 @@ namespace RISE
 			//! Can pass the photon off to the papillary dermis or to the stratum corneum
 			//! \return TRUE if the photon was absorbed, FALSE otherwise
 			bool ProcessEpidermisInteraction(
+				const SkinParams& sp,										///< Skin parameters
 				const Scalar nm,											///< The wavelength we are working in
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
@@ -585,6 +597,7 @@ namespace RISE
 			//! Can pass the photon off to the epidermis or reticular dermis
 			//! \return TRUE if the photon was absorbed, FALSE otherwise
 			bool ProcessPapillaryDermisInteraction(
+				const SkinParams& sp,										///< Skin parameters
 				const Scalar nm,											///< The wavelength we are working in
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
@@ -599,6 +612,7 @@ namespace RISE
 			//! Can pass the photon off to the epidermis or reticular dermis
 			//! \return TRUE if the photon was absorbed, FALSE otherwise
 			bool ProcessReticularDermisInteraction(
+				const SkinParams& sp,										///< Skin parameters
 				const Scalar nm,											///< The wavelength we are working in
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer
@@ -613,6 +627,7 @@ namespace RISE
 			//! Can pass the photon off to the dermis
 			//! \return TRUE if the photon was absorbed, FALSE otherwise
 			bool ProcessSubdermisInteraction(
+				const SkinParams& sp,										///< Skin parameters
 				const Scalar nm,											///< The wavelength we are working in
 				const Vector3& photon_in,									///< The photon we are starting with
 				Vector3& photon_out,										///< The photon coming out of the layer

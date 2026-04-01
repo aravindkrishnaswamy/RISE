@@ -280,6 +280,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	// so the ray caster needs the scene attached before training starts.
 	// AttachScene also creates and Prepare()s the unified LightSampler.
 	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
 
 	// Share the RayCaster's prepared LightSampler with the integrator
 	const LightSampler* pLS = pCaster->GetLightSampler();

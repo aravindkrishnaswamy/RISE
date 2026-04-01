@@ -76,6 +76,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 	const unsigned int height = pScene.GetCamera()->GetHeight();
 
 	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
 
 	ISampling2D::SamplesList2D samples;
 	pSampling.GenerateSamplePoints(rc.random, samples);
@@ -373,6 +374,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	pCaster->AttachScene( &pScene );
 
+	// Eagerly build spatial acceleration structures (BSP/octree) from current
+	// world-space bounding boxes before any multi-threaded rendering begins.
+	pScene.GetObjects()->PrepareForRendering();
+
 	// Pre-render hook (e.g. path guiding training)
 	PreRenderSetup( pScene, pRect );
 
@@ -384,7 +389,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 	// We should do the irradiance pass to populate the cache
-	IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
+	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
 		BlockRasterizeSequence* irrad_seq = new BlockRasterizeSequence( 64, 64, 6 );
 		if( pProgressFunc ) {
@@ -531,7 +536,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	framedata.pixelRate = pixelRate;
 	framedata.scanningRate = scanningRate;
 
-	IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
+	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
 		BlockRasterizeSequence* irrad_seq = new BlockRasterizeSequence( 32, 24, 6 );
 		pProgressFunc->SetTitle( "Irradiance Pass: " );
@@ -582,6 +587,8 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// Get the ray caster ready to roll
 	pCaster->AttachScene( &pScene );
 
+	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
+
 	for( unsigned int i=0; i<(specificFrame?1:num_frames); i++ )
 	{
 		if( do_fields ) {
@@ -591,12 +598,22 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 			// Upper field
 			pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
+			// Rebuild spatial structure after transforms update but before
+			// SetSceneTime, which regenerates photon maps via ray tracing.
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence );
 
 			// Lower field
 			pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence );
@@ -604,6 +621,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
 			pScene.GetAnimator()->EvaluateAtTime( curtime );
+			// Rebuild spatial structure after transforms update but before
+			// SetSceneTime, which regenerates photon maps via ray tracing.
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 

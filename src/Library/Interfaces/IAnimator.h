@@ -40,7 +40,11 @@ namespace RISE
 			const String* interp_param								///< [in] Parameters for the interpolator
 			) = 0;
 
-		//! Evaluates the entire animation at the given time
+		//! Evaluates the entire animation at the given time.
+		//! WARNING: This mutates keyframed scene elements (camera, transforms,
+		//! painters) through stored pointers. When called during multi-threaded
+		//! temporal sampling, this is a pre-existing data race in the animation
+		//! system. A proper fix would require per-thread interpolated state.
 		virtual void EvaluateAtTime( const Scalar time ) = 0;
 
 		//! Tells us whether anything is keyframed

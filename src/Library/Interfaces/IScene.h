@@ -44,33 +44,37 @@ namespace RISE
 		virtual const ILightManager*		GetLights( )	const = 0;
 
 		/// \return The currently assigned camera
-		virtual ICamera*					GetCamera( )	const = 0;
+		virtual const ICamera*				GetCamera( )	const = 0;
 
 		/// \return The global radiance map
 		virtual const IRadianceMap*			GetGlobalRadianceMap() const = 0;
 
 		/// \return The caustic PEL photon map
-		virtual IPhotonMap*					GetCausticPelMap()	const = 0;
+		virtual const IPhotonMap*			GetCausticPelMap()	const = 0;
 
 		/// \return The global PEL photon map
-		virtual IPhotonMap*					GetGlobalPelMap()	const = 0;
+		virtual const IPhotonMap*			GetGlobalPelMap()	const = 0;
 
 		/// \return The translucent PEL photon map
-		virtual IPhotonMap*					GetTranslucentPelMap()	const = 0;
+		virtual const IPhotonMap*			GetTranslucentPelMap()	const = 0;
 
 		/// \return The caustic spectral photon map
-		virtual ISpectralPhotonMap*			GetCausticSpectralMap() const = 0;
+		virtual const ISpectralPhotonMap*	GetCausticSpectralMap() const = 0;
 
 		/// \return The caustic global photon map
-		virtual ISpectralPhotonMap*			GetGlobalSpectralMap() const = 0;
+		virtual const ISpectralPhotonMap*	GetGlobalSpectralMap() const = 0;
 
 		/// \return The shadow photon map
-		virtual IShadowPhotonMap*			GetShadowMap()	const = 0;
+		virtual const IShadowPhotonMap*		GetShadowMap()	const = 0;
 
 		/// \return The irradiance cache
-		virtual IIrradianceCache*			GetIrradianceCache() const = 0;
+		virtual const IIrradianceCache*		GetIrradianceCache() const = 0;
 
 		/// \return The animator
+		/// NOTE: Returns non-const because EvaluateAtTime() mutates keyframed
+		/// elements. This is a known scene-immutability exception — the animation
+		/// system predates the const-correctness model and a proper fix would
+		/// require per-thread interpolated state for temporal sampling.
 		virtual IAnimator*					GetAnimator() const = 0;
 
 		/// \return The global participating medium (NULL if vacuum)

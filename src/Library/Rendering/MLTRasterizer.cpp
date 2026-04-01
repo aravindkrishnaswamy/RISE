@@ -522,6 +522,7 @@ void MLTRasterizer::RasterizeScene(
 
 	// AttachScene creates and Prepare()s the unified LightSampler
 	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
 
 	// Share the RayCaster's prepared LightSampler with the integrator
 	const LightSampler* pLS = pCaster->GetLightSampler();

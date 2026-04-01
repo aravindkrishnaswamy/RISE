@@ -62,6 +62,16 @@ namespace RISE
 
 		//! Tells all the objects to reset any runtime data
 		virtual void ResetRuntimeData() const = 0;
+
+		//! Eagerly builds spatial acceleration structures before rendering begins.
+		//! Must be called before multi-threaded rendering to avoid lazy init during render.
+		virtual void PrepareForRendering() const = 0;
+
+		//! Destroys the current spatial acceleration structure so it can be rebuilt.
+		//! Used when animated object transforms invalidate the world-space bounding
+		//! boxes that the BSP/octree was built from. Call PrepareForRendering() after
+		//! this to rebuild with current transforms.
+		virtual void InvalidateSpatialStructure() const = 0;
 	};
 }
 

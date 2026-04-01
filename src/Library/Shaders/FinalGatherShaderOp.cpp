@@ -369,7 +369,7 @@ void FinalGatherShaderOp::PerformOperation(
 			bool bComputeIrradiance = true;
 
 				// If we are in normal rendering pass, look it up in the cache
-				IIrradianceCache* pCache = pScene->GetIrradianceCache();
+				const IIrradianceCache* pCache = pScene->GetIrradianceCache();
 				if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
 					// Look it up
 					std::vector<IIrradianceCache::CacheElement> results;

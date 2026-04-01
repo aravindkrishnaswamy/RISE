@@ -97,6 +97,9 @@ namespace RISE
 
 			//! Tells all the objects to reset any runtime data
 			void ResetRuntimeData() const;
+
+			void PrepareForRendering() const;
+			void InvalidateSpatialStructure() const;
 		};
 	}
 }

@@ -20,6 +20,10 @@
 #include "GeometryUtilities.h"
 #include "../Utilities/stl_utils.h"
 #include <cmath>
+#ifdef RISE_ENABLE_MAILBOXING
+#include <atomic>
+#include <unordered_map>
+#endif
 
 inline unsigned int VoidPtrToUInt( const void* v )
 {
@@ -28,6 +32,29 @@ inline unsigned int VoidPtrToUInt( const void* v )
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+#ifdef RISE_ENABLE_MAILBOXING
+namespace {
+	static std::atomic<unsigned int> s_nextGeometryId(1);
+
+	struct MailboxState {
+		unsigned int rayId;
+		std::vector<unsigned int> stamps;
+	};
+
+	static thread_local std::unordered_map<unsigned int, MailboxState> tl_mailboxes;
+
+	static inline MailboxState& GetMailbox(unsigned int geomId, size_t numTris)
+	{
+		MailboxState& mb = tl_mailboxes[geomId];
+		if( mb.stamps.size() < numTris ) {
+			mb.stamps.assign(numTris, 0);
+			mb.rayId = 0;
+		}
+		return mb;
+	}
+}
+#endif
 
 #include "TriangleMeshGeometryIndexedSpecializations.h"
 
@@ -46,7 +73,7 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
   pPtrOctree( 0 ),
   pPtrBSPtree( 0 )
 #ifdef RISE_ENABLE_MAILBOXING
-  , currentRayId( 0 )
+  , geometryId( s_nextGeometryId.fetch_add(1) )
 #endif
 {
 }
@@ -68,7 +95,10 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 
 	// Bump the mailbox ray ID so duplicate triangles in multiple BSP leaves are skipped
 #ifdef RISE_ENABLE_MAILBOXING
-	++currentRayId;
+	{
+		MailboxState& mb = GetMailbox(geometryId, ptr_polygons.size());
+		++mb.rayId;
+	}
 #endif
 
 	if( bUseBSP && pPtrBSPtree ) {
@@ -88,7 +118,10 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 bool TriangleMeshGeometryIndexed::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
 #ifdef RISE_ENABLE_MAILBOXING
-	++currentRayId;
+	{
+		MailboxState& mb = GetMailbox(geometryId, ptr_polygons.size());
+		++mb.rayId;
+	}
 #endif
 
 	if( bUseBSP && pPtrBSPtree ) {
@@ -258,12 +291,6 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 		stl_utils::container_erase_all< IndexTriangleListType >( indexedtris );
 
 	}
-
-	// Initialize mailbox array (one slot per triangle, all zeroed)
-#ifdef RISE_ENABLE_MAILBOXING
-	mailbox.assign( ptr_polygons.size(), 0 );
-	currentRayId = 0;
-#endif
 
 	// We're done with all the triangles so stuff it all into an octree
 	// First compute the bounds of the octree
@@ -696,12 +723,6 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	}
 
 	ComputeAreas();
-
-	// Initialize mailbox for the loaded triangles
-#ifdef RISE_ENABLE_MAILBOXING
-	mailbox.assign( ptr_polygons.size(), 0 );
-	currentRayId = 0;
-#endif
 
 	// And we're done!
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Finished deserialization", bDoubleSided );

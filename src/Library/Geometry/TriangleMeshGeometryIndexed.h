@@ -67,11 +67,12 @@ namespace RISE
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas
 			Scalar					totalArea;			// Total area
 
-			// Mailboxing: per-triangle stamp to avoid redundant intersection tests
-			// when the same triangle appears in multiple BSP leaves.
+			// Mailboxing: unique ID for this geometry, used with thread_local
+			// storage to avoid redundant intersection tests when the same
+			// triangle appears in multiple BSP leaves.
 #ifdef RISE_ENABLE_MAILBOXING
-			mutable std::vector<unsigned int>	mailbox;
-			mutable unsigned int				currentRayId;
+			const unsigned int					geometryId;
+			size_t numTriangles() const { return ptr_polygons.size(); }
 #endif
 
 			//! Computes the triangle areas and the CDF

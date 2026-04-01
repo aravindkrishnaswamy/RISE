@@ -31,8 +31,9 @@ namespace RISE { namespace Implementation { class PathGuidingField; } }
 
 namespace RISE
 {
-	// This is this currently just a really simple POD, no reference counting
-	// and no real methods, this may however change
+	// Per-thread rendering state, allocated and owned by each rasterizer thread.
+	// Not part of the shared scene graph — mutable fields here are correct because
+	// each thread has its own RuntimeContext instance.
 	struct RuntimeContext
 	{
 		enum PASS
