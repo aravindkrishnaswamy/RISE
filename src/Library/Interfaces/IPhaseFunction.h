@@ -79,6 +79,11 @@ namespace RISE
 			const Vector3& wi,							///< [in] Incoming direction
 			const Vector3& wo							///< [in] Outgoing direction
 			) const = 0;
+
+		/// Return the mean cosine (asymmetry parameter g) of the phase function.
+		/// Used by volume guiding to apply the HG product to the learned
+		/// distribution.  Returns 0 (isotropic) by default.
+		virtual Scalar GetMeanCosine() const { return 0; }
 	};
 }
 

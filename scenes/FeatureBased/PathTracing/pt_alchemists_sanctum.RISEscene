@@ -1,0 +1,860 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_alchemists_sanctum.RISEscene                                                         #
+#   Description:    Participating-media torture test: "The Alchemist's Sanctum"                             #
+#                                                                                                           #
+#                   An underground chamber where magical artifacts sit amid layered fog and                  #
+#                   refracted light.  The scene exercises every medium-transport path:                       #
+#                                                                                                           #
+#                   MEDIA TOPOLOGY:                                                                         #
+#                     - Global haze: thin golden atmospheric fog (forward-scatter g=0.76)                   #
+#                       filling the entire chamber.  Makes light shafts visible.                             #
+#                     - Crystal orb: glass sphere (IOR 1.52) with dense amber interior fog.                 #
+#                       Tests IOR-stack medium tracking and volumetric caustics (light                       #
+#                       refracts through glass into the fog, scatters forward, glows).                      #
+#                     - Elixir vial: smaller glass sphere with emerald-green interior fog.                  #
+#                       Second IOR-stack + per-object medium instance.                                      #
+#                     - Summoned mist: pure-volume sphere (casts_shadows FALSE) of blue                     #
+#                       ethereal fog hovering above the scene.  Tests disjoint shadow-ray                    #
+#                       medium walk (shadow rays from the floor discover the mist volume                    #
+#                       along the path and attenuate).                                                      #
+#                     - Mist core: denser cyan fog sphere nested inside the summoned mist.                  #
+#                       Tests nested overlapping media in the shadow-walk boundary stack.                    #
+#                     - Overlapping aureole: a second pure-volume sphere that partially                     #
+#                       overlaps the summoned mist.  Tests non-LIFO stack removal when                      #
+#                       the shadow walk exits the aureole before the mist.                                  #
+#                                                                                                           #
+#                   LIGHTING:                                                                               #
+#                     - Narrow skylight slot overhead creates a defined shaft of warm light                  #
+#                       through the global haze.  Volumetric shadows are cast by the fog                    #
+#                       spheres (colored shadow patches on the floor).                                      #
+#                     - Small bright omni light behind the glass lens to drive refracted                    #
+#                       caustic beams through the fog.                                                      #
+#                                                                                                           #
+#                   GEOMETRY:                                                                               #
+#                     - Glass lens (CSG sphere intersection) focuses light into the fog.                    #
+#                     - Polished stone floor shows colored shadow patches from fog volumes.                  #
+#                     - Copper pedestal and mirror sphere for complex indirect paths.                        #
+#                                                                                                           #
+#                   EXPECTED VISUAL RESULT:                                                                  #
+#                     - Warm light shaft from skylight visible in global haze                                #
+#                     - Crystal orb glows amber from internal forward-scattered light                        #
+#                     - Blue mist sphere casts blue-tinted shadow on the floor                               #
+#                     - Within the blue shadow, a deeper cyan patch from the nested core                    #
+#                     - Green elixir sphere casts green-tinted shadow                                        #
+#                     - Aureole overlap region shows combined attenuation with mist                          #
+#                     - Caustic beam from lens visible as bright streak in the haze                          #
+#                     - Polished floor reflects all fog volumes                                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 1, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		14
+	min_importance		0.0005
+	samples				512
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_alchemists_sanctum
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_alchemists_sanctum
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+#
+# Dramatic low angle from the front-right corner,
+# looking across the chamber toward the artifacts.
+# The skylight shaft and fog volumes are all visible.
+##################################################
+
+pinhole_camera
+{
+	location			4.5 2.8 9.0
+	lookat				-0.5 1.8 2.0
+	up					0 1 0
+	width				768
+	height				512
+	fov					58.0
+}
+
+##################################################
+# Participating Media
+#
+# Six distinct media exercising the full transport:
+#   1. Global haze     (scene-wide, forward-scatter)
+#   2. Orb interior    (per-object, glass-enclosed)
+#   3. Elixir interior (per-object, glass-enclosed)
+#   4. Summoned mist   (per-object, pure volume)
+#   5. Mist core       (per-object, nested in #4)
+#   6. Aureole         (per-object, overlapping #4)
+##################################################
+
+# 1. Global haze: very thin golden fog.
+#    sigma_t ~ 0.003 per unit.  Room is ~12 units across
+#    so optical depth ~ 0.036 — subtle but visible shafts.
+#    Forward-scattering (g=0.76) concentrates scattered light
+#    near the beam direction, making shafts well-defined.
+homogeneous_medium
+{
+	name		global_haze
+	absorption	0.0003 0.0002 0.0006
+	scattering	0.0025 0.0022 0.0015
+	phase		hg 0.76
+}
+
+> set global_medium global_haze
+
+# 2. Crystal orb interior: dense amber smoke.
+#    Strong blue absorption gives a warm amber glow.
+#    Forward-scatter g=0.65 creates directional glow
+#    from the light entering through the glass shell.
+#    Sphere radius 1.3, optical depth ~ 2.6*0.9 ~ 2.3
+homogeneous_medium
+{
+	name		orb_fog
+	absorption	0.08 0.25 0.90
+	scattering	0.25 0.22 0.12
+	phase		hg 0.65
+}
+
+# 3. Elixir vial: emerald-green fog.
+#    Absorbs red and blue, transmits green.
+#    Sphere radius 0.55, optical depth ~ 1.1*0.8 ~ 0.9
+homogeneous_medium
+{
+	name		elixir_fog
+	absorption	0.60 0.06 0.55
+	scattering	0.15 0.20 0.15
+	phase		hg 0.4
+}
+
+# 4. Summoned mist: ethereal blue-violet haze.
+#    Absorbs red/green, transmits blue.  Moderate density.
+#    Sphere radius 1.1, optical depth ~ 2.2*0.35 ~ 0.77
+#    casts_shadows FALSE on the object — only the medium
+#    walk discovers this volume along shadow rays.
+homogeneous_medium
+{
+	name		mist_fog
+	absorption	0.18 0.12 0.01
+	scattering	0.12 0.10 0.15
+	phase		hg 0.3
+}
+
+# 5. Mist core: dense luminous cyan, nested inside #4.
+#    Stronger scattering, very low red absorption.
+#    Sphere radius 0.35, optical depth ~ 0.7*1.2 ~ 0.84
+#    The shadow walk pushes mist_fog, then pushes core_fog
+#    (core becomes active), pops core, pops mist.
+homogeneous_medium
+{
+	name		core_fog
+	absorption	0.40 0.10 0.02
+	scattering	0.50 0.45 0.60
+	phase		hg 0.0
+}
+
+# 6. Aureole: warm golden wisp overlapping the mist.
+#    Partially overlaps summoned mist to test non-LIFO
+#    stack removal in the shadow walk.
+#    Sphere radius 0.7, optical depth ~ 1.4*0.3 ~ 0.42
+homogeneous_medium
+{
+	name		aureole_fog
+	absorption	0.04 0.08 0.25
+	scattering	0.10 0.10 0.06
+	phase		hg 0.5
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# ---- Light ----
+uniformcolor_painter
+{
+	name				pnt_skylight
+	color				1.0 0.92 0.78
+}
+
+uniformcolor_painter
+{
+	name				pnt_caustic_light
+	color				1.0 0.96 0.88
+}
+
+# ---- Floor: polished dark stone ----
+uniformcolor_painter
+{
+	name				pnt_floor_rd
+	color				0.08 0.07 0.06
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_rs
+	color				0.06 0.055 0.05
+	colorspace			RISERGB
+}
+
+# ---- Walls: warm sandstone ----
+uniformcolor_painter
+{
+	name				pnt_wall_back
+	color				0.42 0.32 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall_side_warm
+	color				0.48 0.35 0.20
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall_side_cool
+	color				0.28 0.30 0.34
+}
+
+uniformcolor_painter
+{
+	name				pnt_ceiling
+	color				0.35 0.30 0.25
+}
+
+# ---- Pedestals ----
+uniformcolor_painter
+{
+	name				pnt_ped_stone
+	color				0.22 0.20 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_ped_copper_diff
+	color				0.08 0.03 0.01
+}
+
+uniformcolor_painter
+{
+	name				pnt_ped_copper_spec
+	color				0.55 0.28 0.12
+	colorspace			RISERGB
+}
+
+# ---- Glass ----
+uniformcolor_painter
+{
+	name				pnt_clear_glass
+	color				0.998 0.998 0.998
+	colorspace			RISERGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_tinted_glass
+	color				0.96 0.98 0.96
+	colorspace			RISERGB
+}
+
+# ---- Fog sphere surfaces (mist objects are lambertian
+#      but with casts_shadows FALSE, so their surface is
+#      visible but doesn't block shadow rays) ----
+uniformcolor_painter
+{
+	name				pnt_mist_surface
+	color				0.5 0.55 0.7
+}
+
+# ---- Mirror ----
+uniformcolor_painter
+{
+	name				pnt_mirror
+	color				0.92 0.92 0.94
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+# Polished stone floor — subtle glossy reflection
+ward_isotropic_material
+{
+	name				floor_mat
+	rd					pnt_floor_rd
+	rs					pnt_floor_rs
+	alpha				0.06
+}
+
+# Walls
+orennayar_material
+{
+	name				backwall_mat
+	reflectance			pnt_wall_back
+	roughness			0.3
+}
+
+lambertian_material
+{
+	name				warmwall_mat
+	reflectance			pnt_wall_side_warm
+}
+
+lambertian_material
+{
+	name				coolwall_mat
+	reflectance			pnt_wall_side_cool
+}
+
+lambertian_material
+{
+	name				ceiling_mat
+	reflectance			pnt_ceiling
+}
+
+# Stone pedestal
+orennayar_material
+{
+	name				pedestal_mat
+	reflectance			pnt_ped_stone
+	roughness			0.2
+}
+
+# Copper pedestal (decorative)
+ward_isotropic_material
+{
+	name				copper_ped_mat
+	rd					pnt_ped_copper_diff
+	rs					pnt_ped_copper_spec
+	alpha				0.08
+}
+
+# Clear glass (crystal orb shell, lens)
+dielectric_material
+{
+	name				clear_glass
+	tau					pnt_clear_glass
+	ior					1.52
+	scattering			100000.0
+}
+
+# Tinted glass (elixir vial)
+dielectric_material
+{
+	name				green_glass
+	tau					pnt_tinted_glass
+	ior					1.48
+	scattering			100000.0
+}
+
+# Mist surface (visible but shadow-transparent)
+lambertian_material
+{
+	name				mist_mat
+	reflectance			pnt_mist_surface
+}
+
+# Mirror sphere
+perfectreflector_material
+{
+	name				mirror_mat
+	reflectance			pnt_mirror
+}
+
+# Skylight emitter (bright narrow slot)
+lambertian_luminaire_material
+{
+	name				skylight_mat
+	exitance			pnt_skylight
+	scale				4000.0
+	material			none
+}
+
+# Caustic light (small bright omni emitter behind lens)
+lambertian_luminaire_material
+{
+	name				caustic_light_mat
+	exitance			pnt_caustic_light
+	scale				800.0
+	material			none
+}
+
+##################################################
+# Geometry
+#
+# Room: x=[-6, 6], y=[0, 7], z=[-1, 11]
+# 12 wide, 7 tall, 12 deep
+##################################################
+
+# ---- Room shell ----
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					6 0 -1
+	ptb					-6 0 -1
+	ptc					-6 0 11
+	ptd					6 0 11
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					-6 0 -1
+	ptb					6 0 -1
+	ptc					6 0 11
+	ptd					-6 0 11
+}
+
+# Back wall: split for skylight slot (slot at y=5.6 to y=6.1)
+clippedplane_geometry
+{
+	name				backwall_lower_geom
+	pta					-6 5.6 0
+	ptb					-6 0 0
+	ptc					6 0 0
+	ptd					6 5.6 0
+}
+
+clippedplane_geometry
+{
+	name				backwall_upper_geom
+	pta					-6 7 0
+	ptb					-6 6.1 0
+	ptc					6 6.1 0
+	ptd					6 7 0
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 7 11
+	ptb					0 0 11
+	ptc					0 0 -1
+	ptd					0 7 -1
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					0 7 -1
+	ptb					0 0 -1
+	ptc					0 0 11
+	ptd					0 7 11
+}
+
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					6 7 0
+	ptb					6 0 0
+	ptc					-6 0 0
+	ptd					-6 7 0
+}
+
+# ---- Skylight slot emitter (behind back wall, shining in) ----
+clippedplane_geometry
+{
+	name				skylight_geom
+	pta					-2.0 5.65 -0.5
+	ptb					2.0 5.65 -0.5
+	ptc					2.0 6.05 -0.5
+	ptd					-2.0 6.05 -0.5
+}
+
+# Light channel box (prevents light wrapping around the slot)
+box_geometry
+{
+	name				light_channel_top_geom
+	width				12
+	height				1.0
+	depth				0.6
+}
+
+box_geometry
+{
+	name				light_channel_bot_geom
+	width				12
+	height				5.7
+	depth				0.6
+}
+
+# ---- Caustic light emitter (small sphere behind the lens) ----
+sphere_geometry
+{
+	name				caustic_light_geom
+	radius				0.12
+}
+
+# ---- Crystal orb ----
+sphere_geometry
+{
+	name				orb_geom
+	radius				1.3
+}
+
+# ---- Elixir vial ----
+sphere_geometry
+{
+	name				elixir_geom
+	radius				0.55
+}
+
+# ---- Summoned mist (outer) ----
+sphere_geometry
+{
+	name				mist_geom
+	radius				1.1
+}
+
+# ---- Mist core (nested inside mist) ----
+sphere_geometry
+{
+	name				core_geom
+	radius				0.35
+}
+
+# ---- Aureole (overlaps mist) ----
+sphere_geometry
+{
+	name				aureole_geom
+	radius				0.7
+}
+
+# ---- Glass lens (CSG intersection of two spheres) ----
+sphere_geometry
+{
+	name				lens_top_geom
+	radius				0.55
+}
+
+sphere_geometry
+{
+	name				lens_bot_geom
+	radius				0.55
+}
+
+standard_object
+{
+	name				lens_half_a
+	geometry			lens_top_geom
+	position			0 0.36 0
+	material			clear_glass
+}
+
+standard_object
+{
+	name				lens_half_b
+	geometry			lens_bot_geom
+	position			0 -0.36 0
+	material			clear_glass
+}
+
+# ---- Mirror sphere ----
+sphere_geometry
+{
+	name				mirror_sphere_geom
+	radius				0.45
+}
+
+# ---- Pedestals ----
+box_geometry
+{
+	name				ped_tall_geom
+	width				1.0
+	height				1.0
+	depth				1.0
+}
+
+cylinder_geometry
+{
+	name				ped_round_geom
+	axis				y
+	radius				0.38
+	height				0.7
+}
+
+box_geometry
+{
+	name				ped_small_geom
+	width				0.6
+	height				0.5
+	depth				0.6
+}
+
+##################################################
+# Room structure
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	position			0 7 0
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				backwall_lower
+	geometry			backwall_lower_geom
+	material			backwall_mat
+}
+
+standard_object
+{
+	name				backwall_upper
+	geometry			backwall_upper_geom
+	material			backwall_mat
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	position			-6 0 0
+	material			warmwall_mat
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	position			6 0 0
+	material			coolwall_mat
+}
+
+standard_object
+{
+	name				frontwall
+	geometry			frontwallgeom
+	position			0 0 11
+	material			backwall_mat
+}
+
+##################################################
+# Skylight slot + channel
+##################################################
+
+standard_object
+{
+	name				skylight
+	geometry			skylight_geom
+	material			skylight_mat
+}
+
+standard_object
+{
+	name				light_channel_top
+	geometry			light_channel_top_geom
+	position			0 6.55 -0.25
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				light_channel_bot
+	geometry			light_channel_bot_geom
+	position			0 2.85 -0.25
+	material			ceiling_mat
+}
+
+##################################################
+# Pedestals
+##################################################
+
+# Orb pedestal: tall copper, center-left of room
+standard_object
+{
+	name				ped_orb
+	geometry			ped_tall_geom
+	position			-1.2 0.5 3.5
+	material			copper_ped_mat
+}
+
+# Elixir pedestal: small stone, right of orb
+standard_object
+{
+	name				ped_elixir
+	geometry			ped_round_geom
+	position			2.0 0.35 4.5
+	material			pedestal_mat
+}
+
+# Lens pedestal: small stone, left of orb
+standard_object
+{
+	name				ped_lens
+	geometry			ped_small_geom
+	position			-4.0 0.25 2.0
+	material			pedestal_mat
+}
+
+##################################################
+# Artifacts
+##################################################
+
+# ---- Crystal orb: glass shell + amber fog interior ----
+#
+# Glass sphere with IOR 1.52 enclosing dense amber fog.
+# Light refracts into the sphere, scatters forward in the
+# fog, and glows.  This is the primary volumetric caustic:
+# the glass concentrates light inside, and the fog makes
+# that concentration visible as a bright internal glow.
+standard_object
+{
+	name				crystal_orb
+	geometry			orb_geom
+	position			-1.2 2.3 3.5
+	material			clear_glass
+	interior_medium		orb_fog
+}
+
+# ---- Elixir vial: green glass + emerald fog ----
+standard_object
+{
+	name				elixir_vial
+	geometry			elixir_geom
+	position			2.0 1.25 4.5
+	material			green_glass
+	interior_medium		elixir_fog
+}
+
+# ---- Glass lens (CSG intersection) ----
+#
+# Positioned between the caustic point light and the orb.
+# Focuses light into a caustic beam visible in the global
+# haze.  Tilted slightly for visual interest.
+csg_object
+{
+	name				glass_lens
+	obja				lens_half_a
+	objb				lens_half_b
+	operation			intersection
+	position			-4.0 0.95 2.0
+	orientation			20 15 0
+}
+
+# ---- Caustic point light behind the lens ----
+#
+# Small bright emitter sphere positioned behind the lens.
+# Light refracts through the lens and creates a focused
+# beam through the haze toward the orb area.
+standard_object
+{
+	name				caustic_source
+	geometry			caustic_light_geom
+	position			-5.2 1.0 0.8
+	material			caustic_light_mat
+}
+
+# ---- Summoned mist: ethereal blue-violet fog ----
+#
+# Pure volume (casts_shadows FALSE).  Hovers above and
+# to the left.  Shadow rays from floor points to the
+# skylight must traverse this volume — the medium walk
+# discovers it and applies mist_fog transmittance.
+standard_object
+{
+	name				summoned_mist
+	geometry			mist_geom
+	position			-2.5 3.8 5.5
+	material			mist_mat
+	interior_medium		mist_fog
+	casts_shadows		FALSE
+}
+
+# ---- Mist core: dense cyan, nested inside summoned mist ----
+#
+# Nested inside the mist sphere.  The shadow-walk boundary
+# stack pushes mist_fog on entering the outer sphere, then
+# pushes core_fog on entering this sphere (core becomes
+# the active medium), pops core on exit, pops mist on exit.
+# The floor shadow directly below shows a deeper, cyan-
+# tinted patch within the broader blue shadow.
+standard_object
+{
+	name				mist_core
+	geometry			core_geom
+	position			-2.5 3.9 5.3
+	material			mist_mat
+	interior_medium		core_fog
+	casts_shadows		FALSE
+}
+
+# ---- Aureole: warm wisp overlapping the mist ----
+#
+# Partially overlaps the summoned mist sphere.  The shadow
+# walk enters mist, then enters aureole.  When the ray exits
+# the aureole before the mist, the stack must do non-LIFO
+# removal (remove aureole entry, mist stays active).
+# The floor shows a combined attenuation in the overlap zone.
+standard_object
+{
+	name				aureole
+	geometry			aureole_geom
+	position			-1.5 3.5 6.3
+	material			mist_mat
+	interior_medium		aureole_fog
+	casts_shadows		FALSE
+}
+
+# ---- Mirror sphere: reflects the fog volumes ----
+#
+# Sits on the floor, right side.  Reflects the glowing orb,
+# the blue mist, and the light shaft, creating complex
+# reflected-medium light paths.
+standard_object
+{
+	name				mirror_sphere
+	geometry			mirror_sphere_geom
+	position			3.5 0.45 3.0
+	material			mirror_mat
+}

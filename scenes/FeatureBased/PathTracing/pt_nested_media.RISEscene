@@ -1,0 +1,333 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_nested_media.RISEscene                                                               #
+#   Description:    Regression test for multi-medium shadow ray traversal with nested                       #
+#                   and disjoint per-object media.                                                          #
+#                                                                                                           #
+#                   Scene layout (side view, camera at left):                                               #
+#                                                                                                           #
+#                     [camera]  ...  [outer_fog(inner_fog)]  ...  [side_fog]  ... [light]                   #
+#                                                                                                           #
+#                   - outer_fog: large sphere (r=1.5) with blue absorption (absorbs red/green),            #
+#                     casts_shadows FALSE.  Light passing through appears warm/orange.                      #
+#                     Contains inner_fog: smaller sphere (r=0.6) with very strong warm                      #
+#                     absorption (absorbs green/blue heavily), casts_shadows FALSE.  The                    #
+#                     inner sphere is displaced forward so it sits partly inside the outer,                  #
+#                     creating a nested overlap.                                                             #
+#                                                                                                           #
+#                   - side_fog: a separate sphere (r=0.8) displaced to the right, not                       #
+#                     overlapping the outer/inner pair.  Has magenta absorption (absorbs                     #
+#                     red and blue, transmits green).  Tests the disjoint case: a shadow                     #
+#                     ray from the floor to the light must traverse side_fog's volume even                   #
+#                     though the shading point is not inside it.                                             #
+#                                                                                                           #
+#                   - A global medium with very light scattering fills the scene so that                     #
+#                     the global-minus-object accounting in EvalShadowTransmittance is also                  #
+#                     exercised.                                                                             #
+#                                                                                                           #
+#                   All fog spheres use casts_shadows FALSE so they are transparent to                       #
+#                   CastShadowRay and the only attenuation comes from the medium walk.                      #
+#                                                                                                           #
+#                   Expected visual result:                                                                  #
+#                     - Floor beneath outer_fog: warm/orange tinted patch (blue absorbed)                    #
+#                     - Floor beneath inner_fog (nested inside outer): deeper, more saturated                #
+#                       warm patch because both outer and inner transmittances multiply                      #
+#                     - Floor beneath side_fog: green-tinted patch (magenta absorbed)                        #
+#                     - Floor elsewhere: faint global fog haze                                               #
+#                                                                                                           #
+#                   If the nested walk is broken, the inner_fog's shadow will be identical                   #
+#                   to the outer_fog's shadow (inner is swallowed), and side_fog will cast                   #
+#                   no shadow at all (disjoint media missed).                                                #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 1, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	min_importance		0.001
+	samples				256
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_nested_media
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_nested_media
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 5 -4
+	lookat				0 -1.5 1.5
+	up					0 1 0
+	width				512
+	height				512
+	fov					55.0
+}
+
+##################################################
+# Participating Media
+##################################################
+
+# Thin global haze -- exercises global-medium accounting
+homogeneous_medium
+{
+	name		global_haze
+	absorption	0.0001 0.0001 0.0001
+	scattering	0.0002 0.0002 0.0002
+	phase		isotropic
+}
+
+> set global_medium global_haze
+
+# Outer fog sphere -- blue absorption, high density for visible effect
+homogeneous_medium
+{
+	name		outer_fog
+	absorption	0.2 0.5 1.5
+	scattering	0.05 0.05 0.05
+	phase		hg 0.0
+}
+
+# Inner fog sphere -- very strong warm absorption (nested inside outer)
+# When nested, both outer+inner transmittances multiply, producing
+# a visibly darker and warmer shadow than outer alone.
+homogeneous_medium
+{
+	name		inner_fog
+	absorption	0.5 2.0 5.0
+	scattering	0.1 0.1 0.1
+	phase		hg 0.0
+}
+
+# Side fog sphere -- magenta absorption, disjoint from outer/inner
+homogeneous_medium
+{
+	name		side_fog
+	absorption	1.0 0.2 1.0
+	scattering	0.05 0.05 0.05
+	phase		hg 0.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.98 0.92
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.8 0.8 0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_checker_a
+	color				0.7 0.7 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_checker_b
+	color				0.3 0.3 0.3
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				80.0
+	material			none
+}
+
+##################################################
+# Geometry
+##################################################
+
+# --- Floor ---
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					8 -1.5 -4
+	ptb					-8 -1.5 -4
+	ptc					-8 -1.5 8
+	ptd					8 -1.5 8
+}
+
+# --- Back wall ---
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					-8 -1.5 6
+	ptb					-8 6 6
+	ptc					8 6 6
+	ptd					8 -1.5 6
+}
+
+# --- Ceiling light ---
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					2.0 5.99 -1
+	ptb					2.0 5.99 3
+	ptc					-2.0 5.99 3
+	ptd					-2.0 5.99 -1
+}
+
+# --- Outer fog sphere (large) ---
+sphere_geometry
+{
+	name				outer_sphere_geom
+	radius				1.5
+}
+
+# --- Inner fog sphere (nested inside outer) ---
+sphere_geometry
+{
+	name				inner_sphere_geom
+	radius				0.6
+}
+
+# --- Side fog sphere (disjoint) ---
+sphere_geometry
+{
+	name				side_sphere_geom
+	radius				0.8
+}
+
+# --- Small reference sphere (solid, no medium) ---
+sphere_geometry
+{
+	name				ref_sphere_geom
+	radius				0.3
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}
+
+# Outer fog sphere -- casts_shadows FALSE so shadow rays pass through.
+# The medium walk in EvalShadowTransmittance discovers this object
+# and applies outer_fog transmittance.
+standard_object
+{
+	name				outer_sphere
+	geometry			outer_sphere_geom
+	position			-0.5 0.3 1.0
+	material			white
+	interior_medium		outer_fog
+	casts_shadows		FALSE
+}
+
+# Inner fog sphere -- nested inside outer_sphere.
+# When a shadow ray crosses both, the boundary walk must:
+#   (1) enter outer (push outer_fog)
+#   (2) enter inner (push inner_fog -- inner becomes active)
+#   (3) exit inner  (pop inner_fog -- outer becomes active again)
+#   (4) exit outer  (pop outer_fog -- global medium active)
+standard_object
+{
+	name				inner_sphere
+	geometry			inner_sphere_geom
+	position			-0.5 0.3 0.5
+	material			white
+	interior_medium		inner_fog
+	casts_shadows		FALSE
+}
+
+# Side fog sphere -- disjoint from outer/inner.
+# Tests that a shadow ray from a floor point (outside all fog objects)
+# to the ceiling light correctly discovers and traverses this medium.
+standard_object
+{
+	name				side_sphere
+	geometry			side_sphere_geom
+	position			2.0 0.0 1.5
+	material			white
+	interior_medium		side_fog
+	casts_shadows		FALSE
+}
+
+# Small solid reference sphere -- no medium, casts normal shadow.
+# Provides visual reference for expected shadow darkness.
+standard_object
+{
+	name				ref_sphere
+	geometry			ref_sphere_geom
+	position			-3.0 -1.2 1.0
+	material			white
+}

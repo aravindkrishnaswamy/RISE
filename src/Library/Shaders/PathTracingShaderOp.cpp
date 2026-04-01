@@ -650,8 +650,10 @@ void PathTracingShaderOp::PerformOperation(
 
 	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
-	// Determine current participating medium for transmittance on NEE shadow rays
-	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	// Determine current participating medium for transmittance on NEE shadow rays.
+	// Also get the enclosing object for shadow ray distance clipping.
+	const IObject* pMediumObject = 0;
+	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
 #ifdef RISE_ENABLE_OPENPGL
 	const bool useGuidingPathSegments = UsePTPathSegmentTraining( rc, bBranch );
@@ -832,7 +834,7 @@ void PathTracingShaderOp::PerformOperation(
 							if( pLS )
 							{
 								RISEPel directSSS = pLS->EvaluateDirectLighting(
-									entryRI, entryBSDF, &entryMaterial, caster, bssrdfSampler, ri.pObject, 0, false );
+									entryRI, entryBSDF, &entryMaterial, caster, bssrdfSampler, ri.pObject, 0, false, 0 );
 								RISEPel sssDirectContrib = bssrdfWeightSpatial * directSSS;
 								if( rc.pStabilityConfig ) {
 									sssDirectContrib = ClampContribution( sssDirectContrib, rc.pStabilityConfig->directClamp );
@@ -1008,7 +1010,7 @@ void PathTracingShaderOp::PerformOperation(
 			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
 			RISEPel directAll = pLS->EvaluateDirectLighting(
-				ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler, ri.pObject, pCurrentMedium, false );
+				ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
 			if( rc.pStabilityConfig ) {
 				directAll = ClampContribution( directAll, rc.pStabilityConfig->directClamp );
 			}
@@ -1376,8 +1378,10 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
-	// Determine current participating medium for transmittance on NEE shadow rays
-	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	// Determine current participating medium for transmittance on NEE shadow rays.
+	// Also get the enclosing object for shadow ray distance clipping.
+	const IObject* pMediumObject = 0;
+	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
 	// ================================================================
 	// PART 1: Emission (spectral)
@@ -1494,7 +1498,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							if( pLS )
 							{
 								Scalar directSSSNM = pLS->EvaluateDirectLightingNM(
-									entryRI, entryBSDF, &entryMaterial, nm, caster, bssrdfSampler, ri.pObject, 0, false );
+									entryRI, entryBSDF, &entryMaterial, nm, caster, bssrdfSampler, ri.pObject, 0, false, 0 );
 								Scalar sssDirectContribNM = bssrdfWeightSpatialNM * directSSSNM;
 								if( rc.pStabilityConfig ) {
 									sssDirectContribNM = ClampContributionNM( sssDirectContribNM, rc.pStabilityConfig->directClamp );
@@ -1630,7 +1634,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 			ISampler& neeSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
 
 			Scalar directAllNM = pLS->EvaluateDirectLightingNM(
-				ri.geometric, *pBRDF, ri.pMaterial, nm, caster, neeSamplerNM, ri.pObject, pCurrentMedium, false );
+				ri.geometric, *pBRDF, ri.pMaterial, nm, caster, neeSamplerNM, ri.pObject, pCurrentMedium, false, pMediumObject );
 			if( rc.pStabilityConfig ) {
 				directAllNM = ClampContributionNM( directAllNM, rc.pStabilityConfig->directClamp );
 			}

@@ -93,7 +93,7 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_light
-	scale				500.0
+	scale				50.0
 	material			none
 }
 

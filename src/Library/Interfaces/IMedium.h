@@ -136,6 +136,20 @@ namespace RISE
 		/// Returns true for homogeneous media.  Analogous to Cycles'
 		/// volume_is_homogeneous() check on SD_HETEROGENEOUS_VOLUME flag.
 		virtual bool IsHomogeneous() const = 0;
+
+		/// Return the maximum distance a ray travels inside this medium.
+		/// For unbounded media (global/world medium or homogeneous with
+		/// no spatial extent), returns the input dist unchanged.
+		/// For bounded media (heterogeneous with AABB, or homogeneous
+		/// assigned to an object), clips to the medium's spatial boundary.
+		///
+		/// Used by shadow ray transmittance to avoid over-attenuating
+		/// when the ray exits the medium before reaching the light.
+		virtual Scalar ClipDistanceToBounds(
+			const Ray& ray,							///< [in] Ray to test
+			const Scalar dist						///< [in] Maximum distance to clip
+			) const { return dist; }
+
 	};
 }
 

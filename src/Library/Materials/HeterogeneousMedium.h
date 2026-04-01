@@ -170,6 +170,11 @@ namespace RISE
 			) const;
 
 		bool IsHomogeneous() const;
+
+		Scalar ClipDistanceToBounds(
+			const Ray& ray,
+			const Scalar dist
+			) const;
 	};
 }
 

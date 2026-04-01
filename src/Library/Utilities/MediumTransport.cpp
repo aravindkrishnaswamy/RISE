@@ -99,7 +99,8 @@ RISEPel MediumTransport::EvaluateInScattering(
 	const IRayCaster& caster,
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
-	const RasterizerState& rast
+	const RasterizerState& rast,
+	const IObject* pMediumObject
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -132,7 +133,7 @@ RISEPel MediumTransport::EvaluateInScattering(
 
 	return pLightSampler->EvaluateDirectLighting(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		caster, sampler, 0, pMedium, true );
+		caster, sampler, 0, pMedium, true, pMediumObject );
 }
 
 Scalar MediumTransport::EvaluateInScatteringNM(
@@ -143,7 +144,8 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 	const IRayCaster& caster,
 	const Implementation::LightSampler* pLightSampler,
 	ISampler& sampler,
-	const RasterizerState& rast
+	const RasterizerState& rast,
+	const IObject* pMediumObject
 	)
 {
 	if( !pMedium || !pLightSampler )
@@ -168,5 +170,5 @@ Scalar MediumTransport::EvaluateInScatteringNM(
 
 	return pLightSampler->EvaluateDirectLightingNM(
 		scatterRI, scatterBSDF, &scatterMaterial,
-		nm, caster, sampler, 0, pMedium, true );
+		nm, caster, sampler, 0, pMedium, true, pMediumObject );
 }

@@ -47,6 +47,8 @@ PathGuidingField::PathGuidingField(
   config( cfg ),
   sampleCount( 0 ),
   zeroValueSampleCount( 0 ),
+  volumeSampleCount( 0 ),
+  zeroValueVolumeSampleCount( 0 ),
   sampleEnergy( 0 ),
   directSampleEnergy( 0 )
 {
@@ -112,6 +114,8 @@ void PathGuidingField::BeginTrainingIteration()
 {
 	sampleCount = 0;
 	zeroValueSampleCount = 0;
+	volumeSampleCount = 0;
+	zeroValueVolumeSampleCount = 0;
 	sampleEnergy = 0;
 	directSampleEnergy = 0;
 	collectingTraining = true;
@@ -247,18 +251,31 @@ void PathGuidingField::EndTrainingIteration()
 		}
 	}
 
+	// pglFieldUpdate trains both surface and volume distributions
+	// from the shared sample storage in a single pass — the same
+	// API that Cycles uses for mixed surface+volume scenes.
+	// Do NOT call pglFieldUpdateVolume separately; that would
+	// double-train the volume distribution.
 	pglFieldUpdate( field, sampleStorage );
+
+	// Query volume sample counts for diagnostics only.
+	const size_t numVolumeSamples = pglSampleStorageGetSizeVolume( sampleStorage );
+	const size_t numZeroValueVolumeSamples =
+		pglSampleStorageGetSizeZeroValueVolume( sampleStorage );
+	volumeSampleCount = numVolumeSamples;
+	zeroValueVolumeSampleCount = numZeroValueVolumeSamples;
+
 	trained = true;
 	collectingTraining = false;
 
 	const size_t iteration = pglFieldGetIteration( field );
 	GlobalLog()->PrintEx( eLog_Event,
-		"PathGuidingField:: Training iteration %zu complete (%zu surface samples, %zu zero-value, %zu added, %zu zero-value added, energy %.6f, direct %.6f)",
+		"PathGuidingField:: Training iteration %zu complete (%zu surface, %zu zero-value, %zu volume, %zu vol-zero-value, energy %.6f, direct %.6f)",
 		iteration,
 		numSamples,
 		numZeroValueSamples,
-		sampleCount,
-		zeroValueSampleCount,
+		numVolumeSamples,
+		numZeroValueVolumeSamples,
 		sampleEnergy,
 		directSampleEnergy );
 }
@@ -362,6 +379,174 @@ Scalar PathGuidingField::Pdf(
 		static_cast<float>( direction.z ) );
 
 	return static_cast<Scalar>( pglSurfaceSamplingDistributionPDF( handle.dist, dir ) );
+}
+
+
+//
+// Volume guiding — training
+//
+
+void PathGuidingField::AddVolumeSample(
+	const Point3& position,
+	const Vector3& direction,
+	Scalar distance,
+	Scalar pdf,
+	Scalar luminance,
+	bool isDirect
+	)
+{
+	if( !sampleStorage || !field ) {
+		return;
+	}
+
+	if( pdf <= 0 || !std::isfinite( luminance ) || luminance < 0 ) {
+		return;
+	}
+
+	const float weight = static_cast<float>( luminance / pdf );
+	if( !std::isfinite( weight ) || weight < 0 ) {
+		return;
+	}
+
+	PGLSampleData sample;
+	pglPoint3f( sample.position,
+		static_cast<float>( position.x ),
+		static_cast<float>( position.y ),
+		static_cast<float>( position.z ) );
+
+	pglVec3f( sample.direction,
+		static_cast<float>( direction.x ),
+		static_cast<float>( direction.y ),
+		static_cast<float>( direction.z ) );
+
+	sample.weight = weight;
+	sample.pdf = static_cast<float>( pdf );
+	sample.distance = static_cast<float>( distance );
+	sample.flags = (isDirect ? PGLSampleData::EDirectLight : 0) |
+		PGLSampleData::EInsideVolume;
+
+	pglSampleStorageAddSample( sampleStorage, sample );
+}
+
+void PathGuidingField::AddZeroValueVolumeSample(
+	const Point3& position,
+	const Vector3& direction
+	)
+{
+	if( !sampleStorage || !field ) {
+		return;
+	}
+
+	PGLZeroValueSampleData sample;
+	pglPoint3f( sample.position,
+		static_cast<float>( position.x ),
+		static_cast<float>( position.y ),
+		static_cast<float>( position.z ) );
+
+	pglVec3f( sample.direction,
+		static_cast<float>( direction.x ),
+		static_cast<float>( direction.y ),
+		static_cast<float>( direction.z ) );
+
+	sample.volume = true;
+
+	pglSampleStorageAddZeroValueSample( sampleStorage, sample );
+}
+
+
+//
+// Volume guiding — query
+//
+
+bool PathGuidingField::InitVolumeDistribution(
+	GuidingVolumeDistributionHandle& handle,
+	const Point3& position,
+	Scalar sample1D
+	) const
+{
+	if( !field ) {
+		return false;
+	}
+
+	if( !handle.dist ) {
+		handle.dist = pglFieldNewVolumeSamplingDistribution( field );
+		if( !handle.dist ) {
+			return false;
+		}
+	}
+
+	pgl_point3f pos;
+	pglPoint3f( pos,
+		static_cast<float>( position.x ),
+		static_cast<float>( position.y ),
+		static_cast<float>( position.z ) );
+
+	float s1d = static_cast<float>( sample1D );
+
+	return pglFieldInitVolumeSamplingDistribution( field, handle.dist, pos, &s1d );
+}
+
+void PathGuidingField::ApplyHGProduct(
+	GuidingVolumeDistributionHandle& handle,
+	const Vector3& wo,
+	Scalar meanCosine
+	) const
+{
+	if( !handle.dist ) {
+		return;
+	}
+
+	if( pglVolumeSamplingDistributionSupportsApplySingleLobeHenyeyGreensteinProduct( handle.dist ) )
+	{
+		pgl_vec3f dir;
+		pglVec3f( dir,
+			static_cast<float>( wo.x ),
+			static_cast<float>( wo.y ),
+			static_cast<float>( wo.z ) );
+		pglVolumeSamplingDistributionApplySingleLobeHenyeyGreensteinProduct(
+			handle.dist, dir, static_cast<float>( meanCosine ) );
+	}
+}
+
+Vector3 PathGuidingField::SampleVolume(
+	GuidingVolumeDistributionHandle& handle,
+	const Point2& xi,
+	Scalar& pdf
+	) const
+{
+	if( !handle.dist ) {
+		pdf = 0;
+		return Vector3( 0, 0, 0 );
+	}
+
+	pgl_point2f sample;
+	pglPoint2f( sample, static_cast<float>( xi.x ), static_cast<float>( xi.y ) );
+
+	pgl_vec3f dir;
+	float pdfF = pglVolumeSamplingDistributionSamplePDF( handle.dist, sample, dir );
+
+	pdf = static_cast<Scalar>( pdfF );
+	return Vector3( static_cast<Scalar>( dir.x ),
+					static_cast<Scalar>( dir.y ),
+					static_cast<Scalar>( dir.z ) );
+}
+
+Scalar PathGuidingField::PdfVolume(
+	GuidingVolumeDistributionHandle& handle,
+	const Vector3& direction
+	) const
+{
+	if( !handle.dist ) {
+		return 0;
+	}
+
+	pgl_vec3f dir;
+	pglVec3f( dir,
+		static_cast<float>( direction.x ),
+		static_cast<float>( direction.y ),
+		static_cast<float>( direction.z ) );
+
+	return static_cast<Scalar>( pglVolumeSamplingDistributionPDF( handle.dist, dir ) );
 }
 
 #endif // RISE_ENABLE_OPENPGL

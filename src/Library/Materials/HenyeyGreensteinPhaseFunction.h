@@ -81,6 +81,8 @@ namespace RISE
 			const Vector3& wo
 			) const;
 
+		Scalar GetMeanCosine() const { return m_g; }
+
 		//
 		// Static helpers for callers that need HG with a per-call g value.
 		// These are the canonical implementations — the instance methods

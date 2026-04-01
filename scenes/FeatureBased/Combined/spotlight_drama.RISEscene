@@ -29,7 +29,7 @@ standard_shader
 simple_sss_shaderop
 {
 	name				sss_simple
-	numpoints			2000
+	numpoints			200000
 	irrad_scale			60
 	geometric_scale		1.5
 	shader				sss_irrad
@@ -39,7 +39,7 @@ simple_sss_shaderop
 diffusion_approximation_sss_shaderop
 {
 	name				sss_wax
-	numpoints			1000
+	numpoints			100000
 	irrad_scale			2000
 	geometric_scale		0.08
 
@@ -66,7 +66,7 @@ standard_shader
 distributiontracing_shaderop
 {
 	name				dt
-	samples				64
+	samples				4
 	diffuse				false
 	reflections			TRUE
 }
@@ -315,7 +315,7 @@ spot_light
 	position			-8 10 6
 	target				-5 3 0
 	color				1.0 0.2 0.15
-	power				40.0
+	power				4000.0
 	inner				20
 	outer				55
 }
@@ -327,7 +327,7 @@ spot_light
 	position			8 10 6
 	target				5 3 1
 	color				0.2 0.3 1.0
-	power				40.0
+	power				4000.0
 	inner				20
 	outer				55
 }
@@ -339,7 +339,7 @@ spot_light
 	position			0 12 4
 	target				0 2 -2
 	color				1.0 0.8 0.4
-	power				30.0
+	power				3000.0
 	inner				20
 	outer				55
 }
@@ -348,7 +348,7 @@ spot_light
 directional_light
 {
 	name				backlight
-	power				4.0
+	power				400.0
 	color				0.6 0.65 0.8
 	direction			0 -0.3 1
 }

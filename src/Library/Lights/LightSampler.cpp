@@ -21,10 +21,410 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/Math3D/Constants.h"
+#include "../Intersection/RayIntersection.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// ----------------------------------------------------------------
+// Shadow-ray medium transmittance
+//
+// Walks the shadow ray boundary-by-boundary through the scene,
+// maintaining a small stack of active per-object media.  At each
+// intersection with a medium-bearing object:
+//
+//   Front-face hit → push that object's medium onto the stack
+//   Back-face hit  → remove that object's medium from the stack
+//
+// Between consecutive boundaries the active medium (stack top, or
+// global medium when the stack is empty) determines the
+// transmittance for that segment.  This correctly handles:
+//
+//   - Disjoint media (ray enters A, exits A, enters B, exits B)
+//   - Nested media   (ray inside A, enters B, exits B, exits A)
+//   - Overlapping    (ray enters A, enters B, exits A, exits B)
+//
+// The innermost per-object medium always takes priority, matching
+// MediumTracking's IOR-stack-based resolution and Cycles' volume
+// stack semantics.
+//
+// Performance:
+//   - Scenes with no media: one quick-exit check, zero scene queries
+//   - Scenes with media: one scene IntersectRay per boundary crossed.
+//     Bounded by MAX_WALK_STEPS and early Tr < 1e-6 termination.
+//
+// Bounds:
+//   - Nesting depth: MAX_DEPTH = 4.  If more than 4 per-object media
+//     overlap at one point, entries beyond the 4th are silently
+//     dropped (under-attenuation).
+//   - Boundary count: MAX_WALK_STEPS = 16.  If the ray crosses more
+//     than 16 medium boundaries, the walk stops and the remaining
+//     distance uses only the stack state at that point (potential
+//     under-attenuation for segments not yet discovered).
+//   Both limits are conservative for realistic scenes.
+//
+// Limitation: global-medium transmittance for the non-object
+// segments uses a single EvalTransmittance call with the summed
+// vacuum distance, which is exact for homogeneous global media
+// but approximate for heterogeneous global media.
+// ----------------------------------------------------------------
+
+/// Small fixed-capacity stack of active per-object media along a
+/// shadow ray.  Supports push, removal by object pointer (for
+/// non-LIFO exit order in overlapping geometry), and top() query.
+/// Nesting depth beyond 4 is extremely rare in practice.
+struct ShadowMediumStack
+{
+	static const int MAX_DEPTH = 4;
+
+	struct Entry
+	{
+		const IObject* pObj;
+		const IMedium* pMedium;
+	};
+
+	Entry entries[MAX_DEPTH];
+	int   count;
+
+	ShadowMediumStack() : count( 0 ) {}
+
+	void push( const IObject* pObj, const IMedium* pMedium )
+	{
+		if( count < MAX_DEPTH ) {
+			entries[count].pObj = pObj;
+			entries[count].pMedium = pMedium;
+			count++;
+		}
+	}
+
+	/// Remove the entry matching pObj.  Handles non-LIFO removal
+	/// when overlapping objects exit in a different order than they
+	/// were entered.
+	void remove( const IObject* pObj )
+	{
+		for( int i = 0; i < count; i++ ) {
+			if( entries[i].pObj == pObj ) {
+				for( int j = i; j < count - 1; j++ ) {
+					entries[j] = entries[j + 1];
+				}
+				count--;
+				return;
+			}
+		}
+	}
+
+	/// Returns the innermost (most recently pushed) per-object
+	/// medium, or NULL if the stack is empty (global medium or
+	/// vacuum is active).
+	const IMedium* top() const
+	{
+		return count > 0 ? entries[count - 1].pMedium : 0;
+	}
+
+	bool empty() const { return count == 0; }
+};
+
+/// Evaluate transmittance along a shadow ray, accounting for
+/// nested, overlapping, and disjoint per-object media as well
+/// as the global medium.
+///
+/// Uses a boundary walk with a medium stack (see block comment
+/// above).  Bounded by MAX_DEPTH (4 simultaneous overlapping
+/// media) and MAX_WALK_STEPS (16 boundary crossings); rays
+/// that exceed either limit will under-attenuate silently.
+static RISEPel EvalShadowTransmittance(
+	const Ray& ray,
+	const Scalar maxDist,
+	const IMedium* pOriginMedium,
+	const IObject* pOriginMediumObject,
+	const IScene* pScene,
+	const bool bSceneHasObjectMedia
+	)
+{
+	RISEPel Tr( 1, 1, 1 );
+	if( !pScene || maxDist <= 0 ) {
+		return Tr;
+	}
+
+	const IMedium* pGlobalMedium = pScene->GetGlobalMedium();
+	const IObjectManager* pObjects = pScene->GetObjects();
+
+	// Quick exit: no media anywhere
+	if( !pOriginMedium && !pGlobalMedium && !bSceneHasObjectMedia ) {
+		return Tr;
+	}
+
+	// Fast path: no per-object media in scene, just apply
+	// origin/global medium for the full distance.
+	if( !bSceneHasObjectMedia ) {
+		const IMedium* pMedium = pOriginMedium ? pOriginMedium : pGlobalMedium;
+		if( pMedium ) {
+			return pMedium->EvalTransmittance( ray, maxDist );
+		}
+		return Tr;
+	}
+
+	static const Scalar WALK_EPSILON = 1e-5;
+	static const int MAX_WALK_STEPS = 16;
+
+	// Initialize medium stack with the origin medium (if per-object)
+	ShadowMediumStack stack;
+	if( pOriginMedium && pOriginMediumObject ) {
+		stack.push( pOriginMediumObject, pOriginMedium );
+	}
+
+	// Walk boundary-by-boundary.  Each iteration finds the nearest
+	// intersection, applies the active medium's transmittance for
+	// the segment leading up to it, then updates the stack.
+	Scalar segStart = 0;
+	Scalar objectCoveredDist = 0;
+
+	if( pObjects )
+	{
+		for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+		{
+			// Cast from segStart + epsilon to avoid re-hitting the
+			// boundary we just processed.  On the first iteration
+			// (segStart == 0) we still add epsilon to avoid self-
+			// intersection at the shading point.
+			const Scalar castStart = segStart + WALK_EPSILON;
+			if( castStart >= maxDist ) {
+				break;
+			}
+
+			const Point3 castOrigin = ray.PointAtLength( castStart );
+			const Ray castRay( castOrigin, ray.Dir() );
+			const Scalar castMax = maxDist - castStart;
+
+			RasterizerState nullRast = {0};
+			RayIntersection ri( castRay, nullRast );
+			pObjects->IntersectRay( ri, true, true, false );
+
+			if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
+				// No more boundaries before maxDist.
+				// Apply the active medium for [segStart, maxDist].
+				const Scalar remaining = maxDist - segStart;
+				if( remaining > 0 ) {
+					const IMedium* pActive = stack.top();
+					if( pActive ) {
+						const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+						Tr = Tr * pActive->EvalTransmittance( segRay, remaining );
+						objectCoveredDist += remaining;
+					}
+				}
+				segStart = maxDist;
+				break;
+			}
+
+			const IObject* pHitObj = ri.pObject;
+			if( !pHitObj ) {
+				break;
+			}
+
+			// Absolute distance along the original ray to this boundary
+			const Scalar boundaryDist = castStart + ri.geometric.range;
+
+			// Apply the active medium for the segment [segStart, boundaryDist]
+			const Scalar segLen = boundaryDist - segStart;
+			if( segLen > 0 ) {
+				const IMedium* pActive = stack.top();
+				if( pActive ) {
+					const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+					Tr = Tr * pActive->EvalTransmittance( segRay, segLen );
+					objectCoveredDist += segLen;
+				}
+			}
+
+			// Update the stack based on this boundary.
+			// Only medium-bearing objects affect the stack; non-medium
+			// objects are ignored (the walk advances past them).
+			const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
+			if( pObjMedium ) {
+				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, ray.Dir() );
+				if( ndotd < 0 ) {
+					// Front-face: entering this object
+					stack.push( pHitObj, pObjMedium );
+				} else {
+					// Back-face: exiting this object
+					stack.remove( pHitObj );
+				}
+			}
+
+			segStart = boundaryDist;
+
+			// Early termination when transmittance is negligible
+			if( ColorMath::MaxValue( Tr ) < 1e-6 ) {
+				return RISEPel( 0, 0, 0 );
+			}
+		}
+	}
+
+	// Handle remaining distance if the walk ended before maxDist
+	// (either max steps reached, or no pObjects)
+	if( segStart < maxDist ) {
+		const Scalar remaining = maxDist - segStart;
+		if( remaining > 0 ) {
+			const IMedium* pActive = stack.top();
+			if( pActive ) {
+				const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+				Tr = Tr * pActive->EvalTransmittance( segRay, remaining );
+				objectCoveredDist += remaining;
+			}
+		}
+	}
+
+	// Apply global medium transmittance for segments where no
+	// per-object medium was active.  The global medium is the
+	// fallback when the stack is empty, so it covers exactly
+	// maxDist minus the per-object distance.
+	if( pGlobalMedium ) {
+		const Scalar globalDist = maxDist - objectCoveredDist;
+		if( globalDist > WALK_EPSILON ) {
+			// For homogeneous global media this is exact (transmittance
+			// depends only on total distance).  For heterogeneous global
+			// media this is approximate — a per-segment evaluation would
+			// be needed, but heterogeneous global media are uncommon.
+			Tr = Tr * pGlobalMedium->EvalTransmittance( ray, globalDist );
+		}
+	}
+
+	return Tr;
+}
+
+/// Spectral variant of EvalShadowTransmittance.
+/// Same boundary walk, medium stack, and depth/step bounds;
+/// rays exceeding MAX_DEPTH or MAX_WALK_STEPS will under-
+/// attenuate silently.  Operates on scalar transmittance at
+/// a single wavelength.
+static Scalar EvalShadowTransmittanceNM(
+	const Ray& ray,
+	const Scalar maxDist,
+	const IMedium* pOriginMedium,
+	const IObject* pOriginMediumObject,
+	const IScene* pScene,
+	const bool bSceneHasObjectMedia,
+	const Scalar nm
+	)
+{
+	Scalar Tr = 1;
+	if( !pScene || maxDist <= 0 ) {
+		return Tr;
+	}
+
+	const IMedium* pGlobalMedium = pScene->GetGlobalMedium();
+	const IObjectManager* pObjects = pScene->GetObjects();
+
+	if( !pOriginMedium && !pGlobalMedium && !bSceneHasObjectMedia ) {
+		return Tr;
+	}
+
+	if( !bSceneHasObjectMedia ) {
+		const IMedium* pMedium = pOriginMedium ? pOriginMedium : pGlobalMedium;
+		if( pMedium ) {
+			return pMedium->EvalTransmittanceNM( ray, maxDist, nm );
+		}
+		return Tr;
+	}
+
+	static const Scalar WALK_EPSILON = 1e-5;
+	static const int MAX_WALK_STEPS = 16;
+
+	ShadowMediumStack stack;
+	if( pOriginMedium && pOriginMediumObject ) {
+		stack.push( pOriginMediumObject, pOriginMedium );
+	}
+
+	Scalar segStart = 0;
+	Scalar objectCoveredDist = 0;
+
+	if( pObjects )
+	{
+		for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+		{
+			const Scalar castStart = segStart + WALK_EPSILON;
+			if( castStart >= maxDist ) {
+				break;
+			}
+
+			const Point3 castOrigin = ray.PointAtLength( castStart );
+			const Ray castRay( castOrigin, ray.Dir() );
+			const Scalar castMax = maxDist - castStart;
+
+			RasterizerState nullRast = {0};
+			RayIntersection ri( castRay, nullRast );
+			pObjects->IntersectRay( ri, true, true, false );
+
+			if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
+				const Scalar remaining = maxDist - segStart;
+				if( remaining > 0 ) {
+					const IMedium* pActive = stack.top();
+					if( pActive ) {
+						const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+						Tr *= pActive->EvalTransmittanceNM( segRay, remaining, nm );
+						objectCoveredDist += remaining;
+					}
+				}
+				segStart = maxDist;
+				break;
+			}
+
+			const IObject* pHitObj = ri.pObject;
+			if( !pHitObj ) {
+				break;
+			}
+
+			const Scalar boundaryDist = castStart + ri.geometric.range;
+
+			const Scalar segLen = boundaryDist - segStart;
+			if( segLen > 0 ) {
+				const IMedium* pActive = stack.top();
+				if( pActive ) {
+					const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+					Tr *= pActive->EvalTransmittanceNM( segRay, segLen, nm );
+					objectCoveredDist += segLen;
+				}
+			}
+
+			const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
+			if( pObjMedium ) {
+				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, ray.Dir() );
+				if( ndotd < 0 ) {
+					stack.push( pHitObj, pObjMedium );
+				} else {
+					stack.remove( pHitObj );
+				}
+			}
+
+			segStart = boundaryDist;
+
+			if( Tr < 1e-6 ) {
+				return 0;
+			}
+		}
+	}
+
+	if( segStart < maxDist ) {
+		const Scalar remaining = maxDist - segStart;
+		if( remaining > 0 ) {
+			const IMedium* pActive = stack.top();
+			if( pActive ) {
+				const Ray segRay( ray.PointAtLength( segStart ), ray.Dir() );
+				Tr *= pActive->EvalTransmittanceNM( segRay, remaining, nm );
+				objectCoveredDist += remaining;
+			}
+		}
+	}
+
+	if( pGlobalMedium ) {
+		const Scalar globalDist = maxDist - objectCoveredDist;
+		if( globalDist > WALK_EPSILON ) {
+			Tr *= pGlobalMedium->EvalTransmittanceNM( ray, globalDist, nm );
+		}
+	}
+
+	return Tr;
+}
 
 /// Power heuristic weight: w = pa^2 / (pa^2 + pb^2)
 static inline Scalar PowerHeuristic( const Scalar pa, const Scalar pb )
@@ -39,6 +439,7 @@ LightSampler::LightSampler() :
   cachedTotalExitance( 0 ),
   risCandidates( 0 ),
   lightSampleRRThreshold( 0 ),
+  bSceneHasObjectMedia( false ),
   pEnvSampler( 0 ),
   pEnvironmentMap( 0 )
 {
@@ -177,6 +578,30 @@ void LightSampler::Prepare(
 	if( risCandidates == 0 && lightEntries.size() > 8 )
 	{
 		risCandidates = 8;
+	}
+
+	// Scan objects for interior media.  This flag gates the
+	// multi-medium shadow transmittance walk — when no objects
+	// have media and there's no global medium, shadow transmittance
+	// evaluation is skipped entirely.
+	bSceneHasObjectMedia = false;
+	{
+		struct MediaScan : public IEnumCallback<IObject>
+		{
+			bool found;
+			MediaScan() : found(false) {}
+			bool operator()( const IObject& obj )
+			{
+				if( obj.GetInteriorMedium() ) {
+					found = true;
+					return false;  // stop enumeration
+				}
+				return true;  // continue
+			}
+		};
+		MediaScan scan;
+		scene.GetObjects()->EnumerateObjects( scan );
+		bSceneHasObjectMedia = scan.found;
 	}
 }
 
@@ -516,7 +941,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	ISampler& sampler,
 	const IObject* pShadingObject,
 	const IMedium* pMedium,
-	const bool isVolumeScatter
+	const bool isVolumeScatter,
+	const IObject* pMediumObject
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -654,11 +1080,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// Delta-position light: w = 1 (no MIS needed).
 			RISEPel amount = Le * fBSDF * cosSurface * invDistSq;
 
-			// Apply medium transmittance along shadow ray
-			if( pMedium )
+			// Apply medium transmittance along shadow ray.
+			// Multi-medium shadow transmittance (origin, per-object,
+			// and global media; bounded by stack depth and step count).
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				amount = amount * pMedium->EvalTransmittance( rayToLight, dist );
+				const RISEPel Tr = EvalShadowTransmittance( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia );
+				amount = amount * Tr;
 			}
 
 			result = result + amount * (risWeight / pdfAlias);
@@ -735,11 +1163,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					const Scalar geom = area * cosLight / (dist * dist);
 					RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
 
-					// Apply medium transmittance along shadow ray
-					if( pMedium )
+					// Apply medium transmittance along shadow ray.
+					// Multi-medium shadow transmittance.
 					{
 						const Ray rayToLight( ri.ptIntersection, vToLight );
-						contrib = contrib * pMedium->EvalTransmittance( rayToLight, dist );
+						const RISEPel Tr = EvalShadowTransmittance( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia );
+						contrib = contrib * Tr;
 					}
 
 					// MIS weight: only when RIS is OFF.  When RIS is ON
@@ -798,12 +1227,12 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				RISEPel envContrib = Le * f * (cosEnv / envPdf);
 
 				// Apply medium transmittance for environment ray.
-				// In a participating medium, the transmittance to infinity
-				// is zero for any nonzero extinction.  For practical
-				// purposes we use a large finite distance.
-				if( pMedium )
+				// Multi-medium shadow transmittance.
+				// Use a large but finite distance for the walk limit
+				// (environment rays go to infinity, but media are bounded).
 				{
-					envContrib = envContrib * pMedium->EvalTransmittance( envRay, RISE_INFINITY );
+					const RISEPel Tr = EvalShadowTransmittance( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia );
+					envContrib = envContrib * Tr;
 				}
 
 				// MIS: power heuristic against BSDF PDF
@@ -834,7 +1263,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	ISampler& sampler,
 	const IObject* pShadingObject,
 	const IMedium* pMedium,
-	const bool isVolumeScatter
+	const bool isVolumeScatter,
+	const IObject* pMediumObject
 	) const
 {
 	Scalar result = 0;
@@ -949,11 +1379,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			Scalar neeContrib = LeNM * fBSDF * cosSurface * invDistSq
 				   * (risWeight / pdfAlias);
 
-			// Apply medium transmittance along shadow ray
-			if( pMedium )
+			// Apply medium transmittance along shadow ray.
+			// Multi-medium shadow transmittance.
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				neeContrib *= pMedium->EvalTransmittanceNM( rayToLight, dist, nm );
+				neeContrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
 			}
 
 			result = neeContrib;
@@ -1019,11 +1449,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		const Scalar geom = area * cosLight / (dist * dist);
 		Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
 
-		// Apply medium transmittance along shadow ray
-		if( pMedium )
+		// Multi-medium shadow transmittance.
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			contrib *= pMedium->EvalTransmittanceNM( rayToLight, dist, nm );
+			contrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
 		}
 
 		// MIS only when RIS is OFF
@@ -1067,10 +1496,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				const Scalar f = brdf.valueNM( envDir, ri, nm );
 				Scalar envContrib = Le * f * cosEnv / envPdf;
 
-				// Apply medium transmittance for environment ray
-				if( pMedium )
+				// Apply medium transmittance for environment ray.
+				// Multi-medium shadow transmittance.
 				{
-					envContrib *= pMedium->EvalTransmittanceNM( envRay, RISE_INFINITY, nm );
+					envContrib *= EvalShadowTransmittanceNM( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
 				}
 
 				if( pMaterial )

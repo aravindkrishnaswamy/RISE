@@ -491,3 +491,16 @@ bool HeterogeneousMedium::IsHomogeneous() const
 {
 	return false;
 }
+
+Scalar HeterogeneousMedium::ClipDistanceToBounds(
+	const Ray& ray,
+	const Scalar dist
+	) const
+{
+	Scalar tEntry, tExit;
+	if( !IntersectBBox( ray, tEntry, tExit ) )
+	{
+		return 0;
+	}
+	return fmin( tExit, dist );
+}

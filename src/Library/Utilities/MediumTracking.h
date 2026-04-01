@@ -58,6 +58,30 @@ namespace RISE
 			}
 			return pScene ? pScene->GetGlobalMedium() : 0;
 		}
+
+		/// Extended variant that also returns the enclosing object
+		/// (if the medium comes from an object interior).
+		/// pEnclosingObject is set to the IOR stack top object when
+		/// the medium is per-object, or NULL for the global medium.
+		inline const IMedium* GetCurrentMediumWithObject(
+			const IORStack* ior_stack,
+			const IScene* pScene,
+			const IObject*& pEnclosingObject
+			)
+		{
+			pEnclosingObject = 0;
+			if( ior_stack ) {
+				const IObject* pObj = ior_stack->topObject();
+				if( pObj ) {
+					const IMedium* m = pObj->GetInteriorMedium();
+					if( m ) {
+						pEnclosingObject = pObj;
+						return m;
+					}
+				}
+			}
+			return pScene ? pScene->GetGlobalMedium() : 0;
+		}
 	}
 }
 

@@ -20,6 +20,7 @@
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/MediumTransport.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/PathGuidingField.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -234,7 +235,8 @@ bool RayCaster::CastRay(
 	//   c. If surface hit through medium:
 	//      - Apply transmittance to surface shading result
 	// ----------------------------------------------------------------
-	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
 	if( pMedium )
 	{
@@ -291,7 +293,7 @@ bool RayCaster::CastRay(
 			// 1. NEE at scatter point (in-scattering from lights)
 			RISEPel Ld = MediumTransport::EvaluateInScattering(
 				scatterPt, wo, pMedium, *this, pLightSampler,
-				mediumSampler, rast );
+				mediumSampler, rast, pMediumObject );
 
 			// 2. Phase-function continuation (indirect in-scattering)
 			// Volume bounces are bounded independently of the general
@@ -299,21 +301,121 @@ bool RayCaster::CastRay(
 			static const unsigned int nMaxVolumeBounces = 64;
 			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 			RISEPel Li( 0, 0, 0 );
+			Scalar phasePdf = 0;
+			Vector3 wi( 0, 0, 0 );
 			if( pPhase && rs.depth < nMaxRecursions &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
-				const Vector3 wi = pPhase->Sample( wo, mediumSampler );
+				// Sample the continuation direction — optionally guided
+				Scalar guidingMISWeight = 1.0;
+				Scalar effectivePdf = 0;
+				wi = pPhase->Sample( wo, mediumSampler );
+				phasePdf = pPhase->Pdf( wo, wi );
+				effectivePdf = phasePdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+				// Volume guiding: one-sample MIS between guiding
+				// distribution and phase function.
+				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+					rc.guidingAlpha > 0 &&
+					rs.depth < rc.maxGuidingDepth )
+				{
+					static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandle;
+
+					const Scalar alpha = rc.guidingAlpha;
+					if( rc.pGuidingField->InitVolumeDistribution(
+						volGuideHandle, scatterPt, mediumSampler.Get1D() ) )
+					{
+						// Apply HG product if the phase function is anisotropic
+						const Scalar meanCosine = pPhase->GetMeanCosine();
+						if( fabs( meanCosine ) > 1e-6 )
+						{
+							rc.pGuidingField->ApplyHGProduct(
+								volGuideHandle, wo, meanCosine );
+						}
+
+						const Scalar xiG = mediumSampler.Get1D();
+						if( xiG < alpha )
+						{
+							// Sample from guiding distribution.
+							// Save phase-sampled state in case guide fails.
+							const Vector3 wi_phase = wi;
+							const Scalar phasePdf_phase = phasePdf;
+
+							Scalar guidePdf = 0;
+							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
+							wi = rc.pGuidingField->SampleVolume( volGuideHandle, xi2D, guidePdf );
+
+							if( guidePdf > 0 )
+							{
+								phasePdf = pPhase->Pdf( wo, wi );
+								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								guidingMISWeight = phasePdf / combinedPdf;
+								effectivePdf = combinedPdf;
+							}
+							else
+							{
+								// Degenerate guide sample — restore phase direction
+								wi = wi_phase;
+								phasePdf = phasePdf_phase;
+							}
+						}
+						else
+						{
+							// Keep phase-sampled direction, but reweight for combined PDF
+							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandle, wi );
+							if( guidePdf > 0 && phasePdf > 0 )
+							{
+								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								guidingMISWeight = phasePdf / combinedPdf;
+								effectivePdf = combinedPdf;
+							}
+						}
+					}
+				}
+#endif // RISE_ENABLE_OPENPGL
+
 				const Ray scatterRay( scatterPt, wi );
 
 				RAY_STATE rs2;
 				rs2.depth = rs.depth + 1;
-				rs2.importance = rs.importance * ColorMath::MaxValue( throughput );
+				rs2.importance = rs.importance * ColorMath::MaxValue( throughput ) * guidingMISWeight;
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
 
-				CastRay( rc, rast, scatterRay, Li, rs2, 0,
+				Scalar hitDist = 0;
+				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
 					pRadianceMap, ior_stack );
+
+#ifdef RISE_ENABLE_OPENPGL
+				// Record volume training sample for the guiding field.
+				// Use effectivePdf (= combinedPdf when guiding was applied)
+				// so that weight = luminance / pdf matches the actual
+				// sampling distribution used to generate the direction.
+				if( rc.pGuidingField &&
+					rc.pGuidingField->IsCollectingTrainingSamples() &&
+					effectivePdf > NEARZERO )
+				{
+					const Scalar lum = ColorMath::MaxValue( Li );
+					if( lum > 0 )
+					{
+						rc.pGuidingField->AddVolumeSample(
+							scatterPt, wi,
+							hitDist > 0 ? hitDist : 1.0,
+							effectivePdf,
+							lum,
+							false );
+					}
+					else
+					{
+						rc.pGuidingField->AddZeroValueVolumeSample(
+							scatterPt, wi );
+					}
+				}
+#endif // RISE_ENABLE_OPENPGL
+
+				Li = Li * guidingMISWeight;
 			}
 
 			// Combine: throughput * (Ld + Li) + emission
@@ -554,7 +656,8 @@ bool RayCaster::CastRayNM(
 	bool bReturn = false;
 
 	// Medium transport (spectral variant)
-	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	const IObject* pMediumObject = 0;
+	const IMedium* pMedium = MediumTracking::GetCurrentMediumWithObject( ior_stack, pScene, pMediumObject );
 
 	if( pMedium )
 	{
@@ -584,27 +687,122 @@ bool RayCaster::CastRayNM(
 			// NEE at scatter point
 			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 				scatterPt, wo, pMedium, nm, *this, pLightSampler,
-				mediumSampler, rast );
+				mediumSampler, rast, pMediumObject );
 
 			// Phase-function continuation
 			static const unsigned int nMaxVolumeBounces = 64;
 			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
 			Scalar Li = 0;
+			Scalar phasePdf = 0;
+			Vector3 wi( 0, 0, 0 );
 			if( pPhase && rs.depth < nMaxRecursions &&
 				rs.volumeBounces < nMaxVolumeBounces )
 			{
-				const Vector3 wi = pPhase->Sample( wo, mediumSampler );
+				Scalar guidingMISWeight = 1.0;
+				Scalar effectivePdf = 0;
+				wi = pPhase->Sample( wo, mediumSampler );
+				phasePdf = pPhase->Pdf( wo, wi );
+				effectivePdf = phasePdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+				// Volume guiding (spectral): one-sample MIS
+				if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+					rc.guidingAlpha > 0 &&
+					rs.depth < rc.maxGuidingDepth )
+				{
+					static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandleNM;
+
+					const Scalar alpha = rc.guidingAlpha;
+					if( rc.pGuidingField->InitVolumeDistribution(
+						volGuideHandleNM, scatterPt, mediumSampler.Get1D() ) )
+					{
+						// Apply HG product if the phase function is anisotropic
+						const Scalar meanCosine = pPhase->GetMeanCosine();
+						if( fabs( meanCosine ) > 1e-6 )
+						{
+							rc.pGuidingField->ApplyHGProduct(
+								volGuideHandleNM, wo, meanCosine );
+						}
+
+						const Scalar xiG = mediumSampler.Get1D();
+						if( xiG < alpha )
+						{
+							// Save phase-sampled state in case guide fails
+							const Vector3 wi_phase = wi;
+							const Scalar phasePdf_phase = phasePdf;
+
+							Scalar guidePdf = 0;
+							const Point2 xi2D( mediumSampler.Get1D(), mediumSampler.Get1D() );
+							wi = rc.pGuidingField->SampleVolume( volGuideHandleNM, xi2D, guidePdf );
+
+							if( guidePdf > 0 )
+							{
+								phasePdf = pPhase->Pdf( wo, wi );
+								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								guidingMISWeight = phasePdf / combinedPdf;
+								effectivePdf = combinedPdf;
+							}
+							else
+							{
+								// Degenerate guide sample — restore phase direction
+								wi = wi_phase;
+								phasePdf = phasePdf_phase;
+							}
+						}
+						else
+						{
+							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandleNM, wi );
+							if( guidePdf > 0 && phasePdf > 0 )
+							{
+								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								guidingMISWeight = phasePdf / combinedPdf;
+								effectivePdf = combinedPdf;
+							}
+						}
+					}
+				}
+#endif // RISE_ENABLE_OPENPGL
+
 				const Ray scatterRay( scatterPt, wi );
 
 				RAY_STATE rs2;
 				rs2.depth = rs.depth + 1;
-				rs2.importance = rs.importance * throughput;
+				rs2.importance = rs.importance * throughput * guidingMISWeight;
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
 
-				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, 0,
+				Scalar hitDist = 0;
+				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
 					pRadianceMap, ior_stack );
+
+#ifdef RISE_ENABLE_OPENPGL
+				// Record volume training sample (spectral path).
+				// Use effectivePdf (= combinedPdf when guiding was applied)
+				// so that weight = luminance / pdf matches the actual
+				// sampling distribution.
+				if( rc.pGuidingField &&
+					rc.pGuidingField->IsCollectingTrainingSamples() &&
+					effectivePdf > NEARZERO )
+				{
+					if( Li > 0 )
+					{
+						rc.pGuidingField->AddVolumeSample(
+							scatterPt, wi,
+							hitDist > 0 ? hitDist : 1.0,
+							effectivePdf,
+							Li,
+							false );
+					}
+					else
+					{
+						rc.pGuidingField->AddZeroValueVolumeSample(
+							scatterPt, wi );
+					}
+				}
+#endif // RISE_ENABLE_OPENPGL
+
+				Li = Li * guidingMISWeight;
 			}
 
 			c = throughput * (Ld + Li);

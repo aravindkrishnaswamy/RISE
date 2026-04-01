@@ -83,8 +83,8 @@ pinhole_camera
 homogeneous_medium
 {
 	name		fog
-	absorption	0.0005 0.0005 0.0005
-	scattering	0.002 0.002 0.002
+	absorption	0.0005 0.0005 0.0003
+	scattering	0.001 0.001 0.0001
 	phase		isotropic
 }
 
@@ -144,7 +144,7 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_light
-	scale				80.0
+	scale				150.0
 	material			none
 }
 

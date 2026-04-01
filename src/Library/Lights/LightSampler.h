@@ -144,6 +144,7 @@ namespace RISE
 			AliasTable					aliasTable;		///< O(1) selection table
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
+			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
 
 			/// Environment map importance sampler (null when no env map)
 			const EnvironmentSampler*	pEnvSampler;
@@ -208,7 +209,8 @@ namespace RISE
 				ISampler& sampler,									///< [in] Low-discrepancy sampler
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
-				const bool isVolumeScatter							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
+				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
+				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -222,7 +224,8 @@ namespace RISE
 				ISampler& sampler,									///< [in] Low-discrepancy sampler
 				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
 				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
-				const bool isVolumeScatter							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
+				const bool isVolumeScatter,							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
+				const IObject* pMediumObject						///< [in] Object enclosing the medium (NULL = unbounded/global medium)
 				) const;
 
 			/// Returns the alias-table selection probability for a given
@@ -238,6 +241,12 @@ namespace RISE
 
 			/// Returns whether RIS spatial resampling is active.
 			bool IsRISActive() const { return risCandidates > 0; }
+
+			/// Returns whether the scene has any participating media
+			/// (per-object or global).  Used to gate shadow transmittance
+			/// evaluation — when false, all shadow transmittance calls
+			/// are skipped.
+			bool SceneHasMedia() const { return bSceneHasObjectMedia || (pPreparedScene && pPreparedScene->GetGlobalMedium()); }
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  When M>0, EvaluateDirectLighting draws

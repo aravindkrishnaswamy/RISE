@@ -81,6 +81,21 @@ namespace RISE
 			}
 		};
 
+		/// Thread-local volume guiding distribution handle.
+		struct GuidingVolumeDistributionHandle
+		{
+			PGLVolumeSamplingDistribution dist;
+
+			GuidingVolumeDistributionHandle() : dist( 0 ) {}
+			~GuidingVolumeDistributionHandle()
+			{
+				if( dist ) {
+					pglReleaseVolumeSamplingDistribution( dist );
+					dist = 0;
+				}
+			}
+		};
+
 		/// Wrapper around Intel OpenPGL.  Owns the device, field, and
 		/// sample storage.  Thread-safe for queries after training.
 		class PathGuidingField :
@@ -96,6 +111,8 @@ namespace RISE
 			PathGuidingConfig		config;
 			mutable size_t			sampleCount;
 			mutable size_t			zeroValueSampleCount;
+			mutable size_t			volumeSampleCount;
+			mutable size_t			zeroValueVolumeSampleCount;
 			mutable Scalar			sampleEnergy;
 			mutable Scalar			directSampleEnergy;
 
@@ -173,6 +190,58 @@ namespace RISE
 				GuidingDistributionHandle& handle,
 				const Vector3& direction
 				) const;
+
+			//
+			// Volume guiding API
+			//
+
+			/// Record a volume scatter training sample.
+			void AddVolumeSample(
+				const Point3& position,
+				const Vector3& direction,
+				Scalar distance,
+				Scalar pdf,
+				Scalar luminance,
+				bool isDirect
+				);
+
+			/// Record a zero-value volume sample (guides away from dark regions).
+			void AddZeroValueVolumeSample(
+				const Point3& position,
+				const Vector3& direction
+				);
+
+			/// Initialize a volume sampling distribution at the given scatter point.
+			/// Returns false if no guiding data is available.
+			bool InitVolumeDistribution(
+				GuidingVolumeDistributionHandle& handle,
+				const Point3& position,
+				Scalar sample1D
+				) const;
+
+			/// Apply Henyey-Greenstein product to the volume distribution.
+			/// This improves guiding quality for anisotropic phase functions.
+			void ApplyHGProduct(
+				GuidingVolumeDistributionHandle& handle,
+				const Vector3& wo,
+				Scalar meanCosine
+				) const;
+
+			/// Sample a direction from the volume guiding distribution.
+			Vector3 SampleVolume(
+				GuidingVolumeDistributionHandle& handle,
+				const Point2& xi,
+				Scalar& pdf
+				) const;
+
+			/// Evaluate the volume guiding PDF for a given direction.
+			Scalar PdfVolume(
+				GuidingVolumeDistributionHandle& handle,
+				const Vector3& direction
+				) const;
+
+			/// Get volume sample statistics from last training iteration.
+			size_t GetLastAddedVolumeSampleCount() const { return volumeSampleCount; }
 
 			bool IsTrained() const { return trained; }
 			bool IsCollectingTrainingSamples() const { return collectingTraining; }
