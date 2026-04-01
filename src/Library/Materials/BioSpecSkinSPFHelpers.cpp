@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "BioSpecSkinSPF.h"
+#include "HenyeyGreensteinPhaseFunction.h"
 #include "../Utilities/Optics.h"
 #include "../Utilities/GeometricUtilities.h"
 
@@ -58,14 +59,8 @@ Vector3 BioSpecSkinSPF::Scattering_From_HenyeyGreenstein(
 	const Scalar g											///< [in] The asymmetry factor
 	)
 {
-	const Scalar inner = (1.0 - g*g) / (1 - g + 2*g*sampler.Get1D());
-	const Scalar hny_phase = acos( (1/(2.0*g)) * (1 + g*g - inner*inner) );
-
-	// Use the warping function to perturb the reflected ray using HG phase function
-	return Vector3Ops::Normalize(GeometricUtilities::Perturb(
-		incoming,
-		hny_phase,
-		TWO_PI * sampler.Get1D() ));
+	// Delegate to the canonical HG phase function implementation
+	return HenyeyGreensteinPhaseFunction::SampleWithG( incoming, sampler, g );
 }
 
 //! Scatters a ray at the dermis (both papillary and reticular layer)

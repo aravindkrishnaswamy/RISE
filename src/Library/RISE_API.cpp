@@ -4579,3 +4579,74 @@ namespace RISE
 		return true;
 	}
 }
+
+///////////////////////////////////////////////////////////
+// Phase functions and participating media
+///////////////////////////////////////////////////////////
+
+#include "Materials/IsotropicPhaseFunction.h"
+#include "Materials/HenyeyGreensteinPhaseFunction.h"
+#include "Materials/HomogeneousMedium.h"
+
+namespace RISE
+{
+	bool RISE_API_CreateIsotropicPhaseFunction(
+								IPhaseFunction** ppi				///< [out] Pointer to recieve the phase function
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new IsotropicPhaseFunction();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "isotropic phase function" );
+		return true;
+	}
+
+	bool RISE_API_CreateHenyeyGreensteinPhaseFunction(
+								IPhaseFunction** ppi,				///< [out] Pointer to recieve the phase function
+								const Scalar g						///< [in] Asymmetry factor [-1, 1]
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new HenyeyGreensteinPhaseFunction( g );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "henyey-greenstein phase function" );
+		return true;
+	}
+
+	bool RISE_API_CreateHomogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, phase );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium" );
+		return true;
+	}
+
+	bool RISE_API_CreateHomogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new HomogeneousMedium( sigma_a, sigma_s, emission, phase );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "homogeneous medium with emission" );
+		return true;
+	}
+}

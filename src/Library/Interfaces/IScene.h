@@ -16,7 +16,7 @@
 
 #include "IReference.h"
 #include "IRadianceMap.h"
-#include "IAtmosphere.h"
+#include "IMedium.h"
 
 namespace RISE
 {
@@ -73,8 +73,8 @@ namespace RISE
 		/// \return The animator
 		virtual IAnimator*					GetAnimator() const = 0;
 
-		/// \return The atmospherics effect
-		virtual const IAtmosphere*			GetGlobalAtmosphere() const = 0;
+		/// \return The global participating medium (NULL if vacuum)
+		virtual const IMedium*				GetGlobalMedium() const = 0;
 
 		/// Tells the scene a new time is set 
 		virtual void						SetSceneTime( const Scalar time ) const = 0;

@@ -32,7 +32,7 @@ Scene::Scene( ) :
   pShadowMap( 0 ),
   pIrradianceCache( 0 ),
   pAnimator( 0 ),
-  pGlobalAtmosphere( 0 )
+  pGlobalMedium( 0 )
 {
 	pAnimator = new Animator();
 	GlobalLog()->PrintNew( pAnimator, __FILE__, __LINE__, "animator" );
@@ -57,6 +57,7 @@ void Scene::Shutdown()
 	safe_shutdown_and_release( pGlobalSpectralMap );
 	safe_shutdown_and_release( pShadowMap );
 	safe_release( pIrradianceCache );
+	safe_release( pGlobalMedium );
 	safe_release( pAnimator );
 }
 
@@ -248,13 +249,13 @@ void Scene::SetIrradianceCache( IIrradianceCache* pCache )
 	}
 }
 
-void Scene::SetGlobalAtmosphere( const IAtmosphere* pAtmosphere )
+void Scene::SetGlobalMedium( const IMedium* pMedium )
 {
-	if( pAtmosphere ) {
-		safe_release( pGlobalAtmosphere );
+	if( pMedium ) {
+		safe_release( pGlobalMedium );
 
-		pGlobalAtmosphere = pAtmosphere;
-		pGlobalAtmosphere->addref();
+		pGlobalMedium = pMedium;
+		pGlobalMedium->addref();
 	}
 }
 

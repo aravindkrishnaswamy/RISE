@@ -15,6 +15,7 @@
 #include "GenericHumanTissueSPF.h"
 #include "BioSpecSkinData.h"
 #include "BioSpecSkinSPF.h"
+#include "HenyeyGreensteinPhaseFunction.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
@@ -152,7 +153,7 @@ void GenericHumanTissueSPF::Scatter(
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColor(ri)[0] ));
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetColor(ri)[0] ));
 			}
 		}
 		
@@ -167,7 +168,7 @@ void GenericHumanTissueSPF::Scatter(
 			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColor(ri)[0] ));
+			trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetColor(ri)[0] ));
 		}
 	}
 
@@ -217,7 +218,7 @@ void GenericHumanTissueSPF::ScatterNM(
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColor(ri)[0] ));
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetColor(ri)[0] ));
 			}
 		}
 		
@@ -232,7 +233,7 @@ void GenericHumanTissueSPF::ScatterNM(
 			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.SetDir(BioSpecSkinSPF::Scattering_From_HenyeyGreenstein( sampler, ri.ray.Dir(), g.GetColorNM(ri,nm) ));
+			trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetColorNM(ri,nm) ));
 		}
 	}
 

@@ -46,7 +46,7 @@ namespace RISE
 
 			IAnimator*					pAnimator;
 
-			const IAtmosphere*			pGlobalAtmosphere;
+			const IMedium*				pGlobalMedium;
 
 			virtual ~Scene( );
 
@@ -69,7 +69,7 @@ namespace RISE
 
 			inline IAnimator*			GetAnimator() const { return pAnimator; }
 
-			inline const IAtmosphere*	GetGlobalAtmosphere() const { return pGlobalAtmosphere; }
+			inline const IMedium*		GetGlobalMedium() const { return pGlobalMedium; }
 
 			void		SetCamera( ICamera* pCamera_ );
 			void		SetObjectManager( const IObjectManager* pObjectManager_ );
@@ -83,7 +83,7 @@ namespace RISE
 			void		SetGlobalSpectralMap( ISpectralPhotonMap* pPhotonMap );
 			void		SetShadowMap( IShadowPhotonMap* pPhotonMap );
 			void		SetIrradianceCache( IIrradianceCache* pCache );
-			void		SetGlobalAtmosphere( const IAtmosphere* pAtmosphere );
+			void		SetGlobalMedium( const IMedium* pMedium );
 
 			void		SetSceneTime( const Scalar time ) const ;
 

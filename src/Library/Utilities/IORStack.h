@@ -146,6 +146,14 @@ namespace RISE
 			return iorstack.containsObject( pCurrentObject );
 		}
 
+		// Returns the object at the top of the IOR stack (innermost enclosing object).
+		// Returns 0 for the environment (root entry with no object).
+		// Analogous to Cycles' volume stack top entry.
+		inline const IObject* topObject() const
+		{
+			return iorstack.top().pObj;
+		}
+
 		// Sets the current object
 		inline void SetCurrentObject( const IObject* pObj ) const
 		{

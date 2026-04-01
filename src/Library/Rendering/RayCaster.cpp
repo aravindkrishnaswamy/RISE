@@ -17,6 +17,9 @@
 #include "EnvironmentSampler.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/MediumTracking.h"
+#include "../Utilities/MediumTransport.h"
+#include "../Utilities/IndependentSampler.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -211,6 +214,173 @@ bool RayCaster::CastRay(
 		}
 	}
 
+	// ----------------------------------------------------------------
+	// Medium transport: determine if the ray is traveling through a
+	// participating medium and handle absorption/scattering.
+	//
+	// Resolution order (matching Cycles volume stack):
+	//   1. Check innermost enclosing object (IOR stack top) for
+	//      interior medium
+	//   2. Fall back to scene's global medium
+	//   3. No medium (vacuum) — skip medium transport entirely
+	//
+	// When a medium is present:
+	//   a. Sample free-flight distance from the medium
+	//   b. If scatter event occurs before surface hit:
+	//      - NEE at scatter point (in-scattering)
+	//      - Sample phase function for continuation direction
+	//      - Recursively CastRay from scatter point
+	//      - Return (skip surface shading)
+	//   c. If surface hit through medium:
+	//      - Apply transmittance to surface shading result
+	// ----------------------------------------------------------------
+	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+
+	if( pMedium )
+	{
+		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+
+		IndependentSampler mediumSampler( rc.random );
+		bool scattered = false;
+		const Scalar t_m = pMedium->SampleDistance( ray, maxDist, mediumSampler, scattered );
+
+		if( scattered )
+		{
+			// Medium scatter event before surface hit.
+			// Compute scatter point and evaluate in-scattering + continuation.
+			//
+			// Phase function convention: 'wo' is the travel direction of
+			// the arriving photon (= ray.Dir()), NOT the toward-viewer
+			// direction.  This matches Cycles' convention (which negates
+			// sd->wi before passing to HG) and RISE's own BioSpec usage
+			// (GenericHumanTissueSPF passes ri.ray.Dir() to SampleWithG).
+			// For forward scattering (g > 0), Sample(wo) returns
+			// directions close to wo — i.e., the photon continues
+			// roughly in its original travel direction.
+			const Point3 scatterPt = ray.PointAtLength( t_m );
+			const Vector3 wo = ray.Dir();
+
+			// Throughput: transmittance * sigma_s / sampling PDF.
+			// For exponential sampling on sigma_t_max:
+			//   PDF = sigma_t_max * exp(-sigma_t_max * t)
+			//   Transmittance = exp(-sigma_t * t) per channel
+			//   Net weight per channel = sigma_s / sigma_t_max
+			//     (after canceling the exp terms)
+			// This simplifies to the single-scattering albedo
+			// times a channel correction.
+			const MediumCoefficients coeff = pMedium->GetCoefficients( scatterPt );
+			const RISEPel Tr = pMedium->EvalTransmittance( ray, t_m );
+			const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+			RISEPel throughput( 0, 0, 0 );
+			if( sigma_t_max > 0 ) {
+				// Per-channel weight: Tr * sigma_s / (sigma_t_max * Tr_max)
+				// where Tr_max = exp(-sigma_t_max * t) is the sampling PDF's
+				// exponential factor.  Since Tr[ch] = exp(-sigma_t[ch] * t),
+				// the ratio Tr[ch] / Tr_max corrects for per-channel extinction.
+				const Scalar Tr_max = exp( -sigma_t_max * t_m );
+				if( Tr_max > 0 ) {
+					throughput = Tr * coeff.sigma_s * (1.0 / (sigma_t_max * Tr_max));
+				}
+			}
+
+			// 1. NEE at scatter point (in-scattering from lights)
+			RISEPel Ld = MediumTransport::EvaluateInScattering(
+				scatterPt, wo, pMedium, *this, pLightSampler,
+				mediumSampler, rast );
+
+			// 2. Phase-function continuation (indirect in-scattering)
+			// Volume bounces are bounded independently of the general
+			// depth limit to prevent excessive scattering in dense media.
+			static const unsigned int nMaxVolumeBounces = 64;
+			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
+			RISEPel Li( 0, 0, 0 );
+			if( pPhase && rs.depth < nMaxRecursions &&
+				rs.volumeBounces < nMaxVolumeBounces )
+			{
+				const Vector3 wi = pPhase->Sample( wo, mediumSampler );
+				const Ray scatterRay( scatterPt, wi );
+
+				RAY_STATE rs2;
+				rs2.depth = rs.depth + 1;
+				rs2.importance = rs.importance * ColorMath::MaxValue( throughput );
+				rs2.considerEmission = true;
+				rs2.type = rs.type;
+				rs2.volumeBounces = rs.volumeBounces + 1;
+
+				CastRay( rc, rast, scatterRay, Li, rs2, 0,
+					pRadianceMap, ior_stack );
+			}
+
+			// Combine: throughput * (Ld + Li) + emission
+			c = throughput * (Ld + Li);
+
+			// Volumetric emission contribution along segment [0, t_m].
+			// The correct integral for homogeneous emissive media is:
+			//   integral_0^t emission * exp(-sigma_t * s) ds
+			//     = emission * (1 - exp(-sigma_t * t)) / sigma_t
+			// Per-channel: emission[ch] * (1 - Tr[ch]) / sigma_t[ch]
+			if( ColorMath::MaxValue( coeff.emission ) > 0 )
+			{
+				RISEPel emissionContrib( 0, 0, 0 );
+				for( int ch = 0; ch < 3; ch++ )
+				{
+					if( coeff.sigma_t[ch] > 0 )
+					{
+						emissionContrib[ch] = coeff.emission[ch] *
+							(1.0 - Tr[ch]) / coeff.sigma_t[ch];
+					}
+					else
+					{
+						// Zero extinction: emission accumulates linearly
+						emissionContrib[ch] = coeff.emission[ch] * t_m;
+					}
+				}
+				c = c + emissionContrib;
+			}
+
+			if( distance ) {
+				*distance = t_m;
+			}
+
+			// Apply RR compensation
+			if( rrCompensation != 1.0 ) {
+				c = c * rrCompensation;
+			}
+
+			return true;
+		}
+		// else: no scatter — ray passes through to surface or background.
+		// Apply transmittance after shading below.
+		//
+		// Accumulate volumetric emission along the non-scatter segment.
+		// Without this, purely absorptive emissive media (sigma_s = 0)
+		// would never contribute emission since scatter events never occur.
+		if( !scattered )
+		{
+			const MediumCoefficients coeff = pMedium->GetCoefficients( ray.origin );
+			if( ColorMath::MaxValue( coeff.emission ) > 0 )
+			{
+				const Scalar segDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				RISEPel emissionContrib( 0, 0, 0 );
+				for( int ch = 0; ch < 3; ch++ )
+				{
+					if( coeff.sigma_t[ch] > 0 )
+					{
+						// Beer-Lambert emission integral: emission * (1 - exp(-sigma_t * d)) / sigma_t
+						const Scalar Tr_ch = exp( -coeff.sigma_t[ch] * segDist );
+						emissionContrib[ch] = coeff.emission[ch] *
+							(1.0 - Tr_ch) / coeff.sigma_t[ch];
+					}
+					else
+					{
+						emissionContrib[ch] = coeff.emission[ch] * segDist;
+					}
+				}
+				c = c + emissionContrib;
+			}
+		}
+	}
+
 	if( bHit )
 	{
 		// If there is an intersection modifier, then get it to modify
@@ -231,6 +401,11 @@ bool RayCaster::CastRay(
 			pDefaultShader.Shade( rc, ri, *this, rs, c, ior_stack );
 		}
 
+		// Apply medium transmittance to surface shading result
+		if( pMedium ) {
+			c = c * pMedium->EvalTransmittance( ray, ri.geometric.range );
+		}
+
 		if( distance ) {
 			*distance = ri.geometric.range;
 		}
@@ -238,6 +413,11 @@ bool RayCaster::CastRay(
 		bReturn = true;
 	} else if( pRadianceMap ) {
 		c = pRadianceMap->GetRadiance( ray, rast );
+
+		// Apply medium transmittance for background
+		if( pMedium ) {
+			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadiance( ray, rast );
 
@@ -257,16 +437,16 @@ bool RayCaster::CastRay(
 			}
 		}
 
+		// Apply medium transmittance for environment
+		if( pMedium ) {
+			c = c * pMedium->EvalTransmittance( ray, RISE_INFINITY );
+		}
+
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
 		}
 
 		bReturn = bConsiderRMapAsBackground;
-	}
-
-	// After everything else is done, apply atmospherics if its there
-	if( pScene->GetGlobalAtmosphere() && (bHit||pRadianceMap||pScene->GetGlobalRadianceMap()) ) {
-		c = pScene->GetGlobalAtmosphere()->ApplyAtmospherics( ray, ri.geometric.ptIntersection, rast, c, !bHit );
 	}
 
 	// Apply RR compensation to the returned radiance so the caller's
@@ -352,6 +532,105 @@ bool RayCaster::CastRayNM(
 
 	bool bReturn = false;
 
+	// Medium transport (spectral variant)
+	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+
+	if( pMedium )
+	{
+		const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
+
+		IndependentSampler mediumSampler( rc.random );
+		bool scattered = false;
+		const Scalar t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
+
+		if( scattered )
+		{
+			// Phase function convention: wo = travel direction (see RGB path comment)
+			const Point3 scatterPt = ray.PointAtLength( t_m );
+			const Vector3 wo = ray.Dir();
+
+			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( scatterPt, nm );
+			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, t_m, nm );
+			Scalar throughput = 0;
+			if( coeff.sigma_t > 0 ) {
+				// For single-channel exponential sampling:
+				//   PDF = sigma_t * exp(-sigma_t * t)
+				//   Transmittance = exp(-sigma_t * t)
+				//   Net weight = sigma_s / sigma_t (single-scattering albedo)
+				throughput = coeff.sigma_s / coeff.sigma_t;
+			}
+
+			// NEE at scatter point
+			Scalar Ld = MediumTransport::EvaluateInScatteringNM(
+				scatterPt, wo, pMedium, nm, *this, pLightSampler,
+				mediumSampler, rast );
+
+			// Phase-function continuation
+			static const unsigned int nMaxVolumeBounces = 64;
+			const IPhaseFunction* pPhase = pMedium->GetPhaseFunction();
+			Scalar Li = 0;
+			if( pPhase && rs.depth < nMaxRecursions &&
+				rs.volumeBounces < nMaxVolumeBounces )
+			{
+				const Vector3 wi = pPhase->Sample( wo, mediumSampler );
+				const Ray scatterRay( scatterPt, wi );
+
+				RAY_STATE rs2;
+				rs2.depth = rs.depth + 1;
+				rs2.importance = rs.importance * throughput;
+				rs2.considerEmission = true;
+				rs2.type = rs.type;
+				rs2.volumeBounces = rs.volumeBounces + 1;
+
+				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, 0,
+					pRadianceMap, ior_stack );
+			}
+
+			c = throughput * (Ld + Li);
+
+			// Volumetric emission: correct Beer-Lambert integral
+			if( coeff.emission > 0 )
+			{
+				if( coeff.sigma_t > 0 )
+				{
+					c += coeff.emission * (1.0 - Tr) / coeff.sigma_t;
+				}
+				else
+				{
+					c += coeff.emission * t_m;
+				}
+			}
+
+			if( distance ) {
+				*distance = t_m;
+			}
+
+			if( rrCompensation != 1.0 ) {
+				c = c * rrCompensation;
+			}
+
+			return true;
+		}
+		// Non-scatter path: accumulate volumetric emission along segment
+		if( !scattered )
+		{
+			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( ray.origin, nm );
+			if( coeff.emission > 0 )
+			{
+				const Scalar segDist = bHit ? ri.geometric.range : RISE_INFINITY;
+				if( coeff.sigma_t > 0 )
+				{
+					const Scalar Tr_seg = exp( -coeff.sigma_t * segDist );
+					c += coeff.emission * (1.0 - Tr_seg) / coeff.sigma_t;
+				}
+				else
+				{
+					c += coeff.emission * segDist;
+				}
+			}
+		}
+	}
+
 	if( bHit ) {
 		// If there is an intersection modifier, then get it to modify
 		// the intersection information
@@ -371,15 +650,22 @@ bool RayCaster::CastRayNM(
 			c = pDefaultShader.ShadeNM( rc, ri, *this, rs, nm, ior_stack );
 		}
 
+		// Apply medium transmittance to surface shading result
+		if( pMedium ) {
+			c *= pMedium->EvalTransmittanceNM( ray, ri.geometric.range, nm );
+		}
+
 		if( distance ) {
 			*distance = ri.geometric.range;
 		}
 
 		bReturn = true;
 	} else if( pRadianceMap ) {
-		// If there is a radiance map, return the radiance value
-		// Transform the world co-ordinates to the texture lookup
 		c = pRadianceMap->GetRadianceNM( ray, rast, nm );
+
+		if( pMedium ) {
+			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+		}
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
@@ -399,16 +685,15 @@ bool RayCaster::CastRayNM(
 			}
 		}
 
+		if( pMedium ) {
+			c *= pMedium->EvalTransmittanceNM( ray, RISE_INFINITY, nm );
+		}
+
 		if( distance && bConsiderRMapAsBackground ) {
 			*distance = RISE_INFINITY;
 		}
 
 		bReturn = bConsiderRMapAsBackground;
-	}
-
-	// After everything else is done, apply atmospherics if its there
-	if( pScene->GetGlobalAtmosphere() && (bHit||pRadianceMap||pScene->GetGlobalRadianceMap()) ) {
-		c = pScene->GetGlobalAtmosphere()->ApplyAtmosphericsNM( ray, ri.geometric.ptIntersection, rast, nm, c, !bHit );
 	}
 
 	// Apply RR compensation to the returned radiance so the caller's

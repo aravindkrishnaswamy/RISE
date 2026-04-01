@@ -81,6 +81,7 @@
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IMedium.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/Reference.h"
@@ -205,7 +206,9 @@ namespace RISE
 				const IMaterial* pMaterial,							///< [in] Material at shading point (for BSDF PDF query)
 				const IRayCaster& caster,							///< [in] Ray caster for shadow tests
 				ISampler& sampler,									///< [in] Low-discrepancy sampler
-				const IObject* pShadingObject						///< [in] Object being shaded (to skip self-illumination)
+				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
+				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
+				const bool isVolumeScatter							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				) const;
 
 			/// Spectral variant of EvaluateDirectLighting.
@@ -217,7 +220,9 @@ namespace RISE
 				const Scalar nm,									///< [in] Wavelength in nanometers
 				const IRayCaster& caster,							///< [in] Ray caster for shadow tests
 				ISampler& sampler,									///< [in] Low-discrepancy sampler
-				const IObject* pShadingObject						///< [in] Object being shaded (to skip self-illumination)
+				const IObject* pShadingObject,						///< [in] Object being shaded (to skip self-illumination)
+				const IMedium* pMedium,								///< [in] Current participating medium for transmittance (NULL = vacuum)
+				const bool isVolumeScatter							///< [in] True for volume scatter points — skips cosine weighting and hemisphere rejection
 				) const;
 
 			/// Returns the alias-table selection probability for a given

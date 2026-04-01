@@ -876,6 +876,34 @@ namespace RISE
 
 
 		//
+		// Participating media
+		//
+
+		//! Adds a homogeneous participating medium
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHomogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
+			const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			) = 0;
+
+		//! Sets the scene's global participating medium
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool SetGlobalMedium(
+			const char* name										///< [in] Name of a previously added medium
+			) = 0;
+
+		//! Assigns an interior participating medium to an object
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool SetObjectInteriorMedium(
+			const char* object_name,								///< [in] Name of the object
+			const char* medium_name									///< [in] Name of the medium
+			) = 0;
+
+
+		//
 		// Adds modifiers
 		//
 

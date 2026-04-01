@@ -3577,6 +3577,55 @@ namespace RISE
 			};
 
 			//////////////////////////////////////////
+			// Participating media
+			//////////////////////////////////////////
+
+			struct HomogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					double sigma_a[3] = {0};
+					double sigma_s[3] = {0};
+					String phase_type = "isotropic";
+					double phase_g = 0.0;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "absorption" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &sigma_a[0], &sigma_a[1], &sigma_a[2] );
+						} else if( pname == "scattering" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &sigma_s[0], &sigma_s[1], &sigma_s[2] );
+						} else if( pname == "phase" ) {
+							// Parse "isotropic" or "hg <g>"
+							String ptype;
+							String pval;
+							if( string_split( pvalue, ptype, pval, ' ' ) ) {
+								phase_type = ptype;
+								phase_g = pval.toDouble();
+							} else {
+								phase_type = pvalue;
+							}
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddHomogeneousMedium( name.c_str(), sigma_a, sigma_s, phase_type.c_str(), phase_g );
+				}
+			};
+
+
+			//////////////////////////////////////////
 			// Objects
 			//////////////////////////////////////////
 
@@ -3599,6 +3648,7 @@ namespace RISE
 					double radorient[3] = {0};
 					bool bCastsShadows = true;
 					bool bReceivesShadows = true;
+					String interior_medium = "none";
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -3642,13 +3692,21 @@ namespace RISE
 							bCastsShadows = pvalue.toBoolean();
 						} else if( pname == "receives_shadows" ) {
 							bReceivesShadows = pvalue.toBoolean();
+						} else if( pname == "interior_medium" ) {
+							interior_medium = pvalue;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddObject( name.c_str(), geometry.c_str(), material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radianceScale, radorient, pos, orient, scale, bCastsShadows, bReceivesShadows );
+					bool bRet = pJob.AddObject( name.c_str(), geometry.c_str(), material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radianceScale, radorient, pos, orient, scale, bCastsShadows, bReceivesShadows );
+
+					if( bRet && !(interior_medium == "none") ) {
+						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
+					}
+
+					return bRet;
 				}
 			};
 
@@ -6840,6 +6898,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["bilinearpatch_geometry"] = new BilinearPatchGeometryAsciiChunkParser();
 
 	chunks["bumpmap_modifier"] = new BumpmapModifierAsciiChunkParser();
+
+	chunks["homogeneous_medium"] = new HomogeneousMediumAsciiChunkParser();
 
 	chunks["standard_object"] = new StandardObjectAsciiChunkParser();
 	chunks["csg_object"] = new CSGObjectAsciiChunkParser();

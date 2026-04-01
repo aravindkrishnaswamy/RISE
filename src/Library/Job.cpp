@@ -133,6 +133,15 @@ void Job::DestroyContainers()
 	safe_shutdown_and_release( pShaderManager );
 	safe_shutdown_and_release( pShaderOpManager );
 	safe_shutdown_and_release( pObjectManager );
+
+	// Release all named media
+	{
+		MediumMap::iterator it;
+		for( it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
+			safe_release( it->second );
+		}
+		mediaMap.clear();
+	}
 }
 
 //
@@ -2932,6 +2941,86 @@ bool Job::AddObject(
 	pObjectManager->AddItem( object, name );
 	safe_release( object );
 
+	return true;
+}
+
+///////////////////////////////////////////////////////////
+// Participating media
+///////////////////////////////////////////////////////////
+
+bool Job::AddHomogeneousMedium(
+	const char* name,										///< [in] Name of the medium
+	const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
+	const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+	const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+	const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+	)
+{
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddHomogeneousMedium:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium
+	IMedium* pMedium = 0;
+	RISE_API_CreateHomogeneousMedium( &pMedium,
+		RISEPel( sigma_a[0], sigma_a[1], sigma_a[2] ),
+		RISEPel( sigma_s[0], sigma_s[1], sigma_s[2] ),
+		*pPhase );
+
+	safe_release( pPhase );
+
+	// Store in our map
+	MediumMap::iterator existing = mediaMap.find( name );
+	if( existing != mediaMap.end() ) {
+		safe_release( existing->second );
+		existing->second = pMedium;
+	} else {
+		mediaMap[name] = pMedium;
+	}
+
+	return true;
+}
+
+bool Job::SetGlobalMedium(
+	const char* name										///< [in] Name of a previously added medium
+	)
+{
+	MediumMap::iterator it = mediaMap.find( name );
+	if( it == mediaMap.end() ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetGlobalMedium:: Medium not found `%s`", name );
+		return false;
+	}
+
+	pScene->SetGlobalMedium( it->second );
+	return true;
+}
+
+bool Job::SetObjectInteriorMedium(
+	const char* object_name,								///< [in] Name of the object
+	const char* medium_name									///< [in] Name of the medium
+	)
+{
+	IObjectPriv* pObj = pObjectManager->GetItem( object_name );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectInteriorMedium:: Object not found `%s`", object_name );
+		return false;
+	}
+
+	MediumMap::iterator it = mediaMap.find( medium_name );
+	if( it == mediaMap.end() ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectInteriorMedium:: Medium not found `%s`", medium_name );
+		return false;
+	}
+
+	pObj->AssignInteriorMedium( *(it->second) );
 	return true;
 }
 

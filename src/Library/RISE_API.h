@@ -56,6 +56,8 @@
 #include "Interfaces/IShaderManager.h"
 #include "Interfaces/IShaderOp.h"
 #include "Interfaces/IShaderOpManager.h"
+#include "Interfaces/IPhaseFunction.h"
+#include "Interfaces/IMedium.h"
 #include "Interfaces/ITriangleMeshGeometry.h"
 #include "Interfaces/ITriangleMeshLoader.h"
 #include "Interfaces/ITwoColorOperator.h"
@@ -2112,6 +2114,43 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_CreateOptionsParser(
 								IOptions** ppi,						///< [out] Pointer to recieve the parser
 								const char* name					///< [in] Name of the file to load
+								);
+
+
+	//////////////////////////////////////////////////////////
+	// Phase functions and participating media
+	//////////////////////////////////////////////////////////
+
+	//! Creates an isotropic phase function (uniform scattering over the sphere)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateIsotropicPhaseFunction(
+								IPhaseFunction** ppi				///< [out] Pointer to recieve the phase function
+								);
+
+	//! Creates a Henyey-Greenstein phase function with given asymmetry factor
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHenyeyGreensteinPhaseFunction(
+								IPhaseFunction** ppi,				///< [out] Pointer to recieve the phase function
+								const Scalar g						///< [in] Asymmetry factor [-1, 1]
+								);
+
+	//! Creates a homogeneous participating medium with constant coefficients
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								);
+
+	//! Creates a homogeneous participating medium with emission
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
 								);
 
 

@@ -34,7 +34,10 @@
 #include "Interfaces/IModifierManager.h"
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
+#include "Interfaces/IMedium.h"
 #include "Utilities/Reference.h"
+#include "Utilities/RString.h"
+#include <map>
 
 namespace RISE
 {
@@ -61,6 +64,9 @@ namespace RISE
 		IProgressCallback*							pGlobalProgress;	// A global progress reporter
 
 		double										lightSampleRRThreshold;	// Light-sample RR threshold (0=disabled)
+
+		typedef std::map<String, IMedium*>		MediumMap;
+		MediumMap									mediaMap;				// Named participating media
 
 		//
 		// Helper functions
@@ -933,6 +939,34 @@ namespace RISE
 			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
 			const double dir[3]										///< [in] Direction of the light
 			);
+
+		//
+		// Participating media
+		//
+
+		//! Adds a homogeneous participating medium
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddHomogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
+			const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			);
+
+		//! Sets the scene's global participating medium
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetGlobalMedium(
+			const char* name										///< [in] Name of a previously added medium
+			);
+
+		//! Assigns an interior participating medium to an object
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetObjectInteriorMedium(
+			const char* object_name,								///< [in] Name of the object
+			const char* medium_name									///< [in] Name of the medium
+			);
+
 
 		//
 		// Adds modifiers

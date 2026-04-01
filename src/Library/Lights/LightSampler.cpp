@@ -514,7 +514,9 @@ RISEPel LightSampler::EvaluateDirectLighting(
 	const IMaterial* pMaterial,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const IObject* pShadingObject
+	const IObject* pShadingObject,
+	const IMedium* pMedium,
+	const bool isVolumeScatter
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -624,10 +626,41 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		{
 			// Selected a non-mesh (delta) light.
 			// w = 1 (no alternative sampling strategy).
-			RISEPel amount( 0, 0, 0 );
-			entry.pLight->ComputeDirectLighting( ri, caster, brdf,
-				pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
-				amount );
+			// Computed inline (not via ComputeDirectLighting) so that
+			// volume scatter points skip hemisphere rejection and
+			// cosine weighting — matching the NM path.
+			const Point3 lightPos = entry.pLight->position();
+			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
+			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
+			const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+				Vector3Ops::Dot( vToLight, ri.vNormal );
+
+			if( !isVolumeScatter && cosSurface <= 0 ) break;
+
+			// Shadow test
+			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
+			{
+				const Ray rayToLight( ri.ptIntersection, vToLight );
+				if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+					break;
+			}
+
+			// emittedRadiance expects the outgoing direction FROM the
+			// light; -vToLight is the light-to-surface direction.
+			const RISEPel Le = entry.pLight->emittedRadiance( -vToLight );
+			const RISEPel fBSDF = brdf.value( vToLight, ri );
+			const Scalar invDistSq = 1.0 / (dist * dist);
+
+			// Delta-position light: w = 1 (no MIS needed).
+			RISEPel amount = Le * fBSDF * cosSurface * invDistSq;
+
+			// Apply medium transmittance along shadow ray
+			if( pMedium )
+			{
+				const Ray rayToLight( ri.ptIntersection, vToLight );
+				amount = amount * pMedium->EvalTransmittance( rayToLight, dist );
+			}
+
 			result = result + amount * (risWeight / pdfAlias);
 		}
 		else
@@ -648,10 +681,16 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			// Geometry
 			Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-			const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+			// For volume scatter points there is no surface normal:
+			// the phase function handles angular distribution, and we
+			// must integrate over the full sphere, not just a hemisphere.
+			// cosSurface is forced to 1.0 to cancel the multiplication below
+			// and skip hemisphere rejection.
+			const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+				Vector3Ops::Dot( vToLight, ri.vNormal );
 			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
-			if( cosLight > 0 && cosSurface > 0 )
+			if( cosLight > 0 && (isVolumeScatter || cosSurface > 0) )
 			{
 				// Light-sample Russian roulette: estimate the geometric
 				// contribution before the expensive shadow ray.  When
@@ -696,6 +735,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					const Scalar geom = area * cosLight / (dist * dist);
 					RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
 
+					// Apply medium transmittance along shadow ray
+					if( pMedium )
+					{
+						const Ray rayToLight( ri.ptIntersection, vToLight );
+						contrib = contrib * pMedium->EvalTransmittance( rayToLight, dist );
+					}
+
 					// MIS weight: only when RIS is OFF.  When RIS is ON
 					// the exact finite-M technique density is intractable,
 					// so we use w=1 here and suppress the BSDF-hit emitter
@@ -732,8 +778,9 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		Scalar envPdf;
 		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
 
-		const Scalar cosEnv = Vector3Ops::Dot( envDir, ri.vNormal );
-		if( cosEnv > 0 && envPdf > 0 )
+		const Scalar cosEnv = isVolumeScatter ? Scalar(1.0) :
+			Vector3Ops::Dot( envDir, ri.vNormal );
+		if( (isVolumeScatter || cosEnv > 0) && envPdf > 0 )
 		{
 			// Shadow test: cast ray to infinity
 			bool envShadowed = false;
@@ -749,6 +796,15 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				const RISEPel Le = pEnvironmentMap->GetRadiance( envRay, nullRasterizerState );
 				const RISEPel f = brdf.value( envDir, ri );
 				RISEPel envContrib = Le * f * (cosEnv / envPdf);
+
+				// Apply medium transmittance for environment ray.
+				// In a participating medium, the transmittance to infinity
+				// is zero for any nonzero extinction.  For practical
+				// purposes we use a large finite distance.
+				if( pMedium )
+				{
+					envContrib = envContrib * pMedium->EvalTransmittance( envRay, RISE_INFINITY );
+				}
 
 				// MIS: power heuristic against BSDF PDF
 				if( pMaterial )
@@ -776,7 +832,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 	const Scalar nm,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const IObject* pShadingObject
+	const IObject* pShadingObject,
+	const IMedium* pMedium,
+	const bool isVolumeScatter
 	) const
 {
 	Scalar result = 0;
@@ -867,9 +925,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			const Point3 lightPos = entry.pLight->position();
 			Vector3 vToLight = Vector3Ops::mkVector3( lightPos, ri.ptIntersection );
 			const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-			const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+			const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+				Vector3Ops::Dot( vToLight, ri.vNormal );
 
-			if( cosSurface <= 0 ) break;
+			if( !isVolumeScatter && cosSurface <= 0 ) break;
 
 			// Shadow test
 			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
@@ -887,8 +946,17 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			const Scalar fBSDF = brdf.valueNM( vToLight, ri, nm );
 
 			// Delta-position light: w = 1 (no MIS needed).
-			result = LeNM * fBSDF * cosSurface * invDistSq
+			Scalar neeContrib = LeNM * fBSDF * cosSurface * invDistSq
 				   * (risWeight / pdfAlias);
+
+			// Apply medium transmittance along shadow ray
+			if( pMedium )
+			{
+				const Ray rayToLight( ri.ptIntersection, vToLight );
+				neeContrib *= pMedium->EvalTransmittanceNM( rayToLight, dist, nm );
+			}
+
+			result = neeContrib;
 			break;
 		}
 
@@ -905,10 +973,11 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		Vector3 vToLight = Vector3Ops::mkVector3( ptOnLum, ri.ptIntersection );
 		const Scalar dist = Vector3Ops::NormalizeMag( vToLight );
-		const Scalar cosSurface = Vector3Ops::Dot( vToLight, ri.vNormal );
+		const Scalar cosSurface = isVolumeScatter ? Scalar(1.0) :
+			Vector3Ops::Dot( vToLight, ri.vNormal );
 		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
-		if( cosLight <= 0 || cosSurface <= 0 )
+		if( cosLight <= 0 || (!isVolumeScatter && cosSurface <= 0) )
 		{
 			break;
 		}
@@ -950,6 +1019,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		const Scalar geom = area * cosLight / (dist * dist);
 		Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
 
+		// Apply medium transmittance along shadow ray
+		if( pMedium )
+		{
+			const Ray rayToLight( ri.ptIntersection, vToLight );
+			contrib *= pMedium->EvalTransmittanceNM( rayToLight, dist, nm );
+		}
+
 		// MIS only when RIS is OFF
 		if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
 		{
@@ -973,8 +1049,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		Scalar envPdf;
 		pEnvSampler->Sample( sampler.Get1D(), sampler.Get1D(), envDir, envPdf );
 
-		const Scalar cosEnv = Vector3Ops::Dot( envDir, ri.vNormal );
-		if( cosEnv > 0 && envPdf > 0 )
+		const Scalar cosEnv = isVolumeScatter ? Scalar(1.0) :
+			Vector3Ops::Dot( envDir, ri.vNormal );
+		if( (isVolumeScatter || cosEnv > 0) && envPdf > 0 )
 		{
 			bool envShadowed = false;
 			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
@@ -989,6 +1066,12 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				const Scalar Le = pEnvironmentMap->GetRadianceNM( envRay, nullRasterizerState, nm );
 				const Scalar f = brdf.valueNM( envDir, ri, nm );
 				Scalar envContrib = Le * f * cosEnv / envPdf;
+
+				// Apply medium transmittance for environment ray
+				if( pMedium )
+				{
+					envContrib *= pMedium->EvalTransmittanceNM( envRay, RISE_INFINITY, nm );
+				}
 
 				if( pMaterial )
 				{

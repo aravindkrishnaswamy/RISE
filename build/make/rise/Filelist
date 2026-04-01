@@ -63,6 +63,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
 	$(PATHLIBRARY)Utilities/Transformable.cpp					\
+	$(PATHLIBRARY)Utilities/MediumTransport.cpp				\
 	$(PATHLIBRARY)Functions/BezierRootFinder.cpp				\
 	$(PATHLIBRARY)Functions/Polynomial.cpp					\
 	$(PATHLIBRARY)Functions/PolynomialGCD.cpp				\
@@ -107,6 +108,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
+	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
+	$(PATHLIBRARY)Materials/HomogeneousMedium.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
 	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\

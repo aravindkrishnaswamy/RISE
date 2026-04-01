@@ -65,9 +65,11 @@ namespace RISE
 
 			Scalar glossyFilterWidth;			///< Accumulated glossy filter roughness increase (0 = no filtering)
 
+			unsigned int volumeBounces;			///< Accumulated volume scattering bounces
+
 			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
 				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
-				glossyFilterWidth( 0 ) {}
+				glossyFilterWidth( 0 ), volumeBounces( 0 ) {}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene

@@ -85,9 +85,9 @@ namespace RISE
 			IIrradianceCache* pCache							///< [in] Cache to set
 			) = 0;
 
-		//! Sets the global atmopsherics processor
-		virtual void SetGlobalAtmosphere( 
-			const IAtmosphere* pAtmosphere						///< [in] Global atmopshere to set
+		//! Sets the global participating medium
+		virtual void SetGlobalMedium(
+			const IMedium* pMedium								///< [in] Global medium to set
 			) = 0;
 
 		//! Shutsdown the scene, forces the deletion and clearing of everything

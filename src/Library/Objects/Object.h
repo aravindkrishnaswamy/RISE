@@ -37,6 +37,7 @@ namespace RISE
 			const IRayIntersectionModifier*					pModifier;
 			const IShader*									pShader;
 			const IRadianceMap*								pRadianceMap;
+			const IMedium*									pInteriorMedium;
 
 			bool											bIsWorldVisible;
 			bool											bCastsShadows;
@@ -61,6 +62,7 @@ namespace RISE
 			virtual bool AssignModifier( const IRayIntersectionModifier& pMod );
 			virtual bool AssignShader( const IShader& pShader );
 			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap );
+			virtual bool AssignInteriorMedium( const IMedium& medium );
 
 			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
@@ -76,6 +78,7 @@ namespace RISE
 			virtual void SetShadowParams( const bool bCasts, const bool bReceives );
 
 			virtual const IMaterial* GetMaterial() const;
+			virtual const IMedium* GetInteriorMedium() const;
 			virtual void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			virtual Scalar GetArea( ) const;
 

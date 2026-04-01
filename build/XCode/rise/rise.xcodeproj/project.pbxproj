@@ -705,6 +705,18 @@
 		F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */; };
 		F24C543F2F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */; };
 		F24C54402F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */; };
+		F24C54452F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */; };
+		F24C54462F7CAB4F009AF16D /* HomogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */; };
+		F24C54472F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */; };
+		F24C54482F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */; };
+		F24C54492F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */; };
+		F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */; };
+		F24C54502F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
+		F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */; };
+		F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */; };
+		F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544B2F7CAB67009AF16D /* MediumTracking.h */; };
+		F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544C2F7CAB67009AF16D /* MediumTransport.h */; };
+		F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1456,6 +1468,15 @@
 		F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = EnvironmentSampler.cpp; sourceTree = "<group>"; };
 		F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSSRDFSampling.h; sourceTree = "<group>"; };
 		F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BSSRDFSampling.cpp; sourceTree = "<group>"; };
+		F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HenyeyGreensteinPhaseFunction.h; sourceTree = "<group>"; };
+		F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HenyeyGreensteinPhaseFunction.cpp; sourceTree = "<group>"; };
+		F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HomogeneousMedium.h; sourceTree = "<group>"; };
+		F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HomogeneousMedium.cpp; sourceTree = "<group>"; };
+		F24C544B2F7CAB67009AF16D /* MediumTracking.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTracking.h; sourceTree = "<group>"; };
+		F24C544C2F7CAB67009AF16D /* MediumTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTransport.h; sourceTree = "<group>"; };
+		F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MediumTransport.cpp; sourceTree = "<group>"; };
+		F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetEnergyLUT.h; sourceTree = "<group>"; };
+		F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetUtils.h; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2537,6 +2558,10 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */,
+				F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */,
+				F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */,
+				F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */,
 				F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */,
 				F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */,
 				F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */,
@@ -2946,6 +2971,11 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F24C544B2F7CAB67009AF16D /* MediumTracking.h */,
+				F24C544C2F7CAB67009AF16D /* MediumTransport.h */,
+				F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */,
+				F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */,
+				F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */,
 				F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */,
 				F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */,
 				F24C54322F79FFF1009AF16D /* CompletePathGuide.h */,
@@ -3202,6 +3232,10 @@
 				F27F0ACA069C42910069C9E5 /* IFullInterpolator.h in Headers */,
 				F27F0ACB069C42910069C9E5 /* IFunction1D.h in Headers */,
 				F27F0ACC069C42910069C9E5 /* IFunction1DManager.h in Headers */,
+				F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */,
+				F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */,
+				F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */,
+				F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */,
 				F27F0ACD069C42910069C9E5 /* IFunction2D.h in Headers */,
 				F27F0ACE069C42910069C9E5 /* IFunction2DManager.h in Headers */,
 				F27F0ACF069C42910069C9E5 /* IFunction3D.h in Headers */,
@@ -3262,6 +3296,8 @@
 				F27F0AFF069C42910069C9E5 /* ISampling2D.h in Headers */,
 				F27F0B00069C42910069C9E5 /* IScene.h in Headers */,
 				F27F0B01069C42910069C9E5 /* ISceneParser.h in Headers */,
+				F24C54452F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h in Headers */,
+				F24C54462F7CAB4F009AF16D /* HomogeneousMedium.h in Headers */,
 				F27F0B02069C42910069C9E5 /* IScenePriv.h in Headers */,
 				F27F0B03069C42910069C9E5 /* ISerializable.h in Headers */,
 				F27F0B04069C42910069C9E5 /* IShader.h in Headers */,
@@ -3824,6 +3860,8 @@
 				F27F0BCE069C42910069C9E5 /* IrradianceCache.cpp in Sources */,
 				F27F0BD3069C42910069C9E5 /* ShadowPhotonMap.cpp in Sources */,
 				F2C5D5702F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
+				F24C54472F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */,
+				F24C54482F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F27F0BD5069C42910069C9E5 /* ShadowPhotonTracer.cpp in Sources */,
 				F27F0BD8069C42910069C9E5 /* TranslucentPelPhotonMap.cpp in Sources */,
 				F2C5D57C2F6E450F00546C97 /* CameraUtilities.cpp in Sources */,
@@ -3841,6 +3879,7 @@
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
 				F27F0BF9069C42910069C9E5 /* FileRasterizerOutput.cpp in Sources */,
+				F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
 				F27F0BFE069C42910069C9E5 /* PixelBasedPelRasterizer.cpp in Sources */,
 				F27F0C00069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */,
@@ -4295,6 +4334,8 @@
 				F24B73342F52A632008304C4 /* SpectralColorPainter.h in Sources */,
 				F24B73352F52A632008304C4 /* TexturePainter.cpp in Sources */,
 				F24B73362F52A632008304C4 /* TexturePainter.h in Sources */,
+				F24C54492F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */,
+				F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */,
 				F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */,
 				F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */,
@@ -4571,6 +4612,7 @@
 				F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */,
 				F24B743D2F52A632008304C4 /* PEL.h in Sources */,
 				F24B743E2F52A632008304C4 /* PiecewiseLinearFunction.h in Sources */,
+				F24C54502F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F24B743F2F52A632008304C4 /* Plane.h in Sources */,
 				F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */,
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
