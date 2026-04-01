@@ -383,6 +383,7 @@ bool RayCaster::CastRay(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
+				rs2.bsdfPdf = phasePdf;
 
 				Scalar hitDist = 0;
 				CastRay( rc, rast, scatterRay, Li, rs2, &hitDist,
@@ -771,6 +772,7 @@ bool RayCaster::CastRayNM(
 				rs2.considerEmission = true;
 				rs2.type = rs.type;
 				rs2.volumeBounces = rs.volumeBounces + 1;
+				rs2.bsdfPdf = phasePdf;
 
 				Scalar hitDist = 0;
 				CastRayNM( rc, rast, scatterRay, Li, rs2, nm, &hitDist,
