@@ -40,16 +40,35 @@
 namespace RISE
 {
 	class IMaterial;
+	class IMedium;
+	class IPhaseFunction;
 	class IObject;
 	class ILight;
 
 	struct BDPTVertex
 	{
+		/// Vertex classification.
+		///
+		/// MEDIUM vertices represent volumetric scatter events inside
+		/// participating media.  Unlike SURFACE vertices they carry no
+		/// material — the angular scattering distribution comes from the
+		/// phase function (pPhaseFunc) instead of a BSDF.  Medium
+		/// vertices are always connectible and never delta (for smooth
+		/// phase functions such as isotropic or Henyey-Greenstein).
+		///
+		/// In the generalized area-measure PDF (Veach thesis Ch. 11),
+		/// sigma_t at the scatter point replaces |cos(theta)| in the
+		/// solid-angle-to-area Jacobian:
+		///   surface:  pdfArea = pdfDir * |cos| / dist^2
+		///   medium:   pdfArea = pdfDir * sigma_t / dist^2
+		/// This is stored via sigma_t_scalar and used by the MIS weight
+		/// computation.  See BDPTIntegrator.cpp for the full derivation.
 		enum Type
 		{
 			CAMERA = 0,
 			LIGHT,
-			SURFACE
+			SURFACE,
+			MEDIUM			///< Volumetric scatter event inside participating media
 		};
 
 		Type					type;
@@ -69,6 +88,14 @@ namespace RISE
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
 		Scalar					mediumIOR;		///< Top-of-stack IOR seen at this vertex before scattering
 		bool					insideObject;	///< True if the current object was already in the IOR stack
+
+		// Medium scatter data (valid only for type == MEDIUM)
+		const IMedium*			pMediumVol;		///< The participating medium at this scatter vertex
+		const IPhaseFunction*	pPhaseFunc;		///< Phase function for angular scattering distribution
+		const IObject*			pMediumObject;	///< Object enclosing the medium (NULL for global medium)
+		Scalar					sigma_t_scalar;	///< Scalar extinction at scatter point (MaxValue(sigma_t)),
+												///< used as the area-measure conversion factor in place of
+												///< |cos(theta)| for surface vertices.
 
 		// Light endpoint data (non-null only for type == LIGHT)
 		const ILight*			pLight;
@@ -102,6 +129,10 @@ namespace RISE
 		isBSSRDFEntry( false ),
 		mediumIOR( 1.0 ),
 		insideObject( false ),
+		pMediumVol( 0 ),
+		pPhaseFunc( 0 ),
+		pMediumObject( 0 ),
+		sigma_t_scalar( 0 ),
 		pLight( 0 ),
 		pLuminary( 0 ),
 		screenPos( Point2( 0, 0 ) ),

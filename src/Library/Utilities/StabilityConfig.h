@@ -57,6 +57,7 @@ namespace RISE
 		unsigned int	maxGlossyBounce;		///< Maximum glossy/reflection bounces (UINT_MAX = unlimited)
 		unsigned int	maxTransmissionBounce;	///< Maximum refraction/transmission bounces (UINT_MAX = unlimited)
 		unsigned int	maxTranslucentBounce;	///< Maximum translucent bounces (UINT_MAX = unlimited)
+		unsigned int	maxVolumeBounce;		///< Maximum volume scatter bounces (64 default, matches PT)
 
 		StabilityConfig() :
 		  directClamp( 0 ),
@@ -67,7 +68,8 @@ namespace RISE
 		  maxDiffuseBounce( UINT_MAX ),
 		  maxGlossyBounce( UINT_MAX ),
 		  maxTransmissionBounce( UINT_MAX ),
-		  maxTranslucentBounce( UINT_MAX )
+		  maxTranslucentBounce( UINT_MAX ),
+		  maxVolumeBounce( 64 )
 		{
 		}
 	};

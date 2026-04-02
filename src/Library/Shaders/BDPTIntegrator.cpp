@@ -75,6 +75,9 @@
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/RayCaster.h"
+#include "../Utilities/MediumTracking.h"
+#include "../Interfaces/IMedium.h"
+#include "../Interfaces/IPhaseFunction.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -634,6 +637,22 @@ RISEPel BDPTIntegrator::EvalBSDFAtVertex(
 	const Vector3& wo
 	) const
 {
+	// Medium scatter vertex: evaluate the phase function.
+	// Phase functions are symmetric (p(wi,wo) = p(wo,wi)) and isotropic
+	// w.r.t. surface normal — they depend only on the angle between the
+	// incoming and outgoing directions.  No cosine weighting or normal-
+	// dependent sign flipping is needed, unlike surface BSDFs.
+	// wi and wo are both "away from vertex" directions.
+	// IPhaseFunction::Evaluate expects wi toward the scatter point,
+	// so negate wi to convert from "away" to "toward" convention.
+	if( vertex.type == BDPTVertex::MEDIUM ) {
+		if( !vertex.pPhaseFunc ) {
+			return RISEPel( 0, 0, 0 );
+		}
+		const Scalar p = vertex.pPhaseFunc->Evaluate( -wi, wo );
+		return RISEPel( p, p, p );
+	}
+
 	if( !vertex.pMaterial ) {
 		return RISEPel( 0, 0, 0 );
 	}
@@ -705,6 +724,16 @@ Scalar BDPTIntegrator::EvalPdfAtVertex(
 	const Vector3& wo
 	) const
 {
+	// Medium scatter vertex: phase function sampling PDF.
+	// IPhaseFunction::Pdf expects wi toward the scatter point,
+	// so negate wi to convert from "away" to "toward" convention.
+	if( vertex.type == BDPTVertex::MEDIUM ) {
+		if( !vertex.pPhaseFunc ) {
+			return 0;
+		}
+		return vertex.pPhaseFunc->Pdf( -wi, wo );
+	}
+
 	if( !vertex.pMaterial ) {
 		return 0;
 	}
@@ -759,6 +788,364 @@ bool BDPTIntegrator::IsVisible(
 
 	// CastShadowRay returns TRUE if something is hit (i.e. NOT visible)
 	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Helper: evaluate transmittance along a connection edge.
+//
+// For now this only handles the global medium (scene-level fog).
+// Step 5 upgrades this to full boundary-walk transmittance for
+// per-object media.  Without any medium in the scene, this returns
+// (1,1,1) — the identity — so non-media scenes are unaffected.
+//
+// Transmittance along shared edges cancels in the MIS ratio walk.
+// Both forward and reverse sampling traverse the same geometric
+// edge with identical transmittance, so Tr factors appear in both
+// numerator and denominator of pdfRev/pdfFwd and cancel.
+// Therefore pdfFwd and pdfRev do NOT include Tr — only the
+// directional PDF and the area-measure conversion factor
+// (|cos|/dist^2 for surfaces, sigma_t/dist^2 for media).
+// Connection edge Tr is applied as a multiplicative factor on
+// the contribution, not in the MIS weight.
+//////////////////////////////////////////////////////////////////////
+
+/// Connection edge transmittance with boundary walking.
+///
+/// Evaluates transmittance along the segment from p1 to p2, accounting
+/// for nested, overlapping, and disjoint per-object media as well as
+/// the global medium.  Uses the same boundary-walk algorithm as
+/// LightSampler::EvalShadowTransmittance.
+///
+/// The walk starts at p1 and traces toward p2, finding medium
+/// boundaries (object surfaces with interior media).  At each
+/// boundary, the active medium's transmittance is accumulated for
+/// the traversed segment, and the medium stack is updated.  The
+/// global medium fills segments where no per-object medium is active.
+///
+/// This Tr multiplies the connection contribution but is NOT included
+/// in MIS PDFs (transmittance cancels in the MIS ratio walk — see
+/// the note in ConnectAndEvaluate).
+
+/// Small fixed-capacity stack of active per-object media along a
+/// connection segment.
+namespace {
+	struct ConnectionMediumStack
+	{
+		static const int MAX_DEPTH = 4;
+
+		struct Entry
+		{
+			const IObject* pObj;
+			const IMedium* pMedium;
+		};
+
+		Entry entries[MAX_DEPTH];
+		int   count;
+
+		ConnectionMediumStack() : count( 0 ) {}
+
+		void push( const IObject* pObj, const IMedium* pMedium )
+		{
+			if( count < MAX_DEPTH ) {
+				entries[count].pObj = pObj;
+				entries[count].pMedium = pMedium;
+				count++;
+			}
+		}
+
+		void remove( const IObject* pObj )
+		{
+			for( int i = 0; i < count; i++ ) {
+				if( entries[i].pObj == pObj ) {
+					for( int j = i; j < count - 1; j++ ) {
+						entries[j] = entries[j + 1];
+					}
+					count--;
+					return;
+				}
+			}
+		}
+
+		const IMedium* top() const
+		{
+			return count > 0 ? entries[count - 1].pMedium : 0;
+		}
+	};
+}
+
+RISEPel BDPTIntegrator::EvalConnectionTransmittance(
+	const Point3& p1,
+	const Point3& p2,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const IObject* pStartMediumObject,
+	const IMedium* pStartMedium
+	) const
+{
+	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
+
+	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
+	const Scalar maxDist = Vector3Ops::Magnitude( d );
+	if( maxDist < BDPT_RAY_EPSILON ) {
+		return RISEPel( 1, 1, 1 );
+	}
+
+	d = d * (1.0 / maxDist);
+	const Ray connectionRay( p1, d );
+
+	const IObjectManager* pObjects = scene.GetObjects();
+	if( !pGlobalMedium && !pObjects && !pStartMedium ) {
+		return RISEPel( 1, 1, 1 );
+	}
+
+	// Fast path: no per-object media, just global medium
+	if( !pObjects && !pStartMedium ) {
+		if( pGlobalMedium ) {
+			return pGlobalMedium->EvalTransmittance( connectionRay, maxDist );
+		}
+		return RISEPel( 1, 1, 1 );
+	}
+
+	static const Scalar WALK_EPSILON = 1e-5;
+	static const int MAX_WALK_STEPS = 16;
+
+	RISEPel Tr( 1, 1, 1 );
+	ConnectionMediumStack stack;
+
+	// Pre-seed the medium stack if p1 is inside a per-object medium.
+	// Without this, the first segment [p1, first_boundary] would have
+	// no active medium, causing per-object media to be invisible in
+	// BDPT connections from/to interior medium vertices.
+	if( pStartMediumObject && pStartMedium ) {
+		stack.push( pStartMediumObject, pStartMedium );
+	}
+
+	Scalar segStart = 0;
+	Scalar objectCoveredDist = 0;
+
+	for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+	{
+		const Scalar castStart = segStart + WALK_EPSILON;
+		if( castStart >= maxDist ) {
+			break;
+		}
+
+		const Point3 castOrigin = connectionRay.PointAtLength( castStart );
+		const Ray castRay( castOrigin, d );
+		const Scalar castMax = maxDist - castStart;
+
+		RasterizerState nullRast = {0};
+		RayIntersection ri( castRay, nullRast );
+		pObjects->IntersectRay( ri, true, true, false );
+
+		if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
+			// No more boundaries before p2
+			const Scalar remaining = maxDist - segStart;
+			if( remaining > 0 ) {
+				const IMedium* pActive = stack.top();
+				if( pActive ) {
+					const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+					Tr = Tr * pActive->EvalTransmittance( segRay, remaining );
+					objectCoveredDist += remaining;
+				}
+			}
+			segStart = maxDist;
+			break;
+		}
+
+		const IObject* pHitObj = ri.pObject;
+		if( !pHitObj ) {
+			break;
+		}
+
+		const Scalar boundaryDist = castStart + ri.geometric.range;
+
+		// Apply active medium for [segStart, boundaryDist]
+		const Scalar segLen = boundaryDist - segStart;
+		if( segLen > 0 ) {
+			const IMedium* pActive = stack.top();
+			if( pActive ) {
+				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+				Tr = Tr * pActive->EvalTransmittance( segRay, segLen );
+				objectCoveredDist += segLen;
+			}
+		}
+
+		// Update stack based on boundary crossing
+		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
+		if( pObjMedium ) {
+			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, d );
+			if( ndotd < 0 ) {
+				stack.push( pHitObj, pObjMedium );
+			} else {
+				stack.remove( pHitObj );
+			}
+		}
+
+		segStart = boundaryDist;
+
+		if( ColorMath::MaxValue( Tr ) < 1e-6 ) {
+			return RISEPel( 0, 0, 0 );
+		}
+	}
+
+	// Handle remaining distance
+	if( segStart < maxDist ) {
+		const Scalar remaining = maxDist - segStart;
+		if( remaining > 0 ) {
+			const IMedium* pActive = stack.top();
+			if( pActive ) {
+				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+				Tr = Tr * pActive->EvalTransmittance( segRay, remaining );
+				objectCoveredDist += remaining;
+			}
+		}
+	}
+
+	// Apply global medium for segments where no per-object medium was active
+	if( pGlobalMedium ) {
+		const Scalar globalDist = maxDist - objectCoveredDist;
+		if( globalDist > WALK_EPSILON ) {
+			Tr = Tr * pGlobalMedium->EvalTransmittance( connectionRay, globalDist );
+		}
+	}
+
+	return Tr;
+}
+
+/// Spectral variant of EvalConnectionTransmittance.
+/// Same boundary-walk algorithm operating on scalar transmittance
+/// at a single wavelength.
+Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
+	const Point3& p1,
+	const Point3& p2,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const Scalar nm,
+	const IObject* pStartMediumObject,
+	const IMedium* pStartMedium
+	) const
+{
+	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
+
+	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
+	const Scalar maxDist = Vector3Ops::Magnitude( d );
+	if( maxDist < BDPT_RAY_EPSILON ) {
+		return 1.0;
+	}
+
+	d = d * (1.0 / maxDist);
+	const Ray connectionRay( p1, d );
+
+	const IObjectManager* pObjects = scene.GetObjects();
+	if( !pGlobalMedium && !pObjects && !pStartMedium ) {
+		return 1.0;
+	}
+
+	if( !pObjects && !pStartMedium ) {
+		if( pGlobalMedium ) {
+			return pGlobalMedium->EvalTransmittanceNM( connectionRay, maxDist, nm );
+		}
+		return 1.0;
+	}
+
+	static const Scalar WALK_EPSILON = 1e-5;
+	static const int MAX_WALK_STEPS = 16;
+
+	Scalar Tr = 1.0;
+	ConnectionMediumStack stack;
+
+	// Pre-seed the medium stack if p1 is inside a per-object medium
+	if( pStartMediumObject && pStartMedium ) {
+		stack.push( pStartMediumObject, pStartMedium );
+	}
+
+	Scalar segStart = 0;
+	Scalar objectCoveredDist = 0;
+
+	for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+	{
+		const Scalar castStart = segStart + WALK_EPSILON;
+		if( castStart >= maxDist ) {
+			break;
+		}
+
+		const Point3 castOrigin = connectionRay.PointAtLength( castStart );
+		const Ray castRay( castOrigin, d );
+		const Scalar castMax = maxDist - castStart;
+
+		RasterizerState nullRast = {0};
+		RayIntersection ri( castRay, nullRast );
+		pObjects->IntersectRay( ri, true, true, false );
+
+		if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
+			const Scalar remaining = maxDist - segStart;
+			if( remaining > 0 ) {
+				const IMedium* pActive = stack.top();
+				if( pActive ) {
+					const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+					Tr *= pActive->EvalTransmittanceNM( segRay, remaining, nm );
+					objectCoveredDist += remaining;
+				}
+			}
+			segStart = maxDist;
+			break;
+		}
+
+		const IObject* pHitObj = ri.pObject;
+		if( !pHitObj ) {
+			break;
+		}
+
+		const Scalar boundaryDist = castStart + ri.geometric.range;
+
+		const Scalar segLen = boundaryDist - segStart;
+		if( segLen > 0 ) {
+			const IMedium* pActive = stack.top();
+			if( pActive ) {
+				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+				Tr *= pActive->EvalTransmittanceNM( segRay, segLen, nm );
+				objectCoveredDist += segLen;
+			}
+		}
+
+		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
+		if( pObjMedium ) {
+			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, d );
+			if( ndotd < 0 ) {
+				stack.push( pHitObj, pObjMedium );
+			} else {
+				stack.remove( pHitObj );
+			}
+		}
+
+		segStart = boundaryDist;
+
+		if( Tr < 1e-6 ) {
+			return 0;
+		}
+	}
+
+	if( segStart < maxDist ) {
+		const Scalar remaining = maxDist - segStart;
+		if( remaining > 0 ) {
+			const IMedium* pActive = stack.top();
+			if( pActive ) {
+				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+				Tr *= pActive->EvalTransmittanceNM( segRay, remaining, nm );
+				objectCoveredDist += remaining;
+			}
+		}
+	}
+
+	if( pGlobalMedium ) {
+		const Scalar globalDist = maxDist - objectCoveredDist;
+		if( globalDist > WALK_EPSILON ) {
+			Tr *= pGlobalMedium->EvalTransmittanceNM( connectionRay, globalDist, nm );
+		}
+	}
+
+	return Tr;
 }
 
 // SampleBSSRDFEntryPoint has been extracted to BSSRDFSampling.h.
@@ -882,8 +1269,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	unsigned int glossyBounces = 0;
 	unsigned int transmissionBounces = 0;
 	unsigned int translucentBounces = 0;
+	unsigned int volumeBounces = 0;
+	unsigned int surfaceBounces = 0;
 
-	for( unsigned int depth = 0; depth < maxLightDepth; depth++ )
+	// Loop limit accounts for both surface and volume bounces.
+	// Surface bounces are capped by maxLightDepth, volume bounces by maxVolumeBounce.
+	const unsigned int maxLightTotalDepth = maxLightDepth + stabilityConfig.maxVolumeBounce;
+	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
 	{
 		// Align to fixed dimension range for this bounce so that
 		// cross-pixel Sobol stratification is preserved regardless
@@ -895,9 +1287,174 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
 
+		// ----------------------------------------------------------------
+		// Participating media: free-flight distance sampling (light subpath).
+		// Same logic as the eye subpath — see GenerateEyeSubpath for the
+		// full derivation of throughput weights and PDF measure.
+		// ----------------------------------------------------------------
+		// Declared outside the medium block so surface vertices can
+		// inherit the enclosing medium info for connection transmittance.
+		const IObject* pMedObj_light = 0;
+		const IMedium* pMed_light = 0;
+		{
+			const IObject* pMedObj = 0;
+			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
+				useIORStack ? &iorStack : 0, &scene, pMedObj );
+			pMedObj_light = pMedObj;
+			pMed_light = pMed;
+
+			if( pMed )
+			{
+				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+				bool scattered = false;
+				const Scalar t_m = pMed->SampleDistance(
+					currentRay, maxDist, sampler, scattered );
+
+				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
+				{
+					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					const Vector3 wo = currentRay.Dir();
+					const MediumCoefficients coeff = pMed->GetCoefficients( scatterPt );
+					const RISEPel Tr = pMed->EvalTransmittance( currentRay, t_m );
+					const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+
+					RISEPel medWeight( 0, 0, 0 );
+					if( sigma_t_max > 0 ) {
+						const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+						if( Tr_scalar > 0 ) {
+							medWeight = Tr * coeff.sigma_s *
+								(1.0 / (sigma_t_max * Tr_scalar));
+						}
+					}
+
+					if( ColorMath::MaxValue( medWeight ) <= 0 ) {
+						break;
+					}
+
+					beta = beta * medWeight;
+
+					BDPTVertex mv;
+					mv.type = BDPTVertex::MEDIUM;
+					mv.position = scatterPt;
+					mv.normal = -wo;
+					mv.onb.CreateFromW( -wo );
+					mv.pMaterial = 0;
+					mv.pObject = 0;
+					mv.pMediumVol = pMed;
+					mv.pPhaseFunc = pMed->GetPhaseFunction();
+					mv.pMediumObject = pMedObj;
+					mv.sigma_t_scalar = sigma_t_max;
+					mv.isDelta = false;
+
+					// Medium vertices enclosed by a specular (delta) boundary
+					// are not connectible: connection rays are blocked by the
+					// specular surface.  Propagate from previous vertex.
+					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
+					// are always connectable — not enclosed by any specular
+					// boundary.
+					{
+						bool connectible = true;
+						if( pMedObj == 0 ) {
+							connectible = true;
+						} else if( !vertices.empty() ) {
+							const BDPTVertex& prev = vertices.back();
+							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
+								connectible = false;
+							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+								connectible = false;
+							}
+						}
+						mv.isConnectible = connectible;
+					}
+					mv.throughput = beta;
+
+					const Scalar distSqMed = t_m * t_m;
+					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
+						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
+					mv.pdfRev = 0;
+
+					vertices.push_back( mv );
+
+					// Sample phase function continuation
+					const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
+					if( !pPhase ) {
+						break;
+					}
+
+					const Vector3 wi = pPhase->Sample( wo, sampler );
+					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					if( phasePdf <= NEARZERO ) {
+						break;
+					}
+
+					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+					beta = beta * RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
+						phaseVal / phasePdf );
+
+					// Russian roulette
+					{
+						const Scalar rrThreshold = stabilityConfig.rrThreshold;
+						const Scalar rrProb = r_min( Scalar(1.0),
+							ColorMath::MaxValue( beta ) /
+							r_max( ColorMath::MaxValue( mv.throughput ), rrThreshold ) );
+
+						if( (depth + volumeBounces) >= stabilityConfig.rrMinDepth ) {
+							if( sampler.Get1D() >= rrProb ) {
+								break;
+							}
+							if( rrProb > 0 ) {
+								beta = beta * (1.0 / rrProb);
+							}
+						}
+					}
+
+					// Update pdfRev on previous vertex
+					if( vertices.size() >= 2 ) {
+						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
+						const Scalar revPdfSA = phasePdf;
+
+						if( prev.type == BDPTVertex::MEDIUM ) {
+							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+								revPdfSA, prev.sigma_t_scalar, distSqMed );
+						} else if( prev.type == BDPTVertex::LIGHT ) {
+							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
+								prev.normal, currentRay.Dir() ) );
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, absCosAtPrev, distSqMed );
+						} else {
+							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
+								prev.normal, currentRay.Dir() ) );
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, absCosAtPrev, distSqMed );
+						}
+					}
+
+					pdfFwdPrev = phasePdf;
+
+					currentRay = Ray( scatterPt, wi );
+					currentRay.Advance( BDPT_RAY_EPSILON );
+
+					volumeBounces++;
+					continue;
+				}
+				else if( ri.geometric.bHit )
+				{
+					const RISEPel Tr = pMed->EvalTransmittance(
+						currentRay, ri.geometric.range );
+					beta = beta * Tr;
+				}
+			}
+		}
+
 		if( !ri.geometric.bHit ) {
 			break;
 		}
+
+		// Check surface depth limit (medium scatters don't count)
+		if( surfaceBounces >= maxLightDepth ) {
+			break;
+		}
+		surfaceBounces++;
 
 		// Apply intersection modifier if present
 		if( ri.pModifier ) {
@@ -914,6 +1471,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		// Store enclosing medium so connection transmittance can
+		// seed its boundary walk from the correct starting medium.
+		v.pMediumObject = pMedObj_light;
+		v.pMediumVol = pMed_light;
 		if( useIORStack && ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
@@ -1037,6 +1598,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
+						entryV.pMediumObject = pMedObj_light;
+						entryV.pMediumVol = pMed_light;
 						entryV.isDelta = false;
 						entryV.isConnectible = true;
 						entryV.isBSSRDFEntry = true;
@@ -1150,7 +1713,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) ) :
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
-			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, d2 );
+			if( prev.type == BDPTVertex::MEDIUM ) {
+				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, d2 );
+			} else {
+				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, d2 );
+			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
@@ -1246,16 +1813,231 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	unsigned int eyeGlossyBounces = 0;
 	unsigned int eyeTransmissionBounces = 0;
 	unsigned int eyeTranslucentBounces = 0;
+	unsigned int eyeVolumeBounces = 0;
+	unsigned int eyeSurfaceBounces = 0;
 
-	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
+	// Loop limit accounts for both surface and volume bounces.
+	// Surface bounces are capped by maxEyeDepth, volume bounces by maxVolumeBounce.
+	// depth increments every iteration to keep sampler streams unique.
+	const unsigned int maxEyeTotalDepth = maxEyeDepth + stabilityConfig.maxVolumeBounce;
+	for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
 	{
 		// Align to fixed dimension range for this bounce.
-		// Phases 16..30 = eye bounces 0..14
+		// Each iteration gets a unique stream via depth.
 		sampler.StartStream( 16 + depth );
 
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
+
+		// ----------------------------------------------------------------
+		// Participating media: free-flight distance sampling.
+		//
+		// Before creating a surface vertex, check if the current ray
+		// travels through a participating medium.  If a scatter event
+		// occurs before reaching the surface, create a MEDIUM vertex
+		// and sample the phase function for the continuation direction.
+		// If no scatter occurs, apply transmittance to the path
+		// throughput and fall through to normal surface vertex creation.
+		// ----------------------------------------------------------------
+		// Declared outside the medium block so surface vertices can
+		// inherit the enclosing medium info for connection transmittance.
+		const IObject* pMedObj_eye = 0;
+		const IMedium* pMed_eye = 0;
+		{
+			const IObject* pMedObj = 0;
+			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
+				useIORStack ? &iorStack : 0, &scene, pMedObj );
+			pMedObj_eye = pMedObj;
+			pMed_eye = pMed;
+
+			if( pMed )
+			{
+				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+				bool scattered = false;
+				const Scalar t_m = pMed->SampleDistance(
+					currentRay, maxDist, sampler, scattered );
+
+				if( scattered && eyeVolumeBounces < stabilityConfig.maxVolumeBounce )
+				{
+					// Medium scatter event before surface hit.
+					//
+					// Throughput weight for delta-tracking scatter event:
+					//   Sampling PDF:   p(t) = sigma_t_maj * exp(-sigma_t_maj * t)
+					//   Transmittance:  Tr(t) = exp(-sigma_t * t)  per channel
+					//   Weight:         Tr * sigma_s / (sigma_t_maj * Tr_scalar)
+					//
+					// For homogeneous media this simplifies to sigma_s / sigma_t_maj
+					// (single-scattering albedo times a correction for multi-channel
+					// media).  Tr_scalar = MinValue(Tr) is the scalar tracking
+					// transmittance from the delta-tracking majorant channel.
+					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					const Vector3 wo = currentRay.Dir();
+					const MediumCoefficients coeff = pMed->GetCoefficients( scatterPt );
+					const RISEPel Tr = pMed->EvalTransmittance( currentRay, t_m );
+					const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+
+					RISEPel medWeight( 0, 0, 0 );
+					if( sigma_t_max > 0 ) {
+						const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+						if( Tr_scalar > 0 ) {
+							medWeight = Tr * coeff.sigma_s *
+								(1.0 / (sigma_t_max * Tr_scalar));
+						}
+					}
+
+					if( ColorMath::MaxValue( medWeight ) <= 0 ) {
+						break;
+					}
+
+					beta = beta * medWeight;
+
+					// Create MEDIUM vertex
+					BDPTVertex mv;
+					mv.type = BDPTVertex::MEDIUM;
+					mv.position = scatterPt;
+					mv.normal = -wo;	// incoming direction (for guiding orientation)
+					mv.onb.CreateFromW( -wo );
+					mv.pMaterial = 0;
+					mv.pObject = 0;
+					mv.pMediumVol = pMed;
+					mv.pPhaseFunc = pMed->GetPhaseFunction();
+					mv.pMediumObject = pMedObj;
+					mv.sigma_t_scalar = sigma_t_max;
+					mv.isDelta = false;
+
+					// Medium vertices enclosed by a specular (delta) boundary
+					// are not connectible: connection rays are blocked by the
+					// specular surface.  Propagate from previous vertex.
+					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
+					// are always connectable — they are not enclosed by any
+					// specular boundary, even if the previous vertex was a
+					// specular surface (e.g., reflected off glass into open fog).
+					{
+						bool connectible = true;
+						if( pMedObj == 0 ) {
+							// Global medium: always connectable
+							connectible = true;
+						} else if( !vertices.empty() ) {
+							const BDPTVertex& prev = vertices.back();
+							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
+								connectible = false;
+							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+								connectible = false;
+							}
+						}
+						mv.isConnectible = connectible;
+					}
+					mv.throughput = beta;
+
+					// PDF in generalized area measure for a medium scatter vertex.
+					// For surface vertices: pdfArea = pdfDir * |cos(theta)| / dist^2
+					//   (Veach thesis eq. 8.8)
+					// For medium vertices: pdfArea = pdfDir * sigma_t / dist^2
+					//   (Veach thesis Chapter 11; PBRT v4 Section 16.3)
+					// sigma_t at the scatter point replaces |cos| because the
+					// free-flight sampling probability density is proportional
+					// to sigma_t, while surface "acceptance" is proportional to
+					// the projected area (|cos|/dist^2).
+					const Scalar distSqMed = t_m * t_m;
+					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
+						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
+					mv.pdfRev = 0;
+
+#ifdef RISE_ENABLE_OPENPGL
+					mv.guidingHasSegment = true;
+					mv.guidingDirectionOut = -wo;
+					mv.guidingNormal = -wo;
+					mv.guidingEta = 1.0;
+#endif
+
+					vertices.push_back( mv );
+
+					// Sample the phase function for continuation direction
+					const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
+					if( !pPhase ) {
+						break;
+					}
+
+					const Vector3 wi = pPhase->Sample( wo, sampler );
+					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					if( phasePdf <= NEARZERO ) {
+						break;
+					}
+
+					// Phase function throughput: value / pdf.
+					// For isotropic: p = 1/(4pi), pdf = 1/(4pi), so weight = 1.
+					// For HG: value and pdf are identical (self-normalized), weight = 1.
+					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+					beta = beta * RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
+						phaseVal / phasePdf );
+
+					// Russian roulette for volume scattering
+					Scalar rrProb = 1.0;
+					if( (depth + eyeVolumeBounces) >= stabilityConfig.rrMinDepth ) {
+						const Scalar rrThreshold = stabilityConfig.rrThreshold;
+						rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
+							r_max( ColorMath::MaxValue( mv.throughput ), rrThreshold ) );
+						if( sampler.Get1D() >= rrProb ) {
+							break;
+						}
+						if( rrProb > 0 ) {
+							beta = beta * (1.0 / rrProb);
+						}
+					}
+
+#ifdef RISE_ENABLE_OPENPGL
+					vertices.back().guidingHasDirectionIn = true;
+					vertices.back().guidingDirectionIn = wi;
+					vertices.back().guidingPdfDirectionIn = phasePdf;
+					vertices.back().guidingScatteringWeight =
+						RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
+							phaseVal / phasePdf );
+					vertices.back().guidingRussianRouletteSurvivalProbability = rrProb;
+					vertices.back().guidingRoughness = 1.0;
+#endif
+
+					// Update pdfRev on the previous vertex.
+					// Phase functions are symmetric: Pdf(wo, wi) == Pdf(wi, wo),
+					// so reverse pdf == forward pdf.
+					if( vertices.size() >= 2 ) {
+						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
+						const Scalar revPdfSA = phasePdf;
+
+						if( prev.type == BDPTVertex::MEDIUM ) {
+							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+								revPdfSA, prev.sigma_t_scalar, distSqMed );
+						} else if( prev.type == BDPTVertex::CAMERA ) {
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, Scalar(1.0), distSqMed );
+						} else {
+							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
+								prev.normal, currentRay.Dir() ) );
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, absCosAtPrev, distSqMed );
+						}
+					}
+
+					// Store forward pdf for the next vertex
+					pdfFwdPrev = phasePdf;
+
+					// Advance ray
+					currentRay = Ray( scatterPt, wi );
+					currentRay.Advance( BDPT_RAY_EPSILON );
+
+					eyeVolumeBounces++;
+					continue;
+				}
+				else if( ri.geometric.bHit )
+				{
+					// No scatter event: apply transmittance to throughput.
+					// The ray passes through the medium to the surface.
+					const RISEPel Tr = pMed->EvalTransmittance(
+						currentRay, ri.geometric.range );
+					beta = beta * Tr;
+				}
+			}
+		}
 
 		if( !ri.geometric.bHit ) {
 			break;
@@ -1276,6 +2058,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		// Store enclosing medium so connection transmittance can
+		// seed its boundary walk from the correct starting medium.
+		v.pMediumObject = pMedObj_eye;
+		v.pMediumVol = pMed_eye;
 		if( useIORStack && ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
@@ -1386,6 +2172,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
+						entryV.pMediumObject = pMedObj_eye;
+						entryV.pMediumVol = pMed_eye;
 						entryV.isDelta = false;
 						entryV.isConnectible = true;
 						entryV.isBSSRDFEntry = true;
@@ -1587,7 +2375,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				Scalar(1.0) :
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
-			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( prev.type == BDPTVertex::MEDIUM ) {
+				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
+			} else {
+				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
@@ -1750,13 +2542,20 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			// Camera vertex has no meaningful surface normal; use 1.0
-			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( eyePred.normal,
-					Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( eyePred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
+			// Camera vertex: use 1.0; Medium vertex: sigma_t/dist^2
+			if( eyePred.type == BDPTVertex::CAMERA ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distPredSq );
+			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( emPdfDir, eyePred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred =
+					fabs( Vector3Ops::Dot( eyePred.normal,
+						Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -1812,9 +2611,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Evaluate BSDF at the light endpoint for the direction toward camera
+		// Evaluate BSDF (or phase function) at the light endpoint for the direction toward camera
+		const bool lightIsMedium_t0 = (lightEnd.type == BDPTVertex::MEDIUM);
 		RISEPel fLight( 1, 1, 1 );
-		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial ) {
+		if( (lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial) || lightIsMedium_t0 ) {
 			Vector3 wiAtLight;
 			if( s >= 2 ) {
 				wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
@@ -1830,9 +2630,12 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		// Geometric term between light endpoint and camera
+		// Medium vertices have no surface cosine
 		const Scalar distSq = dist * dist;
 		const Scalar absCosLight = lightEnd.isDelta ?
-			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+			Scalar(1.0) :
+			(lightIsMedium_t0 ? Scalar(1.0) :
+				fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) ));
 		const Scalar G = absCosLight / distSq;
 
 		result.contribution = lightEnd.throughput * fLight * (G * We);
@@ -1847,8 +2650,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		{
 			Ray camRayToLight( camPos, -dirToCam );
 			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			if( lightIsMedium_t0 ) {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
+			} else {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			}
 		}
 
 		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
@@ -1869,10 +2677,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, wiAtLightEnd );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			if( lightPred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -1894,13 +2707,19 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 		const BDPTVertex& lightStart = lightVerts[0];
 
-		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
+		// Eye endpoint must be a connectable surface or medium vertex
+		if( eyeEnd.type != BDPTVertex::SURFACE && eyeEnd.type != BDPTVertex::MEDIUM ) {
+			return result;
+		}
+		if( eyeEnd.type == BDPTVertex::SURFACE && !eyeEnd.pMaterial ) {
 			return result;
 		}
 
 		if( !eyeEnd.isConnectible ) {
 			return result;
 		}
+
+		const bool eyeIsMedium_s1 = (eyeEnd.type == BDPTVertex::MEDIUM);
 
 		// Direction from eye vertex to light
 		Vector3 dirToLight = Vector3Ops::mkVector3( lightStart.position, eyeEnd.position );
@@ -1941,7 +2760,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Evaluate BSDF at the eye endpoint
+		// Evaluate BSDF (or phase function for medium vertices) at the eye endpoint
 		Vector3 woAtEye;
 		if( t >= 2 ) {
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
@@ -1960,16 +2779,33 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// Geometric term
 		// For delta-position lights (point/spot), the light has no surface
 		// so the geometric coupling excludes the cosine at the light vertex.
+		// For medium eye vertices, the eye-side cosine is also excluded.
 		Scalar G;
 		if( lightStart.isDelta ) {
 			const Scalar dist2 = dist * dist;
-			const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
-			G = absCosEye / dist2;
+			if( eyeIsMedium_s1 ) {
+				// delta light <-> medium: 1/dist^2 (no cosine on either side)
+				G = 1.0 / dist2;
+			} else {
+				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				G = absCosEye / dist2;
+			}
 		} else {
-			G = BDPTUtilities::GeometricTerm(
-				lightStart.position, lightStart.normal,
-				eyeEnd.position, eyeEnd.normal );
+			if( eyeIsMedium_s1 ) {
+				// area light <-> medium: |cos_light| / dist^2
+				G = BDPTUtilities::GeometricTermSurfaceMedium(
+					lightStart.position, lightStart.normal, eyeEnd.position );
+			} else {
+				G = BDPTUtilities::GeometricTerm(
+					lightStart.position, lightStart.normal,
+					eyeEnd.position, eyeEnd.normal );
+			}
 		}
+
+		// Connection transmittance through participating media
+		const RISEPel Tr_conn_s1 = EvalConnectionTransmittance(
+			eyeEnd.position, lightStart.position, scene, caster,
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
 
 		// Contribution: eyeThroughput * fEye * G * Le / pdfLight
 		// lightStart.throughput already has Le / (pdfSelect * pdfPosition)
@@ -1986,10 +2822,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		result.contribution = eyeEnd.throughput * fEye * Le * (G / pdfLight);
+		result.contribution = eyeEnd.throughput * fEye * Le * Tr_conn_s1 * (G / pdfLight);
 		result.needsSplat = false;
 		result.valid = true;
-		result.guidingLocalContribution = fEye * Le * (G / pdfLight);
+		result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (G / pdfLight);
 		result.guidingEyeVertexIndex = t - 1;
 		result.guidingValid = true;
 
@@ -2018,9 +2854,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
 			}
-			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+			// Medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
+			if( eyeIsMedium_s1 ) {
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
+			} else {
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+			}
 		}
 
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
@@ -2036,12 +2878,19 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
 			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirToLight, dirToPred );
-			// Camera vertex has no meaningful surface normal; use 1.0
-			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
-			const_cast<BDPTVertex&>( eyePred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			// Camera vertex: use 1.0; Medium vertex: sigma_t/dist^2
+			if( eyePred.type == BDPTVertex::CAMERA ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
+			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred =
+					fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -2067,8 +2916,8 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Only connect surface vertices to camera
-		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE ) {
+		// Only connect surface or medium vertices to camera
+		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
 		}
 
@@ -2102,9 +2951,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Evaluate BSDF at the light endpoint for connection to camera
+		// Evaluate BSDF (or phase function) at the light endpoint for connection to camera
+		const bool lightIsMedium_t1 = (lightEnd.type == BDPTVertex::MEDIUM);
 		RISEPel fLight( 1, 1, 1 );
-		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial ) {
+		if( (lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial) || lightIsMedium_t1 ) {
 			Vector3 wiAtLight;
 			if( s >= 2 ) {
 				wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
@@ -2188,11 +3038,19 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		// Geometric term (camera has no surface normal, use 1/dist^2)
+		// For medium light endpoints, there's also no surface cosine:
+		// medium <-> camera: 1/dist^2
 		const Scalar distSq = dist * dist;
-		const Scalar absCosLight = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+		const Scalar absCosLight = lightIsMedium_t1 ?
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
-		result.contribution = lightEnd.throughput * fLight * (G * We);
+		// Connection transmittance through participating media
+		const RISEPel Tr_conn_t1 = EvalConnectionTransmittance(
+			lightEnd.position, camPos, scene, caster,
+			lightEnd.pMediumObject, lightEnd.pMediumVol );
+
+		result.contribution = lightEnd.throughput * fLight * Tr_conn_t1 * (G * We);
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
@@ -2202,15 +3060,21 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		const Scalar savedEyePdfRev = eyeVerts[0].pdfRev;
 
 		// lightEnd.pdfRev: camera's directional PDF at lightEnd
+		// Medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 		{
 			Ray camRayToLight( camPos, -dirToCam );
 			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			if( lightIsMedium_t1 ) {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
+			} else {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			}
 		}
 
 		// eyeVerts[0].pdfRev: PDF at lightEnd of scattering toward camera
-		if( s >= 2 && lightEnd.pMaterial ) {
+		if( s >= 2 && (lightEnd.pMaterial || lightIsMedium_t1) ) {
 			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
@@ -2222,7 +3086,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
 		// PDF at lightEnd of scattering toward lightVerts[s-2] given incoming = dirToCam
 		Scalar savedLightPredPdfRev_t1 = 0;
-		const bool hasLightPred_t1 = (s >= 2 && lightEnd.pMaterial);
+		const bool hasLightPred_t1 = (s >= 2 && (lightEnd.pMaterial || lightIsMedium_t1));
 		if( hasLightPred_t1 )
 		{
 			const BDPTVertex& lightPred = lightVerts[s - 2];
@@ -2235,10 +3099,16 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, wiAtLightEnd );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			// Medium predecessor: sigma_t/dist^2
+			if( lightPred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -2265,11 +3135,18 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Both must be surface vertices with materials
-		if( lightEnd.type != BDPTVertex::SURFACE || !lightEnd.pMaterial ) {
+		// Both endpoints must be connectable surface or medium vertices.
+		// Medium vertices have no material (phase function used instead).
+		if( lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
 		}
-		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
+		if( eyeEnd.type != BDPTVertex::SURFACE && eyeEnd.type != BDPTVertex::MEDIUM ) {
+			return result;
+		}
+		if( lightEnd.type == BDPTVertex::SURFACE && !lightEnd.pMaterial ) {
+			return result;
+		}
+		if( eyeEnd.type == BDPTVertex::SURFACE && !eyeEnd.pMaterial ) {
 			return result;
 		}
 
@@ -2316,22 +3193,53 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Geometric term
-		const Scalar G = BDPTUtilities::GeometricTerm(
-			lightEnd.position, lightEnd.normal,
-			eyeEnd.position, eyeEnd.normal );
+		// Geometric coupling term G(x <-> y):
+		//   surface <-> surface:  |cos_x| * |cos_y| / dist^2
+		//   surface <-> medium:   |cos_surface| / dist^2
+		//   medium  <-> medium:   1 / dist^2
+		// Medium vertices have no surface orientation, so no cosine
+		// factor appears.  The 1/dist^2 term is the inverse-square law
+		// for point-to-point radiance transport in free space.
+		const bool lightIsMedium = (lightEnd.type == BDPTVertex::MEDIUM);
+		const bool eyeIsMedium = (eyeEnd.type == BDPTVertex::MEDIUM);
+		Scalar G;
+		if( lightIsMedium && eyeIsMedium ) {
+			G = BDPTUtilities::GeometricTermMediumMedium(
+				lightEnd.position, eyeEnd.position );
+		} else if( lightIsMedium ) {
+			G = BDPTUtilities::GeometricTermSurfaceMedium(
+				eyeEnd.position, eyeEnd.normal, lightEnd.position );
+		} else if( eyeIsMedium ) {
+			G = BDPTUtilities::GeometricTermSurfaceMedium(
+				lightEnd.position, lightEnd.normal, eyeEnd.position );
+		} else {
+			G = BDPTUtilities::GeometricTerm(
+				lightEnd.position, lightEnd.normal,
+				eyeEnd.position, eyeEnd.normal );
+		}
 
 		if( G <= 0 ) {
 			return result;
 		}
 
+		// Connection edge transmittance: the connection between light
+		// and eye subpath endpoints passes through potentially multiple
+		// media.  We evaluate Tr by walking the connection segment and
+		// accumulating per-segment Beer-Lambert transmittance.
+		// This Tr multiplies the connection contribution but is NOT
+		// included in MIS PDFs (see note on transmittance cancellation
+		// in the MISWeight documentation).
+		const RISEPel Tr_conn = EvalConnectionTransmittance(
+			eyeEnd.position, lightEnd.position, scene, caster,
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+
 		// Full path contribution
 			result.contribution = lightEnd.throughput * fLight *
-				RISEPel( G, G, G ) * fEye * eyeEnd.throughput;
+				RISEPel( G, G, G ) * Tr_conn * fEye * eyeEnd.throughput;
 			result.needsSplat = false;
 			result.valid = true;
 			result.guidingLocalContribution =
-				lightEnd.throughput * fLight * RISEPel( G, G, G ) * fEye;
+				lightEnd.throughput * fLight * RISEPel( G, G, G ) * Tr_conn * fEye;
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
 
@@ -2340,6 +3248,16 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// pdfRev at each endpoint must reflect the probability of generating
 		// the reverse direction through this connection edge, not the
 		// direction from subpath generation.
+		//
+		// Transmittance along shared edges cancels in the MIS ratio walk.
+		// Both forward and reverse sampling traverse the same geometric
+		// edge with identical transmittance, so Tr factors appear in both
+		// numerator and denominator of pdfRev/pdfFwd and cancel.
+		// Therefore pdfFwd and pdfRev do NOT include Tr — only the
+		// directional PDF and the area-measure conversion factor
+		// (|cos|/dist^2 for surfaces, sigma_t/dist^2 for media).
+		// Connection edge Tr is applied as a multiplicative factor on
+		// the contribution, not in the MIS weight.
 		const Scalar distSq_conn = dist * dist;
 
 		const Scalar savedLightPdfRev = lightEnd.pdfRev;
@@ -2347,20 +3265,31 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// lightEnd.pdfRev: PDF that eye-side process would generate lightEnd
 		// = PDF at eyeEnd of scattering toward lightEnd, converted to area at lightEnd
+		// For medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 		{
 			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dConnect );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+			if( lightIsMedium ) {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, lightEnd.sigma_t_scalar, distSq_conn );
+			} else {
+				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+			}
 		}
 
 		// eyeEnd.pdfRev: PDF that light-side process would generate eyeEnd
 		// = PDF at lightEnd of scattering toward eyeEnd, converted to area at eyeEnd
 		{
 			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLight, -dConnect );
-			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
+			if( eyeIsMedium ) {
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, eyeEnd.sigma_t_scalar, distSq_conn );
+			} else {
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
+			}
 		}
 
 		// --- Update predecessor pdfRev at lightVerts[s-2] ---
@@ -2378,10 +3307,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, wiAtLight );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			if( lightPred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		// --- Update predecessor pdfRev at eyeVerts[t-2] ---
@@ -2395,16 +3329,24 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
 			savedEyePredPdfRev = eyePred.pdfRev;
 
-			// wiAtEye = dConnect (from light side), scatter toward pred = -woAtEye
-			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, wiAtEye, -woAtEye );
+			// wiAtEye = dConnect (from light side), woAtEye = toward pred (away from vertex)
+			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, wiAtEye, woAtEye );
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			// Camera vertex has no meaningful surface normal; use 1.0
-			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( eyePred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			// Medium vertices use sigma_t/dist^2 instead of |cos|/dist^2
+			if( eyePred.type == BDPTVertex::CAMERA ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
+			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred =
+					fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -2801,6 +3743,16 @@ Scalar BDPTIntegrator::EvalBSDFAtVertexNM(
 	const Scalar nm
 	) const
 {
+	// Medium scatter vertex: phase function evaluation (wavelength-independent)
+	// IPhaseFunction::Evaluate expects wi toward the scatter point,
+	// so negate wi to convert from "away" to "toward" convention.
+	if( vertex.type == BDPTVertex::MEDIUM ) {
+		if( !vertex.pPhaseFunc ) {
+			return 0;
+		}
+		return vertex.pPhaseFunc->Evaluate( -wi, wo );
+	}
+
 	if( !vertex.pMaterial ) {
 		return 0;
 	}
@@ -2858,6 +3810,16 @@ Scalar BDPTIntegrator::EvalPdfAtVertexNM(
 	const Scalar nm
 	) const
 {
+	// Medium scatter vertex: phase function PDF (wavelength-independent)
+	// IPhaseFunction::Pdf expects wi toward the scatter point,
+	// so negate wi to convert from "away" to "toward" convention.
+	if( vertex.type == BDPTVertex::MEDIUM ) {
+		if( !vertex.pPhaseFunc ) {
+			return 0;
+		}
+		return vertex.pPhaseFunc->Pdf( -wi, wo );
+	}
+
 	if( !vertex.pMaterial ) {
 		return 0;
 	}
@@ -3025,8 +3987,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	unsigned int nmLightGlossyBounces = 0;
 	unsigned int nmLightTransmissionBounces = 0;
 	unsigned int nmLightTranslucentBounces = 0;
+	unsigned int nmLightVolumeBounces = 0;
+	unsigned int nmLightSurfaceBounces = 0;
 
-	for( unsigned int depth = 0; depth < maxLightDepth; depth++ )
+	const unsigned int nmMaxLightTotalDepth = maxLightDepth + stabilityConfig.maxVolumeBounce;
+	for( unsigned int depth = 0; depth < nmMaxLightTotalDepth; depth++ )
 	{
 		// Phases 1..15 = light bounces 0..14
 		sampler.StartStream( 1 + depth );
@@ -3034,9 +3999,165 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
 
+		// ----------------------------------------------------------------
+		// Participating media: free-flight distance sampling (NM light subpath).
+		// Same algorithm as the RGB variant — see GenerateLightSubpath.
+		// Uses spectral SampleDistanceNM / GetCoefficientsNM so that
+		// chromatic media are sampled at the correct wavelength.
+		// ----------------------------------------------------------------
+		const IObject* pMedObj_nmLight = 0;
+		const IMedium* pMed_nmLight = 0;
+		{
+			const IObject* pMedObj = 0;
+			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
+				useIORStack ? &iorStack : 0, &scene, pMedObj );
+			pMedObj_nmLight = pMedObj;
+			pMed_nmLight = pMed;
+
+			if( pMed )
+			{
+				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+				bool scattered = false;
+				const Scalar t_m = pMed->SampleDistanceNM(
+					currentRay, maxDist, nm, sampler, scattered );
+
+				if( scattered && nmLightVolumeBounces < stabilityConfig.maxVolumeBounce )
+				{
+					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					const Vector3 wo = currentRay.Dir();
+					const MediumCoefficientsNM coeff = pMed->GetCoefficientsNM( scatterPt, nm );
+					const Scalar TrNM = pMed->EvalTransmittanceNM( currentRay, t_m, nm );
+					const Scalar sigma_t_nm = coeff.sigma_t;
+
+					Scalar medWeightNM = 0;
+					if( sigma_t_nm > 0 && TrNM > 0 ) {
+						medWeightNM = coeff.sigma_s / sigma_t_nm;
+					}
+
+					if( medWeightNM <= 0 ) {
+						break;
+					}
+
+					betaNM *= medWeightNM;
+
+					BDPTVertex mv;
+					mv.type = BDPTVertex::MEDIUM;
+					mv.position = scatterPt;
+					mv.normal = -wo;
+					mv.onb.CreateFromW( -wo );
+					mv.pMaterial = 0;
+					mv.pObject = 0;
+					mv.pMediumVol = pMed;
+					mv.pPhaseFunc = pMed->GetPhaseFunction();
+					mv.pMediumObject = pMedObj;
+					mv.sigma_t_scalar = sigma_t_nm;
+					mv.isDelta = false;
+
+					// Medium vertices enclosed by a specular (delta) boundary
+					// are not connectible: connection rays are blocked by the
+					// specular surface.  Propagate from previous vertex.
+					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
+					// are always connectable.
+					{
+						bool connectible = true;
+						if( pMedObj == 0 ) {
+							connectible = true;
+						} else if( !vertices.empty() ) {
+							const BDPTVertex& prev = vertices.back();
+							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
+								connectible = false;
+							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+								connectible = false;
+							}
+						}
+						mv.isConnectible = connectible;
+					}
+					mv.throughputNM = betaNM;
+
+					const Scalar distSqMed = t_m * t_m;
+					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
+						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
+					mv.pdfRev = 0;
+
+					vertices.push_back( mv );
+
+					const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
+					if( !pPhase ) {
+						break;
+					}
+
+					const Vector3 wi = pPhase->Sample( wo, sampler );
+					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					if( phasePdf <= NEARZERO ) {
+						break;
+					}
+
+					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+					betaNM *= phaseVal / phasePdf;
+
+					// Russian roulette
+					{
+						const Scalar rrProb = r_min( Scalar(1.0),
+							fabs( betaNM ) /
+							r_max( fabs( mv.throughputNM ), stabilityConfig.rrThreshold ) );
+
+						if( (depth + nmLightVolumeBounces) >= stabilityConfig.rrMinDepth ) {
+							if( sampler.Get1D() >= rrProb ) {
+								break;
+							}
+							if( rrProb > 0 ) {
+								betaNM /= rrProb;
+							}
+						}
+					}
+
+					// Update pdfRev on previous vertex
+					if( vertices.size() >= 2 ) {
+						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
+						const Scalar revPdfSA = phasePdf;
+
+						if( prev.type == BDPTVertex::MEDIUM ) {
+							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+								revPdfSA, prev.sigma_t_scalar, distSqMed );
+						} else if( prev.type == BDPTVertex::LIGHT ) {
+							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
+								prev.normal, currentRay.Dir() ) );
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, absCosAtPrev, distSqMed );
+						} else {
+							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
+								prev.normal, currentRay.Dir() ) );
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, absCosAtPrev, distSqMed );
+						}
+					}
+
+					pdfFwdPrev = phasePdf;
+
+					currentRay = Ray( scatterPt, wi );
+					currentRay.Advance( BDPT_RAY_EPSILON );
+
+					nmLightVolumeBounces++;
+					continue;
+				}
+				else if( ri.geometric.bHit )
+				{
+					const Scalar TrNM = pMed->EvalTransmittanceNM(
+						currentRay, ri.geometric.range, nm );
+					betaNM *= TrNM;
+				}
+			}
+		}
+
 		if( !ri.geometric.bHit ) {
 			break;
 		}
+
+		// Check surface depth limit (medium scatters don't count)
+		if( nmLightSurfaceBounces >= maxLightDepth ) {
+			break;
+		}
+		nmLightSurfaceBounces++;
 
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
@@ -3051,6 +4172,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		v.pMediumObject = pMedObj_nmLight;
+		v.pMediumVol = pMed_nmLight;
 		if( useIORStack && ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
@@ -3149,6 +4272,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 					entryV.onb = bssrdf.entryONB;
 					entryV.pMaterial = ri.pMaterial;
 					entryV.pObject = ri.pObject;
+					entryV.pMediumObject = pMedObj_nmLight;
+					entryV.pMediumVol = pMed_nmLight;
 					entryV.isDelta = false;
 					entryV.isConnectible = true;
 					entryV.isBSSRDFEntry = true;
@@ -3238,7 +4363,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 				curr, scatDir, -currentRay.Dir(), nm );
 
 			const Scalar absCosAtPrev = fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
-			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( prev.type == BDPTVertex::MEDIUM ) {
+				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
+			} else {
+				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
@@ -3318,8 +4447,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	unsigned int nmEyeGlossyBounces = 0;
 	unsigned int nmEyeTransmissionBounces = 0;
 	unsigned int nmEyeTranslucentBounces = 0;
+	unsigned int nmEyeVolumeBounces = 0;
+	unsigned int nmEyeSurfaceBounces = 0;
 
-	for( unsigned int depth = 0; depth < maxEyeDepth; depth++ )
+	const unsigned int nmMaxEyeTotalDepth = maxEyeDepth + stabilityConfig.maxVolumeBounce;
+	for( unsigned int depth = 0; depth < nmMaxEyeTotalDepth; depth++ )
 	{
 		// Phases 16..30 = eye bounces 0..14
 		sampler.StartStream( 16 + depth );
@@ -3327,9 +4459,162 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
 
+		// ----------------------------------------------------------------
+		// Participating media: free-flight distance sampling (NM eye subpath).
+		// Same algorithm as the RGB variant — see GenerateEyeSubpath.
+		// Uses spectral SampleDistanceNM / GetCoefficientsNM so that
+		// chromatic media are sampled at the correct wavelength.
+		// ----------------------------------------------------------------
+		const IObject* pMedObj_nmEye = 0;
+		const IMedium* pMed_nmEye = 0;
+		{
+			const IObject* pMedObj = 0;
+			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
+				useIORStack ? &iorStack : 0, &scene, pMedObj );
+			pMedObj_nmEye = pMedObj;
+			pMed_nmEye = pMed;
+
+			if( pMed )
+			{
+				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+				bool scattered = false;
+				const Scalar t_m = pMed->SampleDistanceNM(
+					currentRay, maxDist, nm, sampler, scattered );
+
+				if( scattered && nmEyeVolumeBounces < stabilityConfig.maxVolumeBounce )
+				{
+					const Point3 scatterPt = currentRay.PointAtLength( t_m );
+					const Vector3 wo = currentRay.Dir();
+					const MediumCoefficientsNM coeff = pMed->GetCoefficientsNM( scatterPt, nm );
+					const Scalar TrNM = pMed->EvalTransmittanceNM( currentRay, t_m, nm );
+					const Scalar sigma_t_nm = coeff.sigma_t;
+
+					// NM throughput weight: sigma_s / sigma_t (single-scattering albedo)
+					Scalar medWeightNM = 0;
+					if( sigma_t_nm > 0 && TrNM > 0 ) {
+						medWeightNM = coeff.sigma_s / sigma_t_nm;
+					}
+
+					if( medWeightNM <= 0 ) {
+						break;
+					}
+
+					betaNM *= medWeightNM;
+
+					BDPTVertex mv;
+					mv.type = BDPTVertex::MEDIUM;
+					mv.position = scatterPt;
+					mv.normal = -wo;
+					mv.onb.CreateFromW( -wo );
+					mv.pMaterial = 0;
+					mv.pObject = 0;
+					mv.pMediumVol = pMed;
+					mv.pPhaseFunc = pMed->GetPhaseFunction();
+					mv.pMediumObject = pMedObj;
+					mv.sigma_t_scalar = sigma_t_nm;
+					mv.isDelta = false;
+
+					// Medium vertices enclosed by a specular (delta) boundary
+					// are not connectible: connection rays are blocked by the
+					// specular surface.  Propagate from previous vertex.
+					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
+					// are always connectable.
+					{
+						bool connectible = true;
+						if( pMedObj == 0 ) {
+							connectible = true;
+						} else if( !vertices.empty() ) {
+							const BDPTVertex& prev = vertices.back();
+							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
+								connectible = false;
+							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+								connectible = false;
+							}
+						}
+						mv.isConnectible = connectible;
+					}
+					mv.throughputNM = betaNM;
+
+					const Scalar distSqMed = t_m * t_m;
+					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
+						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
+					mv.pdfRev = 0;
+
+					vertices.push_back( mv );
+
+					// Sample phase function continuation
+					const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
+					if( !pPhase ) {
+						break;
+					}
+
+					const Vector3 wi = pPhase->Sample( wo, sampler );
+					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					if( phasePdf <= NEARZERO ) {
+						break;
+					}
+
+					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+					betaNM *= phaseVal / phasePdf;
+
+					// Russian roulette
+					{
+						const Scalar rrProb = r_min( Scalar(1.0),
+							fabs( betaNM ) /
+							r_max( fabs( mv.throughputNM ), stabilityConfig.rrThreshold ) );
+
+						if( (depth + nmEyeVolumeBounces) >= stabilityConfig.rrMinDepth ) {
+							if( sampler.Get1D() >= rrProb ) {
+								break;
+							}
+							if( rrProb > 0 ) {
+								betaNM /= rrProb;
+							}
+						}
+					}
+
+					// Update pdfRev on previous vertex
+					if( vertices.size() >= 2 ) {
+						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
+						const Scalar revPdfSA = phasePdf;
+
+						if( prev.type == BDPTVertex::MEDIUM ) {
+							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+								revPdfSA, prev.sigma_t_scalar, distSqMed );
+						} else {
+							const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
+								Scalar(1.0) :
+								fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
+							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+								revPdfSA, absCosAtPrev, distSqMed );
+						}
+					}
+
+					pdfFwdPrev = phasePdf;
+
+					currentRay = Ray( scatterPt, wi );
+					currentRay.Advance( BDPT_RAY_EPSILON );
+
+					nmEyeVolumeBounces++;
+					continue;
+				}
+				else if( ri.geometric.bHit )
+				{
+					const Scalar TrNM = pMed->EvalTransmittanceNM(
+						currentRay, ri.geometric.range, nm );
+					betaNM *= TrNM;
+				}
+			}
+		}
+
 		if( !ri.geometric.bHit ) {
 			break;
 		}
+
+		if( nmEyeSurfaceBounces >= maxEyeDepth ) {
+			break;
+		}
+		nmEyeSurfaceBounces++;
 
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
@@ -3344,6 +4629,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.pObject = ri.pObject;
 		v.pLight = 0;
 		v.pLuminary = 0;
+		v.pMediumObject = pMedObj_nmEye;
+		v.pMediumVol = pMed_nmEye;
 		if( useIORStack && ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
@@ -3442,6 +4729,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 					entryV.onb = bssrdf.entryONB;
 					entryV.pMaterial = ri.pMaterial;
 					entryV.pObject = ri.pObject;
+					entryV.pMediumObject = pMedObj_nmEye;
+					entryV.pMediumVol = pMed_nmEye;
 					entryV.isDelta = false;
 					entryV.isConnectible = true;
 					entryV.isBSSRDFEntry = true;
@@ -3627,7 +4916,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				Scalar(1.0) :
 				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
 
-			prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			if( prev.type == BDPTVertex::MEDIUM ) {
+				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
+			} else {
+				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
@@ -3744,13 +5037,20 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			// Camera vertex has no meaningful surface normal; use 1.0
-			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( eyePred.normal,
-					Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( eyePred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
+			// Camera: 1.0; Medium: sigma_t/dist^2
+			if( eyePred.type == BDPTVertex::CAMERA ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distPredSq );
+			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( emPdfDir, eyePred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred =
+					fabs( Vector3Ops::Dot( eyePred.normal,
+						Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -3762,11 +5062,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	}
 
 	//
-	// Legacy t == 0 path-to-camera case.
-	// The active path enumeration in this file includes the camera as
-	// eye vertex 0, so the camera-connection strategy is t == 1.
-	// This branch is kept only for compatibility with any future caller
-	// that enumerates paths without an explicit camera vertex.
+	// Legacy t == 0 path-to-camera case (NM).
+	// Same as RGB: legacy path kept for compatibility.
 	//
 	if( t == 0 )
 	{
@@ -3861,12 +5158,18 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 		const BDPTVertex& lightStart = lightVerts[0];
 
-		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
+		// Eye endpoint: surface or medium
+		if( eyeEnd.type != BDPTVertex::SURFACE && eyeEnd.type != BDPTVertex::MEDIUM ) {
+			return result;
+		}
+		if( eyeEnd.type == BDPTVertex::SURFACE && !eyeEnd.pMaterial ) {
 			return result;
 		}
 		if( !eyeEnd.isConnectible ) {
 			return result;
 		}
+
+		const bool eyeIsMediumNM_s1 = (eyeEnd.type == BDPTVertex::MEDIUM);
 
 		Vector3 dirToLight = Vector3Ops::mkVector3( lightStart.position, eyeEnd.position );
 		const Scalar dist = Vector3Ops::Magnitude( dirToLight );
@@ -3914,23 +5217,38 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
+		// Medium-aware geometric term
 		Scalar G;
 		if( lightStart.isDelta ) {
 			const Scalar dist2 = dist * dist;
-			const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
-			G = absCosEye / dist2;
+			if( eyeIsMediumNM_s1 ) {
+				G = 1.0 / dist2;
+			} else {
+				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				G = absCosEye / dist2;
+			}
 		} else {
-			G = BDPTUtilities::GeometricTerm(
-				lightStart.position, lightStart.normal,
-				eyeEnd.position, eyeEnd.normal );
+			if( eyeIsMediumNM_s1 ) {
+				G = BDPTUtilities::GeometricTermSurfaceMedium(
+					lightStart.position, lightStart.normal, eyeEnd.position );
+			} else {
+				G = BDPTUtilities::GeometricTerm(
+					lightStart.position, lightStart.normal,
+					eyeEnd.position, eyeEnd.normal );
+			}
 		}
+
+		// Connection transmittance (NM)
+		const Scalar Tr_connNM_s1 = EvalConnectionTransmittanceNM(
+			eyeEnd.position, lightStart.position, scene, caster, nm,
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
 
 		const Scalar pdfLight = lightStart.pdfFwd;
 		if( pdfLight <= 0 ) {
 			return result;
 		}
 
-		result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM * G / pdfLight;
+		result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM * Tr_connNM_s1 * G / pdfLight;
 		result.needsSplat = false;
 		result.valid = true;
 
@@ -3949,15 +5267,19 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		{
 			Scalar emissionPdfDir = 0;
 			if( lightStart.pLuminary ) {
-				// One-sided emission PDF
 				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.normal, -dirToLight );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
 			}
-			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+			if( eyeIsMediumNM_s1 ) {
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
+			} else {
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
+			}
 		}
 
 		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
@@ -3972,12 +5294,18 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
 			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, dirToLight, dirToPred, nm );
-			// Camera vertex has no meaningful surface normal; use 1.0
-			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
-			const_cast<BDPTVertex&>( eyePred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			if( eyePred.type == BDPTVertex::CAMERA ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
+			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred =
+					fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -3999,9 +5327,12 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
-		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE ) {
+		// Surface or medium vertices can connect to camera
+		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
 		}
+
+		const bool lightIsMediumNM_t1 = (lightEnd.type == BDPTVertex::MEDIUM);
 
 		Point2 rasterPos;
 		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
@@ -4029,7 +5360,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 
 		Scalar fLightNM = 1.0;
-		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial ) {
+		if( (lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial) || lightIsMediumNM_t1 ) {
 			if( s >= 2 ) {
 				Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
 				wiAtLight = Vector3Ops::Normalize( wiAtLight );
@@ -4102,11 +5433,18 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
+		// Medium-aware geometric term (camera has no surface normal)
 		const Scalar distSq = dist * dist;
-		const Scalar absCosLight = fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+		const Scalar absCosLight = lightIsMediumNM_t1 ?
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
-		result.contribution = lightEnd.throughputNM * fLightNM * G * We;
+		// Connection transmittance (NM)
+		const Scalar Tr_connNM_t1 = EvalConnectionTransmittanceNM(
+			lightEnd.position, camPos, scene, caster, nm,
+			lightEnd.pMediumObject, lightEnd.pMediumVol );
+
+		result.contribution = lightEnd.throughputNM * fLightNM * Tr_connNM_t1 * G * We;
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
@@ -4118,11 +5456,16 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		{
 			Ray camRayToLight( camPos, -dirToCam );
 			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			if( lightIsMediumNM_t1 ) {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
+			} else {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+			}
 		}
 
-		if( s >= 2 && lightEnd.pMaterial ) {
+		if( s >= 2 && (lightEnd.pMaterial || lightIsMediumNM_t1) ) {
 			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
@@ -4133,7 +5476,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
 		Scalar savedLightPredPdfRevNM_t1 = 0;
-		const bool hasLightPredNM_t1 = (s >= 2 && lightEnd.pMaterial);
+		const bool hasLightPredNM_t1 = (s >= 2 && (lightEnd.pMaterial || lightIsMediumNM_t1));
 		if( hasLightPredNM_t1 )
 		{
 			const BDPTVertex& lightPred = lightVerts[s - 2];
@@ -4146,10 +5489,15 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, wiAtLightEnd, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			if( lightPred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
@@ -4172,12 +5520,22 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
-		if( lightEnd.type != BDPTVertex::SURFACE || !lightEnd.pMaterial ) {
+		// Both endpoints must be connectable surface or medium vertices
+		if( lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
 		}
-		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
+		if( eyeEnd.type != BDPTVertex::SURFACE && eyeEnd.type != BDPTVertex::MEDIUM ) {
 			return result;
 		}
+		if( lightEnd.type == BDPTVertex::SURFACE && !lightEnd.pMaterial ) {
+			return result;
+		}
+		if( eyeEnd.type == BDPTVertex::SURFACE && !eyeEnd.pMaterial ) {
+			return result;
+		}
+
+		const bool lightIsMediumNM = (lightEnd.type == BDPTVertex::MEDIUM);
+		const bool eyeIsMediumNM = (eyeEnd.type == BDPTVertex::MEDIUM);
 
 		Vector3 dConnect = Vector3Ops::mkVector3( lightEnd.position, eyeEnd.position );
 		const Scalar dist = Vector3Ops::Magnitude( dConnect );
@@ -4210,15 +5568,33 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
-		const Scalar G = BDPTUtilities::GeometricTerm(
-			lightEnd.position, lightEnd.normal,
-			eyeEnd.position, eyeEnd.normal );
+		// Medium-aware geometric term
+		Scalar G;
+		if( lightIsMediumNM && eyeIsMediumNM ) {
+			G = BDPTUtilities::GeometricTermMediumMedium(
+				lightEnd.position, eyeEnd.position );
+		} else if( lightIsMediumNM ) {
+			G = BDPTUtilities::GeometricTermSurfaceMedium(
+				eyeEnd.position, eyeEnd.normal, lightEnd.position );
+		} else if( eyeIsMediumNM ) {
+			G = BDPTUtilities::GeometricTermSurfaceMedium(
+				lightEnd.position, lightEnd.normal, eyeEnd.position );
+		} else {
+			G = BDPTUtilities::GeometricTerm(
+				lightEnd.position, lightEnd.normal,
+				eyeEnd.position, eyeEnd.normal );
+		}
 
 		if( G <= 0 ) {
 			return result;
 		}
 
-		result.contribution = lightEnd.throughputNM * fLightNM * G * fEyeNM * eyeEnd.throughputNM;
+		// Connection transmittance (NM)
+		const Scalar Tr_connNM = EvalConnectionTransmittanceNM(
+			eyeEnd.position, lightEnd.position, scene, caster, nm,
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+
+		result.contribution = lightEnd.throughputNM * fLightNM * G * Tr_connNM * fEyeNM * eyeEnd.throughputNM;
 		result.needsSplat = false;
 		result.valid = true;
 
@@ -4230,16 +5606,26 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 		{
 			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dConnect, nm );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+			if( lightIsMediumNM ) {
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, lightEnd.sigma_t_scalar, distSq_conn );
+			} else {
+				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
+				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
+			}
 		}
 
 		{
 			const Scalar pdfRevSA = EvalPdfAtVertexNM( lightEnd, wiAtLight, -dConnect, nm );
-			const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
+			if( eyeIsMediumNM ) {
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, eyeEnd.sigma_t_scalar, distSq_conn );
+			} else {
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
+			}
 		}
 
 		// --- Update predecessor pdfRev at lightVerts[s-2] ---
@@ -4253,10 +5639,15 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, woAtLight, wiAtLight, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
-				Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			if( lightPred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+					Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( lightPred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		// --- Update predecessor pdfRev at eyeVerts[t-2] ---
@@ -4267,15 +5658,21 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const BDPTVertex& eyePred = eyeVerts[t - 2];
 			savedEyePredPdfRevNM = eyePred.pdfRev;
 
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, wiAtEye, -woAtEye, nm );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, wiAtEye, woAtEye, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			// Camera vertex has no meaningful surface normal; use 1.0
-			const Scalar absCosAtPred = (eyePred.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( eyePred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			if( eyePred.type == BDPTVertex::CAMERA ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
+			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
+			} else {
+				const Scalar absCosAtPred =
+					fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+			}
 		}
 
 		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );

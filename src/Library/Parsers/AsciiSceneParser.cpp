@@ -5174,6 +5174,8 @@ namespace RISE
 							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
 						} else if( pname == "max_translucent_bounce" ) {
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
+						} else if( pname == "max_volume_bounce" ) {
+							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5395,6 +5397,8 @@ namespace RISE
 							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
 						} else if( pname == "max_translucent_bounce" ) {
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
+						} else if( pname == "max_volume_bounce" ) {
+							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5777,6 +5781,8 @@ namespace RISE
 							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
 						} else if( pname == "max_translucent_bounce" ) {
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
+						} else if( pname == "max_volume_bounce" ) {
+							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5936,6 +5942,8 @@ namespace RISE
 							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
 						} else if( pname == "max_translucent_bounce" ) {
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
+						} else if( pname == "max_volume_bounce" ) {
+							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;

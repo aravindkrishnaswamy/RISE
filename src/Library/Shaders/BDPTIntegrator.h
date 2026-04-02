@@ -381,6 +381,36 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+			/// Helper: evaluate transmittance along a connection edge
+			/// between two points, accounting for participating media.
+			///
+			/// Connection edge transmittance: the connection between light
+			/// and eye subpath endpoints passes through potentially multiple
+			/// media.  We evaluate Tr by walking the connection segment and
+			/// accumulating per-segment Beer-Lambert transmittance.
+			/// This Tr multiplies the connection contribution but is NOT
+			/// included in MIS PDFs (see note on transmittance cancellation
+			/// in the MISWeight documentation).
+			RISEPel EvalConnectionTransmittance(
+				const Point3& p1,
+				const Point3& p2,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium
+				) const;
+
+			/// Spectral variant of EvalConnectionTransmittance
+			Scalar EvalConnectionTransmittanceNM(
+				const Point3& p1,
+				const Point3& p2,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const Scalar nm,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium
+				) const;
+
 			// BSSRDF sampling is provided by the shared utility
 			// BSSRDFSampling::SampleEntryPoint() in
 			// ../Utilities/BSSRDFSampling.h
