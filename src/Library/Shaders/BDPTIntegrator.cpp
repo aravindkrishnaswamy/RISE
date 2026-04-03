@@ -67,6 +67,8 @@
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/BDPTUtilities.h"
+#include "../Utilities/PathTransportUtilities.h"
+#include "../Utilities/PathVertexEval.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/Math3D/Constants.h"
@@ -101,26 +103,8 @@ namespace
 		return orientedNormal;
 	}
 
-	inline const IORStack* BuildVertexIORStack(
-		const BDPTVertex& vertex,
-		IORStack& stack
-		)
-	{
-		if( !vertex.pObject ) {
-			return 0;
-		}
-
-		if( vertex.insideObject ) {
-			stack = IORStack( 1.0 );
-			stack.SetCurrentObject( vertex.pObject );
-			stack.push( vertex.mediumIOR );
-		} else {
-			stack = IORStack( vertex.mediumIOR );
-			stack.SetCurrentObject( vertex.pObject );
-		}
-
-		return &stack;
-	}
+	// Delegate to shared PathVertexEval utility
+	using PathVertexEval::BuildVertexIORStack;
 
 	inline bool BDPTUsesIORStack( const IRayCaster& caster )
 	{
@@ -637,75 +621,7 @@ RISEPel BDPTIntegrator::EvalBSDFAtVertex(
 	const Vector3& wo
 	) const
 {
-	// Medium scatter vertex: evaluate the phase function.
-	// Phase functions are symmetric (p(wi,wo) = p(wo,wi)) and isotropic
-	// w.r.t. surface normal — they depend only on the angle between the
-	// incoming and outgoing directions.  No cosine weighting or normal-
-	// dependent sign flipping is needed, unlike surface BSDFs.
-	// wi and wo are both "away from vertex" directions.
-	// IPhaseFunction::Evaluate expects wi toward the scatter point,
-	// so negate wi to convert from "away" to "toward" convention.
-	if( vertex.type == BDPTVertex::MEDIUM ) {
-		if( !vertex.pPhaseFunc ) {
-			return RISEPel( 0, 0, 0 );
-		}
-		const Scalar p = vertex.pPhaseFunc->Evaluate( -wi, wo );
-		return RISEPel( p, p, p );
-	}
-
-	if( !vertex.pMaterial ) {
-		return RISEPel( 0, 0, 0 );
-	}
-
-	// BSSRDF entry vertex: evaluate Sw(direction) = Ft(cos) / (c * PI).
-	// This is the directional component of the separable BSSRDF at the
-	// re-emission point.  The cosine-hemisphere PDF cos/PI cancels PI in
-	// the denominator during sampling, but for connections we need the
-	// full Sw value.
-	if( vertex.isBSSRDFEntry ) {
-		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
-		if( pProfile ) {
-			// wi is the direction into the surface (from outside).
-			// No fabs: back-face connections (cosTheta < 0) return zero.
-			const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
-			if( cosTheta <= NEARZERO ) {
-				return RISEPel( 0, 0, 0 );
-			}
-
-			RayIntersectionGeometric rig(
-				Ray( vertex.position, -wi ), nullRasterizerState );
-			rig.bHit = true;
-			rig.ptIntersection = vertex.position;
-			rig.vNormal = vertex.normal;
-			rig.onb = vertex.onb;
-
-			const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
-			const Scalar eta = pProfile->GetIOR( rig );
-			const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
-			return RISEPel( Sw, Sw, Sw );
-		}
-		return RISEPel( 0, 0, 0 );
-	}
-
-	const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
-	if( !pBSDF ) {
-		return RISEPel( 0, 0, 0 );
-	}
-
-	// Build a RayIntersectionGeometric for the BSDF evaluation.
-	// In RISE's convention:
-	//   vLightIn (wi) = direction away from surface toward the light source
-	//   ri.ray.Dir()  = direction toward the surface (incoming viewing ray)
-	// Callers pass wo as the outgoing direction (away from surface toward
-	// the viewer), so we negate it to get the toward-surface convention.
-	Ray evalRay( vertex.position, -wo );
-	RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-	ri.bHit = true;
-	ri.ptIntersection = vertex.position;
-	ri.vNormal = vertex.normal;
-	ri.onb = vertex.onb;
-
-	return pBSDF->value( wi, ri );
+	return PathVertexEval::EvalBSDFAtVertex( vertex, wi, wo );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -724,44 +640,7 @@ Scalar BDPTIntegrator::EvalPdfAtVertex(
 	const Vector3& wo
 	) const
 {
-	// Medium scatter vertex: phase function sampling PDF.
-	// IPhaseFunction::Pdf expects wi toward the scatter point,
-	// so negate wi to convert from "away" to "toward" convention.
-	if( vertex.type == BDPTVertex::MEDIUM ) {
-		if( !vertex.pPhaseFunc ) {
-			return 0;
-		}
-		return vertex.pPhaseFunc->Pdf( -wi, wo );
-	}
-
-	if( !vertex.pMaterial ) {
-		return 0;
-	}
-
-	// BSSRDF entry vertex: the scattered direction is cosine-weighted,
-	// so the sampling PDF is cos(theta) / PI.
-	if( vertex.isBSSRDFEntry ) {
-		const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
-		return cosTheta * INV_PI;
-	}
-
-	const ISPF* pSPF = vertex.pMaterial->GetSPF();
-	if( !pSPF ) {
-		return 0;
-	}
-
-	// Build ri: ri.ray.Dir() must be toward-surface (incoming), and wo is the
-	// outgoing direction (away from surface).  Callers pass wi as the outgoing
-	// direction from the "incoming" side, so we negate to get toward-surface.
-	Ray evalRay( vertex.position, -wi );
-	RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-	ri.bHit = true;
-	ri.ptIntersection = vertex.position;
-	ri.vNormal = vertex.normal;
-	ri.onb = vertex.onb;
-
-	IORStack stack( 1.0 );
-	return pSPF->Pdf( ri, wo, BuildVertexIORStack( vertex, stack ) );
+	return PathVertexEval::EvalPdfAtVertex( vertex, wi, wo );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1393,18 +1272,18 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 					// Russian roulette
 					{
-						const Scalar rrThreshold = stabilityConfig.rrThreshold;
-						const Scalar rrProb = r_min( Scalar(1.0),
-							ColorMath::MaxValue( beta ) /
-							r_max( ColorMath::MaxValue( mv.throughput ), rrThreshold ) );
-
-						if( (depth + volumeBounces) >= stabilityConfig.rrMinDepth ) {
-							if( sampler.Get1D() >= rrProb ) {
-								break;
-							}
-							if( rrProb > 0 ) {
-								beta = beta * (1.0 / rrProb);
-							}
+						const PathTransportUtilities::RussianRouletteResult rr =
+							PathTransportUtilities::EvaluateRussianRoulette(
+								depth + volumeBounces, stabilityConfig.rrMinDepth,
+								stabilityConfig.rrThreshold,
+								ColorMath::MaxValue( beta ),
+								ColorMath::MaxValue( mv.throughput ),
+								sampler.Get1D() );
+						if( rr.terminate ) {
+							break;
+						}
+						if( rr.survivalProb < 1.0 ) {
+							beta = beta * (1.0 / rr.survivalProb);
 						}
 					}
 
@@ -1635,18 +1514,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 
 		// Per-type bounce limits
-		{
-			bool exceeded = false;
-			switch( pScat->type ) {
-				case ScatteredRay::eRayDiffuse:      exceeded = (++diffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
-				case ScatteredRay::eRayReflection:   exceeded = (++glossyBounces        > stabilityConfig.maxGlossyBounce);       break;
-				case ScatteredRay::eRayRefraction:   exceeded = (++transmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
-				case ScatteredRay::eRayTranslucent:  exceeded = (++translucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
-				default: break;
-			}
-			if( exceeded ) {
-				break;
-			}
+		if( PathTransportUtilities::ExceedsBounceLimitForType(
+				pScat->type, diffuseBounces, glossyBounces,
+				transmissionBounces, translucentBounces, stabilityConfig ) ) {
+			break;
 		}
 
 		// Compute throughput update: beta *= f * |cos| / pdf
@@ -1668,17 +1539,17 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Russian Roulette — depth threshold and throughput floor
 		// are configurable via StabilityConfig.
 		{
-			const Scalar rrThreshold = stabilityConfig.rrThreshold;
-			const Scalar rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
-				r_max( ColorMath::MaxValue( vertices.back().throughput ), rrThreshold ) );
-
-			if( depth >= stabilityConfig.rrMinDepth ) {
-				if( sampler.Get1D() >= rrProb ) {
-					break;
-				}
-				if( rrProb > 0 ) {
-					beta = beta * (1.0 / rrProb);
-				}
+			const PathTransportUtilities::RussianRouletteResult rr =
+				PathTransportUtilities::EvaluateRussianRoulette(
+					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+					ColorMath::MaxValue( beta ),
+					ColorMath::MaxValue( vertices.back().throughput ),
+					sampler.Get1D() );
+			if( rr.terminate ) {
+				break;
+			}
+			if( rr.survivalProb < 1.0 ) {
+				beta = beta * (1.0 / rr.survivalProb);
 			}
 		}
 
@@ -1814,7 +1685,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	unsigned int eyeTransmissionBounces = 0;
 	unsigned int eyeTranslucentBounces = 0;
 	unsigned int eyeVolumeBounces = 0;
-	unsigned int eyeSurfaceBounces = 0;
 
 	// Loop limit accounts for both surface and volume bounces.
 	// Surface bounces are capped by maxEyeDepth, volume bounces by maxVolumeBounce.
@@ -1973,17 +1843,19 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						phaseVal / phasePdf );
 
 					// Russian roulette for volume scattering
-					Scalar rrProb = 1.0;
-					if( (depth + eyeVolumeBounces) >= stabilityConfig.rrMinDepth ) {
-						const Scalar rrThreshold = stabilityConfig.rrThreshold;
-						rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
-							r_max( ColorMath::MaxValue( mv.throughput ), rrThreshold ) );
-						if( sampler.Get1D() >= rrProb ) {
-							break;
-						}
-						if( rrProb > 0 ) {
-							beta = beta * (1.0 / rrProb);
-						}
+					const PathTransportUtilities::RussianRouletteResult rr =
+						PathTransportUtilities::EvaluateRussianRoulette(
+							depth + eyeVolumeBounces,
+							stabilityConfig.rrMinDepth,
+							stabilityConfig.rrThreshold,
+							ColorMath::MaxValue( beta ),
+							ColorMath::MaxValue( mv.throughput ),
+							sampler.Get1D() );
+					if( rr.terminate ) {
+						break;
+					}
+					if( rr.survivalProb < 1.0 ) {
+						beta = beta * (1.0 / rr.survivalProb);
 					}
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -1993,7 +1865,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 					vertices.back().guidingScatteringWeight =
 						RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
 							phaseVal / phasePdf );
-					vertices.back().guidingRussianRouletteSurvivalProbability = rrProb;
+					vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 					vertices.back().guidingRoughness = 1.0;
 #endif
 
@@ -2224,7 +2096,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				const Scalar xi = sampler.Get1D();
 				const Scalar alpha = guidingAlpha;
 
-				if( xi < alpha )
+				if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
 				{
 					Scalar guidePdf = 0;
 					const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
@@ -2237,7 +2109,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						const Scalar bsdfPdf = EvalPdfAtVertex(
 							vertices.back(), guidedDir, -currentRay.Dir() );
 
-						guidedCombinedPdf = alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
+						guidedCombinedPdf =
+							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
 
 						if( guidedCombinedPdf > NEARZERO &&
 							ColorMath::MaxValue( guidedF ) > NEARZERO )
@@ -2252,8 +2125,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				{
 					const Scalar guidePdfForBsdfDir =
 						pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-					bsdfCombinedPdf = alpha * guidePdfForBsdfDir +
-						(1.0 - alpha) * pScat->pdf;
+					bsdfCombinedPdf =
+						PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
 				}
 			}
 		}
@@ -2278,18 +2151,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		}
 
 		// Per-type bounce limits
-		{
-			bool exceeded = false;
-			switch( pScat->type ) {
-				case ScatteredRay::eRayDiffuse:      exceeded = (++eyeDiffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
-				case ScatteredRay::eRayReflection:   exceeded = (++eyeGlossyBounces        > stabilityConfig.maxGlossyBounce);       break;
-				case ScatteredRay::eRayRefraction:   exceeded = (++eyeTransmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
-				case ScatteredRay::eRayTranslucent:  exceeded = (++eyeTranslucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
-				default: break;
-			}
-			if( exceeded ) {
-				break;
-			}
+		if( PathTransportUtilities::ExceedsBounceLimitForType(
+				pScat->type, eyeDiffuseBounces, eyeGlossyBounces,
+				eyeTransmissionBounces, eyeTranslucentBounces, stabilityConfig ) ) {
+			break;
 		}
 
 		const Scalar scatterPdf = selectProb * effectivePdf;
@@ -2321,17 +2186,17 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 		// Russian Roulette after a few bounces — depth threshold
 		// and throughput floor are configurable via StabilityConfig.
-		Scalar rrProb = 1.0;
-		if( depth >= stabilityConfig.rrMinDepth ) {
-			const Scalar rrThreshold = stabilityConfig.rrThreshold;
-			rrProb = r_min( Scalar(1.0), ColorMath::MaxValue( beta ) /
-				r_max( ColorMath::MaxValue( vertices.back().throughput ), rrThreshold ) );
-			if( sampler.Get1D() >= rrProb ) {
-				break;
-			}
-			if( rrProb > 0 ) {
-				beta = beta * (1.0 / rrProb);
-			}
+		const PathTransportUtilities::RussianRouletteResult rr =
+			PathTransportUtilities::EvaluateRussianRoulette(
+				depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+				ColorMath::MaxValue( beta ),
+				ColorMath::MaxValue( vertices.back().throughput ),
+				sampler.Get1D() );
+		if( rr.terminate ) {
+			break;
+		}
+		if( rr.survivalProb < 1.0 ) {
+			beta = beta * (1.0 / rr.survivalProb);
 		}
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -2339,7 +2204,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		vertices.back().guidingDirectionIn = scatDir;
 		vertices.back().guidingPdfDirectionIn = scatterPdf;
 		vertices.back().guidingScatteringWeight = localScatteringWeight;
-		vertices.back().guidingRussianRouletteSurvivalProbability = rrProb;
+		vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 		vertices.back().guidingEta =
 			(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
 				pScat->ior_stack->top() :
@@ -3743,60 +3608,7 @@ Scalar BDPTIntegrator::EvalBSDFAtVertexNM(
 	const Scalar nm
 	) const
 {
-	// Medium scatter vertex: phase function evaluation (wavelength-independent)
-	// IPhaseFunction::Evaluate expects wi toward the scatter point,
-	// so negate wi to convert from "away" to "toward" convention.
-	if( vertex.type == BDPTVertex::MEDIUM ) {
-		if( !vertex.pPhaseFunc ) {
-			return 0;
-		}
-		return vertex.pPhaseFunc->Evaluate( -wi, wo );
-	}
-
-	if( !vertex.pMaterial ) {
-		return 0;
-	}
-
-	// BSSRDF entry vertex: Sw(direction) = Ft(cos) / (c * PI)
-	if( vertex.isBSSRDFEntry ) {
-		ISubSurfaceDiffusionProfile* pProfile = vertex.pMaterial->GetDiffusionProfile();
-		if( pProfile ) {
-			// No fabs: back-face connections (cosTheta < 0) return zero.
-			const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
-			if( cosTheta <= NEARZERO ) {
-				return 0;
-			}
-
-			RayIntersectionGeometric rig(
-				Ray( vertex.position, -wi ), nullRasterizerState );
-			rig.bHit = true;
-			rig.ptIntersection = vertex.position;
-			rig.vNormal = vertex.normal;
-			rig.onb = vertex.onb;
-
-			const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
-			const Scalar eta = pProfile->GetIOR( rig );
-			return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
-		}
-		return 0;
-	}
-
-	const IBSDF* pBSDF = vertex.pMaterial->GetBSDF();
-	if( !pBSDF ) {
-		return 0;
-	}
-
-	// Same convention as EvalBSDFAtVertex: wi and wo are both
-	// outgoing (away from surface).  Negate wo to get ri.ray.Dir()
-	// toward surface.
-	Ray evalRay( vertex.position, -wo );
-	RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-	ri.bHit = true;
-	ri.ptIntersection = vertex.position;
-	ri.vNormal = vertex.normal;
-	ri.onb = vertex.onb;
-
-	return pBSDF->valueNM( wi, ri, nm );
+	return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, nm );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -3810,41 +3622,7 @@ Scalar BDPTIntegrator::EvalPdfAtVertexNM(
 	const Scalar nm
 	) const
 {
-	// Medium scatter vertex: phase function PDF (wavelength-independent)
-	// IPhaseFunction::Pdf expects wi toward the scatter point,
-	// so negate wi to convert from "away" to "toward" convention.
-	if( vertex.type == BDPTVertex::MEDIUM ) {
-		if( !vertex.pPhaseFunc ) {
-			return 0;
-		}
-		return vertex.pPhaseFunc->Pdf( -wi, wo );
-	}
-
-	if( !vertex.pMaterial ) {
-		return 0;
-	}
-
-	// BSSRDF entry vertex: cosine hemisphere PDF
-	if( vertex.isBSSRDFEntry ) {
-		const Scalar cosTheta = fabs( Vector3Ops::Dot( wo, vertex.normal ) );
-		return cosTheta * INV_PI;
-	}
-
-	const ISPF* pSPF = vertex.pMaterial->GetSPF();
-	if( !pSPF ) {
-		return 0;
-	}
-
-	// Negate wi to get toward-surface direction for ri.ray.Dir()
-	Ray evalRay( vertex.position, -wi );
-	RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-	ri.bHit = true;
-	ri.ptIntersection = vertex.position;
-	ri.vNormal = vertex.normal;
-	ri.onb = vertex.onb;
-
-	IORStack stack( 1.0 );
-	return pSPF->PdfNM( ri, wo, nm, BuildVertexIORStack( vertex, stack ) );
+	return PathVertexEval::EvalPdfAtVertexNM( vertex, wi, wo, nm );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -4097,17 +3875,17 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 					// Russian roulette
 					{
-						const Scalar rrProb = r_min( Scalar(1.0),
-							fabs( betaNM ) /
-							r_max( fabs( mv.throughputNM ), stabilityConfig.rrThreshold ) );
-
-						if( (depth + nmLightVolumeBounces) >= stabilityConfig.rrMinDepth ) {
-							if( sampler.Get1D() >= rrProb ) {
-								break;
-							}
-							if( rrProb > 0 ) {
-								betaNM /= rrProb;
-							}
+						const PathTransportUtilities::RussianRouletteResult rr =
+							PathTransportUtilities::EvaluateRussianRoulette(
+								depth + nmLightVolumeBounces, stabilityConfig.rrMinDepth,
+								stabilityConfig.rrThreshold,
+								fabs( betaNM ), fabs( mv.throughputNM ),
+								sampler.Get1D() );
+						if( rr.terminate ) {
+							break;
+						}
+						if( rr.survivalProb < 1.0 ) {
+							betaNM /= rr.survivalProb;
 						}
 					}
 
@@ -4306,18 +4084,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		// Per-type bounce limits
-		{
-			bool exceeded = false;
-			switch( pScat->type ) {
-				case ScatteredRay::eRayDiffuse:      exceeded = (++nmLightDiffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
-				case ScatteredRay::eRayReflection:   exceeded = (++nmLightGlossyBounces        > stabilityConfig.maxGlossyBounce);       break;
-				case ScatteredRay::eRayRefraction:   exceeded = (++nmLightTransmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
-				case ScatteredRay::eRayTranslucent:  exceeded = (++nmLightTranslucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
-				default: break;
-			}
-			if( exceeded ) {
-				break;
-			}
+		if( PathTransportUtilities::ExceedsBounceLimitForType(
+				pScat->type, nmLightDiffuseBounces, nmLightGlossyBounces,
+				nmLightTransmissionBounces, nmLightTranslucentBounces, stabilityConfig ) ) {
+			break;
 		}
 
 		// Throughput update using valueNM
@@ -4335,14 +4105,17 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		// Russian Roulette — configurable depth and threshold
-		if( depth >= stabilityConfig.rrMinDepth ) {
-			const Scalar rrProb = r_min( Scalar(1.0), fabs(betaNM) /
-				r_max( fabs(vertices.back().throughputNM), stabilityConfig.rrThreshold ) );
-			if( sampler.Get1D() >= rrProb ) {
+		{
+			const PathTransportUtilities::RussianRouletteResult rr =
+				PathTransportUtilities::EvaluateRussianRoulette(
+					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+					fabs( betaNM ), fabs( vertices.back().throughputNM ),
+					sampler.Get1D() );
+			if( rr.terminate ) {
 				break;
 			}
-			if( rrProb > 0 ) {
-				betaNM = betaNM / rrProb;
+			if( rr.survivalProb < 1.0 ) {
+				betaNM /= rr.survivalProb;
 			}
 		}
 
@@ -4559,17 +4332,19 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 					// Russian roulette
 					{
-						const Scalar rrProb = r_min( Scalar(1.0),
-							fabs( betaNM ) /
-							r_max( fabs( mv.throughputNM ), stabilityConfig.rrThreshold ) );
-
-						if( (depth + nmEyeVolumeBounces) >= stabilityConfig.rrMinDepth ) {
-							if( sampler.Get1D() >= rrProb ) {
-								break;
-							}
-							if( rrProb > 0 ) {
-								betaNM /= rrProb;
-							}
+						const PathTransportUtilities::RussianRouletteResult rr =
+							PathTransportUtilities::EvaluateRussianRoulette(
+								depth + nmEyeVolumeBounces,
+								stabilityConfig.rrMinDepth,
+								stabilityConfig.rrThreshold,
+								fabs( betaNM ),
+								fabs( mv.throughputNM ),
+								sampler.Get1D() );
+						if( rr.terminate ) {
+							break;
+						}
+						if( rr.survivalProb < 1.0 ) {
+							betaNM /= rr.survivalProb;
 						}
 					}
 
@@ -4775,7 +4550,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				const Scalar xi = sampler.Get1D();
 				const Scalar alpha = guidingAlpha;
 
-				if( xi < alpha )
+				if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
 				{
 					Scalar guidePdf = 0;
 					const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
@@ -4788,7 +4563,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 						const Scalar bsdfPdf = EvalPdfAtVertex(
 							vertices.back(), guidedDir, -currentRay.Dir() );
 
-						guidedCombinedPdf = alpha * guidePdf + (1.0 - alpha) * bsdfPdf;
+						guidedCombinedPdf =
+							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
 
 						if( guidedCombinedPdf > NEARZERO && guidedFNM > NEARZERO )
 						{
@@ -4802,8 +4578,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				{
 					const Scalar guidePdfForBsdfDir =
 						pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-					bsdfCombinedPdf = alpha * guidePdfForBsdfDir +
-						(1.0 - alpha) * pScat->pdf;
+					bsdfCombinedPdf =
+						PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
 				}
 			}
 		}
@@ -4850,18 +4626,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		// Per-type bounce limits
-		{
-			bool exceeded = false;
-			switch( pScat->type ) {
-				case ScatteredRay::eRayDiffuse:      exceeded = (++nmEyeDiffuseBounces      > stabilityConfig.maxDiffuseBounce);      break;
-				case ScatteredRay::eRayReflection:   exceeded = (++nmEyeGlossyBounces        > stabilityConfig.maxGlossyBounce);       break;
-				case ScatteredRay::eRayRefraction:   exceeded = (++nmEyeTransmissionBounces  > stabilityConfig.maxTransmissionBounce); break;
-				case ScatteredRay::eRayTranslucent:  exceeded = (++nmEyeTranslucentBounces   > stabilityConfig.maxTranslucentBounce);  break;
-				default: break;
-			}
-			if( exceeded ) {
-				break;
-			}
+		if( PathTransportUtilities::ExceedsBounceLimitForType(
+				pScat->type, nmEyeDiffuseBounces, nmEyeGlossyBounces,
+				nmEyeTransmissionBounces, nmEyeTranslucentBounces, stabilityConfig ) ) {
+			break;
 		}
 
 		// Throughput update using valueNM
@@ -4885,15 +4653,17 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		// Russian Roulette — configurable depth and throughput floor
-		if( depth >= stabilityConfig.rrMinDepth ) {
-			const Scalar rrThreshold = stabilityConfig.rrThreshold;
-			const Scalar rrProb = r_min( Scalar(1.0), fabs(betaNM) /
-				r_max( fabs(vertices.back().throughputNM), rrThreshold ) );
-			if( sampler.Get1D() >= rrProb ) {
+		{
+			const PathTransportUtilities::RussianRouletteResult rr =
+				PathTransportUtilities::EvaluateRussianRoulette(
+					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+					fabs( betaNM ), fabs( vertices.back().throughputNM ),
+					sampler.Get1D() );
+			if( rr.terminate ) {
 				break;
 			}
-			if( rrProb > 0 ) {
-				betaNM = betaNM / rrProb;
+			if( rr.survivalProb < 1.0 ) {
+				betaNM /= rr.survivalProb;
 			}
 		}
 

@@ -23,6 +23,7 @@
 #include "../Utilities/Math3D/Constants.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Intersection/RayIntersectionGeometric.h"
+#include "../Utilities/PathTransportUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -426,12 +427,7 @@ static Scalar EvalShadowTransmittanceNM(
 	return Tr;
 }
 
-/// Power heuristic weight: w = pa^2 / (pa^2 + pb^2)
-static inline Scalar PowerHeuristic( const Scalar pa, const Scalar pb )
-{
-	const Scalar pa2 = pa * pa;
-	return pa2 / (pa2 + pb * pb);
-}
+using PathTransportUtilities::PowerHeuristic;
 
 LightSampler::LightSampler() :
   pPreparedScene( 0 ),

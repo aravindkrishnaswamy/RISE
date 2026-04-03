@@ -17,6 +17,8 @@
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/BSSRDFSampling.h"
 #include "../Utilities/MediumTracking.h"
+#include "../Utilities/PathTransportUtilities.h"
+#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
@@ -51,6 +53,7 @@ static inline bool GuidingWantsDeepSignalTraining( const unsigned int pathDepth 
 // When rs.importance is large the floor has no effect and rrProb = MaxValue(throughput).
 // When rs.importance is small (deep paths) the floor prevents runaway compensation.
 //
+// Default RR parameters — used when StabilityConfig is not provided.
 static const unsigned int PT_RR_MIN_DEPTH = 3;
 static const Scalar PT_RR_THRESHOLD = 0.05;
 
@@ -77,54 +80,7 @@ static inline IRayCaster::RAY_STATE::RayType PathTracingRayType( const Scattered
 }
 
 /// Propagate per-type bounce counters and glossy filter width from
-/// the parent ray state to the child.  Increments the counter
-/// matching the scattered ray type and accumulates the glossy
-/// filter width for non-delta glossy bounces.
-/// Returns true if the bounce limit for this type has been exceeded.
-static inline bool PropagateBounceLimits(
-	const IRayCaster::RAY_STATE& parent,
-	IRayCaster::RAY_STATE& child,
-	const ScatteredRay& scat,
-	const StabilityConfig* pConfig )
-{
-	child.diffuseBounces      = parent.diffuseBounces;
-	child.glossyBounces       = parent.glossyBounces;
-	child.transmissionBounces = parent.transmissionBounces;
-	child.translucentBounces  = parent.translucentBounces;
-	child.glossyFilterWidth   = parent.glossyFilterWidth;
-
-	if( !pConfig ) {
-		return false;
-	}
-
-	// Accumulate glossy filter width for non-delta glossy bounces.
-	// Each glossy reflection adds filterGlossy to the accumulated
-	// width, which downstream SPFs use to increase their effective
-	// roughness, reducing secondary caustic noise.
-	if( scat.type == ScatteredRay::eRayReflection && !scat.isDelta &&
-		pConfig->filterGlossy > 0 )
-	{
-		child.glossyFilterWidth = parent.glossyFilterWidth + pConfig->filterGlossy;
-	}
-
-	switch( scat.type )
-	{
-		case ScatteredRay::eRayDiffuse:
-			child.diffuseBounces++;
-			return child.diffuseBounces > pConfig->maxDiffuseBounce;
-		case ScatteredRay::eRayReflection:
-			child.glossyBounces++;
-			return child.glossyBounces > pConfig->maxGlossyBounce;
-		case ScatteredRay::eRayRefraction:
-			child.transmissionBounces++;
-			return child.transmissionBounces > pConfig->maxTransmissionBounce;
-		case ScatteredRay::eRayTranslucent:
-			child.translucentBounces++;
-			return child.translucentBounces > pConfig->maxTranslucentBounce;
-		default:
-			return false;
-	}
-}
+using PathTransportUtilities::PropagateBounceLimits;
 
 static inline Scalar GuidingSelectionWeight( const ScatteredRay& scat )
 {
@@ -470,40 +426,10 @@ PathTracingShaderOp::~PathTracingShaderOp()
 	safe_release( pSolver );
 }
 
-/// Power heuristic weight: w = pa² / (pa² + pb²)
-static inline Scalar PowerHeuristic( const Scalar pa, const Scalar pb )
-{
-	const Scalar pa2 = pa * pa;
-	return pa2 / (pa2 + pb * pb);
-}
-
-/// Clamp an RGB contribution so that its maximum channel does not
-/// exceed 'limit'.  Returns the original value when limit <= 0
-/// (disabled) or when the contribution is already within bounds.
-static inline RISEPel ClampContribution( const RISEPel& contrib, const Scalar limit )
-{
-	if( limit <= 0 ) {
-		return contrib;
-	}
-	const Scalar maxVal = ColorMath::MaxValue( contrib );
-	if( maxVal > limit ) {
-		return contrib * (limit / maxVal);
-	}
-	return contrib;
-}
-
-/// Scalar variant for the spectral (NM) path.
-static inline Scalar ClampContributionNM( const Scalar contrib, const Scalar limit )
-{
-	if( limit <= 0 ) {
-		return contrib;
-	}
-	const Scalar absVal = fabs( contrib );
-	if( absVal > limit ) {
-		return contrib * (limit / absVal);
-	}
-	return contrib;
-}
+// Shared transport utilities — imported from PathTransportUtilities.h
+using PathTransportUtilities::PowerHeuristic;
+using PathTransportUtilities::ClampContribution;
+using PathTransportUtilities::ClampContributionNM;
 
 //////////////////////////////////////////////////////////////////////
 // BSSRDFEntryBSDF — lightweight IBSDF adapter for BSSRDF entry
@@ -863,19 +789,15 @@ void PathTracingShaderOp::PerformOperation(
 									rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
 								const Scalar rrThreshold = rc.pStabilityConfig ?
 									rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
-								if( rs.depth >= rrMinDepth )
-								{
-									const Scalar pathThroughput = rs.importance *
-										ColorMath::MaxValue( throughput );
-									const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
-									const Scalar rrProb = r_min( Scalar(1.0),
-										pathThroughput / prevThroughput );
-									const Scalar rrXi = bssrdfSampler.Get1D();
-									if( rrXi >= rrProb ) {
-										skipContinuation = true;
-									} else if( rrProb > 0 && rrProb < 1.0 ) {
-										throughput = throughput * (1.0 / rrProb);
-									}
+								const PathTransportUtilities::RussianRouletteResult rr =
+									PathTransportUtilities::EvaluateRussianRoulette(
+										rs.depth, rrMinDepth, rrThreshold,
+										rs.importance * ColorMath::MaxValue( throughput ),
+										rs.importance, bssrdfSampler.Get1D() );
+								if( rr.terminate ) {
+									skipContinuation = true;
+								} else if( rr.survivalProb < 1.0 ) {
+									throughput = throughput * (1.0 / rr.survivalProb);
 								}
 							}
 
@@ -1187,7 +1109,7 @@ void PathTracingShaderOp::PerformOperation(
 
 						const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 
-						if( xiG < alpha )
+						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
 							// Sample from the guiding distribution.
 							Scalar guidePdf = 0;
@@ -1198,11 +1120,13 @@ void PathTracingShaderOp::PerformOperation(
 
 							if( guidePdf > NEARZERO )
 							{
-								const RISEPel fGuided = pBRDF->value( guidedDir, ri.geometric );
+								const RISEPel fGuided = PathVertexEval::EvalBSDFAtSurface(
+									pBRDF, guidedDir, ri.geometric );
 								const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
-								const Scalar bsdfPdfGuided = pSPF ?
-									pSPF->Pdf( ri.geometric, guidedDir, ior_stack ) : 0;
-								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * bsdfPdfGuided;
+								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurface(
+									pSPF, ri.geometric, guidedDir, ior_stack );
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
 
 								if( combinedPdf > NEARZERO )
 								{
@@ -1228,7 +1152,8 @@ void PathTracingShaderOp::PerformOperation(
 							// Keep BSDF direction but adjust throughput for
 							// the combined PDF.
 							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDist, pS->ray.Dir() );
-							const Scalar combinedPdf = alpha * guidePdfForBsdf + (1.0 - alpha) * pS->pdf;
+							const Scalar combinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
 
 							if( combinedPdf > NEARZERO )
 							{
@@ -1251,26 +1176,21 @@ void PathTracingShaderOp::PerformOperation(
 
 				// Russian roulette: probabilistic path termination with
 				// throughput compensation to maintain unbiasedness.
-				// Uses the BDPT's ratio formula:
-				//   rrProb = min(1, pathThroughput / max(prevThroughput, threshold))
-				// In the recursive PT, pathThroughput = rs.importance * MaxValue(throughput)
-				// and prevThroughput = rs.importance.
 				// Branching paths are excluded (they explore all lobes by design).
+				if( !skipContinuation )
 				{
 					const unsigned int rrMinDepth = rc.pStabilityConfig ? rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
 					const Scalar rrThreshold = rc.pStabilityConfig ? rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
-					if( rs.depth >= rrMinDepth && !skipContinuation )
-					{
-						const Scalar pathThroughput = rs.importance * ColorMath::MaxValue( throughput );
-						const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
-						const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
-						const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
-							: rc.random.CanonicalRandom();
-						if( rrXi >= rrProb ) {
-							skipContinuation = true;
-						} else if( rrProb > 0 && rrProb < 1.0 ) {
-							throughput = throughput * (1.0 / rrProb);
-						}
+					const PathTransportUtilities::RussianRouletteResult rr =
+						PathTransportUtilities::EvaluateRussianRoulette(
+							rs.depth, rrMinDepth, rrThreshold,
+							rs.importance * ColorMath::MaxValue( throughput ),
+							rs.importance,
+							rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
+					if( rr.terminate ) {
+						skipContinuation = true;
+					} else if( rr.survivalProb < 1.0 ) {
+						throughput = throughput * (1.0 / rr.survivalProb);
 					}
 				}
 
@@ -1525,18 +1445,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 									rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
 								const Scalar rrThreshold = rc.pStabilityConfig ?
 									rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
-								if( rs.depth >= rrMinDepth )
-								{
-									const Scalar pathThroughput = rs.importance * fabs( throughputNM );
-									const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
-									const Scalar rrProb = r_min( Scalar(1.0),
-										pathThroughput / prevThroughput );
-									const Scalar rrXi = bssrdfSampler.Get1D();
-									if( rrXi >= rrProb ) {
-										skipContinuation = true;
-									} else if( rrProb > 0 && rrProb < 1.0 ) {
-										throughputNM /= rrProb;
-									}
+								const PathTransportUtilities::RussianRouletteResult rr =
+									PathTransportUtilities::EvaluateRussianRoulette(
+										rs.depth, rrMinDepth, rrThreshold,
+										rs.importance * fabs( throughputNM ),
+										rs.importance, bssrdfSampler.Get1D() );
+								if( rr.terminate ) {
+									skipContinuation = true;
+								} else if( rr.survivalProb < 1.0 ) {
+									throughputNM /= rr.survivalProb;
 								}
 							}
 
@@ -1753,7 +1670,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 						const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 
-						if( xiG < alpha )
+						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
 							Scalar guidePdf = 0;
 							const Point2 xi2d(
@@ -1763,11 +1680,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 							if( guidePdf > NEARZERO )
 							{
-								const Scalar fGuided = pBRDF->valueNM( guidedDir, ri.geometric, nm );
+								const Scalar fGuided = PathVertexEval::EvalBSDFAtSurfaceNM(
+									pBRDF, guidedDir, ri.geometric, nm );
 								const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
-								const Scalar bsdfPdfGuided = pSPF ?
-									pSPF->Pdf( ri.geometric, guidedDir, ior_stack ) : 0;
-								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * bsdfPdfGuided;
+								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurfaceNM(
+									pSPF, ri.geometric, guidedDir, nm, ior_stack );
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
 
 								if( combinedPdf > NEARZERO )
 								{
@@ -1791,7 +1710,8 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						else
 						{
 							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDistNM, pS->ray.Dir() );
-							const Scalar combinedPdf = alpha * guidePdfForBsdf + (1.0 - alpha) * pS->pdf;
+							const Scalar combinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
 
 							if( combinedPdf > NEARZERO )
 							{
@@ -1807,23 +1727,22 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif
 
-				// Russian roulette (spectral path) — BDPT ratio formula
+				// Russian roulette (spectral path)
 				bool skipContinuationNM = fabs( throughputNM ) <= NEARZERO;
+				if( !skipContinuationNM )
 				{
 					const unsigned int rrMinDepth = rc.pStabilityConfig ? rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
 					const Scalar rrThreshold = rc.pStabilityConfig ? rc.pStabilityConfig->rrThreshold : PT_RR_THRESHOLD;
-					if( rs.depth >= rrMinDepth && !skipContinuationNM )
-					{
-						const Scalar pathThroughput = rs.importance * fabs( throughputNM );
-						const Scalar prevThroughput = r_max( rs.importance, rrThreshold );
-						const Scalar rrProb = r_min( Scalar(1.0), pathThroughput / prevThroughput );
-						const Scalar rrXi = rc.pSampler ? rc.pSampler->Get1D()
-							: rc.random.CanonicalRandom();
-						if( rrXi >= rrProb ) {
-							skipContinuationNM = true;
-						} else if( rrProb > 0 && rrProb < 1.0 ) {
-							throughputNM /= rrProb;
-						}
+					const PathTransportUtilities::RussianRouletteResult rr =
+						PathTransportUtilities::EvaluateRussianRoulette(
+							rs.depth, rrMinDepth, rrThreshold,
+							rs.importance * fabs( throughputNM ),
+							rs.importance,
+							rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
+					if( rr.terminate ) {
+						skipContinuationNM = true;
+					} else if( rr.survivalProb < 1.0 ) {
+						throughputNM /= rr.survivalProb;
 					}
 				}
 

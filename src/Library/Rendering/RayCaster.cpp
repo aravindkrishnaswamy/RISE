@@ -21,6 +21,7 @@
 #include "../Utilities/MediumTransport.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
+#include "../Utilities/PathTransportUtilities.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -335,7 +336,7 @@ bool RayCaster::CastRay(
 						}
 
 						const Scalar xiG = mediumSampler.Get1D();
-						if( xiG < alpha )
+						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
 							// Sample from guiding distribution.
 							// Save phase-sampled state in case guide fails.
@@ -349,7 +350,8 @@ bool RayCaster::CastRay(
 							if( guidePdf > 0 )
 							{
 								phasePdf = pPhase->Pdf( wo, wi );
-								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
 								guidingMISWeight = phasePdf / combinedPdf;
 								effectivePdf = combinedPdf;
 							}
@@ -366,7 +368,8 @@ bool RayCaster::CastRay(
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandle, wi );
 							if( guidePdf > 0 && phasePdf > 0 )
 							{
-								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
 								guidingMISWeight = phasePdf / combinedPdf;
 								effectivePdf = combinedPdf;
 							}
@@ -726,7 +729,7 @@ bool RayCaster::CastRayNM(
 						}
 
 						const Scalar xiG = mediumSampler.Get1D();
-						if( xiG < alpha )
+						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 						{
 							// Save phase-sampled state in case guide fails
 							const Vector3 wi_phase = wi;
@@ -739,7 +742,8 @@ bool RayCaster::CastRayNM(
 							if( guidePdf > 0 )
 							{
 								phasePdf = pPhase->Pdf( wo, wi );
-								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
 								guidingMISWeight = phasePdf / combinedPdf;
 								effectivePdf = combinedPdf;
 							}
@@ -755,7 +759,8 @@ bool RayCaster::CastRayNM(
 							const Scalar guidePdf = rc.pGuidingField->PdfVolume( volGuideHandleNM, wi );
 							if( guidePdf > 0 && phasePdf > 0 )
 							{
-								const Scalar combinedPdf = alpha * guidePdf + (1.0 - alpha) * phasePdf;
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, phasePdf );
 								guidingMISWeight = phasePdf / combinedPdf;
 								effectivePdf = combinedPdf;
 							}
