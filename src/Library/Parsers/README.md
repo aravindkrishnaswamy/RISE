@@ -67,6 +67,7 @@ When in doubt, read the registration block in [AsciiSceneParser.cpp](AsciiSceneP
 2. Register it in the chunk map in `AsciiSceneParser.cpp`.
 3. Make sure the feature is constructible through `Job` and or `RISE_API`.
 4. Add a representative `.RISEscene` sample.
+   Put isolated parser checks in `scenes/Tests`, and reserve `scenes/FeatureBased` for richer showcase scenes.
 5. Add a deterministic test if parsing logic or supporting math can be exercised without a full render.
 6. Decide whether the scene version marker should change.
 
@@ -80,4 +81,6 @@ When in doubt, read the registration block in [AsciiSceneParser.cpp](AsciiSceneP
 
 - High-level assembly target: [../Job.cpp](../Job.cpp)
 - Public API constructors: [../RISE_API.h](../RISE_API.h)
-- Sample coverage: [../../../scenes/FeatureBased/README.md](../../../scenes/FeatureBased/README.md)
+- Scene taxonomy: [../../../scenes/README.md](../../../scenes/README.md)
+- Showcase scenes: [../../../scenes/FeatureBased/README.md](../../../scenes/FeatureBased/README.md)
+- Regression scenes: [../../../scenes/Tests/README.md](../../../scenes/Tests/README.md)

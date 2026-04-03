@@ -71,6 +71,7 @@ The project intentionally favors physically motivated, readable code over aggres
 - Add a `Job` wrapper if the type should be reachable through `IJob`.
 - Add parser support if the type should be usable from `.RISEscene`.
 - Add a scene and or test that demonstrates the feature.
+  Use `scenes/Tests` for focused regression or baseline scenes, and `scenes/FeatureBased` for curated showcase scenes when the feature is user-facing.
 - Update [../../build/make/rise/Filelist](../../build/make/rise/Filelist) if you added new `.cpp` files.
 
 ### Adding a new scene-visible feature
@@ -78,7 +79,8 @@ The project intentionally favors physically motivated, readable code over aggres
 - Decide whether the feature belongs in `Geometry`, `Materials`, `Shaders`, `PhotonMapping`, `Sampling`, or `Rendering`.
 - Confirm the feature can be named and resolved through the appropriate manager.
 - Register it in the scene parser if users need to author it directly.
-- Add at least one representative scene under `scenes/FeatureBased`.
+- Add at least one focused regression scene under `scenes/Tests`.
+- Add a curated scene under `scenes/FeatureBased` as well if the feature benefits from a showcase-quality example.
 
 ### Changing rasterization behavior
 

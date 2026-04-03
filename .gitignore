@@ -13,3 +13,10 @@ RISE_Log.txt
 /scenes/Internal
 /models/risemesh/internal
 *.md
+!AGENTS.md
+!CLAUDE.md
+!README.md
+!docs/*.md
+!src/**/README.md
+!scenes/**/README.md
+!tests/README.md
