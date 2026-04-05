@@ -255,7 +255,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			// produce identical results when indirectFraction = 1.0 and
 			// CoV >= 2.0.  To switch to A+E, replace the CoV block below
 			// with: energyScale = sqrt(min(1, indirectEnergyFraction)).
-			// See docs/PATH_TRANSPORT_ROADMAP.md Stage 8D for test data.
+			// To switch to A+E: replace the CoV block with energyScale = sqrt(min(1, indirectEnergyFraction)).
 			//
 			const Scalar indirectEnergySquaredSum =
 				pGuidingField->GetLastAddedIndirectSurfaceSampleEnergySquaredSum();

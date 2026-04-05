@@ -92,7 +92,7 @@ The project intentionally favors physically motivated, readable code over aggres
 
 The path guiding subsystem uses Intel OpenPGL to learn incident radiance distributions during training passes, then samples from them during the final render.  Two directional sampling strategies are available: one-sample MIS (default) and RIS (Resampled Importance Sampling, selectable via `pathguiding_sampling_type ris`).
 
-The guiding alpha (blend probability) is adaptively scaled each training iteration.  The current approach uses a variance-aware scheme inspired by Rath et al. 2020: the coefficient of variation (CoV) of indirect sample energy determines how much guiding helps.  A simpler Cycles-style approach (using `sqrt(indirectFraction)`) was also tested and can be substituted — see the inline comments in `Rendering/PixelBasedPelRasterizer.cpp` and `Rendering/BDPTRasterizerBase.cpp`, and `docs/PATH_TRANSPORT_ROADMAP.md` Stage 8D for comparison data.
+The guiding alpha (blend probability) is adaptively scaled each training iteration.  The current approach uses a variance-aware scheme inspired by Rath et al. 2020: the coefficient of variation (CoV) of indirect sample energy determines how much guiding helps.  A simpler Cycles-style approach (using `sqrt(indirectFraction)`) was also tested and can be substituted — see the inline comments in `Rendering/PixelBasedPelRasterizer.cpp` and `Rendering/BDPTRasterizerBase.cpp`.
 
 Key files:
 - `Utilities/PathGuidingField.h` / `.cpp` — OpenPGL wrapper, config, training statistics including `indirectSampleEnergySquaredSum` for variance estimation.

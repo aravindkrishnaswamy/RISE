@@ -47,7 +47,7 @@ No makefile edit is needed for a new `tests/*.cpp` file because the existing wil
 
 ## Transport Correctness Scenes (Roadmap Step 2)
 
-These scenes validate the spectral, SMS, and Russian roulette correctness fixes from `docs/PATH_TRANSPORT_ROADMAP.md` Step 2. They require visual or statistical comparison rather than deterministic assertions.
+These scenes validate spectral, SMS, and Russian roulette correctness. They require visual or statistical comparison rather than deterministic assertions.
 
 Assume `RISE_MEDIA_PATH` is set to the repo root before running any of the scene-based checks below:
 
@@ -91,7 +91,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Spectral/spectral_dispersive_c
 
 ## Production Stability Controls (Roadmap Step 3)
 
-These scenes validate the stability controls from `docs/PATH_TRANSPORT_ROADMAP.md` Step 3. Each control is disabled by default (zero or UINT_MAX) so existing scenes are unaffected.
+These scenes validate the production stability controls. Each control is disabled by default (zero or UINT_MAX) so existing scenes are unaffected.
 
 ### Sample Clamping (3A)
 
@@ -210,7 +210,7 @@ The script generates a minimal Cornell box scene on the fly, so it does not depe
 
 ### Adaptive Alpha
 
-The guiding alpha is adaptively scaled using a variance-aware approach inspired by Rath et al. 2020.  The coefficient of variation (CoV) of indirect sample energy determines how much the guiding distribution helps.  An alternative Cycles-style approach was also tested — see `docs/PATH_TRANSPORT_ROADMAP.md` Stage 8D for the comparison data and how to switch between approaches.
+The guiding alpha is adaptively scaled using a variance-aware approach inspired by Rath et al. 2020.  The coefficient of variation (CoV) of indirect sample energy determines how much the guiding distribution helps.  An alternative Cycles-style approach (using `sqrt(indirectFraction)`) was also tested — see the inline comments in `src/Library/Rendering/PixelBasedPelRasterizer.cpp` and `BDPTRasterizerBase.cpp` for how to switch between approaches.
 
 ## Relationship To Sample Scenes
 

@@ -8,7 +8,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 
 ## Planning Docs
 
-- [PATH_TRANSPORT_ROADMAP.md](PATH_TRANSPORT_ROADMAP.md): prioritized backlog for path transport work, including validation expectations, acceptance criteria, and likely starting files.
+- [IMPROVEMENTS.md](IMPROVEMENTS.md): ranked backlog of rendering improvements, including transport, materials, samplers, and volumes, with acceptance criteria and starting files per item.
 
 ## Related Docs Outside `docs/`
 

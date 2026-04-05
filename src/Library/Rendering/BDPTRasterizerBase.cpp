@@ -493,7 +493,7 @@ void BDPTRasterizerBase::RasterizeScene(
 				// To switch to the simpler Cycles-style approach,
 				// replace the CoV block with:
 				//   strategyScale = sqrt(min(1, deepEyeFrac * indirectFrac))
-				// See docs/PATH_TRANSPORT_ROADMAP.md Stage 8D.
+				// See inline comment in PixelBasedPelRasterizer.cpp for the A+E alternative.
 				//
 				const Scalar indirectEnergySquaredSum =
 					pGuidingField->GetLastAddedIndirectSurfaceSampleEnergySquaredSum();

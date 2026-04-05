@@ -38,4 +38,4 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - Regression scenes: [scenes/Tests/README.md](scenes/Tests/README.md)
 - Executable tests: [tests/README.md](tests/README.md)
 - Thread-safety and scene immutability: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Future transport work: [docs/PATH_TRANSPORT_ROADMAP.md](docs/PATH_TRANSPORT_ROADMAP.md)
+- Planned improvements: [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)
