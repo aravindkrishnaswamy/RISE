@@ -866,48 +866,79 @@ void PathTracingShaderOp::PerformOperation(
 					}
 				}
 			} else {
-				const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
-				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
-				if( pS ) {
-					rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
-					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-					rs2.type = PathTracingRayType( *pS );
-					if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
-						return;
-					}
-					RISEPel cthis( 0, 0, 0 );
-					Ray ray = pS->ray;
-
-#ifdef RISE_ENABLE_OPENPGL
-					if( guidingSegment ) {
-						SetPTGuidingContinuation(
-							guidingSegment,
-							ray.Dir(),
-							pS->pdf,
-							pS->kray,
-							pS->isDelta );
-					}
-#endif
-
-					ray.Advance( 1e-8 );
-					const bool hit = caster.CastRay( rc, ri.geometric.rast, ray, cthis,
-						rs2, 0, ri.pRadianceMap,
-						pS->ior_stack ? pS->ior_stack : ior_stack );
-					{
-						RISEPel indirect = pS->kray * cthis;
-						if( rc.pStabilityConfig && rs.depth > 1 ) {
-							indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+				// When multiple rays are present (e.g. translucent materials),
+				// trace all of them to avoid high-variance one-sample correction.
+				// Single-ray materials (most cases) take the fast path below.
+				if( scattered.Count() > 1 ) {
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						ScatteredRay& scat = scattered[i];
+						const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
+						if( scatmaxv > 0 ) {
+							rs2.importance = rs.importance * scatmaxv;
+							rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+							rs2.type = PathTracingRayType( scat );
+							if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+								continue;
+							}
+							RISEPel cthis( 0, 0, 0 );
+							Ray ray = scat.ray;
+							ray.Advance( 1e-8 );
+							caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+								rs2, 0, ri.pRadianceMap,
+								scat.ior_stack ? scat.ior_stack : ior_stack );
+							{
+								RISEPel indirect = scat.kray * cthis;
+								if( rc.pStabilityConfig && rs.depth > 1 ) {
+									indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+								}
+								c = c + indirect;
+							}
 						}
-						c = c + indirect;
 					}
+				} else {
+					const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+					const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
+					if( pS ) {
+						rs2.importance = rs.importance * ColorMath::MaxValue( pS->kray );
+						rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+						rs2.type = PathTracingRayType( *pS );
+						if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
+							return;
+						}
+						RISEPel cthis( 0, 0, 0 );
+						Ray ray = pS->ray;
 
 #ifdef RISE_ENABLE_OPENPGL
-					if( guidingRecorder && guidingRecorder->active && !hit &&
-						GuidingTrainingLuminance( cthis ) > 0 )
-					{
-						AddPTGuidingBackgroundSegment( *guidingRecorder, ray, cthis );
-					}
+						if( guidingSegment ) {
+							SetPTGuidingContinuation(
+								guidingSegment,
+								ray.Dir(),
+								pS->pdf,
+								pS->kray,
+								pS->isDelta );
+						}
 #endif
+
+						ray.Advance( 1e-8 );
+						const bool hit = caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+							rs2, 0, ri.pRadianceMap,
+							pS->ior_stack ? pS->ior_stack : ior_stack );
+						{
+							RISEPel indirect = pS->kray * cthis;
+							if( rc.pStabilityConfig && rs.depth > 1 ) {
+								indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+							}
+							c = c + indirect;
+						}
+
+#ifdef RISE_ENABLE_OPENPGL
+						if( guidingRecorder && guidingRecorder->active && !hit &&
+							GuidingTrainingLuminance( cthis ) > 0 )
+						{
+							AddPTGuidingBackgroundSegment( *guidingRecorder, ray, cthis );
+						}
+#endif
+					}
 				}
 			}
 		}
@@ -1066,6 +1097,47 @@ void PathTracingShaderOp::PerformOperation(
 						}
 					}
 #endif
+				}
+			}
+		}
+		else if( scattered.Count() > 1 )
+		{
+			// Multiple scattered rays (e.g. translucent or polished materials):
+			// trace all to avoid high-variance one-sample correction.  Each
+			// sub-path continues in non-branching mode at subsequent bounces.
+			for( unsigned int i = 0; i < scattered.Count(); i++ )
+			{
+				ScatteredRay& scat = scattered[i];
+				const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
+				if( scatmaxv > 0 )
+				{
+					rs2.importance = rs.importance * scatmaxv;
+					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+					rs2.type = PathTracingRayType( scat );
+
+					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+						continue;
+					}
+
+					if( scat.isDelta && bSMSEnabled ) {
+						rs2.considerEmission = false;
+					} else {
+						rs2.considerEmission = true;
+					}
+
+					RISEPel cthis( 0, 0, 0 );
+					Ray ray = scat.ray;
+					ray.Advance( 1e-8 );
+					caster.CastRay( rc, ri.geometric.rast, ray, cthis,
+						rs2, 0, ri.pRadianceMap,
+						scat.ior_stack ? scat.ior_stack : ior_stack );
+					{
+						RISEPel indirect = scat.kray * cthis;
+						if( rc.pStabilityConfig && rs.depth > 1 ) {
+							indirect = ClampContribution( indirect, rc.pStabilityConfig->indirectClamp );
+						}
+						c = c + indirect;
+					}
 				}
 			}
 		}
@@ -1617,26 +1689,52 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					}
 				}
 			} else {
-				const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
-				const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
-				if( pS ) {
-					rs2.importance = rs.importance * pS->krayNM;
-					rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-					if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
-						return c;
-					}
-					Scalar cthis = 0;
-					Ray ray = pS->ray;
-					ray.Advance( 1e-8 );
-					caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
-						rs2, nm, 0, ri.pRadianceMap,
-						pS->ior_stack ? pS->ior_stack : ior_stack );
-					{
-						Scalar indirectNM = cthis * pS->krayNM;
-						if( rc.pStabilityConfig && rs.depth > 1 ) {
-							indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+				if( scattered.Count() > 1 ) {
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						ScatteredRay& scat = scattered[i];
+						if( scat.krayNM > 0 ) {
+							rs2.importance = rs.importance * scat.krayNM;
+							rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+							if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+								continue;
+							}
+							Scalar cthis = 0;
+							Ray ray = scat.ray;
+							ray.Advance( 1e-8 );
+							caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+								rs2, nm, 0, ri.pRadianceMap,
+								scat.ior_stack ? scat.ior_stack : ior_stack );
+							{
+								Scalar indirectNM = cthis * scat.krayNM;
+								if( rc.pStabilityConfig && rs.depth > 1 ) {
+									indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+								}
+								c += indirectNM;
+							}
 						}
-						c += indirectNM;
+					}
+				} else {
+					const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+					const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
+					if( pS ) {
+						rs2.importance = rs.importance * pS->krayNM;
+						rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+						if( PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) ) {
+							return c;
+						}
+						Scalar cthis = 0;
+						Ray ray = pS->ray;
+						ray.Advance( 1e-8 );
+						caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+							rs2, nm, 0, ri.pRadianceMap,
+							pS->ior_stack ? pS->ior_stack : ior_stack );
+						{
+							Scalar indirectNM = cthis * pS->krayNM;
+							if( rc.pStabilityConfig && rs.depth > 1 ) {
+								indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+							}
+							c += indirectNM;
+						}
 					}
 				}
 			}
@@ -1716,6 +1814,43 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						rs2.importance = rs.importance * scat.krayNM;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
 						rs2.type = PathTracingRayType( scat );
+
+					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
+						continue;
+					}
+
+					if( scat.isDelta && bSMSEnabled ) {
+						rs2.considerEmission = false;
+					} else {
+						rs2.considerEmission = true;
+					}
+
+					Scalar cthis = 0;
+					Ray ray = scat.ray;
+					ray.Advance( 1e-8 );
+					caster.CastRayNM( rc, ri.geometric.rast, ray, cthis,
+						rs2, nm, 0, ri.pRadianceMap,
+						scat.ior_stack ? scat.ior_stack : ior_stack );
+					{
+						Scalar indirectNM = cthis * scat.krayNM;
+						if( rc.pStabilityConfig && rs.depth > 1 ) {
+							indirectNM = ClampContributionNM( indirectNM, rc.pStabilityConfig->indirectClamp );
+						}
+						c += indirectNM;
+					}
+				}
+			}
+		}
+		else if( scattered.Count() > 1 )
+		{
+			for( unsigned int i = 0; i < scattered.Count(); i++ )
+			{
+				ScatteredRay& scat = scattered[i];
+				if( scat.krayNM > 0 )
+				{
+					rs2.importance = rs.importance * scat.krayNM;
+					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+					rs2.type = PathTracingRayType( scat );
 
 					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
 						continue;

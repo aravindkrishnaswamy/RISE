@@ -96,7 +96,7 @@ namespace RISE
 		inline ScatteredRay& operator[] ( const unsigned int i ) const { return rays[i]; };
 
 		//! From the rays stored, randomly returns one given a value
-		ScatteredRay* RandomlySelect( 
+		ScatteredRay* RandomlySelect(
 			const double random,										///< [in] Random number to use in ray selection
 			const bool bNM												///< [in] Should the spectral values be used when selecting?
 			) const;

@@ -29,9 +29,9 @@ TranslucentSPF::TranslucentSPF(
 	const IPainter& scat 
 	) : 
   pRefFront( rF ),
-  pTrans( T ), 
-  pExtinction( ext ), 
-  N( N_ ), 
+  pTrans( T ),
+  pExtinction( ext ),
+  N( N_ ),
   pScat( scat )
 {
 	pRefFront.addref();
@@ -66,9 +66,16 @@ void TranslucentSPF::Scatter(
 	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
 
-	if( Vector3Ops::Dot(n,r) < 0.0 )
+	// Use the IOR stack as the authoritative source for inside/outside
+	// determination when available, matching DielectricSPF.  The normal-
+	// based dot-product test is unreliable for nested translucent objects
+	// because a back-scattered ray hitting an enclosing surface from
+	// inside the cavity is misclassified as "exiting."
+	const bool bEntering = ior_stack ? !ior_stack->containsCurrent() : (Vector3Ops::Dot(n,r) < 0.0);
+
+	if( bEntering )
 	{
-		// Going in 
+		// Going in
 		// Front face
 		front.kray = pRefFront.GetColor(ri);
 		front.type = ScatteredRay::eRayDiffuse;
@@ -101,6 +108,11 @@ void TranslucentSPF::Scatter(
 				const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 				trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
 				trans.isDelta = false;
+				if( ior_stack ) {
+					trans.ior_stack = new IORStack( *ior_stack );
+					trans.ior_stack->push( 1.0 );
+					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
+				}
 				scattered.AddScatteredRay( trans );
 			} else {
 				// Add a new ray for each color component
@@ -119,6 +131,11 @@ void TranslucentSPF::Scatter(
 					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 					trans.isDelta = false;
+					if( ior_stack ) {
+						trans.ior_stack = new IORStack( *ior_stack );
+						trans.ior_stack->push( 1.0 );
+						GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
+					}
 					scattered.AddScatteredRay( trans );
 				}
 			}
@@ -159,6 +176,7 @@ void TranslucentSPF::Scatter(
 						trans.isDelta = false;
 					}
 					front.kray = front.kray * (RISEPel(1.0,1.0,1.0)-scat);
+					// Back-scattered ray stays inside this object, no stack change
 					scattered.AddScatteredRay( trans );
 				} else {
 					// Add a new ray for each color component
@@ -182,12 +200,14 @@ void TranslucentSPF::Scatter(
 						}
 						front.kray = 0;
 						front.kray[i] = f[i] * (1.0-scat[i]);
+						// Back-scattered ray stays inside this object, no stack change
 						scattered.AddScatteredRay( trans );
 					}
 				}
 			}
 		}
 
+		// Exit diffuse ray leaves the object — pop from IOR stack
 		rv = GeometricUtilities::Perturb( n,
 				acos( sqrt(sampler.Get1D() ) ),
 				TWO_PI * sampler.Get1D() );
@@ -195,6 +215,11 @@ void TranslucentSPF::Scatter(
 		front.ray.Set( ri.ptIntersection, rv );
 		front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 		front.isDelta = false;
+		if( ior_stack ) {
+			front.ior_stack = new IORStack( *ior_stack );
+			front.ior_stack->pop();
+			GlobalLog()->PrintNew( front.ior_stack, __FILE__, __LINE__, "ior stack" );
+		}
 		scattered.AddScatteredRay( front );
 	}
 }
@@ -216,12 +241,14 @@ void TranslucentSPF::ScatterNM(
 	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
 
-	if( Vector3Ops::Dot(n,r) < 0.0 )
+	const bool bEnteringNM = ior_stack ? !ior_stack->containsCurrent() : (Vector3Ops::Dot(n,r) < 0.0);
+
+	if( bEnteringNM )
 	{
 		// Extinction check
 		front.krayNM = pRefFront.GetColorNM(ri,nm);
 		front.type = ScatteredRay::eRayDiffuse;
-		
+
 		if( front.krayNM > 0 ) {
 			rv = GeometricUtilities::Perturb( n,
 				acos( sqrt(sampler.Get1D()) ),
@@ -249,6 +276,11 @@ void TranslucentSPF::ScatterNM(
 			const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 			trans.pdf = (Nval + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval );
 			trans.isDelta = false;
+			if( ior_stack ) {
+				trans.ior_stack = new IORStack( *ior_stack );
+				trans.ior_stack->push( 1.0 );
+				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
+			}
 			scattered.AddScatteredRay( trans );
 		}
 	}
@@ -257,7 +289,7 @@ void TranslucentSPF::ScatterNM(
 		// Coming out the other side
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		front.krayNM = pTrans.GetColorNM(ri,nm) * exp(-(pExtinction.GetColorNM(ri,nm)*distance));
-		
+
 		front.type = ScatteredRay::eRayDiffuse;
 
 		// Don't bother checking scattering if the ray is totally extinguished
@@ -282,12 +314,14 @@ void TranslucentSPF::ScatterNM(
 					trans.pdf = (Nval_scat + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval_scat );
 					trans.isDelta = false;
 				}
+				// Back-scattered ray stays inside this object, no stack change
 				scattered.AddScatteredRay( trans );
 
 				front.krayNM *= (1.0-scat);
 			}
 		}
 
+		// Exit ray leaves the object — pop from IOR stack
 		{
 			const Scalar Nval_front = N.GetColorNM(ri,nm);
 			rv = GeometricUtilities::Perturb( n,
@@ -301,6 +335,11 @@ void TranslucentSPF::ScatterNM(
 			front.isDelta = false;
 		}
 
+		if( ior_stack ) {
+			front.ior_stack = new IORStack( *ior_stack );
+			front.ior_stack->pop();
+			GlobalLog()->PrintNew( front.ior_stack, __FILE__, __LINE__, "ior stack" );
+		}
 		scattered.AddScatteredRay( front );
 	}
 }

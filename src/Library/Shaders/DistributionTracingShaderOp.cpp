@@ -161,20 +161,34 @@ void DistributionTracingShaderOp::PerformOperation(
 					}
 					c = c * (1.0/numshot);
 				} else {
-					// No branching, process all the rays
-					ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), false );
-
-					if( pScatRay && ShouldTraceRay( pScatRay->type ) ) {
-						pScatRay->ray.Advance( 1e-8 );
-						rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray);
-
-						RISEPel	cThisIndirectSample(0,0,0);
-						if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack ) ) {
-							rsum += 1.0/t;
-							hits++;
+					// No branching
+					if( scattered.Count() > 1 ) {
+						// Multiple rays: trace all to avoid high-variance correction
+						for( unsigned int i=0; i<scattered.Count(); i++ ) {
+							ScatteredRay& scat = scattered[i];
+							if( ShouldTraceRay( scat.type ) ) {
+								scat.ray.Advance( 1e-8 );
+								rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
+								RISEPel	cThisIndirectSample(0,0,0);
+								if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack ) ) {
+									rsum += 1.0/t;
+									hits++;
+								}
+								accruedIndirect = accruedIndirect + cThisIndirectSample * scat.kray;
+							}
 						}
-
-						accruedIndirect = accruedIndirect + cThisIndirectSample * pScatRay->kray;
+					} else {
+						ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), false );
+						if( pScatRay && ShouldTraceRay( pScatRay->type ) ) {
+							pScatRay->ray.Advance( 1e-8 );
+							rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray);
+							RISEPel	cThisIndirectSample(0,0,0);
+							if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack ) ) {
+								rsum += 1.0/t;
+								hits++;
+							}
+							accruedIndirect = accruedIndirect + cThisIndirectSample * pScatRay->kray;
+						}
 					}
 				}
 			}
@@ -255,16 +269,27 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 				}
 				c /= Scalar(numshot);
 			} else {
-				// No branching, randomly select a ray
-				ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), true );
-				if( pScatRay && ShouldTraceRay(pScatRay->type) ) {
-					pScatRay->ray.Advance( 1e-8 );
-					rs2.importance = rs.importance * pScatRay->krayNM;
-
-					Scalar	cThisIndirectSample = 0;
-					caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack );
-
-					c = c + cThisIndirectSample * pScatRay->krayNM;
+				// No branching
+				if( scattered.Count() > 1 ) {
+					for( unsigned int i=0; i<scattered.Count(); i++ ) {
+						ScatteredRay& scat = scattered[i];
+						if( ShouldTraceRay( scat.type ) ) {
+							scat.ray.Advance( 1e-8 );
+							rs2.importance = rs.importance * scat.krayNM;
+							Scalar	cThisIndirectSample = 0;
+							caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+							c = c + cThisIndirectSample * scat.krayNM;
+						}
+					}
+				} else {
+					ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), true );
+					if( pScatRay && ShouldTraceRay(pScatRay->type) ) {
+						pScatRay->ray.Advance( 1e-8 );
+						rs2.importance = rs.importance * pScatRay->krayNM;
+						Scalar	cThisIndirectSample = 0;
+						caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack );
+						c = c + cThisIndirectSample * pScatRay->krayNM;
+					}
 				}
 			}
 		}

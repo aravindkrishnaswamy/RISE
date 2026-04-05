@@ -285,7 +285,10 @@ namespace RISE
 	{
 		namespace ChunkParsers
 		{
-
+			// Tracks uniform color painter values so that material parsers
+			// can validate energy conservation at scene-definition time.
+			struct PainterColor { double c[3]; };
+			static std::map<std::string, PainterColor> s_painterColors;
 
 			//////////////////////////////////////////
 			// Painters
@@ -322,6 +325,9 @@ namespace RISE
 							return false;
 						}
 					}
+
+					PainterColor pc = { {color[0], color[1], color[2]} };
+					s_painterColors[name.c_str()] = pc;
 
 					return pJob.AddUniformColorPainter( name.c_str(), color, color_space.c_str() );
 				}
@@ -1743,6 +1749,58 @@ namespace RISE
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
+						}
+					}
+
+					// Energy conservation: ref + tau must not exceed 1.0 per channel.
+					// If violated, create new auto-scaled painters and use those instead.
+					std::map<std::string, PainterColor>::const_iterator itRef = s_painterColors.find( ref.c_str() );
+					std::map<std::string, PainterColor>::const_iterator itTau = s_painterColors.find( tau.c_str() );
+
+					if( itRef != s_painterColors.end() && itTau != s_painterColors.end() )
+					{
+						const double* refColor = itRef->second.c;
+						const double* tauColor = itTau->second.c;
+
+						bool violated = false;
+						for( int ch = 0; ch < 3; ch++ ) {
+							if( refColor[ch] + tauColor[ch] > 1.0 ) {
+								violated = true;
+								break;
+							}
+						}
+
+						if( violated ) {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"TranslucentMaterial '%s': ref + tau exceeds 1.0 "
+								"(R: %.3f+%.3f=%.3f, G: %.3f+%.3f=%.3f, B: %.3f+%.3f=%.3f), "
+								"auto-scaling to conserve energy",
+								name.c_str(),
+								refColor[0], tauColor[0], refColor[0]+tauColor[0],
+								refColor[1], tauColor[1], refColor[1]+tauColor[1],
+								refColor[2], tauColor[2], refColor[2]+tauColor[2] );
+
+							double scaledRef[3], scaledTau[3];
+							for( int ch = 0; ch < 3; ch++ ) {
+								const double sum = refColor[ch] + tauColor[ch];
+								if( sum > 1.0 ) {
+									const double scale = 1.0 / sum;
+									scaledRef[ch] = refColor[ch] * scale;
+									scaledTau[ch] = tauColor[ch] * scale;
+								} else {
+									scaledRef[ch] = refColor[ch];
+									scaledTau[ch] = tauColor[ch];
+								}
+							}
+
+							char buf[256];
+							snprintf( buf, sizeof(buf), "%s_auto_ref", name.c_str() );
+							pJob.AddUniformColorPainter( buf, scaledRef, "sRGB" );
+							ref = buf;
+
+							snprintf( buf, sizeof(buf), "%s_auto_tau", name.c_str() );
+							pJob.AddUniformColorPainter( buf, scaledTau, "sRGB" );
+							tau = buf;
 						}
 					}
 
