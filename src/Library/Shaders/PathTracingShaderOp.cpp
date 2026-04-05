@@ -1107,40 +1107,98 @@ void PathTracingShaderOp::PerformOperation(
 							rc.pGuidingField->ApplyCosineProduct( guideDist, GuidingCosineNormal( ri.geometric ) );
 						}
 
-						const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
-
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+						if( rc.guidingSamplingType == eGuidingRIS )
 						{
-							// Sample from the guiding distribution.
-							Scalar guidePdf = 0;
-							const Point2 xi2d(
-								rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom(),
-								rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
-							const Vector3 guidedDir = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
+							// ------------------------------------------------
+							// RIS-based guiding: draw two candidates (one from
+							// the BSDF, one from the guiding distribution),
+							// evaluate a target function at each, and select
+							// one proportional to the RIS weight.  This
+							// produces lower variance than one-sample MIS.
+							// ------------------------------------------------
+							const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 
-							if( guidePdf > NEARZERO )
+							PathTransportUtilities::GuidingRISCandidate candidates[2];
+
+							// Candidate 0: BSDF sample (already drawn)
 							{
-								const RISEPel fGuided = PathVertexEval::EvalBSDFAtSurface(
-									pBRDF, guidedDir, ri.geometric );
-								const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
-								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurface(
-									pSPF, ri.geometric, guidedDir, ior_stack );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
+								PathTransportUtilities::GuidingRISCandidate& c = candidates[0];
+								c.direction = pS->ray.Dir();
+								c.bsdfEval = PathVertexEval::EvalBSDFAtSurface(
+									pBRDF, c.direction, ri.geometric );
+								c.bsdfPdf = pS->pdf;
+								c.guidePdf = rc.pGuidingField->Pdf( guideDist, c.direction );
+								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+								c.cosTheta = fabs(
+									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
+								const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+								c.risTarget = PathTransportUtilities::GuidingRISTarget(
+									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+									c.bsdfPdf, c.guidePdf );
+								c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+								c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+								if( !c.valid ) {
+									c.risWeight = 0;
+								}
+							}
 
-								if( combinedPdf > NEARZERO )
+							// Candidate 1: guide sample
+							{
+								PathTransportUtilities::GuidingRISCandidate& c = candidates[1];
+								Scalar guidePdf = 0;
+								const Point2 xi2d(
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom(),
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
+								c.direction = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
+								c.guidePdf = guidePdf;
+
+								if( guidePdf > NEARZERO )
 								{
-									const Scalar cosTheta = fabs(
-										Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
-									throughput = fGuided * (cosTheta / combinedPdf);
-									traceRay = Ray( pS->ray.origin, guidedDir );
-									effectiveBsdfPdf = combinedPdf;
-									traceIorStack = ior_stack;
+									c.bsdfEval = PathVertexEval::EvalBSDFAtSurface(
+										pBRDF, c.direction, ri.geometric );
+									c.bsdfPdf = PathVertexEval::EvalPdfAtSurface(
+										pSPF, ri.geometric, c.direction, ior_stack );
+									c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+									c.cosTheta = fabs(
+										Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
+									const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+									c.risTarget = PathTransportUtilities::GuidingRISTarget(
+										avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+									c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+										c.bsdfPdf, c.guidePdf );
+									c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+									c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+									if( !c.valid ) {
+										c.risWeight = 0;
+									}
 								}
 								else
 								{
-									throughput = RISEPel( 0, 0, 0 );
+									c.bsdfEval = RISEPel( 0, 0, 0 );
+									c.bsdfPdf = 0;
+									c.incomingRadPdf = 0;
+									c.cosTheta = 0;
+									c.risTarget = 0;
+									c.risPdf = 0;
+									c.risWeight = 0;
+									c.valid = false;
 								}
+							}
+
+							// Select one candidate proportional to RIS weights
+							Scalar risEffectivePdf = 0;
+							const Scalar xiRIS = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+							const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
+								candidates, 2, xiRIS, risEffectivePdf );
+
+							if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+							{
+								throughput = candidates[sel].bsdfEval *
+									(candidates[sel].cosTheta / risEffectivePdf);
+								traceRay = Ray( pS->ray.origin, candidates[sel].direction );
+								effectiveBsdfPdf = risEffectivePdf;
+								traceIorStack = ior_stack;
 							}
 							else
 							{
@@ -1149,16 +1207,62 @@ void PathTracingShaderOp::PerformOperation(
 						}
 						else
 						{
-							// Keep BSDF direction but adjust throughput for
-							// the combined PDF.
-							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDist, pS->ray.Dir() );
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
+							// ------------------------------------------------
+							// One-sample MIS (original path guiding strategy)
+							// ------------------------------------------------
+							const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 
-							if( combinedPdf > NEARZERO )
+							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 							{
-								throughput = pS->kray * (pS->pdf / combinedPdf);
-								effectiveBsdfPdf = combinedPdf;
+								// Sample from the guiding distribution.
+								Scalar guidePdf = 0;
+								const Point2 xi2d(
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom(),
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
+								const Vector3 guidedDir = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+								if( guidePdf > NEARZERO )
+								{
+									const RISEPel fGuided = PathVertexEval::EvalBSDFAtSurface(
+										pBRDF, guidedDir, ri.geometric );
+									const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+									const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurface(
+										pSPF, ri.geometric, guidedDir, ior_stack );
+									const Scalar combinedPdf =
+										PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
+
+									if( combinedPdf > NEARZERO )
+									{
+										const Scalar cosTheta = fabs(
+											Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
+										throughput = fGuided * (cosTheta / combinedPdf);
+										traceRay = Ray( pS->ray.origin, guidedDir );
+										effectiveBsdfPdf = combinedPdf;
+										traceIorStack = ior_stack;
+									}
+									else
+									{
+										throughput = RISEPel( 0, 0, 0 );
+									}
+								}
+								else
+								{
+									throughput = RISEPel( 0, 0, 0 );
+								}
+							}
+							else
+							{
+								// Keep BSDF direction but adjust throughput for
+								// the combined PDF.
+								const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDist, pS->ray.Dir() );
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
+
+								if( combinedPdf > NEARZERO )
+								{
+									throughput = pS->kray * (pS->pdf / combinedPdf);
+									effectiveBsdfPdf = combinedPdf;
+								}
 							}
 						}
 					}
@@ -1668,39 +1772,91 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							rc.pGuidingField->ApplyCosineProduct( guideDistNM, GuidingCosineNormal( ri.geometric ) );
 						}
 
-						const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
-
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+						if( rc.guidingSamplingType == eGuidingRIS )
 						{
-							Scalar guidePdf = 0;
-							const Point2 xi2d(
-								rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom(),
-								rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
-							const Vector3 guidedDir = rc.pGuidingField->Sample( guideDistNM, xi2d, guidePdf );
+							// RIS-based guiding (spectral)
+							const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 
-							if( guidePdf > NEARZERO )
+							PathTransportUtilities::GuidingRISCandidateNM candidates[2];
+
+							// Candidate 0: BSDF sample
 							{
-								const Scalar fGuided = PathVertexEval::EvalBSDFAtSurfaceNM(
-									pBRDF, guidedDir, ri.geometric, nm );
-								const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
-								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurfaceNM(
-									pSPF, ri.geometric, guidedDir, nm, ior_stack );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
+								PathTransportUtilities::GuidingRISCandidateNM& c = candidates[0];
+								c.direction = pS->ray.Dir();
+								c.bsdfEvalNM = PathVertexEval::EvalBSDFAtSurfaceNM(
+									pBRDF, c.direction, ri.geometric, nm );
+								c.bsdfPdf = pS->pdf;
+								c.guidePdf = rc.pGuidingField->Pdf( guideDistNM, c.direction );
+								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
+								c.cosTheta = fabs(
+									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
+								const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+								c.risTarget = PathTransportUtilities::GuidingRISTarget(
+									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+									c.bsdfPdf, c.guidePdf );
+								c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+								c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+								if( !c.valid ) {
+									c.risWeight = 0;
+								}
+							}
 
-								if( combinedPdf > NEARZERO )
+							// Candidate 1: guide sample
+							{
+								PathTransportUtilities::GuidingRISCandidateNM& c = candidates[1];
+								Scalar guidePdf = 0;
+								const Point2 xi2d(
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom(),
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
+								c.direction = rc.pGuidingField->Sample( guideDistNM, xi2d, guidePdf );
+								c.guidePdf = guidePdf;
+
+								if( guidePdf > NEARZERO )
 								{
-									const Scalar cosTheta = fabs(
-										Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
-									throughputNM = fGuided * cosTheta / combinedPdf;
-									traceRay = Ray( pS->ray.origin, guidedDir );
-									effectiveBsdfPdf = combinedPdf;
-									traceIorStack = ior_stack;
+									c.bsdfEvalNM = PathVertexEval::EvalBSDFAtSurfaceNM(
+										pBRDF, c.direction, ri.geometric, nm );
+									c.bsdfPdf = PathVertexEval::EvalPdfAtSurfaceNM(
+										pSPF, ri.geometric, c.direction, nm, ior_stack );
+									c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
+									c.cosTheta = fabs(
+										Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
+									const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+									c.risTarget = PathTransportUtilities::GuidingRISTarget(
+										avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+									c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+										c.bsdfPdf, c.guidePdf );
+									c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+									c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+									if( !c.valid ) {
+										c.risWeight = 0;
+									}
 								}
 								else
 								{
-									throughputNM = 0;
+									c.bsdfEvalNM = 0;
+									c.bsdfPdf = 0;
+									c.incomingRadPdf = 0;
+									c.cosTheta = 0;
+									c.risTarget = 0;
+									c.risPdf = 0;
+									c.risWeight = 0;
+									c.valid = false;
 								}
+							}
+
+							Scalar risEffectivePdf = 0;
+							const Scalar xiRIS = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+							const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidateNM(
+								candidates, 2, xiRIS, risEffectivePdf );
+
+							if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+							{
+								throughputNM = candidates[sel].bsdfEvalNM *
+									candidates[sel].cosTheta / risEffectivePdf;
+								traceRay = Ray( pS->ray.origin, candidates[sel].direction );
+								effectiveBsdfPdf = risEffectivePdf;
+								traceIorStack = ior_stack;
 							}
 							else
 							{
@@ -1709,14 +1865,57 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						}
 						else
 						{
-							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDistNM, pS->ray.Dir() );
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
+							// One-sample MIS (spectral)
+							const Scalar xiG = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
 
-							if( combinedPdf > NEARZERO )
+							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
 							{
-								throughputNM = pS->krayNM * (pS->pdf / combinedPdf);
-								effectiveBsdfPdf = combinedPdf;
+								Scalar guidePdf = 0;
+								const Point2 xi2d(
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom(),
+									rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom() );
+								const Vector3 guidedDir = rc.pGuidingField->Sample( guideDistNM, xi2d, guidePdf );
+
+								if( guidePdf > NEARZERO )
+								{
+									const Scalar fGuided = PathVertexEval::EvalBSDFAtSurfaceNM(
+										pBRDF, guidedDir, ri.geometric, nm );
+									const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+									const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurfaceNM(
+										pSPF, ri.geometric, guidedDir, nm, ior_stack );
+									const Scalar combinedPdf =
+										PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
+
+									if( combinedPdf > NEARZERO )
+									{
+										const Scalar cosTheta = fabs(
+											Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
+										throughputNM = fGuided * cosTheta / combinedPdf;
+										traceRay = Ray( pS->ray.origin, guidedDir );
+										effectiveBsdfPdf = combinedPdf;
+										traceIorStack = ior_stack;
+									}
+									else
+									{
+										throughputNM = 0;
+									}
+								}
+								else
+								{
+									throughputNM = 0;
+								}
+							}
+							else
+							{
+								const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDistNM, pS->ray.Dir() );
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
+
+								if( combinedPdf > NEARZERO )
+								{
+									throughputNM = pS->krayNM * (pS->pdf / combinedPdf);
+									effectiveBsdfPdf = combinedPdf;
+								}
 							}
 						}
 					}

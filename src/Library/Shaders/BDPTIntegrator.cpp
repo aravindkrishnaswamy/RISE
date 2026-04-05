@@ -521,6 +521,8 @@ BDPTIntegrator::BDPTIntegrator(
   pCompletePathGuide( 0 ),
   guidingAlpha( 0 ),
   maxGuidingDepth( 3 ),
+  guidingSamplingType( eGuidingOneSampleMIS ),
+  guidingRISCandidates( 2 ),
   completePathStrategySelectionEnabled( false ),
   completePathStrategySampleCount( 0 ),
   strategySelectionPathCount( 0 ),
@@ -557,11 +559,13 @@ void BDPTIntegrator::SetLightSampler( const LightSampler* pSampler )
 }
 
 #ifdef RISE_ENABLE_OPENPGL
-void BDPTIntegrator::SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth )
+void BDPTIntegrator::SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth, GuidingSamplingType samplingType, unsigned int risCandidates )
 {
 	pGuidingField = pField;
 	guidingAlpha = alpha;
 	maxGuidingDepth = maxDepth;
+	guidingSamplingType = samplingType;
+	guidingRISCandidates = risCandidates;
 }
 
 void BDPTIntegrator::SetCompletePathGuide(
@@ -2074,11 +2078,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// --- End BSSRDF sampling ---
 
 #ifdef RISE_ENABLE_OPENPGL
-		// --- Path guiding: one-sample MIS (eye subpath) ---
+		// --- Path guiding (eye subpath) ---
 		bool usedGuidedDirection = false;
-		Ray guidedRay;
 		RISEPel guidedF( 0, 0, 0 );
-		Scalar guidedCombinedPdf = 0;
+		Vector3 guidedDir;
+		Scalar guidedEffectivePdf = 0;
 		Scalar bsdfCombinedPdf = 0;
 
 		if( pGuidingField && pGuidingField->IsTrained() &&
@@ -2093,40 +2097,125 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
 				}
 
-				const Scalar xi = sampler.Get1D();
 				const Scalar alpha = guidingAlpha;
 
-				if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+				if( guidingSamplingType == eGuidingRIS )
 				{
-					Scalar guidePdf = 0;
-					const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-					const Vector3 guidedDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+					// RIS-based guiding (BDPT eye subpath)
+					PathTransportUtilities::GuidingRISCandidate candidates[2];
 
-					if( guidePdf > NEARZERO )
+					// Candidate 0: BSDF sample
 					{
-						guidedF = EvalBSDFAtVertex(
-							vertices.back(), guidedDir, -currentRay.Dir() );
-						const Scalar bsdfPdf = EvalPdfAtVertex(
-							vertices.back(), guidedDir, -currentRay.Dir() );
-
-						guidedCombinedPdf =
-							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
-
-						if( guidedCombinedPdf > NEARZERO &&
-							ColorMath::MaxValue( guidedF ) > NEARZERO )
-						{
-							usedGuidedDirection = true;
-							guidedRay = Ray( pScat->ray.origin, guidedDir );
+						PathTransportUtilities::GuidingRISCandidate& c = candidates[0];
+						c.direction = pScat->ray.Dir();
+						c.bsdfEval = EvalBSDFAtVertex(
+							vertices.back(), c.direction, -currentRay.Dir() );
+						c.bsdfPdf = pScat->pdf;
+						c.guidePdf = pGuidingField->Pdf( guideDist, c.direction );
+						c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+						const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+						c.risTarget = PathTransportUtilities::GuidingRISTarget(
+							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+							c.bsdfPdf, c.guidePdf );
+						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+						if( !c.valid ) {
+							c.risWeight = 0;
 						}
 					}
-				}
 
-				if( !usedGuidedDirection )
+					// Candidate 1: guide sample
+					{
+						PathTransportUtilities::GuidingRISCandidate& c = candidates[1];
+						Scalar gPdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						c.direction = pGuidingField->Sample( guideDist, xi2d, gPdf );
+						c.guidePdf = gPdf;
+
+						if( gPdf > NEARZERO )
+						{
+							c.bsdfEval = EvalBSDFAtVertex(
+								vertices.back(), c.direction, -currentRay.Dir() );
+							c.bsdfPdf = EvalPdfAtVertex(
+								vertices.back(), c.direction, -currentRay.Dir() );
+							c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+							const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+							c.risTarget = PathTransportUtilities::GuidingRISTarget(
+								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+								c.bsdfPdf, c.guidePdf );
+							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+							if( !c.valid ) {
+								c.risWeight = 0;
+							}
+						}
+						else
+						{
+							c.bsdfEval = RISEPel( 0, 0, 0 );
+							c.bsdfPdf = 0;
+							c.incomingRadPdf = 0;
+							c.cosTheta = 0;
+							c.risTarget = 0;
+							c.risPdf = 0;
+							c.risWeight = 0;
+							c.valid = false;
+						}
+					}
+
+					Scalar risEffectivePdf = 0;
+					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
+						candidates, 2, sampler.Get1D(), risEffectivePdf );
+
+					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+					{
+						usedGuidedDirection = true;
+						guidedDir = candidates[sel].direction;
+						guidedF = candidates[sel].bsdfEval;
+						guidedEffectivePdf = risEffectivePdf;
+					}
+				}
+				else
 				{
-					const Scalar guidePdfForBsdfDir =
-						pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-					bsdfCombinedPdf =
-						PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+					// One-sample MIS (BDPT eye subpath)
+					const Scalar xi = sampler.Get1D();
+
+					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+					{
+						Scalar guidePdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						const Vector3 gDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+						if( guidePdf > NEARZERO )
+						{
+							guidedF = EvalBSDFAtVertex(
+								vertices.back(), gDir, -currentRay.Dir() );
+							const Scalar bsdfPdf = EvalPdfAtVertex(
+								vertices.back(), gDir, -currentRay.Dir() );
+
+							const Scalar combinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
+
+							if( combinedPdf > NEARZERO &&
+								ColorMath::MaxValue( guidedF ) > NEARZERO )
+							{
+								usedGuidedDirection = true;
+								guidedDir = gDir;
+								guidedEffectivePdf = combinedPdf;
+							}
+						}
+					}
+
+					if( !usedGuidedDirection )
+					{
+						const Scalar guidePdfForBsdfDir =
+							pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
+						bsdfCombinedPdf =
+							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+					}
 				}
 			}
 		}
@@ -2139,8 +2228,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 #ifdef RISE_ENABLE_OPENPGL
 		if( usedGuidedDirection ) {
-			scatDir = guidedRay.Dir();
-			effectivePdf = guidedCombinedPdf;
+			scatDir = guidedDir;
+			effectivePdf = guidedEffectivePdf;
 		} else if( bsdfCombinedPdf > NEARZERO ) {
 			effectivePdf = bsdfCombinedPdf;
 		}
@@ -2251,7 +2340,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Advance to next ray
 #ifdef RISE_ENABLE_OPENPGL
 		if( usedGuidedDirection ) {
-			currentRay = guidedRay;
+			currentRay = Ray( pScat->ray.origin, guidedDir );
 		} else {
 			currentRay = pScat->ray;
 		}
@@ -4528,11 +4617,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		// --- End BSSRDF sampling ---
 
 #ifdef RISE_ENABLE_OPENPGL
-		// --- Path guiding: one-sample MIS (NM eye subpath) ---
+		// --- Path guiding (NM eye subpath) ---
 		bool usedGuidedDirection = false;
-		Ray guidedRay;
+		Vector3 guidedDir;
 		Scalar guidedFNM = 0;
-		Scalar guidedCombinedPdf = 0;
+		Scalar guidedEffectivePdf = 0;
 		Scalar bsdfCombinedPdf = 0;
 
 		if( pGuidingField && pGuidingField->IsTrained() &&
@@ -4547,50 +4636,137 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
 				}
 
-				const Scalar xi = sampler.Get1D();
 				const Scalar alpha = guidingAlpha;
 
-				if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+				if( guidingSamplingType == eGuidingRIS )
 				{
-					Scalar guidePdf = 0;
-					const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-					const Vector3 guidedDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+					// RIS-based guiding (BDPT NM eye subpath)
+					PathTransportUtilities::GuidingRISCandidateNM candidates[2];
 
-					if( guidePdf > NEARZERO )
+					// Candidate 0: BSDF sample
 					{
-						guidedFNM = EvalBSDFAtVertexNM(
-							vertices.back(), guidedDir, -currentRay.Dir(), nm );
-						const Scalar bsdfPdf = EvalPdfAtVertex(
-							vertices.back(), guidedDir, -currentRay.Dir() );
-
-						guidedCombinedPdf =
-							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
-
-						if( guidedCombinedPdf > NEARZERO && guidedFNM > NEARZERO )
-						{
-							usedGuidedDirection = true;
-							guidedRay = Ray( pScat->ray.origin, guidedDir );
+						PathTransportUtilities::GuidingRISCandidateNM& c = candidates[0];
+						c.direction = pScat->ray.Dir();
+						c.bsdfEvalNM = EvalBSDFAtVertexNM(
+							vertices.back(), c.direction, -currentRay.Dir(), nm );
+						c.bsdfPdf = pScat->pdf;
+						c.guidePdf = pGuidingField->Pdf( guideDist, c.direction );
+						c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+						const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+						c.risTarget = PathTransportUtilities::GuidingRISTarget(
+							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+							c.bsdfPdf, c.guidePdf );
+						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+						if( !c.valid ) {
+							c.risWeight = 0;
 						}
 					}
-				}
 
-				if( !usedGuidedDirection )
+					// Candidate 1: guide sample
+					{
+						PathTransportUtilities::GuidingRISCandidateNM& c = candidates[1];
+						Scalar gPdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						c.direction = pGuidingField->Sample( guideDist, xi2d, gPdf );
+						c.guidePdf = gPdf;
+
+						if( gPdf > NEARZERO )
+						{
+							c.bsdfEvalNM = EvalBSDFAtVertexNM(
+								vertices.back(), c.direction, -currentRay.Dir(), nm );
+							c.bsdfPdf = EvalPdfAtVertexNM(
+								vertices.back(), c.direction, -currentRay.Dir(), nm );
+							c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+							const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+							c.risTarget = PathTransportUtilities::GuidingRISTarget(
+								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+								c.bsdfPdf, c.guidePdf );
+							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+							if( !c.valid ) {
+								c.risWeight = 0;
+							}
+						}
+						else
+						{
+							c.bsdfEvalNM = 0;
+							c.bsdfPdf = 0;
+							c.incomingRadPdf = 0;
+							c.cosTheta = 0;
+							c.risTarget = 0;
+							c.risPdf = 0;
+							c.risWeight = 0;
+							c.valid = false;
+						}
+					}
+
+					Scalar risEffectivePdf = 0;
+					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidateNM(
+						candidates, 2, sampler.Get1D(), risEffectivePdf );
+
+					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+					{
+						usedGuidedDirection = true;
+						guidedDir = candidates[sel].direction;
+						guidedFNM = candidates[sel].bsdfEvalNM;
+						guidedEffectivePdf = risEffectivePdf;
+					}
+				}
+				else
 				{
-					const Scalar guidePdfForBsdfDir =
-						pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-					bsdfCombinedPdf =
-						PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+					// One-sample MIS (BDPT NM eye subpath)
+					const Scalar xi = sampler.Get1D();
+
+					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+					{
+						Scalar guidePdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						const Vector3 gDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+						if( guidePdf > NEARZERO )
+						{
+							guidedFNM = EvalBSDFAtVertexNM(
+								vertices.back(), gDir, -currentRay.Dir(), nm );
+							const Scalar bsdfPdf = EvalPdfAtVertexNM(
+								vertices.back(), gDir, -currentRay.Dir(), nm );
+
+							const Scalar combinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
+
+							if( combinedPdf > NEARZERO && guidedFNM > NEARZERO )
+							{
+								usedGuidedDirection = true;
+								guidedDir = gDir;
+								guidedEffectivePdf = combinedPdf;
+							}
+						}
+					}
+
+					if( !usedGuidedDirection )
+					{
+						const Scalar guidePdfForBsdfDir =
+							pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
+						bsdfCombinedPdf =
+							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+					}
 				}
 			}
 		}
 
-		const Scalar trainingPdf = selectProb * (
-			usedGuidedDirection ? guidedCombinedPdf :
-			(bsdfCombinedPdf > NEARZERO ? bsdfCombinedPdf : pScat->pdf) );
+		const Scalar trainingEffectivePdf =
+			usedGuidedDirection ? guidedEffectivePdf :
+			(bsdfCombinedPdf > NEARZERO ? bsdfCombinedPdf : pScat->pdf);
+		const Scalar trainingPdf = selectProb * trainingEffectivePdf;
 		if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() &&
 			GuidingSupportsSurfaceSampling( *pScat ) && trainingPdf > NEARZERO )
 		{
-			const Ray& trainingRay = usedGuidedDirection ? guidedRay : pScat->ray;
+			const Ray trainingRay = usedGuidedDirection ?
+				Ray( pScat->ray.origin, guidedDir ) : pScat->ray;
 			const IORStack* trainingIorStack = usedGuidedDirection ?
 				(useIORStack ? &iorStack : 0) :
 				(pScat->ior_stack ? pScat->ior_stack : (useIORStack ? &iorStack : 0));
@@ -4614,8 +4790,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 #ifdef RISE_ENABLE_OPENPGL
 		if( usedGuidedDirection ) {
-			scatDir = guidedRay.Dir();
-			effectivePdf = guidedCombinedPdf;
+			scatDir = guidedDir;
+			effectivePdf = guidedEffectivePdf;
 		} else if( bsdfCombinedPdf > NEARZERO ) {
 			effectivePdf = bsdfCombinedPdf;
 		}
@@ -4696,7 +4872,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 #ifdef RISE_ENABLE_OPENPGL
 		if( usedGuidedDirection ) {
-			currentRay = guidedRay;
+			currentRay = Ray( pScat->ray.origin, guidedDir );
 		} else {
 			currentRay = pScat->ray;
 		}

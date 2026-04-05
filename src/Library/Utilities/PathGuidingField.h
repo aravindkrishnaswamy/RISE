@@ -10,8 +10,15 @@
 //    The guiding field is trained over multiple low-spp passes,
 //    then queried during the final render to provide a learned
 //    sampling distribution at each non-delta surface vertex.
-//    The guided distribution is combined with the BSDF via
-//    one-sample MIS.
+//    The guided distribution is combined with the BSDF via either
+//    one-sample MIS (original, default) or Resampled Importance
+//    Sampling (RIS), selectable via GuidingSamplingType.
+//
+//    RIS draws two candidates (one from BSDF, one from the guiding
+//    distribution) and selects proportional to a target function
+//    that accounts for both the BSDF value and the learned incident
+//    radiance.  This produces lower variance than one-sample MIS at
+//    modest additional cost.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
@@ -28,6 +35,16 @@
 
 namespace RISE
 {
+	/// Selects the directional sampling strategy used when path
+	/// guiding is active.  The enum lives outside PathGuidingConfig
+	/// so it can be referenced by RuntimeContext without pulling in
+	/// the full config header.
+	enum GuidingSamplingType
+	{
+		eGuidingOneSampleMIS = 0,	///< One-sample MIS blend (original)
+		eGuidingRIS          = 1	///< Resampled Importance Sampling
+	};
+
 	/// Configuration for path guiding.  Always compiled in so the
 	/// parser/Job/API pipeline works regardless of the OpenPGL flag.
 	struct PathGuidingConfig
@@ -37,6 +54,8 @@ namespace RISE
 		unsigned int	trainingSPP;			///< Samples per pixel during each training pass
 		Scalar			alpha;					///< MIS blending weight: P(sample from guide)
 		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling
+		GuidingSamplingType	samplingType;		///< Directional sampling strategy
+		unsigned int	risCandidates;			///< Reserved for future N>2 RIS; currently only N=2 is implemented
 		bool			completePathGuiding;	///< Experimental BDPT complete-path recorder/guide
 		bool			completePathStrategySelection;	///< Experimental BDPT strategy selection
 		unsigned int	completePathStrategySamples;	///< Techniques to evaluate per path
@@ -47,6 +66,8 @@ namespace RISE
 		trainingSPP( 4 ),
 		alpha( 0.5 ),
 		maxGuidingDepth( 3 ),
+		samplingType( eGuidingOneSampleMIS ),
+		risCandidates( 2 ),
 		completePathGuiding( false ),
 		completePathStrategySelection( false ),
 		completePathStrategySamples( 2 )
@@ -187,6 +208,16 @@ namespace RISE
 
 			/// Evaluate the guiding PDF for a given direction.
 			Scalar Pdf(
+				GuidingDistributionHandle& handle,
+				const Vector3& direction
+				) const;
+
+			/// Evaluate the incoming radiance PDF for a given direction.
+			/// Unlike Pdf(), this returns the raw learned distribution
+			/// PDF before any cosine product is applied.  Used by the
+			/// RIS target function which needs the incident radiance
+			/// estimate separately from the sampling PDF.
+			Scalar IncomingRadiancePdf(
 				GuidingDistributionHandle& handle,
 				const Vector3& direction
 				) const;

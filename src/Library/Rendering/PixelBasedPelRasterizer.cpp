@@ -125,6 +125,8 @@ void PixelBasedPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 		rc.pGuidingField = pGuidingField;
 		rc.guidingAlpha = guidingConfig.alpha * guidingAlphaScale;
 		rc.maxGuidingDepth = guidingConfig.maxGuidingDepth;
+		rc.guidingSamplingType = guidingConfig.samplingType;
+		rc.guidingRISCandidates = guidingConfig.risCandidates;
 	}
 #endif
 }

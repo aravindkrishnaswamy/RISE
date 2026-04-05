@@ -108,6 +108,8 @@ namespace RISE
 			CompletePathGuide*	pCompletePathGuide;
 			Scalar				guidingAlpha;
 			unsigned int		maxGuidingDepth;
+			GuidingSamplingType	guidingSamplingType;
+			unsigned int		guidingRISCandidates;
 			bool				completePathStrategySelectionEnabled;
 			unsigned int		completePathStrategySampleCount;
 			mutable std::atomic<unsigned long long> strategySelectionPathCount;
@@ -150,7 +152,7 @@ namespace RISE
 			void SetManifoldSolver( ManifoldSolver* pSolver );
 
 #ifdef RISE_ENABLE_OPENPGL
-			void SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth );
+			void SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth, GuidingSamplingType samplingType, unsigned int risCandidates );
 			void SetCompletePathGuide(
 				CompletePathGuide* pGuide,
 				bool enableStrategySelection = false,

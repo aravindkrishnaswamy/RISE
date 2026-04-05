@@ -5144,6 +5144,14 @@ namespace RISE
 							guidingConfig.alpha = pvalue.toDouble();
 						} else if( pname == "pathguiding_max_depth" ) {
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
+						} else if( pname == "pathguiding_sampling_type" ) {
+							if( pvalue == "ris" || pvalue == "RIS" ) {
+								guidingConfig.samplingType = eGuidingRIS;
+							} else {
+								guidingConfig.samplingType = eGuidingOneSampleMIS;
+							}
+						} else if( pname == "pathguiding_ris_candidates" ) {
+							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
 						} else if( pname == "pathguiding_complete_paths" ) {
 							guidingConfig.completePathGuiding = pvalue.toBoolean();
 						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
@@ -5753,6 +5761,14 @@ namespace RISE
 							guidingConfig.alpha = pvalue.toDouble();
 						} else if( pname == "pathguiding_max_depth" ) {
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
+						} else if( pname == "pathguiding_sampling_type" ) {
+							if( pvalue == "ris" || pvalue == "RIS" ) {
+								guidingConfig.samplingType = eGuidingRIS;
+							} else {
+								guidingConfig.samplingType = eGuidingOneSampleMIS;
+							}
+						} else if( pname == "pathguiding_ris_candidates" ) {
+							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
 						} else if( pname == "pathguiding_complete_paths" ) {
 							guidingConfig.completePathGuiding = pvalue.toBoolean();
 						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
@@ -5924,6 +5940,14 @@ namespace RISE
 							guidingConfig.alpha = pvalue.toDouble();
 						} else if( pname == "pathguiding_max_depth" ) {
 							guidingConfig.maxGuidingDepth = pvalue.toUInt();
+						} else if( pname == "pathguiding_sampling_type" ) {
+							if( pvalue == "ris" || pvalue == "RIS" ) {
+								guidingConfig.samplingType = eGuidingRIS;
+							} else {
+								guidingConfig.samplingType = eGuidingOneSampleMIS;
+							}
+						} else if( pname == "pathguiding_ris_candidates" ) {
+							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
 						} else if( pname == "pathguiding_complete_paths" ) {
 							guidingConfig.completePathGuiding = pvalue.toBoolean();
 						} else if( pname == "direct_clamp" ) {

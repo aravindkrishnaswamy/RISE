@@ -345,7 +345,9 @@ void BDPTRasterizerBase::RasterizeScene(
 		pIntegrator->SetGuidingField(
 			pGuidingField,
 			guidingConfig.alpha * guidingAlphaScale,
-			guidingConfig.maxGuidingDepth );
+			guidingConfig.maxGuidingDepth,
+			guidingConfig.samplingType,
+			guidingConfig.risCandidates );
 		pIntegrator->SetCompletePathGuide( pCompletePathGuide, false, 0 );
 
 				const unsigned int bootstrapTrainingSPP = 1;
@@ -509,7 +511,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			pIntegrator->SetGuidingField(
 				pGuidingField,
 				guidingConfig.alpha * guidingAlphaScale,
-				guidingConfig.maxGuidingDepth );
+				guidingConfig.maxGuidingDepth,
+				guidingConfig.samplingType,
+				guidingConfig.risCandidates );
 
 				if( trainIter == 0 && positiveSampleDensity >= 0.85 &&
 					indirectEnergyFraction < 0.35 )
@@ -596,7 +600,9 @@ void BDPTRasterizerBase::RasterizeScene(
 		pIntegrator->SetGuidingField(
 			pGuidingField,
 			guidingConfig.alpha * guidingAlphaScale,
-			guidingConfig.maxGuidingDepth );
+			guidingConfig.maxGuidingDepth,
+			guidingConfig.samplingType,
+			guidingConfig.risCandidates );
 		bool enableCompletePathStrategySelection =
 			pCompletePathGuide &&
 			guidingConfig.completePathStrategySelection;
@@ -784,7 +790,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	pAOVBuffers = 0;
 #endif
 #ifdef RISE_ENABLE_OPENPGL
-	pIntegrator->SetGuidingField( 0, 0, 0 );
+	pIntegrator->SetGuidingField( 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );
 	safe_release( pGuidingField );
 	safe_release( pCompletePathGuide );

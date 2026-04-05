@@ -88,10 +88,13 @@ PathGuidingField::PathGuidingField(
 	sampleStorage = pglNewSampleStorage();
 
 	GlobalLog()->PrintEx( eLog_Event,
-		"PathGuidingField:: Initialized (bounds [%.1f,%.1f,%.1f]-[%.1f,%.1f,%.1f], %u training iterations, %u spp, alpha=%.2f, maxSamplesPerLeaf=%zu)",
+		"PathGuidingField:: Initialized (bounds [%.1f,%.1f,%.1f]-[%.1f,%.1f,%.1f], %u training iterations, %u spp, alpha=%.2f, sampling=%s, risCandidates=%u, maxSamplesPerLeaf=%zu)",
 		boundsMin.x, boundsMin.y, boundsMin.z,
 		boundsMax.x, boundsMax.y, boundsMax.z,
-		config.trainingIterations, config.trainingSPP, config.alpha, kGuidingMaxSamplesPerLeaf );
+		config.trainingIterations, config.trainingSPP, config.alpha,
+		config.samplingType == eGuidingRIS ? "RIS" : "OneSampleMIS",
+		config.risCandidates,
+		kGuidingMaxSamplesPerLeaf );
 }
 
 PathGuidingField::~PathGuidingField()
@@ -379,6 +382,25 @@ Scalar PathGuidingField::Pdf(
 		static_cast<float>( direction.z ) );
 
 	return static_cast<Scalar>( pglSurfaceSamplingDistributionPDF( handle.dist, dir ) );
+}
+
+Scalar PathGuidingField::IncomingRadiancePdf(
+	GuidingDistributionHandle& handle,
+	const Vector3& direction
+	) const
+{
+	if( !handle.dist ) {
+		return 0;
+	}
+
+	pgl_vec3f dir;
+	pglVec3f( dir,
+		static_cast<float>( direction.x ),
+		static_cast<float>( direction.y ),
+		static_cast<float>( direction.z ) );
+
+	return static_cast<Scalar>(
+		pglSurfaceSamplingDistributionIncomingRadiancePDF( handle.dist, dir ) );
 }
 
 

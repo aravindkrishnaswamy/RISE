@@ -283,6 +283,182 @@ namespace RISE
 		{
 			return xi < alpha;
 		}
+
+		//////////////////////////////////////////////////////////////////////
+		// RIS-Based Path Guiding Helpers
+		//
+		// Resampled Importance Sampling draws N candidates from a mixture
+		// of the BSDF and guiding distributions, evaluates a target
+		// function at each, and selects one proportional to its RIS
+		// weight.  This produces lower variance than one-sample MIS at
+		// modest additional cost.
+		//
+		// The target function follows the Cycles formulation:
+		//   target = avgBsdfEval * ((1-p) / (2*PI) + p * incomingRadPdf)
+		// where p is the guiding sampling probability and
+		// incomingRadPdf is the raw learned radiance PDF from OpenPGL
+		// (before cosine product).
+		//
+		// The proposal PDF for each candidate is:
+		//   proposalPdf = 0.5 * (bsdfPdf + guidePdf)
+		// reflecting equal probability of drawing from either source.
+		//
+		// After selection, the effective PDF for the chosen candidate is:
+		//   effectivePdf = risTarget * (N / sumWeights)
+		// which is the properly normalized RIS estimator.
+		//////////////////////////////////////////////////////////////////////
+
+		/// RGB RIS candidate.  One candidate is drawn from the BSDF,
+		/// one from the guiding distribution.  Both are evaluated under
+		/// the target function for RIS selection.
+		struct GuidingRISCandidate
+		{
+			Vector3		direction;
+			RISEPel		bsdfEval;
+			Scalar		bsdfPdf;
+			Scalar		guidePdf;
+			Scalar		incomingRadPdf;
+			Scalar		cosTheta;
+			Scalar		risTarget;
+			Scalar		risPdf;
+			Scalar		risWeight;
+			bool		valid;
+		};
+
+		/// Spectral (NM) RIS candidate.
+		struct GuidingRISCandidateNM
+		{
+			Vector3		direction;
+			Scalar		bsdfEvalNM;
+			Scalar		bsdfPdf;
+			Scalar		guidePdf;
+			Scalar		incomingRadPdf;
+			Scalar		cosTheta;
+			Scalar		risTarget;
+			Scalar		risPdf;
+			Scalar		risWeight;
+			bool		valid;
+		};
+
+		/// Compute the RIS target function value.
+		///
+		/// In Cycles the BSDF evaluation already includes the cosine
+		/// factor; in RISE the cosine is separate.  We include
+		/// cosTheta here so that the target function matches the
+		/// throughput numerator (bsdfEval * cosTheta), preventing
+		/// fireflies from the cos/target mismatch.
+		///
+		/// \param avgBsdfEval     Scalar measure of the BSDF evaluation (max channel)
+		/// \param cosTheta        Absolute cosine between scattered dir and surface normal
+		/// \param incomingRadPdf  Incoming radiance PDF from OpenPGL (pre-cosine-product)
+		/// \param blendP          Guiding sampling probability (typically 0.5)
+		/// \return Target function value
+		inline Scalar GuidingRISTarget(
+			Scalar avgBsdfEval,
+			Scalar cosTheta,
+			Scalar incomingRadPdf,
+			Scalar blendP
+			)
+		{
+			return avgBsdfEval * cosTheta *
+				((1.0 - blendP) * (0.5 * INV_PI) + blendP * incomingRadPdf);
+		}
+
+		/// Compute the RIS proposal PDF (equal-weight mixture of BSDF
+		/// and guide).  The result is positive whenever at least one
+		/// component is positive, so a BSDF candidate is valid even
+		/// when the guide has zero support for that direction.
+		///
+		/// \param bsdfPdf   BSDF sampling PDF
+		/// \param guidePdf  Guiding distribution sampling PDF (may be zero)
+		/// \return Proposal PDF
+		inline Scalar GuidingRISProposalPdf(
+			Scalar bsdfPdf,
+			Scalar guidePdf
+			)
+		{
+			return 0.5 * (bsdfPdf + guidePdf);
+		}
+
+		/// Select one candidate from an array proportional to RIS
+		/// weights.  Returns the selected index and outputs the
+		/// effective PDF for the chosen candidate.
+		///
+		/// When all candidates are invalid (sumWeights == 0), returns
+		/// the first candidate index with effectivePdf = 0, which
+		/// produces zero throughput at the call site (safe).
+		///
+		/// \param candidates   Array of N candidates
+		/// \param count        Number of candidates
+		/// \param xi           Uniform random sample in [0, 1)
+		/// \param effectivePdf Output: effective PDF for selected candidate
+		/// \return Index of the selected candidate
+		inline unsigned int GuidingRISSelectCandidate(
+			const GuidingRISCandidate* candidates,
+			unsigned int count,
+			Scalar xi,
+			Scalar& effectivePdf
+			)
+		{
+			Scalar sumWeights = 0;
+			for( unsigned int i = 0; i < count; i++ ) {
+				sumWeights += candidates[i].risWeight;
+			}
+
+			if( sumWeights <= NEARZERO ) {
+				effectivePdf = 0;
+				return 0;
+			}
+
+			const Scalar threshold = xi * sumWeights;
+			Scalar cumulative = 0;
+			unsigned int selected = 0;
+			for( unsigned int i = 0; i < count; i++ ) {
+				cumulative += candidates[i].risWeight;
+				if( cumulative >= threshold ) {
+					selected = i;
+					break;
+				}
+			}
+
+			effectivePdf = candidates[selected].risTarget *
+				(static_cast<Scalar>( count ) / sumWeights);
+			return selected;
+		}
+
+		/// Spectral (NM) variant of RIS candidate selection.
+		inline unsigned int GuidingRISSelectCandidateNM(
+			const GuidingRISCandidateNM* candidates,
+			unsigned int count,
+			Scalar xi,
+			Scalar& effectivePdf
+			)
+		{
+			Scalar sumWeights = 0;
+			for( unsigned int i = 0; i < count; i++ ) {
+				sumWeights += candidates[i].risWeight;
+			}
+
+			if( sumWeights <= NEARZERO ) {
+				effectivePdf = 0;
+				return 0;
+			}
+
+			const Scalar threshold = xi * sumWeights;
+			Scalar cumulative = 0;
+			unsigned int selected = 0;
+			for( unsigned int i = 0; i < count; i++ ) {
+				cumulative += candidates[i].risWeight;
+				if( cumulative >= threshold ) {
+					selected = i;
+					break;
+				}
+			}
+
+			effectivePdf = candidates[selected].risTarget *
+				(static_cast<Scalar>( count ) / sumWeights);
+			return selected;
+		}
 #endif
 	}
 }

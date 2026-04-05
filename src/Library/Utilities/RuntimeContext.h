@@ -26,6 +26,7 @@
 #include <map>
 
 #ifdef RISE_ENABLE_OPENPGL
+#include "PathGuidingField.h"
 namespace RISE { namespace Implementation { class PathGuidingField; } }
 #endif
 
@@ -65,6 +66,8 @@ namespace RISE
 		mutable Implementation::PathGuidingField*				pGuidingField;
 		Scalar													guidingAlpha;
 		unsigned int											maxGuidingDepth;
+		GuidingSamplingType										guidingSamplingType;
+		unsigned int											guidingRISCandidates;
 #endif
 
 		typedef std::map<const IReference*,RasterizerStateCache*> StateCacheMapType;
@@ -84,6 +87,8 @@ namespace RISE
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )
 		  ,maxGuidingDepth( 0 )
+		  ,guidingSamplingType( eGuidingOneSampleMIS )
+		  ,guidingRISCandidates( 2 )
 #endif
 		{}
 
