@@ -20,6 +20,15 @@
 //    radiance.  This produces lower variance than one-sample MIS at
 //    modest additional cost.
 //
+//    The guiding alpha (blend probability) is adaptively scaled per
+//    training iteration using a variance-aware approach inspired by
+//    Rath et al. 2020.  The coefficient of variation (CoV) of
+//    indirect sample energy measures how directionally concentrated
+//    the illumination is; scenes with high CoV benefit most from
+//    guiding.  Training also tracks indirectSampleEnergySquaredSum
+//    for this purpose.  See PixelBasedPelRasterizer.cpp and
+//    BDPTRasterizerBase.cpp for the full adaptive alpha logic.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 28, 2026
 //  Tabs: 4
@@ -136,6 +145,7 @@ namespace RISE
 			mutable size_t			zeroValueVolumeSampleCount;
 			mutable Scalar			sampleEnergy;
 			mutable Scalar			directSampleEnergy;
+			mutable Scalar			indirectSampleEnergySquaredSum;	///< Sum of squared indirect energies for variance estimation
 
 			virtual ~PathGuidingField();
 
@@ -286,6 +296,7 @@ namespace RISE
 					sampleEnergy - directSampleEnergy :
 					0;
 			}
+			Scalar GetLastAddedIndirectSurfaceSampleEnergySquaredSum() const { return indirectSampleEnergySquaredSum; }
 
 			Scalar GetAlpha() const { return config.alpha; }
 		};

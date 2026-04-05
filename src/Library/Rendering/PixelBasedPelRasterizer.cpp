@@ -220,36 +220,84 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 				totalSampleEnergy > NEARZERO ?
 					indirectSampleEnergy / totalSampleEnergy :
 					0.0;
+
+			//
+			// ADAPTIVE ALPHA SCALING — Variance-Aware (Rath 2020)
+			//
+			// The guiding alpha (probability of sampling from the learned
+			// distribution) is scaled by two factors:
+			//
+			//   guidingAlphaScale = densityScale * energyScale
+			//
+			// 1. densityScale = positiveSampleDensity²
+			//    Smooth ramp that approaches zero when few camera samples
+			//    produce nonzero contributions.  This is the Cycles-style
+			//    approach: no hard threshold that kills guiding globally.
+			//    OpenPGL's InitDistribution() returns false for under-
+			//    trained spatial cells, providing per-vertex safety.
+			//
+			// 2. energyScale = covScale * min(1, indirectFraction + covScale)
+			//    where covScale = min(1, indirectCoV / kCoVThreshold).
+			//    Inspired by Rath et al. 2020 ("Variance-Aware Path
+			//    Guiding").  The coefficient of variation (CoV) of
+			//    indirect sample energy measures how directionally
+			//    concentrated the illumination is.  High CoV (>= 2.0)
+			//    means the energy comes from a narrow set of directions
+			//    where guiding is most valuable; low CoV means diffuse
+			//    illumination where BSDF sampling already works well.
+			//
+			// ALTERNATIVE CONSIDERED: Cycles-style approach ("A+E") uses
+			//   energyScale = sqrt(min(1, indirectEnergyFraction))
+			// instead of CoV.  This is simpler but does not distinguish
+			// between a scene with uniform indirect lighting (guiding
+			// adds little) and one with concentrated caustic-like
+			// indirect lighting (guiding very valuable).  Both methods
+			// produce identical results when indirectFraction = 1.0 and
+			// CoV >= 2.0.  To switch to A+E, replace the CoV block below
+			// with: energyScale = sqrt(min(1, indirectEnergyFraction)).
+			// See docs/PATH_TRANSPORT_ROADMAP.md Stage 8D for test data.
+			//
+			const Scalar indirectEnergySquaredSum =
+				pGuidingField->GetLastAddedIndirectSurfaceSampleEnergySquaredSum();
+
+			// Compute CoV of indirect energy.  We need at least 2 samples
+			// for a meaningful variance estimate.
+			Scalar indirectCoV = 0;
+			if( indirectSampleEnergy > NEARZERO && positiveSamples > 1 )
+			{
+				const Scalar n = static_cast<Scalar>( positiveSamples );
+				const Scalar indirectMean = indirectSampleEnergy / n;
+				const Scalar indirectVar =
+					indirectEnergySquaredSum / n - indirectMean * indirectMean;
+				if( indirectVar > 0 ) {
+					indirectCoV = std::sqrt( indirectVar ) / indirectMean;
+				}
+			}
+
+			const Scalar kCoVThreshold = 2.0;
+			const Scalar covScale = std::min( Scalar( 1.0 ),
+				indirectCoV / kCoVThreshold );
 			const Scalar energyScale =
 				totalSampleEnergy > NEARZERO ?
-					std::sqrt( std::min( Scalar( 1.0 ), indirectEnergyFraction ) ) :
+					covScale * std::min( Scalar( 1.0 ), indirectEnergyFraction + covScale ) :
 					0.0;
-
 			if( positiveSampleDensity < 1.0 )
 			{
 				const Scalar densityScale =
-					positiveSampleDensity < 0.5 ?
-						0.0 :
-						positiveSampleDensity * positiveSampleDensity;
+					positiveSampleDensity * positiveSampleDensity;
 				guidingAlphaScale = densityScale * energyScale;
 
 				GlobalLog()->PrintEx( eLog_Event,
-					"PathGuidingField:: PT alpha scaled to %.3f (positive sample density %.3f, indirect energy density %.6f, indirect fraction %.3f)",
-					guidingAlphaScale, positiveSampleDensity, indirectEnergyDensity, indirectEnergyFraction );
+					"PathGuidingField:: PT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, energyScale %.3f)",
+					guidingAlphaScale, positiveSampleDensity, indirectEnergyFraction, indirectCoV, covScale, energyScale );
 			}
 			else
 			{
 				guidingAlphaScale = energyScale;
-			}
 
-			if( positiveSampleDensity < 0.75 )
-			{
 				GlobalLog()->PrintEx( eLog_Event,
-					"PathGuidingField:: Stopping PT training after iteration %u (%zu positive samples, density %.3f)",
-					trainIter + 1,
-					positiveSamples,
-					positiveSampleDensity );
-				break;
+					"PathGuidingField:: PT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, energyScale %.3f)",
+					guidingAlphaScale, positiveSampleDensity, indirectEnergyFraction, indirectCoV, covScale, energyScale );
 			}
 
 			if( previousPositiveSampleDensity > NEARZERO ||

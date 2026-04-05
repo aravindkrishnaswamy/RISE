@@ -50,7 +50,8 @@ PathGuidingField::PathGuidingField(
   volumeSampleCount( 0 ),
   zeroValueVolumeSampleCount( 0 ),
   sampleEnergy( 0 ),
-  directSampleEnergy( 0 )
+  directSampleEnergy( 0 ),
+  indirectSampleEnergySquaredSum( 0 )
 {
 	// Create the OpenPGL device (CPU, 8-wide VMM)
 	device = pglNewDevice( PGL_DEVICE_TYPE_CPU_8, 0 );
@@ -121,6 +122,7 @@ void PathGuidingField::BeginTrainingIteration()
 	zeroValueVolumeSampleCount = 0;
 	sampleEnergy = 0;
 	directSampleEnergy = 0;
+	indirectSampleEnergySquaredSum = 0;
 	collectingTraining = true;
 	if( sampleStorage ) {
 		pglSampleStorageClear( sampleStorage );
@@ -243,6 +245,7 @@ void PathGuidingField::EndTrainingIteration()
 	zeroValueSampleCount = numZeroValueSamples;
 	sampleEnergy = 0;
 	directSampleEnergy = 0;
+	indirectSampleEnergySquaredSum = 0;
 	for( size_t i = 0; i < numSamples; i++ )
 	{
 		const PGLSampleData sample =
@@ -251,6 +254,8 @@ void PathGuidingField::EndTrainingIteration()
 		sampleEnergy += energy;
 		if( sample.flags & PGLSampleData::EDirectLight ) {
 			directSampleEnergy += energy;
+		} else {
+			indirectSampleEnergySquaredSum += energy * energy;
 		}
 	}
 

@@ -479,33 +479,76 @@ void BDPTRasterizerBase::RasterizeScene(
 					totalSampleEnergy > NEARZERO ?
 						indirectSampleEnergy / totalSampleEnergy :
 						0.0;
+
+				//
+				// ADAPTIVE ALPHA SCALING — Variance-Aware (Rath 2020)
+				//
+				// Same approach as the PT rasterizer (see
+				// PixelBasedPelRasterizer.cpp for the full rationale).
+				// BDPT additionally factors in deepEyeEnergyFraction
+				// because guiding only affects eye subpath bounces,
+				// so it is most valuable when deep eye connections
+				// (t >= 3) carry significant energy.
+				//
+				// To switch to the simpler Cycles-style approach,
+				// replace the CoV block with:
+				//   strategyScale = sqrt(min(1, deepEyeFrac * indirectFrac))
+				// See docs/PATH_TRANSPORT_ROADMAP.md Stage 8D.
+				//
+				const Scalar indirectEnergySquaredSum =
+					pGuidingField->GetLastAddedIndirectSurfaceSampleEnergySquaredSum();
+				Scalar indirectCoV = 0;
+				if( indirectSampleEnergy > NEARZERO && positiveSamples > 1 )
+				{
+					const Scalar n = static_cast<Scalar>( positiveSamples );
+					const Scalar indirectMean = indirectSampleEnergy / n;
+					const Scalar indirectVar =
+						indirectEnergySquaredSum / n - indirectMean * indirectMean;
+					if( indirectVar > 0 ) {
+						indirectCoV = std::sqrt( indirectVar ) / indirectMean;
+					}
+				}
+
+				const Scalar kCoVThreshold = 2.0;
+				const Scalar covScale = std::min( Scalar( 1.0 ),
+					indirectCoV / kCoVThreshold );
+				// For BDPT, include deep-eye energy fraction as well:
+				// guiding only helps eye subpath bounces, so it's
+				// most valuable when deep connections carry energy.
 				const Scalar strategyScale =
 					totalSampleEnergy > NEARZERO ?
-						std::sqrt( std::min( Scalar( 1.0 ),
-							deepEyeEnergyFraction * indirectEnergyFraction ) ) :
+						covScale * std::min( Scalar( 1.0 ),
+							deepEyeEnergyFraction * indirectEnergyFraction + covScale ) :
 						0.0;
-
 				if( positiveSampleDensity < 1.0 )
 				{
 					const Scalar densityScale =
-						positiveSampleDensity <= 0.35 ?
-							0.0 :
-							positiveSampleDensity * positiveSampleDensity;
+						positiveSampleDensity * positiveSampleDensity;
 					guidingAlphaScale = densityScale * strategyScale;
 
 					GlobalLog()->PrintEx( eLog_Event,
-						"PathGuidingField:: BDPT alpha scaled to %.3f (positive sample density %.3f, indirect energy density %.6f, indirect fraction %.3f, deep-eye energy density %.6f, deep fraction %.3f, first-surface energy %.6f)",
+						"PathGuidingField:: BDPT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, deep fraction %.3f, strategyScale %.3f)",
 						guidingAlphaScale,
 						positiveSampleDensity,
-						indirectEnergyDensity,
 						indirectEnergyFraction,
-						deepEyeEnergyDensity,
+						indirectCoV,
+						covScale,
 						deepEyeEnergyFraction,
-						guidingStats.firstSurfaceConnectionEnergy );
+						strategyScale );
 				}
 				else
 				{
 					guidingAlphaScale = strategyScale;
+
+					GlobalLog()->PrintEx( eLog_Event,
+						"PathGuidingField:: BDPT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, deep fraction %.3f, strategyScale %.3f)",
+						guidingAlphaScale,
+						positiveSampleDensity,
+						indirectEnergyFraction,
+						indirectCoV,
+						covScale,
+						deepEyeEnergyFraction,
+						strategyScale );
 				}
 
 			pIntegrator->SetGuidingField(
@@ -525,15 +568,10 @@ void BDPTRasterizerBase::RasterizeScene(
 					break;
 				}
 
-			if( positiveSampleDensity < 0.5 )
-			{
-				GlobalLog()->PrintEx( eLog_Event,
-					"PathGuidingField:: Stopping BDPT training after iteration %u (%zu positive samples, density %.3f)",
-					trainIter + 1,
-					positiveSamples,
-					positiveSampleDensity );
-				break;
-			}
+			// Cycles-style: do NOT abort training for low density.
+			// Let all configured iterations run; OpenPGL accumulates
+			// data across passes and InitDistribution() handles
+			// per-vertex safety for under-trained cells.
 
 				if( previousPositiveSampleDensity > NEARZERO ||
 					previousIndirectEnergyDensity > NEARZERO )

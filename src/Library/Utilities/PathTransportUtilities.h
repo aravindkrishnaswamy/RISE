@@ -27,6 +27,15 @@
 //    and translucent ray types.  Two variants: one for the PT's
 //    RAY_STATE propagation model, one for BDPT's standalone counters.
 //
+//  PATH GUIDING HELPERS (requires RISE_ENABLE_OPENPGL):
+//    One-sample MIS blending between BSDF and guiding distributions,
+//    plus RIS-based candidate selection.  The RIS helpers draw N=2
+//    candidates (one from BSDF, one from the guide), evaluate a
+//    target function at each, and select proportional to RIS weight.
+//    The adaptive alpha scaling that drives how much weight the
+//    guiding distribution receives lives in the rasterizers; see
+//    PixelBasedPelRasterizer.cpp and BDPTRasterizerBase.cpp.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 2, 2026
 //  Tabs: 4

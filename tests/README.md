@@ -182,6 +182,36 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/BSSRDFFurnace/furnace_sss_zero
 
 **Companion unit test**: `tests/BSSRDFSamplingTest.cpp` tests the same properties deterministically without rendering (profile normalization, sampling consistency, Fresnel conservation, Sw normalization, weight formula correctness, flat-slab energy balance).
 
+## Path Guiding RIS Regression (Roadmap Stage 8)
+
+The script `tests/test_ris_regression.sh` is an automated regression test for the RIS path guiding implementation.  It renders a Cornell box at 128×128 / 64 SPP with both RIS and one-sample MIS guiding, then compares mean luminance, firefly counts, and floor variance.
+
+```sh
+bash tests/test_ris_regression.sh
+```
+
+**Thresholds:**
+- Luminance difference < 5% (energy conservation).
+- RIS fireflies < 3× MIS fireflies + 10 (no firefly regression).
+- RIS floor variance ratio < 2.0 (no variance explosion).
+
+**Exit code:** 0 on pass, 1 on failure.
+
+**Requirements:** RISE binary (`bin/rise`), Python 3 with Pillow and numpy.  Optional: scipy for neighbor-aware firefly detection.
+
+The script generates a minimal Cornell box scene on the fly, so it does not depend on any checked-in scene files.  Temporary files are cleaned up on exit.
+
+### Related Scenes
+
+- `scenes/Tests/PathTracing/pt_guiding_stress_ris.RISEscene` — small-opening stress test with RIS guiding.
+- `scenes/Tests/PathTracing/pt_indirect_test_ris.RISEscene` — indirect-only Cornell box with RIS guiding.
+- `scenes/FeatureBased/BDPT/bdpt_jewel_vault_ris.RISEscene` — BDPT jewel vault with RIS guiding.
+- `scenes/FeatureBased/PathTracing/pt_jewel_vault_guided.RISEscene` — PT jewel vault with RIS guiding.
+
+### Adaptive Alpha
+
+The guiding alpha is adaptively scaled using a variance-aware approach inspired by Rath et al. 2020.  The coefficient of variation (CoV) of indirect sample energy determines how much the guiding distribution helps.  An alternative Cycles-style approach was also tested — see `docs/PATH_TRANSPORT_ROADMAP.md` Stage 8D for the comparison data and how to switch between approaches.
+
 ## Relationship To Sample Scenes
 
 - Use `tests/` for deterministic logic and small subsystem checks.
