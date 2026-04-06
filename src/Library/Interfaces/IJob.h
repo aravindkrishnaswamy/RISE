@@ -570,6 +570,18 @@ namespace RISE
 			const char* alphay											///< [in] Standard deviation (RMS) of surface slope in y
 			) = 0;
 
+		//! Adds GGX anisotropic microfacet material
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGGXMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* diffuse,										///< [in] Diffuse reflectance
+			const char* specular,										///< [in] Specular reflectance
+			const char* alphaX,											///< [in] Roughness in tangent u direction
+			const char* alphaY,											///< [in] Roughness in tangent v direction
+			const char* ior,											///< [in] Index of refraction
+			const char* ext												///< [in] Extinction coefficient
+			) = 0;
+
 		//! Adds Cook Torrance material
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddCookTorranceMaterial(

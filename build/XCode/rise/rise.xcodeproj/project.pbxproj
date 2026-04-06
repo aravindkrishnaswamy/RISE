@@ -720,6 +720,13 @@
 		F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */; };
 		F24C54592F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
 		F24C545A2F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
+		F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
+		F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
+		F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545B2F84597B009AF16D /* GGXBRDF.h */; };
+		F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545D2F84597B009AF16D /* GGXMaterial.h */; };
+		F24C54642F84597B009AF16D /* GGXSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545E2F84597B009AF16D /* GGXSPF.h */; };
+		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
+		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1482,6 +1489,11 @@
 		F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetUtils.h; sourceTree = "<group>"; };
 		F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HeterogeneousMedium.h; sourceTree = "<group>"; };
 		F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HeterogeneousMedium.cpp; sourceTree = "<group>"; };
+		F24C545B2F84597B009AF16D /* GGXBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXBRDF.h; sourceTree = "<group>"; };
+		F24C545C2F84597B009AF16D /* GGXBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXBRDF.cpp; sourceTree = "<group>"; };
+		F24C545D2F84597B009AF16D /* GGXMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXMaterial.h; sourceTree = "<group>"; };
+		F24C545E2F84597B009AF16D /* GGXSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXSPF.h; sourceTree = "<group>"; };
+		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2563,6 +2575,11 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
+				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
+				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
+				F24C545E2F84597B009AF16D /* GGXSPF.h */,
+				F24C545F2F84597B009AF16D /* GGXSPF.cpp */,
 				F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */,
 				F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */,
 				F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */,
@@ -3211,6 +3228,9 @@
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
+				F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */,
+				F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */,
+				F24C54642F84597B009AF16D /* GGXSPF.h in Headers */,
 				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
 				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
 				F27F0AAB069C42910069C9E5 /* TorusGeometry.h in Headers */,
@@ -3877,6 +3897,8 @@
 				F27F0BDA069C42910069C9E5 /* TranslucentPelPhotonTracer.cpp in Sources */,
 				F27F0BDF069C42910069C9E5 /* HDRReader.cpp in Sources */,
 				F27F0BE1069C42910069C9E5 /* HDRWriter.cpp in Sources */,
+				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
+				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				F27F0BE4069C42910069C9E5 /* PNGReader.cpp in Sources */,
 				F27F0BE6069C42910069C9E5 /* PNGWriter.cpp in Sources */,
 				F27F0BE8069C42910069C9E5 /* PPMWriter.cpp in Sources */,
@@ -4598,6 +4620,8 @@
 				F24B74242F52A632008304C4 /* MemoryTracker.h in Sources */,
 				F24B74252F52A632008304C4 /* StreamPrinter.cpp in Sources */,
 				F24B74262F52A632008304C4 /* StreamPrinter.h in Sources */,
+				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
+				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				F24B74272F52A632008304C4 /* Constants.h in Sources */,
 				F24B74282F52A632008304C4 /* Direction.h in Sources */,
 				F24B74292F52A632008304C4 /* Math3D.cpp in Sources */,

@@ -1889,6 +1889,74 @@ bool Job::AddWardAnisotropicEllipticalGaussianMaterial(
 
 //! Adds Cook Torrance material
 /// \return TRUE if successful, FALSE otherwise
+bool Job::AddGGXMaterial(
+	const char* name,
+	const char* diffuse,
+	const char* specular,
+	const char* alphaX,
+	const char* alphaY,
+	const char* ior,
+	const char* ext
+	)
+{
+	IPainter* pRd = pPntManager->GetItem(diffuse);
+	IPainter* pRs = pPntManager->GetItem(specular);
+
+	if( !pRd || !pRs ) {
+		return false;
+	}
+
+	IPainter* pAlphaX = pPntManager->GetItem( alphaX );
+	IPainter* pAlphaY = pPntManager->GetItem( alphaY );
+	IPainter* pIOR = pPntManager->GetItem( ior );
+	IPainter* pExt = pPntManager->GetItem( ext );
+
+	if( !pAlphaX )
+	{
+		double fa = atof(alphaX);
+		RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) );
+	} else {
+		pAlphaX->addref();
+	}
+
+	if( !pAlphaY )
+	{
+		double fa = atof(alphaY);
+		RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) );
+	} else {
+		pAlphaY->addref();
+	}
+
+	if( !pIOR )
+	{
+		double fa = atof(ior);
+		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fa,fa,fa) );
+	} else {
+		pIOR->addref();
+	}
+
+	if( !pExt )
+	{
+		double fa = atof(ext);
+		RISE_API_CreateUniformColorPainter( &pExt, RISEPel(fa,fa,fa) );
+	} else {
+		pExt->addref();
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt );
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+	safe_release( pAlphaX );
+	safe_release( pAlphaY );
+	safe_release( pIOR );
+	safe_release( pExt );
+
+	return true;
+}
+
 bool Job::AddCookTorranceMaterial(
 	const char* name,											///< [in] Name of the material
 	const char* diffuse,										///< [in] Diffuse reflectance

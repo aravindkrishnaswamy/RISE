@@ -64,6 +64,7 @@
 #include "../src/Library/Materials/PerfectReflectorSPF.h"
 #include "../src/Library/Materials/PerfectRefractorSPF.h"
 #include "../src/Library/Materials/DielectricSPF.h"
+#include "../src/Library/Materials/GGXSPF.h"
 
 // BRDF implementations
 #include "../src/Library/Materials/LambertianBRDF.h"
@@ -76,6 +77,7 @@
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongBRDF.h"
 #include "../src/Library/Materials/TranslucentBSDF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringBSDF.h"
+#include "../src/Library/Materials/GGXBRDF.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -536,6 +538,8 @@ int main()
     OrenNayarSPF* orenNayarSPF = new OrenNayarSPF( *white, *roughness );  orenNayarSPF->addref();
     IsotropicPhongSPF* phongSPF = new IsotropicPhongSPF( *gray, *spec, *highExp );  phongSPF->addref();
     CookTorranceSPF* cookTorranceSPF = new CookTorranceSPF( *gray, *spec, *low, *ior, *extinction );  cookTorranceSPF->addref();
+    GGXSPF* ggxIsoSPF = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIsoSPF->addref();
+    GGXSPF* ggxAnisoSPF = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAnisoSPF->addref();
     SchlickSPF* schlickSPF = new SchlickSPF( *gray, *spec, *roughness, *isotropy );  schlickSPF->addref();
     WardIsotropicGaussianSPF* wardIsoSPF = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmall );  wardIsoSPF->addref();
     WardAnisotropicEllipticalGaussianSPF* wardAnisoSPF = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAnisoSPF->addref();
@@ -562,6 +566,8 @@ int main()
     OrenNayarBRDF* orenNayarBRDF = new OrenNayarBRDF( *white, *roughness );  orenNayarBRDF->addref();
     IsotropicPhongBRDF* phongBRDF = new IsotropicPhongBRDF( *gray, *spec, *highExp );  phongBRDF->addref();
     CookTorranceBRDF* cookTorranceBRDF = new CookTorranceBRDF( *gray, *spec, *low, *ior, *extinction );  cookTorranceBRDF->addref();
+    GGXBRDF* ggxIsoBRDF = new GGXBRDF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIsoBRDF->addref();
+    GGXBRDF* ggxAnisoBRDF = new GGXBRDF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAnisoBRDF->addref();
     SchlickBRDF* schlickBRDF = new SchlickBRDF( *gray, *spec, *roughness, *isotropy );  schlickBRDF->addref();
     WardIsotropicGaussianBRDF* wardIsoBRDF = new WardIsotropicGaussianBRDF( *gray, *spec, *alphaSmall );  wardIsoBRDF->addref();
     WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAnisoBRDF->addref();
@@ -602,6 +608,8 @@ int main()
         { "OrenNayar",                         orenNayarSPF,    orenNayarBRDF,      true,  FURNACE_TOL },
         { "IsotropicPhong",                    phongSPF,        phongBRDF,          false, FURNACE_TOL },
         { "CookTorrance",                      cookTorranceSPF, cookTorranceBRDF,   false, FURNACE_TOL },
+        { "GGX_Isotropic",                     ggxIsoSPF,       ggxIsoBRDF,         false, FURNACE_TOL },
+        { "GGX_Anisotropic",                   ggxAnisoSPF,     ggxAnisoBRDF,       false, FURNACE_TOL },
 
         //--------------------------------------------------------------
         // Schlick BRDF (Schlick 1994 approximation)
@@ -681,6 +689,8 @@ int main()
         { "OrenNayar",                         orenNayarSPF,    false },
         { "IsotropicPhong",                    phongSPF,        false },
         { "CookTorrance",                      cookTorranceSPF, false },
+        { "GGX_Isotropic",                     ggxIsoSPF,       false },
+        { "GGX_Anisotropic",                   ggxAnisoSPF,     false },
         { "Schlick",                           schlickSPF,      false },
         { "WardIsotropicGaussian",             wardIsoSPF,      false },
         { "WardAnisotropicEllipticalGaussian", wardAnisoSPF,    false },

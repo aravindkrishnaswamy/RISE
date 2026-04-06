@@ -1,0 +1,385 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           ggx_roughness_sweep.RISEscene                                                          #
+#   Description:    Eight gold GGX spheres sweeping isotropic roughness from 0.01 to 1.0 in a Cornell      #
+#                   box. Validates monotonic highlight spread and energy conservation with                   #
+#                   Kulla-Conty multiscattering.                                                            #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 6, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+bdpt_pel_rasterizer
+{
+	max_eye_depth		10
+	max_light_depth		8
+	samples				64
+	lum_samples			1
+	ior_stack			true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/ggx_roughness_sweep_bdpt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				512
+	height				512
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold_spec
+	color				1.0 0.85 0.35
+}
+
+##################################################
+# GGX Materials - Gold: alpha 0.01 to 1.0
+##################################################
+
+ggx_material
+{
+	name				mat_001
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.01
+	alphay				0.01
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_005
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.05
+	alphay				0.05
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_01
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.1
+	alphay				0.1
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_02
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.2
+	alphay				0.2
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_04
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.4
+	alphay				0.4
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_06
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.6
+	alphay				0.6
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_08
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				0.8
+	alphay				0.8
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				mat_10
+	rd					pnt_black
+	rs					pnt_gold_spec
+	alphax				1.0
+	alphay				1.0
+	ior					2.5
+	extinction			3.0
+}
+
+##################################################
+# Wall materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				70.0
+	material			none
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					393.0 548.7999 177.0
+	ptb					393.0 548.7999 382.0
+	ptc					163.0 548.7999 382.0
+	ptd					163.0 548.7999 177.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Sphere geometry
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				52.0
+}
+
+##################################################
+# Top row: alpha = 0.01, 0.05, 0.1, 0.2
+##################################################
+
+standard_object
+{
+	name				sphere_001
+	geometry			spheregeom
+	position			100 380 350
+	material			mat_001
+}
+
+standard_object
+{
+	name				sphere_005
+	geometry			spheregeom
+	position			230 380 350
+	material			mat_005
+}
+
+standard_object
+{
+	name				sphere_01
+	geometry			spheregeom
+	position			360 380 350
+	material			mat_01
+}
+
+standard_object
+{
+	name				sphere_02
+	geometry			spheregeom
+	position			490 380 350
+	material			mat_02
+}
+
+##################################################
+# Bottom row: alpha = 0.4, 0.6, 0.8, 1.0
+##################################################
+
+standard_object
+{
+	name				sphere_04
+	geometry			spheregeom
+	position			100 160 220
+	material			mat_04
+}
+
+standard_object
+{
+	name				sphere_06
+	geometry			spheregeom
+	position			230 160 220
+	material			mat_06
+}
+
+standard_object
+{
+	name				sphere_08
+	geometry			spheregeom
+	position			360 160 220
+	material			mat_08
+}
+
+standard_object
+{
+	name				sphere_10
+	geometry			spheregeom
+	position			490 160 220
+	material			mat_10
+}

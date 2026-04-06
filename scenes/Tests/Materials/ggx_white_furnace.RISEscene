@@ -1,0 +1,295 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           ggx_white_furnace.RISEscene                                                            #
+#   Description:    White furnace test for GGX material. Spheres with near-unity Fresnel (high IOR,        #
+#                   high extinction) inside a luminaire box providing constant white radiance from all       #
+#                   directions. If energy conservation holds, each sphere should appear uniformly white.     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 6, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				256
+	lum_samples			1
+	ior_stack			true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/ggx_white_furnace
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 -600
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				256
+	fov					50.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_furnace
+	color				1.0 1.0 1.0
+}
+
+##################################################
+# Luminaire material for box walls
+# Lambertian luminaire emits L = exitance * scale / PI
+# We want L = 1, so exitance = 1, scale = PI
+##################################################
+
+lambertian_luminaire_material
+{
+	name				furnace_lum
+	exitance			pnt_furnace
+	scale				3.14159265
+	material			none
+}
+
+##################################################
+# GGX materials - near-unity Fresnel (IOR=100, k=100)
+##################################################
+
+ggx_material
+{
+	name				mat_rough01
+	rd					pnt_black
+	rs					pnt_white
+	alphax				0.1
+	alphay				0.1
+	ior					100.0
+	extinction			100.0
+}
+
+ggx_material
+{
+	name				mat_rough03
+	rd					pnt_black
+	rs					pnt_white
+	alphax				0.3
+	alphay				0.3
+	ior					100.0
+	extinction			100.0
+}
+
+ggx_material
+{
+	name				mat_rough06
+	rd					pnt_black
+	rs					pnt_white
+	alphax				0.6
+	alphay				0.6
+	ior					100.0
+	extinction			100.0
+}
+
+ggx_material
+{
+	name				mat_rough10
+	rd					pnt_black
+	rs					pnt_white
+	alphax				1.0
+	alphay				1.0
+	ior					100.0
+	extinction			100.0
+}
+
+##################################################
+# Luminaire box - normals face INWARD
+# Vertex winding follows Cornell box convention
+# S = 50000 ensures complete enclosure
+##################################################
+
+# Floor (y=-50000, normal = +y)
+clippedplane_geometry
+{
+	name				floor
+	pta					50000 -50000 -50000
+	ptb					-50000 -50000 -50000
+	ptc					-50000 -50000 50000
+	ptd					50000 -50000 50000
+}
+
+# Ceiling (y=+50000, normal = -y)
+clippedplane_geometry
+{
+	name				ceiling
+	pta					50000 50000 -50000
+	ptb					50000 50000 50000
+	ptc					-50000 50000 50000
+	ptd					-50000 50000 -50000
+}
+
+# Back wall (z=+50000, normal = -z)
+clippedplane_geometry
+{
+	name				backwall
+	pta					50000 -50000 50000
+	ptb					-50000 -50000 50000
+	ptc					-50000 50000 50000
+	ptd					50000 50000 50000
+}
+
+# Front wall (z=-50000, normal = +z)
+clippedplane_geometry
+{
+	name				frontwall
+	pta					-50000 -50000 -50000
+	ptb					50000 -50000 -50000
+	ptc					50000 50000 -50000
+	ptd					-50000 50000 -50000
+}
+
+# Left wall (x=-50000, normal = +x)
+clippedplane_geometry
+{
+	name				leftwall
+	pta					-50000 -50000 50000
+	ptb					-50000 -50000 -50000
+	ptc					-50000 50000 -50000
+	ptd					-50000 50000 50000
+}
+
+# Right wall (x=+50000, normal = -x)
+clippedplane_geometry
+{
+	name				rightwall
+	pta					50000 -50000 -50000
+	ptb					50000 -50000 50000
+	ptc					50000 50000 50000
+	ptd					50000 50000 -50000
+}
+
+standard_object
+{
+	name				obj_floor
+	geometry			floor
+	material			furnace_lum
+}
+
+standard_object
+{
+	name				obj_ceiling
+	geometry			ceiling
+	material			furnace_lum
+}
+
+standard_object
+{
+	name				obj_back
+	geometry			backwall
+	material			furnace_lum
+}
+
+standard_object
+{
+	name				obj_front
+	geometry			frontwall
+	material			furnace_lum
+}
+
+standard_object
+{
+	name				obj_left
+	geometry			leftwall
+	material			furnace_lum
+}
+
+standard_object
+{
+	name				obj_right
+	geometry			rightwall
+	material			furnace_lum
+}
+
+##################################################
+# Sphere geometry
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				60.0
+}
+
+##################################################
+# Four spheres: roughness 0.1, 0.3, 0.6, 1.0
+##################################################
+
+standard_object
+{
+	name				sphere_01
+	geometry			spheregeom
+	position			-180 0 0
+	material			mat_rough01
+}
+
+standard_object
+{
+	name				sphere_03
+	geometry			spheregeom
+	position			-60 0 0
+	material			mat_rough03
+}
+
+standard_object
+{
+	name				sphere_06
+	geometry			spheregeom
+	position			60 0 0
+	material			mat_rough06
+}
+
+standard_object
+{
+	name				sphere_10
+	geometry			spheregeom
+	position			180 0 0
+	material			mat_rough10
+}

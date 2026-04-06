@@ -2247,6 +2247,50 @@ namespace RISE
 				}
 			};
 
+			struct GGXMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String rd = "none";
+					String rs = "none";
+					String alphax = "0.15";
+					String alphay = "0.15";
+					String ior = "2.45";
+					String extinction = "3.45";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "rd" ) {
+							rd = pvalue;
+						} else if( pname == "rs" ) {
+							rs = pvalue;
+						} else if( pname == "alphax" ) {
+							alphax = pvalue;
+						} else if( pname == "alphay" ) {
+							alphay = pvalue;
+						} else if( pname == "ior" ) {
+							ior = pvalue;
+						} else if( pname == "extinction" ) {
+							extinction = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str() );
+				}
+			};
+
 			struct CookTorranceMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -7042,6 +7086,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["composite_material"] = new CompositeMaterialAsciiChunkParser();
 	chunks["ward_isotropic_material"] = new WardIsotropicGaussianMaterialAsciiChunkParser();
 	chunks["ward_anisotropic_material"] = new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser();
+	chunks["ggx_material"] = new GGXMaterialAsciiChunkParser();
 	chunks["cooktorrance_material"] = new CookTorranceMaterialAsciiChunkParser();
 	chunks["orennayar_material"] = new OrenNayarMaterialAsciiChunkParser();
 	chunks["schlick_material"] = new SchlickMaterialAsciiChunkParser();

@@ -650,6 +650,18 @@ namespace RISE
 								const IPainter& alphay			///< [in] Standard deviation (RMS) of surface slope in y
 								);
 
+	//! Creates a GGX anisotropic microfacet material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& diffuse,		///< [in] Diffuse reflectance
+								const IPainter& specular,		///< [in] Specular reflectance
+								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
+								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& ext				///< [in] Extinction coefficient
+								);
+
 	//! Creates a Cook Torrance material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCookTorranceMaterial(

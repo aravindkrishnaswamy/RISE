@@ -785,6 +785,7 @@ namespace RISE
 #include "Materials/WardIsotropicGaussianMaterial.h"
 #include "Materials/WardAnisotropicEllipticalGaussianMaterial.h"
 #include "Materials/CookTorranceMaterial.h"
+#include "Materials/GGXMaterial.h"
 #include "Materials/OrenNayarMaterial.h"
 #include "Materials/SchlickMaterial.h"
 #include "Materials/DataDrivenMaterial.h"
@@ -1207,6 +1208,27 @@ namespace RISE
 
 		(*ppi) = new WardAnisotropicEllipticalGaussianMaterial( diffuse, specular, alphax, alphay );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ward anisotropic elliptical gaussian material" );
+		return true;
+	}
+
+	//! Creates a GGX anisotropic microfacet material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& diffuse,		///< [in] Diffuse reflectance
+								const IPainter& specular,		///< [in] Specular reflectance
+								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
+								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& ext				///< [in] Extinction coefficient
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
 		return true;
 	}
 

@@ -1,0 +1,649 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           ggx_showcase.RISEscene                                                                 #
+#   Description:    Comprehensive showcase of the GGX microfacet material with height-correlated G2,       #
+#                   anisotropic roughness, and Kulla-Conty multiscattering compensation.                    #
+#                                                                                                           #
+#                   Rows A-B: 8 gold spheres, isotropic roughness gradient (0.01-1.0)                      #
+#                   Rows C-D: 8 aluminum spheres, anisotropic brushed metal (alphay 0.05-0.8)              #
+#                   Accents:  copper and chromium conductors flanking the grid                               #
+#                                                                                                           #
+#                   All spheres float mid-air in a 4x4+2 arrangement filling the box volume.               #
+#                   Cornell box variant with ceiling area light, colored walls for interreflection.          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 6, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				64
+	lum_samples			1
+	ior_stack			true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/ggx_showcase
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 310 -680
+	lookat				278 260 290
+	up					0 1 0
+	width				512
+	height				512
+	fov					42.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.97 0.90
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+# Gold conductor specular color (Au at visible wavelengths)
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				1.0 0.85 0.35
+}
+
+# Aluminum specular color (highly reflective, near-white)
+uniformcolor_painter
+{
+	name				pnt_aluminum
+	color				0.91 0.92 0.92
+}
+
+# Copper specular color
+uniformcolor_painter
+{
+	name				pnt_copper
+	color				0.98 0.72 0.52
+}
+
+# Chromium specular color
+uniformcolor_painter
+{
+	name				pnt_chromium
+	color				0.55 0.56 0.55
+}
+
+##################################################
+# Gold isotropic roughness sweep (rows A and B)
+# alpha: 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0
+# Gold conductor: IOR=2.5, k=3.0
+##################################################
+
+ggx_material
+{
+	name				gold_001
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.01
+	alphay				0.01
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_005
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.05
+	alphay				0.05
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_01
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.1
+	alphay				0.1
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_02
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.2
+	alphay				0.2
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_03
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.3
+	alphay				0.3
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_05
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.5
+	alphay				0.5
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_07
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				0.7
+	alphay				0.7
+	ior					2.5
+	extinction			3.0
+}
+
+ggx_material
+{
+	name				gold_10
+	rd					pnt_black
+	rs					pnt_gold
+	alphax				1.0
+	alphay				1.0
+	ior					2.5
+	extinction			3.0
+}
+
+##################################################
+# Aluminum anisotropic brushed metal (rows C and D)
+# alphax=0.05 (tight along tangent), alphay varies
+# Aluminum: IOR=1.37, k=7.62
+##################################################
+
+ggx_material
+{
+	name				brushed_005
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.05
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_01
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.1
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_015
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.15
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_02
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.2
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_03
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.3
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_04
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.4
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_06
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.6
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				brushed_08
+	rd					pnt_black
+	rs					pnt_aluminum
+	alphax				0.05
+	alphay				0.8
+	ior					1.37
+	extinction			7.62
+}
+
+##################################################
+# Side accents: copper and chromium
+##################################################
+
+# Copper: IOR=0.21, k=3.6, moderate roughness
+ggx_material
+{
+	name				copper_mid
+	rd					pnt_black
+	rs					pnt_copper
+	alphax				0.15
+	alphay				0.15
+	ior					0.21
+	extinction			3.6
+}
+
+# Chromium: IOR=3.18, k=3.32, low roughness
+ggx_material
+{
+	name				chromium_low
+	rd					pnt_black
+	rs					pnt_chromium
+	alphax				0.05
+	alphay				0.05
+	ior					3.18
+	extinction			3.32
+}
+
+##################################################
+# Wall materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				70.0
+	material			none
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					393.0 548.7999 177.0
+	ptb					393.0 548.7999 382.0
+	ptc					163.0 548.7999 382.0
+	ptd					163.0 548.7999 177.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+	position			0 0 -40
+}
+
+##################################################
+# Sphere geometry
+##################################################
+
+sphere_geometry
+{
+	name				showcase_sphere
+	radius				42.0
+}
+
+sphere_geometry
+{
+	name				accent_sphere
+	radius				50.0
+}
+
+##################################################
+# Layout: 4 columns x 4 rows, floating mid-air
+#
+# 4 columns at x = 100, 220, 340, 460
+# Row A (top):      y=430, z=170   gold 0.01-0.2
+# Row B:            y=330, z=250   gold 0.3-1.0
+# Row C:            y=230, z=330   aluminum brushed 0.05-0.2
+# Row D (bottom):   y=130, z=410   aluminum brushed 0.3-0.8
+#
+# Accents flanking at x=70 and x=486
+##################################################
+
+##################################################
+# Row A: Gold isotropic, low roughness (top row)
+##################################################
+
+standard_object
+{
+	name				fg_001
+	geometry			showcase_sphere
+	position			100 430 170
+	material			gold_001
+}
+
+standard_object
+{
+	name				fg_005
+	geometry			showcase_sphere
+	position			220 430 170
+	material			gold_005
+}
+
+standard_object
+{
+	name				fg_01
+	geometry			showcase_sphere
+	position			340 430 170
+	material			gold_01
+}
+
+standard_object
+{
+	name				fg_02
+	geometry			showcase_sphere
+	position			460 430 170
+	material			gold_02
+}
+
+##################################################
+# Row B: Gold isotropic, high roughness
+##################################################
+
+standard_object
+{
+	name				fg_03
+	geometry			showcase_sphere
+	position			100 330 250
+	material			gold_03
+}
+
+standard_object
+{
+	name				fg_05
+	geometry			showcase_sphere
+	position			220 330 250
+	material			gold_05
+}
+
+standard_object
+{
+	name				fg_07
+	geometry			showcase_sphere
+	position			340 330 250
+	material			gold_07
+}
+
+standard_object
+{
+	name				fg_10
+	geometry			showcase_sphere
+	position			460 330 250
+	material			gold_10
+}
+
+##################################################
+# Row C: Aluminum brushed, mild anisotropy
+##################################################
+
+standard_object
+{
+	name				bg_005
+	geometry			showcase_sphere
+	position			100 230 330
+	material			brushed_005
+}
+
+standard_object
+{
+	name				bg_01
+	geometry			showcase_sphere
+	position			220 230 330
+	material			brushed_01
+}
+
+standard_object
+{
+	name				bg_015
+	geometry			showcase_sphere
+	position			340 230 330
+	material			brushed_015
+}
+
+standard_object
+{
+	name				bg_02
+	geometry			showcase_sphere
+	position			460 230 330
+	material			brushed_02
+}
+
+##################################################
+# Row D: Aluminum brushed, strong anisotropy
+##################################################
+
+standard_object
+{
+	name				bg_03
+	geometry			showcase_sphere
+	position			100 130 410
+	material			brushed_03
+}
+
+standard_object
+{
+	name				bg_04
+	geometry			showcase_sphere
+	position			220 130 410
+	material			brushed_04
+}
+
+standard_object
+{
+	name				bg_06
+	geometry			showcase_sphere
+	position			340 130 410
+	material			brushed_06
+}
+
+standard_object
+{
+	name				bg_08
+	geometry			showcase_sphere
+	position			460 130 410
+	material			brushed_08
+}
+
+##################################################
+# Accent spheres: copper (left) and chromium (right)
+# Floating at mid-height between rows B and C
+##################################################
+
+standard_object
+{
+	name				copper_accent
+	geometry			accent_sphere
+	position			70 150 80
+	material			copper_mid
+}
+
+standard_object
+{
+	name				chromium_accent
+	geometry			accent_sphere
+	position			486 150 80
+	material			chromium_low
+}

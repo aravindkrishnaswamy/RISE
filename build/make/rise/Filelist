@@ -107,6 +107,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/CookTorranceSPF.cpp								\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
+	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
+	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
