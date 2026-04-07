@@ -109,7 +109,9 @@ namespace RISE
 		Vector3					guidingDirectionIn;
 		Vector3					guidingNormal;
 		RISEPel					guidingScatteringWeight;
+		RISEPel					guidingReverseScatteringWeight;	///< f*|cos_in|/revPdf for reversed training segments
 		Scalar					guidingPdfDirectionIn;
+		Scalar					guidingReversePdfDirectionIn;	///< Solid-angle PDF of sampling guidingDirectionOut
 		Scalar					guidingRussianRouletteSurvivalProbability;
 		Scalar					guidingEta;
 		Scalar					guidingRoughness;
@@ -140,7 +142,9 @@ namespace RISE
 		guidingDirectionIn( 0, 0, 0 ),
 		guidingNormal( 0, 0, 1 ),
 		guidingScatteringWeight( RISEPel( 0, 0, 0 ) ),
+		guidingReverseScatteringWeight( RISEPel( 0, 0, 0 ) ),
 		guidingPdfDirectionIn( 1.0 ),
+		guidingReversePdfDirectionIn( 0 ),
 		guidingRussianRouletteSurvivalProbability( 1.0 ),
 		guidingEta( 1.0 ),
 		guidingRoughness( 1.0 ),

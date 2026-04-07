@@ -205,6 +205,7 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 #endif
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 )
+  ,pLightGuidingField( 0 )
   ,pCompletePathGuide( 0 )
   ,guidingAlphaScale( 1.0 )
 #endif
@@ -234,6 +235,7 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 #endif
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
+	safe_release( pLightGuidingField );
 	safe_release( pCompletePathGuide );
 #endif
 }
@@ -314,6 +316,7 @@ void BDPTRasterizerBase::RasterizeScene(
 #ifdef RISE_ENABLE_OPENPGL
 	// Path guiding: training phase
 	safe_release( pGuidingField );
+	safe_release( pLightGuidingField );
 	safe_release( pCompletePathGuide );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );
 	guidingAlphaScale = 1.0;
@@ -325,6 +328,17 @@ void BDPTRasterizerBase::RasterizeScene(
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
 		pGuidingField->addref();
+
+		// Separate field for light subpath guiding (Option B).
+		// Avoids conflicting eye/light distributions in the same
+		// spatial cells (e.g. floor positions where eye training
+		// learns "look up toward ceiling light" but light training
+		// learns "scatter through glass sphere").
+		if( guidingConfig.maxLightGuidingDepth > 0 )
+		{
+			pLightGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
+			pLightGuidingField->addref();
+		}
 
 		if( guidingConfig.completePathGuiding )
 		{
@@ -344,8 +358,10 @@ void BDPTRasterizerBase::RasterizeScene(
 		// Set the guiding field on the integrator (training mode: collect samples, no guiding)
 		pIntegrator->SetGuidingField(
 			pGuidingField,
+			pLightGuidingField,
 			guidingConfig.alpha * guidingAlphaScale,
 			guidingConfig.maxGuidingDepth,
+			guidingConfig.maxLightGuidingDepth,
 			guidingConfig.samplingType,
 			guidingConfig.risCandidates );
 		pIntegrator->SetCompletePathGuide( pCompletePathGuide, false, 0 );
@@ -368,6 +384,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			{
 				pIntegrator->ResetGuidingTrainingStats();
 				pGuidingField->BeginTrainingIteration();
+				if( pLightGuidingField ) {
+					pLightGuidingField->BeginTrainingIteration();
+				}
 				if( pCompletePathGuide ) {
 					pCompletePathGuide->BeginIteration();
 				}
@@ -444,6 +463,9 @@ void BDPTRasterizerBase::RasterizeScene(
 			safe_release( pTrainSampling );
 
 			pGuidingField->EndTrainingIteration();
+			if( pLightGuidingField ) {
+				pLightGuidingField->EndTrainingIteration();
+			}
 			if( pCompletePathGuide ) {
 				pCompletePathGuide->EndIteration();
 			}
@@ -553,8 +575,10 @@ void BDPTRasterizerBase::RasterizeScene(
 
 			pIntegrator->SetGuidingField(
 				pGuidingField,
+				pLightGuidingField,
 				guidingConfig.alpha * guidingAlphaScale,
 				guidingConfig.maxGuidingDepth,
+				guidingConfig.maxLightGuidingDepth,
 				guidingConfig.samplingType,
 				guidingConfig.risCandidates );
 
@@ -637,8 +661,10 @@ void BDPTRasterizerBase::RasterizeScene(
 
 		pIntegrator->SetGuidingField(
 			pGuidingField,
+			pLightGuidingField,
 			guidingConfig.alpha * guidingAlphaScale,
 			guidingConfig.maxGuidingDepth,
+			guidingConfig.maxLightGuidingDepth,
 			guidingConfig.samplingType,
 			guidingConfig.risCandidates );
 		bool enableCompletePathStrategySelection =
@@ -828,9 +854,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	pAOVBuffers = 0;
 #endif
 #ifdef RISE_ENABLE_OPENPGL
-	pIntegrator->SetGuidingField( 0, 0, 0, eGuidingOneSampleMIS, 2 );
+	pIntegrator->SetGuidingField( 0, 0, 0, 0, 0, eGuidingOneSampleMIS, 2 );
 	pIntegrator->SetCompletePathGuide( 0, false, 0 );
 	safe_release( pGuidingField );
+	safe_release( pLightGuidingField );
 	safe_release( pCompletePathGuide );
 #endif
 }

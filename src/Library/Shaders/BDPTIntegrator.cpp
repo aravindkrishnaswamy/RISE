@@ -465,6 +465,197 @@ namespace
 			false );
 	}
 
+	/// Record light subpath vertices as guiding training samples.
+	///
+	/// For the shared guiding field (Option A), light subpath segments
+	/// are recorded in REVERSE order so that OpenPGL's incident-radiance
+	/// semantics align with the light transport direction.  At each
+	/// surface position the "incoming direction" becomes the direction
+	/// from which light scatters toward that point — which is the
+	/// outgoing direction in the light-forward walk (guidingDirectionOut).
+	///
+	/// Because the segment chain is reversed, pdfDirectionIn and
+	/// scatteringWeight must describe the reversed directionIn (toward
+	/// the light), not the forward scatter direction.  These are stored
+	/// as guidingReversePdfDirectionIn and guidingReverseScatteringWeight
+	/// on each vertex, computed during path construction using
+	/// EvalPdfAtVertex with swapped arguments and the reciprocal BSDF.
+	///
+	/// The terminal segment (vertex 1, closest to the light, recorded
+	/// last in the chain) carries Le (the emitted radiance) as
+	/// directContribution so OpenPGL has a non-zero radiance source to
+	/// backpropagate through the segment chain during training.  Le is
+	/// recovered from vertex 0 as throughput[0] * pdfFwd[0], keeping
+	/// it on the same scale as eye training contributions (~O(100)
+	/// rather than ~O(millions) from the raw throughput).
+	///
+	/// Segments are only emitted for vertices within maxLightGuidingDepth
+	/// of the light source and only when the vertex has valid guiding
+	/// metadata.
+	inline void RecordGuidingTrainingLightPath(
+		PathGuidingField* pGuidingField,
+		const std::vector<BDPTVertex>& lightVerts,
+		unsigned int maxLightGuidingDepth
+		)
+	{
+		if( !pGuidingField || !pGuidingField->IsCollectingTrainingSamples() ||
+			maxLightGuidingDepth == 0 || lightVerts.size() <= 1 )
+		{
+			return;
+		}
+
+		// Find usable surface vertices (skip vertex 0 which is the light itself)
+		bool hasSegments = false;
+		for( unsigned int i = 1; i < lightVerts.size(); i++ ) {
+			if( lightVerts[i].type == BDPTVertex::SURFACE &&
+				lightVerts[i].guidingHasSegment )
+			{
+				hasSegments = true;
+				break;
+			}
+		}
+
+		if( !hasSegments ) {
+			return;
+		}
+
+		static thread_local GuidingTrainingPathScratch lightScratch;
+		if( !lightScratch.pathSegments ) {
+			return;
+		}
+
+		// Count eligible vertices within the depth limit
+		const unsigned int maxVert =
+			std::min( static_cast<unsigned int>( lightVerts.size() ),
+					  maxLightGuidingDepth + 1u );  // +1 for the light vertex at index 0
+
+		const size_t requiredSegments = maxVert > 1 ? maxVert - 1 : 0;
+		if( lightScratch.reservedSegments < requiredSegments ) {
+			pglPathSegmentStorageReserve( lightScratch.pathSegments, requiredSegments );
+			lightScratch.reservedSegments = requiredSegments;
+		}
+		pglPathSegmentStorageClear( lightScratch.pathSegments );
+
+		// Record segments in reverse order (from deepest vertex back
+		// toward the light) so that OpenPGL interprets "directionIn"
+		// as the direction from which radiance arrives — matching the
+		// shared-field incident-radiance convention.
+		//
+		// For a light subpath [L, v1, v2, v3, ...], the reversed
+		// segment chain is:
+		//   segment at v3: directionOut = v3.guidingDirectionIn  (toward v4 or terminated)
+		//                  directionIn  = v3.guidingDirectionOut  (toward v2, i.e. toward light)
+		//   segment at v2: directionOut = v2.guidingDirectionIn  (toward v3)
+		//                  directionIn  = v2.guidingDirectionOut  (toward v1)
+		//   segment at v1: directionOut = v1.guidingDirectionIn  (toward v2)
+		//                  directionIn  = v1.guidingDirectionOut  (toward light)
+		//
+		// This way OpenPGL sees each position with an "incoming"
+		// direction pointing back toward the light source, which
+		// is exactly "where does light come from at this point."
+		//
+		// The terminal segment (vertex 1, recorded last) carries the
+		// light emission as directContribution so OpenPGL has a
+		// non-zero radiance source to backpropagate through the chain.
+		//
+		// pdfDirectionIn and scatteringWeight use the REVERSE values
+		// (guidingReversePdfDirectionIn / guidingReverseScatteringWeight)
+		// computed during path construction, so they describe the
+		// reversed directionIn (toward light), not the forward scatter.
+		for( unsigned int i = maxVert - 1; i >= 1; i-- )
+		{
+			const BDPTVertex& v = lightVerts[i];
+			if( v.type != BDPTVertex::SURFACE || !v.guidingHasSegment ) {
+				continue;
+			}
+
+			// In the reversed chain, guidingHasDirectionIn becomes the
+			// reversed directionOut (continuation toward the next vertex
+			// in the reversed walk).  If the light path terminated before
+			// scattering at this vertex (early-out, no material, RR kill),
+			// guidingHasDirectionIn is false and the reversed directionOut
+			// would be a zero vector.  Recording such a segment — even at
+			// vertex 1 with its Le source — creates an inconsistent
+			// OpenPGL segment (non-zero directContribution into a zero
+			// directionOut).  Skip all dangling vertices uniformly.
+			if( !v.guidingHasDirectionIn ) {
+				continue;
+			}
+
+			PGLPathSegmentData* segment =
+				pglPathSegmentStorageNextSegment( lightScratch.pathSegments );
+			if( !segment ) {
+				continue;
+			}
+
+			segment->position = GuidingPoint3f( v.position );
+			segment->normal = GuidingVec3f( v.guidingNormal );
+			segment->volumeScatter = false;
+			segment->transmittanceWeight = GuidingColor3f( RISEPel( 1, 1, 1 ) );
+
+			// Terminal segment (vertex 1, closest to light) carries the
+			// emitted radiance Le as directContribution.  This is the
+			// radiance arriving at vertex 1 from the light direction,
+			// analogous to how eye paths set directContribution = Le
+			// when a vertex directly hits a light surface (s=0 strategy).
+			//
+			// We recover Le from vertex 0: Le = throughput[0] * pdfFwd[0],
+			// since throughput[0] = Le / (pdfSelect * pdfPosition) and
+			// pdfFwd[0] = pdfSelect * pdfPosition.
+			//
+			// Using Le (~150) instead of throughput[1] (~6M for the
+			// Cornell box) keeps the light training signal on the same
+			// scale as eye training contributions, preventing the light
+			// data from overwhelming the shared OpenPGL field.
+			if( i == 1 )
+			{
+				const RISEPel Le = GuidingClampContribution(
+					lightVerts[0].throughput * lightVerts[0].pdfFwd );
+				segment->directContribution = GuidingColor3f( Le );
+			}
+			else
+			{
+				segment->directContribution = GuidingColor3f( RISEPel( 0, 0, 0 ) );
+			}
+			segment->miWeight = 1.0f;
+			segment->scatteredContribution = GuidingColor3f( RISEPel( 0, 0, 0 ) );
+
+			segment->eta = static_cast<float>(
+				v.guidingEta > NEARZERO ? v.guidingEta : 1.0 );
+
+			// Reversed directions: swap directionIn and directionOut
+			// relative to the light-forward walk so OpenPGL sees the
+			// incident radiance direction pointing toward the light.
+			segment->directionOut = v.guidingHasDirectionIn ?
+				GuidingVec3f( v.guidingDirectionIn ) :
+				GuidingVec3f( Vector3( 0, 0, 0 ) );
+
+			// "directionIn" for the reversed path is the direction
+			// toward the previous vertex (toward the light source).
+			// Use the REVERSE PDF and scatteringWeight that correspond
+			// to this reversed directionIn, not the forward values.
+			segment->directionIn = GuidingVec3f( v.guidingDirectionOut );
+			segment->pdfDirectionIn = static_cast<float>(
+				v.guidingReversePdfDirectionIn > 0 ?
+					v.guidingReversePdfDirectionIn : 0 );
+			segment->isDelta = v.isDelta;
+			segment->scatteringWeight =
+				GuidingColor3f( GuidingClampContribution(
+					v.guidingReverseScatteringWeight ) );
+			segment->russianRouletteSurvivalProbability = static_cast<float>(
+				v.guidingRussianRouletteSurvivalProbability > 0 ?
+					v.guidingRussianRouletteSurvivalProbability : 1.0 );
+			segment->roughness = static_cast<float>(
+				v.guidingRoughness >= 0 ? v.guidingRoughness : 1.0 );
+		}
+
+		pGuidingField->AddPathSegments(
+			lightScratch.pathSegments,
+			false,
+			false,
+			false );
+	}
+
 	inline void RecordCompletePathSamples(
 		CompletePathGuide* pCompletePathGuide,
 		const std::vector<BDPTVertex>& lightVerts,
@@ -518,9 +709,11 @@ BDPTIntegrator::BDPTIntegrator(
   stabilityConfig( stabilityCfg )
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 ),
+  pLightGuidingField( 0 ),
   pCompletePathGuide( 0 ),
   guidingAlpha( 0 ),
   maxGuidingDepth( 3 ),
+  maxLightGuidingDepth( 0 ),
   guidingSamplingType( eGuidingOneSampleMIS ),
   guidingRISCandidates( 2 ),
   completePathStrategySelectionEnabled( false ),
@@ -559,11 +752,13 @@ void BDPTIntegrator::SetLightSampler( const LightSampler* pSampler )
 }
 
 #ifdef RISE_ENABLE_OPENPGL
-void BDPTIntegrator::SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth, GuidingSamplingType samplingType, unsigned int risCandidates )
+void BDPTIntegrator::SetGuidingField( PathGuidingField* pField, PathGuidingField* pLightField, Scalar alpha, unsigned int maxDepth, unsigned int maxLightDepth, GuidingSamplingType samplingType, unsigned int risCandidates )
 {
 	pGuidingField = pField;
+	pLightGuidingField = pLightField;
 	guidingAlpha = alpha;
 	maxGuidingDepth = maxDepth;
+	maxLightGuidingDepth = maxLightDepth;
 	guidingSamplingType = samplingType;
 	guidingRISCandidates = risCandidates;
 }
@@ -1377,6 +1572,20 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Check if the material has a delta BSDF (perfect specular)
 		v.isDelta = false;
 
+#ifdef RISE_ENABLE_OPENPGL
+		// Light subpath guiding: record vertex metadata for training.
+		// guidingDirectionOut is the direction toward the previous vertex
+		// (the direction light arrived from), matching the eye subpath
+		// convention where directionOut points toward the camera.
+		if( maxLightGuidingDepth > 0 )
+		{
+			v.guidingHasSegment = true;
+			v.guidingDirectionOut = -currentRay.Dir();
+			v.guidingNormal = GuidingCosineNormal( v.normal, currentRay.Dir() );
+			v.guidingEta = v.mediumIOR > NEARZERO ? v.mediumIOR : 1.0;
+		}
+#endif
+
 		if( !ri.pMaterial ) {
 			vertices.push_back( v );
 			break;
@@ -1509,9 +1718,173 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 		// --- End BSSRDF sampling ---
 
+#ifdef RISE_ENABLE_OPENPGL
+		// --- Path guiding (light subpath) ---
+		// Query the shared guiding field at each light subpath surface vertex
+		// and blend with BSDF sampling using RIS or one-sample MIS.  The
+		// shared field's incident-radiance distribution approximates the
+		// reciprocal scattering distribution for diffuse-dominated transport.
+		// The guided PDF flows into pdfFwdPrev, which becomes pdfFwd of the
+		// next vertex, so MISWeight() auto-corrects via the ratio chain.
+		bool usedGuidedDirection = false;
+		RISEPel guidedF( 0, 0, 0 );
+		Vector3 guidedDir;
+		Scalar guidedEffectivePdf = 0;
+		Scalar bsdfCombinedPdf = 0;
+
+		if( pLightGuidingField && pLightGuidingField->IsTrained() &&
+			depth < maxLightGuidingDepth &&
+			GuidingSupportsSurfaceSampling( *pScat ) &&
+			vertices.back().isConnectible )
+		{
+			// Use a separate thread_local handle from the eye subpath's
+			// guideDist to avoid cross-contamination.
+			static thread_local GuidingDistributionHandle lightGuideDist;
+			if( pLightGuidingField->InitDistribution( lightGuideDist, v.position, sampler.Get1D() ) )
+			{
+				if( pScat->type == ScatteredRay::eRayDiffuse ) {
+					pLightGuidingField->ApplyCosineProduct(
+						lightGuideDist,
+						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
+				}
+
+				const Scalar alpha = guidingAlpha;
+
+				if( guidingSamplingType == eGuidingRIS )
+				{
+					// RIS-based guiding (BDPT light subpath)
+					PathTransportUtilities::GuidingRISCandidate candidates[2];
+
+					// Candidate 0: BSDF sample
+					{
+						PathTransportUtilities::GuidingRISCandidate& c = candidates[0];
+						c.direction = pScat->ray.Dir();
+						c.bsdfEval = EvalBSDFAtVertex(
+							vertices.back(), -currentRay.Dir(), c.direction );
+						c.bsdfPdf = pScat->pdf;
+						c.guidePdf = pLightGuidingField->Pdf( lightGuideDist, c.direction );
+						c.incomingRadPdf = pLightGuidingField->IncomingRadiancePdf( lightGuideDist, c.direction );
+						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+						const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+						c.risTarget = PathTransportUtilities::GuidingRISTarget(
+							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+							c.bsdfPdf, c.guidePdf );
+						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+						if( !c.valid ) {
+							c.risWeight = 0;
+						}
+					}
+
+					// Candidate 1: guide sample
+					{
+						PathTransportUtilities::GuidingRISCandidate& c = candidates[1];
+						Scalar gPdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						c.direction = pLightGuidingField->Sample( lightGuideDist, xi2d, gPdf );
+						c.guidePdf = gPdf;
+
+						if( gPdf > NEARZERO )
+						{
+							c.bsdfEval = EvalBSDFAtVertex(
+								vertices.back(), -currentRay.Dir(), c.direction );
+							c.bsdfPdf = EvalPdfAtVertex(
+								vertices.back(), -currentRay.Dir(), c.direction );
+							c.incomingRadPdf = pLightGuidingField->IncomingRadiancePdf( lightGuideDist, c.direction );
+							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+							const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+							c.risTarget = PathTransportUtilities::GuidingRISTarget(
+								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+								c.bsdfPdf, c.guidePdf );
+							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+							if( !c.valid ) {
+								c.risWeight = 0;
+							}
+						}
+						else
+						{
+							c.bsdfEval = RISEPel( 0, 0, 0 );
+							c.bsdfPdf = 0;
+							c.incomingRadPdf = 0;
+							c.cosTheta = 0;
+							c.risTarget = 0;
+							c.risPdf = 0;
+							c.risWeight = 0;
+							c.valid = false;
+						}
+					}
+
+					Scalar risEffectivePdf = 0;
+					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
+						candidates, 2, sampler.Get1D(), risEffectivePdf );
+
+					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+					{
+						usedGuidedDirection = true;
+						guidedDir = candidates[sel].direction;
+						guidedF = candidates[sel].bsdfEval;
+						guidedEffectivePdf = risEffectivePdf;
+					}
+				}
+				else
+				{
+					// One-sample MIS (BDPT light subpath)
+					const Scalar xi = sampler.Get1D();
+
+					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+					{
+						Scalar guidePdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						const Vector3 gDir = pLightGuidingField->Sample( lightGuideDist, xi2d, guidePdf );
+
+						if( guidePdf > NEARZERO )
+						{
+							guidedF = EvalBSDFAtVertex(
+								vertices.back(), -currentRay.Dir(), gDir );
+							const Scalar bsdfPdf = EvalPdfAtVertex(
+								vertices.back(), -currentRay.Dir(), gDir );
+
+							const Scalar combinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
+
+							if( combinedPdf > NEARZERO &&
+								ColorMath::MaxValue( guidedF ) > NEARZERO )
+							{
+								usedGuidedDirection = true;
+								guidedDir = gDir;
+								guidedEffectivePdf = combinedPdf;
+							}
+						}
+					}
+
+					if( !usedGuidedDirection )
+					{
+						const Scalar guidePdfForBsdfDir =
+							pLightGuidingField->Pdf( lightGuideDist, pScat->ray.Dir() );
+						bsdfCombinedPdf =
+							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+					}
+				}
+			}
+		}
+#endif
+		// --- End light subpath path guiding ---
+
 		// Compute effective scatter direction and PDF.
 		Vector3 scatDir = pScat->ray.Dir();
 		Scalar effectivePdf = pScat->pdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			scatDir = guidedDir;
+			effectivePdf = guidedEffectivePdf;
+		} else if( bsdfCombinedPdf > NEARZERO ) {
+			effectivePdf = bsdfCombinedPdf;
+		}
+#endif
 
 		if( effectivePdf <= 0 ) {
 			break;
@@ -1525,37 +1898,92 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 
 		// Compute throughput update: beta *= f * |cos| / pdf
+		// localScatteringWeight captures f * |cos| / pdf for guiding training.
+		RISEPel localScatteringWeight( 0, 0, 0 );
 		if( pScat->isDelta ) {
 			// For delta scattering, kray already incorporates the right factor
 			// but must be divided by the lobe selection probability.
 			beta = beta * pScat->kray * (bssrdfReflectCompensation / selectProb);
 		} else {
-			RISEPel f = EvalBSDFAtVertex( vertices.back(), -currentRay.Dir(), scatDir );
+			RISEPel f;
+#ifdef RISE_ENABLE_OPENPGL
+			// Reuse the BSDF evaluation from guiding RIS candidate selection
+			// when a guided direction was chosen (avoids redundant eval).
+			f = usedGuidedDirection ? guidedF :
+				EvalBSDFAtVertex( vertices.back(), -currentRay.Dir(), scatDir );
+#else
+			f = EvalBSDFAtVertex( vertices.back(), -currentRay.Dir(), scatDir );
+#endif
 			const Scalar cosTheta = fabs( Vector3Ops::Dot(
 				scatDir, ri.geometric.vNormal ) );
 
 			if( ColorMath::MaxValue( f ) <= 0 ) {
 				break;
 			}
-			beta = beta * f * (bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf));
+			const Scalar scatterPdf = selectProb * effectivePdf;
+			localScatteringWeight =
+				f * (bssrdfReflectCompensation * cosTheta / scatterPdf);
+			beta = beta * localScatteringWeight;
 		}
 
 		// Russian Roulette — depth threshold and throughput floor
 		// are configurable via StabilityConfig.
+		const PathTransportUtilities::RussianRouletteResult rr =
+			PathTransportUtilities::EvaluateRussianRoulette(
+				depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+				ColorMath::MaxValue( beta ),
+				ColorMath::MaxValue( vertices.back().throughput ),
+				sampler.Get1D() );
+		if( rr.terminate ) {
+			break;
+		}
+		if( rr.survivalProb < 1.0 ) {
+			beta = beta * (1.0 / rr.survivalProb);
+		}
+
+#ifdef RISE_ENABLE_OPENPGL
+		// Light subpath guiding: record scatter direction and scattering
+		// weight for training.  Mirrors eye subpath metadata at ~line 2293.
+		if( maxLightGuidingDepth > 0 )
 		{
-			const PathTransportUtilities::RussianRouletteResult rr =
-				PathTransportUtilities::EvaluateRussianRoulette(
-					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
-					ColorMath::MaxValue( beta ),
-					ColorMath::MaxValue( vertices.back().throughput ),
-					sampler.Get1D() );
-			if( rr.terminate ) {
-				break;
-			}
-			if( rr.survivalProb < 1.0 ) {
-				beta = beta * (1.0 / rr.survivalProb);
+			vertices.back().guidingHasDirectionIn = true;
+			vertices.back().guidingDirectionIn = scatDir;
+			vertices.back().guidingPdfDirectionIn = selectProb * effectivePdf;
+			vertices.back().guidingScatteringWeight = localScatteringWeight;
+			vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
+			vertices.back().guidingEta =
+				(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+					pScat->ior_stack->top() :
+					(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
+			vertices.back().guidingRoughness = pScat->isDelta ?
+				Scalar( 0.0 ) :
+				(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
+
+			// Reverse PDF and scattering weight for training.  When light
+			// subpath segments are recorded in reverse order, the segment's
+			// directionIn becomes guidingDirectionOut (toward the light).
+			// pdfDirectionIn and scatteringWeight must correspond to that
+			// reversed directionIn, not the forward scatter direction.
+			if( !pScat->isDelta )
+			{
+				const Scalar revPdf = EvalPdfAtVertex(
+					vertices.back(), scatDir, -currentRay.Dir() );
+				vertices.back().guidingReversePdfDirectionIn = revPdf;
+
+				if( revPdf > NEARZERO )
+				{
+					// Reciprocal BSDF: f(wi→wo) = f(wo→wi).  Reuse the
+					// forward BSDF eval; only cos and PDF change.
+					const RISEPel f = usedGuidedDirection ? guidedF :
+						EvalBSDFAtVertex( vertices.back(), -currentRay.Dir(), scatDir );
+					const Scalar cosIncoming = fabs( Vector3Ops::Dot(
+						-currentRay.Dir(), ri.geometric.vNormal ) );
+					vertices.back().guidingReverseScatteringWeight =
+						f * (bssrdfReflectCompensation * cosIncoming / revPdf);
+				}
 			}
 		}
+#endif
 
 		// Store the forward pdf for the next vertex (solid angle measure),
 		// accounting for lobe selection probability.
@@ -1597,9 +2025,21 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 
 		// Advance to next ray
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			currentRay = Ray( pScat->ray.origin, guidedDir );
+		} else {
+			currentRay = pScat->ray;
+		}
+#else
 		currentRay = pScat->ray;
+#endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
+	#ifdef RISE_ENABLE_OPENPGL
+		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+	#else
 		if( useIORStack && pScat->ior_stack ) {
+	#endif
 			iorStack = *pScat->ior_stack;
 		}
 	}
@@ -3496,6 +3936,9 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 	if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() ) {
 		RecordGuidingTrainingPath( pGuidingField, &guidingTrainingStats, eyeVerts, results );
 	}
+	if( pLightGuidingField && pLightGuidingField->IsCollectingTrainingSamples() ) {
+		RecordGuidingTrainingLightPath( pLightGuidingField, lightVerts, maxLightGuidingDepth );
+	}
 #endif
 
 	return results;
@@ -3821,6 +4264,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		if( v.pdfFwd > 0 ) {
 			v.throughputNM = LeNM / v.pdfFwd;
+			v.throughput = RISEPel( v.throughputNM, v.throughputNM, v.throughputNM );	// for guiding training (Le recovery)
 		} else {
 			v.throughputNM = 0;
 		}
@@ -4053,8 +4497,19 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		v.throughputNM = betaNM;
+		v.throughput = RISEPel( betaNM, betaNM, betaNM );	// for guiding training
 		v.pdfRev = 0;
 		v.isDelta = false;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( maxLightGuidingDepth > 0 )
+		{
+			v.guidingHasSegment = true;
+			v.guidingDirectionOut = -currentRay.Dir();
+			v.guidingNormal = GuidingCosineNormal( v.normal, currentRay.Dir() );
+			v.guidingEta = v.mediumIOR > NEARZERO ? v.mediumIOR : 1.0;
+		}
+#endif
 
 		if( !ri.pMaterial ) {
 			vertices.push_back( v );
@@ -4162,11 +4617,163 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 		// --- End BSSRDF sampling ---
 
-		// --- End path guiding ---
+#ifdef RISE_ENABLE_OPENPGL
+		// --- Path guiding (NM light subpath) ---
+		bool usedGuidedDirection = false;
+		Vector3 guidedDir;
+		Scalar guidedFNM = 0;
+		Scalar guidedEffectivePdf = 0;
+		Scalar bsdfCombinedPdf = 0;
+
+		if( pLightGuidingField && pLightGuidingField->IsTrained() &&
+			depth < maxLightGuidingDepth &&
+			GuidingSupportsSurfaceSampling( *pScat ) &&
+			vertices.back().isConnectible )
+		{
+			static thread_local GuidingDistributionHandle lightGuideDistNM;
+			if( pLightGuidingField->InitDistribution( lightGuideDistNM, v.position, sampler.Get1D() ) )
+			{
+				if( pScat->type == ScatteredRay::eRayDiffuse ) {
+					pLightGuidingField->ApplyCosineProduct(
+						lightGuideDistNM,
+						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
+				}
+
+				const Scalar alpha = guidingAlpha;
+
+				if( guidingSamplingType == eGuidingRIS )
+				{
+					PathTransportUtilities::GuidingRISCandidateNM candidates[2];
+
+					// Candidate 0: BSDF sample
+					{
+						PathTransportUtilities::GuidingRISCandidateNM& c = candidates[0];
+						c.direction = pScat->ray.Dir();
+						c.bsdfEvalNM = EvalBSDFAtVertexNM(
+							vertices.back(), -currentRay.Dir(), c.direction, nm );
+						c.bsdfPdf = pScat->pdf;
+						c.guidePdf = pLightGuidingField->Pdf( lightGuideDistNM, c.direction );
+						c.incomingRadPdf = pLightGuidingField->IncomingRadiancePdf( lightGuideDistNM, c.direction );
+						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+						const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+						c.risTarget = PathTransportUtilities::GuidingRISTarget(
+							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+							c.bsdfPdf, c.guidePdf );
+						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+						if( !c.valid ) {
+							c.risWeight = 0;
+						}
+					}
+
+					// Candidate 1: guide sample
+					{
+						PathTransportUtilities::GuidingRISCandidateNM& c = candidates[1];
+						Scalar gPdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						c.direction = pLightGuidingField->Sample( lightGuideDistNM, xi2d, gPdf );
+						c.guidePdf = gPdf;
+
+						if( gPdf > NEARZERO )
+						{
+							c.bsdfEvalNM = EvalBSDFAtVertexNM(
+								vertices.back(), -currentRay.Dir(), c.direction, nm );
+							c.bsdfPdf = EvalPdfAtVertexNM(
+								vertices.back(), -currentRay.Dir(), c.direction, nm );
+							c.incomingRadPdf = pLightGuidingField->IncomingRadiancePdf( lightGuideDistNM, c.direction );
+							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+							const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+							c.risTarget = PathTransportUtilities::GuidingRISTarget(
+								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+								c.bsdfPdf, c.guidePdf );
+							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+							if( !c.valid ) {
+								c.risWeight = 0;
+							}
+						}
+						else
+						{
+							c.bsdfEvalNM = 0;
+							c.bsdfPdf = 0;
+							c.incomingRadPdf = 0;
+							c.cosTheta = 0;
+							c.risTarget = 0;
+							c.risPdf = 0;
+							c.risWeight = 0;
+							c.valid = false;
+						}
+					}
+
+					Scalar risEffectivePdf = 0;
+					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidateNM(
+						candidates, 2, sampler.Get1D(), risEffectivePdf );
+
+					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+					{
+						usedGuidedDirection = true;
+						guidedDir = candidates[sel].direction;
+						guidedFNM = candidates[sel].bsdfEvalNM;
+						guidedEffectivePdf = risEffectivePdf;
+					}
+				}
+				else
+				{
+					// One-sample MIS (NM light subpath)
+					const Scalar xi = sampler.Get1D();
+
+					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+					{
+						Scalar guidePdf = 0;
+						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+						const Vector3 gDir = pLightGuidingField->Sample( lightGuideDistNM, xi2d, guidePdf );
+
+						if( guidePdf > NEARZERO )
+						{
+							guidedFNM = EvalBSDFAtVertexNM(
+								vertices.back(), -currentRay.Dir(), gDir, nm );
+							const Scalar bsdfPdf = EvalPdfAtVertexNM(
+								vertices.back(), -currentRay.Dir(), gDir, nm );
+
+							const Scalar combinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
+
+							if( combinedPdf > NEARZERO && fabs( guidedFNM ) > NEARZERO )
+							{
+								usedGuidedDirection = true;
+								guidedDir = gDir;
+								guidedEffectivePdf = combinedPdf;
+							}
+						}
+					}
+
+					if( !usedGuidedDirection )
+					{
+						const Scalar guidePdfForBsdfDir =
+							pLightGuidingField->Pdf( lightGuideDistNM, pScat->ray.Dir() );
+						bsdfCombinedPdf =
+							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+					}
+				}
+			}
+		}
+#endif
+		// --- End NM light subpath path guiding ---
 
 		// Compute effective scatter direction and PDF
 		Vector3 scatDir = pScat->ray.Dir();
 		Scalar effectivePdf = pScat->pdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			scatDir = guidedDir;
+			effectivePdf = guidedEffectivePdf;
+		} else if( bsdfCombinedPdf > NEARZERO ) {
+			effectivePdf = bsdfCombinedPdf;
+		}
+#endif
 
 		if( effectivePdf <= 0 ) {
 			break;
@@ -4180,33 +4787,81 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		// Throughput update using valueNM
+		// localScatteringWeight captures f * |cos| / pdf for guiding training.
+		RISEPel localScatteringWeight( 0, 0, 0 );
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
 		} else {
-			Scalar fNM = EvalBSDFAtVertexNM( vertices.back(), -currentRay.Dir(), scatDir, nm );
+			Scalar fNM;
+#ifdef RISE_ENABLE_OPENPGL
+			fNM = usedGuidedDirection ? guidedFNM :
+				EvalBSDFAtVertexNM( vertices.back(), -currentRay.Dir(), scatDir, nm );
+#else
+			fNM = EvalBSDFAtVertexNM( vertices.back(), -currentRay.Dir(), scatDir, nm );
+#endif
 			const Scalar cosTheta = fabs( Vector3Ops::Dot(
 				scatDir, ri.geometric.vNormal ) );
 
 			if( fNM <= 0 ) {
 				break;
 			}
-			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
+			const Scalar scatterPdf = selectProb * effectivePdf;
+			localScatteringWeight = RISEPel(
+				fNM * bssrdfReflectCompensation * cosTheta / scatterPdf,
+				fNM * bssrdfReflectCompensation * cosTheta / scatterPdf,
+				fNM * bssrdfReflectCompensation * cosTheta / scatterPdf );
+			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / scatterPdf;
 		}
 
 		// Russian Roulette — configurable depth and threshold
+		const PathTransportUtilities::RussianRouletteResult rr =
+			PathTransportUtilities::EvaluateRussianRoulette(
+				depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+				fabs( betaNM ), fabs( vertices.back().throughputNM ),
+				sampler.Get1D() );
+		if( rr.terminate ) {
+			break;
+		}
+		if( rr.survivalProb < 1.0 ) {
+			betaNM /= rr.survivalProb;
+		}
+
+#ifdef RISE_ENABLE_OPENPGL
+		if( maxLightGuidingDepth > 0 )
 		{
-			const PathTransportUtilities::RussianRouletteResult rr =
-				PathTransportUtilities::EvaluateRussianRoulette(
-					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
-					fabs( betaNM ), fabs( vertices.back().throughputNM ),
-					sampler.Get1D() );
-			if( rr.terminate ) {
-				break;
-			}
-			if( rr.survivalProb < 1.0 ) {
-				betaNM /= rr.survivalProb;
+			vertices.back().guidingHasDirectionIn = true;
+			vertices.back().guidingDirectionIn = scatDir;
+			vertices.back().guidingPdfDirectionIn = selectProb * effectivePdf;
+			vertices.back().guidingScatteringWeight = localScatteringWeight;
+			vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
+			vertices.back().guidingEta =
+				(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+					pScat->ior_stack->top() :
+					(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
+			vertices.back().guidingRoughness = pScat->isDelta ?
+				Scalar( 0.0 ) :
+				(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
+
+			// Reverse PDF and scattering weight for reversed training segments.
+			if( !pScat->isDelta )
+			{
+				const Scalar revPdfNM = EvalPdfAtVertexNM(
+					vertices.back(), scatDir, -currentRay.Dir(), nm );
+				vertices.back().guidingReversePdfDirectionIn = revPdfNM;
+
+				if( revPdfNM > NEARZERO )
+				{
+					const Scalar fRevNM = usedGuidedDirection ? guidedFNM :
+						EvalBSDFAtVertexNM( vertices.back(), -currentRay.Dir(), scatDir, nm );
+					const Scalar cosIncoming = fabs( Vector3Ops::Dot(
+						-currentRay.Dir(), ri.geometric.vNormal ) );
+					const Scalar revWeight = fRevNM * bssrdfReflectCompensation * cosIncoming / revPdfNM;
+					vertices.back().guidingReverseScatteringWeight =
+						RISEPel( revWeight, revWeight, revWeight );
+				}
 			}
 		}
+#endif
 
 		pdfFwdPrev = selectProb * effectivePdf;
 
@@ -4233,9 +4888,21 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
 		}
 
+#ifdef RISE_ENABLE_OPENPGL
+		if( usedGuidedDirection ) {
+			currentRay = Ray( pScat->ray.origin, guidedDir );
+		} else {
+			currentRay = pScat->ray;
+		}
+#else
 		currentRay = pScat->ray;
+#endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
+	#ifdef RISE_ENABLE_OPENPGL
+		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+	#else
 		if( useIORStack && pScat->ior_stack ) {
+	#endif
 			iorStack = *pScat->ior_stack;
 		}
 	}
@@ -5671,6 +6338,12 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 			}
 		}
 	}
+
+#ifdef RISE_ENABLE_OPENPGL
+	if( pLightGuidingField && pLightGuidingField->IsCollectingTrainingSamples() ) {
+		RecordGuidingTrainingLightPath( pLightGuidingField, lightVerts, maxLightGuidingDepth );
+	}
+#endif
 
 	return results;
 }

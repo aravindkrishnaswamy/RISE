@@ -42,15 +42,22 @@ bdpt_pel_rasterizer
 	samples				128
 	lum_samples			1
 	ior_stack			TRUE
-	sms_enabled			FALSE
+	pathguiding				FALSE
+	pathguiding_iterations	4
+	pathguiding_spp			4
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	3
+    pathguiding_light_max_depth 0
+	pathguiding_sampling_type	ris
+	sms_enabled			TRUE
 	sms_max_iterations	20
 	sms_threshold		1e-3
 	sms_max_chain_depth	20
 	sms_biased			TRUE
-	oidn_denoise		TRUE
-	adaptive_max_samples	1000
-	adaptive_threshold		0.01
-	show_adaptive_map		FALSE
+	oidn_denoise		FALSE
+#	adaptive_max_samples	1000
+#	adaptive_threshold		0.01
+#	show_adaptive_map		FALSE
 }
 
 

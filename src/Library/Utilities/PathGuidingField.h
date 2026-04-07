@@ -63,6 +63,7 @@ namespace RISE
 		unsigned int	trainingSPP;			///< Samples per pixel during each training pass
 		Scalar			alpha;					///< MIS blending weight: P(sample from guide)
 		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling
+		unsigned int	maxLightGuidingDepth;	///< Max light subpath bounce depth for guided sampling (0 = disabled)
 		GuidingSamplingType	samplingType;		///< Directional sampling strategy
 		unsigned int	risCandidates;			///< Reserved for future N>2 RIS; currently only N=2 is implemented
 		bool			completePathGuiding;	///< Experimental BDPT complete-path recorder/guide
@@ -75,6 +76,7 @@ namespace RISE
 		trainingSPP( 4 ),
 		alpha( 0.5 ),
 		maxGuidingDepth( 3 ),
+		maxLightGuidingDepth( 0 ),
 		samplingType( eGuidingOneSampleMIS ),
 		risCandidates( 2 ),
 		completePathGuiding( false ),

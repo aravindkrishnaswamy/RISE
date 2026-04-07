@@ -105,9 +105,11 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 			PathGuidingField*	pGuidingField;
+			PathGuidingField*	pLightGuidingField;	///< Separate field for light subpath guiding (Option B)
 			CompletePathGuide*	pCompletePathGuide;
 			Scalar				guidingAlpha;
 			unsigned int		maxGuidingDepth;
+			unsigned int		maxLightGuidingDepth;
 			GuidingSamplingType	guidingSamplingType;
 			unsigned int		guidingRISCandidates;
 			bool				completePathStrategySelectionEnabled;
@@ -152,7 +154,7 @@ namespace RISE
 			void SetManifoldSolver( ManifoldSolver* pSolver );
 
 #ifdef RISE_ENABLE_OPENPGL
-			void SetGuidingField( PathGuidingField* pField, Scalar alpha, unsigned int maxDepth, GuidingSamplingType samplingType, unsigned int risCandidates );
+			void SetGuidingField( PathGuidingField* pField, PathGuidingField* pLightField, Scalar alpha, unsigned int maxDepth, unsigned int maxLightDepth, GuidingSamplingType samplingType, unsigned int risCandidates );
 			void SetCompletePathGuide(
 				CompletePathGuide* pGuide,
 				bool enableStrategySelection = false,

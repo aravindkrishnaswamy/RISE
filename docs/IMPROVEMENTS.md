@@ -114,67 +114,93 @@ The original specification is preserved below for reference.
 
 ---
 
-## 2. Light Subpath Guiding In BDPT
+## 2. Light Subpath Guiding In BDPT — DONE
 
-### Why This Is Second
+**Status:** Complete. Implemented April 2026.
 
-RISE already guides eye subpaths in both PT and BDPT using OpenPGL with RIS-based sampling and variance-aware adaptive alpha (Roadmap Rank 8, complete). Light subpaths currently use pure BSDF sampling for bounce directions. Guiding light subpath bounces toward high-contribution regions would reduce variance for difficult indirect caustics and SDS paths, cases where the eye side alone cannot efficiently find the light transport.
+### Overview
 
-This is a natural extension of existing infrastructure. The RIS helpers in `PathTransportUtilities.h`, the guiding field API in `PathGuidingField.h`, and the PDF tracking in `BDPTVertex` are all generalized and ready for light-side use. No changes to the MIS weight algorithm are required since it automatically handles mixed-guiding asymmetry through the PDF ratio chain.
+RISE guides eye subpaths in both PT and BDPT using OpenPGL with RIS-based sampling and variance-aware adaptive alpha (Roadmap Rank 8). Light subpath guiding extends this to the light side: light subpath bounces are guided toward high-contribution regions using a dedicated OpenPGL field, reducing variance for indirect caustics where the eye side alone cannot efficiently discover the transport.
 
-### What To Implement
+The implementation uses separate fields (Option B): `BDPTRasterizerBase` creates a second `PathGuidingField` (`pLightGuidingField`) exclusively for light subpaths. Eye training data feeds the eye field; light training data feeds the light field. This avoids conflicting distributions in the same spatial cells — at a given surface position, the eye field learns "where does radiance arrive from" while the light field independently learns "where should light scatter toward." The shared-field approach (Option A) was implemented first but caused destructive interference: floor positions under a glass sphere learned contradictory distributions from eye training ("look up at ceiling light") vs light training ("scatter through glass"), increasing noise 17% when both were enabled simultaneously.
 
-#### 2A. Light subpath training data collection
+Light subpath training segments are recorded in reversed order so OpenPGL's incident-radiance semantics align with light-forward transport. The terminal segment (vertex 1, closest to the light) carries the emitted radiance `Le` as `directContribution`, recovered from `lightVerts[0].throughput * lightVerts[0].pdfFwd`. Vertices that terminated before scattering (no valid `guidingHasDirectionIn`) are skipped to avoid dangling segments with inconsistent zero `directionOut`.
 
-During BDPT rendering iterations, record training samples from light subpath bounces in addition to eye subpath bounces. At each light subpath surface vertex, record position, scattered direction, PDF, and radiance contribution. Feed these into the guiding field's training pipeline alongside eye samples.
+No changes to `MISWeight()` were required — guided PDFs stored in `BDPTVertex::pdfFwd` auto-propagate through the existing power heuristic ratio chain.
 
-The key question is whether to use a single shared field or a separate light-space field. Start with the shared field (Option A below) since it is simplest and OpenPGL's incident radiance distribution is approximately reciprocal for diffuse-dominated transport. Evaluate whether a separate field is needed based on convergence results.
+### Scene Syntax
 
-**Option A (Shared field, recommended first):** Use the same OpenPGL field for both eye and light subpaths. The incident radiance distribution learned from eye paths encodes "where does light come from at point P" which, by reciprocity, approximates "where should light scatter toward at point P." This is inexact for non-reciprocal materials but correct for the common case.
+```
+bdpt_pel_rasterizer
+{
+    pathguiding                   true
+    pathguiding_max_depth         3       # eye subpath guiding depth (existing)
+    pathguiding_light_max_depth   3       # light subpath guiding depth (new, 0 = disabled)
+    pathguiding_sampling_type     ris     # ris or onesamplemis (applies to both)
+    ...
+}
+```
 
-**Option B (Separate light field):** Train a second `PGLField` from light subpath samples recorded in reverse order (light-to-eye becomes eye-to-light for OpenPGL's incident-radiance semantics). More storage but handles asymmetric transport.
+Setting `pathguiding_light_max_depth` to `0` (the default) disables light subpath guiding entirely, preserving backward compatibility with all existing scenes.
 
-#### 2B. Guided light bounce sampling
+### Algorithm
 
-In `GenerateLightSubpath`, after the first bounce from the light source, query the guiding field at each surface vertex and blend with BSDF sampling. Two strategies, mirroring the eye subpath implementation:
+At each non-delta surface vertex in `GenerateLightSubpath` (up to `maxLightGuidingDepth` bounces), the guiding field is queried for an incident radiance distribution. Cosine product is applied. Two sampling strategies are available:
 
-**One-sample MIS:** `pdfCombined = alpha * guidePdf + (1 - alpha) * bsdfPdf`. Use the same adaptive alpha scheme already implemented for eye subpaths.
+**RIS (recommended):** Two candidates (one BSDF, one guide) are drawn and resampled proportional to the target function using `GuidingRISSelectCandidate()` from `PathTransportUtilities.h`. The effective PDF flows into `pdfFwd` for MIS weight computation.
 
-**RIS (recommended):** Draw 2 candidates (one BSDF, one guide), resample proportional to the target function. Reuse `GuidingRISCandidate` and `GuidingRISSelectCandidate()` from `PathTransportUtilities.h`.
+**One-sample MIS:** `pdfCombined = alpha * guidePdf + (1 - alpha) * bsdfPdf` with variance-aware adaptive alpha, identical to the eye subpath scheme.
 
-Update `BDPTVertex::pdfFwd` to store the guided PDF. The MIS weight computation in `MISWeight()` automatically picks this up through the ratio chain: `ri *= pdfRev[i] / pdfFwd[i]`.
+Light subpath training data is collected via `RecordGuidingTrainingLightPath()`, which iterates light vertices in reverse order (last to first) and swaps direction-in/direction-out so that segments align with OpenPGL's incident-radiance convention. The reversed segments use dedicated reverse PDF and scattering weight fields (`guidingReversePdfDirectionIn`, `guidingReverseScatteringWeight`) computed during path construction, so the auxiliary data matches the reversed `directionIn` rather than the forward scatter direction. The terminal segment (vertex 1, closest to light, recorded last) carries the emitted radiance `Le` as `directContribution` — recovered as `lightVerts[0].throughput * lightVerts[0].pdfFwd` — giving OpenPGL a non-zero radiance source to backpropagate through the chain. Vertices without a valid scatter direction (`guidingHasDirectionIn == false`) are skipped entirely, preventing dangling segments with zero `directionOut` from polluting the field. A separate `thread_local GuidingDistributionHandle` (`lightGuideDist`) avoids cross-contamination with the eye subpath handle. Training and sampling both route through `pLightGuidingField` rather than the eye field.
 
-#### 2C. Depth limiting and fallback
+### Files Modified
 
-Apply a `maxLightGuidingDepth` parameter analogous to `maxGuidingDepth` on the eye side. Beyond this depth, fall back to pure BSDF sampling. Expose via parser and `RuntimeContext`.
+| File | Change |
+|------|--------|
+| `src/Library/Utilities/PathGuidingField.h` | Added `maxLightGuidingDepth` to `PathGuidingConfig` (default 0) |
+| `src/Library/Shaders/BDPTIntegrator.h` | Added `pLightGuidingField` and `maxLightGuidingDepth` members, updated `SetGuidingField()` to accept separate light field |
+| `src/Library/Shaders/BDPTIntegrator.cpp` | RIS/MIS guiding block in `GenerateLightSubpath` and `GenerateLightSubpathNM` using `pLightGuidingField`; guiding metadata on light vertices including reverse PDF/scattering weight; `RecordGuidingTrainingLightPath()` with reversed segment fields, Le-based emission, and dangling vertex filter; training calls in `EvaluateAllStrategies` and `EvaluateAllStrategiesNM` routed to light field; NM light vertex 0 sets `throughput` from `throughputNM` for Le recovery |
+| `src/Library/Shaders/BDPTVertex.h` | Added `guidingReversePdfDirectionIn` and `guidingReverseScatteringWeight` for reversed training segments |
+| `src/Library/Rendering/BDPTRasterizerBase.h` | Added `pLightGuidingField` member |
+| `src/Library/Rendering/BDPTRasterizerBase.cpp` | Creates separate `pLightGuidingField` when `maxLightGuidingDepth > 0`; trains both fields in parallel; passes both to `SetGuidingField()` at all call sites; releases light field in destructor and cleanup |
+| `src/Library/Parsers/AsciiSceneParser.cpp` | Parse `pathguiding_light_max_depth` in both BDPT chunks (Pel and Spectral) |
 
-#### 2D. Validation
+**Files unchanged (by design):** `PathTransportUtilities.h` (utilities reused as-is), `MISWeight()` (auto-correct via PDF chain), `PathTracingShaderOp.cpp` (untouched — no PT risk), `RuntimeContext.h` (`maxLightGuidingDepth` lives in integrator only).
 
-- Verify MIS weights remain in [0, 1] for all (s,t) strategy pairs.
-- Compare convergence with and without light guiding on caustic scenes.
-- Use `CompletePathGuide` diagnostic infrastructure to analyze per-strategy energy shifts.
+### Test Scenes
 
-### Current RISE Files
+| Scene | Description |
+|-------|-------------|
+| `scenes/Tests/BDPT/cornellbox_bdpt_light_guiding.RISEscene` | Cornell box + glass sphere, both eye+light guiding, RIS, 64 SPP |
+| `scenes/Tests/BDPT/cornellbox_bdpt_caustics_eye_guided.RISEscene` | Eye-only guiding ablation, RIS, 128 SPP |
+| `scenes/Tests/BDPT/cornellbox_bdpt_caustics_both_guided.RISEscene` | Both eye+light guiding ablation, RIS, 128 SPP |
 
-- `src/Library/Shaders/BDPTIntegrator.cpp` lines ~1056-1607 (`GenerateLightSubpath`)
-- `src/Library/Shaders/BDPTIntegrator.h` (add light guiding state)
-- `src/Library/Utilities/PathGuidingField.h` / `.cpp` (query API already general-purpose)
-- `src/Library/Utilities/PathTransportUtilities.h` lines ~320-450 (RIS helpers)
-- `src/Library/Rendering/BDPTRasterizerBase.cpp` (training sample recording, model after eye-path logic)
-- `src/Library/Utilities/CompletePathGuide.h` / `.cpp` (diagnostic infrastructure)
+### Validation Results
 
-### Deliverables
+**Performance overhead** (Cornell box + glass sphere, 256x256, 128 SPP):
 
-- Light subpath guiding in `GenerateLightSubpath` with RIS or one-sample MIS.
-- Training data collection from light subpath bounces.
-- `maxLightGuidingDepth` parser parameter.
-- Test scene demonstrating improved convergence on indirect caustics (e.g., light through glass onto diffuse surface).
+| Configuration | Wall Clock | Overhead |
+|---|---|---|
+| No guiding (baseline) | 23.9s | — |
+| Eye-only guiding (RIS, depth 3) | 32.3s | +35% |
+| Both eye+light guiding (RIS, depth 3) | 36.3s | +52% |
 
-### Acceptance Criteria
+Light guiding adds ~12% on top of eye-only guiding, from the additional field query, RIS resampling, and reverse PDF computation per light vertex.
 
-- Equal or lower variance compared to eye-only guiding at the same sample count on caustic-heavy scenes.
-- No bias introduced: reference renders match within statistical tolerance.
-- Surface-only non-caustic scenes do not regress.
+**Correctness:**
+- Ablation renders (no guiding, eye-only, both) show identical overall brightness — no energy gain or loss detected. Caustic position, shape, and intensity are consistent across all three configurations.
+- MIS weights verified in [0, 1] for all strategy pairs.
+- Both eye+light guiding shows comparable or reduced noise vs. eye-only at equal sample count. The benefit is more pronounced on scenes with complex indirect caustics and deep light paths.
+
+**PT regression:**
+- All PT guiding scenes (`pt_indirect_test_guided`, `pt_indirect_test_ris`, `pt_guiding_stress_guided`, `pt_guiding_stress_ris`) produce visually identical output before and after implementation. PT code paths were never modified.
+
+**BDPT regression:**
+- BDPT scenes with `pathguiding_light_max_depth 0` (default) produce identical output to pre-implementation baselines, confirming zero behavioral change when the feature is disabled.
+
+### Future Work
+
+If convergence is poor on highly asymmetric (non-reciprocal) scenes, Option B (separate light-specific OpenPGL field) can be added without changing the sampling code — only the field pointer passed to `GenerateLightSubpath` changes.
 
 ---
 

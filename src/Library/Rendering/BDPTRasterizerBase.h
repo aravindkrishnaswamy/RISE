@@ -64,7 +64,8 @@ namespace RISE
 #endif
 
 #ifdef RISE_ENABLE_OPENPGL
-			mutable PathGuidingField*	pGuidingField;	///< Learned radiance distribution for guided sampling
+			mutable PathGuidingField*	pGuidingField;	///< Learned radiance distribution for eye subpath guided sampling
+			mutable PathGuidingField*	pLightGuidingField;	///< Separate field for light subpath guided sampling (Option B)
 			mutable CompletePathGuide*	pCompletePathGuide;	///< Experimental BDPT complete-path recorder
 			mutable Scalar				guidingAlphaScale;
 #endif
