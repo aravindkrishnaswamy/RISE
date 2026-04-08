@@ -89,6 +89,10 @@ namespace RISE
 				return Point2( u, v );
 			}
 
+			//! SobolSampler uses fixed-size phases (kStreamStride dimensions
+			//! each).  Variable-length algorithms must use IndependentSampler.
+			bool HasFixedDimensionBudget() const { return true; }
+
 			//! Advance to stream's dimension range.
 			//! Stream 0 = film/camera, 1 = light subpath, 2 = eye subpath, etc.
 			void StartStream( int streamIndex )

@@ -183,7 +183,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
-	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts );
+	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, rc.random );
 
 	// Stream 2: eye subpath and connection samples
 	sampler.StartStream( 2 );

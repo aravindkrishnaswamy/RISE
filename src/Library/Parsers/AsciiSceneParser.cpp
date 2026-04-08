@@ -1549,6 +1549,50 @@ namespace RISE
 				}
 			};
 
+			struct RandomWalkSSSMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String ior = "1.3";
+					String absorption = "0.1";
+					String scattering = "1.0";
+					String g = "0.0";
+					String roughness = "0.0";
+					String maxBounces = "64";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "ior" ) {
+							ior = pvalue;
+						} else if( pname == "absorption" ) {
+							absorption = pvalue;
+						} else if( pname == "scattering" ) {
+							scattering = pvalue;
+						} else if( pname == "g" ) {
+							g = pvalue;
+						} else if( pname == "roughness" ) {
+							roughness = pvalue;
+						} else if( pname == "max_bounces" ) {
+							maxBounces = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddRandomWalkSSSMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str(), maxBounces.c_str() );
+				}
+			};
+
 			struct LambertianLuminaireMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -7078,6 +7122,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["polished_material"] = new PolishedMaterialAsciiChunkParser();
 	chunks["dielectric_material"] = new DielectricMaterialAsciiChunkParser();
 	chunks["subsurfacescattering_material"] = new SubSurfaceScatteringMaterialAsciiChunkParser();
+	chunks["randomwalk_sss_material"] = new RandomWalkSSSMaterialAsciiChunkParser();
 	chunks["lambertian_luminaire_material"] = new LambertianLuminaireMaterialAsciiChunkParser();
 	chunks["phong_luminaire_material"] = new PhongLuminaireMaterialAsciiChunkParser();
 	chunks["ashikminshirley_anisotropicphong_material"] = new AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser();

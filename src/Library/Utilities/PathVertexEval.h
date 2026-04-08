@@ -143,6 +143,22 @@ namespace RISE
 					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 					return RISEPel( Sw, Sw, Sw );
 				}
+
+				// Random-walk SSS: Sw with Schlick Fresnel
+				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
+				if( pRW ) {
+					const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
+					if( cosTheta <= NEARZERO ) {
+						return RISEPel( 0, 0, 0 );
+					}
+					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+						((pRW->ior - 1.0) / (pRW->ior + 1.0));
+					const Scalar FSchlick = F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 );
+					const Scalar FtEntry = 1.0 - FSchlick;
+					const Scalar Sw = BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, pRW->ior );
+					return RISEPel( Sw, Sw, Sw );
+				}
+
 				return RISEPel( 0, 0, 0 );
 			}
 
@@ -258,6 +274,21 @@ namespace RISE
 					const Scalar eta = pProfile->GetIOR( rig );
 					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, eta );
 				}
+
+				// Random-walk SSS: Sw with Schlick Fresnel
+				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
+				if( pRW ) {
+					const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
+					if( cosTheta <= NEARZERO ) {
+						return 0;
+					}
+					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+						((pRW->ior - 1.0) / (pRW->ior + 1.0));
+					const Scalar FSchlick = F0 + (1.0 - F0) * pow( 1.0 - cosTheta, 5.0 );
+					const Scalar FtEntry = 1.0 - FSchlick;
+					return BSSRDFSampling::EvaluateSwWithFresnel( FtEntry, pRW->ior );
+				}
+
 				return 0;
 			}
 

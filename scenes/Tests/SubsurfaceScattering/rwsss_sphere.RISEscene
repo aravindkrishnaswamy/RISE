@@ -1,0 +1,187 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           rwsss_sphere.RISEscene                                                                 #
+#   Description:    Unit sphere with random-walk SSS material for visual validation.                       #
+#                   Uses same coefficients as pt_sss_wax_sphere for comparison.                            #
+#                   The sphere should show smooth translucent glow from backlit regions.                    #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 7, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		16
+	min_importance		0.001
+	samples				512
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rwsss_sphere
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 0 5
+	lookat				0 0 0
+	up					0 1 0
+	width				480
+	height				360
+	fov					40.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+	colorspace			ROMMRGB_Linear
+}
+
+# Same coefficients as pt_sss_wax_sphere for comparison
+uniformcolor_painter
+{
+	name				pnt_absorption
+	color				0.01 0.3 1.0
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_scattering
+	color				2.0 2.0 2.0
+	colorspace			ROMMRGB_Linear
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				lum
+	exitance			pnt_light
+	scale				8
+	material			none
+}
+
+randomwalk_sss_material
+{
+	name				rwsss
+	ior					1.3
+	absorption			pnt_absorption
+	scattering			pnt_scattering
+	g					0.0
+	roughness			0.05
+	max_bounces			64
+}
+
+##################################################
+# Objects
+##################################################
+
+# SSS sphere
+sphere_geometry
+{
+	name				spheregeom
+	radius				1.0
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0 0
+	material			rwsss
+}
+
+# Floor
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-10 -10 0
+	ptb					10 -10 0
+	ptc					10 10 0
+	ptd					-10 10 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 -1 0
+	orientation			-90 0 0
+	material			white
+}
+
+# Back wall
+standard_object
+{
+	name				backwall
+	geometry			floorgeom
+	position			0 0 -3
+	orientation			0 0 0
+	material			white
+}
+
+# Light behind and above the sphere to show translucency
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-2 -2 0
+	ptb					2 -2 0
+	ptc					2 2 0
+	ptd					-2 2 0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			lum
+	position			0 2 -2.5
+	orientation			45 0 0
+}

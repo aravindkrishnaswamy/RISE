@@ -296,11 +296,23 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 		result.weightSpatialNM = RdScalar * FtExit / pdfSurface;
 	}
 
-	result.entryPoint = entryPoint;
+	// Offset entry point along the surface normal so that shadow
+	// rays (NEE) and connection rays (BDPT) clear the originating
+	// surface and do not self-intersect.  This is critical for thin
+	// geometry where the entry point lies on a face whose back side
+	// is within floating-point epsilon.
+	// Offset entry point along the surface normal so that shadow
+	// rays (NEE), connection rays (BDPT), and the continuation ray
+	// all start above the originating surface.  Using the normal
+	// offset for the scattered ray (rather than advancing along the
+	// ray direction) ensures adequate clearance even for near-grazing
+	// directions, and keeps the ray origin consistent with the stored
+	// vertex position used by BDPT geometric terms.
+	result.entryPoint = Point3Ops::mkPoint3( entryPoint,
+		entryNormal * BSSRDF_RAY_EPSILON );
 	result.entryNormal = entryNormal;
 	result.entryONB = entryONB;
-	result.scatteredRay = Ray( entryPoint, cosineDir );
-	result.scatteredRay.Advance( BSSRDF_RAY_EPSILON );
+	result.scatteredRay = Ray( result.entryPoint, cosineDir );
 	result.cosinePdf = cosTheta * INV_PI;
 	result.pdfSurface = pdfSurface;
 	result.valid = true;

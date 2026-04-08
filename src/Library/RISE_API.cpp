@@ -772,6 +772,7 @@ namespace RISE
 #include "Materials/PolishedMaterial.h"
 #include "Materials/DielectricMaterial.h"
 #include "Materials/SubSurfaceScatteringMaterial.h"
+#include "Materials/RandomWalkSSSMaterial.h"
 #include "Materials/PerfectReflectorMaterial.h"
 #include "Materials/PerfectRefractorMaterial.h"
 #include "Materials/AshikminShirleyAnisotropicPhongMaterial.h"
@@ -879,6 +880,27 @@ namespace RISE
 
 		(*ppi) = new SubSurfaceScatteringMaterial( ior, absorption, scattering, g, roughness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "subsurface scattering material" );
+		return true;
+	}
+
+	//! Creates a Random Walk SSS material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateRandomWalkSSSMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& absorption,		///< [in] Absorption coefficient
+								const IPainter& scattering,		///< [in] Scattering coefficient
+								const Scalar g,					///< [in] HG asymmetry parameter
+								const Scalar roughness,			///< [in] Surface roughness [0,1]
+								const unsigned int maxBounces	///< [in] Maximum walk steps
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new RandomWalkSSSMaterial( ior, absorption, scattering, g, roughness, maxBounces );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "random walk SSS material" );
 		return true;
 	}
 

@@ -83,6 +83,7 @@
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/BSSRDFSampling.h"
 #include "BDPTVertex.h"
+#include "../Utilities/RandomNumbers.h"
 #include <atomic>
 #include <vector>
 
@@ -209,7 +210,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				std::vector<BDPTVertex>& vertices
+				std::vector<BDPTVertex>& vertices,
+				const RandomNumberGenerator& random
 				) const;
 
 			/// Generates an eye subpath from a camera ray.
@@ -283,7 +285,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
-				const Scalar nm
+				const Scalar nm,
+				const RandomNumberGenerator& random
 				) const;
 
 			unsigned int GenerateEyeSubpathNM(

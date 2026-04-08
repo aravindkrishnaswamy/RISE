@@ -16,6 +16,7 @@
 
 #include "IReference.h"
 #include "SpecularInfo.h"
+#include "../Utilities/Math3D/Math3D.h"
 
 namespace RISE
 {
@@ -25,6 +26,18 @@ namespace RISE
 	class ISubSurfaceDiffusionProfile;
 	class RayIntersectionGeometric;
 	class IORStack;
+
+	/// Parameters for random-walk subsurface scattering.
+	/// Stored on the material and queried by the integrators.
+	struct RandomWalkSSSParams
+	{
+		RISEPel			sigma_a;		///< Absorption coefficient [1/m]
+		RISEPel			sigma_s;		///< Scattering coefficient [1/m]
+		RISEPel			sigma_t;		///< Extinction coefficient [1/m]
+		Scalar			g;				///< HG asymmetry factor (-1 to 1)
+		Scalar			ior;			///< Index of refraction at boundary
+		unsigned int	maxBounces;		///< Maximum walk steps
+	};
 
 	//! The IMaterial interface is basically an aggregate of other interfaces.  Though we don't actually
 	//! aggregate the interfaces, in essense what is all it does
@@ -64,6 +77,13 @@ namespace RISE
 		/// probe ray casting to find entry points on the surface, using
 		/// this profile's Rd(r) for weighting and sampling.
 		virtual ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return 0; }
+
+		/// \return Parameters for random-walk subsurface scattering.
+		/// NULL if this material does not use random-walk SSS.
+		/// When non-NULL, the integrator traces a volumetric random
+		/// walk inside the mesh instead of using disk-projection
+		/// sampling.  Mutually exclusive with GetDiffusionProfile().
+		virtual const RandomWalkSSSParams* GetRandomWalkSSSParams() const { return 0; }
 
 		/// \return Information about this material's specular (delta) behavior.
 		/// Used by the specular manifold sampling solver to determine constraint

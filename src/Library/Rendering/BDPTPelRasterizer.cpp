@@ -87,7 +87,7 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
-	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts );
+	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );
 
 	// Extract first-hit AOV data for the denoiser

@@ -489,6 +489,18 @@ namespace RISE
 								const Scalar roughness			///< [in] Surface roughness [0,1]
 								);
 
+	//! Creates a Random Walk SSS material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateRandomWalkSSSMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& absorption,		///< [in] Absorption coefficient
+								const IPainter& scattering,		///< [in] Scattering coefficient
+								const Scalar g,					///< [in] HG asymmetry parameter
+								const Scalar roughness,			///< [in] Surface roughness [0,1]
+								const unsigned int maxBounces	///< [in] Maximum walk steps
+								);
+
 	//! Creates an isotropic phong material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIsotropicPhongMaterial(

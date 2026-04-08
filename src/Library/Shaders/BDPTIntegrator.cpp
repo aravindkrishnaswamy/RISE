@@ -66,6 +66,7 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/ILightPriv.h"
+#include "../Utilities/RandomWalkSSS.h"
 #include "../Utilities/BDPTUtilities.h"
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/PathVertexEval.h"
@@ -80,6 +81,7 @@
 #include "../Utilities/MediumTracking.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPhaseFunction.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1252,7 +1254,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	std::vector<BDPTVertex>& vertices
+	std::vector<BDPTVertex>& vertices,
+	const RandomNumberGenerator& random
 	) const
 {
 	vertices.clear();
@@ -1711,6 +1714,86 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 				// The SPF's kray already contains R, so throughput update
 				// below gives beta *= R.  We need beta *= R/R = 1, so
 				// compensate by dividing by R.
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
+				}
+			}
+		}
+		// --- Random-walk SSS (RGB light subpath) ---
+		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
+		{
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
+			if( cosIn > NEARZERO )
+			{
+				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
+				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+					((pRW->ior - 1.0) / (pRW->ior + 1.0));
+				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+				const Scalar Ft = 1.0 - F;
+				const Scalar R = F;
+
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+				{
+					// The random walk consumes a variable number of
+					// dimensions (up to ~7 per scatter × maxBounces).
+					// Samplers with a fixed dimension budget (Sobol)
+					// cannot tolerate this — use IndependentSampler.
+					// Samplers without a budget (PSSMLT, independent)
+					// are used directly so the walk stays in the
+					// primary sample vector.
+					IndependentSampler walkSampler( random );
+					ISampler& rwSampler = sampler.HasFixedDimensionBudget()
+						? static_cast<ISampler&>(walkSampler) : sampler;
+
+					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
+						ri.geometric, ri.pObject,
+						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0 );
+
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+
+						// SampleExit does NOT include Ft(entry).
+						// Coin flip selects with probability Ft, so the
+						// physical Ft and the 1/Ft selection compensation
+						// cancel: weight * Ft / Ft = weight.
+						const RISEPel betaSpatial = beta * bssrdf.weightSpatial;
+						beta = beta * bssrdf.weight;
+
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.pMediumObject = pMedObj_light;
+						entryV.pMediumVol = pMed_light;
+
+						// The random walk has no analytic area PDF for
+						// the exit point — pdfSurface is a placeholder.
+						// Mark the vertex as delta + non-connectible so
+						// that (a) no connection strategy targets it,
+						// and (b) the MIS ratio chain passes through
+						// cleanly (remap0(0)/remap0(0) = 1).  The PT
+						// path still does NEE at entry points via
+						// EvaluateDirectLighting.
+						entryV.isDelta = true;
+						entryV.isConnectible = false;
+						entryV.isBSSRDFEntry = true;
+						entryV.throughput = betaSpatial;
+						entryV.pdfFwd = 0;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
 				if( R > NEARZERO ) {
 					bssrdfReflectCompensation = 1.0 / R;
 				}
@@ -2495,6 +2578,77 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						entryV.isBSSRDFEntry = true;
 						entryV.throughput = betaSpatial;
 						entryV.pdfFwd = bssrdf.pdfSurface;
+						entryV.pdfRev = 0;
+#ifdef RISE_ENABLE_OPENPGL
+						entryV.guidingHasSegment = true;
+						entryV.guidingDirectionOut = -bssrdf.scatteredRay.Dir();
+						entryV.guidingNormal = entryV.normal;
+						entryV.guidingEta = 1.0;
+#endif
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
+				}
+			}
+		}
+		// --- Random-walk SSS (RGB eye subpath) ---
+		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
+		{
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
+			if( cosIn > NEARZERO )
+			{
+				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
+				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+					((pRW->ior - 1.0) / (pRW->ior + 1.0));
+				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+				const Scalar Ft = 1.0 - F;
+				const Scalar R = F;
+
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+				{
+					// See RGB light subpath comment for rationale.
+					IndependentSampler walkSampler( rc.random );
+					ISampler& rwSampler = sampler.HasFixedDimensionBudget()
+						? static_cast<ISampler&>(walkSampler) : sampler;
+
+					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
+						ri.geometric, ri.pObject,
+						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0 );
+
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+
+						// SampleExit does NOT include Ft(entry).
+						// Coin flip: weight * Ft / Ft = weight.
+						const RISEPel betaSpatial = beta * bssrdf.weightSpatial;
+						beta = beta * bssrdf.weight;
+
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.pMediumObject = pMedObj_eye;
+						entryV.pMediumVol = pMed_eye;
+
+						// See RGB light subpath block for rationale.
+						entryV.isDelta = true;
+						entryV.isConnectible = false;
+						entryV.isBSSRDFEntry = true;
+						entryV.throughput = betaSpatial;
+						entryV.pdfFwd = 0;
 						entryV.pdfRev = 0;
 #ifdef RISE_ENABLE_OPENPGL
 						entryV.guidingHasSegment = true;
@@ -4194,7 +4348,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<BDPTVertex>& vertices,
-	const Scalar nm
+	const Scalar nm,
+	const RandomNumberGenerator& random
 	) const
 {
 	vertices.clear();
@@ -4613,6 +4768,71 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			if( R > NEARZERO ) {
 				bssrdfReflectCompensation = 1.0 / R;
 			}
+			}
+		}
+		// --- Random-walk SSS (NM light subpath) ---
+		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
+		{
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
+			if( cosIn > NEARZERO )
+			{
+				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
+				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+					((pRW->ior - 1.0) / (pRW->ior + 1.0));
+				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+				const Scalar Ft = 1.0 - F;
+				const Scalar R = F;
+
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+				{
+					// See RGB light subpath comment for rationale.
+					IndependentSampler walkSampler( random );
+					ISampler& rwSampler = sampler.HasFixedDimensionBudget()
+						? static_cast<ISampler&>(walkSampler) : sampler;
+
+					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
+						ri.geometric, ri.pObject,
+						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm );
+
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+
+						// SampleExit does NOT include Ft(entry).
+						// Coin flip: weight * Ft / Ft = weight.
+						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM;
+						betaNM = betaNM * bssrdf.weightNM;
+
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.pMediumObject = pMedObj_nmLight;
+						entryV.pMediumVol = pMed_nmLight;
+
+						// See RGB light subpath block for rationale.
+						entryV.isDelta = true;
+						entryV.isConnectible = false;
+						entryV.isBSSRDFEntry = true;
+						entryV.throughputNM = betaSpatialNM;
+						entryV.pdfFwd = 0;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
+				}
 			}
 		}
 		// --- End BSSRDF sampling ---
@@ -5279,6 +5499,71 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			if( R > NEARZERO ) {
 				bssrdfReflectCompensation = 1.0 / R;
 			}
+			}
+		}
+		// --- Random-walk SSS (NM eye subpath) ---
+		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
+		{
+			const Scalar cosIn = Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() );
+			if( cosIn > NEARZERO )
+			{
+				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
+				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+					((pRW->ior - 1.0) / (pRW->ior + 1.0));
+				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+				const Scalar Ft = 1.0 - F;
+				const Scalar R = F;
+
+				if( Ft > NEARZERO && sampler.Get1D() < Ft )
+				{
+					// See RGB light subpath comment for rationale.
+					IndependentSampler walkSampler( rc.random );
+					ISampler& rwSampler = sampler.HasFixedDimensionBudget()
+						? static_cast<ISampler&>(walkSampler) : sampler;
+
+					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
+						ri.geometric, ri.pObject,
+						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm );
+
+					if( bssrdf.valid )
+					{
+						vertices.back().isDelta = true;
+
+						// SampleExit does NOT include Ft(entry).
+						// Coin flip: weight * Ft / Ft = weight.
+						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM;
+						betaNM = betaNM * bssrdf.weightNM;
+
+						BDPTVertex entryV;
+						entryV.type = BDPTVertex::SURFACE;
+						entryV.position = bssrdf.entryPoint;
+						entryV.normal = bssrdf.entryNormal;
+						entryV.onb = bssrdf.entryONB;
+						entryV.pMaterial = ri.pMaterial;
+						entryV.pObject = ri.pObject;
+						entryV.pMediumObject = pMedObj_nmEye;
+						entryV.pMediumVol = pMed_nmEye;
+
+						// See RGB light subpath block for rationale.
+						entryV.isDelta = true;
+						entryV.isConnectible = false;
+						entryV.isBSSRDFEntry = true;
+						entryV.throughputNM = betaSpatialNM;
+						entryV.pdfFwd = 0;
+						entryV.pdfRev = 0;
+						vertices.push_back( entryV );
+
+						pdfFwdPrev = bssrdf.cosinePdf;
+						currentRay = bssrdf.scatteredRay;
+						continue;
+					}
+					break;
+				}
+				if( R > NEARZERO ) {
+					bssrdfReflectCompensation = 1.0 / R;
+				}
 			}
 		}
 		// --- End BSSRDF sampling ---

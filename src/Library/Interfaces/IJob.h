@@ -409,6 +409,18 @@ namespace RISE
 									const char* roughness			///< [in] Surface roughness [0,1]
 									) = 0;
 
+		//! Adds a Random Walk SSS material
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddRandomWalkSSSMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* ior,				///< [in] Index of refraction
+									const char* absorption,			///< [in] Absorption coefficient
+									const char* scattering,			///< [in] Scattering coefficient
+									const char* g,					///< [in] HG asymmetry parameter
+									const char* roughness,			///< [in] Surface roughness [0,1]
+									const char* maxBounces			///< [in] Maximum walk steps
+									) = 0;
+
 		//! Adds an isotropic phong material
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddIsotropicPhongMaterial(

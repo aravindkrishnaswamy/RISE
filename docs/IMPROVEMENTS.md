@@ -31,7 +31,7 @@ The improvements below target gaps where the field has advanced beyond what RISE
 |------|------------|----------|--------|------------|
 | 1 | ~~GGX microfacet + VNDF + Kulla-Conty multiscattering~~ **DONE** | Materials | Medium | None |
 | 2 | Light subpath guiding in BDPT | Transport | Medium | None (eye guiding complete) |
-| 3 | Random-walk subsurface scattering | Materials | Medium | None (disk projection complete) |
+| 3 | ~~Random-walk subsurface scattering~~ **DONE** | Materials | Medium | None (disk projection complete) |
 | 4 | Light BVH for many-light sampling | Lights | Medium-Large | Roadmap Rank 1 |
 | 5 | Hero wavelength spectral sampling (HWSS) | Spectral | Medium-Large | None |
 | 6 | Blue-noise screen-space error distribution (ZSobol) | Sampling | Small | None |
@@ -204,56 +204,59 @@ If convergence is poor on highly asymmetric (non-reciprocal) scenes, Option B (s
 
 ---
 
-## 3. Random-Walk Subsurface Scattering
+## 3. Random-Walk Subsurface Scattering — DONE
 
-### Why This Is Third
+**Implemented April 2026.**
 
-RISE already has excellent diffusion-profile BSSRDF support (Donner-Jensen, BioSpec, Burley normalized diffusion) with disk-projection sampling in both PT and BDPT (Roadmap Stage 4A/4B complete). Random-walk SSS (Chiang, Burley, SIGGRAPH 2016) handles thin geometry (ears, noses, fingers) and high-albedo materials where disk projection fails. It is the default in Arnold, RenderMan, Hyperion, and Cycles.
+### Summary
 
-### What To Implement
+Volumetric random-walk SSS (Chiang, Burley et al., SIGGRAPH 2016) as a new material type, parallel to existing disk-projection BSSRDF. At a front-face hit, the algorithm refracts into the surface and traces a random walk using Beer-Lambert free-flight distance sampling and Henyey-Greenstein phase function scattering. When the walk exits the mesh, the exit point becomes the re-emission vertex with cosine-weighted sampling.
 
-#### 3A. Volumetric random walk inside mesh
+Key features:
+- Mixture PDF throughput formulation (avoids infinite variance from per-channel selection)
+- Stochastic Fresnel at exit boundary (coin-flip reflect/transmit, weight cancellation)
+- TIR handling (reflect back inside and continue walk)
+- Coefficient conversion utility (Burley scaling: s = 1.9 - A + 3.5*(A-0.8)^2)
+- Full RGB and spectral (NM) support in both PT and BDPT
+- Compatible with OpenPGL path guiding (entry vertices set identical guiding metadata)
+- Existing disk-projection materials untouched (zero regression risk)
 
-At a BSSRDF entry point, instead of disk-projection sampling, trace a random walk inside the mesh geometry:
+### Files
 
-1. Refract into the surface using the material's IOR.
-2. Sample free-flight distance from Beer's law: t = -log(xi) / sigma_t.
-3. At each scatter point, apply the Henyey-Greenstein phase function (or isotropic) to choose a new direction.
-4. When the walk exits the mesh (ray intersects the interior surface from inside), evaluate the BSSRDF exit conditions: compute the surface normal, apply Fresnel transmission, and connect to the exit point.
-5. Apply MIS between the disk-projection method and random walk if both are available.
+New:
+- `src/Library/Utilities/RandomWalkSSS.h` / `.cpp` — Walk algorithm
+- `src/Library/Utilities/SSSCoefficients.h` — Coefficient conversion (header-only)
+- `src/Library/Materials/RandomWalkSSSMaterial.h` — Material class (header-only)
+- `tests/RandomWalkSSSTest.cpp` — 5-test suite: walk exits sphere, energy conservation, pure absorption, coefficient conversion, TIR handling
+- `scenes/Tests/SubsurfaceScattering/rwsss_sphere.RISEscene` — Basic sphere (PT)
+- `scenes/Tests/SubsurfaceScattering/rwsss_bdpt.RISEscene` — BDPT convergence test
+- `scenes/Tests/SubsurfaceScattering/rwsss_thin_slab.RISEscene` — Thin geometry test
+- `scenes/Tests/SubsurfaceScattering/rwsss_colored.RISEscene` — Anisotropic absorption
 
-The `HomogeneousMedium` and `HenyeyGreensteinPhaseFunction` classes already provide the volumetric primitives. The main new work is the inside-mesh ray tracing loop and exit-point detection.
+Modified:
+- `src/Library/Interfaces/IMaterial.h` — `RandomWalkSSSParams` struct + `GetRandomWalkSSSParams()`
+- `src/Library/Shaders/PathTracingShaderOp.cpp` — RGB + NM random-walk blocks, `RandomWalkEntryBSDF` adapter
+- `src/Library/Shaders/BDPTIntegrator.cpp` — 4 random-walk blocks (RGB/NM eye/light subpaths)
+- `src/Library/Utilities/PathVertexEval.h` — Sw evaluation for random-walk entry vertices
+- `src/Library/RISE_API.h` / `.cpp` — Public construction API
+- `src/Library/Interfaces/IJob.h`, `src/Library/Job.h` / `.cpp` — Material creation
+- `src/Library/Parsers/AsciiSceneParser.cpp` — `randomwalk_sss_material` parser chunk
+- `build/make/rise/Filelist` — Build system
 
-#### 3B. Scattering coefficient conversion
+### Scene syntax
 
-Convert diffusion-profile parameters (mean free path, albedo) to volumetric scattering coefficients (sigma_a, sigma_s) for the random walk. Use the searchable inversion from Christensen and Burley (2015) or the direct parameterization from the Chiang et al. (2016) paper.
-
-#### 3C. Per-material selection
-
-Add a per-material flag to choose between disk projection and random walk. Expose via parser. Default to random walk for new materials; preserve disk projection as fallback for compatibility.
-
-### Current RISE Files
-
-- `src/Library/Materials/SubSurfaceScatteringSPF.h` / `.cpp`
-- `src/Library/Utilities/BSSRDFSampling.h` / `.cpp` (shared entry/exit utilities)
-- `src/Library/Materials/HomogeneousMedium.h` / `.cpp` (volumetric primitives)
-- `src/Library/Materials/HenyeyGreensteinPhaseFunction.h`
-- `src/Library/Materials/BurleyNormalizedDiffusionProfile.h` / `.cpp`
-- `src/Library/Shaders/PathTracingShaderOp.cpp` (PT BSSRDF path)
-- `src/Library/Shaders/BDPTIntegrator.cpp` (BDPT BSSRDF path)
-
-### Deliverables
-
-- Random-walk BSSRDF sampling mode in PT and BDPT.
-- Coefficient conversion from diffusion-profile parameters.
-- Per-material mode selection via parser.
-- Comparison scene: thin geometry (ear, finger) rendered with disk projection vs random walk.
-
-### Acceptance Criteria
-
-- Thin geometry renders without the light leaking artifacts that disk projection produces.
-- Thick geometry matches disk projection within noise.
-- Energy conservation validated on a unit sphere.
+```
+randomwalk_sss_material
+{
+    name        my_rwsss
+    ior         1.3
+    absorption  abs_painter
+    scattering  scat_painter
+    g           0.0
+    roughness   0.05
+    max_bounces 64
+}
+```
 
 ---
 
@@ -635,7 +638,7 @@ Several items here build on transport work already completed or planned before t
 | Light BVH (Rank 4) | Planned (Stage 1C of prior roadmap) |
 | Null-scattering volumes (Rank 7) | Planned (Ranks 5-6 of prior roadmap) |
 | Light subpath guiding (Rank 2) | New scope (Stage 8C was deferred) |
-| Random-walk SSS (Rank 3) | Planned (Stage 4C of prior roadmap) |
+| Random-walk SSS (Rank 3) | **Done** (April 2026) |
 
 The following validation and correctness work from the prior roadmap remains relevant before starting items that depend on light sampling or spectral correctness:
 - Validation harness: focused scenes for many-light, caustic, BSSRDF, and fog transport.

@@ -727,6 +727,9 @@
 		F24C54642F84597B009AF16D /* GGXSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545E2F84597B009AF16D /* GGXSPF.h */; };
 		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
+		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
+		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
+		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1494,6 +1497,8 @@
 		F24C545D2F84597B009AF16D /* GGXMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXMaterial.h; sourceTree = "<group>"; };
 		F24C545E2F84597B009AF16D /* GGXSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXSPF.h; sourceTree = "<group>"; };
 		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
+		F24C54672F859F87009AF16D /* RandomWalkSSS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSS.h; sourceTree = "<group>"; };
+		F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RandomWalkSSS.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2995,6 +3000,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54672F859F87009AF16D /* RandomWalkSSS.h */,
+				F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */,
 				F24C544B2F7CAB67009AF16D /* MediumTracking.h */,
 				F24C544C2F7CAB67009AF16D /* MediumTransport.h */,
 				F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */,
@@ -3465,6 +3472,7 @@
 				F27F0BDB069C42910069C9E5 /* TranslucentPelPhotonTracer.h in Headers */,
 				F27F0BDC069C42910069C9E5 /* Polygon.h in Headers */,
 				F27F0BDD069C42910069C9E5 /* BicubicRasterImageAccessor.h in Headers */,
+				F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */,
 				F27F0BDE069C42910069C9E5 /* BilinRasterImageAccessor.h in Headers */,
 				F27F0BE0069C42910069C9E5 /* HDRReader.h in Headers */,
 				F27F0BE2069C42910069C9E5 /* HDRWriter.h in Headers */,
@@ -3764,6 +3772,7 @@
 				F27F0A77069C42910069C9E5 /* BezierRootFinder.cpp in Sources */,
 				F27F0A79069C42910069C9E5 /* CubicFunction.cpp in Sources */,
 				F27F0A7B069C42910069C9E5 /* KleinBottleParametricFunctions.cpp in Sources */,
+				F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */,
 				F27F0A7D069C42910069C9E5 /* LinearFunction.cpp in Sources */,
 				F27F0A7F069C42910069C9E5 /* ParametricSurface.cpp in Sources */,
 				F27F0A81069C42910069C9E5 /* Polynomial.cpp in Sources */,
@@ -4526,6 +4535,7 @@
 				F24B73C92F52A632008304C4 /* CausticSpectralPhotonMapShaderOp.cpp in Sources */,
 				F24B73CA2F52A632008304C4 /* CausticSpectralPhotonMapShaderOp.h in Sources */,
 				F24B73CB2F52A632008304C4 /* DirectLightingShaderOp.cpp in Sources */,
+				F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */,
 				F24B73CC2F52A632008304C4 /* DirectLightingShaderOp.h in Sources */,
 				F24B73CD2F52A632008304C4 /* DistributionTracingShaderOp.cpp in Sources */,
 				F24B73CE2F52A632008304C4 /* DistributionTracingShaderOp.h in Sources */,

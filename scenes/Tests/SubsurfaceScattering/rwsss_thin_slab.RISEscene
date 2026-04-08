@@ -1,0 +1,180 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           rwsss_thin_slab.RISEscene                                                              #
+#   Description:    Thin planar slab (0.1 unit thick) with random-walk SSS, backlit by an                  #
+#                   area light.  This tests the random-walk advantage over disk projection                  #
+#                   for thin geometry — light should transmit through the slab and be visible               #
+#                   on the camera-facing side.                                                               #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 7, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		16
+	min_importance		0.001
+	samples				128
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rwsss_thin_slab
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	width				480
+	height				360
+	fov					40.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+	colorspace			ROMMRGB_Linear
+}
+
+# Low absorption, high scattering for visible transmission
+uniformcolor_painter
+{
+	name				pnt_absorption
+	color				0.05 0.2 0.5
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_scattering
+	color				8.0 8.0 8.0
+	colorspace			ROMMRGB_Linear
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				lum
+	exitance			pnt_light
+	scale				5
+	material			none
+}
+
+randomwalk_sss_material
+{
+	name				rwsss_thin
+	ior					1.3
+	absorption			pnt_absorption
+	scattering			pnt_scattering
+	g					0.0
+	roughness			0.0
+	max_bounces			64
+}
+
+##################################################
+# Objects
+##################################################
+
+# Thin slab: a box 2x2x0.1 units
+box_geometry
+{
+	name				slabgeom
+	width				2.0
+	height				2.0
+	depth				0.1
+}
+
+standard_object
+{
+	name				slab
+	geometry			slabgeom
+	position			0 0 0
+	material			rwsss_thin
+}
+
+# Backlight: behind the slab
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-1.5 -1.5 0
+	ptb					1.5 -1.5 0
+	ptc					1.5 1.5 0
+	ptd					-1.5 1.5 0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			lum
+	position			0 0 -1.0
+	orientation			0 0 0
+}
+
+# Floor
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-5 -5 0
+	ptb					5 -5 0
+	ptc					5 5 0
+	ptd					-5 5 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 -1.5 0
+	orientation			-90 0 0
+	material			white
+}

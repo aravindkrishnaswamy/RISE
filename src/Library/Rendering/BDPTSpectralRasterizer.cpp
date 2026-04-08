@@ -97,7 +97,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
-	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, nm );
+	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, nm, rc.random );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, nm );
 
 	// Extract first-hit AOV data for the denoiser (only on first wavelength)
