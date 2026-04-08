@@ -93,7 +93,8 @@ namespace RISE
 			const Scalar ior,
 			const unsigned int maxBounces,
 			ISampler& sampler,
-			const Scalar nm
+			const Scalar nm,
+			const Scalar maxDepth = 0
 			);
 	}
 }

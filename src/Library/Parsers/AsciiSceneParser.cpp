@@ -2040,6 +2040,96 @@ namespace RISE
 				}
 			};
 
+			struct BioSpecSkinRWMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String thickness_SC = "0.001";
+					String thickness_epidermis = "0.01";
+					String thickness_papillary_dermis = "0.02";
+					String thickness_reticular_dermis = "0.18";
+					String ior_SC = "1.55";
+					String ior_epidermis = "1.4";
+					String ior_papillary_dermis = "1.36";
+					String ior_reticular_dermis = "1.38";
+					String concentration_eumelanin = "80.0";
+					String concentration_pheomelanin = "12.0";
+					String melanosomes_in_epidermis = "0.10";
+					String hb_ratio = "0.75";
+					String whole_blood_in_papillary_dermis = "0.012";
+					String whole_blood_in_reticular_dermis = "0.0091";
+					String bilirubin_concentration = "0.05";
+					String betacarotene_concentration_SC = "2.1e-4";
+					String betacarotene_concentration_epidermis = "2.1e-4";
+					String betacarotene_concentration_dermis = "7.0e-5";
+					String roughness = "0.0";
+					String max_bounces = "64";
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "thickness_SC" ) {
+							thickness_SC = pvalue;
+						} else if( pname == "thickness_epidermis" ) {
+							thickness_epidermis = pvalue;
+						} else if( pname == "thickness_papillary_dermis" ) {
+							thickness_papillary_dermis = pvalue;
+						} else if( pname == "thickness_reticular_dermis" ) {
+							thickness_reticular_dermis = pvalue;
+						} else if( pname == "ior_SC" ) {
+							ior_SC = pvalue;
+						} else if( pname == "ior_epidermis" ) {
+							ior_epidermis = pvalue;
+						} else if( pname == "ior_papillary_dermis" ) {
+							ior_papillary_dermis = pvalue;
+						} else if( pname == "ior_reticular_dermis" ) {
+							ior_reticular_dermis = pvalue;
+						} else if( pname == "concentration_eumelanin" ) {
+							concentration_eumelanin = pvalue;
+						} else if( pname == "concentration_pheomelanin" ) {
+							concentration_pheomelanin = pvalue;
+						} else if( pname == "melanosomes_in_epidermis" ) {
+							melanosomes_in_epidermis = pvalue;
+						} else if( pname == "hb_ratio" ) {
+							hb_ratio = pvalue;
+						} else if( pname == "whole_blood_in_papillary_dermis" ) {
+							whole_blood_in_papillary_dermis = pvalue;
+						} else if( pname == "whole_blood_in_reticular_dermis" ) {
+							whole_blood_in_reticular_dermis = pvalue;
+						} else if( pname == "bilirubin_concentration" ) {
+							bilirubin_concentration = pvalue;
+						} else if( pname == "betacarotene_concentration_SC" ) {
+							betacarotene_concentration_SC = pvalue;
+						} else if( pname == "betacarotene_concentration_epidermis" ) {
+							betacarotene_concentration_epidermis = pvalue;
+						} else if( pname == "betacarotene_concentration_dermis" ) {
+							betacarotene_concentration_dermis = pvalue;
+						} else if( pname == "roughness" ) {
+							roughness = pvalue;
+						} else if( pname == "max_bounces" ) {
+							max_bounces = pvalue;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddBioSpecSkinRWMaterial( name.c_str(), thickness_SC.c_str(), thickness_epidermis.c_str(), thickness_papillary_dermis.c_str(), thickness_reticular_dermis.c_str(),
+						ior_SC.c_str(), ior_epidermis.c_str(), ior_papillary_dermis.c_str(), ior_reticular_dermis.c_str(), concentration_eumelanin.c_str(), concentration_pheomelanin.c_str(),
+						melanosomes_in_epidermis.c_str(), hb_ratio.c_str(), whole_blood_in_papillary_dermis.c_str(), whole_blood_in_reticular_dermis.c_str(),
+						bilirubin_concentration.c_str(), betacarotene_concentration_SC.c_str(), betacarotene_concentration_epidermis.c_str(), betacarotene_concentration_dermis.c_str(),
+						roughness.c_str(), max_bounces.c_str() );
+				}
+			};
+
 			struct DonnerJensenSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -4723,99 +4813,6 @@ namespace RISE
 				}
 			};
 
-			struct BioSpecSkinSSSShaderOpAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					String name = "noname";
-					unsigned int numpoints = 100000;
-					double error = 0.0001;
-					unsigned int maxPointsPerNode = 40;
-					unsigned char maxDepth = 8;
-					double irrad_scale = 0.3;
-					String shader = "none";
-					bool cache = true;
-					double thickness_SC = 0.001;
-					double thickness_epidermis = 0.01;
-					double thickness_papillary = 0.02;
-					double thickness_reticular = 0.18;
-					double ior_SC = 1.55;
-					double ior_epidermis = 1.4;
-					double ior_papillary = 1.36;
-					double ior_reticular = 1.38;
-					double concentration_eumelanin = 80.0;
-					double concentration_pheomelanin = 12.0;
-					double melanosomes_in_epidermis = 0.10;
-					double hb_ratio = 0.75;
-					double whole_blood_papillary = 0.012;
-					double whole_blood_reticular = 0.0091;
-					double bilirubin_concentration = 0.05;
-					double betacarotene_SC = 2.1e-4;
-					double betacarotene_epidermis = 2.1e-4;
-					double betacarotene_dermis = 7.0e-5;
-					String melanosomes_offset = "";
-					String blood_papillary_offset = "";
-					String blood_reticular_offset = "";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) { name = pvalue; }
-						else if( pname == "numpoints" ) { numpoints = pvalue.toUInt(); }
-						else if( pname == "error" ) { error = pvalue.toDouble(); }
-						else if( pname == "maxpointspernode" ) { maxPointsPerNode = pvalue.toUInt(); }
-						else if( pname == "maxdepth" ) { maxDepth = pvalue.toUChar(); }
-						else if( pname == "irrad_scale" ) { irrad_scale = pvalue.toDouble(); }
-						else if( pname == "shader" ) { shader = pvalue; }
-						else if( pname == "cache" ) { cache = pvalue.toBoolean(); }
-						else if( pname == "thickness_SC" ) { thickness_SC = pvalue.toDouble(); }
-						else if( pname == "thickness_epidermis" ) { thickness_epidermis = pvalue.toDouble(); }
-						else if( pname == "thickness_papillary_dermis" ) { thickness_papillary = pvalue.toDouble(); }
-						else if( pname == "thickness_reticular_dermis" ) { thickness_reticular = pvalue.toDouble(); }
-						else if( pname == "ior_SC" ) { ior_SC = pvalue.toDouble(); }
-						else if( pname == "ior_epidermis" ) { ior_epidermis = pvalue.toDouble(); }
-						else if( pname == "ior_papillary_dermis" ) { ior_papillary = pvalue.toDouble(); }
-						else if( pname == "ior_reticular_dermis" ) { ior_reticular = pvalue.toDouble(); }
-						else if( pname == "concentration_eumelanin" ) { concentration_eumelanin = pvalue.toDouble(); }
-						else if( pname == "concentration_pheomelanin" ) { concentration_pheomelanin = pvalue.toDouble(); }
-						else if( pname == "melanosomes_in_epidermis" ) { melanosomes_in_epidermis = pvalue.toDouble(); }
-						else if( pname == "hb_ratio" ) { hb_ratio = pvalue.toDouble(); }
-						else if( pname == "whole_blood_in_papillary_dermis" ) { whole_blood_papillary = pvalue.toDouble(); }
-						else if( pname == "whole_blood_in_reticular_dermis" ) { whole_blood_reticular = pvalue.toDouble(); }
-						else if( pname == "bilirubin_concentration" ) { bilirubin_concentration = pvalue.toDouble(); }
-						else if( pname == "betacarotene_concentration_SC" ) { betacarotene_SC = pvalue.toDouble(); }
-						else if( pname == "betacarotene_concentration_epidermis" ) { betacarotene_epidermis = pvalue.toDouble(); }
-						else if( pname == "betacarotene_concentration_dermis" ) { betacarotene_dermis = pvalue.toDouble(); }
-						else if( pname == "melanosomes_offset" ) { melanosomes_offset = pvalue; }
-						else if( pname == "blood_papillary_offset" ) { blood_papillary_offset = pvalue; }
-						else if( pname == "blood_reticular_offset" ) { blood_reticular_offset = pvalue; }
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddBioSpecSkinSSSShaderOp( name.c_str(),
-						numpoints, error, maxPointsPerNode, maxDepth, irrad_scale,
-						shader.c_str(), cache,
-						thickness_SC, thickness_epidermis, thickness_papillary, thickness_reticular,
-						ior_SC, ior_epidermis, ior_papillary, ior_reticular,
-						concentration_eumelanin, concentration_pheomelanin,
-						melanosomes_in_epidermis, hb_ratio,
-						whole_blood_papillary, whole_blood_reticular,
-						bilirubin_concentration,
-						betacarotene_SC, betacarotene_epidermis, betacarotene_dermis,
-						melanosomes_offset.c_str(),
-						blood_papillary_offset.c_str(),
-						blood_reticular_offset.c_str() );
-				}
-			};
-
 			struct AreaLightShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -7130,6 +7127,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["translucent_material"] = new TranslucentMaterialAsciiChunkParser();
 	chunks["biospec_skin_material"] = new BioSpecSkinMaterialAsciiChunkParser();
 	chunks["biospec_skin_bssrdf_material"] = new BioSpecSkinBSSRDFMaterialAsciiChunkParser();
+	chunks["biospec_skin_rw_material"] = new BioSpecSkinRWMaterialAsciiChunkParser();
 	chunks["donner_jensen_skin_bssrdf_material"] = new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser();
 	chunks["generic_human_tissue_material"] = new GenericHumanTissueMaterialAsciiChunkParser();
 	chunks["composite_material"] = new CompositeMaterialAsciiChunkParser();
@@ -7182,7 +7180,6 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["simple_sss_shaderop"] = new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser();
 	chunks["diffusion_approximation_sss_shaderop"] = new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser();
 	chunks["donner_jensen_skin_sss_shaderop"] = new DonnerJensenSkinSSSShaderOpAsciiChunkParser();
-	chunks["biospec_skin_sss_shaderop"] = new BioSpecSkinSSSShaderOpAsciiChunkParser();
 	chunks["arealight_shaderop"] = new AreaLightShaderOpAsciiChunkParser();
 	chunks["transparency_shaderop"] = new TransparencyShaderOpAsciiChunkParser();
 

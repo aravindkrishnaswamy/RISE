@@ -730,6 +730,9 @@
 		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
 		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
 		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
+		F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
+		F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */; };
+		F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1387,9 +1390,6 @@
 		F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
 		F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */; };
 		F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
-		F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
-		F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
-		F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */; };
 		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
 		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
@@ -1499,6 +1499,8 @@
 		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
 		F24C54672F859F87009AF16D /* RandomWalkSSS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSS.h; sourceTree = "<group>"; };
 		F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RandomWalkSSS.cpp; sourceTree = "<group>"; };
+		F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinRWMaterial.h; sourceTree = "<group>"; };
+		F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinRWMaterial.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2139,8 +2141,6 @@
 		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
 		F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinSSSShaderOp.h; sourceTree = "<group>"; };
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
-		F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinSSSShaderOp.h; sourceTree = "<group>"; };
-		F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
 		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
@@ -2221,8 +2221,6 @@
 		6DBFAA4A09C4D2A20048A09D /* SSS */ = {
 			isa = PBXGroup;
 			children = (
-				F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */,
-				F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */,
 				F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */,
 				F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */,
 				6DBFAA4B09C4D2A20048A09D /* DiffusionApproximationExtinction.h */,
@@ -2580,6 +2578,8 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */,
+				F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */,
 				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
 				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
 				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
@@ -3193,6 +3193,7 @@
 				F27F0A5D069C42910069C9E5 /* Animator.h in Headers */,
 				F27F0A5F069C42910069C9E5 /* ElementTimeline.h in Headers */,
 				F27F0A61069C42910069C9E5 /* KeyframableHelper.h in Headers */,
+				F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */,
 				F27F0A62069C42910069C9E5 /* Keyframe.h in Headers */,
 				F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */,
 				F27F0A64069C42910069C9E5 /* Timeline.h in Headers */,
@@ -3259,7 +3260,6 @@
 				F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */,
 				F27F0AC5069C42910069C9E5 /* ICubicInterpolator.h in Headers */,
 				F27F0AC6069C42910069C9E5 /* IDeletedCallback.h in Headers */,
-				F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */,
 				F27F0AC7069C42910069C9E5 /* IDetectorSphere.h in Headers */,
 				F27F0AC8069C42910069C9E5 /* IEmitter.h in Headers */,
 				F27F0AC9069C42910069C9E5 /* IEnumCallback.h in Headers */,
@@ -3846,6 +3846,7 @@
 				F27F0B63069C42910069C9E5 /* PerfectReflectorSPF.cpp in Sources */,
 				F27F0B66069C42910069C9E5 /* PerfectRefractorSPF.cpp in Sources */,
 				F27F0B68069C42910069C9E5 /* PhongEmitter.cpp in Sources */,
+				F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F27F0B6B069C42910069C9E5 /* PolishedBRDF.cpp in Sources */,
 				F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */,
 				F27F0B70069C42910069C9E5 /* ScatteredRayContainer.cpp in Sources */,
@@ -3914,7 +3915,6 @@
 				F27F0BEC069C42910069C9E5 /* RGBEAWriter.cpp in Sources */,
 				F27F0BEE069C42910069C9E5 /* TGAReader.cpp in Sources */,
 				F27F0BF0069C42910069C9E5 /* TGAWriter.cpp in Sources */,
-				F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */,
 				F27F0BF3069C42910069C9E5 /* TIFFReader.cpp in Sources */,
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
@@ -4279,7 +4279,6 @@
 				F24B72DD2F52A632008304C4 /* IsotropicPhongSPF.cpp in Sources */,
 				F24B72DE2F52A632008304C4 /* IsotropicPhongSPF.h in Sources */,
 				F24B72DF2F52A632008304C4 /* LambertianBRDF.cpp in Sources */,
-				F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */,
 				F24B72E02F52A632008304C4 /* LambertianBRDF.h in Sources */,
 				F2C5D5E82F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */,
 				F24B72E12F52A632008304C4 /* LambertianEmitter.cpp in Sources */,
@@ -4302,6 +4301,7 @@
 				F24B72F12F52A632008304C4 /* PerfectRefractorSPF.cpp in Sources */,
 				F24B72F22F52A632008304C4 /* PerfectRefractorSPF.h in Sources */,
 				F2C5D5DE2F716BAA00546C97 /* BDPTRasterizerBase.cpp in Sources */,
+				F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F2C5D5DF2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp in Sources */,
 				F24B72F32F52A632008304C4 /* PhongEmitter.cpp in Sources */,
 				F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */,

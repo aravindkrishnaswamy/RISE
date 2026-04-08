@@ -57,9 +57,8 @@ Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geome
 
 ### SSS Pointset Lazy Initialization
 
-Three subsurface scattering shader ops lazily build per-object point set octrees on first access:
+Two subsurface scattering shader ops lazily build per-object point set octrees on first access:
 - `SubSurfaceScatteringShaderOp`
-- `BioSpecSkinSSSShaderOp`
 - `DonnerJensenSkinSSSShaderOp`
 
 These use `mutable PointSetMap pointsets` guarded by a mutex with double-checked locking. The lazy pattern is necessary because octree construction requires ray tracing the scene (evaluating irradiance at sample points), making pre-build during the prepare phase impractical. The mutex serialization makes this thread-safe.

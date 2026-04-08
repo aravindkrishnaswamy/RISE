@@ -100,6 +100,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
 	$(PATHLIBRARY)Materials/BioSpecDiffusionProfile.cpp					\
+	$(PATHLIBRARY)Materials/BioSpecSkinRWMaterial.cpp					\
 	$(PATHLIBRARY)Materials/DonnerJensenSkinDiffusionProfile.cpp			\
 	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
@@ -248,7 +249,6 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
 	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp			\
-	$(PATHLIBRARY)Shaders/SSS/BioSpecSkinSSSShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\

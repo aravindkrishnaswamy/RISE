@@ -15,7 +15,6 @@
 #include "Job.h"
 #include "RISE_API.h"
 #include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
-#include "Shaders/SSS/BioSpecSkinSSSShaderOp.h"
 #include "Utilities/RString.h"
 #include <stdio.h>
 #include "Utilities/MediaPathLocator.h"
@@ -1694,6 +1693,118 @@ bool Job::AddBioSpecSkinBSSRDFMaterial(
 		*pnt_folds_aspect_ratio_,
 		bSubdermalLayer,
 		roughnessVal
+		);
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+
+	return true;
+}
+
+//! Adds a BioSpec skin random-walk SSS material
+bool Job::AddBioSpecSkinRWMaterial(
+	const char* name,
+	const char* thickness_SC_,
+	const char* thickness_epidermis_,
+	const char* thickness_papillary_dermis_,
+	const char* thickness_reticular_dermis_,
+	const char* ior_SC_,
+	const char* ior_epidermis_,
+	const char* ior_papillary_dermis_,
+	const char* ior_reticular_dermis_,
+	const char* concentration_eumelanin_,
+	const char* concentration_pheomelanin_,
+	const char* melanosomes_in_epidermis_,
+	const char* hb_ratio_,
+	const char* whole_blood_in_papillary_dermis_,
+	const char* whole_blood_in_reticular_dermis_,
+	const char* bilirubin_concentration_,
+	const char* betacarotene_concentration_SC_,
+	const char* betacarotene_concentration_epidermis_,
+	const char* betacarotene_concentration_dermis_,
+	const char* roughness,
+	const char* maxBounces
+	)
+{
+
+	IPainter* pnt_thickness_SC_ = pPntManager->GetItem( thickness_SC_ );
+	IPainter* pnt_thickness_epidermis_ = pPntManager->GetItem( thickness_epidermis_ );
+	IPainter* pnt_thickness_papillary_dermis_ = pPntManager->GetItem( thickness_papillary_dermis_ );
+	IPainter* pnt_thickness_reticular_dermis_ = pPntManager->GetItem( thickness_reticular_dermis_ );
+	IPainter* pnt_ior_SC_ = pPntManager->GetItem( ior_SC_ );
+	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
+	IPainter* pnt_ior_papillary_dermis_ = pPntManager->GetItem( ior_papillary_dermis_ );
+	IPainter* pnt_ior_reticular_dermis_ = pPntManager->GetItem( ior_reticular_dermis_ );
+	IPainter* pnt_concentration_eumelanin_ = pPntManager->GetItem( concentration_eumelanin_ );
+	IPainter* pnt_concentration_pheomelanin_ = pPntManager->GetItem( concentration_pheomelanin_ );
+	IPainter* pnt_melanosomes_in_epidermis_ = pPntManager->GetItem( melanosomes_in_epidermis_ );
+	IPainter* pnt_hb_ratio_ = pPntManager->GetItem( hb_ratio_ );
+	IPainter* pnt_whole_blood_in_papillary_dermis_ = pPntManager->GetItem( whole_blood_in_papillary_dermis_ );
+	IPainter* pnt_whole_blood_in_reticular_dermis_ = pPntManager->GetItem( whole_blood_in_reticular_dermis_ );
+	IPainter* pnt_bilirubin_concentration_ = pPntManager->GetItem( bilirubin_concentration_ );
+	IPainter* pnt_betacarotene_concentration_SC_ = pPntManager->GetItem( betacarotene_concentration_SC_ );
+	IPainter* pnt_betacarotene_concentration_epidermis_ = pPntManager->GetItem( betacarotene_concentration_epidermis_ );
+	IPainter* pnt_betacarotene_concentration_dermis_ = pPntManager->GetItem( betacarotene_concentration_dermis_ );
+
+	{
+#define CHECK_FOR_VALUE( x )\
+		{\
+			if( !pnt_##x ) {\
+				double d = atof( x );\
+				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
+			} else {\
+				pnt_##x->addref();\
+			}\
+		}
+
+	CHECK_FOR_VALUE(thickness_SC_);
+	CHECK_FOR_VALUE(thickness_epidermis_);
+	CHECK_FOR_VALUE(thickness_papillary_dermis_);
+	CHECK_FOR_VALUE(thickness_reticular_dermis_);
+	CHECK_FOR_VALUE(ior_SC_);
+	CHECK_FOR_VALUE(ior_epidermis_);
+	CHECK_FOR_VALUE(ior_papillary_dermis_);
+	CHECK_FOR_VALUE(ior_reticular_dermis_);
+	CHECK_FOR_VALUE(concentration_eumelanin_);
+	CHECK_FOR_VALUE(concentration_pheomelanin_);
+	CHECK_FOR_VALUE(melanosomes_in_epidermis_);
+	CHECK_FOR_VALUE(hb_ratio_);
+	CHECK_FOR_VALUE(whole_blood_in_papillary_dermis_);
+	CHECK_FOR_VALUE(whole_blood_in_reticular_dermis_);
+	CHECK_FOR_VALUE(bilirubin_concentration_);
+	CHECK_FOR_VALUE(betacarotene_concentration_SC_);
+	CHECK_FOR_VALUE(betacarotene_concentration_epidermis_);
+	CHECK_FOR_VALUE(betacarotene_concentration_dermis_);
+
+#undef CHECK_FOR_VALUE
+	}
+
+	const double roughnessVal = atof( roughness );
+	const unsigned int maxBouncesVal = (unsigned int) atoi( maxBounces );
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateBioSpecSkinRWMaterial( &pMaterial,
+		*pnt_thickness_SC_,
+		*pnt_thickness_epidermis_,
+		*pnt_thickness_papillary_dermis_,
+		*pnt_thickness_reticular_dermis_,
+		*pnt_ior_SC_,
+		*pnt_ior_epidermis_,
+		*pnt_ior_papillary_dermis_,
+		*pnt_ior_reticular_dermis_,
+		*pnt_concentration_eumelanin_,
+		*pnt_concentration_pheomelanin_,
+		*pnt_melanosomes_in_epidermis_,
+		*pnt_hb_ratio_,
+		*pnt_whole_blood_in_papillary_dermis_,
+		*pnt_whole_blood_in_reticular_dermis_,
+		*pnt_bilirubin_concentration_,
+		*pnt_betacarotene_concentration_SC_,
+		*pnt_betacarotene_concentration_epidermis_,
+		*pnt_betacarotene_concentration_dermis_,
+		roughnessVal,
+		maxBouncesVal
 		);
 
 	pMatManager->AddItem( pMaterial, name );
@@ -3620,62 +3731,6 @@ bool Job::AddDonnerJensenSkinSSSShaderOp(
 		ior_epidermis, ior_dermis, blood_oxygenation,
 		pOffMel, pOffHbEpi, pOffHbDerm );
 	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "donner jensen skin sss shaderop" );
-
-	pShaderOpManager->AddItem( pShaderOp, name );
-	safe_release( pShaderOp );
-	return true;
-}
-
-bool Job::AddBioSpecSkinSSSShaderOp(
-	const char* name,
-	const unsigned int numPoints,
-	const double error,
-	const unsigned int maxPointsPerNode,
-	const unsigned char maxDepth,
-	const double irrad_scale,
-	const char* shader,
-	const bool cache,
-	const double thickness_SC, const double thickness_epidermis,
-	const double thickness_papillary, const double thickness_reticular,
-	const double ior_SC, const double ior_epidermis,
-	const double ior_papillary, const double ior_reticular,
-	const double concentration_eumelanin, const double concentration_pheomelanin,
-	const double melanosomes_in_epidermis,
-	const double hb_ratio,
-	const double whole_blood_papillary, const double whole_blood_reticular,
-	const double bilirubin_concentration,
-	const double betacarotene_SC, const double betacarotene_epidermis,
-	const double betacarotene_dermis,
-	const char* melanosomes_offset,
-	const char* blood_papillary_offset,
-	const char* blood_reticular_offset
-	)
-{
-	IShader* pShader = pShaderManager->GetItem( shader );
-	if( !pShader ) {
-		GlobalLog()->PrintEx( eLog_Error, "Job::AddBioSpecSkinSSSShaderOp:: Shader not found '%s'", shader );
-		return false;
-	}
-
-	IPainter* pOffMel = (melanosomes_offset && melanosomes_offset[0]) ?
-		pPntManager->GetItem( melanosomes_offset ) : 0;
-	IPainter* pOffBP = (blood_papillary_offset && blood_papillary_offset[0]) ?
-		pPntManager->GetItem( blood_papillary_offset ) : 0;
-	IPainter* pOffBR = (blood_reticular_offset && blood_reticular_offset[0]) ?
-		pPntManager->GetItem( blood_reticular_offset ) : 0;
-
-	IShaderOp* pShaderOp = new Implementation::BioSpecSkinSSSShaderOp(
-		numPoints, error, maxPointsPerNode, maxDepth, irrad_scale,
-		*pShader, cache,
-		thickness_SC, thickness_epidermis, thickness_papillary, thickness_reticular,
-		ior_SC, ior_epidermis, ior_papillary, ior_reticular,
-		concentration_eumelanin, concentration_pheomelanin,
-		melanosomes_in_epidermis, hb_ratio,
-		whole_blood_papillary, whole_blood_reticular,
-		bilirubin_concentration,
-		betacarotene_SC, betacarotene_epidermis, betacarotene_dermis,
-		pOffMel, pOffBP, pOffBR );
-	GlobalLog()->PrintNew( pShaderOp, __FILE__, __LINE__, "biospec skin sss shaderop" );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );

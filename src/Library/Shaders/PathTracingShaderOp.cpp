@@ -932,7 +932,7 @@ void PathTracingShaderOp::PerformOperation(
 						ri.geometric, ri.pObject,
 						pRWParams->sigma_a, pRWParams->sigma_s, pRWParams->sigma_t,
 						pRWParams->g, pRWParams->ior, pRWParams->maxBounces,
-						rwSampler, 0 );
+						rwSampler, 0, pRWParams->maxDepth );
 
 					if( bssrdf.valid )
 					{
@@ -941,8 +941,10 @@ void PathTracingShaderOp::PerformOperation(
 						// the PT path (no Fresnel coin flip) we scale by
 						// Ft so that SSS + surface reflection sum correctly:
 						//   Ft * SSS + R * Reflection = 1.
-						const RISEPel bssrdfWeight = bssrdf.weight * Ft;
-						const RISEPel bssrdfWeightSpatial = bssrdf.weightSpatial * Ft;
+						// Also apply boundary filter (e.g. melanin double-pass).
+						const Scalar bf = pRWParams->boundaryFilter;
+						const RISEPel bssrdfWeight = bssrdf.weight * Ft * bf;
+						const RISEPel bssrdfWeightSpatial = bssrdf.weightSpatial * Ft * bf;
 
 						// Build a synthetic intersection at the entry point
 						RayIntersectionGeometric entryRI(
@@ -1869,6 +1871,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		const RandomWalkSSSParams* pRWParams =
 			ri.pMaterial ? ri.pMaterial->GetRandomWalkSSSParams() : 0;
 
+		// Spectral-only materials (e.g. BioSpec skin) return NULL from
+		// GetRandomWalkSSSParams() but provide per-wavelength coefficients.
+		RandomWalkSSSParams rwParamsNM;
+		if( !pRWParams && ri.pMaterial &&
+			ri.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) )
+		{
+			pRWParams = &rwParamsNM;
+		}
+
 		if( pRWParams && pBRDF )
 		{
 			const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
@@ -1894,13 +1905,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						ri.geometric, ri.pObject,
 						pRWParams->sigma_a, pRWParams->sigma_s, pRWParams->sigma_t,
 						pRWParams->g, pRWParams->ior, pRWParams->maxBounces,
-						rwSampler, nm );
+						rwSampler, nm, pRWParams->maxDepth );
 
 					if( bssrdf.valid )
 					{
-						// Scale by entry Fresnel (see RGB block comment)
-						const Scalar bssrdfWeightNM = bssrdf.weightNM * Ft;
-						const Scalar bssrdfWeightSpatialNM = bssrdf.weightSpatialNM * Ft;
+						// Scale by entry Fresnel and boundary filter
+						// (e.g. melanin double-pass for layered skin).
+						const Scalar bf = pRWParams->boundaryFilter;
+						const Scalar bssrdfWeightNM = bssrdf.weightNM * Ft * bf;
+						const Scalar bssrdfWeightSpatialNM = bssrdf.weightSpatialNM * Ft * bf;
 
 						RayIntersectionGeometric entryRI(
 							Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),

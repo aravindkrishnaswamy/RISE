@@ -1749,7 +1749,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
 						ri.geometric, ri.pObject,
 						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0 );
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0, pRW->maxDepth );
 
 					if( bssrdf.valid )
 					{
@@ -1759,8 +1759,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 						// Coin flip selects with probability Ft, so the
 						// physical Ft and the 1/Ft selection compensation
 						// cancel: weight * Ft / Ft = weight.
-						const RISEPel betaSpatial = beta * bssrdf.weightSpatial;
-						beta = beta * bssrdf.weight;
+						// Apply boundary filter (e.g. melanin double-pass).
+						const Scalar bf = pRW->boundaryFilter;
+						const RISEPel betaSpatial = beta * bssrdf.weightSpatial * bf;
+						beta = beta * bssrdf.weight * bf;
 
 						BDPTVertex entryV;
 						entryV.type = BDPTVertex::SURFACE;
@@ -2622,7 +2624,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
 						ri.geometric, ri.pObject,
 						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0 );
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0, pRW->maxDepth );
 
 					if( bssrdf.valid )
 					{
@@ -2630,8 +2632,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 						// SampleExit does NOT include Ft(entry).
 						// Coin flip: weight * Ft / Ft = weight.
-						const RISEPel betaSpatial = beta * bssrdf.weightSpatial;
-						beta = beta * bssrdf.weight;
+						// Apply boundary filter (e.g. melanin double-pass).
+						const Scalar bf = pRW->boundaryFilter;
+						const RISEPel betaSpatial = beta * bssrdf.weightSpatial * bf;
+						beta = beta * bssrdf.weight * bf;
 
 						BDPTVertex entryV;
 						entryV.type = BDPTVertex::SURFACE;
@@ -4771,13 +4775,17 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			}
 		}
 		// --- Random-walk SSS (NM light subpath) ---
-		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
+		else if( ri.pMaterial )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
+			RandomWalkSSSParams rwParamsNM;
+			if( !pRW && ri.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
+				pRW = &rwParamsNM;
+			}
+			const Scalar cosIn = pRW ? Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() ) : 0;
+			if( pRW && cosIn > NEARZERO )
 			{
-				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
 				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
 					((pRW->ior - 1.0) / (pRW->ior + 1.0));
 				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
@@ -4794,7 +4802,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
 						ri.geometric, ri.pObject,
 						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm );
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm, pRW->maxDepth );
 
 					if( bssrdf.valid )
 					{
@@ -4802,8 +4810,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 						// SampleExit does NOT include Ft(entry).
 						// Coin flip: weight * Ft / Ft = weight.
-						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM;
-						betaNM = betaNM * bssrdf.weightNM;
+						// Apply boundary filter (e.g. melanin double-pass).
+						const Scalar bf = pRW->boundaryFilter;
+						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM * bf;
+						betaNM = betaNM * bssrdf.weightNM * bf;
 
 						BDPTVertex entryV;
 						entryV.type = BDPTVertex::SURFACE;
@@ -5502,13 +5512,17 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			}
 		}
 		// --- Random-walk SSS (NM eye subpath) ---
-		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
+		else if( ri.pMaterial )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
+			RandomWalkSSSParams rwParamsNM;
+			if( !pRW && ri.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
+				pRW = &rwParamsNM;
+			}
+			const Scalar cosIn = pRW ? Vector3Ops::Dot(
+				ri.geometric.vNormal, -currentRay.Dir() ) : 0;
+			if( pRW && cosIn > NEARZERO )
 			{
-				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
 				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
 					((pRW->ior - 1.0) / (pRW->ior + 1.0));
 				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
@@ -5525,7 +5539,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
 						ri.geometric, ri.pObject,
 						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm );
+						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm, pRW->maxDepth );
 
 					if( bssrdf.valid )
 					{
@@ -5533,8 +5547,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 						// SampleExit does NOT include Ft(entry).
 						// Coin flip: weight * Ft / Ft = weight.
-						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM;
-						betaNM = betaNM * bssrdf.weightNM;
+						// Apply boundary filter (e.g. melanin double-pass).
+						const Scalar bf = pRW->boundaryFilter;
+						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM * bf;
+						betaNM = betaNM * bssrdf.weightNM * bf;
 
 						BDPTVertex entryV;
 						entryV.type = BDPTVertex::SURFACE;

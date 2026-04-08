@@ -33,7 +33,8 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	const Scalar ior,
 	const unsigned int maxBounces,
 	ISampler& sampler,
-	const Scalar nm
+	const Scalar nm,
+	const Scalar maxDepth
 	)
 {
 	BSSRDFSampling::SampleResult result;
@@ -83,6 +84,13 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 
 	// Offset inward to avoid self-intersection
 	pos = Point3Ops::mkPoint3( pos, dir * BSSRDFSampling::BSSRDF_RAY_EPSILON );
+
+	// For depth-limited walks (e.g. BioSpec skin thickness),
+	// track depth below the entry surface.  Depth is measured
+	// as the projection onto the inward normal from the entry
+	// point.  Walks that exceed maxDepth are terminated.
+	const Vector3 inwardNormal = -outwardNormal;
+	const Point3 entryPos = ri.ptIntersection;
 
 	//
 	// Step 3: Random walk loop
@@ -167,6 +175,18 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 
 			// Advance position
 			pos = Point3Ops::mkPoint3( pos, dir * t );
+
+			// Depth limit: terminate if the walk has gone
+			// deeper than maxDepth below the entry surface.
+			if( maxDepth > 0 )
+			{
+				const Vector3 offset = Vector3Ops::mkVector3(
+					entryPos, pos );
+				const Scalar depth = Vector3Ops::Dot( offset, inwardNormal );
+				if( depth > maxDepth ) {
+					return result;  // absorbed
+				}
+			}
 
 			// Update throughput using mixture PDF formulation.
 			//

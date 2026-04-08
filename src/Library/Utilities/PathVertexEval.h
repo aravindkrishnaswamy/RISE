@@ -277,6 +277,10 @@ namespace RISE
 
 				// Random-walk SSS: Sw with Schlick Fresnel
 				const RandomWalkSSSParams* pRW = vertex.pMaterial->GetRandomWalkSSSParams();
+				RandomWalkSSSParams rwParamsNM;
+				if( !pRW && vertex.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
+					pRW = &rwParamsNM;
+				}
 				if( pRW ) {
 					const Scalar cosTheta = Vector3Ops::Dot( wi, vertex.normal );
 					if( cosTheta <= NEARZERO ) {

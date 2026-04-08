@@ -590,6 +590,31 @@ namespace RISE
 			const char* roughness
 			);
 
+		//! Adds a BioSpec skin random-walk SSS material
+		bool AddBioSpecSkinRWMaterial(
+			const char* name,
+			const char* thickness_SC_,
+			const char* thickness_epidermis_,
+			const char* thickness_papillary_dermis_,
+			const char* thickness_reticular_dermis_,
+			const char* ior_SC_,
+			const char* ior_epidermis_,
+			const char* ior_papillary_dermis_,
+			const char* ior_reticular_dermis_,
+			const char* concentration_eumelanin_,
+			const char* concentration_pheomelanin_,
+			const char* melanosomes_in_epidermis_,
+			const char* hb_ratio_,
+			const char* whole_blood_in_papillary_dermis_,
+			const char* whole_blood_in_reticular_dermis_,
+			const char* bilirubin_concentration_,
+			const char* betacarotene_concentration_SC_,
+			const char* betacarotene_concentration_epidermis_,
+			const char* betacarotene_concentration_dermis_,
+			const char* roughness,
+			const char* maxBounces
+			);
+
 		//! Adds a Donner & Jensen 2008 spectral skin BSSRDF material
 		bool AddDonnerJensenSkinBSSRDFMaterial(
 			const char* name,
@@ -1243,31 +1268,6 @@ namespace RISE
 			const char* melanin_fraction_offset,
 			const char* hemoglobin_epidermis_offset,
 			const char* hemoglobin_dermis_offset
-			);
-
-		bool AddBioSpecSkinSSSShaderOp(
-			const char* name,
-			const unsigned int numPoints,
-			const double error,
-			const unsigned int maxPointsPerNode,
-			const unsigned char maxDepth,
-			const double irrad_scale,
-			const char* shader,
-			const bool cache,
-			const double thickness_SC, const double thickness_epidermis,
-			const double thickness_papillary, const double thickness_reticular,
-			const double ior_SC, const double ior_epidermis,
-			const double ior_papillary, const double ior_reticular,
-			const double concentration_eumelanin, const double concentration_pheomelanin,
-			const double melanosomes_in_epidermis,
-			const double hb_ratio,
-			const double whole_blood_papillary, const double whole_blood_reticular,
-			const double bilirubin_concentration,
-			const double betacarotene_SC, const double betacarotene_epidermis,
-			const double betacarotene_dermis,
-			const char* melanosomes_offset,
-			const char* blood_papillary_offset,
-			const char* blood_reticular_offset
 			);
 
 		bool AddAreaLightShaderOp(
