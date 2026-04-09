@@ -51,6 +51,9 @@ namespace RISE
 
 			inline bool IsPositionalLight() const { return true; }
 
+			inline Vector3 emissionDirection() const { return vDirection; }
+			inline Scalar emissionConeHalfAngle() const { return dOuterAngle; }
+
 			inline RISEPel radiantExitance() const
 			{
 				return (cColor * radiantEnergy * TWO_PI * (TWO_PI*(dOuterAngle/TWO_PI)));

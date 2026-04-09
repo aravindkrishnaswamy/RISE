@@ -50,6 +50,7 @@ namespace RISE
 			const bool					bChooseOnlyOneLuminaire;
 
 			Scalar						dPendingLightRRThreshold;
+			bool						bPendingUseLightBVH;
 
 			virtual ~RayCaster();
 
@@ -148,6 +149,9 @@ namespace RISE
 			/// Sets the threshold for light-sample Russian roulette.
 			/// Must be called after AttachScene().
 			void SetLightSampleRRThreshold( const Scalar threshold );
+
+			/// Enables or disables the light BVH.
+			void SetUseLightBVH( const bool enable );
 
 			/// \return True when the ray caster tracks a per-ray IOR stack
 			inline bool UsesIORStack() const { return bIORStack; }

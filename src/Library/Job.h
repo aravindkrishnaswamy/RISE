@@ -1562,7 +1562,8 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
 
 		//

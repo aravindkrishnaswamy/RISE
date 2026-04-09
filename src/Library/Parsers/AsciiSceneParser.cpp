@@ -5329,6 +5329,8 @@ namespace RISE
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else if( pname == "max_volume_bounce" ) {
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5552,6 +5554,8 @@ namespace RISE
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else if( pname == "max_volume_bounce" ) {
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5946,6 +5950,8 @@ namespace RISE
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else if( pname == "max_volume_bounce" ) {
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6115,6 +6121,8 @@ namespace RISE
 							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
 						} else if( pname == "max_volume_bounce" ) {
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6148,6 +6156,7 @@ namespace RISE
 					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = false;
+					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -6179,6 +6188,8 @@ namespace RISE
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6187,7 +6198,7 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight, oidnDenoise );
+						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight, oidnDenoise, stabilityConfig );
 				}
 			};
 

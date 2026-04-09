@@ -89,6 +89,7 @@
 #include "../Utilities/AliasTable.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/EnvironmentSampler.h"
+#include "LightBVH.h"
 
 namespace RISE
 {
@@ -121,6 +122,16 @@ namespace RISE
 		/// correct MIS weights.
 		///
 		/// Uses an alias table for O(1) light selection and PDF queries.
+		/// A single entry in the combined light table.
+		/// Public so LightBVH and tests can reference it.
+		struct LightEntry
+		{
+			const ILightPriv*	pLight;		///< Non-null for non-mesh lights
+			unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
+			Scalar				exitance;	///< MaxValue of radiant exitance
+			Point3				position;	///< Representative position for distance estimates
+		};
+
 		class LightSampler : public virtual Reference
 		{
 		protected:
@@ -131,15 +142,6 @@ namespace RISE
 			const LuminaryManager::LuminariesList*			pPreparedLuminaries;
 			Scalar											cachedTotalExitance;
 
-			/// A single entry in the combined light table
-			struct LightEntry
-			{
-				const ILightPriv*	pLight;		///< Non-null for non-mesh lights
-				unsigned int		lumIndex;	///< Index into luminaries list (valid when pLight==0)
-				Scalar				exitance;	///< MaxValue of radiant exitance
-				Point3				position;	///< Representative position for distance estimates
-			};
-
 			std::vector<LightEntry>		lightEntries;	///< All selectable lights
 			std::vector<unsigned int>	positionalLightIndices;	///< Indices into lightEntries for positional (point/spot) lights
 			Scalar						positionalLightTotalExitance;	///< Sum of exitance for positional lights
@@ -147,6 +149,10 @@ namespace RISE
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
 			bool						bSceneHasObjectMedia;	///< True if any object has an interior medium (cached during Prepare)
+
+			/// Light BVH for importance-weighted selection (null when disabled)
+			LightBVH*					pLightBVH;
+			bool						bUseLightBVH;		///< True to build and use the light BVH
 
 			/// Environment map importance sampler (null when no env map)
 			const EnvironmentSampler*	pEnvSampler;
@@ -179,7 +185,9 @@ namespace RISE
 			Scalar PdfSelectLight(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
-				const ILight& light									///< [in] The light to query
+				const ILight& light,								///< [in] The light to query
+				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
+				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
 				) const;
 
 			/// Returns the probability of selecting a given mesh luminary
@@ -187,7 +195,9 @@ namespace RISE
 			Scalar PdfSelectLuminary(
 				const IScene& scene,								///< [in] The scene containing lights
 				const LuminaryManager::LuminariesList& luminaries,	///< [in] List of mesh luminaries
-				const IObject& luminary								///< [in] The luminary to query
+				const IObject& luminary,							///< [in] The luminary to query
+				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
+				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
 				) const;
 
 			//
@@ -238,11 +248,24 @@ namespace RISE
 			/// instead (see PathTracingShaderOp).
 			/// \return Selection probability, or 0 if luminary not found
 			Scalar CachedPdfSelectLuminary(
-				const IObject& luminary								///< [in] The luminary to query
+				const IObject& luminary,							///< [in] The luminary to query
+				const Point3& shadingPoint,							///< [in] Shading point (used for BVH PDF; ignored when BVH inactive)
+				const Vector3& shadingNormal						///< [in] Shading normal (used for BVH PDF; ignored when BVH inactive)
 				) const;
 
 			/// Returns whether RIS spatial resampling is active.
-			bool IsRISActive() const { return risCandidates > 0; }
+			bool IsRISActive() const { return risCandidates > 0 && !IsLightBVHActive(); }
+
+			/// Returns whether the light BVH is built and active.
+			bool IsLightBVHActive() const { return pLightBVH && pLightBVH->IsBuilt(); }
+
+			/// Enables or disables the light BVH.  When enabled, the BVH
+			/// is built during Prepare() and used for spatially-aware light
+			/// selection with full MIS support.  When disabled (default),
+			/// the alias table + optional RIS is used.
+			void SetUseLightBVH(
+				const bool enable									///< [in] True to enable light BVH
+				);
 
 			/// Returns whether the scene has any participating media
 			/// (per-object or global).  Used to gate shadow transmittance

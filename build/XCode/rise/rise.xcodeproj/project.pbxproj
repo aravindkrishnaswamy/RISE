@@ -736,6 +736,9 @@
 		F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
 		F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548A2F87D990009AF16D /* MajorantGrid.h */; };
 		F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
+		F24C54912F87F453009AF16D /* LightBVH.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548F2F87F453009AF16D /* LightBVH.h */; };
+		F24C54922F87F453009AF16D /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
+		F24C54932F87F453009AF16D /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1506,6 +1509,8 @@
 		F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinRWMaterial.cpp; sourceTree = "<group>"; };
 		F24C548A2F87D990009AF16D /* MajorantGrid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MajorantGrid.h; sourceTree = "<group>"; };
 		F24C548B2F87D990009AF16D /* MajorantGrid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MajorantGrid.cpp; sourceTree = "<group>"; };
+		F24C548F2F87F453009AF16D /* LightBVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LightBVH.h; sourceTree = "<group>"; };
+		F24C54902F87F453009AF16D /* LightBVH.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = LightBVH.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2545,6 +2550,8 @@
 		F27F08B5069C428F0069C9E5 /* Lights */ = {
 			isa = PBXGroup;
 			children = (
+				F24C548F2F87F453009AF16D /* LightBVH.h */,
+				F24C54902F87F453009AF16D /* LightBVH.cpp */,
 				F2C5D5732F6E44DE00546C97 /* LightSampler.h */,
 				F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */,
 				F27F08B6069C428F0069C9E5 /* AmbientLight.h */,
@@ -3525,6 +3532,7 @@
 				F27F0C19069C42910069C9E5 /* LanczosPixelFilter.h in Headers */,
 				F27F0C1A069C42910069C9E5 /* MaxPixelFilter.h in Headers */,
 				F27F0C1B069C42910069C9E5 /* MitchellNetravaliPixelFilter.h in Headers */,
+				F24C54912F87F453009AF16D /* LightBVH.h in Headers */,
 				F27F0C1D069C42910069C9E5 /* MultiJitteredSampling2D.h in Headers */,
 				F2C5D5802F6EA5B300546C97 /* PSSMLTSampler.h in Headers */,
 				F27F0C1F069C42910069C9E5 /* NRooksSampling2D.h in Headers */,
@@ -3828,6 +3836,7 @@
 				F27F0B1B069C42910069C9E5 /* RayTorusIntersection.cpp in Sources */,
 				F27F0B1C069C42910069C9E5 /* RayTriangleIntersection.cpp in Sources */,
 				F24C543F2F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */,
+				F24C54922F87F453009AF16D /* LightBVH.cpp in Sources */,
 				F27F0B1E069C42910069C9E5 /* Job.cpp in Sources */,
 				F27F0B21069C42910069C9E5 /* DirectionalLight.cpp in Sources */,
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
@@ -4086,6 +4095,7 @@
 				F24B72182F52A632008304C4 /* BilinearPatchGeometry.cpp in Sources */,
 				F24B72192F52A632008304C4 /* BilinearPatchGeometry.h in Sources */,
 				F24B721A2F52A632008304C4 /* BoxGeometry.cpp in Sources */,
+				F24C54932F87F453009AF16D /* LightBVH.cpp in Sources */,
 				F24B721B2F52A632008304C4 /* BoxGeometry.h in Sources */,
 				F24B721C2F52A632008304C4 /* BoxUVGenerator.cpp in Sources */,
 				F24B721D2F52A632008304C4 /* BoxUVGenerator.h in Sources */,

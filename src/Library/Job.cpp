@@ -4217,6 +4217,10 @@ bool Job::SetPixelBasedPelRasterizer(
 		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
 
@@ -4308,6 +4312,10 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 
 	if( lightSampleRRThreshold > 0 ) {
 		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
 	}
 
 	IRasterizer* pRaster = 0;
@@ -4609,6 +4617,10 @@ bool Job::SetBDPTPelRasterizer(
 		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
@@ -4703,6 +4715,10 @@ bool Job::SetBDPTSpectralRasterizer(
 		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
 	}
 
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
@@ -4730,7 +4746,8 @@ bool Job::SetMLTRasterizer(
 	const bool bShowLuminaires,
 	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
-	const bool oidnDenoise									///< [in] Should we denoise the output with OIDN?
+	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
+	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
 	IShader* pShader = pShaderManager->GetItem( shader );
@@ -4741,6 +4758,10 @@ bool Job::SetMLTRasterizer(
 
 	IRayCaster* pCaster = 0;
 	RISE_API_CreateRayCaster( &pCaster, false, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,

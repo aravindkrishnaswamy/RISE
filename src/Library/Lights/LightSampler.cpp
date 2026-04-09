@@ -437,6 +437,8 @@ LightSampler::LightSampler() :
   risCandidates( 0 ),
   lightSampleRRThreshold( 0 ),
   bSceneHasObjectMedia( false ),
+  pLightBVH( 0 ),
+  bUseLightBVH( false ),
   pEnvSampler( 0 ),
   pEnvironmentMap( 0 )
 {
@@ -448,6 +450,15 @@ LightSampler::~LightSampler()
 		pEnvSampler->release();
 		pEnvSampler = 0;
 	}
+	delete pLightBVH;
+	pLightBVH = 0;
+}
+
+void LightSampler::SetUseLightBVH(
+	const bool enable
+	)
+{
+	bUseLightBVH = enable;
 }
 
 void LightSampler::SetRISCandidates(
@@ -585,9 +596,26 @@ void LightSampler::Prepare(
 	// Auto-enable RIS when there are enough lights that spatial
 	// selection matters.  With fewer lights, the alias table alone
 	// is sufficient and RIS overhead is wasted.
-	if( risCandidates == 0 && lightEntries.size() > 8 )
+	// (Skipped when light BVH is enabled — BVH provides superior
+	// spatial selection with tractable MIS.)
+	if( !bUseLightBVH && risCandidates == 0 && lightEntries.size() > 8 )
 	{
 		risCandidates = 8;
+	}
+
+	// Build the light BVH when enabled and there are lights to sample.
+	if( bUseLightBVH && lightEntries.size() > 1 )
+	{
+		delete pLightBVH;
+		pLightBVH = new LightBVH();
+		pLightBVH->Build( lightEntries, luminaries );
+		GlobalLog()->PrintEx( eLog_Info, "LightSampler:: Built light BVH over %d lights (%d nodes)",
+			(int)lightEntries.size(), (int)pLightBVH->NumNodes() );
+	}
+	else
+	{
+		delete pLightBVH;
+		pLightBVH = 0;
 	}
 
 	// Scan objects for interior media.  This flag gates the
@@ -835,7 +863,9 @@ bool LightSampler::SampleLight(
 Scalar LightSampler::PdfSelectLight(
 	const IScene& scene,
 	const LuminaryManager::LuminariesList& luminaries,
-	const ILight& light
+	const ILight& light,
+	const Point3& shadingPoint,
+	const Vector3& shadingNormal
 	) const
 {
 	// Find the matching entry in the light table
@@ -843,6 +873,10 @@ Scalar LightSampler::PdfSelectLight(
 	{
 		if( lightEntries[i].pLight == &light )
 		{
+			if( pLightBVH && pLightBVH->IsBuilt() )
+			{
+				return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+			}
 			return static_cast<Scalar>( aliasTable.Pdf( i ) );
 		}
 	}
@@ -853,7 +887,9 @@ Scalar LightSampler::PdfSelectLight(
 Scalar LightSampler::PdfSelectLuminary(
 	const IScene& scene,
 	const LuminaryManager::LuminariesList& luminaries,
-	const IObject& luminary
+	const IObject& luminary,
+	const Point3& shadingPoint,
+	const Vector3& shadingNormal
 	) const
 {
 	if( !pPreparedLuminaries )
@@ -868,6 +904,10 @@ Scalar LightSampler::PdfSelectLuminary(
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
+				if( pLightBVH && pLightBVH->IsBuilt() )
+				{
+					return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+				}
 				return static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}
 		}
@@ -898,7 +938,9 @@ int LightSampler::FindLuminaryIndex(
 }
 
 Scalar LightSampler::CachedPdfSelectLuminary(
-	const IObject& luminary
+	const IObject& luminary,
+	const Point3& shadingPoint,
+	const Vector3& shadingNormal
 	) const
 {
 	if( !pPreparedLuminaries )
@@ -912,6 +954,10 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
+				if( pLightBVH && pLightBVH->IsBuilt() )
+				{
+					return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+				}
 				return static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}
 		}
@@ -1007,7 +1053,28 @@ RISEPel LightSampler::EvaluateDirectLighting(
 		Scalar pdfAlias;
 		Scalar risWeight = 1.0;
 
-		if( risCandidates > 0 )
+		if( pLightBVH && pLightBVH->IsBuilt() )
+		{
+			// Light BVH: importance-weighted selection with full MIS.
+			Scalar bvhPdf;
+			idx = pLightBVH->Sample( ri.ptIntersection, ri.vNormal,
+				sampler.Get1D(), bvhPdf );
+
+			if( bvhPdf <= 0 || static_cast<int>(idx) == selfIdx )
+			{
+				// Zero PDF means no light has importance at this
+				// shading point (e.g. all spotlights point away).
+				// Treat identically to self-exclusion: consume the
+				// remaining random numbers and skip to env NEE.
+				sampler.Get1D();
+				sampler.Get1D();
+				sampler.Get1D();
+				break;
+			}
+
+			pdfAlias = bvhPdf;
+		}
+		else if( risCandidates > 0 )
 		{
 			// RIS with self excluded via zeroed resampling weight.
 			// Returns N (out-of-bounds) when every candidate is self.
@@ -1181,16 +1248,18 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						contrib = contrib * Tr;
 					}
 
-					// MIS weight: only when RIS is OFF.  When RIS is ON
-					// the exact finite-M technique density is intractable,
-					// so we use w=1 here and suppress the BSDF-hit emitter
-					// contribution in PathTracingShaderOp.
-					if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
+					// MIS weight: applied when the selection PDF is
+					// tractable (alias table or BVH).  When RIS is ON
+					// (no BVH), the exact finite-M technique density is
+					// intractable, so we use w=1 and suppress the BSDF-hit
+					// emitter contribution in PathTracingShaderOp.
+					const bool bCanDoMIS = (pLightBVH && pLightBVH->IsBuilt()) ||
+						risCandidates == 0;
+					if( bCanDoMIS && pMaterial && area > 0 && cosLight > 0 )
 					{
-						// Convert alias-table selection PDF to solid angle.
-						// Self-exclusion uses single-draw skip-self, so the
-						// selection PDF is the raw alias-table p(j) — no
-						// correction needed (see proof above).
+						// Convert selection PDF to solid angle.
+						// For both alias-table and BVH, pdfAlias is the
+						// probability of selecting this light.
 						const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 						const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
 
@@ -1326,7 +1395,24 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		Scalar pdfAlias;
 		Scalar risWeight = 1.0;
 
-		if( risCandidates > 0 )
+		if( pLightBVH && pLightBVH->IsBuilt() )
+		{
+			// Light BVH: importance-weighted selection with full MIS.
+			Scalar bvhPdf;
+			idx = pLightBVH->Sample( ri.ptIntersection, ri.vNormal,
+				sampler.Get1D(), bvhPdf );
+
+			if( bvhPdf <= 0 || static_cast<int>(idx) == selfIdx )
+			{
+				sampler.Get1D();
+				sampler.Get1D();
+				sampler.Get1D();
+				break;
+			}
+
+			pdfAlias = bvhPdf;
+		}
+		else if( risCandidates > 0 )
 		{
 			idx = SelectLightRIS( ri.ptIntersection, sampler, pdfAlias, risWeight, selfIdx );
 
@@ -1465,8 +1551,10 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			contrib *= EvalShadowTransmittanceNM( rayToLight, dist, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
 		}
 
-		// MIS only when RIS is OFF
-		if( risCandidates == 0 && pMaterial && area > 0 && cosLight > 0 )
+		// MIS when selection PDF is tractable (alias table or BVH)
+		const bool bCanDoMIS_NM = (pLightBVH && pLightBVH->IsBuilt()) ||
+			risCandidates == 0;
+		if( bCanDoMIS_NM && pMaterial && area > 0 && cosLight > 0 )
 		{
 			const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 			const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );

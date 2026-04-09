@@ -3064,8 +3064,12 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
 
+			// For BVH PDF, the shading point is the predecessor vertex
+			// (where NEE would have selected this emitter from).
+			const BDPTVertex& predVert_s0 = eyeVerts[t - 2];
 			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
-				scene, luminaries, *eyeEnd.pObject );
+				scene, luminaries, *eyeEnd.pObject,
+				predVert_s0.position, predVert_s0.normal );
 			const Scalar area = eyeEnd.pObject->GetArea();
 			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
@@ -5924,8 +5928,11 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
 
+			// For BVH PDF, the shading point is the predecessor vertex
+			const BDPTVertex& predVert_s0_NM = eyeVerts[t - 2];
 			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
-				scene, luminaries, *eyeEnd.pObject );
+				scene, luminaries, *eyeEnd.pObject,
+				predVert_s0_NM.position, predVert_s0_NM.normal );
 			const Scalar area = eyeEnd.pObject->GetArea();
 			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;

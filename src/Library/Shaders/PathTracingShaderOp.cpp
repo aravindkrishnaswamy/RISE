@@ -688,10 +688,12 @@ void PathTracingShaderOp::PerformOperation(
 								ri.geometric.ray.origin ) );
 
 						// MIS weight for BSDF-sampled emitter hit.
-						// When RIS is active the exact finite-M technique
-						// density is intractable, so MIS is disabled:
-						// NEE uses w_nee=1 and the BSDF-hit emitter
-						// contribution is suppressed here (w_bsdf=0).
+						// When RIS is active (and BVH is not), the exact
+						// finite-M technique density is intractable, so MIS
+						// is disabled: NEE uses w_nee=1 and the BSDF-hit
+						// emitter contribution is suppressed (w_bsdf=0).
+						// When BVH is active, the selection PDF is tractable
+						// and full MIS is used.
 						// Specular paths (bsdfPdf==0) never enter this
 						// block and keep their full contribution.
 						const LightSampler* pLS = caster.GetLightSampler();
@@ -707,7 +709,13 @@ void PathTracingShaderOp::PerformOperation(
 							Scalar pdfSelect = 1.0;
 							if( pLS )
 							{
-								pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
+								// The shading point for the BVH PDF is the
+								// previous vertex (ray origin), which is where
+								// NEE would have selected this light from.
+								pdfSelect = pLS->CachedPdfSelectLuminary(
+									*ri.pObject,
+									ri.geometric.ray.origin,
+									ri.geometric.ray.Dir() );
 								if( pdfSelect <= 0 )
 								{
 									pdfSelect = 1.0;
@@ -1725,7 +1733,10 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							Scalar pdfSelect = 1.0;
 							if( pLS )
 							{
-								pdfSelect = pLS->CachedPdfSelectLuminary( *ri.pObject );
+								pdfSelect = pLS->CachedPdfSelectLuminary(
+									*ri.pObject,
+									ri.geometric.ray.origin,
+									ri.geometric.ray.Dir() );
 								if( pdfSelect <= 0 )
 								{
 									pdfSelect = 1.0;

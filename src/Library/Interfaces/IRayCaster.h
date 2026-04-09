@@ -163,6 +163,12 @@ namespace RISE
 		virtual void SetLightSampleRRThreshold(
 			const Scalar threshold								///< [in] RR threshold (0=disabled)
 			) = 0;
+
+		/// Enables or disables the light BVH for importance-weighted
+		/// many-light selection.  Must be called before AttachScene().
+		virtual void SetUseLightBVH(
+			const bool enable									///< [in] True to enable light BVH
+			) = 0;
 	};
 }
 

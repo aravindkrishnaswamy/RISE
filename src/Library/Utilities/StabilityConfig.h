@@ -59,6 +59,12 @@ namespace RISE
 		unsigned int	maxTranslucentBounce;	///< Maximum translucent bounces (UINT_MAX = unlimited)
 		unsigned int	maxVolumeBounce;		///< Maximum volume scatter bounces (64 default, matches PT)
 
+		//
+		// Light sampling
+		//
+
+		bool			useLightBVH;			///< Use light BVH for importance-weighted many-light selection (true = enabled by default)
+
 		StabilityConfig() :
 		  directClamp( 0 ),
 		  indirectClamp( 0 ),
@@ -69,7 +75,8 @@ namespace RISE
 		  maxGlossyBounce( UINT_MAX ),
 		  maxTransmissionBounce( UINT_MAX ),
 		  maxTranslucentBounce( UINT_MAX ),
-		  maxVolumeBounce( 64 )
+		  maxVolumeBounce( 64 ),
+		  useLightBVH( true )
 		{
 		}
 	};

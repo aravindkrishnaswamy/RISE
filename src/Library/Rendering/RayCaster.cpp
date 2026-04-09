@@ -66,7 +66,8 @@ RayCaster::RayCaster(
   bShowLuminaires( showLuminaires ),
   bIORStack( useiorstack ),
   bChooseOnlyOneLuminaire( chooseonlyoneluminaire ),
-  dPendingLightRRThreshold( 0 )
+  dPendingLightRRThreshold( 0 ),
+  bPendingUseLightBVH( false )
 {
 	pDefaultShader.addref();
 }
@@ -109,6 +110,14 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		safe_release( pLightSampler );
 		pLightSampler = new LightSampler();
 		GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
+
+		// Apply pending settings before Prepare() which builds
+		// internal data structures that depend on them.
+		if( bPendingUseLightBVH )
+		{
+			pLightSampler->SetUseLightBVH( true );
+		}
+
 		pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
 
 		// Apply any pending light-sample RR threshold
@@ -1324,6 +1333,15 @@ void RayCaster::SetLightSampleRRThreshold( const Scalar threshold )
 	if( pLightSampler )
 	{
 		pLightSampler->SetLightSampleRRThreshold( threshold );
+	}
+}
+
+void RayCaster::SetUseLightBVH( const bool enable )
+{
+	bPendingUseLightBVH = enable;
+	if( pLightSampler )
+	{
+		pLightSampler->SetUseLightBVH( enable );
 	}
 }
 

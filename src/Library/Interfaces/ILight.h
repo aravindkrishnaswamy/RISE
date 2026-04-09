@@ -62,6 +62,14 @@ namespace RISE
 		//! Returns false for directional and ambient lights.
 		virtual bool IsPositionalLight() const { return false; }
 
+		//! Returns the primary emission direction (unit vector).
+		//! Default is (0,1,0); overridden by directional lights (e.g. spot).
+		virtual Vector3 emissionDirection() const { return Vector3(0,1,0); }
+
+		//! Returns the half-angle (radians) of the emission cone.
+		//! PI means full-sphere (isotropic, e.g. point lights).
+		virtual Scalar emissionConeHalfAngle() const { return PI; }
+
 		//! Computes direct lighting
 		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information

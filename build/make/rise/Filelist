@@ -306,6 +306,7 @@ SRCLIBRASTERIMAGES =\
 # Lights 
 SRCLIBLIGHTS =\
 	$(PATHLIBRARY)Lights/DirectionalLight.cpp					\
+	$(PATHLIBRARY)Lights/LightBVH.cpp							\
 	$(PATHLIBRARY)Lights/PointLight.cpp							\
 	$(PATHLIBRARY)Lights/SpotLight.cpp							\
 	$(PATHLIBRARY)Lights/LightSampler.cpp

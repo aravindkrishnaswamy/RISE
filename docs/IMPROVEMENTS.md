@@ -32,7 +32,7 @@ The improvements below target gaps where the field has advanced beyond what RISE
 | 1 | ~~GGX microfacet + VNDF + Kulla-Conty multiscattering~~ **DONE** | Materials | Medium | None |
 | 2 | ~~Light subpath guiding in BDPT~~ **DONE** | Transport | Medium | None (eye guiding complete) |
 | 3 | ~~Random-walk subsurface scattering~~ **DONE** | Materials | Medium | None (disk projection complete) |
-| 4 | Light BVH for many-light sampling | Lights | Medium-Large | Roadmap Rank 1 |
+| 4 | ~~Light BVH for many-light sampling~~ **DONE** | Lights | Medium-Large | Roadmap Rank 1 |
 | 5 | Hero wavelength spectral sampling (HWSS) | Spectral | Medium-Large | None |
 | 6 | Blue-noise screen-space error distribution (ZSobol) | Sampling | Small | None |
 | 7 | ~~Null-scattering volume framework~~ **DONE** | Volumes | Large | Roadmap Ranks 5-6 |
@@ -305,6 +305,53 @@ The light BVH selection PDF replaces the alias-table PDF in the existing MIS fra
 - Equal or lower noise on many-light scenes at fixed render time.
 - Small light count scenes (< 10 emitters) do not regress.
 - PDF is consistent: evaluable for any emitter at any shading point.
+
+### Implementation (April 2026)
+
+**Algorithm**: Conty & Kulla 2018, "Importance Sampling of Many Lights with Adaptive Tree Splitting", as implemented in pbrt-v4. Top-down BVH over emitters with orientation cones; stochastic traversal with xi-rescaling; root-to-leaf PDF evaluation for MIS.
+
+**New files**:
+
+| File | Purpose |
+|------|---------|
+| `src/Library/Lights/LightBVH.h` | BVH class, OrientationCone, LightBVHNode structs, full algorithmic documentation |
+| `src/Library/Lights/LightBVH.cpp` | Build (top-down, power-weighted centroid split), Sample (stochastic traversal), Pdf (root-to-leaf walk) |
+| `tests/LightBVHTest.cpp` | 15 unit tests: cone merge (5), construction (3), sampling (3), PDF (4) |
+| `scenes/Tests/LightBVH/*.RISEscene` | Many-light test scenes (100-light corridor, 20-light corridor, 12-spotlight stage, BDPT variants) |
+
+**Modified files**:
+
+| File | Change |
+|------|--------|
+| `src/Library/Interfaces/ILight.h` | `emissionDirection()`, `emissionConeHalfAngle()` with defaults |
+| `src/Library/Lights/SpotLight.h` | Override orientation methods for directed emission |
+| `src/Library/Lights/LightSampler.h/.cpp` | BVH member, `SetUseLightBVH()`, BVH selection in `EvaluateDirectLighting`, BVH PDF in `PdfSelectLight`/`CachedPdfSelectLuminary` |
+| `src/Library/Shaders/PathTracingShaderOp.cpp` | Pass shading point to `CachedPdfSelectLuminary` for BVH PDF |
+| `src/Library/Shaders/BDPTIntegrator.cpp` | Pass predecessor vertex to `PdfSelectLuminary` for s=0 strategy |
+| `src/Library/Rendering/RayCaster.h/.cpp` | `SetUseLightBVH()` with pending flag (applied before `Prepare()`) |
+| `src/Library/Interfaces/IRayCaster.h` | `SetUseLightBVH()` pure virtual |
+| `src/Library/Utilities/StabilityConfig.h` | `useLightBVH` field |
+| `src/Library/Interfaces/IJob.h` | `StabilityConfig` parameter added to `SetMLTRasterizer` |
+| `src/Library/Parsers/AsciiSceneParser.cpp` | `light_bvh` in `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, `mlt_rasterizer` |
+| `src/Library/Job.cpp` | Wire `stabilityConfig.useLightBVH` to `pCaster->SetUseLightBVH()` |
+| `build/make/rise/Filelist` | Add `LightBVH.cpp` |
+
+**Scene syntax**: Add `light_bvh true` to any `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, or `mlt_rasterizer` chunk.
+
+**Quantitative results** (100-light corridor, 64 SPP, 512x512):
+
+| Method | MSE vs 1024-SPP ref | Relative MSE | Wall time |
+|--------|---------------------|--------------|-----------|
+| Alias table | 0.0422 | 2.26% | 12.3s |
+| **Light BVH** | **0.0088** | **0.47%** | 12.3s |
+| **Variance reduction** | **4.78x** | | ~0% overhead |
+
+20-light corridor: ~1.84x local noise reduction. 2-light Cornell box: no regression. BDPT: correct, no energy gain/loss.
+
+**Design notes**:
+- BVH is used only for NEE light selection; BDPT emission sampling (`SampleLight`) stays on the alias table (power-proportional, no spatial bias needed).
+- When BVH is active, RIS is automatically disabled (BVH supersedes it with tractable PDF for full MIS).
+- BVH is disabled by default; existing scenes produce identical output.
 
 ---
 
@@ -650,7 +697,7 @@ Several items here build on transport work already completed or planned before t
 
 | Item | Prior status |
 |------|-------------|
-| Light BVH (Rank 4) | Planned (Stage 1C of prior roadmap) |
+| Light BVH (Rank 4) | **Done** (April 2026) — 4A, 4B, 4C implemented; 4.78x variance reduction on 100-light corridor |
 | Null-scattering volumes (Rank 7) | **Done** (April 2026) — 7A, 7B, 7C, 7E implemented; 7D deferred pending HWSS |
 | Light subpath guiding (Rank 2) | New scope (Stage 8C was deferred) |
 | Random-walk SSS (Rank 3) | **Done** (April 2026) |
