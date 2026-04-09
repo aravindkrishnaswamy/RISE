@@ -22,6 +22,7 @@
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
+#include "../Utilities/EquiangularSampler.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -245,7 +246,210 @@ bool RayCaster::CastRay(
 
 		IndependentSampler mediumSampler( rc.random );
 		bool scattered = false;
-		const Scalar t_m = pMedium->SampleDistance( ray, maxDist, mediumSampler, scattered );
+		Scalar t_m = 0;
+
+		// ----------------------------------------------------------------
+		// Equiangular MIS: one-sample MIS between delta tracking and
+		// equiangular sampling toward positional lights.
+		//
+		// When positional (point/spot) lights exist:
+		//   With prob 0.5: delta tracking → t, pdf_dt
+		//   With prob 0.5: equiangular toward random light → t, pdf_eq
+		//   combined_pdf = 0.5 * pdf_dt + 0.5 * pdf_eq
+		//   throughput = Tr * sigma_s / combined_pdf
+		//
+		// When no positional lights: plain delta tracking (unchanged).
+		//
+		// Reference: Kulla, Fajardo, "Importance Sampling Techniques
+		// for Path Tracing in Participating Media", EGSR 2012.
+		// ----------------------------------------------------------------
+		const bool useEquiangularMIS = (pLightSampler &&
+			pLightSampler->GetPositionalLightCount() > 0);
+		Scalar combinedPdf = 0;		// Deterministic MIS denominator
+		bool useExplicitThroughput = false;
+		bool equiangularZeroContrib = false;	// True when equiangular strategy samples zero density
+
+		if( useEquiangularMIS )
+		{
+			// Clip equiangular range to medium bounds.
+			// For bounded media (heterogeneous), use the medium's AABB
+			// to set the integration domain.  For unbounded global media,
+			// use [0, maxDist].
+			Scalar eqTNear = 0;
+			Scalar eqTFar = maxDist;
+			{
+				Point3 bbMin, bbMax;
+				if( pMedium->GetBoundingBox( bbMin, bbMax ) )
+				{
+					// Intersect ray with medium AABB to find entry/exit
+					Scalar tEntry = 0, tExit = maxDist;
+					// Use the same slab intersection as MajorantGrid
+					const Scalar invX = (fabs(ray.Dir().x) > 1e-20) ? 1.0 / ray.Dir().x : 0;
+					const Scalar invY = (fabs(ray.Dir().y) > 1e-20) ? 1.0 / ray.Dir().y : 0;
+					const Scalar invZ = (fabs(ray.Dir().z) > 1e-20) ? 1.0 / ray.Dir().z : 0;
+
+					bool aabbHit = true;
+					if( invX != 0 ) {
+						Scalar t0 = (bbMin.x - ray.origin.x) * invX;
+						Scalar t1 = (bbMax.x - ray.origin.x) * invX;
+						if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+						tEntry = fmax( tEntry, t0 );
+						tExit = fmin( tExit, t1 );
+					} else if( ray.origin.x < bbMin.x || ray.origin.x > bbMax.x ) {
+						aabbHit = false;
+					}
+					if( aabbHit && invY != 0 ) {
+						Scalar t0 = (bbMin.y - ray.origin.y) * invY;
+						Scalar t1 = (bbMax.y - ray.origin.y) * invY;
+						if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+						tEntry = fmax( tEntry, t0 );
+						tExit = fmin( tExit, t1 );
+					} else if( ray.origin.y < bbMin.y || ray.origin.y > bbMax.y ) {
+						aabbHit = false;
+					}
+					if( aabbHit && invZ != 0 ) {
+						Scalar t0 = (bbMin.z - ray.origin.z) * invZ;
+						Scalar t1 = (bbMax.z - ray.origin.z) * invZ;
+						if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+						tEntry = fmax( tEntry, t0 );
+						tExit = fmin( tExit, t1 );
+					} else if( ray.origin.z < bbMin.z || ray.origin.z > bbMax.z ) {
+						aabbHit = false;
+					}
+
+					if( aabbHit && tEntry < tExit )
+					{
+						eqTNear = fmax( 0.0, tEntry );
+						eqTFar = fmin( maxDist, tExit );
+					}
+				}
+			}
+
+			if( eqTFar <= eqTNear )
+			{
+				// Medium AABB doesn't intersect ray — fall back to plain delta tracking
+				t_m = pMedium->SampleDistance( ray, maxDist, mediumSampler, scattered );
+			}
+			else
+			{
+				// Select one positional light proportional to exitance
+				const unsigned int nPosLights = pLightSampler->GetPositionalLightCount();
+				const Scalar totalPosExitance = pLightSampler->GetPositionalLightTotalExitance();
+				unsigned int selectedLight = 0;
+				{
+					const Scalar xiLight = mediumSampler.Get1D();
+					Scalar cumulative = 0;
+					for( unsigned int i = 0; i < nPosLights; i++ )
+					{
+						cumulative += pLightSampler->GetPositionalLightExitance( i ) / totalPosExitance;
+						if( xiLight <= cumulative ) { selectedLight = i; break; }
+					}
+				}
+				const Point3& lightPos = pLightSampler->GetPositionalLightPosition( selectedLight );
+
+				const Scalar xiStrategy = mediumSampler.Get1D();
+
+				if( xiStrategy < 0.5 )
+				{
+					// Delta tracking strategy
+					IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdf(
+						ray, maxDist, mediumSampler );
+					t_m = ds.t;
+					scattered = ds.scattered;
+
+					if( scattered )
+					{
+						// MIS balance heuristic with deterministic densities.
+						// pdf_dt uses majorant transmittance T_bar (via DDA),
+						// not stochastic ratio-tracking T_real, so the MIS
+						// denominator is deterministic.  See EvalDistancePdf
+						// comment for rationale.
+						const Scalar pdf_dt = pMedium->EvalDistancePdf(
+							ray, t_m, true, maxDist );
+						Scalar pdf_eq = 0;
+						for( unsigned int i = 0; i < nPosLights; i++ )
+						{
+							const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
+								/ totalPosExitance;
+							pdf_eq += pSel * EquiangularSampling::Pdf(
+								ray, pLightSampler->GetPositionalLightPosition( i ),
+								eqTNear, eqTFar, t_m );
+						}
+
+						combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+						useExplicitThroughput = true;
+					}
+					// If not scattered: no equiangular counterpart, weight = 1
+				}
+				else
+				{
+					// Equiangular strategy: sample distance toward selected light.
+					// Unlike delta tracking, equiangular ONLY proposes scatter
+					// events — it cannot produce a "no scatter" (transmission)
+					// result.  When the sample lands at a zero-density point or
+					// outside the medium, the contribution is zero and we must
+					// NOT fall through to the surface/transmission path.
+					EquiangularSampling::Sample eqSample =
+						EquiangularSampling::SampleDistance(
+							ray, lightPos, eqTNear, eqTFar,
+							mediumSampler.Get1D() );
+					t_m = eqSample.t;
+
+					if( t_m > eqTNear && t_m < maxDist )
+					{
+						const Point3 eqPt = ray.PointAtLength( t_m );
+						const MediumCoefficients eqCoeff = pMedium->GetCoefficients( eqPt );
+
+						if( ColorMath::MaxValue( eqCoeff.sigma_t ) > 0 )
+						{
+							scattered = true;
+
+							const Scalar pdf_dt = pMedium->EvalDistancePdf(
+								ray, t_m, true, maxDist );
+							Scalar pdf_eq = 0;
+							for( unsigned int i = 0; i < nPosLights; i++ )
+							{
+								const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
+									/ totalPosExitance;
+								pdf_eq += pSel * EquiangularSampling::Pdf(
+									ray, pLightSampler->GetPositionalLightPosition( i ),
+									eqTNear, eqTFar, t_m );
+							}
+
+							combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+							useExplicitThroughput = true;
+						}
+						else
+						{
+							// Zero density: equiangular scatter proposal contributes
+							// zero (sigma_s = 0).  This is a valid zero-weight sample,
+							// not a transmission event.
+							equiangularZeroContrib = true;
+						}
+					}
+					else
+					{
+						// Sample outside medium range: zero contribution.
+						equiangularZeroContrib = true;
+					}
+				}
+			}
+		}
+		else
+		{
+			t_m = pMedium->SampleDistance( ray, maxDist, mediumSampler, scattered );
+		}
+
+		// Equiangular zero-contribution: the equiangular strategy
+		// sampled a point with no density.  Return zero for this
+		// sample — do NOT proceed to surface shading, as this is a
+		// scatter-measure sample, not a surface-measure sample.
+		if( equiangularZeroContrib )
+		{
+			if( distance ) *distance = 0;
+			if( rrCompensation != 1.0 ) c = c * rrCompensation;
+			return false;
+		}
 
 		if( scattered )
 		{
@@ -263,31 +467,34 @@ bool RayCaster::CastRay(
 			const Point3 scatterPt = ray.PointAtLength( t_m );
 			const Vector3 wo = ray.Dir();
 
-			// Throughput: transmittance * sigma_s / sampling PDF.
-			// For exponential sampling on sigma_t_max:
-			//   PDF = sigma_t_max * exp(-sigma_t_max * t)
-			//   Transmittance = exp(-sigma_t * t) per channel
-			//   Net weight per channel = sigma_s / sigma_t_max
-			//     (after canceling the exp terms)
-			// This simplifies to the single-scattering albedo
-			// times a channel correction.
 			const MediumCoefficients coeff = pMedium->GetCoefficients( scatterPt );
 			const RISEPel Tr = pMedium->EvalTransmittance( ray, t_m );
-			const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
 			RISEPel throughput( 0, 0, 0 );
-			if( sigma_t_max > 0 ) {
-				// Per-channel weight: Tr[ch] * sigma_s[ch] / (sigma_t_max * T_scalar)
-				// where T_scalar is the scalar tracking transmittance used by the
-				// distance sampling PDF.  For delta tracking with majorant
-				// sigma_t_majorant = MaxValue(max_sigma_t):
-				//   T_scalar = exp(-sigma_t_majorant * integral_density)
-				// Since Tr[ch] = exp(-max_sigma_t[ch] * integral_density), the
-				// channel with the highest max_sigma_t gives the lowest Tr.
-				// Therefore T_scalar = MinValue(Tr), which works correctly for
-				// both homogeneous and heterogeneous media.
-				const Scalar Tr_scalar = ColorMath::MinValue( Tr );
-				if( Tr_scalar > 0 ) {
-					throughput = Tr * coeff.sigma_s * (1.0 / (sigma_t_max * Tr_scalar));
+
+			if( useExplicitThroughput && combinedPdf > 0 )
+			{
+				// MIS throughput: Tr * sigma_s / combined_pdf
+				// where combined_pdf = 0.5 * pdf_dt + 0.5 * pdf_eq.
+				// Both pdf_dt and pdf_eq are deterministic: pdf_dt uses
+				// majorant transmittance T_bar (DDA), pdf_eq is analytic.
+				// The stochastic Tr in the numerator is correct — it's
+				// the integrand estimate, not a technique density.
+				throughput = Tr * coeff.sigma_s * (1.0 / combinedPdf);
+			}
+			else
+			{
+				// Original throughput (no MIS): cancel the delta tracking
+				// PDF terms analytically.
+				//   PDF = sigma_t_max * exp(-sigma_t_majorant * integral)
+				//   Transmittance = exp(-sigma_t * t) per channel
+				//   Net weight per channel = sigma_s / sigma_t_max
+				//     (after canceling the exp terms)
+				const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+				if( sigma_t_max > 0 ) {
+					const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+					if( Tr_scalar > 0 ) {
+						throughput = Tr * coeff.sigma_s * (1.0 / (sigma_t_max * Tr_scalar));
+					}
 				}
 			}
 
@@ -669,7 +876,160 @@ bool RayCaster::CastRayNM(
 
 		IndependentSampler mediumSampler( rc.random );
 		bool scattered = false;
-		const Scalar t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
+		Scalar t_m = 0;
+
+		// Equiangular MIS (spectral variant, see RGB path for details)
+		const bool useEquiangularMIS_NM = (pLightSampler &&
+			pLightSampler->GetPositionalLightCount() > 0);
+		Scalar combinedPdf_NM = 0;
+		bool useExplicitThroughput_NM = false;
+		bool equiangularZeroContrib_NM = false;
+
+		if( useEquiangularMIS_NM )
+		{
+			Scalar eqTNear = 0;
+			Scalar eqTFar = maxDist;
+			{
+				Point3 bbMin, bbMax;
+				if( pMedium->GetBoundingBox( bbMin, bbMax ) )
+				{
+					Scalar tEntry = 0, tExit = maxDist;
+					const Scalar invX = (fabs(ray.Dir().x) > 1e-20) ? 1.0 / ray.Dir().x : 0;
+					const Scalar invY = (fabs(ray.Dir().y) > 1e-20) ? 1.0 / ray.Dir().y : 0;
+					const Scalar invZ = (fabs(ray.Dir().z) > 1e-20) ? 1.0 / ray.Dir().z : 0;
+					bool aabbHit = true;
+					if( invX != 0 ) {
+						Scalar t0 = (bbMin.x - ray.origin.x) * invX;
+						Scalar t1 = (bbMax.x - ray.origin.x) * invX;
+						if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+						tEntry = fmax( tEntry, t0 ); tExit = fmin( tExit, t1 );
+					} else if( ray.origin.x < bbMin.x || ray.origin.x > bbMax.x ) {
+						aabbHit = false;
+					}
+					if( aabbHit && invY != 0 ) {
+						Scalar t0 = (bbMin.y - ray.origin.y) * invY;
+						Scalar t1 = (bbMax.y - ray.origin.y) * invY;
+						if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+						tEntry = fmax( tEntry, t0 ); tExit = fmin( tExit, t1 );
+					} else if( ray.origin.y < bbMin.y || ray.origin.y > bbMax.y ) {
+						aabbHit = false;
+					}
+					if( aabbHit && invZ != 0 ) {
+						Scalar t0 = (bbMin.z - ray.origin.z) * invZ;
+						Scalar t1 = (bbMax.z - ray.origin.z) * invZ;
+						if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+						tEntry = fmax( tEntry, t0 ); tExit = fmin( tExit, t1 );
+					} else if( ray.origin.z < bbMin.z || ray.origin.z > bbMax.z ) {
+						aabbHit = false;
+					}
+					if( aabbHit && tEntry < tExit ) {
+						eqTNear = fmax( 0.0, tEntry );
+						eqTFar = fmin( maxDist, tExit );
+					}
+				}
+			}
+
+			if( eqTFar <= eqTNear )
+			{
+				t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
+			}
+			else
+			{
+				const unsigned int nPosLights = pLightSampler->GetPositionalLightCount();
+				const Scalar totalPosExitance = pLightSampler->GetPositionalLightTotalExitance();
+				unsigned int selectedLight = 0;
+				{
+					const Scalar xiLight = mediumSampler.Get1D();
+					Scalar cumulative = 0;
+					for( unsigned int i = 0; i < nPosLights; i++ )
+					{
+						cumulative += pLightSampler->GetPositionalLightExitance( i ) / totalPosExitance;
+						if( xiLight <= cumulative ) { selectedLight = i; break; }
+					}
+				}
+				const Point3& lightPos = pLightSampler->GetPositionalLightPosition( selectedLight );
+
+				const Scalar xiStrategy = mediumSampler.Get1D();
+
+				if( xiStrategy < 0.5 )
+				{
+					IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdfNM(
+						ray, maxDist, nm, mediumSampler );
+					t_m = ds.t;
+					scattered = ds.scattered;
+
+					if( scattered )
+					{
+						const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
+							ray, t_m, true, maxDist, nm );
+						Scalar pdf_eq = 0;
+						for( unsigned int i = 0; i < nPosLights; i++ )
+						{
+							const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
+								/ totalPosExitance;
+							pdf_eq += pSel * EquiangularSampling::Pdf(
+								ray, pLightSampler->GetPositionalLightPosition( i ),
+								eqTNear, eqTFar, t_m );
+						}
+						combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
+						useExplicitThroughput_NM = true;
+					}
+				}
+				else
+				{
+					EquiangularSampling::Sample eqSample =
+						EquiangularSampling::SampleDistance(
+							ray, lightPos, eqTNear, eqTFar,
+							mediumSampler.Get1D() );
+					t_m = eqSample.t;
+
+					if( t_m > eqTNear && t_m < maxDist )
+					{
+						const Point3 eqPt = ray.PointAtLength( t_m );
+						const MediumCoefficientsNM eqCoeff = pMedium->GetCoefficientsNM( eqPt, nm );
+
+						if( eqCoeff.sigma_t > 0 )
+						{
+							scattered = true;
+
+							const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
+								ray, t_m, true, maxDist, nm );
+							Scalar pdf_eq = 0;
+							for( unsigned int i = 0; i < nPosLights; i++ )
+							{
+								const Scalar pSel = pLightSampler->GetPositionalLightExitance( i )
+									/ totalPosExitance;
+								pdf_eq += pSel * EquiangularSampling::Pdf(
+									ray, pLightSampler->GetPositionalLightPosition( i ),
+									eqTNear, eqTFar, t_m );
+							}
+
+							combinedPdf_NM = 0.5 * pdf_dt + 0.5 * pdf_eq;
+							useExplicitThroughput_NM = true;
+						}
+						else
+						{
+							equiangularZeroContrib_NM = true;
+						}
+					}
+					else
+					{
+						equiangularZeroContrib_NM = true;
+					}
+				}
+			}
+		}
+		else
+		{
+			t_m = pMedium->SampleDistanceNM( ray, maxDist, nm, mediumSampler, scattered );
+		}
+
+		if( equiangularZeroContrib_NM )
+		{
+			if( distance ) *distance = 0;
+			if( rrCompensation != 1.0 ) c = c * rrCompensation;
+			return false;
+		}
 
 		if( scattered )
 		{
@@ -680,11 +1040,17 @@ bool RayCaster::CastRayNM(
 			const MediumCoefficientsNM coeff = pMedium->GetCoefficientsNM( scatterPt, nm );
 			const Scalar Tr = pMedium->EvalTransmittanceNM( ray, t_m, nm );
 			Scalar throughput = 0;
-			if( coeff.sigma_t > 0 ) {
-				// For single-channel exponential sampling:
-				//   PDF = sigma_t * exp(-sigma_t * t)
-				//   Transmittance = exp(-sigma_t * t)
-				//   Net weight = sigma_s / sigma_t (single-scattering albedo)
+
+			if( useExplicitThroughput_NM && combinedPdf_NM > 0 )
+			{
+				// MIS throughput: Tr * sigma_s / combined_pdf
+				// combined_pdf was computed deterministically in strategy
+				// selection using majorant transmittance (see RGB path).
+				throughput = Tr * coeff.sigma_s / combinedPdf_NM;
+			}
+			else if( coeff.sigma_t > 0 )
+			{
+				// Original: sigma_s / sigma_t (single-scattering albedo)
 				throughput = coeff.sigma_s / coeff.sigma_t;
 			}
 

@@ -141,6 +141,8 @@ namespace RISE
 			};
 
 			std::vector<LightEntry>		lightEntries;	///< All selectable lights
+			std::vector<unsigned int>	positionalLightIndices;	///< Indices into lightEntries for positional (point/spot) lights
+			Scalar						positionalLightTotalExitance;	///< Sum of exitance for positional lights
 			AliasTable					aliasTable;		///< O(1) selection table
 			unsigned int				risCandidates;	///< Number of RIS candidates (0=disabled)
 			Scalar						lightSampleRRThreshold;	///< Light-sample RR threshold (0=disabled)
@@ -267,6 +269,22 @@ namespace RISE
 
 			/// \return The environment importance sampler, or NULL
 			const EnvironmentSampler* GetEnvironmentSampler() const { return pEnvSampler; }
+
+			/// \return Number of positional (point/spot) lights suitable for equiangular sampling
+			unsigned int GetPositionalLightCount() const { return (unsigned int)positionalLightIndices.size(); }
+
+			/// Get position of a positional light by index [0, GetPositionalLightCount())
+			const Point3& GetPositionalLightPosition(
+				const unsigned int idx							///< [in] Index into positional light list
+				) const { return lightEntries[positionalLightIndices[idx]].position; }
+
+			/// Get exitance of a positional light by index [0, GetPositionalLightCount())
+			Scalar GetPositionalLightExitance(
+				const unsigned int idx							///< [in] Index into positional light list
+				) const { return lightEntries[positionalLightIndices[idx]].exitance; }
+
+			/// Get total exitance of all positional lights
+			Scalar GetPositionalLightTotalExitance() const { return positionalLightTotalExitance; }
 
 			/// Sets the threshold for light-sample Russian roulette.
 			/// When > 0, mesh luminary shadow samples whose estimated

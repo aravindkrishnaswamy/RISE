@@ -30,12 +30,12 @@ The improvements below target gaps where the field has advanced beyond what RISE
 | Rank | Improvement | Category | Effort | Depends On |
 |------|------------|----------|--------|------------|
 | 1 | ~~GGX microfacet + VNDF + Kulla-Conty multiscattering~~ **DONE** | Materials | Medium | None |
-| 2 | Light subpath guiding in BDPT | Transport | Medium | None (eye guiding complete) |
+| 2 | ~~Light subpath guiding in BDPT~~ **DONE** | Transport | Medium | None (eye guiding complete) |
 | 3 | ~~Random-walk subsurface scattering~~ **DONE** | Materials | Medium | None (disk projection complete) |
 | 4 | Light BVH for many-light sampling | Lights | Medium-Large | Roadmap Rank 1 |
 | 5 | Hero wavelength spectral sampling (HWSS) | Spectral | Medium-Large | None |
 | 6 | Blue-noise screen-space error distribution (ZSobol) | Sampling | Small | None |
-| 7 | Null-scattering volume framework | Volumes | Large | Roadmap Ranks 5-6 |
+| 7 | ~~Null-scattering volume framework~~ **DONE** | Volumes | Large | Roadmap Ranks 5-6 |
 | 8 | Optimal and correlation-aware MIS weights | Transport | Medium | None |
 | 9 | VCM (Vertex Connection and Merging) | Transport | Medium-Large | None |
 | 10 | Hair/fiber BSDF (Chiang et al. 2016) | Materials | Medium | ~~1 (GGX foundation)~~ None |
@@ -393,7 +393,7 @@ Derive Owen scramble seeds from the Morton-ordered pixel index rather than raw p
 
 ---
 
-## 7. Null-Scattering Volume Framework
+## 7. Null-Scattering Volume Framework — **DONE** (7A, 7B, 7C, 7E; 7D deferred)
 
 ### Why This Is Seventh
 
@@ -445,6 +445,21 @@ Implement Kulla and Fajardo (EGSR 2012) equiangular sampling: distribute samples
 - Homogeneous media results match existing implementation within noise.
 - Heterogeneous media converge without excessive null collisions.
 - Shadow rays in optically thin media show measurably lower variance with ratio tracking.
+
+### Implementation Notes (April 2026)
+
+**Completed sub-items:**
+- **7A**: `MajorantGrid` (`src/Library/Utilities/MajorantGrid.h/.cpp`) — low-resolution 3D grid with Amanatides-Woo DDA traversal via templated visitor pattern. Grid resolution: `max(4, ceil(volDim/8))` per axis, capped at 32. `HeterogeneousMedium` builds the grid in its constructor and uses per-cell local majorants for delta tracking. Significant reduction in null collisions for spatially varying volumes.
+- **7B**: `NullScatteringTracker` (`src/Library/Utilities/NullScatteringTracker.h`) — evaluates the delta tracking PDF at arbitrary distances via DDA majorant optical depth accumulation. `IMedium::DistanceSample` struct and `SampleDistanceWithPdf`/`EvalDistancePdf` methods added to the interface with default implementations for `HomogeneousMedium`. `HeterogeneousMedium` overrides these using the majorant grid.
+- **7C**: `HeterogeneousMedium::EvalTransmittance` replaced deterministic ray march with ratio tracking using thread-local RNG for stochastic sampling. Per-channel multiplicative weights: `w[ch] *= max(0, 1 - sigma_t[ch] / cellMajorant)`.
+- **7E**: `EquiangularSampler` (`src/Library/Utilities/EquiangularSampler.h`) — Kulla-Fajardo 2012 closed-form CDF inversion. One-sample MIS (balance heuristic) in `RayCaster::CastRay` (both RGB and spectral paths) between delta tracking and equiangular sampling toward positional lights. `ILight::IsPositionalLight()` added for type identification; `LightSampler` caches positional light list during `Prepare()`.
+
+**Deferred:**
+- **7D** (Spectral/decomposition tracking): Requires HWSS (Improvement 5) for hero wavelength selection. Current spectral path uses single-wavelength delta tracking.
+
+**New files:** `MajorantGrid.h/.cpp`, `NullScatteringTracker.h`, `EquiangularSampler.h`
+**Modified interfaces:** `IMedium.h` (DistanceSample, SampleDistanceWithPdf, EvalDistancePdf, GetBoundingBox), `ILight.h` (IsPositionalLight)
+**Test scenes:** `pt_equiangular_fog`, `pt_equiangular_hetero`, `pt_chromatic_fog`, `pt_thick_fog_corridor`
 
 ---
 
@@ -636,7 +651,7 @@ Several items here build on transport work already completed or planned before t
 | Item | Prior status |
 |------|-------------|
 | Light BVH (Rank 4) | Planned (Stage 1C of prior roadmap) |
-| Null-scattering volumes (Rank 7) | Planned (Ranks 5-6 of prior roadmap) |
+| Null-scattering volumes (Rank 7) | **Done** (April 2026) — 7A, 7B, 7C, 7E implemented; 7D deferred pending HWSS |
 | Light subpath guiding (Rank 2) | New scope (Stage 8C was deferred) |
 | Random-walk SSS (Rank 3) | **Done** (April 2026) |
 

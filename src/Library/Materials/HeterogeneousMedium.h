@@ -55,6 +55,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
+#include "../Utilities/MajorantGrid.h"
 
 namespace RISE
 {
@@ -76,6 +77,7 @@ namespace RISE
 
 		const IPhaseFunction* m_pPhase;		///< Phase function (ref-counted)
 		IVolumeAccessor* m_pAccessor;		///< Density field accessor (ref-counted)
+		MajorantGrid* m_pMajorantGrid;		///< Per-cell majorant grid for DDA tracking
 
 		/// World-space bounding box
 		Point3 m_bboxMin;
@@ -87,12 +89,6 @@ namespace RISE
 		unsigned int m_volHeight;
 		unsigned int m_volDepth;
 
-		/// Look up density [0,1] at a world-space point.
-		/// Returns 0 for points outside the bounding box.
-		Scalar LookupDensity(
-			const Point3& worldPt				///< [in] World-space point
-			) const;
-
 		/// Compute ray-AABB intersection (entry/exit distances).
 		/// Returns false if the ray misses the box entirely.
 		bool IntersectBBox(
@@ -101,9 +97,39 @@ namespace RISE
 			Scalar& tExit						///< [out] Exit distance
 			) const;
 
+		/// Deterministic optical depth via accessor-knot-aligned DDA +
+		/// Gauss-Legendre quadrature.
+		///
+		/// Computes integral_0^targetDist sigma_t_eff * density(s) ds
+		/// by Amanatides-Woo DDA traversal that splits the ray at
+		/// accessor knot planes (integer coordinates in the centered
+		/// accessor coordinate system).  This ensures each GL panel
+		/// stays within one interpolation stencil region regardless
+		/// of volume dimension parity.  5-point Gauss-Legendre
+		/// quadrature is exact for polynomials up to degree 9,
+		/// covering all supported accessor types: nearest-neighbor
+		/// (degree 0), trilinear (degree 3 along ray), and
+		/// Catmull-Rom tricubic (degree 9 along ray).
+		///
+		/// This is used by EvalDistancePdf to provide a deterministic
+		/// technique density for MIS, avoiding the stochastic ratio
+		/// tracking path through EvalTransmittance.
+		Scalar EvalDeterministicOpticalDepth(
+			const Ray& ray,
+			const Scalar targetDist,
+			const Scalar sigma_t_eff
+			) const;
+
 		virtual ~HeterogeneousMedium();
 
 	public:
+		/// Look up density [0,1] at a world-space point.
+		/// Returns 0 for points outside the bounding box.
+		/// Public to allow DDA visitors to query density.
+		Scalar LookupDensity(
+			const Point3& worldPt				///< [in] World-space point
+			) const;
+
 		/// Construct a heterogeneous medium.
 		/// The phase function and accessor are addref'd.
 		HeterogeneousMedium(
@@ -174,6 +200,39 @@ namespace RISE
 		Scalar ClipDistanceToBounds(
 			const Ray& ray,
 			const Scalar dist
+			) const;
+
+		DistanceSample SampleDistanceWithPdf(
+			const Ray& ray,
+			const Scalar maxDist,
+			ISampler& sampler
+			) const;
+
+		DistanceSample SampleDistanceWithPdfNM(
+			const Ray& ray,
+			const Scalar maxDist,
+			const Scalar nm,
+			ISampler& sampler
+			) const;
+
+		Scalar EvalDistancePdf(
+			const Ray& ray,
+			const Scalar t,
+			const bool scattered,
+			const Scalar maxDist
+			) const;
+
+		Scalar EvalDistancePdfNM(
+			const Ray& ray,
+			const Scalar t,
+			const bool scattered,
+			const Scalar maxDist,
+			const Scalar nm
+			) const;
+
+		bool GetBoundingBox(
+			Point3& bbMin,
+			Point3& bbMax
 			) const;
 	};
 }

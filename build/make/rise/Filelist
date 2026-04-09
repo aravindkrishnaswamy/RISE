@@ -65,6 +65,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
 	$(PATHLIBRARY)Utilities/Transformable.cpp					\
 	$(PATHLIBRARY)Utilities/MediumTransport.cpp				\
+	$(PATHLIBRARY)Utilities/MajorantGrid.cpp				\
 	$(PATHLIBRARY)Functions/BezierRootFinder.cpp				\
 	$(PATHLIBRARY)Functions/Polynomial.cpp					\
 	$(PATHLIBRARY)Functions/PolynomialGCD.cpp				\

@@ -733,6 +733,9 @@
 		F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
 		F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */; };
 		F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
+		F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
+		F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548A2F87D990009AF16D /* MajorantGrid.h */; };
+		F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1501,6 +1504,8 @@
 		F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RandomWalkSSS.cpp; sourceTree = "<group>"; };
 		F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinRWMaterial.h; sourceTree = "<group>"; };
 		F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinRWMaterial.cpp; sourceTree = "<group>"; };
+		F24C548A2F87D990009AF16D /* MajorantGrid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MajorantGrid.h; sourceTree = "<group>"; };
+		F24C548B2F87D990009AF16D /* MajorantGrid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MajorantGrid.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -3000,6 +3005,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F24C548A2F87D990009AF16D /* MajorantGrid.h */,
+				F24C548B2F87D990009AF16D /* MajorantGrid.cpp */,
 				F24C54672F859F87009AF16D /* RandomWalkSSS.h */,
 				F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */,
 				F24C544B2F7CAB67009AF16D /* MediumTracking.h */,
@@ -3263,6 +3270,7 @@
 				F27F0AC7069C42910069C9E5 /* IDetectorSphere.h in Headers */,
 				F27F0AC8069C42910069C9E5 /* IEmitter.h in Headers */,
 				F27F0AC9069C42910069C9E5 /* IEnumCallback.h in Headers */,
+				F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */,
 				F27F0ACA069C42910069C9E5 /* IFullInterpolator.h in Headers */,
 				F27F0ACB069C42910069C9E5 /* IFunction1D.h in Headers */,
 				F27F0ACC069C42910069C9E5 /* IFunction1DManager.h in Headers */,
@@ -3776,6 +3784,7 @@
 				F27F0A7D069C42910069C9E5 /* LinearFunction.cpp in Sources */,
 				F27F0A7F069C42910069C9E5 /* ParametricSurface.cpp in Sources */,
 				F27F0A81069C42910069C9E5 /* Polynomial.cpp in Sources */,
+				F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */,
 				F27F0A83069C42910069C9E5 /* PolynomialGCD.cpp in Sources */,
 				F27F0A84069C42910069C9E5 /* QuadraticFunction.cpp in Sources */,
 				F27F0A86069C42910069C9E5 /* QuarticFunction.cpp in Sources */,
@@ -4339,6 +4348,7 @@
 				F2C5D5CD2F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */,
 				F24B73132F52A632008304C4 /* NoiseUtils.h in Sources */,
 				F24B73142F52A632008304C4 /* PerlinNoise.h in Sources */,
+				F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */,
 				F24B73152F52A632008304C4 /* PerlinNoise1D.cpp in Sources */,
 				F24B73162F52A632008304C4 /* PerlinNoise2D.cpp in Sources */,
 				F24B73172F52A632008304C4 /* PerlinNoise3D.cpp in Sources */,

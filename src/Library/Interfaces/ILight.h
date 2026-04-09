@@ -58,8 +58,12 @@ namespace RISE
 		//! Returns the solid angle PDF for the directional sampling used by generateRandomPhoton
 		virtual Scalar pdfDirection( const Vector3& dir ) const = 0;
 
+		//! Is this a positional (point/spot) light suitable for equiangular sampling?
+		//! Returns false for directional and ambient lights.
+		virtual bool IsPositionalLight() const { return false; }
+
 		//! Computes direct lighting
-		virtual void ComputeDirectLighting( 
+		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information
 			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
 			const IBSDF& brdf,								///< [in] BRDF of the object 

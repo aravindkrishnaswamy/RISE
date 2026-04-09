@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "HeterogeneousMedium.h"
+#include "../Utilities/RandomNumbers.h"
 #include <math.h>
 
 using namespace RISE;
@@ -50,6 +51,15 @@ HeterogeneousMedium::HeterogeneousMedium(
 {
 	m_pPhase->addref();
 	m_pAccessor->addref();
+
+	// Build the majorant grid for DDA-based delta/ratio tracking
+	unsigned int gridX, gridY, gridZ;
+	MajorantGrid::DefaultGridResolution( volWidth, volHeight, volDepth,
+		gridX, gridY, gridZ );
+	m_pMajorantGrid = new MajorantGrid(
+		accessor, volWidth, volHeight, volDepth,
+		bboxMin, bboxMax, m_sigma_t_majorant,
+		gridX, gridY, gridZ );
 }
 
 HeterogeneousMedium::HeterogeneousMedium(
@@ -80,10 +90,21 @@ HeterogeneousMedium::HeterogeneousMedium(
 {
 	m_pPhase->addref();
 	m_pAccessor->addref();
+
+	// Build the majorant grid for DDA-based delta/ratio tracking
+	unsigned int gridX, gridY, gridZ;
+	MajorantGrid::DefaultGridResolution( volWidth, volHeight, volDepth,
+		gridX, gridY, gridZ );
+	m_pMajorantGrid = new MajorantGrid(
+		accessor, volWidth, volHeight, volDepth,
+		bboxMin, bboxMax, m_sigma_t_majorant,
+		gridX, gridY, gridZ );
 }
 
 HeterogeneousMedium::~HeterogeneousMedium()
 {
+	delete m_pMajorantGrid;
+	m_pMajorantGrid = 0;
 	safe_release( m_pPhase );
 	safe_release( m_pAccessor );
 }
@@ -255,53 +276,94 @@ Scalar HeterogeneousMedium::SampleDistance(
 		return maxDist;
 	}
 
-	// Find the range of the ray within the AABB
-	Scalar tEntry, tExit;
-	if( !IntersectBBox( ray, tEntry, tExit ) )
+	// DDA-based delta tracking: walk through the majorant grid
+	// cell by cell, using each cell's local majorant instead of
+	// the global majorant.  This dramatically reduces null
+	// collisions in volumes with spatially varying density.
+	//
+	// At each cell boundary we restart exponential sampling with
+	// the new cell's majorant (standard approach, matches pbrt-v4).
+	// This avoids numerical issues with residual rescaling.
+
+	// Capture data needed by the DDA visitor
+	const HeterogeneousMedium* self = this;
+	const Ray& rayRef = ray;
+	ISampler& samplerRef = sampler;
+	const Scalar sigma_t_max_channel = ColorMath::MaxValue( m_max_sigma_t );
+	Scalar scatterDist = 0;
+	bool didScatter = false;
+	unsigned int totalSteps = 0;
+
+	struct DeltaTrackingVisitor
 	{
-		// Ray misses the volume entirely — no interaction
-		scattered = false;
-		return maxDist;
+		const HeterogeneousMedium* self;
+		const Ray* pRay;
+		ISampler* pSampler;
+		Scalar sigma_t_max_channel;
+		Scalar* pScatterDist;
+		bool* pDidScatter;
+		unsigned int* pTotalSteps;
+
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		{
+			// Skip empty cells (zero majorant)
+			if( cellMajorant <= 0 )
+				return true;  // Continue to next cell
+
+			const Scalar invCellMaj = 1.0 / cellMajorant;
+			Scalar t = tCellEntry;
+
+			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			{
+				(*pTotalSteps)++;
+
+				// Sample exponential free-flight distance with local majorant
+				const Scalar xi = pSampler->Get1D();
+				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
+				t += dt;
+
+				// Past cell exit? Move to next cell
+				if( t >= tCellExit )
+					return true;
+
+				// Evaluate local density at sample point
+				const Point3 samplePt = Point3Ops::mkPoint3(
+					pRay->origin, pRay->Dir() * t );
+				const Scalar density = self->LookupDensity( samplePt );
+				const Scalar sigma_t_local = sigma_t_max_channel * density;
+
+				// Accept/reject with local majorant
+				const Scalar xi2 = pSampler->Get1D();
+				if( xi2 < sigma_t_local * invCellMaj )
+				{
+					// Real scatter event
+					*pScatterDist = t;
+					*pDidScatter = true;
+					return false;  // Stop traversal
+				}
+				// Null collision — continue
+			}
+			return false;  // Exceeded max steps, stop
+		}
+	};
+
+	DeltaTrackingVisitor visitor;
+	visitor.self = self;
+	visitor.pRay = &rayRef;
+	visitor.pSampler = &samplerRef;
+	visitor.sigma_t_max_channel = sigma_t_max_channel;
+	visitor.pScatterDist = &scatterDist;
+	visitor.pDidScatter = &didScatter;
+	visitor.pTotalSteps = &totalSteps;
+
+	m_pMajorantGrid->TraverseRay( ray, 0.0, maxDist, visitor );
+
+	if( didScatter )
+	{
+		scattered = true;
+		return scatterDist;
 	}
 
-	// Clamp exit to the surface hit distance
-	tExit = fmin( tExit, maxDist );
-
-	// Start delta tracking from the AABB entry point
-	Scalar t = tEntry;
-	const Scalar invMajorant = 1.0 / m_sigma_t_majorant;
-
-	for( unsigned int step = 0; step < nMaxDeltaTrackingSteps; step++ )
-	{
-		// Sample exponential free-flight distance
-		const Scalar xi = sampler.Get1D();
-		const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invMajorant;
-		t += dt;
-
-		// Past the exit distance?
-		if( t >= tExit )
-		{
-			scattered = false;
-			return maxDist;
-		}
-
-		// Evaluate local density at the sample point
-		const Point3 samplePt = Point3Ops::mkPoint3( ray.origin, ray.Dir() * t );
-		const Scalar density = LookupDensity( samplePt );
-		const Scalar sigma_t_local = ColorMath::MaxValue( m_max_sigma_t ) * density;
-
-		// Accept/reject: real collision with probability sigma_t_local / majorant
-		const Scalar xi2 = sampler.Get1D();
-		if( xi2 < sigma_t_local * invMajorant )
-		{
-			// Real scatter event
-			scattered = true;
-			return t;
-		}
-		// Null collision — continue stepping
-	}
-
-	// Exceeded max steps — treat as no scatter
 	scattered = false;
 	return maxDist;
 }
@@ -322,40 +384,86 @@ Scalar HeterogeneousMedium::SampleDistanceNM(
 		return maxDist;
 	}
 
-	Scalar tEntry, tExit;
-	if( !IntersectBBox( ray, tEntry, tExit ) )
+	// DDA-based delta tracking (spectral variant).
+	// Uses the same majorant grid as the RGB path.  The spectral
+	// majorant per cell is scaled by the ratio of the spectral
+	// to RGB majorant so that accept/reject uses the correct
+	// spectral extinction.
+	const Scalar majorantRatio = (m_sigma_t_majorant > 0)
+		? sigma_t_majorant_nm / m_sigma_t_majorant : 1.0;
+
+	const HeterogeneousMedium* self = this;
+	const Ray& rayRef = ray;
+	ISampler& samplerRef = sampler;
+	Scalar scatterDist = 0;
+	bool didScatter = false;
+	unsigned int totalSteps = 0;
+
+	struct DeltaTrackingVisitorNM
 	{
-		scattered = false;
-		return maxDist;
-	}
+		const HeterogeneousMedium* self;
+		const Ray* pRay;
+		ISampler* pSampler;
+		Scalar sigma_t_majorant_nm;
+		Scalar majorantRatio;
+		Scalar* pScatterDist;
+		bool* pDidScatter;
+		unsigned int* pTotalSteps;
 
-	tExit = fmin( tExit, maxDist );
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		{
+			// Scale the RGB cell majorant to spectral
+			const Scalar cellMajNM = cellMajorant * majorantRatio;
+			if( cellMajNM <= 0 )
+				return true;
 
-	Scalar t = tEntry;
-	const Scalar invMajorant = 1.0 / sigma_t_majorant_nm;
+			const Scalar invCellMaj = 1.0 / cellMajNM;
+			Scalar t = tCellEntry;
 
-	for( unsigned int step = 0; step < nMaxDeltaTrackingSteps; step++ )
+			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			{
+				(*pTotalSteps)++;
+
+				const Scalar xi = pSampler->Get1D();
+				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
+				t += dt;
+
+				if( t >= tCellExit )
+					return true;
+
+				const Point3 samplePt = Point3Ops::mkPoint3(
+					pRay->origin, pRay->Dir() * t );
+				const Scalar density = self->LookupDensity( samplePt );
+				const Scalar sigma_t_local = sigma_t_majorant_nm * density;
+
+				const Scalar xi2 = pSampler->Get1D();
+				if( xi2 < sigma_t_local * invCellMaj )
+				{
+					*pScatterDist = t;
+					*pDidScatter = true;
+					return false;
+				}
+			}
+			return false;
+		}
+	};
+
+	DeltaTrackingVisitorNM visitor;
+	visitor.self = self;
+	visitor.pRay = &rayRef;
+	visitor.pSampler = &samplerRef;
+	visitor.sigma_t_majorant_nm = sigma_t_majorant_nm;
+	visitor.majorantRatio = majorantRatio;
+	visitor.pScatterDist = &scatterDist;
+	visitor.pDidScatter = &didScatter;
+	visitor.pTotalSteps = &totalSteps;
+
+	m_pMajorantGrid->TraverseRay( ray, 0.0, maxDist, visitor );
+
+	if( didScatter )
 	{
-		const Scalar xi = sampler.Get1D();
-		const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invMajorant;
-		t += dt;
-
-		if( t >= tExit )
-		{
-			scattered = false;
-			return maxDist;
-		}
-
-		const Point3 samplePt = Point3Ops::mkPoint3( ray.origin, ray.Dir() * t );
-		const Scalar density = LookupDensity( samplePt );
-		const Scalar sigma_t_local = sigma_t_majorant_nm * density;
-
-		const Scalar xi2 = sampler.Get1D();
-		if( xi2 < sigma_t_local * invMajorant )
-		{
-			scattered = true;
-			return t;
-		}
+		scattered = true;
+		return scatterDist;
 	}
 
 	scattered = false;
@@ -386,56 +494,99 @@ RISEPel HeterogeneousMedium::EvalTransmittance(
 		return RISEPel( 1, 1, 1 );
 	}
 
-	Scalar tEntry, tExit;
-	if( !IntersectBBox( ray, tEntry, tExit ) )
-	{
-		return RISEPel( 1, 1, 1 );
-	}
-
-	tExit = fmin( tExit, dist );
-	if( tEntry >= tExit )
-	{
-		return RISEPel( 1, 1, 1 );
-	}
-
-	const Scalar invMajorant = 1.0 / m_sigma_t_majorant;
-
-	// Use deterministic ray marching for transmittance rather than
-	// stochastic ratio tracking — avoids noise in shadow rays.
-	// March through the volume in uniform steps, accumulating
-	// optical depth per channel.
+	// Ratio tracking with DDA-based majorant grid.
 	//
-	// Step size: use the minimum world-space voxel edge length to
-	// ensure adequate sampling regardless of ray direction.  This
-	// handles diagonal rays correctly (they traverse more voxels
-	// than axis-aligned rays of the same parametric length).
-	const Scalar rayExtent = tExit - tEntry;
-	const Scalar minVoxelEdge = fmin(
-		fmin( m_bboxExtent.x / Scalar(m_volWidth),
-			  m_bboxExtent.y / Scalar(m_volHeight) ),
-		m_bboxExtent.z / Scalar(m_volDepth) );
-	// Target ~2 samples per voxel, but cap at 512 steps
-	const Scalar stepSize = fmax( minVoxelEdge * 0.5, rayExtent / 512.0 );
-	const unsigned int nSteps = (unsigned int)ceil( rayExtent / stepSize );
-	const Scalar dt = rayExtent / Scalar(nSteps);
+	// For each cell traversed by the ray, we sample exponential
+	// steps using the cell's local majorant.  At each sample point
+	// the running per-channel transmittance weight is multiplied by:
+	//   w[ch] *= 1 - sigma_t[ch] * density / cell_majorant
+	//
+	// This produces an unbiased estimate of the true per-channel
+	// transmittance.  Using local majorants from the grid instead
+	// of the global majorant ensures the ratio stays close to 1
+	// in low-density cells, reducing variance.
+	//
+	// Reference: Novak et al. 2014, "Residual Ratio Tracking for
+	// Estimating Attenuation in Participating Media".
 
-	RISEPel opticalDepth( 0, 0, 0 );
+	// Thread-local RNG for stochastic sampling.
+	// Each thread gets its own Mersenne Twister to avoid contention.
+	static thread_local RandomNumberGenerator tl_rng;
 
-	for( unsigned int i = 0; i < nSteps; i++ )
+	RISEPel w( 1, 1, 1 );
+	const HeterogeneousMedium* self = this;
+	unsigned int totalSteps = 0;
+
+	struct RatioTrackingVisitor
 	{
-		// Sample at the midpoint of each step
-		const Scalar t = tEntry + (Scalar(i) + 0.5) * dt;
-		const Point3 samplePt = Point3Ops::mkPoint3( ray.origin, ray.Dir() * t );
-		const Scalar density = LookupDensity( samplePt );
+		const HeterogeneousMedium* self;
+		const Ray* pRay;
+		RandomNumberGenerator* pRng;
+		RISEPel* pW;
+		RISEPel max_sigma_t;
+		unsigned int* pTotalSteps;
 
-		opticalDepth = opticalDepth + m_max_sigma_t * (density * dt);
-	}
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		{
+			if( cellMajorant <= 0 )
+				return true;  // Skip empty cells
 
-	return RISEPel(
-		exp( -opticalDepth[0] ),
-		exp( -opticalDepth[1] ),
-		exp( -opticalDepth[2] )
-	);
+			const Scalar invCellMaj = 1.0 / cellMajorant;
+			Scalar t = tCellEntry;
+
+			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			{
+				(*pTotalSteps)++;
+
+				const Scalar xi = pRng->CanonicalRandom();
+				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
+				t += dt;
+
+				if( t >= tCellExit )
+					return true;  // Next cell
+
+				const Point3 samplePt = Point3Ops::mkPoint3(
+					pRay->origin, pRay->Dir() * t );
+				const Scalar density = self->LookupDensity( samplePt );
+
+				// Per-channel ratio tracking weight
+				for( int ch = 0; ch < 3; ch++ )
+				{
+					const Scalar sigma_t_ch = max_sigma_t[ch] * density;
+					(*pW)[ch] *= fmax( 0.0, 1.0 - sigma_t_ch * invCellMaj );
+				}
+
+				// Russian roulette for low transmittance.
+				// Unlike a hard cutoff (which biases toward zero), RR
+				// is unbiased: survivors are scaled by 1/pSurvive to
+				// compensate for killed paths.
+				const Scalar wMax = ColorMath::MaxValue( *pW );
+				if( wMax < 0.1 )
+				{
+					const Scalar pSurvive = fmax( wMax, 1e-6 );
+					if( pRng->CanonicalRandom() >= pSurvive )
+					{
+						*pW = RISEPel( 0, 0, 0 );
+						return false;
+					}
+					*pW = *pW * (1.0 / pSurvive);
+				}
+			}
+			return false;
+		}
+	};
+
+	RatioTrackingVisitor visitor;
+	visitor.self = self;
+	visitor.pRay = &ray;
+	visitor.pRng = &tl_rng;
+	visitor.pW = &w;
+	visitor.max_sigma_t = m_max_sigma_t;
+	visitor.pTotalSteps = &totalSteps;
+
+	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
+
+	return w;
 }
 
 Scalar HeterogeneousMedium::EvalTransmittanceNM(
@@ -451,40 +602,82 @@ Scalar HeterogeneousMedium::EvalTransmittanceNM(
 		return 1.0;
 	}
 
-	Scalar tEntry, tExit;
-	if( !IntersectBBox( ray, tEntry, tExit ) )
+	// Ratio tracking (spectral variant) with DDA-based majorant grid.
+	// Uses the RGB majorant grid scaled by the spectral/RGB ratio.
+	const Scalar majorantRatio = (m_sigma_t_majorant > 0)
+		? sigma_t_max_nm / m_sigma_t_majorant : 1.0;
+
+	static thread_local RandomNumberGenerator tl_rng_nm;
+
+	Scalar w = 1.0;
+	const HeterogeneousMedium* self = this;
+	unsigned int totalSteps = 0;
+
+	struct RatioTrackingVisitorNM
 	{
-		return 1.0;
-	}
+		const HeterogeneousMedium* self;
+		const Ray* pRay;
+		RandomNumberGenerator* pRng;
+		Scalar* pW;
+		Scalar sigma_t_max_nm;
+		Scalar majorantRatio;
+		unsigned int* pTotalSteps;
 
-	tExit = fmin( tExit, dist );
-	if( tEntry >= tExit )
-	{
-		return 1.0;
-	}
+		bool operator()( Scalar tCellEntry, Scalar tCellExit, Scalar cellMajorant )
+		{
+			const Scalar cellMajNM = cellMajorant * majorantRatio;
+			if( cellMajNM <= 0 )
+				return true;
 
-	// Deterministic ray marching for spectral transmittance
-	const Scalar rayExtent = tExit - tEntry;
-	const Scalar minVoxelEdge = fmin(
-		fmin( m_bboxExtent.x / Scalar(m_volWidth),
-			  m_bboxExtent.y / Scalar(m_volHeight) ),
-		m_bboxExtent.z / Scalar(m_volDepth) );
-	const Scalar stepSize = fmax( minVoxelEdge * 0.5, rayExtent / 512.0 );
-	const unsigned int nSteps = (unsigned int)ceil( rayExtent / stepSize );
-	const Scalar dt = rayExtent / Scalar(nSteps);
+			const Scalar invCellMaj = 1.0 / cellMajNM;
+			Scalar t = tCellEntry;
 
-	Scalar opticalDepth = 0;
+			while( *pTotalSteps < nMaxDeltaTrackingSteps )
+			{
+				(*pTotalSteps)++;
 
-	for( unsigned int i = 0; i < nSteps; i++ )
-	{
-		const Scalar t = tEntry + (Scalar(i) + 0.5) * dt;
-		const Point3 samplePt = Point3Ops::mkPoint3( ray.origin, ray.Dir() * t );
-		const Scalar density = LookupDensity( samplePt );
+				const Scalar xi = pRng->CanonicalRandom();
+				const Scalar dt = -log( fmax( 1.0 - xi, 1e-30 ) ) * invCellMaj;
+				t += dt;
 
-		opticalDepth += sigma_t_max_nm * density * dt;
-	}
+				if( t >= tCellExit )
+					return true;
 
-	return exp( -opticalDepth );
+				const Point3 samplePt = Point3Ops::mkPoint3(
+					pRay->origin, pRay->Dir() * t );
+				const Scalar density = self->LookupDensity( samplePt );
+				const Scalar sigma_t_local = sigma_t_max_nm * density;
+
+				*pW *= fmax( 0.0, 1.0 - sigma_t_local * invCellMaj );
+
+				// Russian roulette (see RGB variant for rationale)
+				if( *pW < 0.1 )
+				{
+					const Scalar pSurvive = fmax( *pW, 1e-6 );
+					if( pRng->CanonicalRandom() >= pSurvive )
+					{
+						*pW = 0;
+						return false;
+					}
+					*pW = *pW * (1.0 / pSurvive);
+				}
+			}
+			return false;
+		}
+	};
+
+	RatioTrackingVisitorNM visitor;
+	visitor.self = self;
+	visitor.pRay = &ray;
+	visitor.pRng = &tl_rng_nm;
+	visitor.pW = &w;
+	visitor.sigma_t_max_nm = sigma_t_max_nm;
+	visitor.majorantRatio = majorantRatio;
+	visitor.pTotalSteps = &totalSteps;
+
+	m_pMajorantGrid->TraverseRay( ray, 0.0, dist, visitor );
+
+	return w;
 }
 
 bool HeterogeneousMedium::IsHomogeneous() const
@@ -503,4 +696,318 @@ Scalar HeterogeneousMedium::ClipDistanceToBounds(
 		return 0;
 	}
 	return fmin( tExit, dist );
+}
+
+
+IMedium::DistanceSample HeterogeneousMedium::SampleDistanceWithPdf(
+	const Ray& ray,
+	const Scalar maxDist,
+	ISampler& sampler
+	) const
+{
+	DistanceSample ds;
+	ds.t = SampleDistance( ray, maxDist, sampler, ds.scattered );
+	ds.pdf = EvalDistancePdf( ray, ds.t, ds.scattered, maxDist );
+	if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
+	return ds;
+}
+
+IMedium::DistanceSample HeterogeneousMedium::SampleDistanceWithPdfNM(
+	const Ray& ray,
+	const Scalar maxDist,
+	const Scalar nm,
+	ISampler& sampler
+	) const
+{
+	DistanceSample ds;
+	ds.t = SampleDistanceNM( ray, maxDist, nm, sampler, ds.scattered );
+	ds.pdf = EvalDistancePdfNM( ray, ds.t, ds.scattered, maxDist, nm );
+	if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
+	return ds;
+}
+
+Scalar HeterogeneousMedium::EvalDeterministicOpticalDepth(
+	const Ray& ray,
+	const Scalar targetDist,
+	const Scalar sigma_t_eff
+	) const
+{
+	// Deterministic optical depth via voxel-lattice DDA + Gauss-
+	// Legendre quadrature.
+	//
+	// Amanatides-Woo DDA traversal splits the ray at every
+	// accessor knot plane — the world-space positions where the
+	// interpolation stencil changes.  All three supported accessors
+	// (NNB, trilinear, tricubic Catmull-Rom) switch stencils at
+	// integer accessor coordinates.  Within each interval between
+	// consecutive knot planes, 5-point Gauss-Legendre quadrature
+	// integrates the density exactly:
+	//
+	//   Nearest-neighbor ('n'): piecewise constant (degree 0)
+	//   Trilinear ('t'):  cubic along ray per cell (degree 3)
+	//   Tricubic Catmull-Rom ('c'):  degree 9 along ray per cell
+	//     (3D tensor product of cubics, each axis linear in t)
+	//
+	// 5-point GL is exact for polynomials up to degree 2*5-1 = 9.
+	//
+	// COORDINATE MAPPING:
+	//   LookupDensity maps world → accessor via:
+	//     vx = ((world_x - bboxMin.x) / extent.x - 0.5) * volWidth
+	//   Knot planes are at integer vx = n.  Solving for world_x:
+	//     world_x = (n/volWidth + 0.5) * extent.x + bboxMin.x
+	//             = (n + volWidth/2.0) * cellSzX + bboxMin.x
+	//   For even volWidth, this coincides with bboxMin + k*cellSz.
+	//   For odd volWidth, there is a half-voxel offset; the DDA
+	//   must use the knot planes, not the naively subdivided AABB.
+	//
+	// DDA cell indices are in accessor space (floor of accessor
+	// coordinate), not 0-based voxel indices.
+	//
+	// Fully deterministic: same (ray, targetDist) always returns
+	// the same value.
+
+	// Intersect ray with the volume AABB
+	Scalar tEntry = 0, tExit = 0;
+	if( !IntersectBBox( ray, tEntry, tExit ) )
+		return 0;
+
+	tEntry = fmax( tEntry, 0.0 );
+	tExit = fmin( tExit, targetDist );
+	if( tEntry >= tExit )
+		return 0;
+
+	// Voxel cell size in world space (same as before — the spacing
+	// between knot planes equals extent/volDim regardless of parity)
+	const Scalar cellSzX = m_bboxExtent.x / Scalar(m_volWidth);
+	const Scalar cellSzY = m_bboxExtent.y / Scalar(m_volHeight);
+	const Scalar cellSzZ = m_bboxExtent.z / Scalar(m_volDepth);
+	const Scalar invCellSzX = Scalar(m_volWidth)  / m_bboxExtent.x;
+	const Scalar invCellSzY = Scalar(m_volHeight) / m_bboxExtent.y;
+	const Scalar invCellSzZ = Scalar(m_volDepth)  / m_bboxExtent.z;
+
+	// Accessor-space half-widths for the centered coordinate mapping
+	const Scalar halfW = Scalar(m_volWidth)  * 0.5;
+	const Scalar halfH = Scalar(m_volHeight) * 0.5;
+	const Scalar halfD = Scalar(m_volDepth)  * 0.5;
+
+	// Starting point (nudge slightly inside to avoid landing on face)
+	const Point3 startPt = ray.PointAtLength( tEntry + 1e-10 );
+
+	// Map start point to accessor coordinates and take floor to get
+	// the cell index.  Accessor coord:
+	//   vx = (world_x - bboxMin.x) * invCellSzX - halfW
+	// Cell index = floor(vx).
+	int cx = (int)floor( (startPt.x - m_bboxMin.x) * invCellSzX - halfW );
+	int cy = (int)floor( (startPt.y - m_bboxMin.y) * invCellSzY - halfH );
+	int cz = (int)floor( (startPt.z - m_bboxMin.z) * invCellSzZ - halfD );
+
+	// Valid accessor-space cell range: floor(-halfW) .. ceil(halfW)-1
+	// (the AABB spans accessor coords [-halfW, halfW])
+	const int minCx = (int)floor( -halfW );
+	const int maxCx = (int)ceil( halfW ) - 1;
+	const int minCy = (int)floor( -halfH );
+	const int maxCy = (int)ceil( halfH ) - 1;
+	const int minCz = (int)floor( -halfD );
+	const int maxCz = (int)ceil( halfD ) - 1;
+
+	if( cx < minCx ) cx = minCx;  if( cx > maxCx ) cx = maxCx;
+	if( cy < minCy ) cy = minCy;  if( cy > maxCy ) cy = maxCy;
+	if( cz < minCz ) cz = minCz;  if( cz > maxCz ) cz = maxCz;
+
+	// DDA step directions
+	const int stepX = (ray.Dir().x >= 0) ? 1 : -1;
+	const int stepY = (ray.Dir().y >= 0) ? 1 : -1;
+	const int stepZ = (ray.Dir().z >= 0) ? 1 : -1;
+
+	// tMax: ray parameter to reach the next knot plane in each axis.
+	// Knot plane at accessor integer n maps to world:
+	//   world_x = (n + halfW) * cellSzX + bboxMin.x
+	// Next face from cell cx in +x direction: n = cx + 1
+	// Next face from cell cx in -x direction: n = cx
+	Scalar tMaxX, tMaxY, tMaxZ;
+	Scalar tDeltaX, tDeltaY, tDeltaZ;
+
+	if( fabs( ray.Dir().x ) > 1e-20 )
+	{
+		const int nextN = (stepX > 0) ? cx + 1 : cx;
+		const Scalar nextFaceX = m_bboxMin.x + (Scalar(nextN) + halfW) * cellSzX;
+		tMaxX = (nextFaceX - ray.origin.x) / ray.Dir().x;
+		tDeltaX = fabs( cellSzX / ray.Dir().x );
+	}
+	else
+	{
+		tMaxX = RISE_INFINITY;
+		tDeltaX = RISE_INFINITY;
+	}
+
+	if( fabs( ray.Dir().y ) > 1e-20 )
+	{
+		const int nextN = (stepY > 0) ? cy + 1 : cy;
+		const Scalar nextFaceY = m_bboxMin.y + (Scalar(nextN) + halfH) * cellSzY;
+		tMaxY = (nextFaceY - ray.origin.y) / ray.Dir().y;
+		tDeltaY = fabs( cellSzY / ray.Dir().y );
+	}
+	else
+	{
+		tMaxY = RISE_INFINITY;
+		tDeltaY = RISE_INFINITY;
+	}
+
+	if( fabs( ray.Dir().z ) > 1e-20 )
+	{
+		const int nextN = (stepZ > 0) ? cz + 1 : cz;
+		const Scalar nextFaceZ = m_bboxMin.z + (Scalar(nextN) + halfD) * cellSzZ;
+		tMaxZ = (nextFaceZ - ray.origin.z) / ray.Dir().z;
+		tDeltaZ = fabs( cellSzZ / ray.Dir().z );
+	}
+	else
+	{
+		tMaxZ = RISE_INFINITY;
+		tDeltaZ = RISE_INFINITY;
+	}
+
+	// Walk the voxel lattice along accessor knot planes
+	Scalar opticalDepth = 0;
+	Scalar t = tEntry;
+
+	while( t < tExit )
+	{
+		// Next knot-plane crossing or segment end
+		Scalar tNext = fmin( fmin( tMaxX, tMaxY ), tMaxZ );
+		tNext = fmin( tNext, tExit );
+
+		if( tNext > t + 1e-15 )
+		{
+			// 5-point Gauss-Legendre: exact for polynomials up to
+			// degree 9, covering all supported accessor types.
+			//
+			// Nodes on [-1,1]:  ±0.90618, ±0.53847, 0
+			// Weights:          0.23693,  0.47863,  0.56889
+			static const Scalar glNodes[5] = {
+				-0.906179845938664, -0.538469310105683, 0.0,
+				 0.538469310105683,  0.906179845938664 };
+			static const Scalar glWeights[5] = {
+				0.236926885056189, 0.478628670499366, 0.568888888888889,
+				0.478628670499366, 0.236926885056189 };
+
+			const Scalar halfLen = 0.5 * (tNext - t);
+			const Scalar midPt  = 0.5 * (t + tNext);
+			Scalar segIntegral = 0;
+			for( int q = 0; q < 5; q++ )
+			{
+				const Scalar tq = midPt + halfLen * glNodes[q];
+				const Scalar dq = LookupDensity(
+					Point3Ops::mkPoint3( ray.origin, ray.Dir() * tq ) );
+				segIntegral += glWeights[q] * dq;
+			}
+			opticalDepth += sigma_t_eff * halfLen * segIntegral;
+		}
+
+		// Advance DDA: step the axis with the smallest tMax
+		if( tMaxX <= tMaxY && tMaxX <= tMaxZ )
+		{
+			cx += stepX;
+			tMaxX += tDeltaX;
+		}
+		else if( tMaxY <= tMaxZ )
+		{
+			cy += stepY;
+			tMaxY += tDeltaY;
+		}
+		else
+		{
+			cz += stepZ;
+			tMaxZ += tDeltaZ;
+		}
+
+		t = tNext;
+
+		// Out of accessor-space voxel range?  (Safety bound with
+		// 1-cell margin; the tExit clamp is the true limiter.)
+		if( cx < minCx - 1 || cx > maxCx + 1 ||
+			cy < minCy - 1 || cy > maxCy + 1 ||
+			cz < minCz - 1 || cz > maxCz + 1 )
+			break;
+	}
+
+	return opticalDepth;
+}
+
+
+Scalar HeterogeneousMedium::EvalDistancePdf(
+	const Ray& ray,
+	const Scalar t,
+	const bool scattered,
+	const Scalar maxDist
+	) const
+{
+	// Deterministic technique density for MIS weights.
+	//
+	// The true marginal PDF of delta tracking is:
+	//   scatter:    sigma_t(t) * T_real(0,t)
+	//   no scatter: T_real(0,tEnd)
+	// where T_real = exp(-integral sigma_t ds) is the real transmittance.
+	//
+	// We compute T_real deterministically via Simpson quadrature over
+	// the DDA cells (see EvalDeterministicOpticalDepth).  This avoids
+	// the stochastic ratio-tracking path through EvalTransmittance,
+	// which would randomize the MIS balance-heuristic denominator.
+	//
+	// sigma_t_eff is the scalar extinction used by the delta tracking
+	// sampler: MaxValue(m_max_sigma_t) for RGB.
+	//
+	// Reference: Miller, Georgiev, Jarosz, SIGGRAPH 2019 §3.3
+	const Scalar sigma_t_eff = m_sigma_t_majorant;  // = MaxValue(m_max_sigma_t)
+	const Scalar targetDist = scattered ? t : maxDist;
+	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar T_real = exp( -tau );
+
+	if( scattered )
+	{
+		const Point3 pt = ray.PointAtLength( t );
+		const Scalar density = LookupDensity( pt );
+		return fmax( sigma_t_eff * density * T_real, 1e-30 );
+	}
+	else
+	{
+		return fmax( T_real, 1e-30 );
+	}
+}
+
+Scalar HeterogeneousMedium::EvalDistancePdfNM(
+	const Ray& ray,
+	const Scalar t,
+	const bool scattered,
+	const Scalar maxDist,
+	const Scalar nm
+	) const
+{
+	// Deterministic technique density — see EvalDistancePdf comment.
+	// sigma_t_eff for NM is Luminance(m_max_sigma_t), matching
+	// the scalar majorant used by SampleDistanceNM.
+	const Scalar sigma_t_eff = ColorMath::Luminance( m_max_sigma_t );
+	const Scalar targetDist = scattered ? t : maxDist;
+	const Scalar tau = EvalDeterministicOpticalDepth( ray, targetDist, sigma_t_eff );
+	const Scalar T_real = exp( -tau );
+
+	if( scattered )
+	{
+		const Point3 pt = ray.PointAtLength( t );
+		const Scalar density = LookupDensity( pt );
+		return fmax( sigma_t_eff * density * T_real, 1e-30 );
+	}
+	else
+	{
+		return fmax( T_real, 1e-30 );
+	}
+}
+
+bool HeterogeneousMedium::GetBoundingBox(
+	Point3& bbMin,
+	Point3& bbMax
+	) const
+{
+	bbMin = m_bboxMin;
+	bbMax = m_bboxMax;
+	return true;
 }

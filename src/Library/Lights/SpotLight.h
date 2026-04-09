@@ -49,6 +49,8 @@ namespace RISE
 				return bShootPhotons;
 			}
 
+			inline bool IsPositionalLight() const { return true; }
+
 			inline RISEPel radiantExitance() const
 			{
 				return (cColor * radiantEnergy * TWO_PI * (TWO_PI*(dOuterAngle/TWO_PI)));

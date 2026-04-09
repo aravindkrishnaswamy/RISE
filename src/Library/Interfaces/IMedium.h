@@ -150,6 +150,114 @@ namespace RISE
 			const Scalar dist						///< [in] Maximum distance to clip
 			) const { return dist; }
 
+		/// Result of distance sampling with explicit PDF
+		struct DistanceSample
+		{
+			Scalar t;			///< Sampled distance along the ray
+			bool scattered;		///< True if scatter event occurred
+			Scalar pdf;			///< PDF of this distance sample
+		};
+
+		/// Sample a free-flight distance with explicit PDF.
+		/// The PDF is needed for MIS between different sampling
+		/// strategies (e.g., delta tracking vs equiangular).
+		///
+		/// Default implementation calls SampleDistance and computes
+		/// the analytic PDF (correct for HomogeneousMedium):
+		///   scatter:     pdf = sigma_t * exp(-sigma_t * t)
+		///   no scatter:  pdf = exp(-sigma_t * maxDist)
+		virtual DistanceSample SampleDistanceWithPdf(
+			const Ray& ray,							///< [in] Ray to sample along
+			const Scalar maxDist,					///< [in] Maximum distance
+			ISampler& sampler						///< [in] Random number source
+			) const
+		{
+			DistanceSample ds;
+			ds.t = SampleDistance( ray, maxDist, sampler, ds.scattered );
+			const MediumCoefficients coeff = GetCoefficients(
+				Point3Ops::mkPoint3( ray.origin, ray.Dir() * ds.t ) );
+			const Scalar sigma_t_max = fmax( fmax( coeff.sigma_t[0], coeff.sigma_t[1] ), coeff.sigma_t[2] );
+			if( ds.scattered )
+				ds.pdf = sigma_t_max * exp( -sigma_t_max * ds.t );
+			else
+				ds.pdf = exp( -sigma_t_max * maxDist );
+			if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
+			return ds;
+		}
+
+		/// Spectral variant of SampleDistanceWithPdf
+		virtual DistanceSample SampleDistanceWithPdfNM(
+			const Ray& ray,							///< [in] Ray to sample along
+			const Scalar maxDist,					///< [in] Maximum distance
+			const Scalar nm,						///< [in] Wavelength in nanometers
+			ISampler& sampler						///< [in] Random number source
+			) const
+		{
+			DistanceSample ds;
+			ds.t = SampleDistanceNM( ray, maxDist, nm, sampler, ds.scattered );
+			const MediumCoefficientsNM coeff = GetCoefficientsNM(
+				Point3Ops::mkPoint3( ray.origin, ray.Dir() * ds.t ), nm );
+			if( ds.scattered )
+				ds.pdf = coeff.sigma_t * exp( -coeff.sigma_t * ds.t );
+			else
+				ds.pdf = exp( -coeff.sigma_t * maxDist );
+			if( ds.pdf < 1e-30 ) ds.pdf = 1e-30;
+			return ds;
+		}
+
+		/// Evaluate the delta tracking PDF at a given distance along
+		/// a ray, without sampling.  Needed for MIS weight computation
+		/// when an alternative sampling strategy (e.g., equiangular)
+		/// provides the distance.
+		///
+		/// Default implementation uses the analytic homogeneous PDF:
+		///   scatter:     pdf = sigma_t * exp(-sigma_t * t)
+		///   no scatter:  pdf = exp(-sigma_t * maxDist)
+		virtual Scalar EvalDistancePdf(
+			const Ray& ray,							///< [in] Ray to evaluate along
+			const Scalar t,							///< [in] Distance to evaluate PDF at
+			const bool scattered,					///< [in] Whether this is a scatter event
+			const Scalar maxDist					///< [in] Maximum distance (for no-scatter PDF)
+			) const
+		{
+			const MediumCoefficients coeff = GetCoefficients(
+				Point3Ops::mkPoint3( ray.origin, ray.Dir() * t ) );
+			const Scalar sigma_t_max = fmax( fmax( coeff.sigma_t[0], coeff.sigma_t[1] ), coeff.sigma_t[2] );
+			Scalar pdf;
+			if( scattered )
+				pdf = sigma_t_max * exp( -sigma_t_max * t );
+			else
+				pdf = exp( -sigma_t_max * maxDist );
+			return fmax( pdf, 1e-30 );
+		}
+
+		/// Spectral variant of EvalDistancePdf
+		virtual Scalar EvalDistancePdfNM(
+			const Ray& ray,							///< [in] Ray to evaluate along
+			const Scalar t,							///< [in] Distance to evaluate PDF at
+			const bool scattered,					///< [in] Whether this is a scatter event
+			const Scalar maxDist,					///< [in] Maximum distance
+			const Scalar nm							///< [in] Wavelength in nanometers
+			) const
+		{
+			const MediumCoefficientsNM coeff = GetCoefficientsNM(
+				Point3Ops::mkPoint3( ray.origin, ray.Dir() * t ), nm );
+			Scalar pdf;
+			if( scattered )
+				pdf = coeff.sigma_t * exp( -coeff.sigma_t * t );
+			else
+				pdf = exp( -coeff.sigma_t * maxDist );
+			return fmax( pdf, 1e-30 );
+		}
+
+		/// Get the medium's world-space bounding box.
+		/// Returns false for unbounded media (e.g., global homogeneous).
+		/// Used by equiangular sampling to clip the integration domain.
+		virtual bool GetBoundingBox(
+			Point3& bbMin,							///< [out] AABB minimum corner
+			Point3& bbMax							///< [out] AABB maximum corner
+			) const { return false; }
+
 	};
 }
 

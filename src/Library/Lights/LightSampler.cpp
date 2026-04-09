@@ -433,6 +433,7 @@ LightSampler::LightSampler() :
   pPreparedScene( 0 ),
   pPreparedLuminaries( 0 ),
   cachedTotalExitance( 0 ),
+  positionalLightTotalExitance( 0 ),
   risCandidates( 0 ),
   lightSampleRRThreshold( 0 ),
   bSceneHasObjectMedia( false ),
@@ -555,6 +556,19 @@ void LightSampler::Prepare(
 
 				lightEntries.push_back( entry );
 			}
+		}
+	}
+
+	// Build the positional light list for equiangular sampling.
+	// Only point and spot lights have meaningful spatial positions.
+	positionalLightIndices.clear();
+	positionalLightTotalExitance = 0;
+	for( unsigned int i = 0; i < lightEntries.size(); i++ )
+	{
+		if( lightEntries[i].pLight && lightEntries[i].pLight->IsPositionalLight() )
+		{
+			positionalLightIndices.push_back( i );
+			positionalLightTotalExitance += lightEntries[i].exitance;
 		}
 	}
 

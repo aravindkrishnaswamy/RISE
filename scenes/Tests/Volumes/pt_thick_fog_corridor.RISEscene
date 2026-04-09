@@ -1,0 +1,228 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_thick_fog_corridor.RISEscene                                                         #
+#   Description:    Long corridor with thick fog and a point light at one end.                              #
+#                                                                                                           #
+#                   High optical depth stresses ratio tracking transmittance and                             #
+#                   equiangular sampling.  The corridor is 2000 units long, 200 wide,                       #
+#                   200 tall, with the camera at one end and a point light at the far end.                  #
+#                   The fog is dense enough that most of the corridor is dark, with light                   #
+#                   only visible near the far end.                                                           #
+#                                                                                                           #
+#                   sigma_a = 0.0005  sigma_s = 0.002                                                      #
+#                   optical depth ~ 0.0025 * 2000 = 5 (moderately dense)                                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 8, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		12
+	min_importance		0.0005
+	samples				256
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_thick_fog_corridor
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_thick_fog_corridor
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+##################################################
+# Camera at near end of corridor
+##################################################
+
+pinhole_camera
+{
+	location			100 100 -50
+	lookat				100 100 1000
+	up					0 1 0
+	width				512
+	height				256
+	fov					60.0
+}
+
+##################################################
+# Dense Participating Medium
+##################################################
+
+homogeneous_medium
+{
+	name		fog
+	absorption	0.0003 0.0003 0.0002
+	scattering	0.001 0.001 0.0008
+	phase		isotropic
+}
+
+> set global_medium fog
+
+##################################################
+# Point Light at far end of corridor
+##################################################
+
+omni_light
+{
+	name				farlight
+	power				200000.0
+	color				1.0 0.9 0.7
+	position			100 100 1200
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.8 0.8 0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_grey
+	color				0.5 0.5 0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				walls
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_grey
+}
+
+##################################################
+# Corridor Geometry (200 x 200 x 2000)
+##################################################
+
+# Floor (y=0)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					200 0 0
+	ptb					0 0 0
+	ptc					0 0 2000
+	ptd					200 0 2000
+}
+
+# Ceiling (y=200)
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0 200 0
+	ptb					200 200 0
+	ptc					200 200 2000
+	ptd					0 200 2000
+}
+
+# Left wall (x=0)
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 0
+	ptb					0 200 0
+	ptc					0 200 2000
+	ptd					0 0 2000
+}
+
+# Right wall (x=200)
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					200 0 2000
+	ptb					200 200 2000
+	ptc					200 200 0
+	ptd					200 0 0
+}
+
+# Far wall (z=2000)
+clippedplane_geometry
+{
+	name				farwallgeom
+	pta					0 0 2000
+	ptb					0 200 2000
+	ptc					200 200 2000
+	ptd					200 0 2000
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			walls
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			walls
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			walls
+}
+
+standard_object
+{
+	name				farwall
+	geometry			farwallgeom
+	material			walls
+}

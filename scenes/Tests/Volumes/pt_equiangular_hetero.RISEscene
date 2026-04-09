@@ -1,0 +1,246 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_equiangular_hetero.RISEscene                                                         #
+#   Description:    Point light near a heterogeneous volume — tests equiangular sampling                    #
+#                   with spatially varying density.                                                          #
+#                                                                                                           #
+#                   Combines the heterogeneous sphere volume (64^3) with a point light                      #
+#                   positioned just outside the dense region.  This tests the interaction                    #
+#                   between equiangular sampling (which concentrates samples near the light)                 #
+#                   and delta tracking (which concentrates samples where density is high).                   #
+#                   The one-sample MIS should balance both strategies.                                       #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 8, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		false
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		12
+	min_importance		0.0005
+	samples				256
+	lum_samples			1
+	ior_stack			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_equiangular_hetero
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_equiangular_hetero
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -280
+	lookat				278 273 280
+	up					0 1 0
+	width				512
+	height				512
+	fov					65.0
+}
+
+##################################################
+# Heterogeneous participating medium
+##################################################
+
+heterogeneous_medium
+{
+	name			sphere_vol
+	absorption		0.001 0.001 0.001
+	scattering		0.008 0.008 0.008
+	phase			isotropic
+	volume_pattern	media/volumes/sphere_%03d.raw
+	volume_width	64
+	volume_height	64
+	volume_startz	0
+	volume_endz		63
+	accessor		t
+	bbox_min		78 73 80
+	bbox_max		478 473 480
+}
+
+> set global_medium sphere_vol
+
+##################################################
+# Point Light (near the dense volume region)
+##################################################
+
+omni_light
+{
+	name				pointlight
+	power				40000.0
+	color				1.0 0.95 0.85
+	position			350 400 350
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+##################################################
+# Cornell box geometry
+##################################################
+
+# Floor
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 556
+	ptd					556 0 556
+}
+
+# Ceiling
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0 548 0
+	ptb					556 548 0
+	ptc					556 548 556
+	ptd					0 548 556
+}
+
+# Back wall
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 556
+	ptb					0 548 556
+	ptc					556 548 556
+	ptd					556 0 556
+}
+
+# Left wall (red)
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 0
+	ptb					0 548 0
+	ptc					0 548 556
+	ptd					0 0 556
+}
+
+# Right wall (green)
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 556
+	ptb					556 548 556
+	ptc					556 548 0
+	ptd					556 0 0
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
