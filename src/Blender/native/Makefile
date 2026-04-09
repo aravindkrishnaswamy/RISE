@@ -19,6 +19,33 @@ OBJS = $(SRCS:.cpp=.o)
 CPPFLAGS += -I.
 CXXFLAGS += -std=c++17
 
+OPENVDB_ROOT ?=
+TBB_ROOT ?=
+
+ifeq ($(OPENVDB_ROOT),)
+ifneq ($(wildcard /opt/homebrew/opt/openvdb/include/openvdb/openvdb.h),)
+OPENVDB_ROOT := /opt/homebrew/opt/openvdb
+else ifneq ($(wildcard $(HOME)/Development/blender-git/blender/lib/macos_arm64/openvdb/include/openvdb/openvdb.h),)
+OPENVDB_ROOT := $(HOME)/Development/blender-git/blender/lib/macos_arm64/openvdb
+endif
+endif
+
+ifneq ($(OPENVDB_ROOT),)
+ifeq ($(TBB_ROOT),)
+ifneq ($(wildcard /opt/homebrew/opt/tbb/lib/libtbb.dylib),)
+TBB_ROOT := /opt/homebrew/opt/tbb
+else ifneq ($(wildcard $(HOME)/Development/blender-git/blender/lib/macos_arm64/tbb/lib/libtbb.dylib),)
+TBB_ROOT := $(HOME)/Development/blender-git/blender/lib/macos_arm64/tbb
+endif
+endif
+
+CPPFLAGS += -DRISE_BLENDER_ENABLE_OPENVDB -I$(OPENVDB_ROOT)/include
+LDLIBS += -L$(OPENVDB_ROOT)/lib -Wl,-rpath,$(OPENVDB_ROOT)/lib -lopenvdb
+ifneq ($(TBB_ROOT),)
+LDLIBS += -L$(TBB_ROOT)/lib -Wl,-rpath,$(TBB_ROOT)/lib -ltbb
+endif
+endif
+
 all: $(TARGET)
 
 .PHONY: rise_archive

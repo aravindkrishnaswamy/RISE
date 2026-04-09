@@ -13,8 +13,26 @@
 # name of the CC compiler
 CXX = c++ -arch arm64
 
+OPENEXR_PREFIX ?= /opt/homebrew/opt/openexr
+IMATH_PREFIX ?= /opt/homebrew/opt/imath
+LIBTIFF_PREFIX ?= /opt/homebrew/opt/libtiff
+
+ifneq ($(wildcard $(OPENEXR_PREFIX)/include/OpenEXR/ImfRgbaFile.h),)
+CPPFLAGS_OPENEXR = -I$(OPENEXR_PREFIX)/include/OpenEXR -I$(OPENEXR_PREFIX)/include -I$(IMATH_PREFIX)/include/Imath -I$(IMATH_PREFIX)/include
+LDLIBS_EXR = -L$(OPENEXR_PREFIX)/lib -Wl,-rpath,$(OPENEXR_PREFIX)/lib -L$(IMATH_PREFIX)/lib -Wl,-rpath,$(IMATH_PREFIX)/lib -lOpenEXR -lOpenEXRUtil -lOpenEXRCore -lIex -lIlmThread -lImath
+else
+DEF_EXR = -DNO_EXR_SUPPORT
+endif
+
+ifneq ($(wildcard $(LIBTIFF_PREFIX)/include/tiffio.h),)
+CPPFLAGS_TIFF = -I$(LIBTIFF_PREFIX)/include
+LDLIBS_TIFF = -L$(LIBTIFF_PREFIX)/lib -Wl,-rpath,$(LIBTIFF_PREFIX)/lib -ltiff
+else
+DEF_TIFF = -DNO_TIFF_SUPPORT
+endif
+
 # options for the linker
-CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include -flto
+CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) -flto
 
 CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
 
@@ -44,4 +62,4 @@ DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) 
 # libraries to link with
 LDLIBS_OIDN = -lOpenImageDenoise
 LDLIBS_OPENPGL = -lopenpgl
-LDLIBS = -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_OIDN) $(LDLIBS_OPENPGL)
+LDLIBS = -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OIDN) $(LDLIBS_OPENPGL)

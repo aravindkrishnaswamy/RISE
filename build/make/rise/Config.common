@@ -30,4 +30,4 @@ HDRS = \
 # We can also select the random number generator we want to use.
 # By default we use the very spiffy Mersenne
 # twister, specifically the one with 53bit resolution
-CXXLIBSETTINGS = -DCOLORS_RGB -DMERSENNE53 -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT
+CXXLIBSETTINGS = -DCOLORS_RGB -DMERSENNE53 $(DEF_TIFF) $(DEF_EXR)

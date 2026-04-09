@@ -10,6 +10,8 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
+#define RISE_BLENDER_API_VERSION 2
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,6 +29,40 @@ enum rise_blender_light_type {
 	RISE_BLENDER_LIGHT_AMBIENT = 4
 };
 
+enum rise_blender_painter_kind {
+	RISE_BLENDER_PAINTER_UNIFORM = 0,
+	RISE_BLENDER_PAINTER_TEXTURE_PNG = 1,
+	RISE_BLENDER_PAINTER_TEXTURE_EXR = 2,
+	RISE_BLENDER_PAINTER_TEXTURE_HDR = 3,
+	RISE_BLENDER_PAINTER_TEXTURE_TIFF = 4,
+	RISE_BLENDER_PAINTER_BLEND = 5
+};
+
+enum rise_blender_color_space {
+	RISE_BLENDER_COLOR_LINEAR = 0,
+	RISE_BLENDER_COLOR_SRGB = 1
+};
+
+enum rise_blender_modifier_kind {
+	RISE_BLENDER_MODIFIER_BUMP = 0
+};
+
+enum rise_blender_material_model {
+	RISE_BLENDER_MATERIAL_LAMBERT = 0,
+	RISE_BLENDER_MATERIAL_GGX = 1,
+	RISE_BLENDER_MATERIAL_DIELECTRIC = 2
+};
+
+enum rise_blender_phase_type {
+	RISE_BLENDER_PHASE_ISOTROPIC = 0,
+	RISE_BLENDER_PHASE_HG = 1
+};
+
+enum rise_blender_medium_kind {
+	RISE_BLENDER_MEDIUM_HOMOGENEOUS = 0,
+	RISE_BLENDER_MEDIUM_HETEROGENEOUS_VDB = 1
+};
+
 typedef struct rise_blender_camera {
 	int projection_type;
 	float location[3];
@@ -41,17 +77,41 @@ typedef struct rise_blender_camera {
 	float shift_y;
 } rise_blender_camera;
 
+typedef struct rise_blender_painter {
+	const char* name;
+	int kind;
+	float color[3];
+	const char* path;
+	int color_space;
+	int filter_type;
+	int lowmemory;
+	float scale[3];
+	float shift[3];
+	const char* painter_a_name;
+	const char* painter_b_name;
+	const char* mask_painter_name;
+} rise_blender_painter;
+
+typedef struct rise_blender_modifier {
+	const char* name;
+	int kind;
+	const char* source_painter_name;
+	float scale;
+	float window;
+} rise_blender_modifier;
+
 typedef struct rise_blender_material {
 	const char* name;
-	float base_color[4];
-	float emission_color[3];
-	float emission_strength;
-	float metallic;
-	float roughness;
-	float specular;
-	float transmission;
-	float ior;
-	float alpha;
+	int model;
+	const char* diffuse_painter_name;
+	const char* specular_painter_name;
+	const char* alpha_x_painter_name;
+	const char* alpha_y_painter_name;
+	const char* ior_painter_name;
+	const char* extinction_painter_name;
+	const char* tau_painter_name;
+	const char* scatter_painter_name;
+	const char* emission_painter_name;
 	int double_sided;
 } rise_blender_material;
 
@@ -79,6 +139,8 @@ typedef struct rise_blender_object {
 	int casts_shadows;
 	int receives_shadows;
 	int visible;
+	const char* modifier_name;
+	const char* interior_medium_name;
 } rise_blender_object;
 
 typedef struct rise_blender_light {
@@ -92,7 +154,23 @@ typedef struct rise_blender_light {
 	float spot_blend;
 } rise_blender_light;
 
+typedef struct rise_blender_medium {
+	const char* name;
+	int kind;
+	float sigma_a[3];
+	float sigma_s[3];
+	float emission[3];
+	int phase_type;
+	float phase_g;
+	const char* source_filepath;
+	const char* source_grid_name;
+	float bbox_min[3];
+	float bbox_max[3];
+} rise_blender_medium;
+
 typedef struct rise_blender_render_settings {
+	uint32_t width;
+	uint32_t height;
 	uint32_t pixel_samples;
 	uint32_t light_samples;
 	uint32_t max_recursion;
@@ -101,22 +179,64 @@ typedef struct rise_blender_render_settings {
 	int choose_one_light;
 	int use_ior_stack;
 	int show_lights;
+	int path_branch;
+	int sms_enabled;
+	uint32_t sms_max_iterations;
+	float sms_threshold;
+	uint32_t sms_max_chain_depth;
+	int sms_biased;
+	uint32_t adaptive_max_samples;
+	float adaptive_threshold;
+	int adaptive_show_map;
+	int path_guiding_enabled;
+	uint32_t path_guiding_training_iterations;
+	uint32_t path_guiding_training_spp;
+	float path_guiding_alpha;
+	uint32_t path_guiding_max_depth;
+	uint32_t path_guiding_sampling_type;
+	uint32_t path_guiding_ris_candidates;
+	float stability_direct_clamp;
+	float stability_indirect_clamp;
+	float stability_filter_glossy;
+	uint32_t stability_rr_min_depth;
+	float stability_rr_threshold;
+	uint32_t stability_max_diffuse_bounce;
+	uint32_t stability_max_glossy_bounce;
+	uint32_t stability_max_transmission_bounce;
+	uint32_t stability_max_translucent_bounce;
+	uint32_t stability_max_volume_bounce;
+	int oidn_denoise;
+	const char* temporary_directory;
 } rise_blender_render_settings;
 
 typedef struct rise_blender_scene {
 	const rise_blender_camera* camera;
+	const rise_blender_painter* painters;
+	const rise_blender_modifier* modifiers;
 	const rise_blender_material* materials;
 	const rise_blender_mesh* meshes;
 	const rise_blender_object* objects;
 	const rise_blender_light* lights;
+	const rise_blender_medium* mediums;
+	uint32_t num_painters;
+	uint32_t num_modifiers;
 	uint32_t num_materials;
 	uint32_t num_meshes;
 	uint32_t num_objects;
 	uint32_t num_lights;
+	uint32_t num_mediums;
 	float world_color[3];
 	float world_strength;
 	int use_world_ambient;
+	const char* global_medium_name;
 } rise_blender_scene;
+
+typedef struct rise_blender_capabilities {
+	uint32_t api_version;
+	int supports_oidn;
+	int supports_path_guiding;
+	int supports_vdb_volumes;
+} rise_blender_capabilities;
 
 typedef struct rise_blender_render_result {
 	float* rgba;
@@ -137,6 +257,10 @@ typedef int (*rise_blender_image_callback)(
 );
 
 RISE_BLENDER_EXPORT int rise_blender_api_version(void);
+
+RISE_BLENDER_EXPORT int rise_blender_get_capabilities(
+	rise_blender_capabilities* capabilities
+);
 
 RISE_BLENDER_EXPORT int rise_blender_render_scene(
 	const rise_blender_scene* scene,
