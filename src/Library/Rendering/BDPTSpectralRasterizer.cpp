@@ -25,6 +25,8 @@
 #include "BDPTSpectralRasterizer.h"
 #include "AOVBuffers.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Utilities/ZSobolSampler.h"
+#include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Interfaces/IBSDF.h"
@@ -50,12 +52,14 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const unsigned int spectralSamples,
 	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
-	const StabilityConfig& stabilityConfig
+	const StabilityConfig& stabilityConfig,
+	bool useZSobol_
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityConfig ),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig() )
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false )
 {
+	useZSobol = useZSobol_;
 }
 
 BDPTSpectralRasterizer::~BDPTSpectralRasterizer()
@@ -211,6 +215,8 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 	const ICamera& camera,
 	uint32_t pixelSampleIndex,
 	uint32_t pixelSeed,
+	uint32_t mortonIndex,
+	uint32_t log2SPP,
 	PixelAOV* pAOV
 	) const
 {
@@ -223,8 +229,15 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			(lambda_begin + int(rc.random.CanonicalRandom() * Scalar(num_wavelengths)) * wavelength_steps) :
 			(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
 
-		// Each (pixel sample, spectral sample) pair gets a unique Sobol index
-		const uint32_t sampleIndex = pixelSampleIndex * nSpectralSamples + ss;
+		// Each (pixel sample, spectral sample) pair gets a unique Sobol index.
+		// The combined index is computed from the raw pixelSampleIndex, then
+		// Morton-remapped if ZSobol is active.  This ensures the Morton
+		// encoding is applied to the final sample index and is not destroyed
+		// by the multiplication with nSpectralSamples.
+		const uint32_t combinedIndex = pixelSampleIndex * nSpectralSamples + ss;
+		const uint32_t sampleIndex = useZSobol
+			? ((mortonIndex << log2SPP) | combinedIndex)
+			: combinedIndex;
 
 		// Extract AOV only on the first wavelength sample
 		const Scalar nmvalue = IntegratePixelNM( rc, ptOnScreen, pScene, camera, nm,
@@ -277,10 +290,40 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		samples.push_back( Point2( 0, 0 ) );
 	}
 
-	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
-	const uint32_t pixelSeed = SobolSequence::HashCombine(
-		static_cast<uint32_t>(x),
-		static_cast<uint32_t>(y) );
+	// Derive a per-pixel seed for Owen scrambling.
+	// ZSobol (blue-noise): seed from Morton index.
+	// If the Morton-shifted index would overflow uint32_t, fall back
+	// to standard Sobol (white-noise) for this pixel.
+	uint32_t pixelSeed;
+	uint32_t mortonIndex = 0;
+	uint32_t log2SPP = 0;
+	if( useZSobol &&
+		MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
+	{
+		const uint32_t mi = MortonCode::Morton2D(
+			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+		// The effective per-pixel sample count includes both pixel
+		// samples and spectral samples, since IntegratePixelSpectral
+		// derives Sobol indices as (pixelSampleIndex * nSpectralSamples + ss).
+		const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2(
+			static_cast<uint32_t>(samples.size()) * nSpectralSamples ) );
+		// Check overflow: if the Morton-shifted index exceeds uint32_t,
+		// fall back to standard Sobol (mortonIndex=0, log2SPP=0 gives
+		// the identity mapping).
+		if( l2 < 32 &&
+			(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
+		{
+			mortonIndex = mi;
+			log2SPP = l2;
+			pixelSeed = SobolSequence::HashCombine( mortonIndex, 0u );
+		} else {
+			pixelSeed = SobolSequence::HashCombine(
+				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+		}
+	} else {
+		pixelSeed = SobolSequence::HashCombine(
+			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+	}
 
 	XYZPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
@@ -303,17 +346,20 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 		}
 
+		// The Morton remapping is done inside IntegratePixelSpectral per
+		// spectral sample, so pass the raw pixelSampleIndex here.
+
 #ifdef RISE_ENABLE_OIDN
 		PixelAOV aov;
 		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-			pixelSampleIndex, pixelSeed, pAOVBuffers ? &aov : 0 ) * weight;
+			pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 ) * weight;
 		if( pAOVBuffers && aov.valid ) {
 			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 			pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
 		}
 #else
 		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-			pixelSampleIndex, pixelSeed, 0 ) * weight;
+			pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 ) * weight;
 #endif
 	}
 

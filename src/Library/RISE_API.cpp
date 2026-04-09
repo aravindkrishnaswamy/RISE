@@ -4274,14 +4274,15 @@ namespace RISE
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
-								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig );
+		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4317,14 +4318,15 @@ namespace RISE
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig );
+		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol );
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4445,7 +4447,8 @@ namespace RISE
 								const bool oidnDenoise,
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
-								const StabilityConfig& stabilityConfig
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol
 								)
 	{
 		if( !ppi ) {
@@ -4462,7 +4465,7 @@ namespace RISE
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 		}
 
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig );
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4502,7 +4505,8 @@ namespace RISE
 								const unsigned int smsBernoulliTrials,
 								const bool oidnDenoise,
 								const PathGuidingConfig& guidingConfig,
-								const StabilityConfig& stabilityConfig
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol
 								)
 	{
 		if( !ppi ) {
@@ -4521,7 +4525,7 @@ namespace RISE
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig, stabilityConfig );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig, stabilityConfig, useZSobol );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );

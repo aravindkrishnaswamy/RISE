@@ -36,7 +36,8 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	) :
   pCaster( pCaster_ ),
   pSampling( 0 ),
-  pPixelFilter( 0 )
+  pPixelFilter( 0 ),
+  useZSobol( false )
 {
 	if( pCaster ) {
 		pCaster->addref();

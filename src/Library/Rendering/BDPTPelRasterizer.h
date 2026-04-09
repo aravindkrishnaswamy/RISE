@@ -77,7 +77,8 @@ namespace RISE
 				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
 				const AdaptiveSamplingConfig& adaptiveConfig,
-				const StabilityConfig& stabilityConfig
+				const StabilityConfig& stabilityConfig,
+				bool useZSobol_
 				);
 		};
 	}

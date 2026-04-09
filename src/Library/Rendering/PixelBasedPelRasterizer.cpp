@@ -15,6 +15,8 @@
 #include "pch.h"
 #include "PixelBasedPelRasterizer.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Utilities/ZSobolSampler.h"
+#include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "BlockRasterizeSequence.h"
 #include "../RasterImages/RasterImage.h"
@@ -97,7 +99,8 @@ PixelBasedPelRasterizer::PixelBasedPelRasterizer(
 	IRayCaster* pCaster_,
 	const PathGuidingConfig& guidingCfg,
 	const AdaptiveSamplingConfig& adaptiveCfg,
-	const StabilityConfig& stabilityCfg
+	const StabilityConfig& stabilityCfg,
+	bool useZSobol_
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
 #ifdef RISE_ENABLE_OPENPGL
@@ -108,6 +111,7 @@ PixelBasedPelRasterizer::PixelBasedPelRasterizer(
   adaptiveConfig( adaptiveCfg ),
   stabilityConfig( stabilityCfg )
 {
+	useZSobol = useZSobol_;
 }
 
 PixelBasedPelRasterizer::~PixelBasedPelRasterizer( )
@@ -378,16 +382,42 @@ void PixelBasedPelRasterizer::IntegratePixel(
 {
 	RasterizerState rast = {x,y};
 
-	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
-	const uint32_t pixelSeed = SobolSequence::HashCombine(
-		static_cast<uint32_t>(x),
-		static_cast<uint32_t>(y) );
+	// Derive a per-pixel seed for Owen scrambling.
+	// Standard Sobol: seed from pixel coordinates.
+	// ZSobol (blue-noise): seed from Morton index for spatially
+	// correlated scrambles across neighboring pixels.
+	uint32_t pixelSeed;
+	uint32_t mortonIndex = 0;
+	uint32_t log2SPP = 0;
+
+	if( !useZSobol ) {
+		pixelSeed = SobolSequence::HashCombine(
+			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+	}
 
 	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
 	{
 		const bool adaptive = adaptiveConfig.maxSamples > 0;
 		const unsigned int batchSize = pSampling->GetNumSamples();
 		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
+		if( useZSobol &&
+			MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
+		{
+			const uint32_t mi = MortonCode::Morton2D(
+				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+			const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( maxSamples ) );
+			if( l2 < 32 &&
+				(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
+			{
+				mortonIndex = mi;
+				log2SPP = l2;
+				pixelSeed = SobolSequence::HashCombine( mortonIndex, 0u );
+			} else {
+				pixelSeed = SobolSequence::HashCombine(
+					static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+			}
+		}
 
 		RISEPel		colAccrued( 0, 0, 0 );
 		Scalar		weights = 0;
@@ -421,8 +451,13 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				// Install a Sobol sampler for this pixel sample so that
 				// shader ops (PathTracingShaderOp) can use low-discrepancy
 				// sampling across the full path recursion.
-				SobolSampler sobolSampler( globalSampleIndex, pixelSeed );
-				rc.pSampler = &sobolSampler;
+				// ZSobol remaps the sample index via the pixel's Morton code
+				// to produce blue-noise error distribution across screen space.
+				SobolSampler stdSampler( globalSampleIndex, pixelSeed );
+				ZSobolSampler zSampler( globalSampleIndex, mortonIndex, log2SPP, pixelSeed );
+				rc.pSampler = useZSobol
+					? static_cast<ISampler*>(&zSampler)
+					: static_cast<ISampler*>(&stdSampler);
 
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
@@ -497,8 +532,19 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	}
 	else
 	{
-		SobolSampler sobolSampler( 0, pixelSeed );
-		rc.pSampler = &sobolSampler;
+		if( useZSobol &&
+			MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
+		{
+			mortonIndex = MortonCode::Morton2D(
+				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+			pixelSeed = SobolSequence::HashCombine( mortonIndex, 0u );
+			// log2SPP stays 0 for single sample
+		}
+		SobolSampler stdSampler( 0, pixelSeed );
+		ZSobolSampler zSampler( 0, mortonIndex, 0, pixelSeed );
+		rc.pSampler = useZSobol
+			? static_cast<ISampler*>(&zSampler)
+			: static_cast<ISampler*>(&stdSampler);
 
 		RISEPel	c;
 		Ray ray;

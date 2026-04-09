@@ -72,7 +72,8 @@ namespace RISE
 				IRayCaster* pCaster_,
 				const PathGuidingConfig& guidingCfg,
 				const AdaptiveSamplingConfig& adaptiveCfg,
-				const StabilityConfig& stabilityCfg
+				const StabilityConfig& stabilityCfg,
+				bool useZSobol_
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

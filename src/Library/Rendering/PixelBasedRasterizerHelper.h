@@ -89,6 +89,7 @@ namespace RISE
 			IRayCaster*			pCaster;
 			ISampling2D*		pSampling;
 			IPixelFilter*		pPixelFilter;
+			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
 
 			virtual ~PixelBasedRasterizerHelper( );
 

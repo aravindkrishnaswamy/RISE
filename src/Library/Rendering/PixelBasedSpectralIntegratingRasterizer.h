@@ -86,7 +86,8 @@ namespace RISE
 				const Scalar lambda_end_,
 				const unsigned int num_wavelengths_,
 				const unsigned int specsamp,
-				const StabilityConfig& stabilityCfg
+				const StabilityConfig& stabilityCfg,
+				bool useZSobol_
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

@@ -5216,6 +5216,7 @@ namespace RISE
 					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = false;
+					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
@@ -5240,6 +5241,8 @@ namespace RISE
 							numSamples = pvalue.toUInt();
 						} else if( pname == "lum_samples" ) {
 							numLumSamples = pvalue.toUInt();
+						} else if( pname == "blue_noise_sampler" ) {
+							blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "radiance_map" ) {
 							radiancemap = pvalue;
 						} else if( pname == "radiance_scale" ) {
@@ -5342,7 +5345,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler );
 				}
 			};
 
@@ -5378,6 +5381,7 @@ namespace RISE
 					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = false;
+					bool blueNoiseSampler = true;
 					bool integrateRGB = false;
 					std::vector<double> spd_wavelengths;
 					std::vector<double> spd_r;
@@ -5534,6 +5538,8 @@ namespace RISE
 							}
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "blue_noise_sampler" ) {
+							blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "direct_clamp" ) {
 							stabilityConfig.directClamp = pvalue.toDouble();
 						} else if( pname == "indirect_clamp" ) {
@@ -5568,7 +5574,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
-						oidnDenoise, stabilityConfig
+						oidnDenoise, stabilityConfig, blueNoiseSampler
 						);
 				}
 			};
@@ -5829,6 +5835,7 @@ namespace RISE
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
 					bool oidnDenoise = false;
+					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
@@ -5886,6 +5893,8 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "blue_noise_sampler" ) {
+							blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "sms_enabled" ) {
 							smsEnabled = pvalue.toBoolean();
 						} else if( pname == "sms_max_iterations" ) {
@@ -5965,7 +5974,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler );
 				}
 			};
 
@@ -6005,6 +6014,7 @@ namespace RISE
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
 					bool oidnDenoise = false;
+					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					StabilityConfig stabilityConfig;
 
@@ -6061,6 +6071,8 @@ namespace RISE
 							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "blue_noise_sampler" ) {
+							blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
 							nmbegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
@@ -6137,7 +6149,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler );
 				}
 			};
 

@@ -17,6 +17,8 @@
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Utilities/ZSobolSampler.h"
+#include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 
 using namespace RISE;
@@ -28,7 +30,8 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 		const Scalar lambda_end_,
 		const unsigned int num_wavelengths_,
 		const unsigned int specsamp,
-		const StabilityConfig& stabilityCfg
+		const StabilityConfig& stabilityCfg,
+		bool useZSobol_
 		) :
   PixelBasedRasterizerHelper( pCaster_ ),
 	  lambda_begin( lambda_begin_ ),
@@ -39,6 +42,7 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	  nSpectralSamples( specsamp ),
 	  stabilityConfig( stabilityCfg )
 {
+	useZSobol = useZSobol_;
 	vecSpectralSamples.reserve( nSpectralSamples );
 }
 
@@ -147,12 +151,16 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 {
 	RasterizerState rast = {x,y};
 
-	// If we have a sampling object, then we want to sub-sample each pixel, so
-	// do that
-	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
-	const uint32_t pixelSeed = SobolSequence::HashCombine(
-		static_cast<uint32_t>(x),
-		static_cast<uint32_t>(y) );
+	// Derive a per-pixel seed for Owen scrambling.
+	// ZSobol (blue-noise): seed from Morton index.
+	uint32_t pixelSeed;
+	uint32_t mortonIndex = 0;
+	uint32_t log2SPP = 0;
+
+	if( !useZSobol ) {
+		pixelSeed = SobolSequence::HashCombine(
+			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+	}
 
 	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
 	{
@@ -160,6 +168,25 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 		ISampling2D::SamplesList2D	samples;
 		pSampling->GenerateSamplePoints( rc.random, samples );
+
+		if( useZSobol &&
+			MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
+		{
+			const uint32_t mi = MortonCode::Morton2D(
+				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+			const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2(
+				static_cast<uint32_t>(samples.size()) ) );
+			if( l2 < 32 &&
+				(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
+			{
+				mortonIndex = mi;
+				log2SPP = l2;
+				pixelSeed = SobolSequence::HashCombine( mortonIndex, 0u );
+			} else {
+				pixelSeed = SobolSequence::HashCombine(
+					static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+			}
+		}
 
 		Scalar weights = 0;
 
@@ -179,8 +206,11 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			// Install a Sobol sampler for this pixel sample so that
 			// shader ops can use low-discrepancy sampling across the
 			// full path recursion (including all spectral samples).
-			SobolSampler sobolSampler( sampleIndex, pixelSeed );
-			rc.pSampler = &sobolSampler;
+			SobolSampler stdSampler( sampleIndex, pixelSeed );
+			ZSobolSampler zSampler( sampleIndex, mortonIndex, log2SPP, pixelSeed );
+			rc.pSampler = useZSobol
+				? static_cast<ISampler*>(&zSampler)
+				: static_cast<ISampler*>(&stdSampler);
 
 			Ray ray;
 			if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
@@ -196,8 +226,18 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 	}
 	else
 	{
-		SobolSampler sobolSampler( 0, pixelSeed );
-		rc.pSampler = &sobolSampler;
+		if( useZSobol &&
+			MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
+		{
+			mortonIndex = MortonCode::Morton2D(
+				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+			pixelSeed = SobolSequence::HashCombine( mortonIndex, 0u );
+		}
+		SobolSampler stdSampler( 0, pixelSeed );
+		ZSobolSampler zSampler( 0, mortonIndex, 0, pixelSeed );
+		rc.pSampler = useZSobol
+			? static_cast<ISampler*>(&zSampler)
+			: static_cast<ISampler*>(&stdSampler);
 
 		Ray ray;
 		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {

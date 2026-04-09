@@ -64,7 +64,9 @@ namespace RISE
 			/// Spectral integration for a single pixel sample.
 			/// Samples nSpectralSamples wavelengths and returns accumulated XYZ.
 			/// Splats are XYZ-converted and written to pSplatFilm.
-			/// pixelSampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
+			/// pixelSampleIndex is the raw [0, SPP) index before Morton remapping.
+			/// mortonIndex and log2SPP drive the ZSobol mapping when useZSobol
+			/// is true; otherwise they are ignored.
 			/// When pAOV is non-null, extracts first-hit AOV from the first wavelength.
 			XYZPel IntegratePixelSpectral(
 				const RuntimeContext& rc,
@@ -73,6 +75,8 @@ namespace RISE
 				const ICamera& camera,
 				uint32_t pixelSampleIndex,
 				uint32_t pixelSeed,
+				uint32_t mortonIndex,
+				uint32_t log2SPP,
 				PixelAOV* pAOV
 				) const;
 
@@ -102,7 +106,8 @@ namespace RISE
 				const unsigned int spectralSamples,
 				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
-				const StabilityConfig& stabilityConfig
+				const StabilityConfig& stabilityConfig,
+				bool useZSobol_
 				);
 		};
 	}

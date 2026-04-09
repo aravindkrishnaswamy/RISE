@@ -54,9 +54,10 @@ bdpt_pel_rasterizer
 	sms_threshold		1e-3
 	sms_max_chain_depth	20
 	sms_biased			TRUE
-	oidn_denoise		FALSE
-#	adaptive_max_samples	1000
-#	adaptive_threshold		0.01
+	oidn_denoise 		TRUE
+	blue_noise_sampler	TRUE
+	adaptive_max_samples	1024
+	adaptive_threshold		0.01
 #	show_adaptive_map		FALSE
 }
 

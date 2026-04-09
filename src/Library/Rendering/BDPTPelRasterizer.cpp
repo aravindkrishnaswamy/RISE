@@ -16,6 +16,8 @@
 #include "BDPTPelRasterizer.h"
 #include "AOVBuffers.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Utilities/ZSobolSampler.h"
+#include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IMaterial.h"
@@ -37,13 +39,15 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveCfg,
-	const StabilityConfig& stabilityCfg
+	const StabilityConfig& stabilityCfg,
+	bool useZSobol_
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityCfg ),
-  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig() ),
+  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false ),
   adaptiveConfig( adaptiveCfg )
 {
+	useZSobol = useZSobol_;
 }
 
 BDPTPelRasterizer::~BDPTPelRasterizer()
@@ -223,14 +227,37 @@ void BDPTPelRasterizer::IntegratePixel(
 
 	const bool bMultiSample = pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL;
 
-	// Derive a per-pixel seed for Owen scrambling from pixel coordinates
-	const uint32_t pixelSeed = SobolSequence::HashCombine(
-		static_cast<uint32_t>(x),
-		static_cast<uint32_t>(y) );
+	// Derive a per-pixel seed for Owen scrambling.
+	// ZSobol (blue-noise): seed from Morton index for spatially
+	// correlated scrambles across neighboring pixels.
+	uint32_t pixelSeed;
+	uint32_t mortonIndex = 0;
+	uint32_t log2SPP = 0;
 
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample;
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
+	if( useZSobol &&
+		MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
+	{
+		const uint32_t mi = MortonCode::Morton2D(
+			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+		const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( maxSamples ) );
+		if( l2 < 32 &&
+			(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
+		{
+			mortonIndex = mi;
+			log2SPP = l2;
+			pixelSeed = SobolSequence::HashCombine( mortonIndex, 0u );
+		} else {
+			pixelSeed = SobolSequence::HashCombine(
+				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+		}
+	} else {
+		pixelSeed = SobolSequence::HashCombine(
+			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
+	}
 
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
@@ -270,17 +297,24 @@ void BDPTPelRasterizer::IntegratePixel(
 				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
 			}
 
+			// For ZSobol, remap the sample index via Morton code so that
+			// IntegratePixelRGB (which constructs the SobolSampler from
+			// these parameters) gets the blue-noise-distributed index.
+			const uint32_t effectiveIndex = useZSobol
+				? ((mortonIndex << log2SPP) | globalSampleIndex)
+				: globalSampleIndex;
+
 #ifdef RISE_ENABLE_OIDN
 			PixelAOV aov;
 			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				globalSampleIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
+				effectiveIndex, pixelSeed, pAOVBuffers ? &aov : 0 );
 			if( pAOVBuffers && aov.valid ) {
 				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
 				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
 			}
 #else
 			const RISEPel sampleColor = IntegratePixelRGB( rc, ptOnScreen, pScene, *pCamera,
-				globalSampleIndex, pixelSeed, 0 );
+				effectiveIndex, pixelSeed, 0 );
 #endif
 
 			colAccrued = colAccrued + sampleColor * weight;

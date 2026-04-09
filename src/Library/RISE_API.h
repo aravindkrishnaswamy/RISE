@@ -2031,7 +2031,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
-								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -2045,7 +2046,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
-								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								);
 
 	//! Creates an adaptive sampling pixel based rasterizer
@@ -2093,7 +2095,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
-								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2117,7 +2120,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
-								const StabilityConfig& stabilityConfig	///< [in] Production stability controls
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer

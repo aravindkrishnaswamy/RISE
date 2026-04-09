@@ -1316,7 +1316,8 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
-			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol									///< [in] Use Z-Sobol sampler
 			) = 0;
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1353,7 +1354,8 @@ namespace RISE
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol									///< [in] Use Z-Sobol sampler
 			) = 0;
 
 		//! Sets the rasterizer type to be adaptive pixel based PEL
@@ -1447,7 +1449,8 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
-			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol									///< [in] Use Z-Sobol sampler
 			) = 0;
 
 		//! Sets the rasterizer type to be spectral BDPT
@@ -1485,7 +1488,8 @@ namespace RISE
 			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
-			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol									///< [in] Use Z-Sobol sampler
 			) = 0;
 
 		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer
