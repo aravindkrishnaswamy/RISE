@@ -6880,3 +6880,173 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 
 	return results;
 }
+
+//////////////////////////////////////////////////////////////////////
+// RecomputeSubpathThroughputNM — HWSS companion wavelength
+// re-evaluation.
+//
+// Adjusts every vertex's throughputNM from heroNM to companionNM.
+//
+// Vertex storage convention (GenerateLight/EyeSubpathNM):
+//   vertex[i].throughputNM includes scatters at vertices 0..(i-1)
+//   but NOT the scatter at vertex i.  The scatter at vertex i
+//   determines the direction toward vertex i+1.
+//
+// Therefore the BSDF ratio at vertex i must be folded into the
+// cumulativeRatio AFTER applying the ratio to vertex i (so that
+// it affects vertex i+1 onwards).
+//
+// Light endpoint (v[0]): throughputNM = Le / pdfPos.
+//   The emission Le is wavelength-dependent.  The emission ratio
+//   is applied to v[0] and propagates forward.
+//
+// Camera endpoint (v[0]): throughputNM = 1.  No spectral
+//   dependence; cumulativeRatio stays 1.0.
+//
+// Delta vertices: ratio = 1.0.  This is exact for non-dispersive
+//   specular (same IOR at all wavelengths).  Dispersive delta
+//   vertices should have companions terminated upstream — see
+//   CheckDispersiveTermination().
+//
+// Medium vertices: phase function is wavelength-independent
+//   (ratio = 1.0 for scattering).  Segment transmittance ratio
+//   is a documented approximation.
+//////////////////////////////////////////////////////////////////////
+void BDPTIntegrator::RecomputeSubpathThroughputNM(
+	std::vector<BDPTVertex>& verts,
+	bool isLightPath,
+	Scalar heroNM,
+	Scalar companionNM,
+	const IScene& scene,
+	const IRayCaster& caster
+	) const
+{
+	if( verts.empty() ) {
+		return;
+	}
+
+	// Accumulated correction ratio.  Each vertex's scatter
+	// contributes to the ratio for SUBSEQUENT vertices.
+	Scalar cumulativeRatio = 1.0;
+
+	for( unsigned int i = 0; i < verts.size(); i++ )
+	{
+		BDPTVertex& v = verts[i];
+
+		// ---- Phase 1: endpoint emission ratio (applies to v[0] itself) ----
+		if( i == 0 && isLightPath && v.type == BDPTVertex::LIGHT )
+		{
+			if( verts.size() >= 2 )
+			{
+				const Vector3 outDir = Vector3Ops::Normalize(
+					Vector3Ops::mkVector3( verts[1].position, v.position ) );
+				const Scalar heroLe = EvalEmitterRadianceNM( v, outDir, heroNM );
+				const Scalar compLe = EvalEmitterRadianceNM( v, outDir, companionNM );
+				if( heroLe > NEARZERO ) {
+					cumulativeRatio *= compLe / heroLe;
+				} else {
+					cumulativeRatio = 0;
+				}
+			}
+		}
+
+		// ---- Phase 2: apply accumulated ratio to this vertex ----
+		v.throughputNM *= cumulativeRatio;
+
+		// ---- Phase 3: compute this vertex's scatter ratio ----
+		// This ratio represents the scatter AT vertex i that creates
+		// the direction toward vertex i+1.  It applies to v[i+1]
+		// onwards, so we fold it into cumulativeRatio AFTER updating
+		// v[i] above.
+		if( i + 1 < verts.size() && i > 0 &&
+			v.type == BDPTVertex::SURFACE && !v.isDelta &&
+			v.pMaterial && v.pMaterial->GetBSDF() )
+		{
+			const Vector3 dirFromPrev = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+			const Vector3 dirToNext = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
+
+			// Light subpath: wi = toward light (prev), wo = toward eye (next)
+			// Eye subpath:   wi = toward light (next), wo = toward eye (prev)
+			Vector3 wi, wo;
+			if( isLightPath ) {
+				wi = dirFromPrev;
+				wo = dirToNext;
+			} else {
+				wi = dirToNext;
+				wo = dirFromPrev;
+			}
+
+			const Scalar heroF = EvalBSDFAtVertexNM( v, wi, wo, heroNM );
+			const Scalar compF = EvalBSDFAtVertexNM( v, wi, wo, companionNM );
+
+			if( heroF > NEARZERO ) {
+				cumulativeRatio *= compF / heroF;
+			} else {
+				cumulativeRatio = 0;
+			}
+		}
+		// Delta, BSSRDF, medium, endpoints: scatter ratio = 1.0
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// HasDispersiveDeltaVertex — checks stored subpath for dispersive
+// delta interactions.
+//
+// At a delta (specular) vertex, the scattering direction is determined
+// by Snell's law / Fresnel reflection.  If the IOR varies between
+// heroNM and companionNM, the companion cannot share the hero's
+// geometric path — it should be terminated.
+//
+// We reconstruct a minimal RayIntersectionGeometric from the stored
+// vertex geometry and call IMaterial::GetSpecularInfoNM at both
+// wavelengths.  If the IORs differ beyond a small tolerance, the
+// vertex is dispersive.
+//////////////////////////////////////////////////////////////////////
+bool BDPTIntegrator::HasDispersiveDeltaVertex(
+	const std::vector<BDPTVertex>& verts,
+	Scalar heroNM,
+	Scalar companionNM
+	)
+{
+	for( unsigned int i = 0; i < verts.size(); i++ )
+	{
+		const BDPTVertex& v = verts[i];
+		if( !v.isDelta || v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+			continue;
+		}
+
+		// Reconstruct a minimal RayIntersectionGeometric for
+		// GetSpecularInfoNM.  The function needs:
+		//   - ptIntersection (for texture / painter lookup)
+		//   - vNormal, onb (surface frame)
+		//   - ray direction (incoming ray — used for IOR stack side determination)
+		// We use the normal as a stand-in incoming direction; the IOR
+		// painter typically only needs the intersection point and UV,
+		// not the actual ray direction, for its wavelength-dependent
+		// lookup.
+		Ray dummyRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
+		RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
+		rig.ptIntersection = v.position;
+		rig.vNormal = v.normal;
+		rig.onb = v.onb;
+
+		const SpecularInfo heroSI = v.pMaterial->GetSpecularInfoNM( rig, 0, heroNM );
+		const SpecularInfo compSI = v.pMaterial->GetSpecularInfoNM( rig, 0, companionNM );
+
+		if( heroSI.valid && compSI.valid &&
+			heroSI.isSpecular && compSI.isSpecular &&
+			heroSI.canRefract && compSI.canRefract )
+		{
+			// Compare IOR at the two wavelengths
+			const Scalar iorDiff = fabs( heroSI.ior - compSI.ior );
+			if( iorDiff > 1e-6 ) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}

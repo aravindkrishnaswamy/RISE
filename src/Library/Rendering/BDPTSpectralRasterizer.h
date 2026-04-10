@@ -47,7 +47,7 @@ namespace RISE
 			/// the default from PixelBasedRasterizerHelper.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
 
-			Scalar GetSplatSampleScale() const { return static_cast<Scalar>( nSpectralSamples ); }
+			Scalar GetSplatSampleScale() const { return bUseHWSS ? static_cast<Scalar>( nSpectralSamples * SampledWavelengths::N ) : static_cast<Scalar>( nSpectralSamples ); }
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -107,7 +107,8 @@ namespace RISE
 				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
 				const StabilityConfig& stabilityConfig,
-				bool useZSobol_
+				bool useZSobol_,
+				bool useHWSS_
 				);
 		};
 	}

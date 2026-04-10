@@ -18,6 +18,7 @@
 #include "IRayCaster.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/Color_Template.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 #include "ISampling2D.h"
 
 namespace RISE
@@ -53,6 +54,36 @@ namespace RISE
 			const Scalar nm,							///< [in] Wavelength to shade
 			const IORStack* const ior_stack				///< [in/out] Index of refraction stack
 			) const = 0;
+
+		//! Tells the shader to apply shade for a bundle of HWSS wavelengths.
+		//! The hero wavelength drives all directional decisions; companions
+		//! evaluate spectral throughput at the hero's geometric direction.
+		//!
+		//! Default implementation: dispatch each wavelength independently
+		//! via ShadeNM.  StandardShader and AdvancedShader override this
+		//! to route through PerformOperationHWSS.
+		virtual void ShadeHWSS(
+			const RuntimeContext& rc,					///< [in] The runtime context
+			const RayIntersection& ri,					///< [in] Intersection information
+			const IRayCaster& caster,					///< [in] The Ray Caster
+			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
+			Scalar c[SampledWavelengths::N],				///< [out] Per-wavelength shading results
+			SampledWavelengths& swl,					///< [in/out] Wavelength bundle
+			const IORStack* const ior_stack				///< [in/out] Index of refraction stack
+			) const
+		{
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+			{
+				if( !swl.terminated[i] )
+				{
+					c[i] = ShadeNM( rc, ri, caster, rs, swl.lambda[i], ior_stack );
+				}
+				else
+				{
+					c[i] = 0;
+				}
+			}
+		}
 
 		//! Tells the shader to reset itself
 		virtual void ResetRuntimeData() const = 0;

@@ -4271,7 +4271,8 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-	const bool useZSobol									///< [in] Use Z-Sobol sampler
+	const bool useZSobol,									///< [in] Use Z-Sobol sampler
+	const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4350,7 +4351,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise, stabilityConfig, useZSobol );
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise, stabilityConfig, useZSobol, useHWSS );
 	}
 
 	safe_release( pPixelSampler );
@@ -4674,7 +4675,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol
+	const bool useZSobol,
+	const bool useHWSS
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4726,7 +4728,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, useZSobol );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, useZSobol, useHWSS );
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4770,6 +4772,51 @@ bool Job::SetMLTRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise );
+
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
+bool Job::SetMLTSpectralRasterizer(
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const unsigned int nBootstrap,
+	const unsigned int nChains,
+	const unsigned int nMutationsPerPixel,
+	const double largeStepProb,
+	const char* shader,
+	const bool bShowLuminaires,
+	const bool bUseIORStack,
+	const bool bChooseOnlyOneLight,
+	const double nmbegin,
+	const double nmend,
+	const unsigned int nSpectralSamples,
+	const bool useHWSS,
+	const bool oidnDenoise,
+	const StabilityConfig& stabilityConfig
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetMLTSpectralRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, false, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreateMLTSpectralRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
+		nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
+		nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise );
 
 	safe_release( pCaster );
 	safe_release( pRasterizer );

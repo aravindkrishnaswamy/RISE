@@ -119,6 +119,23 @@ namespace RISE
 				const IORStack* const ior_stack						///< [in/out] Index of refraction stack
 				) const;
 
+			//! Casts a ray for a bundle of HWSS wavelengths with shared
+			//! scene intersection.  The hero wavelength drives medium
+			//! transport; the shader op evaluates all wavelengths at
+			//! the shared geometric intersection.
+			/// \return TRUE if any wavelength produced a hit
+			bool CastRayHWSS(
+				const RuntimeContext& rc,							///< [in] The runtime context
+				const RasterizerState& rast,						///< [in] Current state of the rasterizer
+				const Ray& ray,										///< [in] Ray to cast
+				Scalar c[SampledWavelengths::N],					///< [out] Per-wavelength amplitudes
+				const RAY_STATE& rs,								///< [in] The ray state
+				SampledWavelengths& swl,							///< [in/out] Wavelength bundle
+				Scalar* distance,									///< [in] If there was a hit, how far?
+				const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
+				const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+				) const;
+
 			//! This function casts a ray into the scene and only checks to see if it intersects something.
 			//! Very useful for shadow checks
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise

@@ -71,6 +71,30 @@ namespace RISE
 				const ScatteredRayContainer* pScat
 				) const;
 
+			/// HWSS override: evaluates the wavelength bundle with
+			/// material-aware fallback strategy.
+			///
+			/// For materials with IBSDF and no SSS: hero wavelength
+			/// drives directional decisions via ScatterNM(hero);
+			/// companions evaluate throughput via valueNM(lambda_i).
+			///
+			/// Fallback cases (see material audit in plan):
+			/// - SPF-only materials (GetBSDF()==NULL): per-wavelength
+			/// - SSS materials: SSS component per-wavelength, surface HWSS
+			/// - Dispersive specular (isDelta + varying IOR): terminate
+			///   companions
+			void PerformOperationHWSS(
+				const RuntimeContext& rc,
+				const RayIntersection& ri,
+				const IRayCaster& caster,
+				const IRayCaster::RAY_STATE& rs,
+				const Scalar caccum[SampledWavelengths::N],
+				SampledWavelengths& swl,
+				const IORStack* const ior_stack,
+				const ScatteredRayContainer* pScat,
+				Scalar result[SampledWavelengths::N]
+				) const;
+
 			bool RequireSPF() const { return true; }
 			bool HandlesEmission() const { return true; }
 		};

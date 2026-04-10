@@ -421,6 +421,45 @@ namespace RISE
 			// BSSRDF sampling is provided by the shared utility
 			// BSSRDFSampling::SampleEntryPoint() in
 			// ../Utilities/BSSRDFSampling.h
+
+		public:
+			/// Recompute throughputNM for each vertex in a stored subpath
+			/// at a companion wavelength.  Used by HWSS BDPT to re-evaluate
+			/// spectral transport along the hero's geometric path.
+			///
+			/// Walks the stored vertex array and adjusts throughputNM by
+			/// the ratio of BSDF values at the companion vs hero wavelength.
+			/// Delta vertices use a ratio of 1.0 (exact for non-dispersive
+			/// specular interactions).  Light endpoint emission is re-evaluated
+			/// at the companion wavelength.
+			///
+			/// @param verts        Vertex array (modified in place)
+			/// @param isLightPath  True for light subpath, false for eye subpath
+			/// @param heroNM       Hero wavelength (nm)
+			/// @param companionNM  Companion wavelength (nm)
+			/// @param scene        Scene reference
+			/// @param caster       Ray caster reference
+			void RecomputeSubpathThroughputNM(
+				std::vector<BDPTVertex>& verts,
+				bool isLightPath,
+				Scalar heroNM,
+				Scalar companionNM,
+				const IScene& scene,
+				const IRayCaster& caster
+				) const;
+
+			/// Checks whether any delta vertex in the given subpath has
+			/// wavelength-dependent IOR (dispersion).  If so, returns
+			/// true — the caller should terminate companion wavelengths.
+			///
+			/// Walks the stored vertices, reconstructs a minimal
+			/// RayIntersectionGeometric from vertex geometry, and
+			/// compares GetSpecularInfoNM at hero vs companion wavelength.
+			static bool HasDispersiveDeltaVertex(
+				const std::vector<BDPTVertex>& verts,
+				Scalar heroNM,
+				Scalar companionNM
+				);
 		};
 	}
 }

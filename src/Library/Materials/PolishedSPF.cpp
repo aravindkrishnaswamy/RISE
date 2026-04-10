@@ -226,6 +226,46 @@ void PolishedSPF::ScatterNM(
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM — HWSS companion throughput evaluation.
+//
+// Returns the krayNM that ScatterNM would have produced for the
+// given lobe at wavelength nm.  Both lobes are direction-independent:
+//   coat:    tau(nm) * Rs(nm, theta_i)
+//   diffuse: Rd(nm) * (1 - Rs(nm, theta_i))
+// where Rs is the Fresnel reflectance at the incident angle.
+//////////////////////////////////////////////////////////////////////
+Scalar PolishedSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack* ior_stack
+	) const
+{
+	// Compute Fresnel reflectance at the incident angle (same logic
+	// as GenerateScatteredRayFromPolish lines 62-68).
+	const Vector3 n = Vector3Ops::Dot( ri.vNormal, ri.ray.Dir() ) > 0
+		? -ri.vNormal : ri.vNormal;
+	Vector3 vRefracted = ri.ray.Dir();
+	Scalar Rs = 0.0;
+	const Scalar iorTop = ior_stack ? ior_stack->top() : 1.0;
+	const Scalar iorCoat = Nt.GetColorNM( ri, nm );
+	if( Optics::CalculateRefractedRay( n, iorTop, iorCoat, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance(
+			ri.ray.Dir(), vRefracted, n, iorTop, iorCoat );
+	}
+
+	if( rayType == ScatteredRay::eRayReflection ) {
+		return tau.GetColorNM( ri, nm ) * Rs;
+	}
+	else if( rayType == ScatteredRay::eRayDiffuse ) {
+		return Rd.GetColorNM( ri, nm ) * ( 1.0 - Rs );
+	}
+
+	return -1;
+}
+
 // Computes the Polished SPF PDF for a given direction
 static Scalar PolishedPdf(
 	const RayIntersectionGeometric& ri,

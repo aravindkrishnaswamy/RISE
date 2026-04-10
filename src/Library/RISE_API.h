@@ -2047,7 +2047,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
 								);
 
 	//! Creates an adaptive sampling pixel based rasterizer
@@ -2121,7 +2122,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
@@ -2136,6 +2138,24 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
 								const Scalar largeStepProb,					///< [in] Large step probability
 								const bool oidnDenoise						///< [in] Enable OIDN denoising post-process
+								);
+
+	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,		///< [in] Number of bootstrap samples
+								const unsigned int nChains,			///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,	///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,			///< [in] Large step probability
+								const Scalar lambda_begin,			///< [in] Start of spectral range (nm)
+								const Scalar lambda_end,			///< [in] End of spectral range (nm)
+								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//////////////////////////////////////////////////////////

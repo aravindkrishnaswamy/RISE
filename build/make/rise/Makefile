@@ -37,6 +37,9 @@ PATHTESTDEST = $(PATHDEST)tests/
 SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
 OBJTESTS = $(SRCTESTS:.cpp=.o)
 
+# Source trees owned by this makefile. Sweep these for stale object files during clean.
+CLEAN_OBJECT_DIRS = $(PATHLIBRARY) $(PATHSRCS) $(PATHSRCSDRISE) $(PATHTESTS)
+
 # Rules section
 # Normally you would define target upstairs and build it here, but 
 # in our case we're going to explicitly build the test programs
@@ -122,10 +125,11 @@ files:
 
 clean:
 	@echo Removing all objects and build targets
-	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise $(OBJS) $(OBJMPI) $(OBJLIB) 
+	@rm -rf $(PATHDEST)rise $(PATHDEST)risempi $(PATHDEST)librise.a $(PATHDEST)meshconverter $(PATHDEST)imageconverter $(PATHDEST)biospecbsdfmaker $(PATHDEST)drise_server $(PATHDEST)drise_client $(PATHDEST)drise_submitter $(OBJS) $(OBJMPI) $(OBJLIB)
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
 	@rm -rf $(OBJTESTS) $(PATHTESTDEST)
+	@find $(CLEAN_OBJECT_DIRS) -type f -name '*.o' -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
 	@rm -rf $(PATHLIBRARY)Animation/ii_files
 	@rm -rf $(PATHLIBRARY)Cameras/ii_files

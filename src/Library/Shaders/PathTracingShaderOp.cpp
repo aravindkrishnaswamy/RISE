@@ -2658,3 +2658,389 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 	return c;
 }
+
+// ================================================================
+// PerformOperationHWSS — Hero Wavelength Spectral Sampling
+//
+// Evaluates the wavelength bundle with material-aware fallback:
+//
+// 1. SPF-only materials (GetBSDF()==NULL):
+//    Falls back to independent per-wavelength PerformOperationNM.
+//    Covers: DielectricMaterial, PerfectReflector, PerfectRefractor,
+//    BioSpecSkinMaterial, GenericHumanTissueMaterial.
+//
+// 2. SSS materials (GetDiffusionProfile() or GetRandomWalkSSSParamsNM):
+//    Falls back to independent per-wavelength for this vertex since
+//    subsurface scattering coefficients are wavelength-dependent and
+//    the random walk geometry varies per wavelength.
+//
+// 3. Materials with BSDF and no SSS:
+//    Hero wavelength drives direction sampling via ScatterNM(hero).
+//    All active wavelengths evaluate throughput via valueNM at the
+//    hero's geometric direction.  NEE uses hero for direction,
+//    evaluates emitter radiance and BSDF at all wavelengths.
+//
+// 4. Dispersive specular termination (5C):
+//    At specular delta interfaces where IOR varies with wavelength,
+//    terminate companions via swl.TerminateSecondary().
+//
+// The equidistant wavelength stratification from SampledWavelengths
+// provides the primary HWSS benefit (better spectral coverage per
+// path).  Shared directional decisions reduce variance further for
+// materials with BSDF.
+// ================================================================
+void PathTracingShaderOp::PerformOperationHWSS(
+	const RuntimeContext& rc,
+	const RayIntersection& ri,
+	const IRayCaster& caster,
+	const IRayCaster::RAY_STATE& rs,
+	const Scalar caccum[SampledWavelengths::N],
+	SampledWavelengths& swl,
+	const IORStack* const ior_stack,
+	const ScatteredRayContainer* pScat,
+	Scalar result[SampledWavelengths::N]
+	) const
+{
+	// Initialize results
+	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+	{
+		result[i] = 0;
+	}
+
+	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+		return;
+	}
+
+	const IScene* pScene = caster.GetAttachedScene();
+	if( !pScene ) return;
+
+	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
+
+	// ================================================================
+	// Fallback 1: SPF-only materials (no BSDF)
+	// ================================================================
+	// Materials like DielectricSPF, PerfectReflectorSPF, BioSpecSkinSPF
+	// couple direction and throughput in ScatterNM.  Cannot separate
+	// hero direction from companion throughput, so fall back to
+	// independent per-wavelength evaluation.
+	if( !pBRDF )
+	{
+		for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+		{
+			if( !swl.terminated[i] )
+			{
+				result[i] = PerformOperationNM( rc, ri, caster, rs,
+					caccum[i], swl.lambda[i], ior_stack, pScat );
+			}
+		}
+		return;
+	}
+
+	// ================================================================
+	// Fallback 2: SSS materials
+	// ================================================================
+	// Materials with diffusion profiles or random-walk SSS have
+	// wavelength-dependent scattering coefficients that affect the
+	// subsurface geometry.  Fall back to per-wavelength evaluation.
+	{
+		ISubSurfaceDiffusionProfile* pProfile =
+			ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
+
+		const RandomWalkSSSParams* pRWParams =
+			ri.pMaterial ? ri.pMaterial->GetRandomWalkSSSParams() : 0;
+
+		RandomWalkSSSParams rwParamsNM;
+		bool hasRWNM = ri.pMaterial &&
+			ri.pMaterial->GetRandomWalkSSSParamsNM( swl.HeroLambda(), rwParamsNM );
+
+		if( pProfile || pRWParams || hasRWNM )
+		{
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+			{
+				if( !swl.terminated[i] )
+				{
+					result[i] = PerformOperationNM( rc, ri, caster, rs,
+						caccum[i], swl.lambda[i], ior_stack, pScat );
+				}
+			}
+			return;
+		}
+	}
+
+	// ================================================================
+	// HWSS path: materials with BSDF, no SSS
+	// ================================================================
+	// Hero wavelength drives all directional decisions.  Companions
+	// evaluate throughput at the hero's geometric direction.
+
+	const Scalar heroNM = swl.HeroLambda();
+
+	// ================================================================
+	// PART 1: Emission (HWSS)
+	// ================================================================
+	{
+		IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
+		if( pEmitter && rs.considerEmission )
+		{
+			// Evaluate emission at all active wavelengths
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
+			{
+				if( swl.terminated[w] ) continue;
+
+				Scalar emission = pEmitter->emittedRadianceNM(
+					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal,
+					swl.lambda[w] );
+
+				if( rs.bsdfPdf > 0 && ri.pObject )
+				{
+					const Scalar area = ri.pObject->GetArea();
+					if( area > 0 )
+					{
+						const Scalar cosLight = fabs( Vector3Ops::Dot(
+							ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+						if( cosLight > 0 )
+						{
+							const Scalar dist = Vector3Ops::Magnitude(
+								Vector3Ops::mkVector3(
+									ri.geometric.ptIntersection,
+									ri.geometric.ray.origin ) );
+
+							const LightSampler* pLS = caster.GetLightSampler();
+							if( pLS && pLS->IsRISActive() )
+							{
+								emission = 0;
+							}
+							else
+							{
+								Scalar pdfSelect = 1.0;
+								if( pLS )
+								{
+									pdfSelect = pLS->CachedPdfSelectLuminary(
+										*ri.pObject,
+										ri.geometric.ray.origin,
+										ri.geometric.ray.Dir() );
+									if( pdfSelect <= 0 ) pdfSelect = 1.0;
+								}
+								const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
+
+								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+								{
+									const Scalar alpha = rc.pOptimalMIS->GetAlpha(
+										ri.geometric.rast.x, ri.geometric.rast.y );
+									emission = emission * MISWeights::OptimalMIS2Weight(
+										rs.bsdfPdf, p_nee, alpha );
+								}
+								else
+								{
+									emission = emission * PowerHeuristic( rs.bsdfPdf, p_nee );
+								}
+							}
+						}
+					}
+				}
+
+				if( rc.pStabilityConfig && rs.depth > 1 ) {
+					emission = ClampContributionNM( emission, rc.pStabilityConfig->directClamp );
+				}
+				result[w] += emission;
+			}
+		}
+	}
+
+	// ================================================================
+	// PART 2: NEE (HWSS) — hero samples direction, all wavelengths
+	//   evaluate radiance
+	// ================================================================
+	{
+		const LightSampler* pLS = caster.GetLightSampler();
+		if( pLS )
+		{
+			IndependentSampler fallbackSampler( rc.random );
+			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
+			// Evaluate NEE at hero wavelength using existing infrastructure
+			Scalar directHero = pLS->EvaluateDirectLightingNM(
+				ri.geometric, *pBRDF, ri.pMaterial, heroNM, caster,
+				neeSampler, ri.pObject, 0, false, 0 );
+			if( rc.pStabilityConfig ) {
+				directHero = ClampContributionNM( directHero, rc.pStabilityConfig->directClamp );
+			}
+			result[0] += directHero;
+
+			// For companions, also evaluate NEE independently at their
+			// wavelengths.  The light direction is shared (hero's choice)
+			// but emitter radiance and BSDF value differ per wavelength.
+			// For now, use per-wavelength EvaluateDirectLightingNM since
+			// the LightSampler handles all the complexity internally.
+			for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
+			{
+				if( swl.terminated[w] ) continue;
+
+				Scalar directCompanion = pLS->EvaluateDirectLightingNM(
+					ri.geometric, *pBRDF, ri.pMaterial, swl.lambda[w],
+					caster, neeSampler, ri.pObject, 0, false, 0 );
+				if( rc.pStabilityConfig ) {
+					directCompanion = ClampContributionNM( directCompanion,
+						rc.pStabilityConfig->directClamp );
+				}
+				result[w] += directCompanion;
+			}
+		}
+	}
+
+	// ================================================================
+	// PART 3: BSDF sampling (HWSS) — hero direction, all wavelengths
+	// ================================================================
+	if( pScat )
+	{
+		const ScatteredRayContainer& scattered = *pScat;
+
+		// Use hero's ScatterNM results (already computed by the caller
+		// at the hero wavelength).  The scattered ray container was
+		// produced by ScatterNM(hero).
+		const Scalar xi = rc.pSampler ? rc.pSampler->Get1D() : rc.random.CanonicalRandom();
+		const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
+
+		if( pS )
+		{
+			// Check for dispersive specular termination (5C).
+			// At delta interactions, if IOR varies with wavelength,
+			// companions would follow different geometric paths.
+			if( pS->isDelta && !swl.SecondaryTerminated() )
+			{
+				const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+				if( pSPF )
+				{
+					SpecularInfo heroInfo = pSPF->GetSpecularInfoNM(
+						ri.geometric, ior_stack, heroNM );
+					if( heroInfo.valid && heroInfo.canRefract )
+					{
+						// Check if any companion has different IOR
+						for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
+						{
+							if( swl.terminated[w] ) continue;
+							SpecularInfo compInfo = pSPF->GetSpecularInfoNM(
+								ri.geometric, ior_stack, swl.lambda[w] );
+							if( compInfo.valid && fabs( compInfo.ior - heroInfo.ior ) > 1e-8 )
+							{
+								swl.TerminateSecondary();
+								break;
+							}
+						}
+					}
+				}
+			}
+
+			// Hero: recurse via CastRayNM
+			{
+				IRayCaster::RAY_STATE rs2;
+				rs2.depth = rs.depth + 1;
+				rs2.considerEmission = true;
+				rs2.importance = rs.importance * pS->krayNM;
+				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+				rs2.type = PathTracingRayType( *pS );
+
+				if( !PropagateBounceLimits( rs, rs2, *pS, rc.pStabilityConfig ) )
+				{
+					if( pS->isDelta && bSMSEnabled ) {
+						rs2.considerEmission = false;
+					}
+
+					Scalar heroResult = 0;
+					Ray traceRay = pS->ray;
+					traceRay.Advance( 1e-8 );
+					const IORStack* traceStack = pS->ior_stack ? pS->ior_stack : ior_stack;
+					caster.CastRayNM( rc, ri.geometric.rast, traceRay, heroResult,
+						rs2, heroNM, 0, ri.pRadianceMap, traceStack );
+
+					Scalar heroIndirect = heroResult * pS->krayNM;
+					if( rc.pStabilityConfig && rs.depth > 1 ) {
+						heroIndirect = ClampContributionNM( heroIndirect,
+							rc.pStabilityConfig->indirectClamp );
+					}
+					result[0] += heroIndirect;
+
+					// Companions: evaluate throughput at the hero's
+					// scattered direction for each companion wavelength.
+					//
+					// First try ISPF::EvaluateKrayNM which computes the
+					// exact krayNM for the hero-selected lobe at the
+					// companion wavelength.  SPFs whose lobes are not
+					// fully represented by the material's IBSDF (e.g.
+					// PolishedSPF's dielectric coat) must override this.
+					//
+					// If EvaluateKrayNM returns < 0 (not implemented),
+					// fall back to BSDF evaluation at the hero's
+					// direction: pBRDF->valueNM(dir, ri, comp_nm).
+					// This is correct for all materials whose BSDF
+					// covers every lobe (GGX, CookTorrance, Phong, etc.)
+					// since valueNM evaluates the full BRDF including
+					// direction-dependent Fresnel/G terms at the hero's
+					// actual outgoing direction.
+					const ISPF* pCompSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
+
+					for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
+					{
+						if( swl.terminated[w] ) continue;
+
+						Scalar compWeight = -1;
+
+						// Try SPF-provided companion evaluation first.
+						// Uses pre-scatter ior_stack (not post-bounce
+						// traceStack) so stack-sensitive SPFs see the
+						// correct interface state.
+						if( pCompSPF )
+						{
+							compWeight = pCompSPF->EvaluateKrayNM(
+								ri.geometric, pS->ray.Dir(), pS->type,
+								swl.lambda[w], ior_stack );
+						}
+
+						// Fall back to BSDF evaluation if the SPF does
+						// not implement EvaluateKrayNM.
+						if( compWeight < 0 && pBRDF )
+						{
+							compWeight = pBRDF->valueNM(
+								pS->ray.Dir(), ri.geometric, swl.lambda[w] );
+							Scalar cosTheta = fabs( Vector3Ops::Dot(
+								pS->ray.Dir(), ri.geometric.vNormal ) );
+							compWeight *= cosTheta;
+							if( pS->pdf > 0 ) {
+								compWeight /= pS->pdf;
+							}
+						}
+
+						if( compWeight > 0 )
+						{
+							IRayCaster::RAY_STATE rs2c;
+							rs2c.depth = rs.depth + 1;
+							rs2c.considerEmission = true;
+							rs2c.importance = rs.importance * compWeight;
+							rs2c.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+							rs2c.type = PathTracingRayType( *pS );
+
+							if( !PropagateBounceLimits( rs, rs2c, *pS, rc.pStabilityConfig ) )
+							{
+								if( pS->isDelta && bSMSEnabled ) {
+									rs2c.considerEmission = false;
+								}
+
+								Scalar compResult = 0;
+								caster.CastRayNM( rc, ri.geometric.rast, traceRay,
+									compResult, rs2c, swl.lambda[w], 0,
+									ri.pRadianceMap, traceStack );
+
+								Scalar compIndirect = compResult * compWeight;
+								if( rc.pStabilityConfig && rs.depth > 1 ) {
+									compIndirect = ClampContributionNM( compIndirect,
+										rc.pStabilityConfig->indirectClamp );
+								}
+								result[w] += compIndirect;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}

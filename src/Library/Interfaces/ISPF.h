@@ -186,6 +186,33 @@ namespace RISE
 		{
 			return GetSpecularInfo( ri, ior_stack );
 		}
+
+		/// Evaluate the spectral throughput weight (krayNM) for a
+		/// previously sampled scattered ray at a different wavelength.
+		///
+		/// Given a ray that was produced by ScatterNM at some hero
+		/// wavelength, this method returns what krayNM would be for
+		/// the same geometric event at wavelength @a nm.
+		///
+		/// @a rayType identifies the lobe (eRayDiffuse, eRayReflection,
+		/// etc.) so the match is correct even if the container layout
+		/// changes across wavelengths.
+		///
+		/// @return  krayNM >= 0 on success, or < 0 if not implemented
+		///          (caller should fall back to BSDF evaluation).
+		///
+		/// Default: returns -1 (not implemented).  SPFs whose lobes are
+		/// not fully represented by the material's IBSDF must override.
+		virtual Scalar EvaluateKrayNM(
+			const RayIntersectionGeometric& ri,
+			const Vector3& outDir,
+			ScatteredRay::ScatRayType rayType,
+			Scalar nm,
+			const IORStack* ior_stack
+			) const
+		{
+			return -1;
+		}
 	};
 }
 

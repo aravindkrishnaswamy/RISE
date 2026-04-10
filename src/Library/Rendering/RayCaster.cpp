@@ -1393,6 +1393,176 @@ void RayCaster::SetUseLightBVH( const bool enable )
 	}
 }
 
+// ================================================================
+// CastRayHWSS — HWSS wavelength bundle ray casting.
+//
+// Performs a SINGLE scene intersection shared by all wavelengths,
+// then dispatches to ShadeHWSS which routes through
+// PerformOperationHWSS.  This enables hero-wavelength directional
+// sharing: the hero drives BSDF sampling / NEE direction and
+// companions evaluate throughput at the hero's geometric direction.
+//
+// Participating media: falls back to per-wavelength CastRayNM
+// because volumetric scattering (equiangular MIS, free-flight
+// sampling) is wavelength-dependent and would require a separate
+// multi-wavelength medium transport implementation.
+// ================================================================
+bool RayCaster::CastRayHWSS(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& ray,
+	Scalar c[SampledWavelengths::N],
+	const RAY_STATE& rs,
+	SampledWavelengths& swl,
+	Scalar* distance,
+	const IRadianceMap* pRadianceMap,
+	const IORStack* const ior_stack
+	) const
+{
+	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+		c[i] = 0;
+
+#ifdef ENABLE_MAX_RECURSION
+	if( rs.depth > nMaxRecursions )
+		return false;
+#endif
+
+	// Check for participating medium BEFORE Russian roulette.
+	// CastRayNM performs its own RR internally, so we must not
+	// apply RR here and then again inside CastRayNM.
+	const IMedium* pMedium = MediumTracking::GetCurrentMedium( ior_stack, pScene );
+	if( pMedium )
+	{
+		bool anyHit = false;
+		for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+		{
+			c[i] = 0;
+			if( !swl.terminated[i] )
+			{
+				bool hit = CastRayNM( rc, rast, ray, c[i], rs,
+					swl.lambda[i], distance, pRadianceMap, ior_stack );
+				if( hit ) anyHit = true;
+			}
+		}
+		return anyHit;
+	}
+
+	// Russian roulette using hero importance (applied only on the
+	// non-medium path — medium fallback delegates to CastRayNM
+	// which does its own RR).
+	Scalar rrCompensation = 1.0;
+#ifdef ENABLE_RAYCASTER_RR
+	if( rs.importance < RC_RR_THRESHOLD && rs.importance > 0 )
+	{
+		const Scalar pSurvive = rs.importance / RC_RR_THRESHOLD;
+		if( rc.random.CanonicalRandom() >= pSurvive )
+			return false;
+		rrCompensation = 1.0 / pSurvive;
+	}
+#endif
+
+	// Single scene intersection shared by all wavelengths
+	RayIntersection ri( ray, rast );
+	ri.geometric.glossyFilterWidth = rs.glossyFilterWidth;
+	pScene->GetObjects()->IntersectRay( ri, true, true, false );
+
+	bool bHit = ri.geometric.bHit;
+
+	if( bHit && rs.type == IRayCaster::RAY_STATE::eRayView ) {
+		if( ri.pMaterial && ri.pMaterial->GetEmitter() ) {
+			bHit = bShowLuminaires;
+		}
+	}
+
+	bool bReturn = false;
+
+	if( bHit ) {
+		// Intersection modifier
+		if( ri.pModifier ) {
+			ri.pModifier->Modify( ri.geometric );
+		}
+
+		// IOR stack (shared geometry)
+		if( ior_stack ) {
+			ior_stack->SetCurrentObject( ri.pObject );
+		}
+
+		// Dispatch to ShadeHWSS — this routes through
+		// PerformOperationHWSS, enabling hero-wavelength
+		// directional sharing in PathTracingShaderOp.
+		if( ri.pShader ) {
+			ri.pShader->ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
+		} else {
+			pDefaultShader.ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
+		}
+
+		if( distance ) {
+			*distance = ri.geometric.range;
+		}
+
+		bReturn = true;
+	} else if( pRadianceMap ) {
+		// Local radiance map: evaluate per wavelength
+		for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+			if( !swl.terminated[i] ) {
+				c[i] = pRadianceMap->GetRadianceNM( ray, rast, swl.lambda[i] );
+			}
+		}
+	} else if( pScene->GetGlobalRadianceMap() ) {
+		// Global radiance map (environment): per wavelength with
+		// MIS weights using the hero's BSDF pdf.
+		const IRadianceMap* pGlobalRM = pScene->GetGlobalRadianceMap();
+		for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+			if( !swl.terminated[i] ) {
+				c[i] = pGlobalRM->GetRadianceNM( ray, rast, swl.lambda[i] );
+			}
+		}
+
+		// Environment MIS: use hero's bsdfPdf for the balance
+		// heuristic (all wavelengths share the same geometric
+		// direction, so the same PDF applies).
+		if( pLightSampler && rs.bsdfPdf > 0 )
+		{
+			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
+			if( pES )
+			{
+				const Scalar envPdf = pES->Pdf( ray.Dir() );
+				if( envPdf > 0 )
+				{
+					Scalar w_bsdf;
+					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+					{
+						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
+					}
+					else
+					{
+						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
+					}
+					for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+						c[i] *= w_bsdf;
+					}
+				}
+			}
+		}
+
+		if( distance && bConsiderRMapAsBackground ) {
+			*distance = RISE_INFINITY;
+		}
+
+		bReturn = bConsiderRMapAsBackground;
+	}
+
+	// RR compensation
+	if( rrCompensation != 1.0 ) {
+		for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+			c[i] *= rrCompensation;
+		}
+	}
+
+	return bReturn;
+}
+
 //! Sets the luminaire sampler
 void RayCaster::SetLuminaireSampling(
 	ISampling2D* pLumSam							///< [in] Kernel to use for luminaire sampling

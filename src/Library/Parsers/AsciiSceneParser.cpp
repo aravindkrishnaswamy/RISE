@@ -5388,6 +5388,7 @@ namespace RISE
 					bool onlyonelight = false;
 					bool oidnDenoise = false;
 					bool blueNoiseSampler = true;
+					bool useHWSS = false;
 					bool integrateRGB = false;
 					std::vector<double> spd_wavelengths;
 					std::vector<double> spd_r;
@@ -5546,6 +5547,8 @@ namespace RISE
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
 							blueNoiseSampler = pvalue.toBoolean();
+						} else if( pname == "hwss" ) {
+							useHWSS = pvalue.toBoolean();
 						} else if( pname == "direct_clamp" ) {
 							stabilityConfig.directClamp = pvalue.toDouble();
 						} else if( pname == "indirect_clamp" ) {
@@ -5580,7 +5583,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
-						oidnDenoise, stabilityConfig, blueNoiseSampler
+						oidnDenoise, stabilityConfig, blueNoiseSampler, useHWSS
 						);
 				}
 			};
@@ -6027,6 +6030,7 @@ namespace RISE
 					unsigned int smsBernoulliTrials = 100;
 					bool oidnDenoise = false;
 					bool blueNoiseSampler = true;
+					bool useHWSS = false;
 					PathGuidingConfig guidingConfig;
 					StabilityConfig stabilityConfig;
 
@@ -6085,6 +6089,8 @@ namespace RISE
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
 							blueNoiseSampler = pvalue.toBoolean();
+						} else if( pname == "hwss" ) {
+							useHWSS = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
 							nmbegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
@@ -6167,7 +6173,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS );
 				}
 			};
 
@@ -6229,6 +6235,80 @@ namespace RISE
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight, oidnDenoise, stabilityConfig );
+				}
+			};
+
+			struct MLTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String defaultshader = "global";
+					unsigned int maxEyeDepth = 10;
+					unsigned int maxLightDepth = 10;
+					unsigned int bootstrapSamples = 100000;
+					unsigned int chains = 512;
+					unsigned int mutationsPerPixel = 100;
+					double largeStepProb = 0.3;
+					bool showLuminaires = true;
+					bool useiorstack = false;
+					bool onlyonelight = false;
+					bool oidnDenoise = false;
+					double nmbegin = 400;
+					double nmend = 700;
+					unsigned int spectralSamples = 1;
+					bool useHWSS = false;
+					StabilityConfig stabilityConfig;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "defaultshader" ) {
+							defaultshader = pvalue;
+						} else if( pname == "max_eye_depth" ) {
+							maxEyeDepth = pvalue.toUInt();
+						} else if( pname == "max_light_depth" ) {
+							maxLightDepth = pvalue.toUInt();
+						} else if( pname == "bootstrap_samples" ) {
+							bootstrapSamples = pvalue.toUInt();
+						} else if( pname == "chains" ) {
+							chains = pvalue.toUInt();
+						} else if( pname == "mutations_per_pixel" ) {
+							mutationsPerPixel = pvalue.toUInt();
+						} else if( pname == "large_step_prob" ) {
+							largeStepProb = pvalue.toDouble();
+						} else if( pname == "show_luminaires" ) {
+							showLuminaires = pvalue.toBoolean();
+						} else if( pname == "ior_stack" ) {
+							useiorstack = pvalue.toBoolean();
+						} else if( pname == "choose_one_light" ) {
+							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "nmbegin" ) {
+							nmbegin = pvalue.toDouble();
+						} else if( pname == "nmend" ) {
+							nmend = pvalue.toDouble();
+						} else if( pname == "spectral_samples" ) {
+							spectralSamples = pvalue.toUInt();
+						} else if( pname == "hwss" ) {
+							useHWSS = pvalue.toBoolean();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
+						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
+						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight,
+						nmbegin, nmend, spectralSamples, useHWSS, oidnDenoise, stabilityConfig );
 				}
 			};
 
@@ -7236,6 +7316,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["bdpt_pel_rasterizer"] = new BDPTPelRasterizerAsciiChunkParser();
 	chunks["bdpt_spectral_rasterizer"] = new BDPTSpectralRasterizerAsciiChunkParser();
 	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();
+chunks["mlt_spectral_rasterizer"] = new MLTSpectralRasterizerAsciiChunkParser();
 	chunks["file_rasterizeroutput"] = new FileRasterizerOutputAsciiChunkParser();
 
 	chunks["ambient_light"] = new AmbientLightAsciiChunkParser();

@@ -31,7 +31,8 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 		const unsigned int num_wavelengths_,
 		const unsigned int specsamp,
 		const StabilityConfig& stabilityCfg,
-		bool useZSobol_
+		bool useZSobol_,
+		bool useHWSS_
 		) :
   PixelBasedRasterizerHelper( pCaster_ ),
 	  lambda_begin( lambda_begin_ ),
@@ -40,6 +41,7 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	  num_wavelengths( num_wavelengths_ ),
 	  wavelength_steps( (lambda_diff)/Scalar(num_wavelengths) ),
 	  nSpectralSamples( specsamp ),
+	  bUseHWSS( useHWSS_ ),
 	  stabilityConfig( stabilityCfg )
 {
 	useZSobol = useZSobol_;
@@ -55,13 +57,17 @@ void PixelBasedSpectralIntegratingRasterizer::PrepareRuntimeContext( RuntimeCont
 	rc.pStabilityConfig = &stabilityConfig;
 }
 
-bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample( 
+bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 	const RuntimeContext& rc,
 	const RasterizerState& rast,
 	const Ray& ray,
 	ColorXYZ& c
 	) const
 {
+	if( bUseHWSS ) {
+		return TakeSingleSampleHWSS( rc, rast, ray, c );
+	}
+
 	bool bHit = false;
 	c = ColorXYZ(0,0,0,0);
 
@@ -132,6 +138,63 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 		if( bHit ) {
 			c = ColorXYZ( sum, 1.0 );
 		}
+	}
+
+	return bHit;
+}
+
+/// HWSS path: each spectral sample produces a bundle of
+/// SampledWavelengths::N equidistant wavelengths.  The hero drives
+/// all directional decisions in the shader op; companions share
+/// the geometric path but carry independent spectral throughput.
+/// XYZ conversion uses the same normalization as the single-wavelength
+/// path: (1/numActive) * sum_i XYZFromNM(lambda_i) * c_i.
+bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& ray,
+	ColorXYZ& c
+	) const
+{
+	bool bHit = false;
+	c = ColorXYZ(0,0,0,0);
+
+	XYZPel totalSum( 0, 0, 0 );
+	unsigned int totalActive = 0;
+
+	for( unsigned int s = 0; s < nSpectralSamples; s++ )
+	{
+		const Scalar u = rc.random.CanonicalRandom();
+		SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+
+		Scalar cHWSS[SampledWavelengths::N] = {0};
+		IRayCaster::RAY_STATE rs;
+		bool bThisHit = pCaster->CastRayHWSS( rc, rast, ray, cHWSS, rs, swl, 0, 0, 0 );
+
+		if( bThisHit ) {
+			bHit = true;
+		}
+
+		// Count all active (non-terminated) wavelengths in the
+		// denominator, including those with zero contribution.
+		// Only XYZFromNM failures are excluded.
+		for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
+			if( !swl.terminated[i] ) {
+				XYZPel thisNM( 0, 0, 0 );
+				if( ColorUtils::XYZFromNM( thisNM, swl.lambda[i] ) ) {
+					totalSum = totalSum + thisNM * cHWSS[i];
+					totalActive++;
+				}
+			}
+		}
+	}
+
+	if( totalActive > 0 ) {
+		totalSum = totalSum * (1.0 / Scalar(totalActive));
+	}
+
+	if( bHit ) {
+		c = ColorXYZ( totalSum, 1.0 );
 	}
 
 	return bHit;

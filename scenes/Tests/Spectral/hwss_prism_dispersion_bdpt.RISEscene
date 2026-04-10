@@ -1,0 +1,246 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   File:           hwss_prism_dispersion_bdpt.RISEscene                                                    #
+#   Description:    Dispersive glass sphere with HWSS BDPT to test companion wavelength termination          #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 9, 2026                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name	pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+bdpt_spectral_rasterizer
+{
+	samples					256
+	lum_samples				1
+	max_eye_depth			5
+	max_light_depth			5
+	nmbegin					405
+	nmend					705
+	num_wavelengths			8
+	spectral_samples		1
+	hwss					true
+	ior_stack				true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/hwss_prism_dispersion_bdpt
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+pinhole_camera
+{
+	location			0.278 0.273 -0.800
+	lookat				0.278 0.273 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					37.0
+}
+
+spectral_painter
+{
+	name				pnt_green
+	file				colors/cornellbox_green.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_red
+	file				colors/cornellbox_red.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_white
+	file				colors/cornellbox_white.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_light
+	file				colors/cornellbox_light.spectra
+	nmbegin				386
+	nmend				711
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_trans
+	file				colors/flat_1.spectra
+	nmbegin				380
+	nmend				720
+}
+
+spectral_painter
+{
+	name				linear_ior
+	file				colors/linear.ior
+	nmbegin				380
+	nmend				720
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				10.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					pnt_trans
+	ior					linear_ior
+	scattering			1000000
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					0.5528 0 0
+	ptb					0 0 0
+	ptc					0 0 0.5592
+	ptd					0.5496 0 0.5592
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0.556 0.5488 0.0
+	ptb					0.556 0.5488 0.5592
+	ptc					0 0.5488 0.5592
+	ptd					0.0 0.5488 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					0.5496 0 0.5592
+	ptb					0 0 0.5592
+	ptc					0 0.5488 0.5592
+	ptd					0.556 0.5488 0.5592
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 0.5592
+	ptb					0 0 0
+	ptc					0 0.5488 0.0
+	ptd					0 0.5488 0.5592
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					0.5528 0 0
+	ptb					0.5496 0 0.5592
+	ptc					0.556 0.5488 0.5592
+	ptd					0.556 0.5488 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					0.3430 0.5487999 0.2270
+	ptb					0.3430 0.5487999 0.3320
+	ptc					0.2130 0.5487999 0.3320
+	ptd					0.2130 0.5487999 0.2270
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.12
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0.273 0.12 0.2
+	material			glass
+}

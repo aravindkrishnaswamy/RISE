@@ -4319,14 +4319,15 @@ namespace RISE
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol );
+		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS );
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4425,6 +4426,7 @@ namespace RISE
 #include "Rendering/BDPTPelRasterizer.h"
 #include "Rendering/BDPTSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
+#include "Rendering/MLTSpectralRasterizer.h"
 #include "Utilities/ManifoldSolver.h"
 
 namespace RISE
@@ -4506,7 +4508,8 @@ namespace RISE
 								const bool oidnDenoise,
 								const PathGuidingConfig& guidingConfig,
 								const StabilityConfig& stabilityConfig,
-								const bool useZSobol
+								const bool useZSobol,
+								const bool useHWSS
 								)
 	{
 		if( !ppi ) {
@@ -4525,7 +4528,7 @@ namespace RISE
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig, stabilityConfig, useZSobol );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig, stabilityConfig, useZSobol, useHWSS );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4573,6 +4576,43 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT rasterizer" );
+		return true;
+	}
+
+	bool RISE_API_CreateMLTSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const unsigned int nBootstrap,
+								const unsigned int nChains,
+								const unsigned int nMutationsPerPixel,
+								const Scalar largeStepProb,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int nSpectralSamples,
+								const bool useHWSS,
+								const bool oidnDenoise
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		MLTSpectralRasterizer* pRasterizer = new MLTSpectralRasterizer( caster, maxEyeDepth, maxLightDepth,
+			nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
+			lambda_begin, lambda_end, nSpectralSamples, useHWSS );
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT Spectral rasterizer" );
 		return true;
 	}
 }

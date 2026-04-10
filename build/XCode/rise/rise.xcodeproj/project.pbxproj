@@ -742,6 +742,9 @@
 		F24C54962F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
 		F24C54972F88556A009AF16D /* OptimalMISAccumulator.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */; };
 		F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
+		F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
+		F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */; };
+		F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1516,6 +1519,8 @@
 		F24C54902F87F453009AF16D /* LightBVH.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = LightBVH.cpp; sourceTree = "<group>"; };
 		F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OptimalMISAccumulator.h; sourceTree = "<group>"; };
 		F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OptimalMISAccumulator.cpp; sourceTree = "<group>"; };
+		F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTSpectralRasterizer.h; sourceTree = "<group>"; };
+		F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -2875,6 +2880,8 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */,
+				F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */,
 				F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */,
 				F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */,
 				F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */,
@@ -3418,6 +3425,7 @@
 				F27F0B58069C42910069C9E5 /* LambertianLuminaireMaterial.h in Headers */,
 				F27F0B59069C42910069C9E5 /* LambertianMaterial.h in Headers */,
 				F27F0B5B069C42910069C9E5 /* LambertianSPF.h in Headers */,
+				F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */,
 				F27F0B5C069C42910069C9E5 /* Material.h in Headers */,
 				F27F0B5E069C42910069C9E5 /* OrenNayarBRDF.h in Headers */,
 				F27F0B5F069C42910069C9E5 /* OrenNayarMaterial.h in Headers */,
@@ -3845,6 +3853,7 @@
 				F27F0B1C069C42910069C9E5 /* RayTriangleIntersection.cpp in Sources */,
 				F24C543F2F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */,
 				F24C54922F87F453009AF16D /* LightBVH.cpp in Sources */,
+				F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F27F0B1E069C42910069C9E5 /* Job.cpp in Sources */,
 				F27F0B21069C42910069C9E5 /* DirectionalLight.cpp in Sources */,
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
@@ -4690,6 +4699,7 @@
 				F24B743F2F52A632008304C4 /* Plane.h in Sources */,
 				F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */,
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
+				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,
 				F24B74442F52A632008304C4 /* Reference.cpp in Sources */,

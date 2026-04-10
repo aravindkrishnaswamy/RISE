@@ -24,6 +24,7 @@
 #include "pch.h"
 #include "BDPTSpectralRasterizer.h"
 #include "AOVBuffers.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
@@ -53,11 +54,12 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
-	bool useZSobol_
+	bool useZSobol_,
+	bool useHWSS_
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityConfig ),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false )
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false, useHWSS_ )
 {
 	useZSobol = useZSobol_;
 }
@@ -222,6 +224,221 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 {
 	XYZPel spectralSum( 0, 0, 0 );
 
+	if( bUseHWSS )
+	{
+		// HWSS path: generate subpaths ONCE at the hero wavelength,
+		// then re-evaluate spectral transport for companion wavelengths
+		// using stored vertex geometry.  This shares the expensive
+		// ray intersection and subpath construction across wavelengths
+		// while correctly adjusting spectral throughput.
+		//
+		// For each companion wavelength, vertex throughputNM is
+		// recomputed by multiplying the hero's throughput by per-vertex
+		// BSDF ratios (companion/hero).  Connection evaluation in
+		// EvaluateAllStrategiesNM re-evaluates BSDF and emitter
+		// radiance at the companion wavelength automatically.
+		unsigned int totalActive = 0;
+
+		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
+		{
+			const Scalar u = rc.random.CanonicalRandom();
+			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
+
+			const Scalar heroNM = swl.HeroLambda();
+
+			// Sobol index for subpath generation (hero wavelength)
+			const uint32_t combinedIndex0 = (pixelSampleIndex * nSpectralSamples + ss) * SampledWavelengths::N;
+			const uint32_t sampleIndex0 = useZSobol
+				? ((mortonIndex << log2SPP) | combinedIndex0)
+				: combinedIndex0;
+
+			// Generate camera ray
+			Ray cameraRay;
+			if( !camera.GenerateRay( rc, cameraRay, ptOnScreen ) ) {
+				continue;
+			}
+
+			SobolSampler sampler( sampleIndex0, pixelSeed );
+
+			// Generate subpaths ONCE at hero wavelength
+			std::vector<BDPTVertex> lightVerts;
+			std::vector<BDPTVertex> eyeVerts;
+			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, heroNM, rc.random );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, heroNM );
+
+			// Extract AOV from hero evaluation of first bundle
+			if( ss == 0 && pAOV ) {
+				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
+					const BDPTVertex& v = eyeVerts[iv];
+					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+						pAOV->normal = v.normal;
+						pAOV->albedo = RISEPel( 0, 0, 0 );
+						if( v.pMaterial->GetBSDF() ) {
+							Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
+							RayIntersectionGeometric rig( aovRay, nullRasterizerState );
+							rig.ptIntersection = v.position;
+							rig.vNormal = v.normal;
+							rig.onb = v.onb;
+							pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+						}
+						pAOV->valid = true;
+						break;
+					}
+				}
+			}
+
+			// Evaluate all strategies at hero wavelength
+			{
+				std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
+					pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, heroNM );
+
+				Scalar heroValue = 0;
+				for( unsigned int r = 0; r < heroResults.size(); r++ ) {
+					const BDPTIntegrator::ConnectionResultNM& cr = heroResults[r];
+					if( !cr.valid ) continue;
+					Scalar weighted = cr.contribution * cr.misWeight;
+					{
+						const Scalar clampVal = (cr.s == 1)
+							? BDPTRasterizerBase::stabilityConfig.directClamp
+							: BDPTRasterizerBase::stabilityConfig.indirectClamp;
+						if( clampVal > 0 && fabs(weighted) > clampVal )
+							weighted = (weighted > 0) ? clampVal : -clampVal;
+					}
+					if( cr.needsSplat && pSplatFilm ) {
+						XYZPel splatXYZ( 0, 0, 0 );
+						if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, heroNM ) ) {
+							splatXYZ = splatXYZ * weighted;
+							const int sx = static_cast<int>( cr.rasterPos.x );
+							const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
+							if( sx >= 0 && sy >= 0 &&
+								static_cast<unsigned int>(sx) < camera.GetWidth() &&
+								static_cast<unsigned int>(sy) < camera.GetHeight() )
+								pSplatFilm->Splat( sx, sy, RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ) );
+						}
+					} else {
+						heroValue += weighted;
+					}
+				}
+
+				XYZPel heroXYZ( 0, 0, 0 );
+				if( ColorUtils::XYZFromNM( heroXYZ, heroNM ) ) {
+					spectralSum = spectralSum + heroXYZ * heroValue;
+					totalActive++;
+				}
+			}
+
+			// Check for dispersive delta vertices in either subpath.
+			// If any delta vertex has wavelength-dependent IOR,
+			// companions cannot share the hero's geometric path.
+			for( unsigned int w = 1; w < SampledWavelengths::N && !swl.SecondaryTerminated(); w++ )
+			{
+				if( BDPTIntegrator::HasDispersiveDeltaVertex( lightVerts, heroNM, swl.lambda[w] ) ||
+					BDPTIntegrator::HasDispersiveDeltaVertex( eyeVerts, heroNM, swl.lambda[w] ) )
+				{
+					swl.TerminateSecondary();
+					break;
+				}
+			}
+
+			// Evaluate companion wavelengths using stored subpaths
+			for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
+			{
+				if( swl.terminated[w] ) {
+					// Still count terminated wavelengths with zero contribution
+					XYZPel compXYZ( 0, 0, 0 );
+					if( ColorUtils::XYZFromNM( compXYZ, swl.lambda[w] ) )
+						totalActive++;
+					continue;
+				}
+
+				const Scalar companionNM = swl.lambda[w];
+
+				// Copy vertex arrays and recompute throughputNM
+				// at companion wavelength
+				std::vector<BDPTVertex> compLight = lightVerts;
+				std::vector<BDPTVertex> compEye = eyeVerts;
+				pIntegrator->RecomputeSubpathThroughputNM(
+					compLight, true, heroNM, companionNM, pScene, *pCaster );
+				pIntegrator->RecomputeSubpathThroughputNM(
+					compEye, false, heroNM, companionNM, pScene, *pCaster );
+
+				// Evaluate connections at companion wavelength
+				std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
+					pIntegrator->EvaluateAllStrategiesNM(
+						compLight, compEye, pScene, *pCaster, camera, companionNM );
+
+				Scalar compValue = 0;
+				for( unsigned int r = 0; r < compResults.size(); r++ ) {
+					const BDPTIntegrator::ConnectionResultNM& cr = compResults[r];
+					if( !cr.valid ) continue;
+					Scalar weighted = cr.contribution * cr.misWeight;
+					{
+						const Scalar clampVal = (cr.s == 1)
+							? BDPTRasterizerBase::stabilityConfig.directClamp
+							: BDPTRasterizerBase::stabilityConfig.indirectClamp;
+						if( clampVal > 0 && fabs(weighted) > clampVal )
+							weighted = (weighted > 0) ? clampVal : -clampVal;
+					}
+					if( cr.needsSplat && pSplatFilm ) {
+						XYZPel splatXYZ( 0, 0, 0 );
+						if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, companionNM ) ) {
+							splatXYZ = splatXYZ * weighted;
+							const int sx = static_cast<int>( cr.rasterPos.x );
+							const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
+							if( sx >= 0 && sy >= 0 &&
+								static_cast<unsigned int>(sx) < camera.GetWidth() &&
+								static_cast<unsigned int>(sy) < camera.GetHeight() )
+								pSplatFilm->Splat( sx, sy, RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ) );
+						}
+					} else {
+						compValue += weighted;
+					}
+				}
+
+				XYZPel compXYZ( 0, 0, 0 );
+				if( ColorUtils::XYZFromNM( compXYZ, companionNM ) ) {
+					spectralSum = spectralSum + compXYZ * compValue;
+					totalActive++;
+				}
+			}
+
+			// SMS contributions (hero wavelength only — SMS geometry
+			// is specular-chain dependent and cannot be re-evaluated)
+			if( pIntegrator ) {
+				sampler.StartStream( 31 );
+				std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
+					pIntegrator->EvaluateSMSStrategiesNM(
+						eyeVerts, pScene, *pCaster, camera, sampler, heroNM );
+				Scalar smsValue = 0;
+				for( unsigned int r = 0; r < smsResults.size(); r++ ) {
+					const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
+					if( !cr.valid ) continue;
+					Scalar weighted = cr.contribution * cr.misWeight;
+					{
+						const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
+						if( clampVal > 0 && fabs(weighted) > clampVal )
+							weighted = (weighted > 0) ? clampVal : -clampVal;
+					}
+					smsValue += weighted;
+				}
+				// SMS is evaluated at hero only; weight by 1/N of
+				// active wavelengths to avoid over-counting.
+				// (This is approximate but SMS contributions are
+				// typically a small fraction of total radiance.)
+				XYZPel smsXYZ( 0, 0, 0 );
+				if( smsValue > 0 && ColorUtils::XYZFromNM( smsXYZ, heroNM ) ) {
+					spectralSum = spectralSum + smsXYZ * smsValue;
+				}
+			}
+		}
+
+		if( totalActive > 0 ) {
+			return spectralSum * (1.0 / Scalar(totalActive));
+		}
+		return spectralSum;
+	}
+
+	// Standard (non-HWSS) path: independent random wavelengths
 	for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 	{
 		// Sample a random wavelength

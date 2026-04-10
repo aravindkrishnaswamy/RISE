@@ -12,6 +12,12 @@ if [ ! -d "$BIN_DIR" ]; then
 	exit 1
 fi
 
+stale_object_count="$(find "$SRC_DIR" -type f -name '*.o' -print | wc -l | awk '{print $1}')"
+if [ "$stale_object_count" -ne 0 ]; then
+	echo "Removing $stale_object_count stray test object file(s) from $SRC_DIR"
+	find "$SRC_DIR" -type f -name '*.o' -exec rm -f -- {} +
+fi
+
 # Only run binaries that have a matching source file in tests/.
 # This skips stale build artifacts (e.g., binaries with spaces in
 # the name or leftover from renamed/deleted tests).

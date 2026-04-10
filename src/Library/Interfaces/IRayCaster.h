@@ -19,6 +19,7 @@
 #include "IRadianceMap.h"
 #include "../Utilities/Ray.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 
 namespace RISE
 {
@@ -124,6 +125,36 @@ namespace RISE
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
 			const IORStack* const ior_stack						///< [in/out] Index of refraction stack
 			) const = 0;
+
+		//! Casts a ray for a bundle of HWSS wavelengths.
+		//! Default implementation calls CastRayNM independently for each
+		//! active wavelength.  RayCaster overrides for shared intersection.
+		/// \return TRUE if any wavelength produced a hit
+		virtual bool CastRayHWSS(
+			const RuntimeContext& rc,							///< [in] The runtime context
+			const RasterizerState& rast,						///< [in] Current state of the rasterizer
+			const Ray& ray,										///< [in] Ray to cast
+			Scalar c[SampledWavelengths::N],					///< [out] Per-wavelength amplitudes
+			const RAY_STATE& rs,								///< [in] The ray state
+			SampledWavelengths& swl,							///< [in/out] Wavelength bundle
+			Scalar* distance,									///< [in] If there was a hit, how far?
+			const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
+			const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+			) const
+		{
+			bool anyHit = false;
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+			{
+				c[i] = 0;
+				if( !swl.terminated[i] )
+				{
+					bool hit = CastRayNM( rc, rast, ray, c[i], rs,
+						swl.lambda[i], distance, pRadianceMap, ior_stack );
+					if( hit ) anyHit = true;
+				}
+			}
+			return anyHit;
+		}
 
 		//! This function casts a ray into the scene and only checks to see if it intersects something.
 		//! Very useful for shadow checks

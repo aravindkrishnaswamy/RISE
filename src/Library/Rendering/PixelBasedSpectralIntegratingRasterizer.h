@@ -19,6 +19,7 @@
 #include "../Interfaces/IScene.h"
 #include "PixelBasedRasterizerHelper.h"
 #include "../Utilities/StabilityConfig.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 
 namespace RISE
 {
@@ -42,19 +43,27 @@ namespace RISE
 			const unsigned int						num_wavelengths;
 			const Scalar							wavelength_steps;
 			const unsigned int						nSpectralSamples;
+			const bool								bUseHWSS;
 
 			StabilityConfig				stabilityConfig;
 
 			virtual ~PixelBasedSpectralIntegratingRasterizer();
 
-			bool TakeSingleSample( 
+			bool TakeSingleSample(
 				const RuntimeContext& rc,
 				const RasterizerState& rast,
 				const Ray& ray,
 				ColorXYZ& c
-				) const;	
+				) const;
 
-			bool TakeSingleSample( 
+			bool TakeSingleSampleHWSS(
+				const RuntimeContext& rc,
+				const RasterizerState& rast,
+				const Ray& ray,
+				ColorXYZ& c
+				) const;
+
+			bool TakeSingleSample(
 				const RuntimeContext& rc,
 				const RasterizerState& rast,
 				const Ray& ray,
@@ -87,7 +96,8 @@ namespace RISE
 				const unsigned int num_wavelengths_,
 				const unsigned int specsamp,
 				const StabilityConfig& stabilityCfg,
-				bool useZSobol_
+				bool useZSobol_,
+				bool useHWSS_
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

@@ -115,6 +115,18 @@ namespace RISE
 				const Scalar nm,
 				const IORStack* const ior_stack
 				) const;
+
+			/// HWSS companion evaluation: returns the exact krayNM
+			/// for the coat or diffuse lobe at the given wavelength.
+			/// Both lobes are direction-independent (krayNM depends
+			/// only on Fresnel reflectance and painter values).
+			Scalar EvaluateKrayNM(
+				const RayIntersectionGeometric& ri,
+				const Vector3& outDir,
+				ScatteredRay::ScatRayType rayType,
+				Scalar nm,
+				const IORStack* ior_stack
+				) const;
 		};
 	}
 }

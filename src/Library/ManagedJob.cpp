@@ -254,7 +254,7 @@ namespace RISE
 			const double __pin* orient_ = &orient[0];
 
 			bool bRet = pBackObj->SetPixelBasedSpectralIntegratingRasterizer(
-				numPixelSamples, numLumSamples, specSamples, lambda_begin, lambda_end, num_wavelengths, maxRecur, minImportance, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight, false, 0, 0, 0, 0, 0, false, StabilityConfig() );
+				numPixelSamples, numLumSamples, specSamples, lambda_begin, lambda_end, num_wavelengths, maxRecur, minImportance, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight, false, 0, 0, 0, 0, 0, false, StabilityConfig(), false, false );
 
 			Marshal::FreeCoTaskMem( intptr );
 			Marshal::FreeCoTaskMem( intptr2 );

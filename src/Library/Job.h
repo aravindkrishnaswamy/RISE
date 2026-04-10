@@ -1418,7 +1418,8 @@ namespace RISE
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 			);
 
 		//! Sets the rasterizer type to be adaptive pixel based PEL
@@ -1552,7 +1553,8 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 			);
 
 		bool SetMLTRasterizer(
@@ -1566,6 +1568,25 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			);
+
+		bool SetMLTSpectralRasterizer(
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const unsigned int nBootstrap,							///< [in] Number of bootstrap samples
+			const unsigned int nChains,								///< [in] Number of Markov chains
+			const unsigned int nMutationsPerPixel,					///< [in] Mutations per pixel budget
+			const double largeStepProb,								///< [in] Large step probability
+			const char* shader,										///< [in] The default shader
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const double nmbegin,									///< [in] Start of spectral range (nm)
+			const double nmend,										///< [in] End of spectral range (nm)
+			const unsigned int nSpectralSamples,					///< [in] Spectral samples per evaluation
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
