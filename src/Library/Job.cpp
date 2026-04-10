@@ -15,6 +15,10 @@
 #include "Job.h"
 #include "RISE_API.h"
 #include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
+#include "Shaders/PathTracingShaderOp.h"
+#include "Shaders/DirectLightingShaderOp.h"
+#include "Shaders/DistributionTracingShaderOp.h"
+#include "Shaders/FinalGatherShaderOp.h"
 #include "Utilities/RString.h"
 #include <stdio.h>
 #include "Utilities/MediaPathLocator.h"
@@ -3842,6 +3846,42 @@ bool Job::AddStandardShader(
 		} else {
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddStandardShader:: The ShaderOp '%s' not found, failed to add shader", shaderops[i] );
 			return false;
+		}
+	}
+
+	// Check for incompatible shader op combinations
+	{
+		bool hasPathTracing = false;
+		bool hasDirectLighting = false;
+		bool hasDistributionTracing = false;
+		bool hasFinalGather = false;
+
+		for( unsigned int i=0; i<shops.size(); i++ ) {
+			if( dynamic_cast<PathTracingShaderOp*>(shops[i]) ) hasPathTracing = true;
+			if( dynamic_cast<DirectLightingShaderOp*>(shops[i]) ) hasDirectLighting = true;
+			if( dynamic_cast<DistributionTracingShaderOp*>(shops[i]) ) hasDistributionTracing = true;
+			if( dynamic_cast<FinalGatherShaderOp*>(shops[i]) ) hasFinalGather = true;
+		}
+
+		if( hasPathTracing && hasDirectLighting ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Shader '%s': PathTracing already includes direct lighting via NEE. "
+				"Stacking with DirectLighting will double-count direct illumination.", name );
+		}
+		if( hasPathTracing && hasDistributionTracing ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Shader '%s': PathTracing already handles all scattering. "
+				"Stacking with DistributionTracing will double-count contributions.", name );
+		}
+		if( hasPathTracing && hasFinalGather ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Shader '%s': PathTracing already handles global illumination. "
+				"Stacking with FinalGather will double-count indirect lighting.", name );
+		}
+		if( hasDirectLighting && hasFinalGather ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Shader '%s': FinalGather includes direct lighting contributions. "
+				"Stacking with DirectLighting may double-count direct illumination.", name );
 		}
 	}
 

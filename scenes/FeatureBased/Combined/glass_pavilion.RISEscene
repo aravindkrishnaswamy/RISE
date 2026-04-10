@@ -15,14 +15,6 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-distributiontracing_shaderop
-{
-	name			dt
-	samples			32
-	diffuse			false
-	reflections		TRUE
-}
-
 standard_shader
 {
 	name			global
@@ -33,7 +25,6 @@ standard_shader
 {
 	name			floor_shader
 	shaderop		DefaultPathTracing
-	shaderop		DefaultDirectLighting
 }
 
 standard_shader
