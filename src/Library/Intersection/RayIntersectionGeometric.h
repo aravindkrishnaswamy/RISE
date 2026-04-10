@@ -96,8 +96,8 @@ namespace RISE
 		  ptObjIntersec( r.ptObjIntersec ),
 		  ptObjExit( r.ptObjExit ),
 		  onb( r.onb ),
-		  glossyFilterWidth( r.glossyFilterWidth ),
-		  pCustom( r.pCustom )
+		  pCustom( r.pCustom ),
+		  glossyFilterWidth( r.glossyFilterWidth )
 		{
 			if( pCustom ) {
 				pCustom->addref();

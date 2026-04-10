@@ -28,6 +28,7 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 #ifdef RISE_ENABLE_OPENPGL
+#include "../Utilities/PathGuidingField.h"
 namespace
 {
 	inline bool IsFiniteBoundingBox( const BoundingBox& bbox )
@@ -153,7 +154,6 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 		ComputeGuidingSceneBounds( pScene, boundsMin, boundsMax );
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
-		pGuidingField->addref();
 
 		const unsigned int width = pScene.GetCamera()->GetWidth();
 		const unsigned int height = pScene.GetCamera()->GetHeight();
@@ -189,7 +189,6 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			{
 				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
-				pTrainBlocks->addref();
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_NORMAL,
 					pScene,
@@ -387,7 +386,6 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 		accConfig.alphaClampMax = 0.95;
 
 		pOptimalMISAccumulator = new OptimalMISAccumulator();
-		pOptimalMISAccumulator->addref();
 		pOptimalMISAccumulator->Initialize( width, height, accConfig );
 
 		// Make the unsolved accumulator visible to the shading pipeline
@@ -433,7 +431,6 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 			{
 				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
-				pTrainBlocks->addref();
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_NORMAL,
 					pScene,

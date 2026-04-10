@@ -54,7 +54,6 @@ class RenderSettingsData:
     pixel_samples: int
     light_samples: int
     max_recursion: int
-    min_importance: float
     use_path_tracing: bool
     choose_one_light: bool
     use_ior_stack: bool
@@ -1319,7 +1318,6 @@ def build_render_settings(scene) -> RenderSettingsData:
         pixel_samples=int(rise.pixel_samples),
         light_samples=int(rise.light_samples),
         max_recursion=int(rise.max_recursion),
-        min_importance=float(rise.min_importance),
         use_path_tracing=bool(rise.use_path_tracing),
         choose_one_light=bool(rise.choose_one_light),
         use_ior_stack=bool(rise.use_ior_stack),

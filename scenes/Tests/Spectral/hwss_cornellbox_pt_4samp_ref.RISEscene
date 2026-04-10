@@ -26,7 +26,6 @@ pixelintegratingspectral_rasterizer
 	nmend					705
 	num_wavelengths			8
 	max_recursion			5
-	min_importance			0.01
 	hwss					false
 	ior_stack				true
 }

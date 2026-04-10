@@ -46,7 +46,7 @@ namespace RISE
 			{
 				if( LUT ) {
 					GlobalLog()->PrintDelete( LUT, __FILE__, __LINE__ );
-					delete LUT;
+					delete [] LUT;
 					LUT = 0;
 				}
 			}

@@ -63,7 +63,6 @@ advanced_shader
 pixelpel_rasterizer
 {
 	max_recursion		10
-	min_importance		0.0001
 	samples				1
 	lum_samples			4
 	show_luminaires		FALSE

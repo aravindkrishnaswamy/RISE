@@ -42,7 +42,6 @@ namespace RISE
 			bool						bConsiderRMapAsBackground;
 
 			const unsigned int			nMaxRecursions;
-			const Scalar				dMinImportance;
 
 			const bool					bShowLuminaires;
 			const bool					bIORStack;
@@ -55,10 +54,9 @@ namespace RISE
 			virtual ~RayCaster();
 
 		public:
-			RayCaster( 
+			RayCaster(
 				const bool seeRadianceMap,
-				const unsigned int maxR, 
-				const Scalar minI, 
+				const unsigned int maxR,
 				const IShader& pDefaultShader_,
 				const bool showLuminaires,
 				const bool useiorstack,

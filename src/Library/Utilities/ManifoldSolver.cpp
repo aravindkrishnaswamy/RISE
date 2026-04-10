@@ -39,7 +39,6 @@ config( cfg ),
 pLightSampler( 0 )
 {
 	pLightSampler = new LightSampler();
-	pLightSampler->addref();
 }
 
 ManifoldSolver::~ManifoldSolver()
@@ -421,11 +420,9 @@ void ManifoldSolver::BuildJacobian(
 
 		// Half-vector (unnormalized)
 		Vector3 h_raw;
-		Scalar sign;
 		if( v.isReflection )
 		{
 			h_raw = Vector3( wi.x + wo.x, wi.y + wo.y, wi.z + wo.z );
-			sign = 1.0;
 		}
 		else
 		{
@@ -433,7 +430,6 @@ void ManifoldSolver::BuildJacobian(
 				-(wi.x + eta_eff * wo.x),
 				-(wi.y + eta_eff * wo.y),
 				-(wi.z + eta_eff * wo.z) );
-			sign = -1.0;
 		}
 
 		Scalar h_len = Vector3Ops::Magnitude( h_raw );

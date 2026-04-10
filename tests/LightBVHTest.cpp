@@ -257,18 +257,16 @@ static void TestConstruction()
 	}
 
 	// 2c. 100 lights in a line
-	{
-		std::vector<Point3> pos( 100 );
-		std::vector<Scalar> pow( 100 );
-		Scalar totalPower = 0;
+		{
+			std::vector<Point3> pos( 100 );
+			std::vector<Scalar> pow( 100 );
 
-		for( int i = 0; i < 100; i++ ) {
-			pos[i] = Point3( Scalar(i), 0, 0 );
-			pow[i] = Scalar(1.0 + i * 0.5);
-			totalPower += pow[i];
-		}
+			for( int i = 0; i < 100; i++ ) {
+				pos[i] = Point3( Scalar(i), 0, 0 );
+				pow[i] = Scalar(1.0 + i * 0.5);
+			}
 
-		auto entries = MakePointLightEntries( pos, pow );
+			auto entries = MakePointLightEntries( pos, pow );
 
 		LightBVH bvh;
 		bvh.Build( entries, emptyLums );

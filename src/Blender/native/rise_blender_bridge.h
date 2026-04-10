@@ -174,7 +174,6 @@ typedef struct rise_blender_render_settings {
 	uint32_t pixel_samples;
 	uint32_t light_samples;
 	uint32_t max_recursion;
-	float min_importance;
 	int use_path_tracing;
 	int choose_one_light;
 	int use_ior_stack;

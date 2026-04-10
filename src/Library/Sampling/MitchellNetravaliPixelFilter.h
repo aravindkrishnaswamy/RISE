@@ -60,6 +60,10 @@ namespace RISE
 
 			inline Scalar ComputeWeight( const Scalar x ) const
 			{
+				if( x >= 2.0 ) {
+					return 0.0;
+				}
+
 				const Scalar x2 = x*x;
 				const Scalar x3 = x2*x;
 

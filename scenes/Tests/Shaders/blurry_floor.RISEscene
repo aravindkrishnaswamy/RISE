@@ -36,7 +36,6 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		2
-	min_importance		0.0001
 	samples				9
 	pixel_filter			tent
 	pixel_filter_width		1.7

@@ -48,15 +48,14 @@ static const RISE::Scalar RC_RR_THRESHOLD = 0.01;
 using namespace RISE;
 using namespace RISE::Implementation;
 
-RayCaster::RayCaster( 
+RayCaster::RayCaster(
 	const bool seeRadianceMap,
 	const unsigned int maxR,
-	const Scalar minI,
 	const IShader& pDefaultShader_,
 	const bool showLuminaires,
 	const bool useiorstack,
 	const bool chooseonlyoneluminaire
-	) : 
+	) :
   pScene( 0 ),
   pDefaultShader( pDefaultShader_ ),
   pLuminaryManager( 0 ),
@@ -64,7 +63,6 @@ RayCaster::RayCaster(
   pLumSampling( 0 ),
   bConsiderRMapAsBackground( seeRadianceMap ),
   nMaxRecursions( maxR ),
-  dMinImportance( minI ),
   bShowLuminaires( showLuminaires ),
   bIORStack( useiorstack ),
   bChooseOnlyOneLuminaire( chooseonlyoneluminaire ),

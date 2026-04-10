@@ -115,7 +115,6 @@ MLTRasterizer::MLTRasterizer(
 	}
 
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, StabilityConfig() );
-	pIntegrator->addref();
 }
 
 MLTRasterizer::~MLTRasterizer()
@@ -302,7 +301,6 @@ void MLTRasterizer::InitChain(
 	) const
 {
 	state.pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-	state.pSampler->addref();
 	state.chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
 
 	// Evaluate the initial state
@@ -724,7 +722,6 @@ void MLTRasterizer::RasterizeScene(
 	//////////////////////////////////////////////////////////////////
 
 	SplatFilm* pSplatFilm = new SplatFilm( width, height );
-	pSplatFilm->addref();
 
 	if( pProgressFunc ) {
 		pProgressFunc->SetTitle( "MLT Rendering: " );

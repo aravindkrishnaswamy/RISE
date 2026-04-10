@@ -1353,7 +1353,6 @@ namespace
 			std::max<uint32_t>( settings.pixel_samples, 1u ),
 			std::max<uint32_t>( settings.light_samples, 1u ),
 			std::max<uint32_t>( settings.max_recursion, 1u ),
-			settings.min_importance > 0.0f ? settings.min_importance : 0.01f,
 			kShaderName,
 			0,
 			false,

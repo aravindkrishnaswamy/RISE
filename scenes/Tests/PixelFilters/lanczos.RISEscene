@@ -25,7 +25,6 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		10
-	min_importance		0.0001
 	samples				256
 	lum_samples			1
 	pixel_filter		lanczos

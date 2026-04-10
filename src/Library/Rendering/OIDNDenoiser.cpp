@@ -26,7 +26,15 @@
 #include "../Utilities/RuntimeContext.h"
 
 #ifdef RISE_ENABLE_OIDN
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+#pragma clang diagnostic ignored "-Wnested-anon-types"
+#endif
 #include <OpenImageDenoise/oidn.hpp>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #endif
 
 using namespace RISE;

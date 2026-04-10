@@ -41,7 +41,6 @@ hdr_painter
 pixelpel_rasterizer
 {
 	max_recursion		6
-	min_importance		0.001
 	samples				6
 	lum_samples			6
 	ior_stack			TRUE

@@ -213,12 +213,10 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   ,stabilityConfig( stabilityCfg )
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, stabilityCfg );
-	pIntegrator->addref();
 
 	if( smsConfig.enabled )
 	{
 		pManifoldSolver = new ManifoldSolver( smsConfig );
-		pManifoldSolver->addref();
 		pIntegrator->SetManifoldSolver( pManifoldSolver );
 	}
 }
@@ -291,7 +289,6 @@ void BDPTRasterizerBase::RasterizeScene(
 	// Create the splat film for s<=1 strategies
 	safe_release( pSplatFilm );
 	pSplatFilm = new SplatFilm( width, height );
-	pSplatFilm->addref();
 
 	// Reset adaptive sample counter for this render
 	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
@@ -327,7 +324,6 @@ void BDPTRasterizerBase::RasterizeScene(
 		ComputeGuidingSceneBounds( pScene, boundsMin, boundsMax );
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
-		pGuidingField->addref();
 
 		// Separate field for light subpath guiding (Option B).
 		// Avoids conflicting eye/light distributions in the same
@@ -337,7 +333,6 @@ void BDPTRasterizerBase::RasterizeScene(
 		if( guidingConfig.maxLightGuidingDepth > 0 )
 		{
 			pLightGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
-			pLightGuidingField->addref();
 		}
 
 		if( guidingConfig.completePathGuiding )
@@ -347,7 +342,6 @@ void BDPTRasterizerBase::RasterizeScene(
 				boundsMax,
 				pIntegrator->GetMaxLightDepth(),
 				pIntegrator->GetMaxEyeDepth() );
-			pCompletePathGuide->addref();
 
 			GlobalLog()->PrintEx( eLog_Event,
 				"CompletePathGuide:: Enabled for BDPT training (maxLightDepth=%u, maxEyeDepth=%u)",
@@ -406,7 +400,6 @@ void BDPTRasterizerBase::RasterizeScene(
 
 			// Create a temporary splat film for training
 			SplatFilm* pTrainSplat = new SplatFilm( width, height );
-			pTrainSplat->addref();
 			SplatFilm* pSavedSplat = pSplatFilm;
 			pSplatFilm = pTrainSplat;
 			mSplatTotalSamples = static_cast<Scalar>( currentTrainingSPP ) * GetSplatSampleScale();
@@ -419,7 +412,6 @@ void BDPTRasterizerBase::RasterizeScene(
 
 				{
 					BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
-					pTrainBlocks->addref();
 					RasterizeBlocksForPass(
 						RuntimeContext::PASS_NORMAL,
 					pScene,
@@ -485,10 +477,6 @@ void BDPTRasterizerBase::RasterizeScene(
 						0.0;
 				const BDPTIntegrator::GuidingTrainingStats& guidingStats =
 					pIntegrator->GetGuidingTrainingStats();
-				const Scalar deepEyeEnergyDensity =
-					cameraSamples > NEARZERO ?
-						guidingStats.deepEyeConnectionEnergy / cameraSamples :
-						0.0;
 				const Scalar indirectEnergyDensity =
 					cameraSamples > NEARZERO ?
 						indirectSampleEnergy / cameraSamples :
@@ -725,7 +713,6 @@ void BDPTRasterizerBase::RasterizeScene(
 
 	safe_release( pScratchImage );
 	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
-	pScratchImage->addref();
 
 	{
 		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );

@@ -156,7 +156,6 @@ class _RenderSettings(ctypes.Structure):
         ("pixel_samples", ctypes.c_uint32),
         ("light_samples", ctypes.c_uint32),
         ("max_recursion", ctypes.c_uint32),
-        ("min_importance", ctypes.c_float),
         ("use_path_tracing", ctypes.c_int),
         ("choose_one_light", ctypes.c_int),
         ("use_ior_stack", ctypes.c_int),
@@ -552,7 +551,6 @@ class _SceneHandle:
         payload.pixel_samples = int(settings.pixel_samples)
         payload.light_samples = int(settings.light_samples)
         payload.max_recursion = int(settings.max_recursion)
-        payload.min_importance = float(settings.min_importance)
         payload.use_path_tracing = int(settings.use_path_tracing)
         payload.choose_one_light = int(settings.choose_one_light)
         payload.use_ior_stack = int(settings.use_ior_stack)

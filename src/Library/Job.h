@@ -1358,7 +1358,6 @@ namespace RISE
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const char* shader,										///< [in] The default shader
 			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 			const bool bBackground,									///< [in] Is the radiance map a background object
@@ -1392,7 +1391,6 @@ namespace RISE
 			const double lambda_end,								///< [in] Wavelength to finish sampling at
 			const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const char* shader,										///< [in] The default shader
 			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 			const bool bBackground,									///< [in] Is the radiance map a background object
@@ -1431,7 +1429,6 @@ namespace RISE
 			const double threshold,									///< [in] Threshold at which to stop sampling further
 			const bool bOutputSamples,								///< [in] Should the renderer show how many samples rather than an image
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const char* shader,										///< [in] The default shader
 			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 			const bool bBackground,									///< [in] Is the radiance map a background object
@@ -1457,7 +1454,6 @@ namespace RISE
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const char* shader,										///< [in] The default shader
 			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 			const bool bBackground,									///< [in] Is the radiance map a background object

@@ -157,15 +157,10 @@ void TestRandomWalkThinBoxOffset()
 		// direction.  Dot(entryPoint - closestSurfacePoint, normal) > 0.
 		// For axis-aligned box faces, the closest surface point is the
 		// entry point projected back onto the face.
-		const Scalar normalDot =
-			ep.x * result.entryNormal.x +
-			ep.y * result.entryNormal.y +
-			ep.z * result.entryNormal.z;
-
-		// For any face, the dot of (point, outward_normal) should exceed
-		// the half-extent in that axis, indicating the point is outside.
-		// We use a simple check: the component along the dominant normal
-		// axis should exceed the half-extent.
+			// For any face, the dot of (point, outward_normal) should exceed
+			// the half-extent in that axis, indicating the point is outside.
+			// We use a simple check: the component along the dominant normal
+			// axis should exceed the half-extent.
 		const Scalar ax = fabs( result.entryNormal.x );
 		const Scalar ay = fabs( result.entryNormal.y );
 		const Scalar az = fabs( result.entryNormal.z );

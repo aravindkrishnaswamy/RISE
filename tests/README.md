@@ -62,7 +62,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/RussianRoulette/cornellbox_hig
 printf "render\nquit\n" | ./bin/rise scenes/Tests/RussianRoulette/cornellbox_highalbedo_bdpt.RISEscene
 ```
 
-**Expected**: PT and BDPT produce images of comparable brightness. The high-albedo (0.9) walls amplify any bias in path termination. The PT scene uses `min_importance 0.0` to ensure the old biased cutoff does not mask the RR behavior. Compare mean luminance; PT should be within 5% of BDPT.
+**Expected**: PT and BDPT produce images of comparable brightness. The high-albedo (0.9) walls amplify any bias in path termination. Russian roulette controls path termination; compare mean luminance — PT should be within 5% of BDPT.
 
 ### Spectral Non-Mesh Lights (2B)
 

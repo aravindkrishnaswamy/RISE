@@ -33,7 +33,6 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		10
-	min_importance		0.00001
 	samples				16
 	lum_samples			1
 }

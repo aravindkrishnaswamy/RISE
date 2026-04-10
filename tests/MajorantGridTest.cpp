@@ -37,16 +37,12 @@ using namespace RISE;
 /// Uses centered coordinates: the sphere is at the origin.
 class TestSphereAccessor : public virtual IVolumeAccessor
 {
-	unsigned int m_width, m_height, m_depth;
 	Scalar m_radius;
 
 public:
 	TestSphereAccessor(
-		unsigned int w,
-		unsigned int h,
-		unsigned int d,
 		Scalar radius
-		) : m_width(w), m_height(h), m_depth(d), m_radius(radius) {}
+		) : m_radius(radius) {}
 
 	Scalar GetValue( Scalar x, Scalar y, Scalar z ) const
 	{
@@ -77,7 +73,7 @@ bool TestMajorantBounds()
 	const unsigned int volDim = 32;
 	const Scalar radius = 12.0;
 	const Scalar sigma_t_majorant = 0.01;
-	TestSphereAccessor accessor( volDim, volDim, volDim, radius );
+	TestSphereAccessor accessor( radius );
 
 	unsigned int gridX, gridY, gridZ;
 	MajorantGrid::DefaultGridResolution( volDim, volDim, volDim,
@@ -141,7 +137,7 @@ bool TestDDAAxisAligned()
 	const unsigned int volDim = 16;
 	const Scalar radius = 6.0;
 	const Scalar sigma_t_majorant = 0.01;
-	TestSphereAccessor accessor( volDim, volDim, volDim, radius );
+	TestSphereAccessor accessor( radius );
 
 	const Point3 bboxMin( 0, 0, 0 );
 	const Point3 bboxMax( 8, 8, 8 );
@@ -200,7 +196,7 @@ bool TestDDADiagonal()
 	const unsigned int volDim = 16;
 	const Scalar radius = 6.0;
 	const Scalar sigma_t_majorant = 0.01;
-	TestSphereAccessor accessor( volDim, volDim, volDim, radius );
+	TestSphereAccessor accessor( radius );
 
 	const Point3 bboxMin( 0, 0, 0 );
 	const Point3 bboxMax( 4, 4, 4 );
@@ -254,7 +250,7 @@ bool TestEmptyCells()
 	const unsigned int volDim = 64;
 	const Scalar radius = 4.0;  // Very small sphere relative to volume
 	const Scalar sigma_t_majorant = 0.01;
-	TestSphereAccessor accessor( volDim, volDim, volDim, radius );
+	TestSphereAccessor accessor( radius );
 
 	const Point3 bboxMin( -100, -100, -100 );
 	const Point3 bboxMax( 100, 100, 100 );
@@ -300,7 +296,7 @@ bool TestVisitorStop()
 	const unsigned int volDim = 16;
 	const Scalar radius = 6.0;
 	const Scalar sigma_t_majorant = 0.01;
-	TestSphereAccessor accessor( volDim, volDim, volDim, radius );
+	TestSphereAccessor accessor( radius );
 
 	const Point3 bboxMin( 0, 0, 0 );
 	const Point3 bboxMax( 8, 8, 8 );

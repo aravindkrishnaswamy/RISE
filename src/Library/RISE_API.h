@@ -2010,7 +2010,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRayCaster** ppi,					///< [out] Pointer to recieve the ray caster
 								const bool seeRadianceMap,			///< [in] Is the radiance map (environment) visible to the view rays?
 								const unsigned int maxR,			///< [in] Maximum recursion level
-								const Scalar minI,					///< [in] Minimum path importance before giving up
 								const IShader& pDefaultShader,		///< [in] The default global shader
 								const bool showLuminaires,			///< [in] Should we be able to see luminaries?
 								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?

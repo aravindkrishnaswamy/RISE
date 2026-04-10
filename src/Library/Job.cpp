@@ -4109,7 +4109,7 @@ bool GetSamplingAndFilterElements(
 				GlobalLog()->PrintEx( eLog_Error, "Unknown filter type: `%s`", pixelFilter );
 			}
 		} else {
-			RISE_API_CreateBoxPixelFilter( pPixelFilter, 1.0, 1.0 );
+			RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, 1.0/3.0, 1.0/3.0 );
 		}
 	}
 
@@ -4151,7 +4151,6 @@ bool Job::SetPixelBasedPelRasterizer(
 	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
-	const double minImportance,								///< [in] Minimum importance to stop at
 	const char* shader,										///< [in] The default shader
 	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 	const bool bBackground,									///< [in] Is the radiance map a background object
@@ -4193,7 +4192,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4245,7 +4244,6 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double lambda_end,								///< [in] Wavelength to finish sampling at
 	const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
-	const double minImportance,								///< [in] Minimum importance to stop at
 	const char* shader,										///< [in] The default shader
 	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 	const bool bBackground,									///< [in] Is the radiance map a background object
@@ -4292,7 +4290,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4374,7 +4372,6 @@ bool Job::SetAdaptivePixelBasedPelRasterizer(
 	const double threshold,									///< [in] Threshold at which to stop sampling further
 	const bool bOutputSamples,								///< [in] Should the renderer show how many samples rather than an image
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
-	const double minImportance,								///< [in] Minimum importance to stop at
 	const char* shader,										///< [in] The default shader
 	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 	const bool bBackground,									///< [in] Is the radiance map a background object
@@ -4417,7 +4414,7 @@ bool Job::SetAdaptivePixelBasedPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4462,7 +4459,6 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
-	const double minImportance,								///< [in] Minimum importance to stop at
 	const char* shader,										///< [in] The default shader
 	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 	const bool bBackground,									///< [in] Is the radiance map a background object
@@ -4504,7 +4500,7 @@ bool Job::SetContrastAAPixelBasedPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, minImportance, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4596,7 +4592,7 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4696,7 +4692,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4763,7 +4759,7 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -4807,7 +4803,7 @@ bool Job::SetMLTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, 0.001, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );

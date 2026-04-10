@@ -40,7 +40,6 @@ class RISE_RENDER_PT_settings(_RISEPanel):
         layout.prop(settings, "pixel_samples")
         layout.prop(settings, "light_samples")
         layout.prop(settings, "max_recursion")
-        layout.prop(settings, "min_importance")
         layout.prop(settings, "use_path_tracing")
         layout.prop(settings, "use_world_ambient")
         layout.prop(settings, "choose_one_light")

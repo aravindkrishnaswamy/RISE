@@ -96,7 +96,8 @@ namespace RISE
 		};
 		virtual ~VolumeOp_LMIP( )
 		{
-			safe_delete( pSampleBuffer );
+			delete [] pSampleBuffer;
+			pSampleBuffer = 0;
 		};
 
 		void BeginOperation( unsigned int num_samples, const IVolumeAccessor* pVolume )
@@ -179,7 +180,7 @@ namespace RISE
 			dThreshold = threshold;
 
 			if( pSampleBuffer ) {
-				delete pSampleBuffer;
+				delete [] pSampleBuffer;
 				pSampleBuffer = 0;
 			}
 

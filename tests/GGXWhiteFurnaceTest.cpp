@@ -53,7 +53,6 @@ static const int NDF_QUAD_PHI    = 400;
 static const double NDF_TOL      = 0.02;     // 2% tolerance for NDF normalization
 
 static const int VNDF_SAMPLES    = 500000;
-static const double VNDF_INT_TOL = 0.05;     // 5% tolerance for VNDF PDF integral
 
 static const int ESS_SAMPLES     = 200000;
 static const double ESS_TOL      = 0.02;     // E_ss must be <= 1.0 + tolerance

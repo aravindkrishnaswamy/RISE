@@ -40,7 +40,6 @@ standard_shader
 adaptivepixelpel_rasterizer
 {
 	max_recursion		10
-	min_importance		0.001
 	min_samples			16
 	max_samples			256
 	num_steps			4

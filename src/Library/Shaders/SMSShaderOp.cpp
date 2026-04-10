@@ -21,7 +21,6 @@ SMSShaderOp::SMSShaderOp( const ManifoldSolverConfig& config ) :
   pSolver( 0 )
 {
 	pSolver = new ManifoldSolver( config );
-	pSolver->addref();
 }
 
 SMSShaderOp::~SMSShaderOp()

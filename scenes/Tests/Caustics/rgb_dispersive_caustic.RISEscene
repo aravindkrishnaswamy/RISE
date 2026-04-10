@@ -28,7 +28,6 @@ pixelpel_rasterizer
 	samples					1
 	lum_samples				16
 	max_recursion			10
-	min_importance			0.01
 }
 
 file_rasterizeroutput

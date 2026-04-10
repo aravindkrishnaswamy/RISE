@@ -40,14 +40,6 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         min=1,
         max=256,
     )
-    min_importance: bpy.props.FloatProperty(
-        name="Min Importance",
-        description="Stop tracing paths below this importance threshold",
-        default=0.01,
-        min=0.000001,
-        max=1.0,
-        precision=6,
-    )
     use_path_tracing: bpy.props.BoolProperty(
         name="Path Tracing",
         description="Use the RISE path tracing shader op for indirect lighting",

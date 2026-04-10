@@ -420,7 +420,6 @@ PathTracingShaderOp::PathTracingShaderOp(
 	if( smsConfig.enabled )
 	{
 		pSolver = new ManifoldSolver( smsConfig );
-		pSolver->addref();
 	}
 }
 
@@ -451,28 +450,24 @@ using PathTransportUtilities::ClampContributionNM;
 // stubbed out.
 //////////////////////////////////////////////////////////////////////
 namespace
-{
-	// Stack-local adapter: must live in the same scope as entryRI.
-	// IReference stubs are safe because EvaluateDirectLighting never
-	// ref-counts its IBSDF argument — it only calls value()/valueNM().
-	// entryRI is a reference to a stack-local RayIntersectionGeometric
-	// in the caller; the adapter must not outlive that scope.
-	class BSSRDFEntryBSDF : public RISE::IBSDF
 	{
-		ISubSurfaceDiffusionProfile* pProfile;
-		const RayIntersectionGeometric& entryRI;
-		Scalar swScale;  // 1 / (c * PI), pre-computed
-
-	public:
-		BSSRDFEntryBSDF(
-			ISubSurfaceDiffusionProfile* profile,
-			const RayIntersectionGeometric& ri,
-			const Scalar eta
-			) : pProfile( profile ), entryRI( ri )
+		// Stack-local adapter: IReference stubs are safe because
+		// EvaluateDirectLighting never ref-counts its IBSDF argument —
+		// it only calls value()/valueNM().
+		class BSSRDFEntryBSDF : public RISE::IBSDF
 		{
-			const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
-			const Scalar c = (41.0 - 20.0 * F0) / 42.0;
-			swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
+			ISubSurfaceDiffusionProfile* pProfile;
+			Scalar swScale;  // 1 / (c * PI), pre-computed
+
+		public:
+			BSSRDFEntryBSDF(
+				ISubSurfaceDiffusionProfile* profile,
+				const Scalar eta
+				) : pProfile( profile )
+			{
+				const Scalar F0 = ((eta - 1.0) / (eta + 1.0)) * ((eta - 1.0) / (eta + 1.0));
+				const Scalar c = (41.0 - 20.0 * F0) / 42.0;
+				swScale = (c > 1e-20) ? 1.0 / (c * PI) : 0;
 		}
 
 		// IReference stubs — this object lives on the stack only
@@ -844,7 +839,7 @@ void PathTracingShaderOp::PerformOperation(
 						entryRI.onb = bssrdf.entryONB;
 
 						const Scalar eta = pProfile->GetIOR( ri.geometric );
-						BSSRDFEntryBSDF entryBSDF( pProfile, entryRI, eta );
+						BSSRDFEntryBSDF entryBSDF( pProfile, eta );
 						BSSRDFEntryMaterial entryMaterial;
 
 						// Per-type bounce limit: skip SSS contribution if
@@ -1913,7 +1908,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 						entryRI.onb = bssrdf.entryONB;
 
 						const Scalar eta = pProfile->GetIOR( ri.geometric );
-						BSSRDFEntryBSDF entryBSDF( pProfile, entryRI, eta );
+						BSSRDFEntryBSDF entryBSDF( pProfile, eta );
 						BSSRDFEntryMaterial entryMaterial;
 
 						const unsigned int nextTranslucentBounces = rs.translucentBounces + 1;

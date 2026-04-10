@@ -105,7 +105,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 		//
 		Ray walkRay( pos, dir );
 		RayIntersection exitRI( walkRay, nullRasterizerState );
-		pObject->IntersectRay( exitRI, INFINITY, false, true, false );
+		pObject->IntersectRay( exitRI, RISE_INFINITY, false, true, false );
 
 		if( !exitRI.geometric.bHit )
 		{
@@ -114,7 +114,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// Try front faces as fallback — the walk may have crossed
 			// a thin shell and needs to find the other side.
 			RayIntersection fallbackRI( walkRay, nullRasterizerState );
-			pObject->IntersectRay( fallbackRI, INFINITY, true, false, false );
+			pObject->IntersectRay( fallbackRI, RISE_INFINITY, true, false, false );
 
 			if( !fallbackRI.geometric.bHit ) {
 				// Truly escaped — terminate walk
@@ -295,8 +295,6 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			//
 			// 3e. Fresnel at exit boundary
 			//
-			const Scalar cosExit = fabs( Vector3Ops::Dot( exitNormal, -dir ) );
-
 			// Compute Fresnel reflectance at the exit boundary.
 			// We are going from medium (ior) to air (1.0).
 			Vector3 refractedOut = dir;

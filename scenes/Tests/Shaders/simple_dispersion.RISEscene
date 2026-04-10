@@ -24,7 +24,6 @@ advanced_shader
 pixelpel_rasterizer
 {
 	max_recursion		3
-	min_importance		0.01
 	samples				4
 	lum_samples			1
 }

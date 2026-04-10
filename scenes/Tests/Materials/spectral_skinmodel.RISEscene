@@ -51,7 +51,6 @@ standard_shader
 pixelintegratingspectral_rasterizer
 {
 	max_recursion		10
-	min_importance		0.0001
 #	samples				4000
 	samples				1000
 	nmbegin				380

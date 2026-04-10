@@ -8,8 +8,8 @@ RISE ASCII SCENE 5
 #                   Any deficit measures systematic loss from probe failures and                             #
 #                   recursion limits, and can be used to normalize the absorption test.                      #
 #                                                                                                           #
-#   Expected:       sphere/background ~ 0.96 (3-4% loss from max_recursion=16,                              #
-#                   min_importance=0.001, and probe failures).  All three channels                           #
+#   Expected:       sphere/background ~ 0.96 (3-4% loss from max_recursion=16                                #
+#                   and probe failures).  All three channels                                                #
 #                   should be equal.                                                                        #
 #                                                                                                           #
 #   Author:         Aravind Krishnaswamy                                                                    #
@@ -31,7 +31,6 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		16
-	min_importance		0.001
 	samples				4000
 	lum_samples			1
 	ior_stack			TRUE

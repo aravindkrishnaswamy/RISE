@@ -1309,7 +1309,7 @@ namespace RISE
 
 					bool bRet = pJob.AddPiecewiseLinearFunction2D( name.c_str(), &cp_x[0], func, static_cast<unsigned int>(cp_x.size()) );
 
-					safe_delete( func );
+					delete [] func;
 
 					return bRet;
 				}
@@ -5198,7 +5198,6 @@ namespace RISE
 					unsigned int maxRecur = 10;
 					unsigned int numSamples = 1;
 					unsigned int numLumSamples = 1;
-					double minImportance = 0.01;
 					String radiancemap = "none";
 					double radianceScale = 1.0;
 					double radorient[3] = {0};
@@ -5210,8 +5209,8 @@ namespace RISE
 					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0;
-					double pixelFilterParamB = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
@@ -5235,8 +5234,6 @@ namespace RISE
 							defaultshader = pvalue;
 						} else if( pname == "max_recursion" ) {
 							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "lum_samples" ) {
@@ -5347,7 +5344,7 @@ namespace RISE
 					}
 
 					return pJob.SetPixelBasedPelRasterizer( numSamples, numLumSamples,
-						maxRecur, minImportance, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+						maxRecur, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
@@ -5369,7 +5366,6 @@ namespace RISE
 					unsigned int numWavelengths = 10;
 					double nmbegin = 380.0;
 					double nmend = 780.0;
-					double minImportance = 0.01;
 					String radiancemap = "none";
 					double radianceScale = 1.0;
 					double radorient[3] = {0};
@@ -5381,8 +5377,8 @@ namespace RISE
 					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0;
-					double pixelFilterParamB = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
@@ -5410,8 +5406,6 @@ namespace RISE
 							defaultshader = pvalue;
 						} else if( pname == "max_recursion" ) {
 							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "lum_samples" ) {
@@ -5577,7 +5571,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, numSpectralSamples, nmbegin, nmend, numWavelengths, maxRecur, minImportance, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, numSpectralSamples, nmbegin, nmend, numWavelengths, maxRecur, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
@@ -5600,7 +5594,6 @@ namespace RISE
 					unsigned int maxSamples = 16;
 					unsigned int numSteps = 3;
 					unsigned int numLumSamples = 1;
-					double minImportance = 0.01;
 					double threshold = 0.005;
 					String radiancemap = "none";
 					double radianceScale = 1.0;
@@ -5614,8 +5607,8 @@ namespace RISE
 					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0;
-					double pixelFilterParamB = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
@@ -5635,8 +5628,6 @@ namespace RISE
 							defaultshader = pvalue;
 						} else if( pname == "max_recursion" ) {
 							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "min_samples" ) {
 							minSamples = pvalue.toUInt();
 						} else if( pname == "max_samples" ) {
@@ -5696,7 +5687,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetAdaptivePixelBasedPelRasterizer( minSamples, maxSamples, numSteps, numLumSamples, threshold, bOutputSamples, maxRecur, minImportance, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+					return pJob.SetAdaptivePixelBasedPelRasterizer( minSamples, maxSamples, numSteps, numLumSamples, threshold, bOutputSamples, maxRecur, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
@@ -5715,7 +5706,6 @@ namespace RISE
 					unsigned int maxRecur = 10;
 					unsigned int numSamples = 1;
 					unsigned int numLumSamples = 1;
-					double minImportance = 0.01;
 					String radiancemap = "none";
 					double radianceScale = 1.0;
 					double radorient[3] = {0};
@@ -5727,8 +5717,8 @@ namespace RISE
 					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0;
-					double pixelFilterParamB = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
@@ -5750,8 +5740,6 @@ namespace RISE
 							defaultshader = pvalue;
 						} else if( pname == "max_recursion" ) {
 							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "lum_samples" ) {
@@ -5804,7 +5792,7 @@ namespace RISE
 					}
 
 					return pJob.SetContrastAAPixelBasedPelRasterizer( numSamples, numLumSamples,
-						maxRecur, minImportance, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+						maxRecur, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
@@ -5832,8 +5820,8 @@ namespace RISE
 					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0;
-					double pixelFilterParamB = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
@@ -6013,8 +6001,8 @@ namespace RISE
 					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0;
-					double pixelFilterParamB = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;

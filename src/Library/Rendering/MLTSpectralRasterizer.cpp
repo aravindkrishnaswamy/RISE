@@ -672,7 +672,6 @@ void MLTSpectralRasterizer::RasterizeScene(
 		// Initialize chain — but we need spectral evaluation
 		// We manually do what InitChain does, but with EvaluateSampleSpectral
 		chainStates[c].pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-		chainStates[c].pSampler->addref();
 		chainStates[c].chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
 
 		chainStates[c].pSampler->StartIteration();
@@ -713,7 +712,6 @@ void MLTSpectralRasterizer::RasterizeScene(
 	//////////////////////////////////////////////////////////////////
 
 	SplatFilm* pSplatFilm = new SplatFilm( width, height );
-	pSplatFilm->addref();
 
 	if( pProgressFunc ) {
 		pProgressFunc->SetTitle( "MLT Spectral Rendering: " );
