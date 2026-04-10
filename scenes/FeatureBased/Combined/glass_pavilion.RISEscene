@@ -32,7 +32,7 @@ standard_shader
 standard_shader
 {
 	name			floor_shader
-	shaderop		dt
+	shaderop		DefaultPathTracing
 	shaderop		DefaultDirectLighting
 }
 
@@ -47,7 +47,7 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		5
-	samples				16
+	samples				64
 	lum_samples			1
 	ior_stack			TRUE
 }
@@ -72,7 +72,7 @@ thinlens_camera
 	width				800
 	height				600
 	fov					40.0
-	aperture_size		0.05
+	aperture_size		0.5
 	focal_length		3.5
 	focus_distance		6.5
 }
@@ -504,7 +504,7 @@ standard_object
 omni_light
 {
 	name				ceiling_light
-	power				5.0
+	power				15.0
 	color				1.0 0.98 0.92
 	position			0 4.5 0
 }
@@ -512,7 +512,7 @@ omni_light
 omni_light
 {
 	name				fill_light
-	power				2.5
+	power				25
 	color				0.9 0.92 1.0
 	position			3 3 4
 }

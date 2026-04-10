@@ -49,13 +49,19 @@ namespace RISE
 				dExpHeightSq = exp(-(dKernelHeightOV2*dKernelHeightOV2));
 			}
 
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				return (exp(-(dx*dx)) - dExpWidthSq) * (exp(-(dy*dy)) - dExpHeightSq);
+			}
+
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
 			{
 				warped = Point2( canonical.x*dKernelWidth - dKernelWidthOV2, canonical.y*dKernelHeight - dKernelHeightOV2 );
 
 				// Compute the weight
-				return 
-					(exp(-(warped.x*warped.x)) - dExpWidthSq) * 
+				return
+					(exp(-(warped.x*warped.x)) - dExpWidthSq) *
 					(exp(-(warped.y*warped.y)) - dExpHeightSq);
 			}
 		};

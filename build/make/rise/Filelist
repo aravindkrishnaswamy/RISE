@@ -239,6 +239,7 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
 	$(PATHLIBRARY)Rendering/EnvironmentSampler.cpp							\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
+	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\

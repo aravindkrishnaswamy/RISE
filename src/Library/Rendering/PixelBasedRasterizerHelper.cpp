@@ -37,7 +37,9 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   pCaster( pCaster_ ),
   pSampling( 0 ),
   pPixelFilter( 0 ),
-  useZSobol( false )
+  useZSobol( false ),
+  pFilteredFilm( 0 ),
+  pFilteredScratch( 0 )
 {
 	if( pCaster ) {
 		pCaster->addref();
@@ -51,6 +53,38 @@ PixelBasedRasterizerHelper::~PixelBasedRasterizerHelper( )
 	safe_release( pSampling );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+}
+
+bool PixelBasedRasterizerHelper::UseFilteredFilm() const
+{
+	if( !pPixelFilter ) return false;
+	Scalar hw, hh;
+	pPixelFilter->GetFilterSupport( hw, hh );
+	return hw > 0.501 || hh > 0.501;
+}
+
+IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterImage& primary ) const
+{
+	if( !pFilteredFilm || !pFilteredScratch ) {
+		return primary;
+	}
+
+	const unsigned int w = primary.GetWidth();
+	const unsigned int h = primary.GetHeight();
+
+	// Copy the current primary image into the scratch buffer
+	for( unsigned int y=0; y<h; y++ ) {
+		for( unsigned int x=0; x<w; x++ ) {
+			pFilteredScratch->SetPEL( x, y, primary.GetPEL( x, y ) );
+		}
+	}
+
+	// Resolve the film into the scratch copy
+	pFilteredFilm->Resolve( *pFilteredScratch );
+
+	return *pFilteredScratch;
 }
 
 unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const
@@ -362,6 +396,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
 
+	// Allocate film buffer for wide-support pixel filter reconstruction
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+	if( UseFilteredFilm() ) {
+		pFilteredFilm = new FilteredFilm( width, height );
+		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	}
+
 	{
 		// GlobalRNG is ok here since this part will always be single threaded
 		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
@@ -409,6 +451,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 
+	// Resolve filtered film: overwrites per-pixel inline estimates with
+	// properly filter-reconstructed values
+	if( pFilteredFilm ) {
+		pFilteredFilm->Resolve( *pImage );
+	}
+
 	RISE_PROFILE_REPORT(GlobalLog());
 
 #ifdef RISE_ENABLE_OIDN
@@ -429,6 +477,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// Post-render hook (e.g. path guiding cleanup)
 	PostRenderCleanup();
 
+	safe_release( pFilteredFilm );
+	pFilteredFilm = 0;
+	safe_release( pFilteredScratch );
+	pFilteredScratch = 0;
 	safe_release( pImage );
 }
 
@@ -549,6 +601,12 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 	// Do a pass
 	RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq, framedata );
+
+	// Resolve filtered film for this frame
+	if( pFilteredFilm ) {
+		pFilteredFilm->Resolve( image );
+		pFilteredFilm->Clear();
+	}
 }
 
 void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
@@ -584,6 +642,14 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// Create the image we are going to render to
 	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
+
+	// Allocate film buffer for wide-support pixel filter reconstruction
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+	if( UseFilteredFilm() ) {
+		pFilteredFilm = new FilteredFilm( width, height );
+		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	}
 
 	// Get the ray caster ready to roll
 	pCaster->AttachScene( &pScene );
@@ -645,6 +711,10 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		blocks = 0;
 	}
 
+	safe_release( pFilteredFilm );
+	pFilteredFilm = 0;
+	safe_release( pFilteredScratch );
+	pFilteredScratch = 0;
 	safe_release( pImage );
 }
 

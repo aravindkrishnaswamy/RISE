@@ -36,6 +36,12 @@ namespace RISE
 				warped = Point2( w.x+x, w.y+y );
 				return weight;
 			}
+
+			void GetFilterSupport( Scalar& halfWidth, Scalar& halfHeight ) const
+			{
+				halfWidth = dKernelWidth / 2.0;
+				halfHeight = dKernelHeight / 2.0;
+			}
 		};
 	}
 }

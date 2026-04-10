@@ -38,6 +38,15 @@ namespace RISE
 		public:
 			SincPixelFilter( const Scalar window, const Scalar scale_ );
 
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				const Scalar sx = dx * scale;
+				const Scalar sy = dy * scale;
+				const Scalar sinc_x = (fabs(sx) < NEARZERO) ? 1.0 : sin(sx) / sx;
+				const Scalar sinc_y = (fabs(sy) < NEARZERO) ? 1.0 : sin(sy) / sy;
+				return sinc_x * sinc_y;
+			}
+
 			virtual Scalar warp( const RandomNumberGenerator& random, const Point2& canonical, Point2& warped ) const;
 		};
 	}

@@ -20,6 +20,7 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IPixelFilter.h"
 #include "Rasterizer.h"
+#include "FilteredFilm.h"
 #include "../Utilities/RuntimeContext.h"
 
 namespace RISE
@@ -90,6 +91,13 @@ namespace RISE
 			ISampling2D*		pSampling;
 			IPixelFilter*		pPixelFilter;
 			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
+
+			mutable FilteredFilm*	pFilteredFilm;		///< Film buffer for wide-support filter reconstruction
+			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
+
+			/// Returns true when the pixel filter's support extends beyond
+			/// a single pixel, requiring film-based reconstruction.
+			bool UseFilteredFilm() const;
 
 			virtual ~PixelBasedRasterizerHelper( );
 
@@ -162,7 +170,7 @@ namespace RISE
 			/// primary image.  BDPT overrides this to return a scratch
 			/// copy with resolved splats composited in, avoiding any
 			/// mutation of the primary accumulation buffer.
-			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const { return primary; }
+			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
 
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;

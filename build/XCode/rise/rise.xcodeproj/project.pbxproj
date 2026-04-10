@@ -1422,6 +1422,9 @@
 		F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */; };
+		F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */; };
+		F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
+		F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2174,6 +2177,8 @@
 		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
 		F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathGuidingField.h; sourceTree = "<group>"; };
 		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
+		F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FilteredFilm.h; sourceTree = "<group>"; };
+		F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FilteredFilm.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2880,6 +2885,8 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */,
+				F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */,
 				F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */,
 				F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */,
 				F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */,
@@ -3276,6 +3283,7 @@
 				F27F0AB1069C42910069C9E5 /* TriangleMeshGeometrySpecializations.h in Headers */,
 				F27F0AB3069C42910069C9E5 /* TriangleMeshLoader3DS.h in Headers */,
 				F27F0AB5069C42910069C9E5 /* TriangleMeshLoaderBezier.h in Headers */,
+				F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */,
 				F27F0AB7069C42910069C9E5 /* TriangleMeshLoaderPLY.h in Headers */,
 				F27F0AB9069C42910069C9E5 /* TriangleMeshLoaderPSurf.h in Headers */,
 				F27F0ABB069C42910069C9E5 /* TriangleMeshLoaderRAW.h in Headers */,
@@ -3869,6 +3877,7 @@
 				F27F0B42069C42910069C9E5 /* CompositeSPF.cpp in Sources */,
 				F27F0B44069C42910069C9E5 /* CookTorranceBRDF.cpp in Sources */,
 				F27F0B47069C42910069C9E5 /* CookTorranceSPF.cpp in Sources */,
+				F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */,
 				F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */,
 				F27F0B4F069C42910069C9E5 /* IsotropicPhongBRDF.cpp in Sources */,
@@ -4331,6 +4340,7 @@
 				F24B72EA2F52A632008304C4 /* OrenNayarMaterial.h in Sources */,
 				F24B72EB2F52A632008304C4 /* OrenNayarSPF.cpp in Sources */,
 				F24B72EC2F52A632008304C4 /* OrenNayarSPF.h in Sources */,
+				F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F24B72ED2F52A632008304C4 /* PerfectReflectorMaterial.h in Sources */,
 				F24C54392F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
 				F24B72EE2F52A632008304C4 /* PerfectReflectorSPF.cpp in Sources */,

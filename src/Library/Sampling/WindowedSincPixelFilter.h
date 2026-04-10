@@ -71,8 +71,15 @@ namespace RISE
 				return weight;
 			}
 
+			inline Scalar sinc1D( const Scalar x ) const
+			{
+				if( fabs(x) < NEARZERO ) return 1.0;
+				const Scalar px = PI * x;
+				return sin(px) / px;
+			}
+
 		public:
-			
+
 		};
 
 		// Here is a list of the all the different windowed sinc filters
@@ -88,21 +95,21 @@ namespace RISE
 			virtual ~BoxWindowSincPixelFilter(){};
 
 		public:
-			BoxWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			BoxWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				return sinc1D(dx) * sinc1D(dy);
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
 			{
 				warpUniform( canonical, warped );
-				const Scalar wx = warped.x*PI;
-				const Scalar wy = warped.y*PI;
-				const Scalar sinc_x = sin(wx) / wx;
-				const Scalar sinc_y = sin(wy) / wy;
-				return
-					(sinc_x) *
-					(sinc_y);
+				return sinc1D(warped.x) * sinc1D(warped.y);
 			}
 		};
 
@@ -115,17 +122,23 @@ namespace RISE
 			virtual ~BarlettWindowSincPixelFilter(){};
 
 		public:
-			BarlettWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			BarlettWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				const Scalar bx = 1.0 - fabs(dx)/dKernelWidthOV2;
+				const Scalar by = 1.0 - fabs(dy)/dKernelHeightOV2;
+				return (bx * sinc1D(dx)) * (by * sinc1D(dy));
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
 			{
 				warpTriangle( canonical, warped );
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return sinc_x * sinc_y;
+				return sinc1D(warped.x) * sinc1D(warped.y);
 			}
 		};
 
@@ -138,9 +151,17 @@ namespace RISE
 			virtual ~WelchWindowSincPixelFilter(){};
 
 		public:
-			WelchWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			WelchWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				const Scalar nx = fabs(dx)/dKernelWidthOV2;
+				const Scalar ny = fabs(dy)/dKernelHeightOV2;
+				return ((1.0-nx*nx) * sinc1D(dx)) * ((1.0-ny*ny) * sinc1D(dy));
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
@@ -148,11 +169,7 @@ namespace RISE
 				warpUniform( canonical, warped );
 				const Scalar nx = fabs(warped.x)/dKernelWidthOV2;
 				const Scalar ny = fabs(warped.y)/dKernelHeightOV2;
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return
-					((1.0-nx*nx) * sinc_x) *
-					((1.0-ny*ny) * sinc_y);
+				return ((1.0-nx*nx) * sinc1D(warped.x)) * ((1.0-ny*ny) * sinc1D(warped.y));
 			}
 		};
 
@@ -165,9 +182,17 @@ namespace RISE
 			virtual ~HanningWindowSincPixelFilter(){};
 
 		public:
-			HanningWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			HanningWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				const Scalar nx = dx/dKernelWidthOV2;
+				const Scalar ny = dy/dKernelHeightOV2;
+				return ((0.5 + 0.5*cos(PI*nx)) * sinc1D(dx)) * ((0.5 + 0.5*cos(PI*ny)) * sinc1D(dy));
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
@@ -175,11 +200,7 @@ namespace RISE
 				warpUniform( canonical, warped );
 				const Scalar nx = warped.x/dKernelWidthOV2;
 				const Scalar ny = warped.y/dKernelHeightOV2;
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return
-					((0.5 + 0.5 * cos(PI*nx)) * sinc_x) *
-					((0.5 + 0.5 * cos(PI*ny)) * sinc_y);
+				return ((0.5 + 0.5*cos(PI*nx)) * sinc1D(warped.x)) * ((0.5 + 0.5*cos(PI*ny)) * sinc1D(warped.y));
 			}
 		};
 
@@ -192,9 +213,17 @@ namespace RISE
 			virtual ~HammingWindowSincPixelFilter(){};
 
 		public:
-			HammingWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			HammingWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				const Scalar nx = dx/dKernelWidthOV2;
+				const Scalar ny = dy/dKernelHeightOV2;
+				return ((0.54 + 0.46*cos(PI*nx)) * sinc1D(dx)) * ((0.54 + 0.46*cos(PI*ny)) * sinc1D(dy));
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
@@ -202,11 +231,7 @@ namespace RISE
 				warpUniform( canonical, warped );
 				const Scalar nx = warped.x/dKernelWidthOV2;
 				const Scalar ny = warped.y/dKernelHeightOV2;
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return
-					((0.54 + 0.46 * cos(PI*nx)) * sinc_x) *
-					((0.54 + 0.46 * cos(PI*ny)) * sinc_y);
+				return ((0.54 + 0.46*cos(PI*nx)) * sinc1D(warped.x)) * ((0.54 + 0.46*cos(PI*ny)) * sinc1D(warped.y));
 			}
 		};
 
@@ -219,9 +244,18 @@ namespace RISE
 			virtual ~BlackmanWindowSincPixelFilter(){};
 
 		public:
-			BlackmanWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			BlackmanWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				const Scalar nx = dx/dKernelWidthOV2;
+				const Scalar ny = dy/dKernelHeightOV2;
+				return ((0.42 + 0.5*cos(PI*nx) + 0.08*cos(TWO_PI*nx)) * sinc1D(dx)) *
+					   ((0.42 + 0.5*cos(PI*ny) + 0.08*cos(TWO_PI*ny)) * sinc1D(dy));
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
@@ -229,11 +263,8 @@ namespace RISE
 				warpUniform( canonical, warped );
 				const Scalar nx = warped.x/dKernelWidthOV2;
 				const Scalar ny = warped.y/dKernelHeightOV2;
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return
-					((0.42 + 0.5 * cos(PI*nx) + 0.08 * cos(TWO_PI*nx)) * sinc_x) *
-					((0.42 + 0.5 * cos(PI*ny) + 0.08 * cos(TWO_PI*ny)) * sinc_y);
+				return ((0.42 + 0.5*cos(PI*nx) + 0.08*cos(TWO_PI*nx)) * sinc1D(warped.x)) *
+					   ((0.42 + 0.5*cos(PI*ny) + 0.08*cos(TWO_PI*ny)) * sinc1D(warped.y));
 			}
 		};
 
@@ -246,9 +277,17 @@ namespace RISE
 			virtual ~LanczosWindowSincPixelFilter(){};
 
 		public:
-			LanczosWindowSincPixelFilter( const Scalar width, const Scalar height ) : 
+			LanczosWindowSincPixelFilter( const Scalar width, const Scalar height ) :
 			WindowedSincPixelFilter( width, height )
 			{
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				const Scalar nx = dx/dKernelWidthOV2;
+				const Scalar ny = dy/dKernelHeightOV2;
+				return (sinc1D(nx) * sinc1D(dx)) * (sinc1D(ny) * sinc1D(dy));
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
@@ -256,11 +295,7 @@ namespace RISE
 				warpUniform( canonical, warped );
 				const Scalar nx = warped.x/dKernelWidthOV2;
 				const Scalar ny = warped.y/dKernelHeightOV2;
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return
-					(sin(PI*nx)/(PI*nx) * sinc_x) *
-					(sin(PI*ny)/(PI*ny) * sinc_y);
+				return (sinc1D(nx) * sinc1D(warped.x)) * (sinc1D(ny) * sinc1D(warped.y));
 			}
 		};
 
@@ -275,23 +310,33 @@ namespace RISE
 			const Scalar alpha;
 			Scalar bessel_alpha;
 
+			inline Scalar kaiser1D( const Scalar x, const Scalar halfW ) const
+			{
+				const Scalar n = x / halfW;
+				const Scalar arg = 1.0 - n*n;
+				if( arg <= 0 ) return 0.0;
+				return Polynomial::bessi0( alpha*sqrt(arg) ) / bessel_alpha;
+			}
+
 		public:
-			KaiserWindowSincPixelFilter( const Scalar width, const Scalar height, const Scalar alpha_ ) : 
+			KaiserWindowSincPixelFilter( const Scalar width, const Scalar height, const Scalar alpha_ ) :
 			WindowedSincPixelFilter( width, height ), alpha( alpha_ )
 			{
 				bessel_alpha = Polynomial::bessi0( alpha );
 			}
 
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs(dx) > dKernelWidthOV2 || fabs(dy) > dKernelHeightOV2 ) return 0.0;
+				return (kaiser1D(dx, dKernelWidthOV2) * sinc1D(dx)) *
+					   (kaiser1D(dy, dKernelHeightOV2) * sinc1D(dy));
+			}
+
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
 			{
 				warpUniform( canonical, warped );
-				const Scalar nx = warped.x/dKernelWidthOV2;
-				const Scalar ny = warped.y/dKernelHeightOV2;
-				const Scalar sinc_x = sin(PI*warped.x) / (PI*warped.x);
-				const Scalar sinc_y = sin(PI*warped.y) / (PI*warped.y);
-				return
-					(((Polynomial::bessi0( alpha*sqrt(1.0-nx*nx)) )/bessel_alpha) * sinc_x) *
-					(((Polynomial::bessi0( alpha*sqrt(1.0-ny*ny)) )/bessel_alpha) * sinc_y);
+				return (kaiser1D(warped.x, dKernelWidthOV2) * sinc1D(warped.x)) *
+					   (kaiser1D(warped.y, dKernelHeightOV2) * sinc1D(warped.y));
 			}
 		};
 	}

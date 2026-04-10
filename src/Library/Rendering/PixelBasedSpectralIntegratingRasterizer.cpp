@@ -259,8 +259,19 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		{
 			ColorXYZ	c;
 			Point2		ptOnScreen;
-			const Scalar weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
-			weights += weight;
+
+			const bool filmMode = (pFilteredFilm != 0);
+			Scalar weight;
+			if( filmMode ) {
+				ptOnScreen = Point2(
+					static_cast<Scalar>(x) + (*m).x - 0.5,
+					static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+				weight = 1.0;
+				weights += 1.0;
+			} else {
+				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				weights += weight;
+			}
 
 			if( temporal_samples ) {
 				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
@@ -278,7 +289,12 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			Ray ray;
 			if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
 				TakeSingleSample( rc, rast, ray, c );
-				colAccrued = colAccrued + c*weight;
+				if( filmMode ) {
+					pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c.base, *pPixelFilter );
+					colAccrued = colAccrued + c;
+				} else {
+					colAccrued = colAccrued + c*weight;
+				}
 			}
 
 			rc.pSampler = 0;

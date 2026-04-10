@@ -29,6 +29,7 @@ standard_shader
 	shaderop			DefaultDirectLighting
 }
 
+/*
 distributiontracing_shaderop
 {
 	name				dt
@@ -36,11 +37,17 @@ distributiontracing_shaderop
 	diffuse				false
 	reflections			TRUE
 }
+*/
+
+pathtracing_shaderop
+{
+	name				pt
+}
 
 standard_shader
 {
 	name				glossy_shader
-	shaderop			dt
+	shaderop			pt
 	shaderop			DefaultDirectLighting
 }
 
@@ -55,7 +62,7 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		6
-	samples				4
+	samples				64
 	lum_samples			1
 	ior_stack			TRUE
 }

@@ -543,10 +543,23 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			ISampling2D::SamplesList2D::const_iterator m, n;
 			for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<maxSamples; m++, globalSampleIndex++ )
 			{
-				RISEPel		c;
+				RISEPel		c( 0, 0, 0 );
 				Point2		ptOnScreen;
-				const Scalar weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
-				weights += weight;
+
+				// In film mode, use box sampling and splat to the film.
+				// Otherwise, use the pixel filter's warp for inline accumulation.
+				const bool filmMode = (pFilteredFilm != 0);
+				Scalar weight;
+				if( filmMode ) {
+					ptOnScreen = Point2(
+						static_cast<Scalar>(x) + (*m).x - 0.5,
+						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					weight = 1.0;
+					weights += 1.0;
+				} else {
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+					weights += weight;
+				}
 
 				if( temporal_samples ) {
 					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
@@ -565,25 +578,29 @@ void PixelBasedPelRasterizer::IntegratePixel(
 
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
-					if( pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 ) ) {
+					bool bHit = pCaster->CastRay( rc, rast, ray, c, IRayCaster::RAY_STATE(), 0, 0 );
+
+					if( filmMode ) {
+						// Always splat to the film, even on miss (c stays zero).
+						// Miss-samples must contribute zero radiance with proper
+						// filter weight so that edge pixels blend correctly.
+						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c, *pPixelFilter );
+						if( bHit ) {
+							colAccrued = colAccrued + c;
+							alphas += 1.0;
+						}
+					} else if( bHit ) {
 						colAccrued = colAccrued + c*weight;
 						alphas += weight;
+					}
 
-						// Welford update on luminance
-						if( adaptive ) {
-							const Scalar lum = ColorMath::MaxValue(c);
-							wN++;
-							const Scalar delta = lum - wMean;
-							wMean += delta / Scalar(wN);
-							const Scalar delta2 = lum - wMean;
-							wM2 += delta * delta2;
-						}
-					} else if( adaptive ) {
-						// Ray missed — count as zero-luminance sample for Welford
+					// Welford update on luminance
+					if( adaptive ) {
+						const Scalar lum = bHit ? ColorMath::MaxValue(c) : 0;
 						wN++;
-						const Scalar delta = -wMean;
+						const Scalar delta = lum - wMean;
 						wMean += delta / Scalar(wN);
-						const Scalar delta2 = -wMean;
+						const Scalar delta2 = lum - wMean;
 						wM2 += delta * delta2;
 					}
 				} else if( adaptive ) {

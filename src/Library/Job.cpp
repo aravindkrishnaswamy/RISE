@@ -114,6 +114,7 @@ void Job::InitializeContainers()
 		this->AddGlobalSpectralPhotonMapShaderOp( "DefaultGlobalSpectralPhotonMap" );
 		this->AddTranslucentPelPhotonMapShaderOp( "DefaultTranslucentPelPhotonMap" );
 		this->AddShadowPhotonMapShaderOp( "DefaultShadowPhotonMap" );
+		this->AddPathTracingShaderOp( "DefaultPathTracing", true, false, 20, 1e-5, 10,  true );
 	}
 }
 
