@@ -65,6 +65,19 @@ namespace RISE
 
 		bool			useLightBVH;			///< Use light BVH for importance-weighted many-light selection (true = enabled by default)
 
+		//
+		// Optimal MIS (Kondapaneni et al. 2019)
+		//
+		// When enabled, the path tracer runs training iterations to
+		// estimate second-moment statistics for the NEE and BSDF
+		// sampling techniques, then uses variance-minimizing weights
+		// instead of the power heuristic for direct illumination.
+		//
+
+		bool			optimalMIS;				///< Enable optimal MIS weight training (false = disabled)
+		unsigned int	optimalMISTrainingIterations;	///< Number of training passes (default 4)
+		unsigned int	optimalMISTileSize;		///< Tile size for spatial binning (default 16)
+
 		StabilityConfig() :
 		  directClamp( 0 ),
 		  indirectClamp( 0 ),
@@ -76,7 +89,10 @@ namespace RISE
 		  maxTransmissionBounce( UINT_MAX ),
 		  maxTranslucentBounce( UINT_MAX ),
 		  maxVolumeBounce( 64 ),
-		  useLightBVH( true )
+		  useLightBVH( true ),
+		  optimalMIS( false ),
+		  optimalMISTrainingIterations( 4 ),
+		  optimalMISTileSize( 16 )
 		{
 		}
 	};

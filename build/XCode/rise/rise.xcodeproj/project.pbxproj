@@ -739,6 +739,9 @@
 		F24C54912F87F453009AF16D /* LightBVH.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548F2F87F453009AF16D /* LightBVH.h */; };
 		F24C54922F87F453009AF16D /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
 		F24C54932F87F453009AF16D /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
+		F24C54962F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
+		F24C54972F88556A009AF16D /* OptimalMISAccumulator.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */; };
+		F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -1511,6 +1514,8 @@
 		F24C548B2F87D990009AF16D /* MajorantGrid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MajorantGrid.cpp; sourceTree = "<group>"; };
 		F24C548F2F87F453009AF16D /* LightBVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LightBVH.h; sourceTree = "<group>"; };
 		F24C54902F87F453009AF16D /* LightBVH.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = LightBVH.cpp; sourceTree = "<group>"; };
+		F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OptimalMISAccumulator.h; sourceTree = "<group>"; };
+		F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OptimalMISAccumulator.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -3012,6 +3017,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */,
+				F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */,
 				F24C548A2F87D990009AF16D /* MajorantGrid.h */,
 				F24C548B2F87D990009AF16D /* MajorantGrid.cpp */,
 				F24C54672F859F87009AF16D /* RandomWalkSSS.h */,
@@ -3377,6 +3384,7 @@
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
 				F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */,
 				F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */,
+				F24C54972F88556A009AF16D /* OptimalMISAccumulator.h in Headers */,
 				F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */,
 				F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */,
 				F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */,
@@ -3969,6 +3977,7 @@
 				F27F0C5E069C42910069C9E5 /* DiskBuffer.cpp in Sources */,
 				F27F0C60069C42910069C9E5 /* DiskFileReadBuffer.cpp in Sources */,
 				F27F0C62069C42910069C9E5 /* DiskFileWriteBuffer.cpp in Sources */,
+				F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */,
 				F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
 				F27F0C66069C42910069C9E5 /* GeometricUtilities.cpp in Sources */,
@@ -4203,6 +4212,7 @@
 				F24B72822F52A632008304C4 /* IRayCaster.h in Sources */,
 				F24B72832F52A632008304C4 /* IRayIntersectionModifier.h in Sources */,
 				F24B72842F52A632008304C4 /* IReadBuffer.h in Sources */,
+				F24C54962F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F24B72852F52A632008304C4 /* IReference.h in Sources */,
 				F24B72862F52A632008304C4 /* ISampling1D.h in Sources */,
 				F24B72872F52A632008304C4 /* ISampling2D.h in Sources */,

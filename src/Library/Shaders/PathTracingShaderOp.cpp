@@ -20,6 +20,8 @@
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/PathVertexEval.h"
+#include "../Utilities/OptimalMISAccumulator.h"
+#include "../Utilities/MISWeights.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #ifdef RISE_ENABLE_OPENPGL
 #include "../Utilities/PathGuidingField.h"
@@ -723,7 +725,36 @@ void PathTracingShaderOp::PerformOperation(
 							}
 
 							const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
-							const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+
+							// Optimal MIS training: accumulate second-moment
+							// statistics using the full integrand f = Le * BSDF * cos.
+							// bsdfTimesCos carries the RGB BSDF*cos from the
+							// scatter site; component-wise multiply with Le then
+							// scalarize to get the true MaxValue(Le * BSDF * cos).
+							if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+							{
+								const Scalar fLum = ColorMath::MaxValue( rawEmission * rs.bsdfTimesCos );
+								const Scalar f2 = fLum * fLum;
+								if( f2 > 0 && rs.bsdfPdf > 0 )
+								{
+									const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
+										ri.geometric.rast.x,
+										ri.geometric.rast.y,
+										f2, rs.bsdfPdf, kTechniqueBSDF );
+								}
+							}
+
+							Scalar w_bsdf;
+							if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+							{
+								const Scalar alpha = rc.pOptimalMIS->GetAlpha(
+									ri.geometric.rast.x, ri.geometric.rast.y );
+								w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, p_nee, alpha );
+							}
+							else
+							{
+								w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+							}
 							emissionMiWeight = w_bsdf;
 							emission = emission * w_bsdf;
 						}
@@ -850,6 +881,13 @@ void PathTracingShaderOp::PerformOperation(
 							rs2.translucentBounces  = nextTranslucentBounces;
 							rs2.glossyFilterWidth   = rs.glossyFilterWidth;
 
+							// Optimal MIS training: count BSSRDF continuation as BSDF attempt
+							if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 )
+							{
+								const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+									ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+							}
+
 							// Russian roulette on subsurface continuation
 							RISEPel throughput = bssrdfWeight;
 							bool skipContinuation = false;
@@ -869,6 +907,10 @@ void PathTracingShaderOp::PerformOperation(
 									throughput = throughput * (1.0 / rr.survivalProb);
 								}
 							}
+
+							// Set bsdfTimesCos after RR so the moment matches
+							// the RR-compensated estimator.
+							rs2.bsdfTimesCos = throughput * bssrdf.cosinePdf;
 
 							if( !skipContinuation )
 							{
@@ -997,6 +1039,13 @@ void PathTracingShaderOp::PerformOperation(
 							rs2.translucentBounces  = nextTranslucentBounces;
 							rs2.glossyFilterWidth   = rs.glossyFilterWidth;
 
+							// Optimal MIS training: count BSSRDF continuation as BSDF attempt
+							if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 )
+							{
+								const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+									ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+							}
+
 							// Russian roulette on subsurface continuation
 							RISEPel throughput = bssrdfWeight;
 							bool skipContinuation = false;
@@ -1016,6 +1065,10 @@ void PathTracingShaderOp::PerformOperation(
 									throughput = throughput * (1.0 / rr.survivalProb);
 								}
 							}
+
+							// Set bsdfTimesCos after RR so the moment matches
+							// the RR-compensated estimator.
+							rs2.bsdfTimesCos = throughput * bssrdf.cosinePdf;
 
 							if( !skipContinuation )
 							{
@@ -1260,6 +1313,15 @@ void PathTracingShaderOp::PerformOperation(
 				{
 					rs2.importance = rs.importance * scatmaxv;
 					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
+						scat.kray * scat.pdf;
+
+					// Optimal MIS training: count every non-delta BSDF scatter
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
+					{
+						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+							ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+					}
 
 					// Per-type bounce limits
 					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
@@ -1329,7 +1391,16 @@ void PathTracingShaderOp::PerformOperation(
 				{
 					rs2.importance = rs.importance * scatmaxv;
 					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
+						scat.kray * scat.pdf;
 					rs2.type = PathTracingRayType( scat );
+
+					// Optimal MIS training: count every non-delta BSDF scatter
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
+					{
+						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+							ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+					}
 
 					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
 						continue;
@@ -1566,6 +1637,14 @@ void PathTracingShaderOp::PerformOperation(
 
 				bool skipContinuation = ColorMath::MaxValue( throughput ) <= NEARZERO;
 
+				// Optimal MIS training: count every non-delta BSDF scatter
+				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
+					!pS->isDelta && !skipContinuation )
+				{
+					const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+						ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+				}
+
 				// Russian roulette: probabilistic path termination with
 				// throughput compensation to maintain unbiasedness.
 				// Branching paths are excluded (they explore all lobes by design).
@@ -1586,8 +1665,15 @@ void PathTracingShaderOp::PerformOperation(
 					}
 				}
 
+				// Compute BSDF*cos (RGB) AFTER Russian roulette so the
+				// moment matches the RR-compensated estimator the renderer
+				// actually uses.  throughput = BSDF*cos/pdf * (1/survivalProb).
+				const RISEPel bsdfTimesCosVal = pS->isDelta ? RISEPel( 0, 0, 0 ) :
+					throughput * effectiveBsdfPdf;
+
 				rs2.importance = rs.importance * ColorMath::MaxValue( throughput );
 				rs2.bsdfPdf = effectiveBsdfPdf;
+				rs2.bsdfTimesCos = bsdfTimesCosVal;
 				rs2.type = PathTracingRayType( *pS );
 
 				// Per-type bounce limits: propagate counters and
@@ -1744,7 +1830,34 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							}
 
 							const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
-							const Scalar w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+
+							// Optimal MIS training (spectral): use full integrand
+							// f = Le * BSDF * cos.  For NM, bsdfTimesCos has the
+							// scalar value replicated across channels.
+							if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+							{
+								const Scalar fVal = emission * rs.bsdfTimesCos.r;
+								const Scalar f2 = fVal * fVal;
+								if( f2 > 0 && rs.bsdfPdf > 0 )
+								{
+									const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
+										ri.geometric.rast.x,
+										ri.geometric.rast.y,
+										f2, rs.bsdfPdf, kTechniqueBSDF );
+								}
+							}
+
+							Scalar w_bsdf;
+							if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+							{
+								const Scalar alpha = rc.pOptimalMIS->GetAlpha(
+									ri.geometric.rast.x, ri.geometric.rast.y );
+								w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, p_nee, alpha );
+							}
+							else
+							{
+								w_bsdf = PowerHeuristic( rs.bsdfPdf, p_nee );
+							}
 							emission = emission * w_bsdf;
 						}
 					}
@@ -1833,6 +1946,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							rs2.translucentBounces  = nextTranslucentBounces;
 							rs2.glossyFilterWidth   = rs.glossyFilterWidth;
 
+							// Optimal MIS training: count BSSRDF continuation as BSDF attempt (spectral)
+							if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 )
+							{
+								const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+									ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+							}
+
 							Scalar throughputNM = bssrdfWeightNM;
 							bool skipContinuation = false;
 							{
@@ -1851,6 +1971,9 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 									throughputNM /= rr.survivalProb;
 								}
 							}
+
+							// Set bsdfTimesCos after RR (spectral BSSRDF continuation)
+							rs2.bsdfTimesCos = RISEPel( fabs( throughputNM ) * bssrdf.cosinePdf );
 
 							if( !skipContinuation )
 							{
@@ -1967,6 +2090,13 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 							rs2.translucentBounces  = nextTranslucentBounces;
 							rs2.glossyFilterWidth   = rs.glossyFilterWidth;
 
+							// Optimal MIS training: count BSSRDF continuation as BSDF attempt (spectral)
+							if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 )
+							{
+								const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+									ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+							}
+
 							Scalar throughputNM = bssrdfWeightNM;
 							bool skipContinuation = false;
 							{
@@ -1985,6 +2115,9 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 									throughputNM /= rr.survivalProb;
 								}
 							}
+
+							// Set bsdfTimesCos after RR (spectral BSSRDF continuation)
+							rs2.bsdfTimesCos = RISEPel( fabs( throughputNM ) * bssrdf.cosinePdf );
 
 							if( !skipContinuation )
 							{
@@ -2166,7 +2299,16 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					{
 						rs2.importance = rs.importance * scat.krayNM;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
+							RISEPel( fabs( scat.krayNM ) * scat.pdf );
 						rs2.type = PathTracingRayType( scat );
+
+					// Optimal MIS training: count every non-delta BSDF scatter (spectral)
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
+					{
+						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+							ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+					}
 
 					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
 						continue;
@@ -2203,7 +2345,16 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 				{
 					rs2.importance = rs.importance * scat.krayNM;
 					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
+						RISEPel( fabs( scat.krayNM ) * scat.pdf );
 					rs2.type = PathTracingRayType( scat );
+
+					// Optimal MIS training: count every non-delta BSDF scatter (spectral multi)
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
+					{
+						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+							ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+					}
 
 					if( PropagateBounceLimits( rs, rs2, scat, rc.pStabilityConfig ) ) {
 						continue;
@@ -2416,6 +2567,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 
 				// Russian roulette (spectral path)
 				bool skipContinuationNM = fabs( throughputNM ) <= NEARZERO;
+
+				// Optimal MIS training: count every non-delta BSDF scatter (spectral)
+				if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
+					!pS->isDelta && !skipContinuationNM )
+				{
+					const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
+						ri.geometric.rast.x, ri.geometric.rast.y, kTechniqueBSDF );
+				}
+
 				if( !skipContinuationNM )
 				{
 					const unsigned int rrMinDepth = rc.pStabilityConfig ? rc.pStabilityConfig->rrMinDepth : PT_RR_MIN_DEPTH;
@@ -2433,8 +2593,14 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 					}
 				}
 
+				// Compute BSDF*cos AFTER Russian roulette so the moment
+				// matches the RR-compensated estimator.
+				const Scalar bsdfTimesCosNM = pS->isDelta ? 0 :
+					fabs( throughputNM ) * effectiveBsdfPdf;
+
 				rs2.importance = rs.importance * fabs( throughputNM );
 				rs2.bsdfPdf = effectiveBsdfPdf;
+				rs2.bsdfTimesCos = RISEPel( bsdfTimesCosNM );
 				rs2.type = PathTracingRayType( *pS );
 
 				// Per-type bounce limits

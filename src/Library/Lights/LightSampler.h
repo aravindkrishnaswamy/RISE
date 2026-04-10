@@ -97,6 +97,8 @@ namespace RISE
 	class IMaterial;
 	class ILightPriv;
 
+	namespace Implementation { class OptimalMISAccumulator; }
+
 	namespace Implementation
 	{
 		/// Describes a sampled emission event from a light or mesh luminary
@@ -158,8 +160,22 @@ namespace RISE
 			const EnvironmentSampler*	pEnvSampler;
 			const IRadianceMap*			pEnvironmentMap;
 
+			/// Optimal MIS accumulator — set by the rasterizer before
+			/// rendering.  When non-null and solved, EvaluateDirectLighting
+			/// uses OptimalMIS2Weight instead of PowerHeuristic.
+			/// Lifetime managed by the rasterizer, not owned by LightSampler.
+			mutable const OptimalMISAccumulator*	pOptimalMIS;
+
 		public:
 			LightSampler();
+
+			/// Sets the optimal MIS accumulator for direct lighting.
+			/// The accumulator must outlive the LightSampler's use of it.
+			/// Pass NULL to disable optimal MIS and revert to PowerHeuristic.
+			void SetOptimalMIS( const OptimalMISAccumulator* pAccum ) const
+			{
+				pOptimalMIS = pAccum;
+			}
 
 			/// Cache the scene and luminaries list for subsequent queries.
 			/// Builds the alias table for O(1) light selection.

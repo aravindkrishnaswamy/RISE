@@ -24,6 +24,8 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/PathTransportUtilities.h"
+#include "../Utilities/OptimalMISAccumulator.h"
+#include "../Utilities/MISWeights.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -440,7 +442,8 @@ LightSampler::LightSampler() :
   pLightBVH( 0 ),
   bUseLightBVH( false ),
   pEnvSampler( 0 ),
-  pEnvironmentMap( 0 )
+  pEnvironmentMap( 0 ),
+  pOptimalMIS( 0 )
 {
 }
 
@@ -1195,6 +1198,15 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				Vector3Ops::Dot( vToLight, ri.vNormal );
 			const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
+			// Optimal MIS training: count every NEE attempt including
+			// geometry-rejected samples (back-face, below hemisphere).
+			// These are valid zero-valued draws for the denominator.
+			if( pOptimalMIS && !pOptimalMIS->IsReady() )
+			{
+				const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+					ri.rast.x, ri.rast.y, kTechniqueNEE );
+			}
+
 			if( cosLight > 0 && (isVolumeScatter || cosSurface > 0) )
 			{
 				// Light-sample Russian roulette: estimate the geometric
@@ -1263,9 +1275,36 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 						const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
 
+						// Optimal MIS training: accumulate second moment
+						// for a successful NEE hit.  contrib includes the
+						// geometry factor (area*cosLight/dist^2), so the
+						// matching pdf is pdfAlias (area measure), not
+						// p_light (solid angle).  This ensures
+						// f2/pdf^2 = (contrib/pdfAlias)^2 = (f/p_nee)^2.
+						if( pOptimalMIS && !pOptimalMIS->IsReady() )
+						{
+							const Scalar lum = ColorMath::MaxValue( contrib );
+							const Scalar f2 = lum * lum;
+							if( f2 > 0 && pdfAlias > 0 )
+							{
+								const_cast<OptimalMISAccumulator*>(pOptimalMIS)->Accumulate(
+									ri.rast.x, ri.rast.y,
+									f2, pdfAlias, kTechniqueNEE );
+							}
+						}
+
 						if( p_bsdf > 0 )
 						{
-							const Scalar w = PowerHeuristic( p_light, p_bsdf );
+							Scalar w;
+							if( pOptimalMIS && pOptimalMIS->IsReady() )
+							{
+								const Scalar alpha = pOptimalMIS->GetAlpha( ri.rast.x, ri.rast.y );
+								w = MISWeights::OptimalMIS2Weight( p_light, p_bsdf, 1.0 - alpha );
+							}
+							else
+							{
+								w = PowerHeuristic( p_light, p_bsdf );
+							}
 							contrib = contrib * w;
 						}
 					}
@@ -1288,6 +1327,16 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 		const Scalar cosEnv = isVolumeScatter ? Scalar(1.0) :
 			Vector3Ops::Dot( envDir, ri.vNormal );
+
+		// Optimal MIS training: count every env NEE attempt that produced
+		// a valid sample (envPdf > 0), including below-hemisphere samples
+		// which are zero-valued draws for the denominator.
+		if( envPdf > 0 && pOptimalMIS && !pOptimalMIS->IsReady() )
+		{
+			const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+				ri.rast.x, ri.rast.y, kTechniqueNEE );
+		}
+
 		if( (isVolumeScatter || cosEnv > 0) && envPdf > 0 )
 		{
 			// Shadow test: cast ray to infinity
@@ -1314,13 +1363,38 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					envContrib = envContrib * Tr;
 				}
 
-				// MIS: power heuristic against BSDF PDF
+				// Optimal MIS training: accumulate second moment for
+				// successful env NEE hit.  envContrib = Le*BSDF*cos*Tr/envPdf,
+				// so the full integrand f = envContrib * envPdf.
+				if( pOptimalMIS && !pOptimalMIS->IsReady() && pMaterial )
+				{
+					const RISEPel fullIntegrand = envContrib * envPdf;
+					const Scalar lum = ColorMath::MaxValue( fullIntegrand );
+					const Scalar f2 = lum * lum;
+					if( f2 > 0 && envPdf > 0 )
+					{
+						const_cast<OptimalMISAccumulator*>(pOptimalMIS)->Accumulate(
+							ri.rast.x, ri.rast.y,
+							f2, envPdf, kTechniqueNEE );
+					}
+				}
+
+				// MIS: power heuristic (or optimal MIS) against BSDF PDF
 				if( pMaterial )
 				{
 					const Scalar pBsdf = pMaterial->Pdf( envDir, ri, 0 );
 					if( pBsdf > 0 )
 					{
-						const Scalar w = PowerHeuristic( envPdf, pBsdf );
+						Scalar w;
+						if( pOptimalMIS && pOptimalMIS->IsReady() )
+						{
+							const Scalar alpha = pOptimalMIS->GetAlpha( ri.rast.x, ri.rast.y );
+							w = MISWeights::OptimalMIS2Weight( envPdf, pBsdf, 1.0 - alpha );
+						}
+						else
+						{
+							w = PowerHeuristic( envPdf, pBsdf );
+						}
 						envContrib = envContrib * w;
 					}
 				}
@@ -1503,6 +1577,15 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			Vector3Ops::Dot( vToLight, ri.vNormal );
 		const Scalar cosLight = Vector3Ops::Dot( -vToLight, lumNormal );
 
+		// Optimal MIS training: count every spectral NEE attempt
+		// including geometry-rejected samples (back-face, below
+		// hemisphere) — valid zero-valued draws for the denominator.
+		if( pOptimalMIS && !pOptimalMIS->IsReady() )
+		{
+			const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+				ri.rast.x, ri.rast.y, kTechniqueNEE );
+		}
+
 		if( cosLight <= 0 || (!isVolumeScatter && cosSurface <= 0) )
 		{
 			break;
@@ -1559,9 +1642,32 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
 			const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
 
+			// Optimal MIS training (spectral NEE): contrib includes
+			// the geometry factor, so use pdfAlias (area measure)
+			// to match.  f2/pdfAlias^2 = (contrib/pdfAlias)^2.
+			if( pOptimalMIS && !pOptimalMIS->IsReady() )
+			{
+				const Scalar f2 = contrib * contrib;
+				if( f2 > 0 && pdfAlias > 0 )
+				{
+					const_cast<OptimalMISAccumulator*>(pOptimalMIS)->Accumulate(
+						ri.rast.x, ri.rast.y,
+						f2, pdfAlias, kTechniqueNEE );
+				}
+			}
+
 			if( p_bsdf > 0 )
 			{
-				const Scalar w = PowerHeuristic( p_light, p_bsdf );
+				Scalar w;
+				if( pOptimalMIS && pOptimalMIS->IsReady() )
+				{
+					const Scalar alpha = pOptimalMIS->GetAlpha( ri.rast.x, ri.rast.y );
+					w = MISWeights::OptimalMIS2Weight( p_light, p_bsdf, 1.0 - alpha );
+				}
+				else
+				{
+					w = PowerHeuristic( p_light, p_bsdf );
+				}
 				contrib = contrib * w;
 			}
 		}
@@ -1578,6 +1684,16 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		const Scalar cosEnv = isVolumeScatter ? Scalar(1.0) :
 			Vector3Ops::Dot( envDir, ri.vNormal );
+
+		// Optimal MIS training: count every spectral env NEE attempt that
+		// produced a valid sample (envPdf > 0), including below-hemisphere
+		// samples which are zero-valued draws for the denominator.
+		if( envPdf > 0 && pOptimalMIS && !pOptimalMIS->IsReady() )
+		{
+			const_cast<OptimalMISAccumulator*>(pOptimalMIS)->AccumulateCount(
+				ri.rast.x, ri.rast.y, kTechniqueNEE );
+		}
+
 		if( (isVolumeScatter || cosEnv > 0) && envPdf > 0 )
 		{
 			bool envShadowed = false;
@@ -1600,12 +1716,36 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 					envContrib *= EvalShadowTransmittanceNM( envRay, RISE_INFINITY, pMedium, pMediumObject, pPreparedScene, bSceneHasObjectMedia, nm );
 				}
 
+				// Optimal MIS training (spectral env NEE): use full
+				// integrand.  envContrib = Le*BSDF*cos*Tr/envPdf,
+				// so fullIntegrand = envContrib * envPdf.
+				if( pOptimalMIS && !pOptimalMIS->IsReady() && pMaterial )
+				{
+					const Scalar fullIntegrand = envContrib * envPdf;
+					const Scalar f2 = fullIntegrand * fullIntegrand;
+					if( f2 > 0 && envPdf > 0 )
+					{
+						const_cast<OptimalMISAccumulator*>(pOptimalMIS)->Accumulate(
+							ri.rast.x, ri.rast.y,
+							f2, envPdf, kTechniqueNEE );
+					}
+				}
+
 				if( pMaterial )
 				{
 					const Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, 0 );
 					if( pBsdf > 0 )
 					{
-						const Scalar w = PowerHeuristic( envPdf, pBsdf );
+						Scalar w;
+						if( pOptimalMIS && pOptimalMIS->IsReady() )
+						{
+							const Scalar alpha = pOptimalMIS->GetAlpha( ri.rast.x, ri.rast.y );
+							w = MISWeights::OptimalMIS2Weight( envPdf, pBsdf, 1.0 - alpha );
+						}
+						else
+						{
+							w = PowerHeuristic( envPdf, pBsdf );
+						}
 						envContrib = envContrib * w;
 					}
 				}

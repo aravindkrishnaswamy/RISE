@@ -5334,6 +5334,12 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "optimal_mis" ) {
+							stabilityConfig.optimalMIS = pvalue.toBoolean();
+						} else if( pname == "optimal_mis_training_iterations" ) {
+							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
+						} else if( pname == "optimal_mis_tile_size" ) {
+							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5961,6 +5967,12 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "optimal_mis" ) {
+							stabilityConfig.optimalMIS = pvalue.toBoolean();
+						} else if( pname == "optimal_mis_training_iterations" ) {
+							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
+						} else if( pname == "optimal_mis_tile_size" ) {
+							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6135,6 +6147,12 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "optimal_mis" ) {
+							stabilityConfig.optimalMIS = pvalue.toBoolean();
+						} else if( pname == "optimal_mis_training_iterations" ) {
+							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
+						} else if( pname == "optimal_mis_tile_size" ) {
+							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;

@@ -56,6 +56,7 @@ namespace RISE
 			bool considerEmission;				///< Should shader consider direct emission
 			RayType type;						///< The type of ray
 			Scalar bsdfPdf;						///< BSDF sampling PDF for MIS weighting (0 = not set / delta)
+			RISEPel bsdfTimesCos;				///< BSDF * cos at scatter point (RGB), for optimal MIS full-integrand training
 
 			// Per-type bounce counters for StabilityConfig bounce limits
 			unsigned int diffuseBounces;		///< Accumulated diffuse bounces

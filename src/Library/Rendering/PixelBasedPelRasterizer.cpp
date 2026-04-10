@@ -17,13 +17,12 @@
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
+#include "../Utilities/OptimalMISAccumulator.h"
 #include "../Sampling/SobolSequence.h"
+#include "../Lights/LightSampler.h"
 #include "BlockRasterizeSequence.h"
 #include "../RasterImages/RasterImage.h"
-
-#ifdef RISE_ENABLE_OPENPGL
 #include "../RISE_API.h"
-#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -107,6 +106,7 @@ PixelBasedPelRasterizer::PixelBasedPelRasterizer(
   pGuidingField( 0 ),
   guidingAlphaScale( 1.0 ),
 #endif
+  pOptimalMISAccumulator( 0 ),
   guidingConfig( guidingCfg ),
   adaptiveConfig( adaptiveCfg ),
   stabilityConfig( stabilityCfg )
@@ -119,11 +119,13 @@ PixelBasedPelRasterizer::~PixelBasedPelRasterizer( )
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
 #endif
+	safe_release( pOptimalMISAccumulator );
 }
 
 void PixelBasedPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
 	rc.pStabilityConfig = &stabilityConfig;
+	rc.pOptimalMIS = pOptimalMISAccumulator;
 #ifdef RISE_ENABLE_OPENPGL
 	if( pGuidingField ) {
 		rc.pGuidingField = pGuidingField;
@@ -359,6 +361,102 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			"PathGuidingField:: Training phase complete" );
 	}
 #endif
+
+	//
+	// OPTIMAL MIS TRAINING (Kondapaneni et al. 2019)
+	//
+	// When enabled, run low-SPP training iterations to estimate
+	// second-moment statistics for NEE and BSDF sampling techniques.
+	// The PathTracingShaderOp accumulates f^2/p_nee and f^2/p_bsdf
+	// into the accumulator via RuntimeContext::pOptimalMIS during
+	// training (when the accumulator is not yet solved).
+	// After training, Solve() computes per-tile optimal alpha and
+	// all subsequent rendering uses variance-minimizing MIS weights.
+	//
+	safe_release( pOptimalMISAccumulator );
+
+	if( stabilityConfig.optimalMIS )
+	{
+		const unsigned int width = pScene.GetCamera()->GetWidth();
+		const unsigned int height = pScene.GetCamera()->GetHeight();
+
+		OptimalMISAccumulator::Config accConfig;
+		accConfig.tileSize = stabilityConfig.optimalMISTileSize;
+		accConfig.minSamplesPerTile = 32;
+		accConfig.alphaClampMin = 0.05;
+		accConfig.alphaClampMax = 0.95;
+
+		pOptimalMISAccumulator = new OptimalMISAccumulator();
+		pOptimalMISAccumulator->addref();
+		pOptimalMISAccumulator->Initialize( width, height, accConfig );
+
+		// Make the unsolved accumulator visible to the shading pipeline
+		// so that PathTracingShaderOp can accumulate second-moment data
+		// during the training render passes.
+		const LightSampler* pLS = pCaster->GetLightSampler();
+		if( pLS ) {
+			pLS->SetOptimalMIS( pOptimalMISAccumulator );
+		}
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"OptimalMIS:: Starting training (%u iterations, tile size %u)",
+			stabilityConfig.optimalMISTrainingIterations,
+			stabilityConfig.optimalMISTileSize );
+
+		// Reset once before training — accumulate across all iterations
+		// so that every pass adds to the statistics.
+		pOptimalMISAccumulator->Reset();
+
+		for( unsigned int trainIter = 0;
+			 trainIter < stabilityConfig.optimalMISTrainingIterations;
+			 trainIter++ )
+		{
+
+			// Use 1 SPP for training — enough to populate tiles
+			ISampling2D* pTrainSampling = 0;
+			RISE_API_CreateUniformSampling2D( &pTrainSampling, 1.0, 1.0 );
+			if( pTrainSampling ) {
+				pTrainSampling->SetNumSamples( 1 );
+			}
+
+			ISampling2D* pSavedSampling = pSampling;
+			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pTrainSampling;
+
+			IRasterImage* pTrainImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+
+			if( pProgressFunc ) {
+				char title[128];
+				snprintf( title, sizeof(title), "Optimal MIS Training [%u/%u]: ",
+					trainIter+1, stabilityConfig.optimalMISTrainingIterations );
+				pProgressFunc->SetTitle( title );
+			}
+
+			{
+				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
+				pTrainBlocks->addref();
+				RasterizeBlocksForPass(
+					RuntimeContext::PASS_NORMAL,
+					pScene,
+					*pTrainImage,
+					pRect,
+					*pTrainBlocks );
+				safe_release( pTrainBlocks );
+			}
+
+			const_cast<PixelBasedPelRasterizer*>(this)->pSampling = pSavedSampling;
+			safe_release( pTrainSampling );
+			safe_release( pTrainImage );
+		}
+
+		pOptimalMISAccumulator->Solve();
+
+		if( pProgressFunc ) {
+			pProgressFunc->SetTitle( "Rasterizing Scene: " );
+		}
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"OptimalMIS:: Training complete, accumulator solved" );
+	}
 }
 
 void PixelBasedPelRasterizer::PostRenderCleanup() const
@@ -366,6 +464,15 @@ void PixelBasedPelRasterizer::PostRenderCleanup() const
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
 #endif
+
+	// Clear the optimal MIS accumulator from the light sampler
+	if( pOptimalMISAccumulator ) {
+		const LightSampler* pLS = pCaster->GetLightSampler();
+		if( pLS ) {
+			pLS->SetOptimalMIS( 0 );
+		}
+		safe_release( pOptimalMISAccumulator );
+	}
 }
 
 void PixelBasedPelRasterizer::IntegratePixel(

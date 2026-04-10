@@ -23,6 +23,8 @@
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/PathTransportUtilities.h"
 #include "../Utilities/EquiangularSampler.h"
+#include "../Utilities/OptimalMISAccumulator.h"
+#include "../Utilities/MISWeights.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -773,8 +775,31 @@ bool RayCaster::CastRay(
 				const Scalar envPdf = pES->Pdf( ray.Dir() );
 				if( envPdf > 0 )
 				{
-					const Scalar bsdfPdf2 = rs.bsdfPdf * rs.bsdfPdf;
-					const Scalar w_bsdf = bsdfPdf2 / (bsdfPdf2 + envPdf * envPdf);
+					// Optimal MIS training: use full integrand Le * BSDF * cos.
+					// bsdfTimesCos carries RGB BSDF*cos from the scatter site;
+					// component-wise multiply with Le then scalarize.
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+					{
+						const Scalar fLum = ColorMath::MaxValue( c * rs.bsdfTimesCos );
+						const Scalar f2 = fLum * fLum;
+						if( f2 > 0 && rs.bsdfPdf > 0 )
+						{
+							const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
+								rast.x, rast.y,
+								f2, rs.bsdfPdf, kTechniqueBSDF );
+						}
+					}
+
+					Scalar w_bsdf;
+					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+					{
+						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
+					}
+					else
+					{
+						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
+					}
 					c = c * w_bsdf;
 				}
 			}
@@ -1273,7 +1298,7 @@ bool RayCaster::CastRayNM(
 	} else if( pScene->GetGlobalRadianceMap() ) {
 		c = pScene->GetGlobalRadianceMap()->GetRadianceNM( ray, rast, nm );
 
-		// Apply MIS weight for BSDF-sampled environment hit vs env NEE
+		// Apply MIS weight for BSDF-sampled environment hit vs env NEE (spectral)
 		if( pLightSampler && rs.bsdfPdf > 0 )
 		{
 			const EnvironmentSampler* pES = pLightSampler->GetEnvironmentSampler();
@@ -1282,8 +1307,31 @@ bool RayCaster::CastRayNM(
 				const Scalar envPdf = pES->Pdf( ray.Dir() );
 				if( envPdf > 0 )
 				{
-					const Scalar bsdfPdf2 = rs.bsdfPdf * rs.bsdfPdf;
-					const Scalar w_bsdf = bsdfPdf2 / (bsdfPdf2 + envPdf * envPdf);
+					// Optimal MIS training (spectral env BSDF-hit): use
+					// full integrand Le * BSDF * cos.  For NM, all channels
+					// of bsdfTimesCos carry the same scalar value.
+					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
+					{
+						const Scalar fVal = c * rs.bsdfTimesCos.r;
+						const Scalar f2 = fVal * fVal;
+						if( f2 > 0 && rs.bsdfPdf > 0 )
+						{
+							const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
+								rast.x, rast.y,
+								f2, rs.bsdfPdf, kTechniqueBSDF );
+						}
+					}
+
+					Scalar w_bsdf;
+					if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
+					{
+						const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
+						w_bsdf = MISWeights::OptimalMIS2Weight( rs.bsdfPdf, envPdf, alpha );
+					}
+					else
+					{
+						w_bsdf = PathTransportUtilities::PowerHeuristic( rs.bsdfPdf, envPdf );
+					}
 					c = c * w_bsdf;
 				}
 			}

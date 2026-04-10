@@ -77,6 +77,18 @@ When in doubt, read the registration block in [AsciiSceneParser.cpp](AsciiSceneP
 - Parser support is split between top-level syntax handling and per-chunk parsers. A feature may require changes in both places.
 - Scene chunk bodies are assembled as strings after token substitution and expression evaluation. If a parameter seems to disappear, inspect macro substitution and token reassembly first.
 
+## MIS Weight Parameters (Rasterizer Blocks)
+
+The following parameters control advanced MIS weight computation in the `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, and `mlt_rasterizer` blocks. All are disabled by default and fall back to the standard power heuristic.
+
+| Parameter | Rasterizers | Type | Default | Description |
+|-----------|-------------|------|---------|-------------|
+| `optimal_mis` | PT, BDPT | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
+| `optimal_mis_training_iterations` | PT, BDPT | uint | 4 | Number of 1-SPP training passes |
+| `optimal_mis_tile_size` | PT, BDPT | uint | 16 | Spatial tile size for second-moment binning |
+
+See `docs/IMPROVEMENTS.md` item 8 for algorithmic details.
+
 ## Good Cross-References
 
 - High-level assembly target: [../Job.cpp](../Job.cpp)

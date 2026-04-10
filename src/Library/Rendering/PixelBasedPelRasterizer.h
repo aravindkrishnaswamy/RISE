@@ -27,6 +27,7 @@
 #ifdef RISE_ENABLE_OPENPGL
 namespace RISE { namespace Implementation { class PathGuidingField; } }
 #endif
+namespace RISE { namespace Implementation { class OptimalMISAccumulator; } }
 
 namespace RISE
 {
@@ -63,6 +64,7 @@ namespace RISE
 			mutable PathGuidingField*	pGuidingField;
 			mutable Scalar				guidingAlphaScale;
 #endif
+			mutable OptimalMISAccumulator*	pOptimalMISAccumulator;
 			PathGuidingConfig			guidingConfig;
 			AdaptiveSamplingConfig		adaptiveConfig;
 			StabilityConfig				stabilityConfig;

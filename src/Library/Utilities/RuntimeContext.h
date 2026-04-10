@@ -25,6 +25,8 @@
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
 
+namespace RISE { namespace Implementation { class OptimalMISAccumulator; } }
+
 #ifdef RISE_ENABLE_OPENPGL
 #include "PathGuidingField.h"
 namespace RISE { namespace Implementation { class PathGuidingField; } }
@@ -59,6 +61,13 @@ namespace RISE
 		/// rendering.  NULL when no stability config is provided.
 		const StabilityConfig*									pStabilityConfig;
 
+		/// Optimal MIS accumulator for variance-minimizing weights in
+		/// PT direct illumination.  Non-null during training iterations
+		/// (accumulating second-moment statistics) and during rendering
+		/// (providing solved alpha values).  NULL when optimal MIS is
+		/// disabled.  Lifetime managed by the rasterizer.
+		const Implementation::OptimalMISAccumulator*			pOptimalMIS;
+
 #ifdef RISE_ENABLE_OPENPGL
 		/// Path guiding field for guided directional sampling.
 		/// Set by the rasterizer before rendering.  NULL when guiding
@@ -82,7 +91,8 @@ namespace RISE
 		  pass( pass_ ),
 		  bThreaded( bThreaded_ ),
 		  pSampler( 0 ),
-		  pStabilityConfig( 0 )
+		  pStabilityConfig( 0 ),
+		  pOptimalMIS( 0 )
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )

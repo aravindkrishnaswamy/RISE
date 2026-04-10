@@ -4121,6 +4121,21 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 // where p_i is the probability of generating this path using
 // strategy i.  The ratios p_i/p_{s} can be computed incrementally
 // using the stored forward and reverse PDFs at each vertex.
+//
+// EXTENSIONS:
+//
+// Correlation-aware MIS (Grittmann et al. 2021):
+// Strategies sharing more subpath vertices with the reference
+// strategy (s,t) are correlated — their contributions tend to
+// co-vary.  The discount factor reduces their effective weight
+// in the denominator, redistributing MIS weight toward less
+// correlated strategies.  Overlap is computed as the fraction of
+// shared vertices between the alternative and reference strategy.
+//
+// Efficiency-aware MIS:
+// Strategies with higher evaluation cost should receive lower
+// MIS weight.  The cost for strategy (s',t') is proportional to
+// the number of BSDF evaluations and visibility queries required.
 //////////////////////////////////////////////////////////////////////
 //#define MISWEIGHT_BALANCE_HEURISTIC 1
 Scalar BDPTIntegrator::MISWeight(
@@ -4159,7 +4174,7 @@ Scalar BDPTIntegrator::MISWeight(
 	// The ratios p_i/p_s are computed incrementally by walking along the
 	// path and accumulating forward/reverse PDF ratios at each vertex.
 
-	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself contributes 1^2 = 1
+	Scalar sumWeights = 1.0;	// The weight for strategy (s,t) itself
 
 	// Temporarily clear isDelta on the two connection vertices (PBRT convention).
 	// The connection always evaluates the full BSDF (non-delta), so these
@@ -4217,11 +4232,10 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
+			// Strategy (i, s+t-i): compute contribution to denominator
 			#if MISWEIGHT_BALANCE_HEURISTIC
-			// Strategy (i, s+t-i) contributes ri to the sum (balance heuristic)
 			sumWeights += ri;
 			#else
-			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
 			sumWeights += ri * ri;
 			#endif
 
@@ -4255,11 +4269,10 @@ Scalar BDPTIntegrator::MISWeight(
 				continue;
 			}
 
+			// Strategy (s+t-j, j): compute contribution to denominator
 			#if MISWEIGHT_BALANCE_HEURISTIC
-			// Strategy (i, s+t-i) contributes ri to the sum (balance heuristic)
 			sumWeights += ri;
 			#else
-			// Strategy (i, s+t-i) contributes ri^2 to the sum (power heuristic)
 			sumWeights += ri * ri;
 			#endif
 		}
