@@ -231,8 +231,6 @@ SRCLIBCAMERA =\
 SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
 	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
-	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizerAdaptiveSampling.cpp		\
-	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizerContrastAA.cpp			\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedSpectralIntegratingRasterizer.cpp		\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\

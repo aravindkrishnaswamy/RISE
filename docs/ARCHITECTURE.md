@@ -67,7 +67,7 @@ These use `mutable PointSetMap pointsets` guarded by a mutex with double-checked
 
 ### Animation / Temporal Sampling (pre-existing data race)
 
-`IAnimator::EvaluateAtTime()` mutates keyframed scene elements (camera transform, object transforms, painter values) through stored pointers. During temporal sampling with motion blur, rasterizers call `EvaluateAtTime()` per-sample from multiple threads (`PixelBasedPelRasterizer`, `BDPTPelRasterizer`, `PixelBasedPelRasterizerAdaptiveSampling`, etc.). This is a **pre-existing data race** that predates the immutability work.
+`IAnimator::EvaluateAtTime()` mutates keyframed scene elements (camera transform, object transforms, painter values) through stored pointers. During temporal sampling with motion blur, rasterizers call `EvaluateAtTime()` per-sample from multiple threads (`PixelBasedPelRasterizer`, `BDPTPelRasterizer`, etc.). This is a **pre-existing data race** that predates the immutability work.
 
 `IScene::GetAnimator()` intentionally returns non-const `IAnimator*` to make this mutation visible rather than hiding it behind `const`. A proper fix would require per-thread interpolated state snapshots, which is a significant architectural change.
 

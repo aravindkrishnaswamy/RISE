@@ -51,8 +51,8 @@ standard_shader
 pixelintegratingspectral_rasterizer
 {
 	max_recursion		10
-#	samples				4000
-	samples				1000
+	samples				2048
+#	samples				1024
 	nmbegin				380
 	nmend				720
 	num_wavelengths		8
@@ -99,8 +99,8 @@ pinhole_camera
 	location			-6 -1.5 12.0
 	lookat				-6 -1.5 0
 	up					0 1 0
-	width				200
-	height				200
+	width				500
+	height				500
 	fov					30.0
 }
 

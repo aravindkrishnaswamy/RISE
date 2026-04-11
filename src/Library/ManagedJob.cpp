@@ -263,64 +263,6 @@ namespace RISE
 			return bRet;
 		}
 
-		//! Sets the rasterizer type to be adaptive pixel based PEL
-		bool SetAdaptivePixelBasedPelRasterizer( 
-			const unsigned int numMinPixelSamples,					///< [in] Minimum or base number of samples to start with
-			const unsigned int numMaxPixelSamples,					///< [in] Maximum number of samples to go to
-			const unsigned int numSteps,							///< [in] Number of steps to maximum sampling level
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const double threshold,									///< [in] Threshold at which to stop sampling further
-			const bool bOutputSamples,								///< [in] Should the renderer show how many samples rather than an image
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			System::String& shader,											///< [in] The default shader
-			System::String& globalRadianceMap,								///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient __gc[],								///< [in] Euler angles for orienting the radiance map
-			System::String& pixelSampler,									///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			System::String& luminarySampler,								///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			System::String& pixelFilter,									///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
-			const bool bShowLuminaires,								///< [in] Should luminaires be shown?
-			const bool bUseIORStack,								///< [in] Should the index of refraction stack be used?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			)
-		{
-			IntPtr intptr = Marshal::StringToHGlobalAnsi(&shader);
-			const char* szshader = (const char*)(intptr).ToPointer();
-
-			IntPtr intptr2 = Marshal::StringToHGlobalAnsi(&globalRadianceMap);
-			const char* szglobalradiancemap = (const char*)(intptr2).ToPointer();
-
-			IntPtr intptr3 = Marshal::StringToHGlobalAnsi(&pixelSampler);
-			const char* szpixelsampler = (const char*)(intptr3).ToPointer();
-
-			IntPtr intptr4 = Marshal::StringToHGlobalAnsi(&luminarySampler);
-			const char* szluminarysampler = (const char*)(intptr4).ToPointer();
-
-			IntPtr intptr5 = Marshal::StringToHGlobalAnsi(&pixelFilter);
-			const char* szpixelfilter = (const char*)(intptr5).ToPointer();
-
-			const double __pin* orient_ = &orient[0];
-
-			bool bRet = pBackObj->SetAdaptivePixelBasedPelRasterizer(
-				numMinPixelSamples, numMaxPixelSamples, numSteps, numLumSamples, threshold, bOutputSamples, maxRecur, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
-
-			Marshal::FreeCoTaskMem( intptr );
-			Marshal::FreeCoTaskMem( intptr2 );
-			Marshal::FreeCoTaskMem( intptr3 );
-			Marshal::FreeCoTaskMem( intptr4 );
-			Marshal::FreeCoTaskMem( intptr5 );
-
-			return bRet;
-		}
-
-
 		//
 		// Adds rasterizer outputs
 		//

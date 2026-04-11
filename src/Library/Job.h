@@ -1422,63 +1422,6 @@ namespace RISE
 			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 			);
 
-		//! Sets the rasterizer type to be adaptive pixel based PEL
-		bool SetAdaptivePixelBasedPelRasterizer(
-			const unsigned int numMinPixelSamples,					///< [in] Minimum or base number of samples to start with
-			const unsigned int numMaxPixelSamples,					///< [in] Maximum number of samples to go to
-			const unsigned int numSteps,							///< [in] Number of steps to maximum sampling level
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const double threshold,									///< [in] Threshold at which to stop sampling further
-			const bool bOutputSamples,								///< [in] Should the renderer show how many samples rather than an image
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
-			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
-			);
-
-		//! Sets the rasterizer type to be contrast AA pixel pel
-		bool SetContrastAAPixelBasedPelRasterizer(
-			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
-			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double contrast_threshold[3],						///< [in] Contrast threshold for each color component
-			const bool show_samples,								///< [in] Should the number of samples be taken be shown?
-			const bool oidnDenoise									///< [in] Enable OIDN denoising post-process
-			);
-
-
 		//! Sets the rasterizer type to be Pel (RGB) BDPT
 		bool SetBDPTPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel

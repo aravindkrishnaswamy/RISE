@@ -4275,8 +4275,6 @@ namespace RISE
 
 #include "Rendering/PixelBasedPelRasterizer.h"
 #include "Rendering/PixelBasedSpectralIntegratingRasterizer.h"
-#include "Rendering/PixelBasedPelRasterizerAdaptiveSampling.h"
-#include "Rendering/PixelBasedPelRasterizerContrastAA.h"
 
 namespace RISE
 {
@@ -4362,81 +4360,6 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates an adaptive sampling pixel based rasterizer
-	/// \return TRUE if successful, FALSE otherwise
-	/// \todo Needs to be rewritten to stop based on variance differences rather than a threshold, since variance threshold is not *that* useful
-	bool RISE_API_CreateAdaptiveSamplingPixelBasedPelRasterizer(
-								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
-								IRayCaster* caster,					///< [in] Ray caster to use for rays
-								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
-								unsigned int maxS,					///< [in] Maximum number of samples to take
-								Scalar var,							///< [in] Variance threshold
-								unsigned int numsteps,				///< [in] Number of steps to take from base sampling to max samples
-								bool bOutputSamples,				///< [in] Should the renderer show how many samples rather than an image
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		PixelBasedPelRasterizerAdaptiveSampling* pRasterizer = new PixelBasedPelRasterizerAdaptiveSampling( maxS, var, numsteps, caster, bOutputSamples );
-
-#ifdef RISE_ENABLE_OIDN
-		pRasterizer->SetDenoisingEnabled( oidnDenoise );
-#else
-		if( oidnDenoise ) {
-			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
-		}
-#endif
-
-		if( pSamples && pFilter ) {
-			pRasterizer->SubSampleRays( pSamples, pFilter );
-		}
-
-		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pixel rasterizer adaptive" );
-
-		return true;
-	}
-
-	//! Creates a pixel based pel rasterizer that does adaptive sampling based on
-	//! contrast differences in regions
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreatePixelBasedPelRasterizerContrastAA(
-								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
-								IRayCaster* caster,					///< [in] Ray caster to use for rays
-								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
-								const RISEPel& contrast_threshold,	///< [in] Contrast threhold for each color component
-								const bool bShowSamples,			///< [in] Show the regions in which more samples were taken
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		PixelBasedPelRasterizerContrastAA* pRasterizer = new PixelBasedPelRasterizerContrastAA( caster, contrast_threshold, bShowSamples );
-
-#ifdef RISE_ENABLE_OIDN
-		pRasterizer->SetDenoisingEnabled( oidnDenoise );
-#else
-		if( oidnDenoise ) {
-			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
-		}
-#endif
-
-		if( pSamples && pFilter ) {
-			pRasterizer->SubSampleRays( pSamples, pFilter );
-		}
-
-		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pixel rasterizer contrast AA" );
-
-		return true;
-	}
 }
 
 #include "Rendering/BDPTPelRasterizer.h"

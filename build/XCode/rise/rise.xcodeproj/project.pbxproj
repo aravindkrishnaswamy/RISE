@@ -472,8 +472,6 @@
 		F24B73822F52A632008304C4 /* TIFFWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0994069C42900069C9E5 /* TIFFWriter.cpp */; };
 		F24B73832F52A632008304C4 /* TIFFWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0995069C42900069C9E5 /* TIFFWriter.h */; };
 		F24B73842F52A632008304C4 /* WriteOnlyRasterImage.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0996069C42900069C9E5 /* WriteOnlyRasterImage.h */; };
-		F24B73852F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */; };
-		F24B73862F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.h in Sources */ = {isa = PBXBuildFile; fileRef = F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */; };
 		F24B73872F52A632008304C4 /* BlockRasterizeSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0998069C42900069C9E5 /* BlockRasterizeSequence.h */; };
 		F24B73882F52A632008304C4 /* FileRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0999069C42900069C9E5 /* FileRasterizerOutput.cpp */; };
 		F24B73892F52A632008304C4 /* FileRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099A069C42900069C9E5 /* FileRasterizerOutput.h */; };
@@ -482,8 +480,6 @@
 		F24B738C2F52A632008304C4 /* LuminaryManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099D069C42900069C9E5 /* LuminaryManager.h */; };
 		F24B738D2F52A632008304C4 /* PixelBasedPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */; };
 		F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */; };
-		F24B738F2F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */; };
-		F24B73902F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */; };
 		F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
 		F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */; };
 		F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
@@ -751,8 +747,6 @@
 		F277340D07ECCB7300C0B600 /* HaltonPointsSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340A07ECCB7300C0B600 /* HaltonPointsSampling2D.h */; };
 		F277341D07ECCBB200C0B600 /* AdvancedShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341B07ECCBB200C0B600 /* AdvancedShader.cpp */; };
 		F277341E07ECCBB200C0B600 /* AdvancedShader.h in Headers */ = {isa = PBXBuildFile; fileRef = F277341C07ECCBB200C0B600 /* AdvancedShader.h */; };
-		F277342107ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */; };
-		F277342207ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h in Headers */ = {isa = PBXBuildFile; fileRef = F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */; };
 		F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */; };
 		F277342F07ECCC2F00C0B600 /* AdaptiveDetectorSphere.h in Headers */ = {isa = PBXBuildFile; fileRef = F277342707ECCC2F00C0B600 /* AdaptiveDetectorSphere.h */; };
 		F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */; };
@@ -1180,8 +1174,6 @@
 		F27F0BFD069C42910069C9E5 /* LuminaryManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F099D069C42900069C9E5 /* LuminaryManager.h */; };
 		F27F0BFE069C42910069C9E5 /* PixelBasedPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */; };
 		F27F0BFF069C42910069C9E5 /* PixelBasedPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */; };
-		F27F0C00069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */; };
-		F27F0C01069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */; };
 		F27F0C02069C42910069C9E5 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
 		F27F0C03069C42910069C9E5 /* PixelBasedRasterizerHelper.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */; };
 		F27F0C04069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
@@ -1543,8 +1535,6 @@
 		F277340A07ECCB7300C0B600 /* HaltonPointsSampling2D.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPointsSampling2D.h; sourceTree = "<group>"; };
 		F277341B07ECCBB200C0B600 /* AdvancedShader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AdvancedShader.cpp; sourceTree = "<group>"; };
 		F277341C07ECCBB200C0B600 /* AdvancedShader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AdvancedShader.h; sourceTree = "<group>"; };
-		F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedPelRasterizerContrastAA.cpp; sourceTree = "<group>"; };
-		F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizerContrastAA.h; sourceTree = "<group>"; };
 		F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = AdaptiveDetectorSphere.cpp; path = DetectorSpheres/AdaptiveDetectorSphere.cpp; sourceTree = "<group>"; };
 		F277342707ECCC2F00C0B600 /* AdaptiveDetectorSphere.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = AdaptiveDetectorSphere.h; path = DetectorSpheres/AdaptiveDetectorSphere.h; sourceTree = "<group>"; };
 		F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = CircularDiskDetector.cpp; path = DetectorSpheres/CircularDiskDetector.cpp; sourceTree = "<group>"; };
@@ -1972,8 +1962,6 @@
 		F27F099D069C42900069C9E5 /* LuminaryManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LuminaryManager.h; sourceTree = "<group>"; };
 		F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedPelRasterizer.cpp; sourceTree = "<group>"; };
 		F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizer.h; sourceTree = "<group>"; };
-		F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedPelRasterizerAdaptiveSampling.cpp; sourceTree = "<group>"; };
-		F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizerAdaptiveSampling.h; sourceTree = "<group>"; };
 		F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedRasterizerHelper.cpp; sourceTree = "<group>"; };
 		F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedRasterizerHelper.h; sourceTree = "<group>"; };
 		F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedSpectralIntegratingRasterizer.cpp; sourceTree = "<group>"; };
@@ -2933,8 +2921,6 @@
 				F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */,
 				F2C5D5632F6E447400546C97 /* SplatFilm.h */,
 				F2C5D5642F6E447400546C97 /* SplatFilm.cpp */,
-				F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */,
-				F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */,
 				F27F0998069C42900069C9E5 /* BlockRasterizeSequence.h */,
 				F27F0999069C42900069C9E5 /* FileRasterizerOutput.cpp */,
 				F27F099A069C42900069C9E5 /* FileRasterizerOutput.h */,
@@ -2943,8 +2929,6 @@
 				F27F099D069C42900069C9E5 /* LuminaryManager.h */,
 				F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */,
 				F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */,
-				F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */,
-				F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */,
 				F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */,
 				F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */,
 				F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */,
@@ -3574,7 +3558,6 @@
 				F27F0BFB069C42910069C9E5 /* HilbertRasterizeSequence.h in Headers */,
 				F27F0BFD069C42910069C9E5 /* LuminaryManager.h in Headers */,
 				F27F0BFF069C42910069C9E5 /* PixelBasedPelRasterizer.h in Headers */,
-				F27F0C01069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h in Headers */,
 				F27F0C03069C42910069C9E5 /* PixelBasedRasterizerHelper.h in Headers */,
 				F27F0C05069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h in Headers */,
 				F27F0C08069C42910069C9E5 /* RadianceMap.h in Headers */,
@@ -3708,7 +3691,6 @@
 				F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */,
 				F277340D07ECCB7300C0B600 /* HaltonPointsSampling2D.h in Headers */,
 				F277341E07ECCBB200C0B600 /* AdvancedShader.h in Headers */,
-				F277342207ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h in Headers */,
 				F277342F07ECCC2F00C0B600 /* AdaptiveDetectorSphere.h in Headers */,
 				F277343107ECCC2F00C0B600 /* CircularDiskDetector.h in Headers */,
 				F277343307ECCC2F00C0B600 /* DetectorSphere.h in Headers */,
@@ -4007,7 +3989,6 @@
 				F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
 				F27F0BFE069C42910069C9E5 /* PixelBasedPelRasterizer.cpp in Sources */,
-				F27F0C00069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */,
 				F27F0C02069C42910069C9E5 /* PixelBasedRasterizerHelper.cpp in Sources */,
 				F27F0C04069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
 				F27F0C09069C42910069C9E5 /* Rasterizer.cpp in Sources */,
@@ -4058,7 +4039,6 @@
 				F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */,
 				F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */,
 				F277341D07ECCBB200C0B600 /* AdvancedShader.cpp in Sources */,
-				F277342107ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */,
 				F2C5D5D32F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */,
 				F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */,
 				F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */,
@@ -4553,8 +4533,6 @@
 				F24B73832F52A632008304C4 /* TIFFWriter.h in Sources */,
 				F24B73842F52A632008304C4 /* WriteOnlyRasterImage.h in Sources */,
 				F2C5D5862F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
-				F24B73852F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */,
-				F24B73862F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.h in Sources */,
 				F24B73872F52A632008304C4 /* BlockRasterizeSequence.h in Sources */,
 				F2C5D56F2F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
 				F24B73882F52A632008304C4 /* FileRasterizerOutput.cpp in Sources */,
@@ -4565,8 +4543,6 @@
 				F24B738D2F52A632008304C4 /* PixelBasedPelRasterizer.cpp in Sources */,
 				F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */,
 				F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */,
-				F24B738F2F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */,
-				F24B73902F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.h in Sources */,
 				F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */,
 				F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */,
 				F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
