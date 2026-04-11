@@ -170,6 +170,8 @@ namespace RISE
 			ri.ptIntersection = vertex.position;
 			ri.vNormal = vertex.normal;
 			ri.onb = vertex.onb;
+			ri.ptCoord = vertex.ptCoord;
+			ri.ptObjIntersec = vertex.ptObjIntersec;
 
 			return pBSDF->value( wi, ri );
 		}
@@ -303,6 +305,8 @@ namespace RISE
 			ri.ptIntersection = vertex.position;
 			ri.vNormal = vertex.normal;
 			ri.onb = vertex.onb;
+			ri.ptCoord = vertex.ptCoord;
+			ri.ptObjIntersec = vertex.ptObjIntersec;
 
 			return pBSDF->valueNM( wi, ri, nm );
 		}

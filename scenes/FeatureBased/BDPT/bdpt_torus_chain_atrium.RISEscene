@@ -29,7 +29,7 @@ standard_shader
 	name		global
 	shaderop	DefaultPathTracing
 }
-/*
+
 bdpt_pel_rasterizer
 {
 	max_eye_depth		14
@@ -55,7 +55,7 @@ bdpt_pel_rasterizer
 	progressive_rendering          TRUE
 	progressive_samples_per_pass   32
 }
-*/
+
 
 /*
 mlt_rasterizer
@@ -69,7 +69,7 @@ mlt_rasterizer
 }
 */
 
-
+/*
 ##################################################
 # Alternative: Unidirectional MIS Path Tracer
 #
@@ -107,7 +107,7 @@ pathtracing_pel_rasterizer
 	progressive_rendering          TRUE
 	progressive_samples_per_pass   32
 }
-
+*/
 
 file_rasterizeroutput
 {

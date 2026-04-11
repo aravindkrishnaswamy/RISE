@@ -76,6 +76,8 @@ namespace RISE
 		Point3					position;
 		Vector3					normal;
 		OrthonormalBasis3D		onb;
+		Point2					ptCoord;		///< Texture coordinate at intersection (for painter evaluation)
+		Point3					ptObjIntersec;	///< Object-space intersection point (for 3D procedural painters)
 		const IMaterial*		pMaterial;		///< NULL for camera/light endpoints
 		const IObject*			pObject;		///< NULL for camera/light endpoints
 
@@ -120,6 +122,8 @@ namespace RISE
 
 		BDPTVertex() :
 		type( SURFACE ),
+		ptCoord( Point2( 0, 0 ) ),
+		ptObjIntersec( Point3( 0, 0, 0 ) ),
 		pMaterial( 0 ),
 		pObject( 0 ),
 		throughput( RISEPel( 0, 0, 0 ) ),
