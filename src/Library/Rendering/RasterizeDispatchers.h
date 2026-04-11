@@ -5,7 +5,7 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 23, 2006
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -13,6 +13,9 @@
 
 #ifndef RASTERIZE_DISPATCHERS_
 #define RASTERIZE_DISPATCHERS_
+
+#include <atomic>
+#include <vector>
 
 namespace RISE
 {
@@ -24,39 +27,45 @@ namespace RISE
 			RuntimeContext::PASS pass;
 			IRasterImage& image;
 			const IScene& scene;
-			IRasterizeSequence& seq;
 			const PixelBasedRasterizerHelper& rasterizer;
 			IProgressCallback* pProgressFunc;
 
-			unsigned int sofar;
-			unsigned int numseq;
+			std::vector<Rect> tiles;
+			std::atomic<unsigned int> nextTile;
+			std::atomic<bool> cancelled;
+			unsigned int numTiles;
 
-			RMutex mut;
+			RMutex progressMut;		// Only for progress callback serialization
 
 			bool GetNextBlock( Rect& rc )
 			{
-				mut.lock();
-				{
-					// Return the next available block
-					if( sofar < numseq ) {
-
-						if( pProgressFunc && sofar>0 )	{
-							if( !pProgressFunc->Progress( static_cast<double>(sofar), static_cast<double>(numseq-1) ) ) {
-								mut.unlock();
-								return false;		// abort the render
-							}
-						}
-
-						rc = seq.GetNextRegion();
-						sofar++;
-						mut.unlock();
-
-						return true;
-					}
-
-					mut.unlock();
+				if( cancelled.load( std::memory_order_relaxed ) ) {
 					return false;
 				}
+
+				const unsigned int idx = nextTile.fetch_add( 1, std::memory_order_relaxed );
+				if( idx >= numTiles ) {
+					return false;
+				}
+
+				rc = tiles[idx];
+
+				// Progress callback needs serialization since it may update UI
+				if( pProgressFunc && idx > 0 ) {
+					progressMut.lock();
+					if( cancelled.load( std::memory_order_relaxed ) ) {
+						progressMut.unlock();
+						return false;
+					}
+					if( !pProgressFunc->Progress( static_cast<double>(idx), static_cast<double>(numTiles-1) ) ) {
+						cancelled.store( true, std::memory_order_relaxed );
+						progressMut.unlock();
+						return false;		// abort the render
+					}
+					progressMut.unlock();
+				}
+
+				return true;
 			}
 
 		public:
@@ -68,16 +77,20 @@ namespace RISE
 				IRasterizeSequence& seq_,
 				const PixelBasedRasterizerHelper& rasterizer_,
 				IProgressCallback* pProgressFunc_
-				) : 
+				) :
 			  pass( pass_ ),
 			  image( image_ ),
 			  scene( scene_ ),
-			  seq( seq_ ),
-			  rasterizer( rasterizer_ ), 
+			  rasterizer( rasterizer_ ),
 			  pProgressFunc( pProgressFunc_ ),
-			  sofar( 0 )
+			  nextTile( 0 ),
+			  cancelled( false )
 			{
-				numseq = seq.NumRegions();
+				numTiles = seq_.NumRegions();
+				tiles.reserve( numTiles );
+				for( unsigned int i = 0; i < numTiles; i++ ) {
+					tiles.push_back( seq_.GetNextRegion() );
+				}
 			}
 
 			void DoWork()
@@ -93,8 +106,13 @@ namespace RISE
 				Rect rect(0,0,0,0);
 				while( GetNextBlock(rect) ) {
 					// Operate on this block
-					rasterizer.SPRasterizeSingleBlock( rc, image, scene, rect, height );			
+					rasterizer.SPRasterizeSingleBlock( rc, image, scene, rect, height );
 				}
+			}
+
+			bool WasCancelled() const
+			{
+				return cancelled.load( std::memory_order_relaxed );
 			}
 		};
 
@@ -113,7 +131,7 @@ namespace RISE
 				const PixelBasedRasterizerHelper& rasterizer_,
 				IProgressCallback* pProgressFunc_,
 				const PixelBasedRasterizerHelper::AnimFrameData& animData_
-				) : 
+				) :
 			  RasterizeBlockDispatcher( pass_, image_, scene_, seq_, rasterizer_, pProgressFunc_ ),
 			  animData( animData_ )
 			{
@@ -132,7 +150,7 @@ namespace RISE
 				Rect rect(0,0,0,0);
 				while( GetNextBlock(rect) ) {
 					// Operate on this block
-					rasterizer.SPRasterizeSingleBlockOfAnimation( rc, image, scene, rect, height, animData );			
+					rasterizer.SPRasterizeSingleBlockOfAnimation( rc, image, scene, rect, height, animData );
 				}
 			}
 		};

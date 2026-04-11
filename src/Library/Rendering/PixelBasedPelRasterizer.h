@@ -60,6 +60,8 @@ namespace RISE
 				const Scalar temporal_exposure
 				) const;
 
+			unsigned int GetProgressiveTotalSPP() const;
+
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;
 			mutable Scalar				guidingAlphaScale;

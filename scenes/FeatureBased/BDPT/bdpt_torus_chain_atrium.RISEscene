@@ -29,7 +29,7 @@ standard_shader
 	name		global
 	shaderop	DefaultPathTracing
 }
-
+/*
 bdpt_pel_rasterizer
 {
 	max_eye_depth		14
@@ -51,10 +51,27 @@ bdpt_pel_rasterizer
 	sms_biased			TRUE
 	oidn_denoise 		TRUE
 	blue_noise_sampler	TRUE
-	adaptive_max_samples	1024
+	adaptive_max_samples	4096
 	adaptive_threshold		0.01
 #	show_adaptive_map		FALSE
+	progressive_rendering          TRUE
+	progressive_samples_per_pass   32
 }
+*/
+
+/*
+mlt_rasterizer
+{
+	max_eye_depth		12
+	max_light_depth		12
+	bootstrap_samples	100000
+	chains				64
+	mutations_per_pixel	10000
+	large_step_prob		0.25
+	ior_stack			TRUE
+}
+*/
+
 
 ##################################################
 # Alternative: Unidirectional MIS Path Tracer
@@ -70,20 +87,31 @@ bdpt_pel_rasterizer
 # subpaths directly carry energy through the glass, which the
 # unidirectional PT cannot do.
 ##################################################
-/*
 
-standard_shader
-{
-	name		global
-	shaderop	DefaultPathTracing
-}
-
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
 	samples				128
 	lum_samples			1
+	pathguiding				TRUE
+	pathguiding_iterations	6
+	pathguiding_spp			4
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	3
+    pathguiding_light_max_depth 0
+	pathguiding_sampling_type	ris
+	sms_enabled			TRUE
+	sms_max_iterations	20
+	sms_threshold		1e-3
+	sms_max_chain_depth	20
+	sms_biased			TRUE
+	oidn_denoise 		TRUE
+	blue_noise_sampler	TRUE
+	adaptive_max_samples	4096
+	adaptive_threshold		0.01
+	progressive_rendering          TRUE
+	progressive_samples_per_pass   32
 }
-*/
+
 
 file_rasterizeroutput
 {
@@ -102,8 +130,8 @@ pinhole_camera
 	location			0 5.5 19.0
 	lookat				0 3.5 4.0
 	up					0 1 0
-	width				200
-	height				200
+	width				400
+	height				400
 	fov					50.0
 }
 

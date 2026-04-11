@@ -78,8 +78,10 @@ void PixelBasedPelRasterizerAdaptiveSampling::IntegratePixel(
 {
 	// If we have a sampling object (which specifies the kernel and size of the 
 	// minimum amount of sampling we have to do, then do that...
-	if( pSampling && rc.pass == RuntimeContext::PASS_NORMAL )
+	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
+		const bool adaptive = rc.AllowsAdaptiveSampling();
+
 		ISampling2D::SamplesList2D	samples;
 		pSampling->GenerateSamplePoints( rc.random, samples );
 
@@ -117,10 +119,15 @@ void PixelBasedPelRasterizerAdaptiveSampling::IntegratePixel(
 		// now we adaptively continue
 		Scalar			weightsSum = weights;
 		unsigned int	numSamplesTaken = static_cast<unsigned int>(samples.size());
+		Scalar			OVweightsSum = weightsSum > 0 ? 1.0 / weightsSum : 0;
+		if( !adaptive ) {
+			cret = (bOutputSamples ? RISEColor( 0, 0, 0, 1 ) : (colAccrued*OVweightsSum));
+			return;
+		}
+
 		unsigned int	adaptiveKernelToUse = 0;
 
 		// Compute the variance before we process this kernel, so that we have something to compare it to later
-		Scalar	OVweightsSum = 1.0 / weightsSum;
 		RISEColor	cLastVariance = (sumofSq - (colAccrued*colAccrued*OVweightsSum)) * (1.0/Scalar(numSamplesTaken-1));
 		Scalar		dLastVariance = fabs(ColorMath::MaxValue(cLastVariance.base));
 
@@ -246,5 +253,3 @@ void PixelBasedPelRasterizerAdaptiveSampling::SubSampleRays( ISampling2D* pSampl
 		}				
 	}
 }
-
-

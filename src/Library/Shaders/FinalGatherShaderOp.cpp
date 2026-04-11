@@ -370,7 +370,7 @@ void FinalGatherShaderOp::PerformOperation(
 
 				// If we are in normal rendering pass, look it up in the cache
 				const IIrradianceCache* pCache = pScene->GetIrradianceCache();
-				if( pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
+				if( pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
 					// Look it up
 					std::vector<IIrradianceCache::CacheElement> results;
 					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);

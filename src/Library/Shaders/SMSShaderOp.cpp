@@ -39,7 +39,7 @@ void SMSShaderOp::PerformOperation(
 	) const
 {
 	// Only run on normal passes
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 
@@ -95,7 +95,7 @@ Scalar SMSShaderOp::PerformOperationNM(
 {
 	// SMS spectral variant: uses per-wavelength IOR for dispersion
 	// and scalar (single-wavelength) evaluation throughout.
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 

@@ -19,6 +19,7 @@
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
+#include "ProgressiveFilm.h"
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IMaterial.h"
 
@@ -52,6 +53,15 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 
 BDPTPelRasterizer::~BDPTPelRasterizer()
 {
+}
+
+unsigned int BDPTPelRasterizer::GetProgressiveTotalSPP() const
+{
+	if( adaptiveConfig.maxSamples > 0 ) {
+		return adaptiveConfig.maxSamples;
+	}
+
+	return PixelBasedRasterizerHelper::GetProgressiveTotalSPP();
 }
 
 void BDPTPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
@@ -225,7 +235,19 @@ void BDPTPelRasterizer::IntegratePixel(
 		return;
 	}
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL;
+	// Progressive rendering: check if this pixel has already converged
+	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		if( px.converged ) {
+			if( px.alphaSum > 0 ) {
+				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			}
+			return;
+		}
+	}
+
+	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	// ZSobol (blue-noise): seed from Morton index for spatially
@@ -234,16 +256,19 @@ void BDPTPelRasterizer::IntegratePixel(
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
 
-	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample;
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
+	// For ZSobol, compute log2SPP from the full progressive SPP budget
+	const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 	if( useZSobol &&
 		MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
 	{
 		const uint32_t mi = MortonCode::Morton2D(
 			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
-		const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( maxSamples ) );
+		const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( zSobolSPP ) );
 		if( l2 < 32 &&
 			(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
 		{
@@ -259,19 +284,38 @@ void BDPTPelRasterizer::IntegratePixel(
 			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
 	}
 
+	// In progressive mode, restore persistent state from the film.
 	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
-
-	// Welford online variance state (luminance-based)
 	Scalar wMean = 0;
 	Scalar wM2 = 0;
 	unsigned int wN = 0;
-
 	uint32_t globalSampleIndex = 0;
 	bool converged = false;
 
-	while( globalSampleIndex < maxSamples && !converged )
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		colAccrued = px.colorSum;
+		weights = px.weightSum;
+		alphas = px.alphaSum;
+		wMean = px.wMean;
+		wM2 = px.wM2;
+		wN = px.wN;
+		globalSampleIndex = px.sampleIndex;
+	}
+
+	const uint32_t passStartSampleIndex = globalSampleIndex;
+	const uint32_t targetSamples = pProgFilm && rc.totalProgressiveSPP > 0
+		? rc.totalProgressiveSPP
+		: maxSamples;
+	uint32_t passEndIndex = targetSamples;
+	if( pProgFilm ) {
+		const uint64_t desiredEnd = static_cast<uint64_t>( globalSampleIndex ) + static_cast<uint64_t>( batchSize );
+		passEndIndex = desiredEnd < targetSamples ? static_cast<uint32_t>( desiredEnd ) : targetSamples;
+	}
+
+	while( globalSampleIndex < passEndIndex && !converged )
 	{
 		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
@@ -281,7 +325,7 @@ void BDPTPelRasterizer::IntegratePixel(
 		}
 
 		ISampling2D::SamplesList2D::const_iterator m, n;
-		for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<maxSamples; m++, globalSampleIndex++ )
+		for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<passEndIndex; m++, globalSampleIndex++ )
 		{
 			Point2 ptOnScreen;
 			Scalar weight = 1.0;
@@ -321,7 +365,7 @@ void BDPTPelRasterizer::IntegratePixel(
 			alphas += weight;
 
 			// Welford update on luminance of non-splat contribution
-			if( adaptive ) {
+			if( adaptive || pProgFilm ) {
 				const Scalar lum = ColorMath::MaxValue(sampleColor);
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -331,52 +375,60 @@ void BDPTPelRasterizer::IntegratePixel(
 			}
 		}
 
-		// Check convergence after enough batches for reliable statistics.
-		// Require at least 4 batches so the variance estimate has some
-		// stability (n >= 16 with typical batch sizes).
-		if( adaptive && globalSampleIndex >= batchSize * 4 && wN >= 16 )
+		// Check convergence after enough cumulative samples
+		if( (adaptive || pProgFilm) && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar(wN - 1);
 			const Scalar stdError = sqrt( variance / Scalar(wN) );
 			const Scalar meanAbs = fabs( wMean );
 
 			if( meanAbs > NEARZERO ) {
-				// Apply a small-sample confidence correction: scale the
-				// threshold down when n is low so we are conservative
-				// about early stopping.  The factor approaches 1.0 as
-				// n grows and equals ~0.5 at n=16.
 				const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-				if( stdError / meanAbs < adaptiveConfig.threshold * confidence ) {
+				const Scalar threshold = adaptiveConfig.maxSamples > 0
+					? adaptiveConfig.threshold
+					: 0.01;
+				if( stdError / meanAbs < threshold * confidence ) {
 					converged = true;
 				}
-			} else if( wM2 < NEARZERO && wN >= batchSize * 8 ) {
-				// Near-zero pixel: require many more samples before
-				// declaring convergence, since rare bright contributions
-				// (e.g. caustics, indirect light) might not have appeared
-				// yet in a small sample set.
+			} else if( wM2 < NEARZERO && wN >= 64 ) {
 				converged = true;
 			}
 		}
 
-		// For non-adaptive, the single batch covers everything
-		if( !bMultiSample ) {
+		// For non-adaptive single-pass, the single batch covers everything
+		if( !bMultiSample && !pProgFilm ) {
 			break;
 		}
 	}
 
-	// Track total adaptive samples for splat film normalization
-	if( adaptive ) {
-		AddAdaptiveSamples( globalSampleIndex );
+	// Write back persistent state for progressive rendering
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		px.colorSum = colAccrued;
+		px.weightSum = weights;
+		px.alphaSum = alphas;
+		px.wMean = wMean;
+		px.wM2 = wM2;
+		px.wN = wN;
+		px.sampleIndex = globalSampleIndex;
+		px.converged = converged;
+	}
+
+	// Track total adaptive samples for splat film normalization.
+	// Use the delta (samples rendered THIS pass) to avoid double-counting
+	// across progressive passes.
+	if( adaptive || pProgFilm ) {
+		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	if( pAOVBuffers && alphas > 0 ) {
+	if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / alphas );
 	}
 #endif
 
 	if( adaptive && adaptiveConfig.showMap ) {
-		const Scalar t = Scalar(globalSampleIndex) / Scalar(maxSamples);
+		const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
 		cret = RISEColor( RISEPel(t, t, t), 1.0 );
 	} else if( alphas > 0 ) {
 		colAccrued = colAccrued * (1.0 / alphas);

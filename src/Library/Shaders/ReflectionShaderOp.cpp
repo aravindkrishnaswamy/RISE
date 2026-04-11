@@ -41,7 +41,7 @@ void ReflectionShaderOp::PerformOperation(
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass
-	if( rc.pass != RuntimeContext::PASS_NORMAL ) {
+	if( !rc.IsNormalShadingPass() ) {
 		return;
 	}
 
@@ -86,7 +86,7 @@ Scalar ReflectionShaderOp::PerformOperationNM(
 	Scalar c=0;
 
 	// Only do stuff on a normal pass
-	if( rc.pass != RuntimeContext::PASS_NORMAL ) {
+	if( !rc.IsNormalShadingPass() ) {
 		return 0;
 	}
 

@@ -26,6 +26,7 @@
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Interfaces/IScene.h"
+#include "ProgressiveFilm.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -44,7 +45,8 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, stabilityCfg, useZSobol_, useHWSS_ ),
-  pIntegrator( 0 )
+  pIntegrator( 0 ),
+  adaptiveConfig( adaptiveConfig )
 {
 	pIntegrator = new PathTracingIntegrator(
 		false,
@@ -57,6 +59,15 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()
 {
 	safe_release( pIntegrator );
+}
+
+unsigned int PathTracingSpectralRasterizer::GetProgressiveTotalSPP() const
+{
+	if( adaptiveConfig.maxSamples > 0 ) {
+		return adaptiveConfig.maxSamples;
+	}
+
+	return PixelBasedRasterizerHelper::GetProgressiveTotalSPP();
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -163,7 +174,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 	RasterizerState rast = {x,y};
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL;
+	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	uint32_t pixelSeed = SobolSequence::HashCombine(
@@ -173,16 +184,28 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 	if( bMultiSample )
 	{
-		ISampling2D::SamplesList2D samples;
-		pSampling->GenerateSamplePoints( rc.random, samples );
+		ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
+		if( pProgFilm ) {
+			ProgressivePixel& px = pProgFilm->Get( x, y );
+			if( px.converged ) {
+				if( px.alphaSum > 0 ) {
+					cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+				}
+				return;
+			}
+		}
+
+		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
+		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+		const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 		if( useZSobol &&
 			MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
 		{
 			const uint32_t mi = MortonCode::Morton2D(
 				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
-			const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2(
-				static_cast<uint32_t>(samples.size()) ) );
+			const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( zSobolSPP ) );
 			if( l2 < 32 &&
 				(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
 			{
@@ -195,59 +218,136 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			}
 		}
 
-		XYZPel colAccrued( 0, 0, 0 );
+		RISEPel colAccrued( 0, 0, 0 );
 		Scalar weights = 0;
+		Scalar alphas = 0;
+		Scalar wMean = 0;
+		Scalar wM2 = 0;
+		unsigned int wN = 0;
 
 		uint32_t sampleIndex = 0;
-		ISampling2D::SamplesList2D::const_iterator m, n;
-		for( m=samples.begin(), n=samples.end(); m!=n; m++, sampleIndex++ )
-		{
-			Point2 ptOnScreen;
+		bool converged = false;
 
-			const bool filmMode = (pFilteredFilm != 0);
-			Scalar weight;
-			if( filmMode ) {
-				ptOnScreen = Point2(
-					static_cast<Scalar>(x) + (*m).x - 0.5,
-					static_cast<Scalar>(height-y) + (*m).y - 0.5 );
-				weight = 1.0;
-			} else {
-				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
-			}
-			weights += weight;
-
-			if( temporal_samples ) {
-				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
-			}
-
-			const uint32_t effectiveIndex = useZSobol
-				? ((mortonIndex << log2SPP) | sampleIndex)
-				: sampleIndex;
-
-			SobolSampler stdSampler( effectiveIndex, pixelSeed );
-			ZSobolSampler zSampler( effectiveIndex, mortonIndex, log2SPP, pixelSeed );
-			ISampler& sampler = useZSobol
-				? static_cast<ISampler&>(zSampler)
-				: static_cast<ISampler&>(stdSampler);
-
-			rc.pSampler = &sampler;
-
-			const XYZPel sampleXYZ = IntegratePixelSpectral(
-				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap );
-
-			if( filmMode ) {
-				pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, RISEPel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z ), *pPixelFilter );
-				colAccrued = colAccrued + sampleXYZ;
-			} else {
-				colAccrued = colAccrued + sampleXYZ * weight;
-			}
-
-			rc.pSampler = 0;
+		if( pProgFilm ) {
+			ProgressivePixel& px = pProgFilm->Get( x, y );
+			colAccrued = px.colorSum;
+			weights = px.weightSum;
+			alphas = px.alphaSum;
+			wMean = px.wMean;
+			wM2 = px.wM2;
+			wN = px.wN;
+			sampleIndex = px.sampleIndex;
 		}
 
-		if( weights > 0 ) {
-			colAccrued = colAccrued * (1.0 / weights);
-			cret = RISEColor( RISEPel( colAccrued.X, colAccrued.Y, colAccrued.Z ), 1.0 );
+		const uint32_t targetSamples = pProgFilm && rc.totalProgressiveSPP > 0
+			? rc.totalProgressiveSPP
+			: maxSamples;
+		uint32_t passEndIndex = targetSamples;
+		if( pProgFilm ) {
+			const uint64_t desiredEnd = static_cast<uint64_t>( sampleIndex ) + static_cast<uint64_t>( batchSize );
+			passEndIndex = desiredEnd < targetSamples ? static_cast<uint32_t>( desiredEnd ) : targetSamples;
+		}
+
+		while( sampleIndex < passEndIndex && !converged )
+		{
+			ISampling2D::SamplesList2D samples;
+			pSampling->GenerateSamplePoints( rc.random, samples );
+
+			ISampling2D::SamplesList2D::const_iterator m, n;
+			for( m=samples.begin(), n=samples.end(); m!=n && sampleIndex<passEndIndex; m++, sampleIndex++ )
+			{
+				Point2 ptOnScreen;
+
+				const bool filmMode = (pFilteredFilm != 0);
+				Scalar weight;
+				if( filmMode ) {
+					ptOnScreen = Point2(
+						static_cast<Scalar>(x) + (*m).x - 0.5,
+						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
+					weight = 1.0;
+				} else {
+					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				}
+				weights += weight;
+
+				if( temporal_samples ) {
+					pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+				}
+
+				const uint32_t effectiveIndex = useZSobol
+					? ((mortonIndex << log2SPP) | sampleIndex)
+					: sampleIndex;
+
+				SobolSampler stdSampler( effectiveIndex, pixelSeed );
+				ZSobolSampler zSampler( effectiveIndex, mortonIndex, log2SPP, pixelSeed );
+				ISampler& sampler = useZSobol
+					? static_cast<ISampler&>(zSampler)
+					: static_cast<ISampler&>(stdSampler);
+
+				rc.pSampler = &sampler;
+
+				const XYZPel sampleXYZ = IntegratePixelSpectral(
+					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap );
+				const RISEPel samplePel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z );
+
+				if( filmMode ) {
+					pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, samplePel, *pPixelFilter );
+					colAccrued = colAccrued + samplePel;
+					alphas += 1.0;
+				} else {
+					colAccrued = colAccrued + samplePel * weight;
+					alphas += weight;
+				}
+
+				if( adaptive || pProgFilm ) {
+					const Scalar lum = ColorMath::MaxValue(samplePel);
+					wN++;
+					const Scalar delta = lum - wMean;
+					wMean += delta / Scalar(wN);
+					const Scalar delta2 = lum - wMean;
+					wM2 += delta * delta2;
+				}
+
+				rc.pSampler = 0;
+			}
+
+			if( (adaptive || pProgFilm) && wN >= 32 )
+			{
+				const Scalar variance = wM2 / Scalar(wN - 1);
+				const Scalar stdError = sqrt( variance / Scalar(wN) );
+				const Scalar meanAbs = fabs( wMean );
+
+				if( meanAbs > NEARZERO ) {
+					const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
+					const Scalar threshold = adaptiveConfig.maxSamples > 0
+						? adaptiveConfig.threshold
+						: 0.01;
+					if( stdError / meanAbs < threshold * confidence ) {
+						converged = true;
+					}
+				} else if( wM2 < NEARZERO && wN >= 64 ) {
+					converged = true;
+				}
+			}
+		}
+
+		if( pProgFilm ) {
+			ProgressivePixel& px = pProgFilm->Get( x, y );
+			px.colorSum = colAccrued;
+			px.weightSum = weights;
+			px.alphaSum = alphas;
+			px.wMean = wMean;
+			px.wM2 = wM2;
+			px.wN = wN;
+			px.sampleIndex = sampleIndex;
+			px.converged = converged;
+		}
+
+		if( adaptive && adaptiveConfig.showMap ) {
+			const Scalar t = Scalar(sampleIndex) / Scalar(targetSamples);
+			cret = RISEColor( RISEPel(t, t, t), 1.0 );
+		} else if( alphas > 0 ) {
+			cret = RISEColor( colAccrued * (1.0 / alphas), alphas / weights );
 		}
 	}
 	else

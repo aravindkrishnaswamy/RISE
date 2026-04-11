@@ -26,6 +26,7 @@
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
+#include "../Utilities/ProgressiveConfig.h"
 
 namespace RISE
 {
@@ -1316,7 +1317,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1447,7 +1449,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
 		//! Sets the rasterizer type to be spectral BDPT
@@ -1487,7 +1490,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
 		//! Sets the rasterizer to pure path tracing (Pel, bypasses shader ops)
@@ -1521,7 +1525,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
 		//! Sets the rasterizer to pure path tracing (spectral, bypasses shader ops)
@@ -1559,7 +1564,8 @@ namespace RISE
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
 		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer

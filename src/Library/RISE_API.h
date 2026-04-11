@@ -1546,7 +1546,14 @@ bool RISE_API_CreateIrradianceCache(
 	// Rasterize Sequeces
 	//////////////////////////////////////////////////////////
 
-	//! Creates a block rasterize sequence
+	//! Creates a Morton (Z-order) curve rasterize sequence for optimal cache locality
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMortonRasterizeSequence(
+								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
+								const unsigned int tileSize			///< [in] Width and height of each square tile
+								);
+
+	//! Creates a block rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBlockRasterizeSequence(
 								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
@@ -1555,13 +1562,13 @@ bool RISE_API_CreateIrradianceCache(
 								const char order					///< [in] Block ordering type
 								);
 
-	//! Creates a scanline rasterize sequence
+	//! Creates a scanline rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateScanlineRasterizeSequence(
 								IRasterizeSequence** ppi			///< [out] Pointer to recieve the rasterize sequence
 								);
 
-	//! Creates a hilbert space filling curve rasterize sequence
+	//! Creates a hilbert space filling curve rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateHilbertRasterizeSequence(
 								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
@@ -2167,6 +2174,14 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								);
+
+	//! Configures progressive multi-pass rendering on a pixel-based rasterizer.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_SetRasterizerProgressiveRendering(
+								IRasterizer* pRasterizer,			///< [in] Rasterizer to configure
+								const bool enabled,					///< [in] Enable progressive multi-pass rendering
+								const unsigned int samplesPerPass	///< [in] SPP per progressive pass
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer

@@ -4213,7 +4213,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 	const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-	const bool useZSobol									///< [in] Use Z-Sobol sampler
+	const bool useZSobol,									///< [in] Use Z-Sobol sampler
+	const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4264,6 +4265,10 @@ bool Job::SetPixelBasedPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -4613,7 +4618,8 @@ bool Job::SetBDPTPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol
+	const bool useZSobol,
+	const ProgressiveConfig& progressiveConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4666,6 +4672,10 @@ bool Job::SetBDPTPelRasterizer(
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
@@ -4713,7 +4723,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
 	const bool useZSobol,
-	const bool useHWSS
+	const bool useHWSS,
+	const ProgressiveConfig& progressiveConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4767,6 +4778,10 @@ bool Job::SetBDPTSpectralRasterizer(
 		nmbegin, nmend, num_wavelengths, spectral_samples,
 		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, useZSobol, useHWSS );
 
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
@@ -4808,7 +4823,8 @@ bool Job::SetPathTracingPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol
+	const bool useZSobol,
+	const ProgressiveConfig& progressiveConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4861,6 +4877,10 @@ bool Job::SetPathTracingPelRasterizer(
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
@@ -4906,7 +4926,8 @@ bool Job::SetPathTracingSpectralRasterizer(
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
 	const bool useZSobol,
-	const bool useHWSS
+	const bool useHWSS,
+	const ProgressiveConfig& progressiveConfig
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4959,6 +4980,10 @@ bool Job::SetPathTracingSpectralRasterizer(
 	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
 		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
 
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
@@ -5879,7 +5904,7 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 	// Read the raster sequence options from the options file
 	IOptions& options = GlobalOptions();
 
-	const int raster_sequence_type = options.ReadInt( "raster_sequence_type", 3 );
+	const int raster_sequence_type = options.ReadInt( "raster_sequence_type", 4 );
 	RISE::String raster_sequence = options.ReadString( "raster_sequence_options", "" );
 
 	IRasterizeSequence* pSeq = 0;
@@ -5888,8 +5913,19 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 	switch( raster_sequence_type )
 	{
 	default:
+	case 4:
+		// Morton Z-order curve (default) - optimal cache locality
+		{
+			unsigned int tileSize = 32;
+			if( !raster_sequence.empty() ) {
+				sscanf( raster_sequence.c_str(), "%u", &tileSize );
+			}
+			RISE_API_CreateMortonRasterizeSequence( &pSeq, tileSize );
+		}
+		break;
+
 	case 3:
-		// Random
+		// Legacy random (deprecated)
 		if( GlobalRNG().CanonicalRandom() < 0.1 ) {
 			RISE_API_CreateHilbertRasterizeSequence( &pSeq, 4 );
 		} else {
@@ -5898,18 +5934,18 @@ static IRasterizeSequence* RasterizeSequenceFromOptions()
 		break;
 
 	case 0:
+		// Scanline (deprecated)
 		RISE_API_CreateScanlineRasterizeSequence( &pSeq );
-		// Scanline
 		break;
 	case 1:
+		// Block (deprecated)
 		unsigned int width, height, type;
 		if( sscanf( raster_sequence.c_str(), "%u %u %u", &width, &height, &type ) == 3 ) {
 			RISE_API_CreateBlockRasterizeSequence( &pSeq, width, height, (char)type );
 		}
-		// Block
 		break;
 	case 2:
-		// Hilbert
+		// Hilbert (deprecated)
 		unsigned int depth;
 		if( sscanf( raster_sequence.c_str(), "%u", &depth ) == 1 ) {
 			RISE_API_CreateHilbertRasterizeSequence( &pSeq, depth );
@@ -5936,7 +5972,7 @@ bool Job::Rasterize(
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 24, 24, 0 );
+			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
 	}
 
@@ -5967,7 +6003,7 @@ bool Job::RasterizeAnimation(
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 24, 24, 0 );
+			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
 	}
 
@@ -5996,7 +6032,7 @@ bool Job::RasterizeRegion(
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 24, 24, 0 );
+			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
 	}
 
@@ -6358,7 +6394,7 @@ bool Job::RasterizeAnimationUsingOptions(
 
 		pSeq = RasterizeSequenceFromOptions( );
 		if( !pSeq ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 24, 24, 0 );
+			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
 	}
 
@@ -6385,7 +6421,7 @@ bool Job::RasterizeAnimationUsingOptions(
 
 		pSeq = RasterizeSequenceFromOptions();
 		if( !pSeq ) {
-			RISE_API_CreateBlockRasterizeSequence( &pSeq, 24, 24, 0 );
+			RISE_API_CreateMortonRasterizeSequence( &pSeq, 32 );
 		}
 	}
 

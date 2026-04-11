@@ -40,16 +40,18 @@ pathtracing_pel_rasterizer
 	ior_stack                     TRUE
 	pathguiding                   true
 	pathguiding_iterations        6
-	pathguiding_spp               4
+	pathguiding_spp               6
 	pathguiding_alpha             0.5
 	pathguiding_max_depth         8
 	pathguiding_sampling_type     ris
 	pathguiding_ris_candidates    2
-	oidn_denoise                  FALSE
+	oidn_denoise                  TRUE
 	max_glossy_bounce             2
 	max_transmission_bounce       2
 	max_volume_bounce             2
 	max_translucent_bounce        2
+	adaptive_max_samples	1024
+	adaptive_threshold		0.1
 }
 
 file_rasterizeroutput

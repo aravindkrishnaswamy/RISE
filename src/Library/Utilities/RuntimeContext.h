@@ -24,8 +24,10 @@
 #include "StabilityConfig.h"
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
+#include <cstdint>
 
 namespace RISE { namespace Implementation { class OptimalMISAccumulator; } }
+namespace RISE { namespace Implementation { class ProgressiveFilm; } }
 
 #ifdef RISE_ENABLE_OPENPGL
 #include "PathGuidingField.h"
@@ -42,7 +44,8 @@ namespace RISE
 		enum PASS
 		{
 			PASS_NORMAL,					// Normal rendering pass
-			PASS_IRRADIANCE_CACHE			// Pass to fill the irradiance cache with data
+			PASS_IRRADIANCE_CACHE,			// Pass to fill the irradiance cache with data
+			PASS_PATHGUIDING				// Path-guiding training pass: normal shading, base pixel samples
 		};
 
 		const RandomNumberGenerator& random;					// A regular random number generator
@@ -68,6 +71,18 @@ namespace RISE
 		/// disabled.  Lifetime managed by the rasterizer.
 		const Implementation::OptimalMISAccumulator*			pOptimalMIS;
 
+		/// Progressive rendering film.  When non-NULL, IntegratePixel
+		/// reads/writes per-pixel accumulation and Welford variance
+		/// state from this film, enabling multi-pass progressive
+		/// rendering with adaptive convergence.  NULL in single-pass mode.
+		mutable Implementation::ProgressiveFilm*				pProgressiveFilm;
+
+		/// Total SPP across all progressive passes.  Used by ZSobol
+		/// to compute log2SPP for the full render, ensuring blue-noise
+		/// properties span the entire sample budget.  0 when progressive
+		/// is disabled.
+		unsigned int											totalProgressiveSPP;
+
 #ifdef RISE_ENABLE_OPENPGL
 		/// Path guiding field for guided directional sampling.
 		/// Set by the rasterizer before rendering.  NULL when guiding
@@ -82,6 +97,21 @@ namespace RISE
 		typedef std::map<const IReference*,RasterizerStateCache*> StateCacheMapType;
 		mutable StateCacheMapType								stateCaches;
 
+		bool IsNormalShadingPass() const
+		{
+			return pass == PASS_NORMAL || pass == PASS_PATHGUIDING;
+		}
+
+		bool UsesPixelSampling() const
+		{
+			return IsNormalShadingPass() || pass == PASS_IRRADIANCE_CACHE;
+		}
+
+		bool AllowsAdaptiveSampling() const
+		{
+			return pass == PASS_NORMAL;
+		}
+
 		RuntimeContext(
 			const RandomNumberGenerator& random_,
 			const PASS pass_,
@@ -92,7 +122,9 @@ namespace RISE
 		  bThreaded( bThreaded_ ),
 		  pSampler( 0 ),
 		  pStabilityConfig( 0 ),
-		  pOptimalMIS( 0 )
+		  pOptimalMIS( 0 ),
+		  pProgressiveFilm( 0 ),
+		  totalProgressiveSPP( 0 )
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )
@@ -155,5 +187,4 @@ namespace RISE
 }
 
 #endif
-
 

@@ -37,16 +37,18 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples                       128
+	samples                       512
 	lum_samples                   1
 	ior_stack                     TRUE
-	oidn_denoise                  FALSE
+	oidn_denoise                  TRUE
 	pathguiding                   true
 	pathguiding_sampling_type     RIS
 	pathguiding_iterations        6
 	pathguiding_spp               12
 	pathguiding_alpha             0.5
 	pathguiding_max_depth         8
+	adaptive_max_samples	2048
+	adaptive_threshold		0.05
 }
 
 file_rasterizeroutput

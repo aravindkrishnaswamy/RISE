@@ -23,6 +23,7 @@
 #include "FilteredFilm.h"
 #include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
+#include "../Utilities/ProgressiveConfig.h"
 
 namespace RISE
 {
@@ -67,10 +68,12 @@ namespace RISE
 				const double toggle_size 
 				) const;
 
-			void RasterizeScenePass( 
+			/// Renders one pass. Returns false if the progress callback
+			/// requested cancellation during the pass.
+			bool RasterizeScenePass(
 				const RuntimeContext::PASS pass,
-				const IScene& scene, 
-				IRasterImage& image, 
+				const IScene& scene,
+				IRasterImage& image,
 				const Rect* pRect, 
 				IRasterizeSequence& seq 
 				) const;
@@ -95,6 +98,10 @@ namespace RISE
 
 			mutable FilteredFilm*	pFilteredFilm;		///< Film buffer for wide-support filter reconstruction
 			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
+			ProgressiveConfig		progressiveConfig;	///< Multi-pass progressive rendering configuration
+
+			mutable ProgressiveFilm*	mProgressiveFilm;	///< Per-pixel state for progressive multi-pass rendering
+			mutable unsigned int		mTotalProgressiveSPP;	///< Total SPP budget across all progressive passes
 
 #ifdef RISE_ENABLE_OIDN
 			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
@@ -183,7 +190,8 @@ namespace RISE
 			/// Reuses the normal block dispatcher for internal passes such as
 			/// path-guiding training, so derived rasterizers can run those
 			/// passes multithreaded without duplicating dispatch logic.
-			void RasterizeBlocksForPass(
+			/// Returns false if the progress callback requested cancellation.
+			bool RasterizeBlocksForPass(
 				const RuntimeContext::PASS pass,
 				const IScene& scene,
 				IRasterImage& image,
@@ -191,7 +199,7 @@ namespace RISE
 				IRasterizeSequence& seq
 				) const
 			{
-				RasterizeScenePass( pass, scene, image, pRect, seq );
+				return RasterizeScenePass( pass, scene, image, pRect, seq );
 			}
 
 		public:
@@ -199,8 +207,13 @@ namespace RISE
 
 			/// Called after a RuntimeContext is created, before any rendering
 			/// with it.  Subclasses can override to inject per-context state
-			/// (e.g. path guiding field pointers).  Default does nothing.
-			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const {}
+			/// (e.g. path guiding field pointers).  Default installs shared
+			/// progressive render state.
+			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			/// Total sample budget for progressive rendering.  Rasterizers with
+			/// adaptive sampling override this to use their adaptive max.
+			virtual unsigned int GetProgressiveTotalSPP() const;
 
 		/// Called at the beginning of RasterizeScene, before the main
 		/// render pass.  Subclasses can override to perform setup such
@@ -224,6 +237,8 @@ namespace RISE
 			virtual void RasterizeSceneAnimation( const IScene& pScene, const Scalar time_start, const Scalar time_end, const unsigned int num_frames, const bool do_fields, const bool invert_fields, const Rect* pRect, const unsigned int* specificFrame, IRasterizeSequence* pRasterSequence ) const;
 
 			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
+			void SetProgressiveConfig( const ProgressiveConfig& config );
+
 		};
 	}
 }

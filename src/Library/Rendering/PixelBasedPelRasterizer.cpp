@@ -21,6 +21,8 @@
 #include "../Sampling/SobolSequence.h"
 #include "../Lights/LightSampler.h"
 #include "BlockRasterizeSequence.h"
+#include "MortonRasterizeSequence.h"
+#include "ProgressiveFilm.h"
 #include "../RasterImages/RasterImage.h"
 #include "../RISE_API.h"
 
@@ -123,8 +125,18 @@ PixelBasedPelRasterizer::~PixelBasedPelRasterizer( )
 	safe_release( pOptimalMISAccumulator );
 }
 
+unsigned int PixelBasedPelRasterizer::GetProgressiveTotalSPP() const
+{
+	if( adaptiveConfig.maxSamples > 0 ) {
+		return adaptiveConfig.maxSamples;
+	}
+
+	return PixelBasedRasterizerHelper::GetProgressiveTotalSPP();
+}
+
 void PixelBasedPelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
+	PixelBasedRasterizerHelper::PrepareRuntimeContext( rc );
 	rc.pStabilityConfig = &stabilityConfig;
 	rc.pOptimalMIS = pOptimalMISAccumulator;
 #ifdef RISE_ENABLE_OPENPGL
@@ -188,9 +200,9 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			{
-				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
 				RasterizeBlocksForPass(
-					RuntimeContext::PASS_NORMAL,
+					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
 					*pTrainImage,
 					pRect,
@@ -430,7 +442,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			{
-				BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_NORMAL,
 					pScene,
@@ -486,6 +498,19 @@ void PixelBasedPelRasterizer::IntegratePixel(
 {
 	RasterizerState rast = {x,y};
 
+	// Progressive rendering: check if this pixel has already converged
+	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		if( px.converged ) {
+			// Return cached result
+			if( px.alphaSum > 0 ) {
+				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			}
+			return;
+		}
+	}
+
 	// Derive a per-pixel seed for Owen scrambling.
 	// Standard Sobol: seed from pixel coordinates.
 	// ZSobol (blue-noise): seed from Morton index for spatially
@@ -495,18 +520,22 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
 
-	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
+	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
-		const bool adaptive = adaptiveConfig.maxSamples > 0;
+		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
 		const unsigned int batchSize = pSampling->GetNumSamples();
 		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
+		// For ZSobol, compute log2SPP from the full progressive SPP budget
+		// so the blue-noise distribution spans the entire render.
+		const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 		if( useZSobol &&
 			MortonCode::CanEncode2D( static_cast<uint32_t>(x), static_cast<uint32_t>(y) ) )
 		{
 			const uint32_t mi = MortonCode::Morton2D(
 				static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
-			const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( maxSamples ) );
+			const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2( zSobolSPP ) );
 			if( l2 < 32 &&
 				(uint64_t(mi) << l2) < (uint64_t(1) << 32) )
 			{
@@ -519,25 +548,44 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			}
 		}
 
+		// In progressive mode, restore persistent state from the film.
+		// In single-pass mode, start fresh.
 		RISEPel		colAccrued( 0, 0, 0 );
 		Scalar		weights = 0;
 		Scalar		alphas = 0;
-
-		// Welford online variance state (luminance-based)
 		Scalar		wMean = 0;
 		Scalar		wM2 = 0;
 		unsigned int wN = 0;
-
 		uint32_t globalSampleIndex = 0;
 		bool converged = false;
 
-		while( globalSampleIndex < maxSamples && !converged )
+		if( pProgFilm ) {
+			ProgressivePixel& px = pProgFilm->Get( x, y );
+			colAccrued = px.colorSum;
+			weights = px.weightSum;
+			alphas = px.alphaSum;
+			wMean = px.wMean;
+			wM2 = px.wM2;
+			wN = px.wN;
+			globalSampleIndex = px.sampleIndex;
+		}
+
+		const uint32_t targetSamples = pProgFilm && rc.totalProgressiveSPP > 0
+			? rc.totalProgressiveSPP
+			: maxSamples;
+		uint32_t passEndIndex = targetSamples;
+		if( pProgFilm ) {
+			const uint64_t desiredEnd = static_cast<uint64_t>( globalSampleIndex ) + static_cast<uint64_t>( batchSize );
+			passEndIndex = desiredEnd < targetSamples ? static_cast<uint32_t>( desiredEnd ) : targetSamples;
+		}
+
+		while( globalSampleIndex < passEndIndex && !converged )
 		{
 			ISampling2D::SamplesList2D samples;
 			pSampling->GenerateSamplePoints( rc.random, samples );
 
 			ISampling2D::SamplesList2D::const_iterator m, n;
-			for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<maxSamples; m++, globalSampleIndex++ )
+			for( m=samples.begin(), n=samples.end(); m!=n && globalSampleIndex<passEndIndex; m++, globalSampleIndex++ )
 			{
 				RISEPel		c( 0, 0, 0 );
 				Point2		ptOnScreen;
@@ -590,8 +638,9 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						alphas += weight;
 					}
 
-					// Welford update on luminance
-					if( adaptive ) {
+					// Welford update on luminance (always in progressive mode,
+					// or when adaptive is enabled in single-pass mode)
+					if( adaptive || pProgFilm ) {
 						const Scalar lum = bHit ? ColorMath::MaxValue(c) : 0;
 						wN++;
 						const Scalar delta = lum - wMean;
@@ -599,7 +648,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						const Scalar delta2 = lum - wMean;
 						wM2 += delta * delta2;
 					}
-				} else if( adaptive ) {
+				} else if( adaptive || pProgFilm ) {
 					wN++;
 					const Scalar delta = -wMean;
 					wMean += delta / Scalar(wN);
@@ -610,36 +659,45 @@ void PixelBasedPelRasterizer::IntegratePixel(
 				rc.pSampler = 0;
 			}
 
-			// Check convergence after enough batches for reliable statistics.
-			// Require at least 4 batches so the variance estimate has some
-			// stability (n >= 16 with typical batch sizes).
-			if( adaptive && globalSampleIndex >= batchSize * 4 && wN >= 16 )
+			// Check convergence after enough cumulative samples for reliable
+			// statistics.  In progressive mode, wN accumulates across all
+			// passes, so convergence detection kicks in once enough total
+			// samples have been gathered (typically pass 4+ at 8 SPP/pass).
+			if( (adaptive || pProgFilm) && wN >= 32 )
 			{
 				const Scalar variance = wM2 / Scalar(wN - 1);
 				const Scalar stdError = sqrt( variance / Scalar(wN) );
 				const Scalar meanAbs = fabs( wMean );
 
 				if( meanAbs > NEARZERO ) {
-					// Apply a small-sample confidence correction: scale the
-					// threshold down when n is low so we are conservative
-					// about early stopping.  The factor approaches 1.0 as
-					// n grows and equals ~0.5 at n=16.
 					const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-					if( stdError / meanAbs < adaptiveConfig.threshold * confidence ) {
+					const Scalar threshold = adaptiveConfig.maxSamples > 0
+						? adaptiveConfig.threshold
+						: 0.01;		// Default threshold for progressive-only mode
+					if( stdError / meanAbs < threshold * confidence ) {
 						converged = true;
 					}
-				} else if( wM2 < NEARZERO && wN >= batchSize * 8 ) {
-					// Near-zero pixel: require many more samples before
-					// declaring convergence, since rare bright contributions
-					// (e.g. caustics, indirect light) might not have appeared
-					// yet in a small sample set.
+				} else if( wM2 < NEARZERO && wN >= 64 ) {
 					converged = true;
 				}
 			}
 		}
 
+		// Write back persistent state for progressive rendering
+		if( pProgFilm ) {
+			ProgressivePixel& px = pProgFilm->Get( x, y );
+			px.colorSum = colAccrued;
+			px.weightSum = weights;
+			px.alphaSum = alphas;
+			px.wMean = wMean;
+			px.wM2 = wM2;
+			px.wN = wN;
+			px.sampleIndex = globalSampleIndex;
+			px.converged = converged;
+		}
+
 		if( adaptive && adaptiveConfig.showMap ) {
-			const Scalar t = Scalar(globalSampleIndex) / Scalar(maxSamples);
+			const Scalar t = Scalar(globalSampleIndex) / Scalar(targetSamples);
 			cret = RISEColor( RISEPel(t, t, t), 1.0 );
 		} else {
 			// Divide out by the number of samples

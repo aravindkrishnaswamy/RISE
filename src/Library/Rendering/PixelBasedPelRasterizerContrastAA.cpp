@@ -187,7 +187,7 @@ void PixelBasedPelRasterizerContrastAA::IntegratePixel(
 {
 	// If we have a sampling object, then we want to sub-sample each pixel, so
 	// do that
-	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
+	if( pSampling && pPixelFilter && rc.UsesPixelSampling() )
 	{
 		RISEPel			colAccrued( 0, 0, 0 );
 
@@ -325,4 +325,3 @@ void PixelBasedPelRasterizerContrastAA::IntegratePixel(
 		SingleSamplePixel( rc, x, y, height, pScene, cret );
 	}
 }
-

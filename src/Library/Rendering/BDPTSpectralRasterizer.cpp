@@ -32,6 +32,7 @@
 #include "../Utilities/Color/ColorUtils.h"
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IMaterial.h"
+#include "ProgressiveFilm.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -70,6 +71,7 @@ BDPTSpectralRasterizer::~BDPTSpectralRasterizer()
 
 void BDPTSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 {
+	PixelBasedRasterizerHelper::PrepareRuntimeContext( rc );
 	// The spectral rasterizer's pixel-based base does not set up
 	// stability config, so set it from the authoritative
 	// BDPTRasterizerBase copy here.
@@ -497,14 +499,19 @@ void BDPTSpectralRasterizer::IntegratePixel(
 	}
 
 	// Determine how many samples to take
-	ISampling2D::SamplesList2D samples;
-	bool bMultiSample = false;
+	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int maxSamples = batchSize;
 
-	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL ) {
-		pSampling->GenerateSamplePoints( rc.random, samples );
-		bMultiSample = true;
-	} else {
-		samples.push_back( Point2( 0, 0 ) );
+	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		if( px.converged ) {
+			if( px.alphaSum > 0 ) {
+				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+			}
+			return;
+		}
 	}
 
 	// Derive a per-pixel seed for Owen scrambling.
@@ -522,8 +529,9 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		// The effective per-pixel sample count includes both pixel
 		// samples and spectral samples, since IntegratePixelSpectral
 		// derives Sobol indices as (pixelSampleIndex * nSpectralSamples + ss).
+		const uint32_t zSobolPixelSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 		const uint32_t l2 = MortonCode::Log2Int( MortonCode::RoundUpPow2(
-			static_cast<uint32_t>(samples.size()) * nSpectralSamples ) );
+			zSobolPixelSPP * nSpectralSamples ) );
 		// Check overflow: if the Morton-shifted index exceeds uint32_t,
 		// fall back to standard Sobol (mortonIndex=0, log2SPP=0 gives
 		// the identity mapping).
@@ -542,52 +550,127 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
 	}
 
-	XYZPel colAccrued( 0, 0, 0 );
+	RISEPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
+	Scalar alphas = 0;
+	Scalar wMean = 0;
+	Scalar wM2 = 0;
+	unsigned int wN = 0;
 
 	uint32_t pixelSampleIndex = 0;
-	ISampling2D::SamplesList2D::const_iterator m, n;
-	for( m=samples.begin(), n=samples.end(); m!=n; m++, pixelSampleIndex++ )
+	bool converged = false;
+
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		colAccrued = px.colorSum;
+		weights = px.weightSum;
+		alphas = px.alphaSum;
+		wMean = px.wMean;
+		wM2 = px.wM2;
+		wN = px.wN;
+		pixelSampleIndex = px.sampleIndex;
+	}
+
+	const uint32_t targetSamples = pProgFilm && rc.totalProgressiveSPP > 0
+		? rc.totalProgressiveSPP
+		: maxSamples;
+	uint32_t passEndIndex = targetSamples;
+	if( pProgFilm ) {
+		const uint64_t desiredEnd = static_cast<uint64_t>( pixelSampleIndex ) + static_cast<uint64_t>( batchSize );
+		passEndIndex = desiredEnd < targetSamples ? static_cast<uint32_t>( desiredEnd ) : targetSamples;
+	}
+
+	while( pixelSampleIndex < passEndIndex && !converged )
 	{
-		Point2 ptOnScreen;
-		Scalar weight = 1.0;
-
+		ISampling2D::SamplesList2D samples;
 		if( bMultiSample ) {
-			weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+			pSampling->GenerateSamplePoints( rc.random, samples );
 		} else {
-			ptOnScreen = Point2( x, height-y );
-		}
-		weights += weight;
-
-		if( temporal_samples ) {
-			pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+			samples.push_back( Point2( 0, 0 ) );
 		}
 
-		// The Morton remapping is done inside IntegratePixelSpectral per
-		// spectral sample, so pass the raw pixelSampleIndex here.
+		ISampling2D::SamplesList2D::const_iterator m, n;
+		for( m=samples.begin(), n=samples.end(); m!=n && pixelSampleIndex<passEndIndex; m++, pixelSampleIndex++ )
+		{
+			Point2 ptOnScreen;
+			Scalar weight = 1.0;
+
+			if( bMultiSample ) {
+				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+			} else {
+				ptOnScreen = Point2( x, height-y );
+			}
+			weights += weight;
+
+			if( temporal_samples ) {
+				pScene.GetAnimator()->EvaluateAtTime( temporal_start + (rc.random.CanonicalRandom()*temporal_exposure) );
+			}
+
+			// The Morton remapping is done inside IntegratePixelSpectral per
+			// spectral sample, so pass the raw pixelSampleIndex here.
 
 #ifdef RISE_ENABLE_OIDN
-		PixelAOV aov;
-		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-			pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 ) * weight;
-		if( pAOVBuffers && aov.valid ) {
-			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-			pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
-		}
+			PixelAOV aov;
+			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
+				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, pAOVBuffers ? &aov : 0 );
+			if( pAOVBuffers && aov.valid ) {
+				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+				pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+			}
 #else
-		colAccrued = colAccrued + IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
-			pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 ) * weight;
+			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
+				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 );
 #endif
+			const RISEPel samplePel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z );
+			colAccrued = colAccrued + samplePel * weight;
+			alphas += weight;
+
+			if( pProgFilm ) {
+				const Scalar lum = ColorMath::MaxValue(samplePel);
+				wN++;
+				const Scalar delta = lum - wMean;
+				wMean += delta / Scalar(wN);
+				const Scalar delta2 = lum - wMean;
+				wM2 += delta * delta2;
+			}
+		}
+
+		if( pProgFilm && wN >= 32 )
+		{
+			const Scalar variance = wM2 / Scalar(wN - 1);
+			const Scalar stdError = sqrt( variance / Scalar(wN) );
+			const Scalar meanAbs = fabs( wMean );
+
+			if( meanAbs > NEARZERO ) {
+				const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
+				if( stdError / meanAbs < 0.01 * confidence ) {
+					converged = true;
+				}
+			} else if( wM2 < NEARZERO && wN >= 64 ) {
+				converged = true;
+			}
+		}
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	if( pAOVBuffers && weights > 0 ) {
+	if( pAOVBuffers && weights > 0 && !pProgFilm ) {
 		pAOVBuffers->Normalize( x, y, 1.0 / weights );
 	}
 #endif
 
-	if( weights > 0 ) {
-		colAccrued = colAccrued * (1.0 / weights);
-		cret = RISEColor( RISEPel( colAccrued.X, colAccrued.Y, colAccrued.Z ), 1.0 );
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		px.colorSum = colAccrued;
+		px.weightSum = weights;
+		px.alphaSum = alphas;
+		px.wMean = wMean;
+		px.wM2 = wM2;
+		px.wN = wN;
+		px.sampleIndex = pixelSampleIndex;
+		px.converged = converged;
+	}
+
+	if( alphas > 0 ) {
+		cret = RISEColor( colAccrued * (1.0 / alphas), alphas / weights );
 	}
 }

@@ -1434,6 +1434,10 @@
 		F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
 		F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */; };
 		F2D9B08F2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
+		F2D9B0C32F89F5070077A171 /* ProgressiveConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */; };
+		F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */; };
+		F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C52F89F7B40077A171 /* AliasTable.h */; };
+		F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2194,6 +2198,10 @@
 		F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingIntegrator.h; sourceTree = "<group>"; };
 		F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingIntegrator.cpp; sourceTree = "<group>"; };
+		F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ProgressiveConfig.h; sourceTree = "<group>"; };
+		F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveSamplingConfig.h; sourceTree = "<group>"; };
+		F2D9B0C52F89F7B40077A171 /* AliasTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AliasTable.h; sourceTree = "<group>"; };
+		F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTUtilities.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -3052,6 +3060,10 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */,
+				F2D9B0C52F89F7B40077A171 /* AliasTable.h */,
+				F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */,
+				F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */,
 				F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */,
 				F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */,
 				F24C548A2F87D990009AF16D /* MajorantGrid.h */,
@@ -3378,6 +3390,9 @@
 				F27F0AF3069C42910069C9E5 /* IRasterImage.h in Headers */,
 				F27F0AF4069C42910069C9E5 /* IRasterImageAccessor.h in Headers */,
 				F27F0AF5069C42910069C9E5 /* IRasterImageReader.h in Headers */,
+				F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */,
+				F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */,
+				F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */,
 				F27F0AF6069C42910069C9E5 /* IRasterImageWriter.h in Headers */,
 				F27F0AF7069C42910069C9E5 /* IRasterizer.h in Headers */,
 				F27F0AF8069C42910069C9E5 /* IRasterizerOutput.h in Headers */,
@@ -3640,6 +3655,7 @@
 				F27F0C78069C42910069C9E5 /* Math3D.h in Headers */,
 				F27F0C79069C42910069C9E5 /* Matrices.h in Headers */,
 				F27F0C7A069C42910069C9E5 /* MatricesOps.h in Headers */,
+				F2D9B0C32F89F5070077A171 /* ProgressiveConfig.h in Headers */,
 				F27F0C7B069C42910069C9E5 /* Points.h in Headers */,
 				F27F0C7C069C42910069C9E5 /* PointsOps.h in Headers */,
 				F27F0C7D069C42910069C9E5 /* Quaternion.h in Headers */,

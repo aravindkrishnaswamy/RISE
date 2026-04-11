@@ -68,7 +68,7 @@ void PathTracingShaderOp::PerformOperation(
 {
 	c = RISEPel( 0.0 );
 
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 
@@ -106,7 +106,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* pScat
 	) const
 {
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 
@@ -152,7 +152,7 @@ void PathTracingShaderOp::PerformOperationHWSS(
 		result[i] = 0;
 	}
 
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 

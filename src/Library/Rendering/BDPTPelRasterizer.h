@@ -41,6 +41,9 @@ namespace RISE
 			/// the default-constructed PixelBasedPelRasterizer copy.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
 
+			/// Override to use this BDPT rasterizer's adaptive sampling config.
+			unsigned int GetProgressiveTotalSPP() const;
+
 			void IntegratePixel(
 				const RuntimeContext& rc,
 				const unsigned int x,

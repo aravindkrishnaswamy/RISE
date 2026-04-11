@@ -5214,11 +5214,12 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5337,6 +5338,11 @@ namespace RISE
 							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
 						} else if( pname == "optimal_mis_tile_size" ) {
 							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5348,7 +5354,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler );
+						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
 
@@ -5382,7 +5388,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					bool useHWSS = false;
 					bool integrateRGB = false;
@@ -5612,7 +5618,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5724,7 +5730,7 @@ namespace RISE
 					bool onlyonelight = false;
 					double contrast_threshold[3] = {0.01, 0.01, 0.01};
 					bool show_samples = false;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5831,11 +5837,12 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5964,6 +5971,11 @@ namespace RISE
 							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
 						} else if( pname == "optimal_mis_tile_size" ) {
 							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -5977,7 +5989,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
 
@@ -6016,11 +6028,12 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					bool useHWSS = false;
 					PathGuidingConfig guidingConfig;
 					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -6147,6 +6160,11 @@ namespace RISE
 							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
 						} else if( pname == "optimal_mis_tile_size" ) {
 							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6161,7 +6179,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
 				}
 			};
 
@@ -6194,11 +6212,12 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -6323,6 +6342,11 @@ namespace RISE
 							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
 						} else if( pname == "optimal_mis_tile_size" ) {
 							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6335,7 +6359,7 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
 
@@ -6372,11 +6396,12 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					bool useHWSS = false;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -6485,6 +6510,11 @@ namespace RISE
 							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
 						} else if( pname == "optimal_mis_tile_size" ) {
 							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6498,7 +6528,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, useiorstack, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, blueNoiseSampler, useHWSS );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
 				}
 			};
 
@@ -6516,7 +6546,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -6577,7 +6607,7 @@ namespace RISE
 					bool showLuminaires = true;
 					bool useiorstack = false;
 					bool onlyonelight = false;
-					bool oidnDenoise = false;
+					bool oidnDenoise = true;
 					double nmbegin = 400;
 					double nmend = 700;
 					unsigned int spectralSamples = 1;

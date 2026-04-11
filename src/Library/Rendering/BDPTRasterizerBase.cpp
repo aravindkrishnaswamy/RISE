@@ -30,10 +30,12 @@
 #include "../Lights/LightSampler.h"
 #include "../RasterImages/RasterImage.h"
 #include "BlockRasterizeSequence.h"
+#include "MortonRasterizeSequence.h"
 #include "RasterizeDispatchers.h"
 #include "../Utilities/Profiling.h"
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
+#include "ProgressiveFilm.h"
 #include "../RISE_API.h"
 
 using namespace RISE;
@@ -403,16 +405,16 @@ void BDPTRasterizerBase::RasterizeScene(
 				pProgressFunc->SetTitle( title );
 			}
 
-				{
-					BlockRasterizeSequence* pTrainBlocks = new BlockRasterizeSequence( 64, 64, 2 );
-					RasterizeBlocksForPass(
-						RuntimeContext::PASS_NORMAL,
+			{
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
+				RasterizeBlocksForPass(
+					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
 					*pTrainImage,
 					pRect,
-						*pTrainBlocks );
-					safe_release( pTrainBlocks );
-				}
+					*pTrainBlocks );
+				safe_release( pTrainBlocks );
+			}
 
 				pTrainSplat->Resolve( *pTrainImage, mSplatTotalSamples );
 
@@ -717,9 +719,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 
 	// If there is no raster sequence, create a default one
-	BlockRasterizeSequence* blocks = 0;
+	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new BlockRasterizeSequence( 64, 64, 2 );
+		blocks = new MortonRasterizeSequence( 32 );
 		pRasterSequence = blocks;
 	}
 
@@ -731,8 +733,90 @@ void BDPTRasterizerBase::RasterizeScene(
 	pIntegrator->ResetStrategySelectionStats();
 #endif
 
-	// Render pass: dispatch blocks to threads
+	if( progressiveConfig.enabled && pSampling )
 	{
+		// Progressive multi-pass BDPT rendering.  SplatFilm accumulates
+		// across all passes; intermediate preview composites splats via
+		// GetIntermediateOutputImage.
+
+		const unsigned int totalSPP = GetProgressiveTotalSPP();
+		const unsigned int spp = progressiveConfig.samplesPerPass > 0 ? progressiveConfig.samplesPerPass : 1;
+		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
+
+		ProgressiveFilm progFilm( width, height );
+		mProgressiveFilm = &progFilm;
+		mTotalProgressiveSPP = totalSPP;
+
+		ISampling2D* pSavedSampling = pSampling;
+
+		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
+		{
+			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
+
+			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			pPassSampling->SetNumSamples( passSPP );
+			const_cast<BDPTRasterizerBase*>(this)->pSampling = pPassSampling;
+
+			if( pProgressFunc ) {
+				char title[128];
+				snprintf( title, sizeof(title), "BDPT Progressive Pass [%u/%u]: ", passIdx+1, numPasses );
+				pProgressFunc->SetTitle( title );
+			}
+
+			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( 32 );
+			const bool passCompleted = RasterizeBlocksForPass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
+			safe_release( pPassSeq );
+
+			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
+			safe_release( pPassSampling );
+
+			// Intermediate preview: rebuild the primary image from the
+			// accumulated progressive state, then composite splats into a
+			// scratch copy for display.
+			progFilm.Resolve( *pImage );
+
+			IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+			RasterizerOutputListType::const_iterator r, s;
+			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+				(*r)->OutputIntermediateImage( outputImage, pRect );
+			}
+
+			if( !passCompleted ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"BDPT Progressive:: Cancelled after pass %u/%u",
+					passIdx+1, numPasses );
+				break;
+			}
+
+			// Check whether every pixel has converged or reached the sample cap.
+			const unsigned int doneCount = progFilm.CountDone( totalSPP );
+			if( doneCount >= width * height ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"BDPT Progressive:: All pixels complete after pass %u/%u",
+					passIdx+1, numPasses );
+				break;
+			}
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		if( pAOVBuffers ) {
+			for( unsigned int y=0; y<height; y++ ) {
+				for( unsigned int x=0; x<width; x++ ) {
+					const ProgressivePixel& px = progFilm.Get( x, y );
+					if( px.alphaSum > 0 ) {
+						pAOVBuffers->Normalize( x, y, 1.0 / px.alphaSum );
+					}
+				}
+			}
+		}
+#endif
+
+		mProgressiveFilm = 0;
+		mTotalProgressiveSPP = 0;
+	}
+	else
+	{
+		// Single-pass render: dispatch blocks to threads
 		unsigned int startx, starty, endx, endy;
 		BoundsFromRect( startx, starty, endx, endy, pRect, width, height );
 
@@ -760,6 +844,7 @@ void BDPTRasterizerBase::RasterizeScene(
 		else
 		{
 			RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
+			PrepareRuntimeContext( rc );
 
 			pRasterSequence->Begin( startx, endx, starty, endy );
 

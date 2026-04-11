@@ -42,7 +42,7 @@ void CausticSpectralPhotonMapShaderOp::PerformOperation(
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 
@@ -71,7 +71,7 @@ Scalar CausticSpectralPhotonMapShaderOp::PerformOperationNM(
 	Scalar c = 0;
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 	

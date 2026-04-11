@@ -38,6 +38,7 @@ namespace RISE
 			virtual ~PathTracingSpectralRasterizer();
 
 			PathTracingIntegrator*	pIntegrator;
+			AdaptiveSamplingConfig	adaptiveConfig;
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -61,6 +62,8 @@ namespace RISE
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap
 				) const;
+
+			unsigned int GetProgressiveTotalSPP() const;
 
 		public:
 			PathTracingSpectralRasterizer(

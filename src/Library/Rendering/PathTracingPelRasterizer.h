@@ -39,6 +39,10 @@ namespace RISE
 
 			PathTracingIntegrator*	pIntegrator;
 
+			/// Progressive rendering should run to adaptive_max_samples
+			/// when adaptive sampling is enabled.
+			unsigned int GetProgressiveTotalSPP() const;
+
 			void IntegratePixel(
 				const RuntimeContext& rc,
 				const unsigned int x,

@@ -84,7 +84,7 @@ void DistributionTracingShaderOp::PerformOperation(
 		const IIrradianceCache* pCache = pScene->GetIrradianceCache();
 
 		// If we are to use irradiance caching and we are in a normal pass, look it up
-		if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
+		if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
 			// Look it up
 			std::vector<IIrradianceCache::CacheElement> results;
             const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
@@ -229,7 +229,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 

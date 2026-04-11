@@ -3160,10 +3160,27 @@ namespace RISE
 #include "Rendering/BlockRasterizeSequence.h"
 #include "Rendering/ScanlineRasterizeSequence.h"
 #include "Rendering/HilbertRasterizeSequence.h"
+#include "Rendering/MortonRasterizeSequence.h"
 
 namespace RISE
 {
-	//! Creates a block rasterize sequence
+	//! Creates a Morton (Z-order) curve rasterize sequence for optimal cache locality
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMortonRasterizeSequence(
+								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
+								const unsigned int tileSize			///< [in] Width and height of each square tile
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new MortonRasterizeSequence( tileSize );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "morton raster sequence" );
+		return true;
+	}
+
+	//! Creates a block rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBlockRasterizeSequence(
 								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
@@ -3181,7 +3198,7 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a scanline rasterize sequence
+	//! Creates a scanline rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateScanlineRasterizeSequence(
 								IRasterizeSequence** ppi			///< [out] Pointer to recieve the rasterize sequence
@@ -3196,7 +3213,7 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a hilbert space filling curve rasterize sequence
+	//! Creates a hilbert space filling curve rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateHilbertRasterizeSequence(
 								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
@@ -4656,6 +4673,25 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PathTracing Spectral rasterizer" );
+		return true;
+	}
+
+	bool RISE_API_SetRasterizerProgressiveRendering(
+								IRasterizer* pRasterizer,
+								const bool enabled,
+								const unsigned int samplesPerPass
+								)
+	{
+		PixelBasedRasterizerHelper* pHelper =
+			dynamic_cast<PixelBasedRasterizerHelper*>( pRasterizer );
+		if( !pHelper ) {
+			return false;
+		}
+
+		ProgressiveConfig config;
+		config.enabled = enabled;
+		config.samplesPerPass = samplesPerPass > 0 ? samplesPerPass : 1;
+		pHelper->SetProgressiveConfig( config );
 		return true;
 	}
 

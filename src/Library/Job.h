@@ -37,6 +37,7 @@
 #include "Interfaces/IMedium.h"
 #include "Utilities/Reference.h"
 #include "Utilities/RString.h"
+#include "Utilities/ProgressiveConfig.h"
 #include <map>
 
 namespace RISE
@@ -1379,7 +1380,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			);
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1510,7 +1512,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			);
 
 		//! Sets the rasterizer type to be spectral BDPT
@@ -1550,7 +1553,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			);
 
 		bool SetPathTracingPelRasterizer(
@@ -1583,7 +1587,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,
 			const AdaptiveSamplingConfig& adaptiveConfig,
 			const StabilityConfig& stabilityConfig,
-			const bool useZSobol
+			const bool useZSobol,
+			const ProgressiveConfig& progressiveConfig
 			);
 
 		bool SetPathTracingSpectralRasterizer(
@@ -1620,7 +1625,8 @@ namespace RISE
 			const AdaptiveSamplingConfig& adaptiveConfig,
 			const StabilityConfig& stabilityConfig,
 			const bool useZSobol,
-			const bool useHWSS
+			const bool useHWSS,
+			const ProgressiveConfig& progressiveConfig
 			);
 
 		bool SetMLTRasterizer(
