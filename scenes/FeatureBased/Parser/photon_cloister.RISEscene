@@ -43,7 +43,6 @@ pixelpel_rasterizer
 	max_recursion		6
 	samples				6
 	lum_samples			6
-	ior_stack			TRUE
 	radiance_map		pnt_env
 	radiance_scale		0.35
 	radiance_background	FALSE
@@ -695,7 +694,6 @@ caustic_pel_photonmap
 	refract				TRUE
 	shootFromNonMeshLights		TRUE
 	shootFromMeshLights			FALSE
-	ior_stack			TRUE
 }
 
 caustic_pel_gather

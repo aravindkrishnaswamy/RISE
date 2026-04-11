@@ -46,7 +46,6 @@ pixelpel_rasterizer
 	max_recursion		4
 	samples				25
 	lum_samples			1
-	ior_stack			TRUE
 	radiance_map		pnt_env
 	radiance_background	TRUE
 }

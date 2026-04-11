@@ -25,7 +25,6 @@ pathtracing_pel_rasterizer
 {
 	samples                       64
 	lum_samples                   1
-	ior_stack                     true
 }
 
 file_rasterizeroutput

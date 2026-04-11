@@ -1368,7 +1368,6 @@ namespace
 			0.0,
 			0.0,
 			settings.show_lights != 0,
-			settings.use_ior_stack != 0,
 			settings.choose_one_light != 0,
 			settings.oidn_denoise != 0,
 			guiding_config,

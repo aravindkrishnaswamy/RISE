@@ -74,7 +74,6 @@ namespace RISE
 				const bool reflect,
 				const bool refract,
 				const bool shootFromNonMeshLights,
-				const bool useiorstack,
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
 				const bool regenerate,

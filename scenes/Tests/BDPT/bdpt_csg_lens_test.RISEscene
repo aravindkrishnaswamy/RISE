@@ -19,7 +19,6 @@ bdpt_pel_rasterizer
 	max_light_depth		5
 	samples				200
 	lum_samples			1
-	ior_stack			TRUE
 }
 
 file_rasterizeroutput

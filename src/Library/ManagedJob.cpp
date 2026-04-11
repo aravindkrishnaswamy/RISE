@@ -173,7 +173,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should luminaires be shown?
-			const bool bUseIORStack,								///< [in] Should the index of refraction stack be used?
 			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			)
 		{
@@ -195,7 +194,7 @@ namespace RISE
 			const double __pin* orient_ = &orient[0];
 
 			bool bRet = pBackObj->SetPixelBasedPelRasterizer(
-				numPixelSamples, numLumSamples, maxRecur, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+				numPixelSamples, numLumSamples, maxRecur, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bChooseOnlyOneLight );
 
 			Marshal::FreeCoTaskMem( intptr );
 			Marshal::FreeCoTaskMem( intptr2 );
@@ -230,7 +229,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should luminaires be shown?
-			const bool bUseIORStack,								///< [in] Should the index of refraction stack be used?
 			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			)
 		{
@@ -252,7 +250,7 @@ namespace RISE
 			const double __pin* orient_ = &orient[0];
 
 			bool bRet = pBackObj->SetPixelBasedSpectralIntegratingRasterizer(
-				numPixelSamples, numLumSamples, specSamples, lambda_begin, lambda_end, num_wavelengths, maxRecur, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight, false, 0, 0, 0, 0, 0, false, StabilityConfig(), false, false );
+				numPixelSamples, numLumSamples, specSamples, lambda_begin, lambda_end, num_wavelengths, maxRecur, szshader, szglobalradiancemap, bBackground, scale, orient_, szpixelsampler, pixelSamplerParam, szluminarysampler, luminarySamplerParam, szpixelfilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB, bShowLuminaires, bChooseOnlyOneLight, false, 0, 0, 0, 0, 0, false, StabilityConfig(), false, false );
 
 			Marshal::FreeCoTaskMem( intptr );
 			Marshal::FreeCoTaskMem( intptr2 );

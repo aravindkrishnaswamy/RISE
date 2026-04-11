@@ -1311,7 +1311,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -1345,7 +1344,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 			const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
@@ -1380,7 +1378,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
 			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
@@ -1417,7 +1414,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const double nmbegin,									///< [in] Start wavelength (nm)
 			const double nmend,										///< [in] End wavelength (nm)
@@ -1456,7 +1452,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
 			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
@@ -1491,7 +1486,6 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const double nmbegin,									///< [in] Start wavelength (nm)
 			const double nmend,										///< [in] End wavelength (nm)
@@ -1522,7 +1516,6 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
@@ -1539,7 +1532,6 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const double nmbegin,									///< [in] Start of spectral range (nm)
 			const double nmend,										///< [in] End of spectral range (nm)
@@ -1733,7 +1725,6 @@ namespace RISE
 			const bool reflect,								///< [in] Should we trace reflected rays?
 			const bool refract,								///< [in] Should we trace refracted rays?
 			const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 			const bool shootFromMeshLights = true			///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -1748,7 +1739,6 @@ namespace RISE
 			const double minImportance,						///< [in] Minimum importance when a photon is discarded
 			const bool branch,								///< [in] Should the tracer branch or follow a single path?
 			const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 			const bool shootFromMeshLights = true			///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -1765,7 +1755,6 @@ namespace RISE
 			const bool refract,								///< [in] Should we trace refracted rays?
 			const bool direct_translucent,					///< [in] Should we trace translucent primary interaction rays?
 			const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 			const bool shootFromMeshLights = true			///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -1781,7 +1770,6 @@ namespace RISE
 			const double nm_begin,							///< [in] Wavelength to start shooting photons at
 			const double nm_end,							///< [in] Wavelength to end shooting photons at
 			const unsigned int num_wavelengths,				///< [in] Number of wavelengths to shoot photons at
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const bool branch,								///< [in] Should the tracer branch or follow a single path?
 			const bool reflect,								///< [in] Should we trace reflected rays?
 			const bool refract,								///< [in] Should we trace refracted rays?
@@ -1799,7 +1787,6 @@ namespace RISE
 			const double nm_begin,							///< [in] Wavelength to start shooting photons at
 			const double nm_end,							///< [in] Wavelength to end shooting photons at
 			const unsigned int num_wavelengths,				///< [in] Number of wavelengths to shoot photons at
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const bool branch,								///< [in] Should the tracer branch or follow a single path?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?

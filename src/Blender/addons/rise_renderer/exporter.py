@@ -56,7 +56,6 @@ class RenderSettingsData:
     max_recursion: int
     use_path_tracing: bool
     choose_one_light: bool
-    use_ior_stack: bool
     show_lights: bool
     use_world_ambient: bool
     path_branch: bool
@@ -1320,7 +1319,6 @@ def build_render_settings(scene) -> RenderSettingsData:
         max_recursion=int(rise.max_recursion),
         use_path_tracing=bool(rise.use_path_tracing),
         choose_one_light=bool(rise.choose_one_light),
-        use_ior_stack=bool(rise.use_ior_stack),
         show_lights=bool(rise.show_lights),
         use_world_ambient=bool(rise.use_world_ambient),
         path_branch=bool(rise.path_branch),

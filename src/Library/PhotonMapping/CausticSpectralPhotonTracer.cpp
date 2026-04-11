@@ -29,7 +29,6 @@ CausticSpectralPhotonTracer::CausticSpectralPhotonTracer(
 	const Scalar nm_begin_,						///< [in] Wavelength to start shooting photons at
 	const Scalar nm_end_,						///< [in] Wavelength to end shooting photons at
 	const unsigned int num_wavelengths_,		///< [in] Number of wavelengths to shoot photons at
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const bool branch,							///< [in] Should the tracer branch or only follow one path?
 	const bool reflect,							///< Should we trace reflected rays?
 	const bool refract,							///< Should we trace refracted rays?
@@ -37,7 +36,7 @@ CausticSpectralPhotonTracer::CausticSpectralPhotonTracer(
 	const unsigned int temporal_samples,
 	const bool regenerate
 	) : 
-  SpectralPhotonTracer<CausticSpectralPhotonMap>( nm_begin_, nm_end_, num_wavelengths_, useiorstack, powerscale, temporal_samples, regenerate ),
+  SpectralPhotonTracer<CausticSpectralPhotonMap>( nm_begin_, nm_end_, num_wavelengths_, powerscale, temporal_samples, regenerate ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bBranch( branch ),

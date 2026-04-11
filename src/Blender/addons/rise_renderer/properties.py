@@ -55,11 +55,6 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         description="Use RISE's single-random-light luminaire sampling mode",
         default=False,
     )
-    use_ior_stack: bpy.props.BoolProperty(
-        name="IOR Stack",
-        description="Enable RISE's index-of-refraction stack",
-        default=True,
-    )
     show_lights: bpy.props.BoolProperty(
         name="Visible Lights",
         description="Allow light sources to be visible to the camera",

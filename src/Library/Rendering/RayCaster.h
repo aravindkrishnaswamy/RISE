@@ -44,7 +44,6 @@ namespace RISE
 			const unsigned int			nMaxRecursions;
 
 			const bool					bShowLuminaires;
-			const bool					bIORStack;
 
 			const bool					bChooseOnlyOneLuminaire;
 
@@ -59,7 +58,6 @@ namespace RISE
 				const unsigned int maxR,
 				const IShader& pDefaultShader_,
 				const bool showLuminaires,
-				const bool useiorstack,
 				const bool chooseonlyoneluminaire
 				);
 
@@ -168,8 +166,6 @@ namespace RISE
 			/// Enables or disables the light BVH.
 			void SetUseLightBVH( const bool enable );
 
-			/// \return True when the ray caster tracks a per-ray IOR stack
-			inline bool UsesIORStack() const { return bIORStack; }
 		};
 	}
 }

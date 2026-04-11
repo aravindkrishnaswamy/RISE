@@ -30,7 +30,6 @@ namespace RISE
 		protected:
 			const bool					bShootFromNonMeshLights;///< Should we shoot from non mesh based lights?
 			const bool					bShootFromMeshLights;	///< Should we shoot from mesh based lights (luminaries)?
-			const bool					bUseIORStack;			///< Should we use an ior stack ?
 			const Scalar				dPowerScale;			///< How much to scale shooting power by
 			const unsigned int			nNumTemporalSamples;	///< Number of temporal samples to take when tracing at a particular time
 			const bool					bRegenerateSpecificTime;///< Should the photon map regenerate when asked to for a specific time?
@@ -42,7 +41,6 @@ namespace RISE
 
 			PhotonTracer(
 				const bool shootFromNonMeshLights,
-				const bool useiorstack,
 				const Scalar power_scale,
 				const unsigned int temporal_samples,
 				const bool regenerate,
@@ -50,7 +48,6 @@ namespace RISE
 				) :
 			  bShootFromNonMeshLights( shootFromNonMeshLights ),
 			  bShootFromMeshLights( shootFromMeshLights ),
-			  bUseIORStack( useiorstack ),
 			  dPowerScale( power_scale ),
 			  nNumTemporalSamples( temporal_samples ),
 			  bRegenerateSpecificTime( regenerate ),
@@ -138,7 +135,7 @@ namespace RISE
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
 
 						// Now shoot that ray as a photon
-						TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );
+						TraceSinglePhoton( r, power, *pPhotonMap, &ior_stack );
 
 						numshot_thislum++;
 					}
@@ -181,7 +178,7 @@ namespace RISE
 								Ray r;
 								r = l->generateRandomPhoton( Point3(geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom()) );
 
-								TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );
+								TraceSinglePhoton( r, power, *pPhotonMap, &ior_stack );
 
 								numshot_thislum++;
 							}

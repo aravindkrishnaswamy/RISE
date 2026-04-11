@@ -20,7 +20,6 @@ bdpt_pel_rasterizer
 	max_eye_depth				12
 	max_light_depth				12
 	samples						32
-	ior_stack					TRUE
 	max_diffuse_bounce			2
 	max_transmission_bounce		50
 }

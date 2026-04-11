@@ -20,7 +20,6 @@ bdpt_pel_rasterizer
 	max_light_depth		6
 	samples				128
 	lum_samples			1
-	ior_stack			TRUE
 	sms_enabled			TRUE
 	sms_max_iterations	20
 	sms_threshold		1e-5

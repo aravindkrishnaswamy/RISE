@@ -53,7 +53,6 @@ RayCaster::RayCaster(
 	const unsigned int maxR,
 	const IShader& pDefaultShader_,
 	const bool showLuminaires,
-	const bool useiorstack,
 	const bool chooseonlyoneluminaire
 	) :
   pScene( 0 ),
@@ -64,7 +63,6 @@ RayCaster::RayCaster(
   bConsiderRMapAsBackground( seeRadianceMap ),
   nMaxRecursions( maxR ),
   bShowLuminaires( showLuminaires ),
-  bIORStack( useiorstack ),
   bChooseOnlyOneLuminaire( chooseonlyoneluminaire ),
   dPendingLightRRThreshold( 0 ),
   bPendingUseLightBVH( false )
@@ -167,12 +165,8 @@ bool RayCaster::CastRay(
 			const IRadianceMap* pRadianceMap					///< [in] Radiance map to use in case there is no hit
 			) const
 {
-	if( bIORStack ) {
-		IORStack ior_stack( 1.0 );
-		return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, &ior_stack );
-	}
-
-	return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, 0 );
+	IORStack ior_stack( 1.0 );
+	return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, &ior_stack );
 }
 
 bool RayCaster::CastRay( 
@@ -837,12 +831,8 @@ bool RayCaster::CastRayNM(
 	const IRadianceMap* pRadianceMap					///< [in] Radiance map to use in case there is no hit
 	) const
 {
-	if( bIORStack ) {
-		IORStack ior_stack( 1.0 );
-		return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, &ior_stack );
-	}
-
-	return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, 0 );
+	IORStack ior_stack( 1.0 );
+	return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, &ior_stack );
 }
 
 //! Tells the ray caster to cast the specified ray into the scene for the specific wavelength

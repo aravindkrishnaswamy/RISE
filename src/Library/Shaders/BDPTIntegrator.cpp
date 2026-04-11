@@ -108,12 +108,6 @@ namespace
 	// Delegate to shared PathVertexEval utility
 	using PathVertexEval::BuildVertexIORStack;
 
-	inline bool BDPTUsesIORStack( const IRayCaster& caster )
-	{
-		const RayCaster* pConcrete = dynamic_cast<const RayCaster*>( &caster );
-		return pConcrete ? pConcrete->UsesIORStack() : false;
-	}
-
 	inline bool GuidingSupportsSurfaceSampling( const ScatteredRay& scat )
 	{
 		return !scat.isDelta && scat.type == ScatteredRay::eRayDiffuse;
@@ -1274,7 +1268,6 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
-	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
 	// Phase 0: light source sampling (position + direction)
@@ -1380,7 +1373,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				useIORStack ? &iorStack : 0, &scene, pMedObj );
+				&iorStack, &scene, pMedObj );
 			pMedObj_light = pMedObj;
 			pMed_light = pMed;
 
@@ -1556,7 +1549,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// seed its boundary walk from the correct starting medium.
 		v.pMediumObject = pMedObj_light;
 		v.pMediumVol = pMed_light;
-		if( useIORStack && ri.pObject ) {
+		if( ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
 			v.insideObject = iorStack.containsCurrent();
@@ -1606,7 +1599,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->Scatter( ri.geometric, sampler, scattered, &iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2037,7 +2030,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			vertices.back().guidingScatteringWeight = localScatteringWeight;
 			vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 			vertices.back().guidingEta =
-				(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+				(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
 					pScat->ior_stack->top() :
 					(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
 			vertices.back().guidingRoughness = pScat->isDelta ?
@@ -2121,9 +2114,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
 	#ifdef RISE_ENABLE_OPENPGL
-		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+		if( !usedGuidedDirection && pScat->ior_stack ) {
 	#else
-		if( useIORStack && pScat->ior_stack ) {
+		if( pScat->ior_stack ) {
 	#endif
 			iorStack = *pScat->ior_stack;
 		}
@@ -2201,7 +2194,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	}
 
 	Scalar pdfFwdPrev = pdfCamDir;
-	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -2246,7 +2238,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				useIORStack ? &iorStack : 0, &scene, pMedObj );
+				&iorStack, &scene, pMedObj );
 			pMedObj_eye = pMedObj;
 			pMed_eye = pMed;
 
@@ -2463,7 +2455,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// seed its boundary walk from the correct starting medium.
 		v.pMediumObject = pMedObj_eye;
 		v.pMediumVol = pMed_eye;
-		if( useIORStack && ri.pObject ) {
+		if( ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
 			v.insideObject = iorStack.containsCurrent();
@@ -2503,7 +2495,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->Scatter( ri.geometric, sampler, scattered, &iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2893,7 +2885,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		vertices.back().guidingScatteringWeight = localScatteringWeight;
 		vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 		vertices.back().guidingEta =
-			(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+			(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
 				pScat->ior_stack->top() :
 				(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
 		vertices.back().guidingRoughness = pScat->isDelta ?
@@ -2947,9 +2939,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
 	#ifdef RISE_ENABLE_OPENPGL
-		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+		if( !usedGuidedDirection && pScat->ior_stack ) {
 	#else
-		if( useIORStack && pScat->ior_stack ) {
+		if( pScat->ior_stack ) {
 	#endif
 			iorStack = *pScat->ior_stack;
 		}
@@ -4385,7 +4377,6 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
-	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
 	// Phase 0: light source sampling
@@ -4497,7 +4488,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				useIORStack ? &iorStack : 0, &scene, pMedObj );
+				&iorStack, &scene, pMedObj );
 			pMedObj_nmLight = pMedObj;
 			pMed_nmLight = pMed;
 
@@ -4661,7 +4652,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.pLuminary = 0;
 		v.pMediumObject = pMedObj_nmLight;
 		v.pMediumVol = pMed_nmLight;
-		if( useIORStack && ri.pObject ) {
+		if( ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
 			v.insideObject = iorStack.containsCurrent();
@@ -4702,7 +4693,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, &iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -5082,7 +5073,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			vertices.back().guidingScatteringWeight = localScatteringWeight;
 			vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
 			vertices.back().guidingEta =
-				(useIORStack && pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+				(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
 					pScat->ior_stack->top() :
 					(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
 			vertices.back().guidingRoughness = pScat->isDelta ?
@@ -5146,9 +5137,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
 	#ifdef RISE_ENABLE_OPENPGL
-		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+		if( !usedGuidedDirection && pScat->ior_stack ) {
 	#else
-		if( useIORStack && pScat->ior_stack ) {
+		if( pScat->ior_stack ) {
 	#endif
 			iorStack = *pScat->ior_stack;
 		}
@@ -5211,7 +5202,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	}
 
 	Scalar pdfFwdPrev = pdfCamDir;
-	const bool useIORStack = BDPTUsesIORStack( caster );
 	IORStack iorStack( 1.0 );
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -5246,7 +5236,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				useIORStack ? &iorStack : 0, &scene, pMedObj );
+				&iorStack, &scene, pMedObj );
 			pMedObj_nmEye = pMedObj;
 			pMed_nmEye = pMed;
 
@@ -5409,7 +5399,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.pLuminary = 0;
 		v.pMediumObject = pMedObj_nmEye;
 		v.pMediumVol = pMed_nmEye;
-		if( useIORStack && ri.pObject ) {
+		if( ri.pObject ) {
 			iorStack.SetCurrentObject( ri.pObject );
 			v.mediumIOR = iorStack.top();
 			v.insideObject = iorStack.containsCurrent();
@@ -5439,7 +5429,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, useIORStack ? &iorStack : 0 );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, &iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -5753,8 +5743,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			const Ray trainingRay = usedGuidedDirection ?
 				Ray( pScat->ray.origin, guidedDir ) : pScat->ray;
 			const IORStack* trainingIorStack = usedGuidedDirection ?
-				(useIORStack ? &iorStack : 0) :
-				(pScat->ior_stack ? pScat->ior_stack : (useIORStack ? &iorStack : 0));
+				(&iorStack) :
+				(pScat->ior_stack ? pScat->ior_stack : (&iorStack));
 			RecordGuidingTrainingSampleNM(
 				pGuidingField,
 				rc,
@@ -5866,9 +5856,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 #endif
 		currentRay.Advance( BDPT_RAY_EPSILON );
 	#ifdef RISE_ENABLE_OPENPGL
-		if( useIORStack && !usedGuidedDirection && pScat->ior_stack ) {
+		if( !usedGuidedDirection && pScat->ior_stack ) {
 	#else
-		if( useIORStack && pScat->ior_stack ) {
+		if( pScat->ior_stack ) {
 	#endif
 			iorStack = *pScat->ior_stack;
 		}

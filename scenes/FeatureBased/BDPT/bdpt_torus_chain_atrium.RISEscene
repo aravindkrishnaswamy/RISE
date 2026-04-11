@@ -36,7 +36,6 @@ bdpt_pel_rasterizer
 	max_light_depth		12
 	samples				128
 	lum_samples			1
-	ior_stack			TRUE
 	pathguiding				FALSE
 	pathguiding_iterations	4
 	pathguiding_spp			4
@@ -68,7 +67,6 @@ mlt_rasterizer
 	chains				64
 	mutations_per_pixel	10000
 	large_step_prob		0.25
-	ior_stack			TRUE
 }
 */
 

@@ -30,13 +30,12 @@ CausticPelPhotonTracer::CausticPelPhotonTracer(
 	const bool reflect,
 	const bool refract,
 	const bool shootFromNonMeshLights,
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
 	const bool regenerate,
 	const bool shootFromMeshLights
 	) :
-  PhotonTracer<CausticPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
+  PhotonTracer<CausticPelPhotonMap>( shootFromNonMeshLights, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bBranch( branch ),

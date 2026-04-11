@@ -24,7 +24,6 @@ mlt_rasterizer
 	chains				32
 	mutations_per_pixel	50
 	large_step_prob		0.3
-	ior_stack			TRUE
 }
 
 file_rasterizeroutput

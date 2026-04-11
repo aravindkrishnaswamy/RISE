@@ -4207,7 +4207,6 @@ bool Job::SetPixelBasedPelRasterizer(
 	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
@@ -4234,7 +4233,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4305,7 +4304,6 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-	const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 	const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
@@ -4336,7 +4334,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4431,7 +4429,6 @@ bool Job::SetBDPTPelRasterizer(
 	const double pixelFilterParamA,
 	const double pixelFilterParamB,
 	const bool bShowLuminaires,
-	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
 	const bool smsEnabled,
 	const unsigned int smsMaxIterations,
@@ -4464,7 +4461,7 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4532,7 +4529,6 @@ bool Job::SetBDPTSpectralRasterizer(
 	const double pixelFilterParamA,
 	const double pixelFilterParamB,
 	const bool bShowLuminaires,
-	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
 	const double nmbegin,
 	const double nmend,
@@ -4569,7 +4565,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4636,7 +4632,6 @@ bool Job::SetPathTracingPelRasterizer(
 	const double pixelFilterParamA,
 	const double pixelFilterParamB,
 	const bool bShowLuminaires,
-	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
 	const bool smsEnabled,
 	const unsigned int smsMaxIterations,
@@ -4669,7 +4664,7 @@ bool Job::SetPathTracingPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4735,7 +4730,6 @@ bool Job::SetPathTracingSpectralRasterizer(
 	const double pixelFilterParamA,
 	const double pixelFilterParamB,
 	const bool bShowLuminaires,
-	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
 	const double nmbegin,
 	const double nmend,
@@ -4772,7 +4766,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( globalRadianceMap ) {
 		IPainter* p = pPntManager->GetItem( globalRadianceMap );
@@ -4830,7 +4824,6 @@ bool Job::SetMLTRasterizer(
 	const double largeStepProb,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
@@ -4843,7 +4836,7 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -4870,7 +4863,6 @@ bool Job::SetMLTSpectralRasterizer(
 	const double largeStepProb,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bUseIORStack,
 	const bool bChooseOnlyOneLight,
 	const double nmbegin,
 	const double nmend,
@@ -4887,7 +4879,7 @@ bool Job::SetMLTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -5552,14 +5544,13 @@ bool Job::ShootCausticPelPhotons(
 	const bool reflect,								///< [in] Should we trace reflected rays?
 	const bool refract,								///< [in] Should we trace refracted rays?
 	const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-	const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 	const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 	const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
 	)
 {
 	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateCausticPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
+	RISE_API_CreateCausticPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 
 	pTracer->AttachScene( pScene );
 	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
@@ -5577,14 +5568,13 @@ bool Job::ShootGlobalPelPhotons(
 	const double minImportance,						///< [in] Minimum importance when a photon is discarded
 	const bool branch,								///< [in] Should the tracer branch or follow a single path?
 	const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-	const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 	const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 	const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
 	)
 {
 	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateGlobalPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
+	RISE_API_CreateGlobalPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 
 	pTracer->AttachScene( pScene );
 	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
@@ -5605,7 +5595,6 @@ bool Job::ShootTranslucentPelPhotons(
 	const bool refract,								///< [in] Should we trace refracted rays?
 	const bool direct_translucent,					///< [in] Should we trace translucent primary interaction rays?
 	const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-	const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 	const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 	const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -5614,7 +5603,7 @@ bool Job::ShootTranslucentPelPhotons(
 	GlobalLog()->PrintEasyWarning( "The Translucent PhotonMap is deprecated.  You should consider using one of the subsurface scattering shaders instead." );
 
 	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateTranslucentPelPhotonTracer( &pTracer, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
+	RISE_API_CreateTranslucentPelPhotonTracer( &pTracer, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 
 	pTracer->AttachScene( pScene );
 	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
@@ -5633,7 +5622,6 @@ bool Job::ShootCausticSpectralPhotons(
 	const double nm_begin,							///< [in] Wavelength to start shooting photons at
 	const double nm_end,							///< [in] Wavelength to end shooting photons at
 	const unsigned int num_wavelengths,				///< [in] Number of wavelengths to shoot photons at
-	const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 	const bool branch,								///< [in] Should the tracer branch or follow a single path?
 	const bool reflect,								///< [in] Should we trace reflected rays?
 	const bool refract,								///< [in] Should we trace refracted rays?
@@ -5642,7 +5630,7 @@ bool Job::ShootCausticSpectralPhotons(
 	)
 {
 	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateCausticSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, useiorstack, branch, reflect, refract, power_scale, temporal_samples, regenerate );
+	RISE_API_CreateCausticSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, branch, reflect, refract, power_scale, temporal_samples, regenerate );
 
 	pTracer->AttachScene( pScene );
 	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
@@ -5662,14 +5650,13 @@ bool Job::ShootGlobalSpectralPhotons(
 	const double nm_begin,							///< [in] Wavelength to start shooting photons at
 	const double nm_end,							///< [in] Wavelength to end shooting photons at
 	const unsigned int num_wavelengths,				///< [in] Number of wavelengths to shoot photons at
-	const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 	const bool branch,								///< [in] Should the tracer branch or follow a single path?
 	const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
 	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateGlobalSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, useiorstack, branch, power_scale, temporal_samples, regenerate );
+	RISE_API_CreateGlobalSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, branch, power_scale, temporal_samples, regenerate );
 
 	pTracer->AttachScene( pScene );
 	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );

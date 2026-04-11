@@ -43,7 +43,6 @@ class RISE_RENDER_PT_settings(_RISEPanel):
         layout.prop(settings, "use_path_tracing")
         layout.prop(settings, "use_world_ambient")
         layout.prop(settings, "choose_one_light")
-        layout.prop(settings, "use_ior_stack")
         layout.prop(settings, "show_lights")
 
 

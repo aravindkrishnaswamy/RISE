@@ -29,13 +29,12 @@ GlobalPelPhotonTracer::GlobalPelPhotonTracer(
 	const Scalar ext,
 	const bool branch,
 	const bool shootFromNonMeshLights,
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
 	const bool regenerate,
 	const bool shootFromMeshLights
 	) :
-  PhotonTracer<GlobalPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
+  PhotonTracer<GlobalPelPhotonMap>( shootFromNonMeshLights, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bBranch( branch )

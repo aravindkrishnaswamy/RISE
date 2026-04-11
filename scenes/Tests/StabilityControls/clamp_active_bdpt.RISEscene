@@ -18,7 +18,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		6
 	max_light_depth		6
 	samples				32
-	ior_stack			TRUE
 	direct_clamp		10.0
 	indirect_clamp		5.0
 }

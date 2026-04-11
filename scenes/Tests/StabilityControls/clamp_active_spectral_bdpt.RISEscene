@@ -29,7 +29,6 @@ bdpt_spectral_rasterizer
 	nmend				705
 	num_wavelengths		8
 	spectral_samples	8
-	ior_stack			TRUE
 	direct_clamp		500.0
 	indirect_clamp		250.0
 }

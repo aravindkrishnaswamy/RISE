@@ -33,7 +33,6 @@ pixelintegratingspectral_rasterizer
 	num_wavelengths			8
 	max_recursion			5
 	hwss					false
-	ior_stack				true
 }
 
 file_rasterizeroutput

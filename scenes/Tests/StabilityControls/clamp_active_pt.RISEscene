@@ -18,7 +18,6 @@ pathtracing_pel_rasterizer
 {
 	samples                       64
 	lum_samples                   1
-	ior_stack                     TRUE
 	direct_clamp                  10.0
 	indirect_clamp                5.0
 }

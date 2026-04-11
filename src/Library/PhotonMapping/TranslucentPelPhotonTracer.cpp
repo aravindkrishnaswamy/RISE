@@ -31,13 +31,12 @@ TranslucentPelPhotonTracer::TranslucentPelPhotonTracer(
 	const bool refract,
 	const bool direct_translucent,
 	const bool shootFromNonMeshLights,
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
 	const bool regenerate,
 	const bool shootFromMeshLights
 	) :
-  PhotonTracer<TranslucentPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
+  PhotonTracer<TranslucentPelPhotonMap>( shootFromNonMeshLights, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bTraceReflections( reflect ),

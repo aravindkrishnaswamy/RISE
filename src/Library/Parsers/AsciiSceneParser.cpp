@@ -5212,7 +5212,6 @@ namespace RISE
 					double pixelFilterParamA = 1.0/3.0;
 					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
@@ -5272,8 +5271,6 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "oidn_denoise" ) {
@@ -5354,7 +5351,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						showLuminaires, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
 
@@ -5386,7 +5383,6 @@ namespace RISE
 					double pixelFilterParamA = 1.0/3.0;
 					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
@@ -5459,8 +5455,6 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "integrate_rgb" ) {
@@ -5581,7 +5575,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight,
+						showLuminaires, onlyonelight,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
 						oidnDenoise, stabilityConfig, blueNoiseSampler, useHWSS
 						);
@@ -5611,7 +5605,6 @@ namespace RISE
 					double pixelFilterParamA = 1.0/3.0;
 					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool smsEnabled = false;
 					unsigned int smsMaxIterations = 20;
@@ -5675,8 +5668,6 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
@@ -5770,7 +5761,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight,
+						showLuminaires, onlyonelight,
 						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
@@ -5798,7 +5789,6 @@ namespace RISE
 					double pixelFilterParamA = 1.0/3.0;
 					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					double nmbegin = 380.0;
 					double nmend = 780.0;
@@ -5866,8 +5856,6 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
@@ -5959,7 +5947,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight,
+						showLuminaires, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
 						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
 				}
@@ -5986,7 +5974,6 @@ namespace RISE
 					double pixelFilterParamA = 1.0/3.0;
 					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool smsEnabled = false;
 					unsigned int smsMaxIterations = 20;
@@ -6046,8 +6033,6 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
@@ -6140,7 +6125,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight,
+						showLuminaires, onlyonelight,
 						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
@@ -6166,7 +6151,6 @@ namespace RISE
 					double pixelFilterParamA = 1.0/3.0;
 					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					double nmbegin = 380.0;
 					double nmend = 780.0;
@@ -6230,8 +6214,6 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
@@ -6308,7 +6290,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, useiorstack, onlyonelight,
+						showLuminaires, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
 						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
 				}
@@ -6326,7 +6308,6 @@ namespace RISE
 					unsigned int mutationsPerPixel = 100;
 					double largeStepProb = 0.3;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = true;
 					StabilityConfig stabilityConfig;
@@ -6355,8 +6336,6 @@ namespace RISE
 							largeStepProb = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "oidn_denoise" ) {
@@ -6371,7 +6350,7 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight, oidnDenoise, stabilityConfig );
+						defaultshader.c_str(), showLuminaires, onlyonelight, oidnDenoise, stabilityConfig );
 				}
 			};
 
@@ -6387,7 +6366,6 @@ namespace RISE
 					unsigned int mutationsPerPixel = 100;
 					double largeStepProb = 0.3;
 					bool showLuminaires = true;
-					bool useiorstack = false;
 					bool onlyonelight = false;
 					bool oidnDenoise = true;
 					double nmbegin = 400;
@@ -6420,8 +6398,6 @@ namespace RISE
 							largeStepProb = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "oidn_denoise" ) {
@@ -6444,7 +6420,7 @@ namespace RISE
 
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, useiorstack, onlyonelight,
+						defaultshader.c_str(), showLuminaires, onlyonelight,
 						nmbegin, nmend, spectralSamples, useHWSS, oidnDenoise, stabilityConfig );
 				}
 			};
@@ -6554,7 +6530,6 @@ namespace RISE
 					bool refract = true;
 					bool shootFromNonMeshLights = true;
 					bool shootFromMeshLights = true;
-					bool useiorstack = false;
 					unsigned int temporal_samples = 100;
 					bool regenerate = true;
 
@@ -6586,8 +6561,6 @@ namespace RISE
 							shootFromNonMeshLights = pvalue.toBoolean();
 						} else if( pname == "shootFromMeshLights" ) {
 							shootFromMeshLights = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "temporal_samples" ) {
 							temporal_samples = pvalue.toUInt();
 						} else if( pname == "regenerate" ) {
@@ -6600,7 +6573,7 @@ namespace RISE
 
 					std::cout << "Shooting Caustic Pel Photons: " << std::endl;
 
-					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, useiorstack, temporal_samples, regenerate, shootFromMeshLights );
+					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
 			};
 
@@ -6617,7 +6590,6 @@ namespace RISE
 					double nmend = 700.0;
 					unsigned int numWavelengths = 30;
 					double minImportance = 0.01;
-					bool useiorstack = false;
 					bool branch = true;
 					bool reflect = true;
 					bool refract = true;
@@ -6648,8 +6620,6 @@ namespace RISE
 							nmend = pvalue.toDouble();
 						} else if( pname == "num_wavelengths" ) {
 							numWavelengths = pvalue.toUInt();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "branch" ) {
 							branch = pvalue.toBoolean();
 						} else if( pname == "reflect" ) {
@@ -6668,7 +6638,7 @@ namespace RISE
 
 					std::cout << "Shooting Caustic Spectral Photons: " << std::endl;
 
-					return pJob.ShootCausticSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, useiorstack, branch, reflect, refract, temporal_samples, regenerate );
+					return pJob.ShootCausticSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, reflect, refract, temporal_samples, regenerate );
 				}
 			};
 
@@ -6685,7 +6655,6 @@ namespace RISE
 					double nmend = 700.0;
 					unsigned int numWavelengths = 30;
 					double minImportance = 0.01;
-					bool useiorstack = false;
 					bool branch = true;
 					unsigned int temporal_samples = 100;
 					bool regenerate = true;
@@ -6714,8 +6683,6 @@ namespace RISE
 							nmend = pvalue.toDouble();
 						} else if( pname == "num_wavelengths" ) {
 							numWavelengths = pvalue.toUInt();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "branch" ) {
 							branch = pvalue.toBoolean();
 						} else if( pname == "temporal_samples" ) {
@@ -6730,7 +6697,7 @@ namespace RISE
 
 					std::cout << "Shooting Global Spectral Photons: " << std::endl;
 
-					return pJob.ShootGlobalSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, useiorstack, branch, temporal_samples, regenerate );
+					return pJob.ShootGlobalSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, temporal_samples, regenerate );
 				}
 			};
 
@@ -6746,7 +6713,6 @@ namespace RISE
 					double power_scale = 1.0;
 					bool shootFromNonMeshLights = true;
 					bool shootFromMeshLights = true;
-					bool useiorstack = false;
 					bool reflect = true;
 					bool refract = true;
 					bool direct_translucent = true;
@@ -6775,8 +6741,6 @@ namespace RISE
 							shootFromNonMeshLights = pvalue.toBoolean();
 						} else if( pname == "shootFromMeshLights" ) {
 							shootFromMeshLights = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "reflect" ) {
 							reflect = pvalue.toBoolean();
 						} else if( pname == "refract" ) {
@@ -6795,7 +6759,7 @@ namespace RISE
 
 					std::cout << "Shooting Translucent Pel Photons: " << std::endl;
 
-					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, useiorstack, temporal_samples, regenerate, shootFromMeshLights );
+					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
 			};
 
@@ -6850,7 +6814,6 @@ namespace RISE
 					bool branch = true;
 					bool shootFromNonMeshLights = true;
 					bool shootFromMeshLights = true;
-					bool useiorstack = false;
 					unsigned int temporal_samples = 100;
 					bool regenerate = true;
 
@@ -6878,8 +6841,6 @@ namespace RISE
 							shootFromNonMeshLights = pvalue.toBoolean();
 						} else if( pname == "shootFromMeshLights" ) {
 							shootFromMeshLights = pvalue.toBoolean();
-						} else if( pname == "ior_stack" ) {
-							useiorstack = pvalue.toBoolean();
 						} else if( pname == "temporal_samples" ) {
 							temporal_samples = pvalue.toUInt();
 						} else if( pname == "regenerate" ) {
@@ -6892,7 +6853,7 @@ namespace RISE
 
 					std::cout << "Shooting Global Pel Photons: " << std::endl;
 
-					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, useiorstack, temporal_samples, regenerate, shootFromMeshLights );
+					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
 			};
 

@@ -23,7 +23,6 @@ bdpt_spectral_rasterizer
 	num_wavelengths			8
 	spectral_samples		1
 	hwss					true
-	ior_stack				true
 }
 
 file_rasterizeroutput

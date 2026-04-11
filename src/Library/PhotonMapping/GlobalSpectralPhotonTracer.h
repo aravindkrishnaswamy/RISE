@@ -72,7 +72,6 @@ namespace RISE
 				const Scalar nm_begin,						///< [in] Wavelength to start shooting photons at
 				const Scalar nm_end,						///< [in] Wavelength to end shooting photons at
 				const unsigned int num_wavelengths,			///< [in] Number of wavelengths to shoot photons at
-				const bool useiorstack,						///< [in] Should we use an ior stack ?
 				const bool branch,							///< [in] Should the tracer branch or only follow one path?
 				const Scalar powerscale,
 				const unsigned int temporal_samples,

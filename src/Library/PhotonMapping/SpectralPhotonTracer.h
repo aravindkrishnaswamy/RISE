@@ -32,7 +32,6 @@ namespace RISE
 			const Scalar				nm_begin;				///< Wavelength to start shooting photons at
 			const Scalar				nm_end;					///< Wavelength to end shooting photons at
 			const Scalar				num_wavelengths;		///< Number of wavelengths to shoot photons at
-			const bool					bUseIORStack;			///< Should we use an ior stack ?
 			const Scalar				dPowerScale;			///< How much to scale shooting power by
 			const unsigned int			nNumTemporalSamples;	///< Number of temporal samples to take when tracing at a particular time
 			const bool					bRegenerateSpecificTime;///< Should the photon map regenerate when asked to for a specific time?
@@ -46,7 +45,6 @@ namespace RISE
 				const Scalar nm_begin_,						///< [in] Wavelength to start shooting photons at
 				const Scalar nm_end_,						///< [in] Wavelength to end shooting photons at
 				const unsigned int num_wavelengths_,		///< [in] Number of wavelengths to shoot photons at
-				const bool useiorstack,
 				const Scalar power_scale,
 				const unsigned int temporal_samples,
 				const bool regenerate
@@ -54,7 +52,6 @@ namespace RISE
 			nm_begin( nm_begin_ ),
 			nm_end( nm_end_ ),
 			num_wavelengths( num_wavelengths_ ),
-			bUseIORStack( useiorstack ),
 			dPowerScale( power_scale ),
 			nNumTemporalSamples( temporal_samples ),
 			bRegenerateSpecificTime( regenerate ),
@@ -149,7 +146,7 @@ namespace RISE
 						const Scalar power = pEmitter->averageRadiantExitanceNM(nm) * area_premul;
 
 						// Now shoot that ray as a photon
-						TraceSinglePhoton( r, power, nm, *pPhotonMap, bUseIORStack?&ior_stack:0 );
+						TraceSinglePhoton( r, power, nm, *pPhotonMap, &ior_stack );
 
 						numshot++;
 					}

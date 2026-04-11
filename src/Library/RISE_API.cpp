@@ -2917,7 +2917,6 @@ namespace RISE
 								const bool reflect,					///< [in] Should we trace reflected rays?
 								const bool refract,					///< [in] Should we trace refracted rays?
 								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
 								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
@@ -2928,7 +2927,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new CausticPelPhotonTracer( maxR, minImp, branch, reflect, refract, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
+		(*ppi) = new CausticPelPhotonTracer( maxR, minImp, branch, reflect, refract, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, " caustic pel photon tracer" );
 		return true;
 	}
@@ -2941,7 +2940,6 @@ namespace RISE
 								const Scalar minImp,				///< [in] Minimum photon importance before giving up
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
 								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
@@ -2952,7 +2950,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new GlobalPelPhotonTracer( maxR, minImp, branch, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
+		(*ppi) = new GlobalPelPhotonTracer( maxR, minImp, branch, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "global pel photon tracer" );
 		return true;
 	}
@@ -2968,7 +2966,6 @@ namespace RISE
 								const bool refract,					///< [in] Should we trace refracted rays?
 								const bool direct_translucent,		///< [in] Should we trace translucent primary interaction rays?
 								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
 								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
@@ -2979,7 +2976,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new TranslucentPelPhotonTracer( maxR, minImp, reflect, refract, direct_translucent, shootFromNonMeshLights, useiorstack, power_scale, temporal_samples, regenerate, shootFromMeshLights );
+		(*ppi) = new TranslucentPelPhotonTracer( maxR, minImp, reflect, refract, direct_translucent, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "translucent pel photon tracer" );
 		return true;
 	}
@@ -2993,7 +2990,6 @@ namespace RISE
 								const Scalar nm_begin,				///< [in] Wavelength to start shooting photons at
 								const Scalar nm_end,				///< [in] Wavelength to end shooting photons at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to shoot photons at
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const bool reflect,					///< [in] Should we trace reflected rays?
 								const bool refract,					///< [in] Should we trace refracted rays?
@@ -3006,7 +3002,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new CausticSpectralPhotonTracer( maxR, minImp, nm_begin, nm_end, num_wavelengths, useiorstack, branch, reflect, refract, power_scale, temporal_samples, regenerate );
+		(*ppi) = new CausticSpectralPhotonTracer( maxR, minImp, nm_begin, nm_end, num_wavelengths, branch, reflect, refract, power_scale, temporal_samples, regenerate );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "caustic spectral photon tracer" );
 		return true;
 	}
@@ -3020,7 +3016,6 @@ namespace RISE
 								const Scalar nm_begin,				///< [in] Wavelength to start shooting photons at
 								const Scalar nm_end,				///< [in] Wavelength to end shooting photons at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to shoot photons at
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
@@ -3031,7 +3026,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new GlobalSpectralPhotonTracer( maxR, minImp, nm_begin, nm_end, num_wavelengths, useiorstack, branch, power_scale, temporal_samples, regenerate );
+		(*ppi) = new GlobalSpectralPhotonTracer( maxR, minImp, nm_begin, nm_end, num_wavelengths, branch, power_scale, temporal_samples, regenerate );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "global spectral photon tracer" );
 		return true;
 	}
@@ -4253,7 +4248,6 @@ namespace RISE
 								const unsigned int maxR,			///< [in] Maximum recursion level
 								const IShader& pDefaultShader,		///< [in] The default global shader
 								const bool showLuminaires,			///< [in] Should we be able to see luminaries?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const bool chooseonlyonelight		///< [in] For luminaire sampling, a random light is chosen for each sample
 								)
 	{
@@ -4261,7 +4255,7 @@ namespace RISE
 			return false;
 		}
 
-		RayCaster* pCaster = new RayCaster( seeRadianceMap, maxR, pDefaultShader, showLuminaires, useiorstack, chooseonlyonelight );
+		RayCaster* pCaster = new RayCaster( seeRadianceMap, maxR, pDefaultShader, showLuminaires, chooseonlyonelight );
 
 		(*ppi) = pCaster;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ray caster" );

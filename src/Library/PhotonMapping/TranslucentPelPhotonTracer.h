@@ -74,7 +74,6 @@ namespace RISE
 				const bool refract,
 				const bool direct_translucent,
 				const bool shootFromNonMeshLights,
-				const bool useiorstack,				///< [in] Should we use an ior stack ?
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
 				const bool regenerate,

@@ -24,7 +24,6 @@ mlt_spectral_rasterizer
 	nmend					705
 	spectral_samples		1
 	hwss					true
-	ior_stack				true
 }
 
 file_rasterizeroutput
