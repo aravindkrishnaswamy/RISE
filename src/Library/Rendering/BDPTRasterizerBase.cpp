@@ -200,9 +200,6 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   pScratchImage( 0 ),
   mSplatTotalSamples( 1.0 ),
   mTotalAdaptiveSamples( 0 )
-#ifdef RISE_ENABLE_OIDN
-  ,pAOVBuffers( 0 )
-#endif
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 )
   ,pLightGuidingField( 0 )
@@ -227,10 +224,6 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 	safe_release( pManifoldSolver );
 	safe_release( pSplatFilm );
 	safe_release( pScratchImage );
-#ifdef RISE_ENABLE_OIDN
-	delete pAOVBuffers;
-	pAOVBuffers = 0;
-#endif
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
 	safe_release( pLightGuidingField );

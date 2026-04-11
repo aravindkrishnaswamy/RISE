@@ -28,11 +28,14 @@
 #include "../Interfaces/IShaderOp.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/StabilityConfig.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
+		class PathTracingIntegrator;
+
 		class PathTracingShaderOp :
 			public virtual IShaderOp,
 			public virtual Reference
@@ -40,14 +43,14 @@ namespace RISE
 		protected:
 			virtual ~PathTracingShaderOp();
 
-			ManifoldSolver*		pSolver;		///< SMS solver (NULL if SMS disabled)
-			const bool			bBranch;		///< Branch vs Russian Roulette
-			const bool			bSMSEnabled;	///< Whether to attempt SMS for blocked NEE
+			PathTracingIntegrator*	pIntegrator;	///< Shared iterative integrator
+			const bool				bSMSEnabled;	///< Whether SMS is active (for emission suppression)
 
 		public:
 			PathTracingShaderOp(
 				const bool branch,
-				const ManifoldSolverConfig& smsConfig
+				const ManifoldSolverConfig& smsConfig,
+				const StabilityConfig& stabilityCfg
 				);
 
 			void PerformOperation(

@@ -79,13 +79,26 @@ When in doubt, read the registration block in [AsciiSceneParser.cpp](AsciiSceneP
 
 ## MIS Weight Parameters (Rasterizer Blocks)
 
-The following parameters control advanced MIS weight computation in the `pixelpel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, and `mlt_rasterizer` blocks. All are disabled by default and fall back to the standard power heuristic.
+The following parameters control advanced MIS weight computation in the `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, and `mlt_rasterizer` blocks. All are disabled by default and fall back to the standard power heuristic.
 
 | Parameter | Rasterizers | Type | Default | Description |
 |-----------|-------------|------|---------|-------------|
 | `optimal_mis` | PT, BDPT | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
 | `optimal_mis_training_iterations` | PT, BDPT | uint | 4 | Number of 1-SPP training passes |
 | `optimal_mis_tile_size` | PT, BDPT | uint | 16 | Spatial tile size for second-moment binning |
+
+## Pure PT Rasterizer Chunks
+
+Two rasterizer chunks bypass the shader-op dispatch chain and call `PathTracingIntegrator` directly:
+
+| Chunk name | Description |
+|-----------|------------|
+| `pathtracing_pel_rasterizer` | Iterative PT, RGB output, per-sample OIDN AOVs |
+| `pathtracing_spectral_rasterizer` | Iterative PT, spectral output, NM or HWSS modes |
+
+These accept all the same parameters as their shader-dispatch counterparts (`pixelpel_rasterizer` and `pixelintegratingspectral_rasterizer`) plus SMS controls (`sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`). The pure PT rasterizers do not use or require a `defaultshader` because they bypass the shader pipeline entirely.
+
+When `oidn_denoise TRUE` is set on `pathtracing_pel_rasterizer`, the filtered film resolve is automatically skipped to preserve raw MC noise for OIDN. See `docs/ARCHITECTURE.md` for details.
 
 See `docs/IMPROVEMENTS.md` item 8 for algorithmic details.
 

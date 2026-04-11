@@ -364,10 +364,11 @@ static void TestIntegrationGuard()
 {
 	std::cout << "\nTest C: Integration guard (source analysis)\n";
 
-	// Try multiple relative paths depending on working directory
+	// PathTracingShaderOp is a thin wrapper that delegates to
+	// PathTracingIntegrator — check the integrator for SSS guards.
 	const char* ptPaths[] = {
-		"src/Library/Shaders/PathTracingShaderOp.cpp",
-		"../../../src/Library/Shaders/PathTracingShaderOp.cpp",
+		"src/Library/Shaders/PathTracingIntegrator.cpp",
+		"../../../src/Library/Shaders/PathTracingIntegrator.cpp",
 		0
 	};
 	const char* bdptPaths[] = {
@@ -483,7 +484,7 @@ static void TestIntegrationGuard()
 		return ok;
 	};
 
-	if( !AuditSampleExitCalls( ptPath, "PathTracingShaderOp.cpp", 2 ) )
+	if( !AuditSampleExitCalls( ptPath, "PathTracingIntegrator.cpp", 1 ) )
 		allPassed = false;
 
 	if( !AuditSampleExitCalls( bdptPath, "BDPTIntegrator.cpp", 4 ) )
@@ -492,7 +493,7 @@ static void TestIntegrationGuard()
 	// Verify IndependentSampler.h is included in both files
 	if( !FileContainsPattern( ptPath, "IndependentSampler.h" ) )
 	{
-		std::cerr << "  FAIL: PathTracingShaderOp.cpp does not include "
+		std::cerr << "  FAIL: PathTracingIntegrator.cpp does not include "
 			<< "IndependentSampler.h\n";
 		allPassed = false;
 	}

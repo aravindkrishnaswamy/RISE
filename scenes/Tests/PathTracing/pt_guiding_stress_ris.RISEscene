@@ -16,31 +16,24 @@ RISE ASCII SCENE 5
 
 > set accelerator B 10 8
 
-pathtracing_shaderop
-{
-	name		pt
-	branch		false
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		8
-	samples				64
-	lum_samples			1
-	ior_stack			TRUE
-	pathguiding			true
-	pathguiding_iterations	6
-	pathguiding_spp			4
-	pathguiding_alpha		0.5
-	pathguiding_max_depth	8
-	pathguiding_sampling_type	ris
-	pathguiding_ris_candidates	2
+	samples                       64
+	lum_samples                   1
+	ior_stack                     TRUE
+	pathguiding                   true
+	pathguiding_iterations        6
+	pathguiding_spp               4
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
+	pathguiding_sampling_type     ris
+	pathguiding_ris_candidates    2
 }
 
 file_rasterizeroutput

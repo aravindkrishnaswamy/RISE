@@ -12,24 +12,18 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		5
-	samples				16
-	lum_samples			1
-	pixel_sampler		sobol
-	blue_noise_sampler	TRUE
+	samples                       16
+	lum_samples                   1
+	pixel_sampler                 sobol
+	blue_noise_sampler            TRUE
 }
 
 file_rasterizeroutput
@@ -59,7 +53,6 @@ pinhole_camera
 	height				1024
 	fov					37.0
 }
-
 
 ##################################################
 # Painters
@@ -208,7 +201,6 @@ standard_object
 	geometry			lightgeom
 	material			white_lum
 }
-
 
 ##################################################
 # Objects - blocks

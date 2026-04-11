@@ -7,15 +7,10 @@ RISE ASCII SCENE 5
 
 > set accelerator B 10 8
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 bdpt_pel_rasterizer

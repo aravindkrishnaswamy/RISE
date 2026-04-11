@@ -16,23 +16,24 @@ RISE ASCII SCENE 5
 # Renderer setup
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		16
-	samples				500
-	lum_samples			1
-	ior_stack			TRUE
+	samples                       64
+	lum_samples                   1
+	ior_stack                     TRUE
+	oidn_denoise					TRUE
+	pathguiding                   true
+	pathguiding_sampling_type     RIS
+	pathguiding_iterations        4
+	pathguiding_spp               6
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
 }
 
 file_rasterizeroutput
@@ -56,7 +57,17 @@ pinhole_camera
 	height				360
 	fov					30.0
 }
+/*
+homogeneous_medium
+{
+	name		fog
+	absorption	0.0003 0.0003 0.0003
+	scattering	0.05 0.05 0.05
+	phase		isotropic
+}
 
+> set global_medium fog
+*/
 ##################################################
 # Painters
 ##################################################

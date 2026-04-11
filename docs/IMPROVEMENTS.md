@@ -16,8 +16,10 @@ RISE already has significant infrastructure in place:
 - Owen-scrambled Sobol samplers
 - PSSMLT via BDPT
 - Caustic, global, and spectral photon mapping
-- Intel OIDN denoising with albedo + normal AOVs
+- Intel OIDN denoising with per-sample albedo + normal AOVs
 - Alias table + spatial RIS for many-light sampling
+- Pure iterative PT rasterizers (Pel and Spectral) bypassing shader-op dispatch
+- Wide-support pixel filter reconstruction via FilteredFilm
 - Homogeneous and heterogeneous volume support with phase functions
 - Environment map importance sampling
 
@@ -676,6 +678,97 @@ All controls are in the rasterizer block and disabled by default:
 - ✓ No bias: converged results match power-heuristic reference
 - ✓ MLT continues to work correctly
 - ✓ Negligible performance overhead (< 5% wall time increase including training)
+
+---
+
+## Cross-Cutting Infrastructure (April 2026)
+
+These items are not ranked improvements but supporting infrastructure that enables and connects the improvements above.
+
+### PathTracingIntegrator — Iterative PT Engine
+
+`PathTracingIntegrator` (`Shaders/PathTracingIntegrator.h/.cpp`) is a standalone iterative unidirectional path tracer modeled on `BDPTIntegrator`. It uses direct intersection (no shader dispatch), inline material evaluation, and an iterative main loop. This replaces the recursive shader-op dispatch chain for scenes that use the pure PT rasterizers.
+
+**Features**: NEE via LightSampler with MIS, BSDF sampling with MIS-weighted emission, BSSRDF disk-projection and random-walk SSS, SMS for caustics, participating media (delta-tracking), per-type bounce limits, Russian roulette, path guiding (OpenPGL), optimal MIS weight accumulation, environment map MIS.
+
+**Key methods**:
+- `IntegrateRay()` — Traces a complete path from a camera ray. Optionally populates a `PixelAOV` for the denoiser.
+- `IntegrateFromHit()` — Starts from a pre-computed `RayIntersection`. Both `IntegrateRay` and the `PathTracingShaderOp` wrapper delegate to this.
+- `IntegrateRayNM()` / `IntegrateRayHWSS()` — Single-wavelength and hero-wavelength spectral variants.
+- `IntegrateFromHitNM()` / `IntegrateFromHitHWSS()` — Pre-hit spectral variants for ShaderOp wrapper use.
+
+### Pure PT Rasterizers
+
+Two new rasterizers bypass the shader-op pipeline entirely, calling `PathTracingIntegrator` directly:
+
+| Rasterizer | Base class | Scene chunk |
+|-----------|-----------|------------|
+| `PathTracingPelRasterizer` | `PixelBasedPelRasterizer` | `pathtracing_pel_rasterizer` |
+| `PathTracingSpectralRasterizer` | `PixelBasedSpectralIntegratingRasterizer` | `pathtracing_spectral_rasterizer` |
+
+Both inherit the standard pixel-based sample loop (Sobol/ZSobol, adaptive sampling, path guiding training, optimal MIS training) from their base classes. The Pel variant supports per-sample AOV accumulation for OIDN. The spectral variant supports both per-wavelength (NM) and hero wavelength (HWSS) modes.
+
+**Scene syntax** (same parameters as existing rasterizers plus SMS controls):
+```
+pathtracing_pel_rasterizer
+{
+    samples                 64
+    oidn_denoise            TRUE
+    pathguiding             true
+    pathguiding_sampling_type RIS
+    sms_enabled             true
+    adaptive_max_samples    256
+    adaptive_threshold      0.01
+    # all stability controls (direct_clamp, indirect_clamp, etc.)
+}
+
+pathtracing_spectral_rasterizer
+{
+    samples                 64
+    spectral_samples        16
+    use_hwss                TRUE
+    sms_enabled             true
+    # all stability controls
+}
+```
+
+### FilteredFilm — Wide-Support Pixel Filter Reconstruction
+
+`FilteredFilm` (`Rendering/FilteredFilm.h/.cpp`) accumulates filter-weighted sample contributions across pixel boundaries. Each sample is splatted to all pixels within the pixel filter's support. After the render pass, `Resolve()` computes the final pixel value as `colorSum/weightSum`.
+
+`PixelBasedRasterizerHelper::UseFilteredFilm()` returns true when the pixel filter's support exceeds half a pixel. Since the default pixel filter is Mitchell-Netravali (support 2.0), the film is active by default for all multi-sample pixel-based rasterizers.
+
+**Important**: The filtered film resolve is skipped when OIDN denoising is enabled. See `docs/ARCHITECTURE.md` for details on why.
+
+### Per-Sample AOV Accumulation For OIDN
+
+`AOVBuffers` (`Rendering/AOVBuffers.h/.cpp`) stores first-hit albedo and normal data for the OIDN denoiser. Previously only BDPT populated AOVs per-sample during rendering. Now:
+
+- `PixelAOV` struct (defined in `AOVBuffers.h`) is shared between PT and BDPT
+- `PathTracingIntegrator::IntegrateRay()` accepts an optional `PixelAOV*` parameter and populates first-hit albedo (via `BSDF::value() * PI`) and normal after the camera ray intersection
+- `PathTracingPelRasterizer::IntegratePixel()` accumulates per-sample AOVs into `pAOVBuffers` with proper weight normalization
+- `pAOVBuffers` member is owned by `PixelBasedRasterizerHelper` (was previously only in BDPT base)
+- `AOVBuffers::HasData()` tracks whether any per-sample data was accumulated; if false after the render pass, `OIDNDenoiser::CollectFirstHitAOVs()` fires a separate retrace pass as fallback
+
+### Files
+
+| File | Role |
+|------|------|
+| `src/Library/Shaders/PathTracingIntegrator.h/.cpp` | Iterative PT integrator (new) |
+| `src/Library/Rendering/PathTracingPelRasterizer.h/.cpp` | Pure PT Pel rasterizer (new) |
+| `src/Library/Rendering/PathTracingSpectralRasterizer.h/.cpp` | Pure PT Spectral rasterizer (new) |
+| `src/Library/Rendering/FilteredFilm.h/.cpp` | Wide-support pixel filter film buffer (new) |
+| `src/Library/Rendering/AOVBuffers.h/.cpp` | Shared AOV types and buffers (modified) |
+| `src/Library/Rendering/PixelBasedRasterizerHelper.h/.cpp` | Film allocation, OIDN bypass, AOV ownership (modified) |
+| `src/Library/Rendering/PixelBasedPelRasterizer.cpp` | Film splatting in sample loop (modified) |
+| `src/Library/Rendering/PixelBasedSpectralIntegratingRasterizer.cpp` | Film splatting in spectral loop (modified) |
+| `src/Library/Rendering/BDPTRasterizerBase.h/.cpp` | AOV ownership moved to base (modified) |
+| `src/Library/Shaders/PathTracingShaderOp.h/.cpp` | Now delegates to PathTracingIntegrator via IntegrateFromHit (modified) |
+| `src/Library/Shaders/BSSRDFEntryAdapters.h` | Shared BSSRDF entry-point adapters (new) |
+| `src/Library/Job.cpp` | Rasterizer construction (modified) |
+| `src/Library/Parsers/AsciiSceneParser.cpp` | New chunk parsers (modified) |
+| `src/Library/RISE_API.h/.cpp` | Public construction API (modified) |
+| `build/make/rise/Filelist` | Build file list (modified) |
 
 ---
 

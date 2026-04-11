@@ -12,15 +12,10 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 mlt_rasterizer
@@ -55,7 +50,6 @@ pinhole_camera
 	height				256
 	fov					37.0
 }
-
 
 ##################################################
 # Painters
@@ -204,7 +198,6 @@ standard_object
 	geometry			lightgeom
 	material			white_lum
 }
-
 
 ##################################################
 # Objects - blocks

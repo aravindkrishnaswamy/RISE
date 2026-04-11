@@ -29,32 +29,24 @@ RISE ASCII SCENE 5
 # Renderer -- Unidirectional Path Tracing
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-	branch		false
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				128
-	lum_samples			1
-	ior_stack			TRUE
-	oidn_denoise		FALSE
-	pathguiding			true
-	pathguiding_sampling_type	RIS
-
-	pathguiding_iterations	6
-	pathguiding_spp			12
-	pathguiding_alpha		0.5
-	pathguiding_max_depth	8
+	samples                       128
+	lum_samples                   1
+	ior_stack                     TRUE
+	oidn_denoise                  FALSE
+	pathguiding                   true
+	pathguiding_sampling_type     RIS
+	pathguiding_iterations        6
+	pathguiding_spp               12
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
 }
 
 file_rasterizeroutput

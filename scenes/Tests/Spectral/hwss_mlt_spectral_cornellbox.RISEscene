@@ -6,15 +6,10 @@ RISE ASCII SCENE 5
 #   Birthdate:      April 9, 2026                                                                           #
 #############################################################################################################
 
-pathtracing_shaderop
-{
-	name	pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 mlt_spectral_rasterizer

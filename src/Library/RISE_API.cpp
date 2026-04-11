@@ -3911,7 +3911,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 			smsConfig.biased = smsBiased;
 		}
 
-		*pShaderOp = new PathTracingShaderOp( branch, smsConfig );
+		*pShaderOp = new PathTracingShaderOp( branch, smsConfig, StabilityConfig() );
 		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "path tracing shaderop" );
 		return true;
 	}
@@ -4424,6 +4424,8 @@ namespace RISE
 
 #include "Rendering/BDPTPelRasterizer.h"
 #include "Rendering/BDPTSpectralRasterizer.h"
+#include "Rendering/PathTracingPelRasterizer.h"
+#include "Rendering/PathTracingSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 #include "Rendering/MLTSpectralRasterizer.h"
 #include "Utilities/ManifoldSolver.h"
@@ -4543,6 +4545,117 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
+		return true;
+	}
+
+	//! Creates a pure path tracing Pel rasterizer
+	bool RISE_API_CreatePathTracingPelRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const bool oidnDenoise,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+		}
+
+		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
+			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PathTracing Pel rasterizer" );
+		return true;
+	}
+
+	//! Creates a pure path tracing spectral rasterizer
+	bool RISE_API_CreatePathTracingSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool smsEnabled,
+								const unsigned int smsMaxIterations,
+								const double smsThreshold,
+								const unsigned int smsMaxChainDepth,
+								const bool smsBiased,
+								const unsigned int smsBernoulliTrials,
+								const bool oidnDenoise,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		ManifoldSolverConfig smsConfig;
+		smsConfig.enabled = smsEnabled;
+		if( smsEnabled ) {
+			smsConfig.maxIterations = smsMaxIterations;
+			smsConfig.solverThreshold = smsThreshold;
+			smsConfig.maxChainDepth = smsMaxChainDepth;
+			smsConfig.biased = smsBiased;
+			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
+		}
+
+		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(
+			caster, lambda_begin, lambda_end, num_wavelengths, spectral_samples,
+			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PathTracing Spectral rasterizer" );
 		return true;
 	}
 

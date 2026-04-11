@@ -1553,6 +1553,76 @@ namespace RISE
 			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 			);
 
+		bool SetPathTracingPelRasterizer(
+			const unsigned int numPixelSamples,
+			const unsigned int numLumSamples,
+			const char* shader,
+			const char* globalRadianceMap,
+			const bool bBackground,
+			const double scale,
+			const double orient[3],
+			const char* pixelSampler,
+			const double pixelSamplerParam,
+			const char* luminarySampler,
+			const double luminarySamplerParam,
+			const char* pixelFilter,
+			const double pixelFilterWidth,
+			const double pixelFilterHeight,
+			const double pixelFilterParamA,
+			const double pixelFilterParamB,
+			const bool bShowLuminaires,
+			const bool bUseIORStack,
+			const bool bChooseOnlyOneLight,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased,
+			const unsigned int smsBernoulliTrials,
+			const bool oidnDenoise,
+			const PathGuidingConfig& guidingConfig,
+			const AdaptiveSamplingConfig& adaptiveConfig,
+			const StabilityConfig& stabilityConfig,
+			const bool useZSobol
+			);
+
+		bool SetPathTracingSpectralRasterizer(
+			const unsigned int numPixelSamples,
+			const unsigned int numLumSamples,
+			const char* shader,
+			const char* globalRadianceMap,
+			const bool bBackground,
+			const double scale,
+			const double orient[3],
+			const char* pixelSampler,
+			const double pixelSamplerParam,
+			const char* luminarySampler,
+			const double luminarySamplerParam,
+			const char* pixelFilter,
+			const double pixelFilterWidth,
+			const double pixelFilterHeight,
+			const double pixelFilterParamA,
+			const double pixelFilterParamB,
+			const bool bShowLuminaires,
+			const bool bUseIORStack,
+			const bool bChooseOnlyOneLight,
+			const double nmbegin,
+			const double nmend,
+			const unsigned int num_wavelengths,
+			const unsigned int spectral_samples,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased,
+			const unsigned int smsBernoulliTrials,
+			const bool oidnDenoise,
+			const AdaptiveSamplingConfig& adaptiveConfig,
+			const StabilityConfig& stabilityConfig,
+			const bool useZSobol,
+			const bool useHWSS
+			);
+
 		bool SetMLTRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth

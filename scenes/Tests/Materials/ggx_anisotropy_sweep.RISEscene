@@ -15,23 +15,17 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		10
-	samples				64
-	lum_samples			1
-	ior_stack			true
+	samples                       64
+	lum_samples                   1
+	ior_stack                     true
 }
 
 file_rasterizeroutput

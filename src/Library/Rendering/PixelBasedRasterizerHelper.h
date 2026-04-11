@@ -21,6 +21,7 @@
 #include "../Interfaces/IPixelFilter.h"
 #include "Rasterizer.h"
 #include "FilteredFilm.h"
+#include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
 
 namespace RISE
@@ -94,6 +95,10 @@ namespace RISE
 
 			mutable FilteredFilm*	pFilteredFilm;		///< Film buffer for wide-support filter reconstruction
 			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
+
+#ifdef RISE_ENABLE_OIDN
+			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
+#endif
 
 			/// Returns true when the pixel filter's support extends beyond
 			/// a single pixel, requiring film-based reconstruction.

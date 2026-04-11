@@ -40,6 +40,9 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   useZSobol( false ),
   pFilteredFilm( 0 ),
   pFilteredScratch( 0 )
+#ifdef RISE_ENABLE_OIDN
+  ,pAOVBuffers( 0 )
+#endif
 {
 	if( pCaster ) {
 		pCaster->addref();
@@ -55,6 +58,9 @@ PixelBasedRasterizerHelper::~PixelBasedRasterizerHelper( )
 	safe_release( pCaster );
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
+#ifdef RISE_ENABLE_OIDN
+	delete pAOVBuffers;
+#endif
 }
 
 bool PixelBasedRasterizerHelper::UseFilteredFilm() const
@@ -449,21 +455,42 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		}
 	}
 
+#ifdef RISE_ENABLE_OIDN
+	delete pAOVBuffers;
+	pAOVBuffers = 0;
+	if( bDenoisingEnabled ) {
+		pAOVBuffers = new AOVBuffers( width, height );
+	}
+#endif
+
 	RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 
 	// Resolve filtered film: overwrites per-pixel inline estimates with
-	// properly filter-reconstructed values
+	// properly filter-reconstructed values.
+	// When OIDN denoising is active, skip the film resolve: OIDN is
+	// trained on raw MC noise and works poorly on filter-reconstructed
+	// images (negative lobes / ringing confuse the denoiser).  The
+	// inline box-filtered estimate provides the clean input OIDN needs.
 	if( pFilteredFilm ) {
+#ifdef RISE_ENABLE_OIDN
+		if( !bDenoisingEnabled ) {
+			pFilteredFilm->Resolve( *pImage );
+		}
+#else
 		pFilteredFilm->Resolve( *pImage );
+#endif
 	}
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
 #ifdef RISE_ENABLE_OIDN
-	if( bDenoisingEnabled ) {
-		AOVBuffers aovBuffers( width, height );
-		OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-		OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
+	if( bDenoisingEnabled && pAOVBuffers ) {
+		if( !pAOVBuffers->HasData() ) {
+			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers );
+		}
+		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
 	}
 #endif
 

@@ -21,6 +21,7 @@ using namespace RISE::Implementation;
 AOVBuffers::AOVBuffers( unsigned int w, unsigned int h ) :
   width( w ),
   height( h ),
+  bHasData( false ),
   albedo( w * h * 3, 0.0f ),
   normals( w * h * 3, 0.0f )
 {
@@ -33,6 +34,7 @@ void AOVBuffers::AccumulateAlbedo(
 	Scalar weight
 	)
 {
+	bHasData = true;
 	const unsigned int idx = (y * width + x) * 3;
 	albedo[idx + 0] += static_cast<float>( c.r * weight );
 	albedo[idx + 1] += static_cast<float>( c.g * weight );

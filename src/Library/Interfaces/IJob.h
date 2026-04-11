@@ -1490,6 +1490,78 @@ namespace RISE
 			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 			) = 0;
 
+		//! Sets the rasterizer to pure path tracing (Pel, bypasses shader ops)
+		virtual bool SetPathTracingPelRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
+			const char* shader,										///< [in] The default shader
+			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+			const bool bBackground,									///< [in] Is the radiance map a background object
+			const double scale,										///< [in] How much to scale the radiance values
+			const double orient[3],									///< [in] Euler angles for orienting the radiance map
+			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
+			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
+			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
+			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
+			const double smsThreshold,								///< [in] SMS convergence threshold
+			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
+			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
+			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol									///< [in] Use Z-Sobol sampler
+			) = 0;
+
+		//! Sets the rasterizer to pure path tracing (spectral, bypasses shader ops)
+		virtual bool SetPathTracingSpectralRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
+			const char* shader,										///< [in] The default shader
+			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+			const bool bBackground,									///< [in] Is the radiance map a background object
+			const double scale,										///< [in] How much to scale the radiance values
+			const double orient[3],									///< [in] Euler angles for orienting the radiance map
+			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
+			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
+			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const double nmbegin,									///< [in] Start wavelength (nm)
+			const double nmend,										///< [in] End wavelength (nm)
+			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
+			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
+			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
+			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
+			const double smsThreshold,								///< [in] SMS convergence threshold
+			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
+			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
+			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+			) = 0;
+
 		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTRasterizer(

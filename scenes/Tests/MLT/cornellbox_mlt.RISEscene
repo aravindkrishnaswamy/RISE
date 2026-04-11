@@ -10,15 +10,10 @@ RISE ASCII SCENE 5
 #                                                                                                           #
 #############################################################################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 mlt_rasterizer

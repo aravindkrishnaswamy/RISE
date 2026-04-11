@@ -42,9 +42,9 @@ Important anchors:
 - `Parsers/`: `.RISEscene`, script, command, and options parsing
 - `PhotonMapping/`: photon maps, tracers, and irradiance cache
 - `RasterImages/`: image representation, readers, writers, and accessors
-- `Rendering/`: rasterizers, ray caster, raster sequences, outputs
+- `Rendering/`: rasterizers, ray caster, raster sequences, outputs, FilteredFilm, AOVBuffers
 - `Sampling/`: sample generators and pixel filters
-- `Shaders/`: shader ops, shader composition, and volume shaders
+- `Shaders/`: shader ops, shader composition, volume shaders, PathTracingIntegrator, BDPTIntegrator
 - `Utilities/`: reference counting, logging, media paths, math, optics, threading
 - `Volume/`: volume data and accessors
 
@@ -85,8 +85,23 @@ The project intentionally favors physically motivated, readable code over aggres
 ### Changing rasterization behavior
 
 - Inspect [Job.cpp](Job.cpp) for rasterizer setup and option wiring.
-- Inspect [Rendering/PixelBasedRasterizerHelper.cpp](Rendering/PixelBasedRasterizerHelper.cpp) for pass structure.
+- Inspect [Rendering/PixelBasedRasterizerHelper.cpp](Rendering/PixelBasedRasterizerHelper.cpp) for pass structure, filtered film lifecycle, and OIDN denoiser integration.
 - Inspect [Rendering/RayCaster.cpp](Rendering/RayCaster.cpp) if the change affects intersection and shading dispatch.
+
+### Rasterizer hierarchy
+
+Pixel-based rasterizers form two parallel inheritance chains:
+
+**Shader-dispatch rasterizers** (use `RayCaster::CastRay` → ShaderOp dispatch):
+- `PixelBasedPelRasterizer` — standard RGB
+- `PixelBasedSpectralIntegratingRasterizer` — standard spectral
+- `BDPTRasterizerBase` → `BDPTPelRasterizer` / `BDPTSpectralRasterizer` — bidirectional
+
+**Pure integrator rasterizers** (bypass shader ops, call `PathTracingIntegrator` directly):
+- `PathTracingPelRasterizer` (extends `PixelBasedPelRasterizer`) — iterative PT, RGB
+- `PathTracingSpectralRasterizer` (extends `PixelBasedSpectralIntegratingRasterizer`) — iterative PT, spectral
+
+All inherit from `PixelBasedRasterizerHelper`, which provides the common block dispatch, filtered film lifecycle, OIDN denoising, and output flushing.  The pure integrator rasterizers override only `IntegratePixel()` and delegate to `PathTracingIntegrator` for the actual path tracing.
 
 ## Path Guiding And Adaptive Alpha
 
@@ -99,7 +114,8 @@ Key files:
 - `Utilities/PathTransportUtilities.h` — RIS helper structs and functions (`GuidingRISTarget`, `GuidingRISProposalPdf`, `GuidingRISSelectCandidate`).
 - `Rendering/PixelBasedPelRasterizer.cpp` — PT adaptive alpha logic.
 - `Rendering/BDPTRasterizerBase.cpp` — BDPT adaptive alpha logic.
-- `Shaders/PathTracingShaderOp.cpp` — PT RIS/MIS dispatch (RGB and spectral).
+- `Shaders/PathTracingIntegrator.cpp` — Iterative PT integrator with inline guiding dispatch (RGB, NM, and HWSS).
+- `Shaders/PathTracingShaderOp.cpp` — PT ShaderOp wrapper, delegates to PathTracingIntegrator.
 - `Shaders/BDPTIntegrator.cpp` — BDPT RIS/MIS dispatch (RGB and spectral).
 
 ## Docs Nearby

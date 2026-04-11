@@ -24,15 +24,10 @@ RISE ASCII SCENE 5
 # and SMS strategies on top — those are separate from the shader.
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 bdpt_pel_rasterizer
@@ -61,7 +56,6 @@ bdpt_pel_rasterizer
 #	show_adaptive_map		FALSE
 }
 
-
 ##################################################
 # Alternative: Unidirectional MIS Path Tracer
 #
@@ -77,21 +71,11 @@ bdpt_pel_rasterizer
 # unidirectional PT cannot do.
 ##################################################
 /*
-pathtracing_shaderop
-{
-	name				mis_pt
-	branch				false
-	sms_enabled			TRUE
-	sms_max_iterations	20
-	sms_threshold		1e-5
-	sms_max_chain_depth	10
-	sms_biased			TRUE
-}
 
 standard_shader
 {
 	name		global
-	shaderop	mis_pt
+	shaderop	DefaultPathTracing
 }
 
 pixelpel_rasterizer

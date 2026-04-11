@@ -27,37 +27,29 @@ RISE ASCII SCENE 5
 # Renderer -- Unidirectional Path Tracing
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-	branch		false
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		16
-	samples				128
-	lum_samples			1
-	ior_stack			TRUE
-	pathguiding			true
-	pathguiding_iterations	6
-	pathguiding_spp			4
-	pathguiding_alpha		0.5
-	pathguiding_max_depth	8
-	pathguiding_sampling_type	ris
-	pathguiding_ris_candidates	2
-	oidn_denoise		FALSE
-# You need these if you enable dispersion by having different IOR for each color channel
-	max_glossy_bounce		2
-	max_transmission_bounce	2
-	max_volume_bounce 2
-	max_translucent_bounce	2
+	samples                       128
+	lum_samples                   1
+	ior_stack                     TRUE
+	pathguiding                   true
+	pathguiding_iterations        6
+	pathguiding_spp               4
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
+	pathguiding_sampling_type     ris
+	pathguiding_ris_candidates    2
+	oidn_denoise                  FALSE
+	max_glossy_bounce             2
+	max_transmission_bounce       2
+	max_volume_bounce             2
+	max_translucent_bounce        2
 }
 
 file_rasterizeroutput

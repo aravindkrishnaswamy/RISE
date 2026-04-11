@@ -31,7 +31,8 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Shaders/`: shader-op and rasterizer behavior checks
 - `Spectral/`: spectral-lighting and dispersive regression scenes
 - `StabilityControls/`: sample clamping, bounce limits, RR, and glossy filtering
-- `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes
+- `Samplers/`: Sobol, ZSobol, and sampler comparison scenes
+- `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes (includes `pathtracing_pel_rasterizer` variants)
 - `UnifiedLighting/`: direct-light sampling and many-light regression scenes
 - `Volumes/`: medium and participating-media validation scenes
 
@@ -40,9 +41,23 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - Geometry sanity: `Geometry/shapes.RISEscene`
 - Parser sanity: `Parser/loops.RISEscene`
 - Path tracing baseline: `PathTracing/cornellbox_pathtracer.RISEscene`
+- Pure PT with OIDN: `PathTracing/cornellbox_pt_oidn.RISEscene`
 - Spectral baseline: `Spectral/cornellbox_spectral.RISEscene`
 - Lighting regression: `UnifiedLighting/cornellbox_mixed_lights_pt.RISEscene`
 - Medium correctness: `Volumes/medium_transmittance_test.RISEscene`
+- SSS with pure PT: `SubsurfaceScattering/pt_sss_dragon.RISEscene`
+
+## OIDN Denoising Regression
+
+```sh
+printf "render\nquit\n" | ./bin/rise scenes/Tests/PathTracing/cornellbox_pt_oidn.RISEscene
+```
+
+**Expected**: Visibly denoised output. Uses `pathtracing_pel_rasterizer` with `oidn_denoise TRUE` and per-sample AOV accumulation. When OIDN is enabled, the filtered film resolve is automatically skipped so OIDN receives raw MC noise (see `docs/ARCHITECTURE.md`). If OIDN output looks identical to the non-denoised version, the film bypass is likely broken.
+
+**Pure PT rasterizer SSS scenes**:
+- `SubsurfaceScattering/pt_sss_dragon.RISEscene` — Dragon with SSS via `pathtracing_pel_rasterizer` + OIDN + path guiding
+- `SubsurfaceScattering/pt_sss_wax_sphere.RISEscene` — Wax sphere via pure PT
 
 ## Notes For Contributors
 

@@ -490,14 +490,10 @@ void PixelBasedPelRasterizer::IntegratePixel(
 	// Standard Sobol: seed from pixel coordinates.
 	// ZSobol (blue-noise): seed from Morton index for spatially
 	// correlated scrambles across neighboring pixels.
-	uint32_t pixelSeed;
+	uint32_t pixelSeed = SobolSequence::HashCombine(
+		static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
-
-	if( !useZSobol ) {
-		pixelSeed = SobolSequence::HashCombine(
-			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
-	}
 
 	if( pSampling && pPixelFilter && rc.pass == RuntimeContext::PASS_NORMAL )
 	{

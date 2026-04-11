@@ -52,6 +52,8 @@ Triangle mesh intersection uses `thread_local` mailbox state (`src/Library/Geome
 | Path guiding training stats | `PathGuidingField` | Atomic counters, updated between passes (not during) |
 | BDPT integrator atomics | `BDPTIntegrator` | Atomic counters for cross-pass statistics |
 | Irradiance cache | `IrradianceCache` | Mutex-guarded insert/query; cache is populated during a dedicated irradiance pass before the main render pass |
+| FilteredFilm row locks | `FilteredFilm` | Per-scanline mutex; threads lock one row at a time during Splat(). Resolve() runs single-threaded after all render threads complete |
+| AOV buffer accumulation | `AOVBuffers` | Written per-pixel by the owning thread during block rasterization; no cross-thread contention within a block |
 
 ## Known Exceptions
 
@@ -78,6 +80,40 @@ The BSP tree / octree in `ObjectManager` is built from world-space bounding boxe
 **Per-frame animation** (`RasterizeAnimation`): The spatial structure is invalidated via `InvalidateSpatialStructure()` and rebuilt via `PrepareForRendering()` after each frame's `EvaluateAtTime()` + `SetSceneTime()`, before multi-threaded rendering begins. This ensures the BSP/octree reflects current transforms for each frame.
 
 **Per-sample temporal sampling** (motion blur within a single frame): `EvaluateAtTime()` is called per-sample from within threaded pixel rasterizers. Rebuilding the spatial structure per-sample is prohibitively expensive, so the BSP is built once for the frame's base time. This means per-sample object transform variations are not reflected in the spatial structure — a pre-existing limitation. In practice, the motion blur exposure window is typically small enough that objects don't move far outside their base-time bounds.
+
+## Filtered Film And OIDN Denoiser Interaction
+
+### FilteredFilm
+
+`FilteredFilm` (`Rendering/FilteredFilm.h`) accumulates filter-weighted sample contributions across pixel boundaries for wide-support pixel filters (Mitchell-Netravali, Lanczos, etc.). `PixelBasedRasterizerHelper::UseFilteredFilm()` returns true when the pixel filter's support exceeds half a pixel (>0.501). When active, each sample is splatted to all pixels within the filter's support via `FilteredFilm::Splat()`, and the inline pixel estimate uses box weighting (`weight=1.0`). After the render pass, `FilteredFilm::Resolve()` overwrites the image with `colorSum/weightSum`.
+
+When no pixel filter is specified, the default is **Mitchell-Netravali (1/3, 1/3)** with support 2.0, so the filtered film is active by default for multi-sample rasterizers.
+
+### OIDN Denoiser Bypass
+
+**Critical invariant**: When OIDN denoising is enabled, the filtered film resolve is skipped. OIDN is trained on raw Monte Carlo noise patterns and produces poor results on filter-reconstructed images — negative lobes and ringing from MN/Lanczos filters change the noise character in ways OIDN cannot handle. The denoiser receives the inline box-filtered estimate instead.
+
+This is enforced in `PixelBasedRasterizerHelper::RasterizeScene()`:
+```cpp
+if( pFilteredFilm ) {
+    if( !bDenoisingEnabled ) {
+        pFilteredFilm->Resolve( *pImage );
+    }
+}
+// ... then OIDN runs on the (box-filtered) pImage ...
+```
+
+BDPT is not affected by this because `BDPTRasterizerBase::RasterizeScene()` is a complete override that never uses `pFilteredFilm`.
+
+### AOV Pipeline
+
+AOV (Arbitrary Output Variable) buffers for OIDN are managed by `AOVBuffers` (`Rendering/AOVBuffers.h`). The base class `PixelBasedRasterizerHelper` owns a `pAOVBuffers` member allocated before the render pass when `bDenoisingEnabled` is true.
+
+Two AOV collection strategies exist:
+1. **Per-sample accumulation** (preferred): Rasterizers that use `PathTracingIntegrator` (e.g., `PathTracingPelRasterizer`) populate a `PixelAOV` struct per sample during integration. The rasterizer accumulates these into `pAOVBuffers` per pixel, weighted by the sample weight, and normalizes after the sample loop. This sets `AOVBuffers::HasData()` to true.
+2. **Post-render retrace** (fallback): If `HasData()` is false after the render pass (e.g., standard shader-dispatch rasterizers), `OIDNDenoiser::CollectFirstHitAOVs()` fires camera rays to collect first-hit albedo and normals in a separate single-threaded pass.
+
+The `PixelAOV` struct is shared between PT and BDPT rasterizers, defined in `AOVBuffers.h`.
 
 ## Design Decisions
 

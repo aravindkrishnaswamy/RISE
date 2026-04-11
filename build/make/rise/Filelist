@@ -241,6 +241,8 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
+	$(PATHLIBRARY)Rendering/PathTracingPelRasterizer.cpp					\
+	$(PATHLIBRARY)Rendering/PathTracingSpectralRasterizer.cpp				\
 	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
@@ -264,6 +266,7 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/GlobalPelPhotonMapShaderOp.cpp					\
 	$(PATHLIBRARY)Shaders/GlobalSpectralPhotonMapShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/PathTracingShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/PathTracingIntegrator.cpp							\
 	$(PATHLIBRARY)Shaders/SMSShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/ReflectionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\

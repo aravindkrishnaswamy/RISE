@@ -23,6 +23,17 @@
 
 namespace RISE
 {
+	/// First-hit AOV data extracted from a path sample.
+	/// Used to populate the denoiser's auxiliary buffers.
+	struct PixelAOV
+	{
+		RISEPel		albedo;
+		Vector3		normal;
+		bool		valid;
+
+		PixelAOV() : valid( false ) {}
+	};
+
 	namespace Implementation
 	{
 		/// Stores first-hit albedo and normal AOVs as float buffers.
@@ -33,6 +44,7 @@ namespace RISE
 		{
 			unsigned int width;
 			unsigned int height;
+			bool bHasData;					///< True once any sample has been accumulated
 			std::vector<float> albedo;		///< width*height*3, RGB interleaved
 			std::vector<float> normals;		///< width*height*3, XYZ interleaved
 
@@ -64,6 +76,9 @@ namespace RISE
 				unsigned int y,
 				Scalar invWeight
 				);
+
+			/// Returns true if any AOV data has been accumulated.
+			bool HasData() const { return bHasData; }
 
 			const float* GetAlbedoPtr() const { return albedo.data(); }
 			const float* GetNormalPtr() const { return normals.data(); }

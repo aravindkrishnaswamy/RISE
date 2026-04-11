@@ -1425,6 +1425,15 @@
 		F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */; };
 		F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
 		F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
+		F2D9B0852F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */; };
+		F2D9B0862F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */; };
+		F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */; };
+		F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */; };
+		F2D9B0892F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */; };
+		F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */; };
+		F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
+		F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */; };
+		F2D9B08F2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2179,6 +2188,12 @@
 		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
 		F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FilteredFilm.h; sourceTree = "<group>"; };
 		F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FilteredFilm.cpp; sourceTree = "<group>"; };
+		F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingPelRasterizer.h; sourceTree = "<group>"; };
+		F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingPelRasterizer.cpp; sourceTree = "<group>"; };
+		F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingSpectralRasterizer.h; sourceTree = "<group>"; };
+		F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingSpectralRasterizer.cpp; sourceTree = "<group>"; };
+		F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingIntegrator.h; sourceTree = "<group>"; };
+		F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingIntegrator.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2885,6 +2900,10 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */,
+				F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */,
+				F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */,
+				F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */,
 				F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */,
 				F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */,
 				F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */,
@@ -2980,6 +2999,8 @@
 		F27F09D5069C42900069C9E5 /* Shaders */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */,
+				F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */,
 				F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */,
 				F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */,
 				F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */,
@@ -3256,6 +3277,7 @@
 				F2C5D5712F6E44CD00546C97 /* BDPTVertex.h in Headers */,
 				F2C5D5722F6E44CD00546C97 /* BDPTIntegrator.h in Headers */,
 				F27F0A8C069C42910069C9E5 /* BezierPatchGeometry.h in Headers */,
+				F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */,
 				F27F0A8E069C42910069C9E5 /* BezierTesselation.h in Headers */,
 				F27F0A8F069C42910069C9E5 /* BezierValueGenerator.h in Headers */,
 				F27F0A91069C42910069C9E5 /* BilinearPatchGeometry.h in Headers */,
@@ -3677,6 +3699,8 @@
 				F277343507ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.h in Headers */,
 				F277345507ECCEDC00C0B600 /* DataDrivenBSDF.h in Headers */,
 				F277345607ECCEDC00C0B600 /* DataDrivenMaterial.h in Headers */,
+				F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */,
+				F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */,
 				F277345807ECCEDC00C0B600 /* TranslucentBSDF.h in Headers */,
 				F27734A107ECD64300C0B600 /* MediaPathLocator.h in Headers */,
 				F27734A207ECD64300C0B600 /* Optics.hpp in Headers */,
@@ -3817,6 +3841,7 @@
 				F27F0A7F069C42910069C9E5 /* ParametricSurface.cpp in Sources */,
 				F27F0A81069C42910069C9E5 /* Polynomial.cpp in Sources */,
 				F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */,
+				F2D9B08F2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */,
 				F27F0A83069C42910069C9E5 /* PolynomialGCD.cpp in Sources */,
 				F27F0A84069C42910069C9E5 /* QuadraticFunction.cpp in Sources */,
 				F27F0A86069C42910069C9E5 /* QuarticFunction.cpp in Sources */,
@@ -4021,6 +4046,8 @@
 				F2C5D5D32F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */,
 				F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */,
 				F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */,
+				F2D9B0892F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */,
+				F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F277343207ECCC2F00C0B600 /* DetectorSphere.cpp in Sources */,
 				F277343407ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp in Sources */,
 				F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */,
@@ -4223,6 +4250,7 @@
 				F24B727B2F52A632008304C4 /* IRasterImage.h in Sources */,
 				F24B727C2F52A632008304C4 /* IRasterImageAccessor.h in Sources */,
 				F24B727D2F52A632008304C4 /* IRasterImageReader.h in Sources */,
+				F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */,
 				F24B727E2F52A632008304C4 /* IRasterImageWriter.h in Sources */,
 				F24B727F2F52A632008304C4 /* IRasterizer.h in Sources */,
 				F24B72802F52A632008304C4 /* IRasterizerOutput.h in Sources */,
@@ -4562,6 +4590,8 @@
 				F24B73B32F52A632008304C4 /* RandomSampling2D.cpp in Sources */,
 				F24B73B42F52A632008304C4 /* RandomSampling2D.h in Sources */,
 				F24B73B52F52A632008304C4 /* Sampling1D.h in Sources */,
+				F2D9B0852F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */,
+				F2D9B0862F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F24B73B62F52A632008304C4 /* Sampling2D.h in Sources */,
 				F24B73B72F52A632008304C4 /* SincPixelFilter.cpp in Sources */,
 				F24B73B82F52A632008304C4 /* SincPixelFilter.h in Sources */,

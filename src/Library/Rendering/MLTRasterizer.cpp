@@ -151,8 +151,9 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 {
 	MLTSample result;
 
-	// Stream 0: film position samples
-	sampler.StartStream( 0 );
+	// Stream 48: film position samples.  Must not conflict with
+	// BDPTIntegrator's internal streams (0-47).
+	sampler.StartStream( 48 );
 
 	// Use the first 2D sample to pick a film position.
 	// This means mutations to these two values move the path
@@ -160,7 +161,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	const Point2 filmSample = sampler.Get2D();
 	const unsigned int px = std::min( static_cast<unsigned int>( filmSample.x * width ), width - 1 );
 	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
-	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - 1 - py) );
+	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - py) );
 
 	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
 
@@ -173,19 +174,12 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 		return result;
 	}
 
-	// Stream 1: light subpath samples
-	sampler.StartStream( 1 );
-
 	// Generate light and eye subpaths using the MLT sampler.
-	// BDPTIntegrator consumes samples from the sampler in a
-	// deterministic order, which is exactly what PSSMLT requires.
+	// BDPTIntegrator manages its own streams internally (0-47).
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
 	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, rc.random );
-
-	// Stream 2: eye subpath and connection samples
-	sampler.StartStream( 2 );
 
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts );
 

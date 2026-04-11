@@ -4778,6 +4778,199 @@ bool Job::SetBDPTSpectralRasterizer(
 	return true;
 }
 
+bool Job::SetPathTracingPelRasterizer(
+	const unsigned int numPixelSamples,
+	const unsigned int numLumSamples,
+	const char* shader,
+	const char* globalRadianceMap,
+	const bool bBackground,
+	const double scale,
+	const double orient[3],
+	const char* pixelSampler,
+	const double pixelSamplerParam,
+	const char* luminarySampler,
+	const double luminarySamplerParam,
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
+	const bool bShowLuminaires,
+	const bool bUseIORStack,
+	const bool bChooseOnlyOneLight,
+	const bool smsEnabled,
+	const unsigned int smsMaxIterations,
+	const double smsThreshold,
+	const unsigned int smsMaxChainDepth,
+	const bool smsBiased,
+	const unsigned int smsBernoulliTrials,
+	const bool oidnDenoise,
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const bool useZSobol
+	)
+{
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
+		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetPathTracingPelRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+
+	if( globalRadianceMap ) {
+		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, scale );
+			pRm->SetOrientation( Vector3( orient ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetPathTracingPelRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( pLumSampler ) {
+		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
+bool Job::SetPathTracingSpectralRasterizer(
+	const unsigned int numPixelSamples,
+	const unsigned int numLumSamples,
+	const char* shader,
+	const char* globalRadianceMap,
+	const bool bBackground,
+	const double scale,
+	const double orient[3],
+	const char* pixelSampler,
+	const double pixelSamplerParam,
+	const char* luminarySampler,
+	const double luminarySamplerParam,
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
+	const bool bShowLuminaires,
+	const bool bUseIORStack,
+	const bool bChooseOnlyOneLight,
+	const double nmbegin,
+	const double nmend,
+	const unsigned int num_wavelengths,
+	const unsigned int spectral_samples,
+	const bool smsEnabled,
+	const unsigned int smsMaxIterations,
+	const double smsThreshold,
+	const unsigned int smsMaxChainDepth,
+	const bool smsBiased,
+	const unsigned int smsBernoulliTrials,
+	const bool oidnDenoise,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const bool useZSobol,
+	const bool useHWSS
+	)
+{
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
+		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetPathTracingSpectralRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bUseIORStack, bChooseOnlyOneLight );
+
+	if( globalRadianceMap ) {
+		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, scale );
+			pRm->SetOrientation( Vector3( orient ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetPathTracingSpectralRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( pLumSampler ) {
+		pCaster->SetLuminaireSampling( pLumSampler );
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
+		nmbegin, nmend, num_wavelengths, spectral_samples,
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
 bool Job::SetMLTRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,

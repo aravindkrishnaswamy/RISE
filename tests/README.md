@@ -23,6 +23,8 @@ Built binaries land in `bin/tests/`.
   `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
 - Sampling, shading, and cache behavior:
   `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `IrradianceCacheTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
+- Sampler and dimension budget:
+  `SobolDimensionBudgetTest.cpp`, `PSSMLTStreamAliasingTest.cpp`
 - Diagnostic or performance-oriented coverage:
   `MailboxingPerformanceTest.cpp`
 

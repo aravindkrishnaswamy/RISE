@@ -13,22 +13,16 @@ RISE ASCII SCENE 5
 # Setup a renderer — standard power heuristic (no optimal MIS)
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		5
-	samples				64
-	lum_samples			1
+	samples                       64
+	lum_samples                   1
 }
 
 file_rasterizeroutput
@@ -52,7 +46,6 @@ pinhole_camera
 	height				512
 	fov					37.0
 }
-
 
 ##################################################
 # Painters

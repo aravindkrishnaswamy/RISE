@@ -24,6 +24,7 @@
 #define BDPT_RASTERIZER_BASE_
 
 #include "PixelBasedRasterizerHelper.h"
+#include "AOVBuffers.h"
 #include "SplatFilm.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Utilities/ManifoldSolver.h"
@@ -34,17 +35,6 @@
 
 namespace RISE
 {
-	/// First-hit AOV data extracted from an eye subpath sample.
-	/// Used to populate the denoiser's auxiliary buffers.
-	struct PixelAOV
-	{
-		RISEPel		albedo;
-		Vector3		normal;
-		bool		valid;
-
-		PixelAOV() : valid( false ) {}
-	};
-
 	namespace Implementation
 	{
 		class AOVBuffers;
@@ -59,9 +49,7 @@ namespace RISE
 			mutable Scalar			mSplatTotalSamples;	///< Cached for progressive resolve
 			mutable std::atomic<uint64_t>	mTotalAdaptiveSamples;	///< Total camera samples across all pixels (adaptive)
 
-#ifdef RISE_ENABLE_OIDN
-			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
-#endif
+			// pAOVBuffers is inherited from PixelBasedRasterizerHelper
 
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;	///< Learned radiance distribution for eye subpath guided sampling

@@ -14,25 +14,19 @@ hdr_painter
 	file				lightprobes/grace_probe.hdr
 }
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		8
-	samples				256
-	lum_samples			1
-	radiance_map		pnt_env
-	radiance_scale		3.0
-	radiance_background	TRUE
+	samples                       256
+	lum_samples                   1
+	radiance_map                  pnt_env
+	radiance_scale                3.0
+	radiance_background           TRUE
 }
 
 file_rasterizeroutput

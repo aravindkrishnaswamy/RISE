@@ -267,14 +267,15 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 {
 	MLTSample result;
 
-	// Stream 0: film position + wavelength samples
-	sampler.StartStream( 0 );
+	// Stream 48: film position + wavelength samples.  Must not
+	// conflict with BDPTIntegrator's internal streams (0-47).
+	sampler.StartStream( 48 );
 
 	// Pick film position (first 2D sample, same as RGB MLT)
 	const Point2 filmSample = sampler.Get2D();
 	const unsigned int px = std::min( static_cast<unsigned int>( filmSample.x * width ), width - 1 );
 	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
-	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - 1 - py) );
+	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - py) );
 	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
 
 	// Generate camera ray
@@ -319,13 +320,12 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 			const Scalar heroNM = swl.HeroLambda();
 
-			// Generate subpaths once at hero wavelength
-			sampler.StartStream( 1 );
+			// Generate subpaths once at hero wavelength.
+			// BDPTIntegrator manages its own streams internally (0-47).
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
 			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, heroNM, rc.random );
 
-			sampler.StartStream( 2 );
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, heroNM );
 
 			// Helper: accumulate strategy results into allStrategyXYZ
@@ -410,17 +410,12 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			const Scalar u = sampler.Get1D();
 			const Scalar nm = lambda_begin + u * range;
 
-			// Stream 1: light subpath
-			sampler.StartStream( 1 );
-
+			// BDPTIntegrator manages its own streams internally (0-47).
 			std::vector<BDPTIntegrator::ConnectionResultNM> results;
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
 
 			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, nm, rc.random );
-
-			// Stream 2: eye subpath
-			sampler.StartStream( 2 );
 
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, nm );
 

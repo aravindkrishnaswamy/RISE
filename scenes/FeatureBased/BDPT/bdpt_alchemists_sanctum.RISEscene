@@ -69,16 +69,10 @@ RISE ASCII SCENE 5
 # Renderer -- Bidirectional Path Tracing
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-	branch		false
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 bdpt_pel_rasterizer

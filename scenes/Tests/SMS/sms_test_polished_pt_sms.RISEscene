@@ -5,35 +5,22 @@ RISE ASCII SCENE 5
 
 > set accelerator B 10 8
 
-pathtracing_shaderop
-{
-	name		pt
-	branch		false
-	force_check_emitters	true
-}
-
-sms_shaderop
-{
-	name				sms
-	max_iterations		20
-	threshold			1e-5
-	max_chain_depth		10
-	biased				TRUE
-}
-
 standard_shader
 {
 	name		global
-	shaderop	sms
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		8
-	samples				256
-	lum_samples			1
-	ior_stack			FALSE
+	samples                       256
+	lum_samples                   1
+	ior_stack                     FALSE
+	sms_enabled                   TRUE
+	sms_max_iterations            20
+	sms_threshold                 1e-5
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
 }
 
 file_rasterizeroutput
