@@ -168,6 +168,7 @@ struct SceneEditorPanel: View {
                 } label: {
                     Label("Save & Reload", systemImage: "arrow.clockwise")
                 }
+                .disabled(viewModel.renderState == .cancelling || viewModel.renderState == .loading)
                 .help("Save to disk, clear the loaded scene, and reload from disk")
 
                 Spacer()

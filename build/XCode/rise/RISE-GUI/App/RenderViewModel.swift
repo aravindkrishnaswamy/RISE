@@ -129,17 +129,22 @@ final class RenderViewModel: ObservableObject {
     @Published var editorText: String = ""
     @Published var editorOriginalText: String = ""
     @Published var hasAnimation: Bool = false
+    @Published var recentFiles: [String] = []
 
     private let bridge = RISEBridge()
     private let cancelFlag = AtomicBool(false)
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
+    private var renderTask: Task<Void, Never>? = nil
 
     private static let maxLogMessages = 10000
+    private static let maxRecentFiles = 10
+    private static let recentFilesKey = "recentSceneFiles"
 
     init() {
         versionString = RISEBridge.versionString()
+        recentFiles = UserDefaults.standard.stringArray(forKey: Self.recentFilesKey) ?? []
         bridge.setLogBlock { [weak self] (level: RISELogLevel, message: String) in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
@@ -165,7 +170,20 @@ final class RenderViewModel: ObservableObject {
         panel.message = "Select a RISE Scene File"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        prepareAndLoadScene(at: url.path)
+    }
 
+    func openRecentScene(at path: String) {
+        guard FileManager.default.fileExists(atPath: path) else {
+            // Remove stale entry
+            recentFiles.removeAll { $0 == path }
+            UserDefaults.standard.set(recentFiles, forKey: Self.recentFilesKey)
+            return
+        }
+        prepareAndLoadScene(at: path)
+    }
+
+    private func prepareAndLoadScene(at path: String) {
         // If the editor has unsaved changes, prompt the user before switching
         if isEditorVisible && isEditorDirty {
             let saveAlert = NSAlert()
@@ -217,10 +235,25 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
-        loadScene(at: url.path)
+        loadScene(at: path)
+    }
+
+    func addToRecentFiles(_ path: String) {
+        recentFiles.removeAll { $0 == path }
+        recentFiles.insert(path, at: 0)
+        if recentFiles.count > Self.maxRecentFiles {
+            recentFiles = Array(recentFiles.prefix(Self.maxRecentFiles))
+        }
+        UserDefaults.standard.set(recentFiles, forKey: Self.recentFilesKey)
+    }
+
+    func clearRecentFiles() {
+        recentFiles.removeAll()
+        UserDefaults.standard.removeObject(forKey: Self.recentFilesKey)
     }
 
     func loadScene(at path: String) {
+        addToRecentFiles(path)
         renderState = .loading
         renderedImage = nil
         progress = 0.0
@@ -257,20 +290,28 @@ final class RenderViewModel: ObservableObject {
         Task.detached { [weak self] in
             let success = bridgeRef.loadAsciiScene(path)
 
+            // Read camera dimensions on the background thread before
+            // switching to MainActor, since the bridge accesses C++ state.
+            let camWidth = bridgeRef.cameraWidth()
+            let camHeight = bridgeRef.cameraHeight()
+
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
+                self.loadedFilePath = path
                 if success {
-                    self.loadedFilePath = path
                     self.renderState = .sceneLoaded
                     self.progressTitle = ""
                     self.hasAnimation = bridgeRef.hasAnimatedObjects()
-                    // Refresh the editor contents if it's open
-                    if self.isEditorVisible {
-                        self.refreshEditorContents()
+                    if camWidth > 0 && camHeight > 0 {
+                        self.sceneSize = CGSize(width: CGFloat(camWidth),
+                                                height: CGFloat(camHeight))
                     }
                 } else {
                     self.renderState = .error("Failed to load scene")
                 }
+                // Always open the editor so the user can fix errors
+                self.refreshEditorContents()
+                self.isEditorVisible = true
             }
         }
     }
@@ -336,11 +377,12 @@ final class RenderViewModel: ObservableObject {
         }
 
         let bridgeRef = bridge
-        Task.detached { [weak self] in
+        renderTask = Task.detached { [weak self] in
             let success = bridgeRef.rasterize()
 
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
+                self.renderTask = nil
                 self.displayTimer?.invalidate()
                 self.displayTimer = nil
                 if let start = self.renderStartTime {
@@ -427,11 +469,12 @@ final class RenderViewModel: ObservableObject {
         }
 
         let bridgeRef = bridge
-        Task.detached { [weak self] in
+        renderTask = Task.detached { [weak self] in
             let success = bridgeRef.rasterizeAnimation()
 
             await MainActor.run { [weak self] in
                 guard let self = self else { return }
+                self.renderTask = nil
                 self.displayTimer?.invalidate()
                 self.displayTimer = nil
                 if let start = self.renderStartTime {
@@ -501,6 +544,21 @@ final class RenderViewModel: ObservableObject {
             return
         }
 
+        // Cancel any active render and wait for it to finish before reloading
+        if renderState == .rendering || renderState == .cancelling {
+            cancelFlag.value = true
+            renderState = .cancelling
+            let task = renderTask
+            Task { @MainActor [weak self] in
+                await task?.value
+                self?.finishSaveAndReload(path: path)
+            }
+        } else {
+            finishSaveAndReload(path: path)
+        }
+    }
+
+    private func finishSaveAndReload(path: String) {
         // Clear the current scene
         bridge.clearAll()
         renderedImage = nil
@@ -517,6 +575,10 @@ final class RenderViewModel: ObservableObject {
 
     var isEditorDirty: Bool {
         editorText != editorOriginalText
+    }
+
+    var canOpenScene: Bool {
+        renderState != .rendering && renderState != .cancelling && renderState != .loading
     }
 
     /// Reload editor contents from the current loadedFilePath.

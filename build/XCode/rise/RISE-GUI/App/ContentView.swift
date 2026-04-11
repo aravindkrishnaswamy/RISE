@@ -46,6 +46,7 @@ struct ContentView: View {
     @EnvironmentObject var viewModel: RenderViewModel
     @State private var editorWidth: CGFloat = sceneEditorPanelWidth
     @GestureState private var dragStartWidth: CGFloat? = nil
+    @State private var suppressEditorAdjust = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -102,7 +103,7 @@ struct ContentView: View {
                     LogOutputView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(height: 220)
+                .frame(height: 280)
 
                 Divider()
 
@@ -112,7 +113,7 @@ struct ContentView: View {
         }
         .navigationTitle(windowTitle)
         .navigationSubtitle("RISE \(viewModel.versionString)")
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 600, minHeight: 500)
         .onChange(of: viewModel.sceneSize) { _, newSize in
             guard let size = newSize else { return }
             resizeWindowToFitScene(size)
@@ -139,7 +140,8 @@ struct ContentView: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 10) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 10) {
                 // Scene actions
                 FlowLayout(spacing: 8) {
                     Button {
@@ -241,10 +243,11 @@ struct ContentView: View {
                     }
                 }
 
-                Spacer()
+                }
+                .padding(10)
             }
-            .padding(10)
         }
+        .clipped()
     }
 
     // MARK: - Status Bar
@@ -275,25 +278,41 @@ struct ContentView: View {
     private func resizeWindowToFitScene(_ sceneSize: CGSize) {
         guard let window = NSApplication.shared.keyWindow else { return }
         guard let screen = window.screen else { return }
+        guard sceneSize.width > 0 && sceneSize.height > 0 else { return }
 
         let chromeHeight = window.frame.height - window.contentLayoutRect.height
-        let bottomPanelHeight: CGFloat = 220
+        let bottomPanelHeight: CGFloat = 280
         let statusBarHeight: CGFloat = 30
+        let fixedHeight = bottomPanelHeight + statusBarHeight
 
         let editorPanelTotal: CGFloat = viewModel.isEditorVisible ? editorWidth + 5 : 0
-        let desiredContentWidth = max(sceneSize.width, 900) + editorPanelTotal
-        let desiredContentHeight = sceneSize.height + bottomPanelHeight + statusBarHeight
-        let desiredFrameWidth = desiredContentWidth
-        let desiredFrameHeight = desiredContentHeight + chromeHeight
-
         let maxWidth = screen.visibleFrame.width
         let maxHeight = screen.visibleFrame.height
-        let frameWidth = min(desiredFrameWidth, maxWidth)
-        let frameHeight = min(desiredFrameHeight, maxHeight)
+
+        // Start with 1:1 pixel mapping for the scene
+        var renderWidth = sceneSize.width
+        var renderHeight = sceneSize.height
+
+        // If the frame would exceed screen bounds, scale down the render area
+        // while preserving the scene's aspect ratio.
+        let maxRenderHeight = maxHeight - chromeHeight - fixedHeight
+        let maxRenderWidth = maxWidth - editorPanelTotal
+        let scale = min(1.0, maxRenderWidth / renderWidth, maxRenderHeight / renderHeight)
+        renderWidth = ceil(renderWidth * scale)
+        renderHeight = ceil(renderHeight * scale)
+
+        let frameWidth = renderWidth + editorPanelTotal
+        let frameHeight = renderHeight + fixedHeight + chromeHeight
 
         let originX = screen.visibleFrame.midX - frameWidth / 2
         let originY = screen.visibleFrame.midY - frameHeight / 2
         let newFrame = NSRect(x: originX, y: originY, width: frameWidth, height: frameHeight)
+
+        // If the editor panel is already included in this resize, suppress
+        // the adjustWindowForEditor that may fire in the same update cycle.
+        if editorPanelTotal > 0 {
+            suppressEditorAdjust = true
+        }
 
         window.setFrame(newFrame, display: true, animate: true)
     }
@@ -301,6 +320,10 @@ struct ContentView: View {
     /// Grows or shrinks the window to accommodate the editor sidebar,
     /// keeping the right edge anchored so the render area stays in place.
     private func adjustWindowForEditor(visible: Bool) {
+        if suppressEditorAdjust {
+            suppressEditorAdjust = false
+            return
+        }
         guard let window = NSApplication.shared.keyWindow else { return }
         guard let screen = window.screen else { return }
 

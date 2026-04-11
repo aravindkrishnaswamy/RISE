@@ -15,6 +15,8 @@
 #include "Interfaces/IJobRasterizerOutput.h"
 #include "Interfaces/IRasterizer.h"
 #include "Interfaces/ILogPriv.h"
+#include "Interfaces/IScene.h"
+#include "Interfaces/ICamera.h"
 #include "Utilities/RTime.h"
 #include "Utilities/MediaPathLocator.h"
 
@@ -251,6 +253,24 @@ public:
 - (BOOL)hasAnimatedObjects {
     if (!_job) return NO;
     return _job->AreThereAnyKeyframedObjects() ? YES : NO;
+}
+
+- (uint32_t)cameraWidth {
+    if (!_job) return 0;
+    IScenePriv* scene = _job->GetScene();
+    if (!scene) return 0;
+    const ICamera* camera = scene->GetCamera();
+    if (!camera) return 0;
+    return camera->GetWidth();
+}
+
+- (uint32_t)cameraHeight {
+    if (!_job) return 0;
+    IScenePriv* scene = _job->GetScene();
+    if (!scene) return 0;
+    const ICamera* camera = scene->GetCamera();
+    if (!camera) return 0;
+    return camera->GetHeight();
 }
 
 - (BOOL)rasterize {

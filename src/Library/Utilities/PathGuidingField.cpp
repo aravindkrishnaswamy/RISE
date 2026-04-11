@@ -88,7 +88,7 @@ PathGuidingField::PathGuidingField(
 	// Create sample storage
 	sampleStorage = pglNewSampleStorage();
 
-	GlobalLog()->PrintEx( eLog_Event,
+	GlobalLog()->PrintEx( eLog_Info,
 		"PathGuidingField:: Initialized (bounds [%.1f,%.1f,%.1f]-[%.1f,%.1f,%.1f], %u training iterations, %u spp, alpha=%.2f, sampling=%s, risCandidates=%u, maxSamplesPerLeaf=%zu)",
 		boundsMin.x, boundsMin.y, boundsMin.z,
 		boundsMax.x, boundsMax.y, boundsMax.z,
@@ -277,7 +277,7 @@ void PathGuidingField::EndTrainingIteration()
 	collectingTraining = false;
 
 	const size_t iteration = pglFieldGetIteration( field );
-	GlobalLog()->PrintEx( eLog_Event,
+	GlobalLog()->PrintEx( eLog_Info,
 		"PathGuidingField:: Training iteration %zu complete (%zu surface, %zu zero-value, %zu volume, %zu vol-zero-value, energy %.6f, direct %.6f)",
 		iteration,
 		numSamples,

@@ -24,6 +24,27 @@ struct RISEApp: App {
                     viewModel.openScene()
                 }
                 .keyboardShortcut("o", modifiers: .command)
+                .disabled(!viewModel.canOpenScene)
+
+                Menu("Open Recent") {
+                    if viewModel.recentFiles.isEmpty {
+                        Text("No Recent Scenes")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(viewModel.recentFiles, id: \.self) { path in
+                            Button((path as NSString).lastPathComponent) {
+                                viewModel.openRecentScene(at: path)
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Clear Recent") {
+                            viewModel.clearRecentFiles()
+                        }
+                    }
+                }
+                .disabled(!viewModel.canOpenScene)
             }
         }
     }
