@@ -239,11 +239,12 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 			ScatteredRayContainer scattered;
 
 			IndependentSampler samplerWrapper( random );
+			IORStack iorStack( 1.0 );
 			if( bSpectral ) {
 				nm = nmdiff*random.CanonicalRandom() + nmbegin;
-				pSPF->ScatterNM( ri, samplerWrapper, nm, scattered, 0 );
+				pSPF->ScatterNM( ri, samplerWrapper, nm, scattered, iorStack );
 			} else {
-				pSPF->Scatter( ri, samplerWrapper, scattered, 0 );
+				pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
 			}
 
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );

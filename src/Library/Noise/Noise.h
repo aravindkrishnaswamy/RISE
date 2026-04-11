@@ -47,7 +47,7 @@ namespace RISE
 		public:
 			virtual inline Scalar Evaluate( const Scalar x, const Scalar y ) const
 			{
-				int		n = int(x) * int(y) * 57;
+				int		n = int(x) + int(y) * 57;
 				n = (n<<13) ^ n;
 				return ( 1.0 - Scalar( (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
 			}
@@ -61,7 +61,7 @@ namespace RISE
 		public:
 			virtual inline Scalar Evaluate( const Scalar x, const Scalar y, const Scalar z ) const
 			{
-				int		n = int(x) * int(y) * int(z) * 57;
+				int		n = int(x) + int(y) * 57 + int(z) * 113;
 				n = (n<<13) ^ n;
 				return ( 1.0 - Scalar( (n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.);
 			}

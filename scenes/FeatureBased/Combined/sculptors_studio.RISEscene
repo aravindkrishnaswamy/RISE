@@ -22,26 +22,10 @@ standard_shader
 	shaderop		DefaultPathTracing
 }
 
-/*
-distributiontracing_shaderop
-{
-	name			dt
-	samples			64
-	diffuse			false
-}
-
-standard_shader
-{
-	name			dt_shader
-	shaderop		dt
-	shaderop		DefaultDirectLighting
-}
-*/
-
 pixelpel_rasterizer
 {
 	max_recursion		4
-	samples				36
+	samples				128
 	lum_samples			1
 }
 
@@ -138,7 +122,7 @@ bumpmap_modifier
 {
 	name				clay_bump
 	function			pnt_clay_bump
-	scale				0.003
+	scale				0.5
 	windowsize			0.005
 }
 
@@ -168,7 +152,7 @@ polished_material
 	reflectance			pnt_cream
 	tau					pnt_cream
 	ior					1.5
-	scattering			500.0
+	scattering			50.0
 }
 
 # Metallic tools - isotropic phong
@@ -270,10 +254,10 @@ clippedplane_geometry
 clippedplane_geometry
 {
 	name				backwallgeom
-	pta					-6.0 5.0 0.0
+	pta					-6.0 7.0 0.0
 	ptb					-6.0 0.0 0.0
 	ptc					6.0 0.0 0.0
-	ptd					6.0 5.0 0.0
+	ptd					6.0 7.0 0.0
 }
 
 ##################################################
@@ -345,7 +329,7 @@ standard_object
 {
 	name				teapot
 	geometry			teapotgeom
-	position			0.0 0.1 0.0
+	position			0.0 2 0.0
 	orientation			10 -30 0
 	material			clay
 	modifier			clay_bump
@@ -358,7 +342,6 @@ standard_object
 	geometry			pedestalgeom
 	position			-1.8 0.75 -0.3
 	material			polished_marble
-	#shader				dt_shader
 }
 
 # Oren-Nayar clay torus sitting on the pedestal
@@ -427,7 +410,7 @@ spot_light
 	position			-4 8 6
 	target				0 0 0
 	color				1.0 0.95 0.85
-	power				1800.0
+	power				180.0
 	inner				20
 	outer				45
 }

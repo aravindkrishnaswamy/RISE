@@ -479,7 +479,8 @@ void AdaptiveDetectorSphere::PerformMeasurement(
 			ScatteredRayContainer scattered;
 
 			IndependentSampler samplerWrapper( random );
-			pSPF->Scatter( ri, samplerWrapper, scattered, 0 );
+			IORStack iorStack( 1.0 );
+			pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 
 			if( pScat )

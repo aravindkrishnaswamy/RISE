@@ -195,7 +195,7 @@ lambertian_luminaire_material
 {
 	name				ceiling_lum
 	exitance			pnt_emit
-	scale				120.0
+	scale				12000.0
 	material			none
 }
 
@@ -203,7 +203,7 @@ lambertian_luminaire_material
 {
 	name				ceiling_lum_cool
 	exitance			pnt_emit_cool
-	scale				100.0
+	scale				10000.0
 	material			none
 }
 
@@ -640,7 +640,7 @@ spot_light
 	position			-0.86 5.95 -1.22
 	target				-0.74 0.46 -1.86
 	color				1.0 0.95 0.88
-	power				55
+	power				550
 	inner				1.1
 	outer				2.6
 }
@@ -651,7 +651,7 @@ spot_light
 	position			1.08 5.95 -1.32
 	target				0.92 0.56 -1.98
 	color				0.92 0.96 1.0
-	power				57
+	power				570
 	inner				1.0
 	outer				2.4
 }
@@ -662,7 +662,7 @@ spot_light
 	position			0 5.95 1.05
 	target				0 1.38 -1.0
 	color				1.0 0.98 0.94
-	power				21
+	power				210
 	inner				1.5
 	outer				3.2
 }

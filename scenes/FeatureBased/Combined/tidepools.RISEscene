@@ -22,7 +22,7 @@ hdr_painter
 	name				pnt_env
 	file				lightprobes/uffizi_probe.hdr
 }
-
+/*
 ambientocclusion_shaderop
 {
 	name				ambocc
@@ -46,6 +46,29 @@ pixelpel_rasterizer
 	max_recursion		4
 	samples				25
 	lum_samples			1
+	radiance_map		pnt_env
+	radiance_background	TRUE
+}
+*/
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+	lum_samples                   1
+	oidn_denoise                  TRUE
+	pathguiding                   true
+	pathguiding_sampling_type     RIS
+	pathguiding_iterations        6
+	pathguiding_spp               12
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
+	adaptive_max_samples	512
+	adaptive_threshold		0.05
 	radiance_map		pnt_env
 	radiance_background	TRUE
 }
@@ -435,7 +458,7 @@ spot_light
 	inner				20
 	outer				50
 }
-
+/*
 irradiance_cache
 {
 	size				500
@@ -443,3 +466,4 @@ irradiance_cache
 	min_spacing			8
 	max_spacing			100
 }
+*/

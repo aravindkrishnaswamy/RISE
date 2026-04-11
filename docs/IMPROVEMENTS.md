@@ -35,10 +35,10 @@ The improvements below target gaps where the field has advanced beyond what RISE
 | 2 | ~~Light subpath guiding in BDPT~~ **DONE** | Transport | Medium | None (eye guiding complete) |
 | 3 | ~~Random-walk subsurface scattering~~ **DONE** | Materials | Medium | None (disk projection complete) |
 | 4 | ~~Light BVH for many-light sampling~~ **DONE** | Lights | Medium-Large | Roadmap Rank 1 |
-| 5 | Hero wavelength spectral sampling (HWSS) | Spectral | Medium-Large | None |
+| 5 | ~~Hero wavelength spectral sampling (HWSS)~~ **DONE** | Spectral | Medium-Large | None |
 | 6 | ~~Blue-noise screen-space error distribution (ZSobol)~~ **DONE** | Sampling | Small | None |
 | 7 | ~~Null-scattering volume framework~~ **DONE** | Volumes | Large | Roadmap Ranks 5-6 |
-| 8 | Optimal MIS weights | Transport | Medium | None |
+| 8 | ~~Optimal MIS weights~~ **DONE** | Transport | Medium | None |
 | 9 | VCM (Vertex Connection and Merging) | Transport | Medium-Large | None |
 | 10 | Hair/fiber BSDF (Chiang et al. 2016) | Materials | Medium | ~~1 (GGX foundation)~~ None |
 | 11 | Jakob-Hanika sigmoid spectral uplifting | Spectral | Small | 5 (HWSS) |

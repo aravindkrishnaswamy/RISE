@@ -168,7 +168,6 @@ void PerfectRefractorSPF::ScatterNM(
 	specular.isDelta = true;
 	specular.pdf = 1.0;
 
-	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	Vector3	vRefracted = ri.ray.Dir();
 
 	Scalar newIOR = Nt.GetColorNM(ri,nm);

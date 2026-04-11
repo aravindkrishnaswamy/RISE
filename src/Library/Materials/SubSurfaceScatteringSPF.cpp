@@ -79,7 +79,6 @@ void SubSurfaceScatteringSPF::Scatter(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar cosine = -Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	const RISEPel iorVal = ior.GetColor( ri );
 	const Scalar n = iorVal[0];
 
@@ -231,7 +230,6 @@ void SubSurfaceScatteringSPF::ScatterNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar cosine = -Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	const Scalar n = ior.GetColorNM( ri, nm );
 
 	const bool bFromInside = ior_stack.containsCurrent();
@@ -363,7 +361,6 @@ Scalar SubSurfaceScatteringSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar cosine = -Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	const bool bFromInside = ior_stack.containsCurrent();
 
 	if( !bFromInside )

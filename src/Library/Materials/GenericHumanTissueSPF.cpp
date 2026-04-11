@@ -123,8 +123,6 @@ void GenericHumanTissueSPF::Scatter(
 	trans.kray = RISEPel(1.0,1.0,1.0);
 	trans.isDelta = false;
 
-	const Scalar cos_alpha = Vector3Ops::Dot(-ri.onb.w(), ri.ray.Dir() );
-
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DielectricSPF for detailed rationale)
 	if( ior_stack.containsCurrent() ) {
@@ -188,8 +186,6 @@ void GenericHumanTissueSPF::ScatterNM(
 	trans.type = ScatteredRay::eRayTranslucent;
 	trans.krayNM = 1.0;
 	trans.isDelta = false;
-
-	const Scalar cos_alpha = Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir() );
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DielectricSPF for detailed rationale)

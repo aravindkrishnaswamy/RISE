@@ -382,7 +382,7 @@ namespace RISE
 		/// \param pSPF     Scattering probability function (may be null)
 		/// \param ri       Geometric intersection containing the surface state
 		/// \param wi       Scattered direction (away from surface)
-		/// \param pIorStack Current IOR stack for dielectric tracking (may be null)
+		/// \param ior_stack Current IOR stack for dielectric tracking
 		/// \return PDF in solid angle measure, or 0 if pSPF is null
 		inline Scalar EvalPdfAtSurface(
 			const ISPF* pSPF,
@@ -417,7 +417,7 @@ namespace RISE
 		/// \param ri       Geometric intersection containing the surface state
 		/// \param wi       Scattered direction (away from surface)
 		/// \param nm       Wavelength in nanometers
-		/// \param pIorStack Current IOR stack for dielectric tracking (may be null)
+		/// \param ior_stack Current IOR stack for dielectric tracking (may be null)
 		/// \return PDF in solid angle measure, or 0 if pSPF is null
 		inline Scalar EvalPdfAtSurfaceNM(
 			const ISPF* pSPF,

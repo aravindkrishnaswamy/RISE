@@ -33,8 +33,8 @@ namespace RISE
 			Scalar		radiantEnergy;
 			Point3		ptPosition;
 			Point3		ptTarget;
-			Scalar		dInnerAngle;		// angle for the core of the light
-			Scalar		dOuterAngle;		// angle for the very outside reaches of the light
+			Scalar		dInnerAngle;		// full cone angle for the core of the light
+			Scalar		dOuterAngle;		// full cone angle for the outside reaches of the light
 			RISEPel		cColor;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
@@ -52,11 +52,33 @@ namespace RISE
 			inline bool IsPositionalLight() const { return true; }
 
 			inline Vector3 emissionDirection() const { return vDirection; }
-			inline Scalar emissionConeHalfAngle() const { return dOuterAngle; }
+			inline Scalar emissionConeHalfAngle() const { return dOuterAngle / 2.0; }
 
 			inline RISEPel radiantExitance() const
 			{
-				return (cColor * radiantEnergy * TWO_PI * (TWO_PI*(dOuterAngle/TWO_PI)));
+				// Integrate emittedRadiance over the emission solid angle.
+				// dInnerAngle/dOuterAngle are full cone angles; half-angles
+				// are used for the actual cone geometry.
+				const Scalar halfInner = dInnerAngle / 2.0;
+				const Scalar halfOuter = dOuterAngle / 2.0;
+
+				// Inner cone: full power, solid angle = 2pi(1 - cos(halfInner))
+				Scalar solidAngle = 1.0 - cos( halfInner );
+
+				// Falloff zone: t^2 weighting from halfInner to halfOuter
+				if( halfOuter > halfInner ) {
+					const unsigned int N = 32;
+					const Scalar dTheta = (halfOuter - halfInner) / Scalar(N);
+					Scalar falloffIntegral = 0;
+					for( unsigned int i = 0; i < N; i++ ) {
+						const Scalar theta = halfInner + (Scalar(i) + 0.5) * dTheta;
+						const Scalar t = (halfOuter - theta) / (halfOuter - halfInner);
+						falloffIntegral += t * t * sin( theta ) * dTheta;
+					}
+					solidAngle += falloffIntegral;
+				}
+
+				return cColor * radiantEnergy * TWO_PI * solidAngle;
 			}
 
 			inline Point3 position() const
@@ -66,8 +88,10 @@ namespace RISE
 
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
 			{
-				// Find the angle between the light out and vDirection
-				const Scalar cost = Vector3Ops::Dot( 
+				// Find the angle between the light out and vDirection.
+				// dInnerAngle/dOuterAngle are full cone angles, so we
+				// compare against half of each (matching ComputeDirectLighting).
+				const Scalar cost = Vector3Ops::Dot(
 					vLightOut,
 					vDirection
 					);
@@ -75,18 +99,15 @@ namespace RISE
 					return RISEPel(0,0,0);
 				}
 
-				/*  Test code, We need to compensate for this in the radiantExitance or bad things will happen
-				const Scalar acost = acos(cost);
-				if( acost < dInnerAngle ) {
-					return (cColor * radiantEnergy);
-				} else if( acost < dOuterAngle ) {
-					return (cColor * radiantEnergy) * ((acost-dInnerAngle)(dOuterAngle-dInnerAngle)));
-				}
-				*/
+				const Scalar halfInner = dInnerAngle / 2.0;
+				const Scalar halfOuter = dOuterAngle / 2.0;
 
 				const Scalar acost = acos(cost);
-				if( acost <= dOuterAngle ) {
+				if( acost <= halfInner ) {
 					return (cColor * radiantEnergy);
+				} else if( acost <= halfOuter ) {
+					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
+					return (cColor * radiantEnergy) * (t * t);
 				}
 
 				return RISEPel(0,0,0);
@@ -94,8 +115,9 @@ namespace RISE
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
-				// Uniform solid angle sampling within the cone
-				const Scalar cosAlpha = cos( dOuterAngle );
+				// Uniform solid angle sampling within the outer half-cone
+				const Scalar halfOuter = dOuterAngle / 2.0;
+				const Scalar cosAlpha = cos( halfOuter );
 				const Scalar cosTheta = 1.0 - ptrand.x * (1.0 - cosAlpha);
 				const Scalar sinTheta = sqrt( r_max( 0.0, 1.0 - cosTheta * cosTheta ) );
 				const Scalar phi = TWO_PI * ptrand.y;
@@ -114,10 +136,11 @@ namespace RISE
 
 			inline Scalar pdfDirection( const Vector3& dir ) const
 			{
+				const Scalar halfOuter = dOuterAngle / 2.0;
 				const Scalar cost = Vector3Ops::Dot( dir, vDirection );
 				if( cost <= 0 ) return 0;
-				if( acos( r_min( 1.0, cost ) ) > dOuterAngle ) return 0;
-				return Scalar(1.0) / (TWO_PI * (1.0 - cos( dOuterAngle )));
+				if( acos( r_min( 1.0, cost ) ) > halfOuter ) return 0;
+				return Scalar(1.0) / (TWO_PI * (1.0 - cos( halfOuter )));
 			}
 
 			SpotLight(

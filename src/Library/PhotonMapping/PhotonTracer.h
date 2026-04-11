@@ -154,7 +154,6 @@ namespace RISE
 							const RISEPel totalpower = l->radiantExitance();
 							unsigned int thislummax = (unsigned int)(ColorMath::MaxValue(totalpower)/total_exitance * numPhotons) + pPhotonMap->NumStored();
 							thislummax = thislummax > pPhotonMap->MaxPhotons() ? pPhotonMap->MaxPhotons() : thislummax;
-							const RISEPel power = l->radiantExitance() * dPowerScale;
 
 							unsigned int numshot_thislum = 0;
 							const unsigned int numstored_sofar = pPhotonMap->NumStored();
@@ -177,6 +176,14 @@ namespace RISE
 
 								Ray r;
 								r = l->generateRandomPhoton( Point3(geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom()) );
+
+								// Weight each photon by emittedRadiance/pdfDirection so that
+								// lights with non-uniform emission profiles (e.g. spot light
+								// inner/outer cone falloff) produce correctly weighted photons.
+								const Scalar pdf = l->pdfDirection( r.Dir() );
+								const RISEPel power = (pdf > 0) ?
+									l->emittedRadiance( r.Dir() ) * (dPowerScale / pdf) :
+									RISEPel(0,0,0);
 
 								TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
 

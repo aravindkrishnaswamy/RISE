@@ -1273,7 +1273,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 						// For both alias-table and BVH, pdfAlias is the
 						// probability of selecting this light.
 						const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
-						const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, 0 );
+						static const IORStack defaultIOR( 1.0 );
+						const Scalar p_bsdf = pMaterial->Pdf( vToLight, ri, defaultIOR );
 
 						// Optimal MIS training: accumulate second moment
 						// for a successful NEE hit.  contrib includes the
@@ -1382,7 +1383,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				// MIS: power heuristic (or optimal MIS) against BSDF PDF
 				if( pMaterial )
 				{
-					const Scalar pBsdf = pMaterial->Pdf( envDir, ri, 0 );
+					static const IORStack defaultIOR( 1.0 );
+					const Scalar pBsdf = pMaterial->Pdf( envDir, ri, defaultIOR );
 					if( pBsdf > 0 )
 					{
 						Scalar w;

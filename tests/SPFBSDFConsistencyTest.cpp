@@ -66,6 +66,8 @@
 #include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 
+#include "TestStubObject.h"
+
 // BRDF implementations
 #include "../src/Library/Materials/LambertianBRDF.h"
 #include "../src/Library/Materials/OrenNayarBRDF.h"
@@ -94,6 +96,12 @@ static const int POINTWISE_SAMPLES      = 10000;    // Samples for pointwise kra
 static const double POINTWISE_TOL       = 0.02;     // 2% relative tolerance for pointwise check
 static const int DELTA_DIRECTION_SAMPLES = 1000;    // Samples for delta direction checks
 static const double DELTA_DIR_TOL       = 1e-6;     // Angular tolerance for delta directions
+
+// ============================================================
+//  Stub object for IOR stack operations
+// ============================================================
+
+static StubObject* g_stubObject = 0;
 
 // ============================================================
 //  Synthetic intersection setup
@@ -145,6 +153,7 @@ static FurnaceResult FurnaceTest(
     const Vector3 normal = ri.onb.w();
     RandomNumberGenerator rng;
     Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
 
     // ---- MC estimate via SPF importance sampling (branching mode) ----
     // In branching mode, we sum kray over ALL scattered rays per sample.
@@ -158,7 +167,7 @@ static FurnaceResult FurnaceTest(
     for( int i = 0; i < FURNACE_MC_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, iorStack );
 
         if( scattered.Count() == 0 ) continue;
 
@@ -281,13 +290,14 @@ static PointwiseResult PointwiseTest(
     const Vector3 normal = ri.onb.w();
     RandomNumberGenerator rng;
     Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
 
     double errSum = 0;
 
     for( int i = 0; i < POINTWISE_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, iorStack );
 
         if( scattered.Count() == 0 ) continue;
 
@@ -375,6 +385,7 @@ static DeltaResult DeltaDirectionTest(
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     RandomNumberGenerator rng;
     Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
 
     // Compute expected mirror reflection direction
     const Vector3 normal = ri.onb.w();
@@ -384,7 +395,7 @@ static DeltaResult DeltaDirectionTest(
     for( int i = 0; i < DELTA_DIRECTION_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, iorStack );
 
         for( unsigned int j = 0; j < scattered.Count(); j++ )
         {
@@ -396,7 +407,7 @@ static DeltaResult DeltaDirectionTest(
                 result.isDeltaFlagCorrect = false;
 
             // Check Pdf returns 0
-            Scalar pdfVal = spf.Pdf( ri, wo, 0 );
+            Scalar pdfVal = spf.Pdf( ri, wo, iorStack );
             if( pdfVal != 0 )
                 result.pdfIsZero = false;
 
@@ -465,13 +476,14 @@ static SanityResult SanityTest(
     RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
     RandomNumberGenerator rng;
     Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
 
     const int N = 10000;
 
     for( int i = 0; i < N; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, iorStack );
 
         for( unsigned int j = 0; j < scattered.Count(); j++ )
         {
@@ -507,6 +519,10 @@ int main()
 
     // Initialize the global log to prevent null pointer crashes
     GlobalLog();
+
+    // Stub object for IOR stack operations (mimics scene object identity)
+    g_stubObject = new StubObject();
+    g_stubObject->addref();
 
     // ---- Create uniform painters ----
     UniformColorPainter* white      = new UniformColorPainter( RISEPel(0.8, 0.8, 0.8) );  white->addref();
@@ -894,6 +910,8 @@ int main()
                   << "  maxErr=" << std::setprecision(2) << pr.maxRelError * 100 << "%"
                   << std::endl;
     }
+
+    g_stubObject->release();
 
     if( numFailed > 0 )
     {

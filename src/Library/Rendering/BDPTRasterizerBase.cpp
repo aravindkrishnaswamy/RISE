@@ -426,7 +426,7 @@ void BDPTRasterizerBase::RasterizeScene(
 						*pTrainImage,
 						kTrainingConvergenceGridResolution );
 
-					GlobalLog()->PrintEx( eLog_Event,
+					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: BDPT training iteration %u coarse image delta %.6f (%ux%u RMSE)",
 						trainIter + 1,
 						coarseImageDelta,
@@ -531,7 +531,7 @@ void BDPTRasterizerBase::RasterizeScene(
 						positiveSampleDensity * positiveSampleDensity;
 					guidingAlphaScale = densityScale * strategyScale;
 
-					GlobalLog()->PrintEx( eLog_Event,
+					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: BDPT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, deep fraction %.3f, strategyScale %.3f)",
 						guidingAlphaScale,
 						positiveSampleDensity,
@@ -545,7 +545,7 @@ void BDPTRasterizerBase::RasterizeScene(
 				{
 					guidingAlphaScale = strategyScale;
 
-					GlobalLog()->PrintEx( eLog_Event,
+					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: BDPT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, deep fraction %.3f, strategyScale %.3f)",
 						guidingAlphaScale,
 						positiveSampleDensity,
@@ -568,7 +568,7 @@ void BDPTRasterizerBase::RasterizeScene(
 				if( trainIter == 0 && positiveSampleDensity >= 0.85 &&
 					indirectEnergyFraction < 0.35 )
 				{
-					GlobalLog()->PrintEx( eLog_Event,
+					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: Stopping BDPT training after bootstrap (density %.3f is already high enough for the coarse field and indirect fraction %.3f is low)",
 						positiveSampleDensity,
 						indirectEnergyFraction );
@@ -600,7 +600,7 @@ void BDPTRasterizerBase::RasterizeScene(
 
 					if( trainIter >= 3 && lowGainPasses >= 2 )
 					{
-						GlobalLog()->PrintEx( eLog_Event,
+						GlobalLog()->PrintEx( eLog_Info,
 							"PathGuidingField:: Stopping BDPT training after iteration %u (relative gain %.3f, energy gain %.3f, %u low-gain passes)",
 							trainIter + 1,
 							relativeGain,
@@ -614,7 +614,7 @@ void BDPTRasterizerBase::RasterizeScene(
 						coarseImageDelta < kTrainingConvergenceDeltaThreshold &&
 						relativeGain < kTrainingConvergenceSampleGainThreshold )
 					{
-						GlobalLog()->PrintEx( eLog_Event,
+						GlobalLog()->PrintEx( eLog_Info,
 							"PathGuidingField:: Stopping BDPT training after iteration %u (coarse image delta %.6f, relative gain %.3f)",
 							trainIter + 1,
 							coarseImageDelta,

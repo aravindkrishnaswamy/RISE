@@ -94,9 +94,9 @@ void SpotLight::ComputeDirectLighting(
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
 			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy);
 		} else {
-			// It isn't so, apply the falloff model
-			const Scalar fMul = 1.0-(fAngleOfIncidence - dInnerAngle/2.0)/(dOuterAngle/2-dInnerAngle/2);
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fMul * fDot * radiantEnergy);
+			// Quadratic falloff between inner and outer half-angles
+			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
+			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * t * t * fDot * radiantEnergy);
 		}
 	}
 }

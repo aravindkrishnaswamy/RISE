@@ -265,7 +265,6 @@ void DielectricSPF::ScatterNM(
 	ScatteredRay dielectric;
 	ScatteredRay fresnel;
 
-	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
 	bool		bFromInside = false;
 
 	// Use the IOR stack as the authoritative source for inside/outside

@@ -41,6 +41,8 @@
 #include "../src/Library/Materials/GGXBRDF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 
+#include "TestStubObject.h"
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -61,6 +63,12 @@ static const int ISO_SAMPLES     = 100000;
 static const double ISO_TOL      = 0.03;     // 3% tolerance for iso vs aniso comparison
 
 static const int G2_SAMPLES      = 100000;
+
+// ============================================================
+//  Stub object for IOR stack operations
+// ============================================================
+
+static StubObject* g_stubObject = 0;
 
 // ============================================================
 //  Test 1: Anisotropic NDF normalization
@@ -479,6 +487,7 @@ static bool TestMaterialPointwiseConsistency(
 
 	RandomNumberGenerator rng;
 	IndependentSampler sampler( rng );
+	IORStack iorStack = MakeTestIORStack( g_stubObject );
 	const Vector3 n = ri.onb.w();
 
 	int validSamples = 0;
@@ -496,7 +505,7 @@ static bool TestMaterialPointwiseConsistency(
 	for( int i = 0; i < numSamples; i++ )
 	{
 		ScatteredRayContainer scattered;
-		spf->Scatter( ri, sampler, scattered, 0 );
+		spf->Scatter( ri, sampler, scattered, iorStack );
 
 		for( unsigned int r = 0; r < scattered.Count(); r++ )
 		{
@@ -514,7 +523,7 @@ static bool TestMaterialPointwiseConsistency(
 
 			if( brdfMax < 1e-10 && krayMax < 1e-10 ) continue;
 
-			const Scalar spfPdf = spf->Pdf( ri, wo, 0 );
+			const Scalar spfPdf = spf->Pdf( ri, wo, iorStack );
 			if( spfPdf < 1e-10 ) continue;
 
 			validSamples++;
@@ -589,6 +598,10 @@ int main()
 	std::cout << "=== GGX White Furnace Test ===" << std::endl;
 	bool allPassed = true;
 
+	// Stub object for IOR stack operations (mimics scene object identity)
+	g_stubObject = new StubObject();
+	g_stubObject->addref();
+
 	// Test 1: NDF normalization
 	std::cout << std::endl << "--- Test 1: NDF Normalization ---" << std::endl;
 	{
@@ -661,6 +674,8 @@ int main()
 			}
 		}
 	}
+
+	g_stubObject->release();
 
 	// Summary
 	std::cout << std::endl << "=== " << (allPassed ? "ALL TESTS PASSED" : "SOME TESTS FAILED") << " ===" << std::endl;

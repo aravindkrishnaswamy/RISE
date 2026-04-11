@@ -304,7 +304,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 					positiveSampleDensity * positiveSampleDensity;
 				guidingAlphaScale = densityScale * energyScale;
 
-				GlobalLog()->PrintEx( eLog_Event,
+				GlobalLog()->PrintEx( eLog_Info,
 					"PathGuidingField:: PT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, energyScale %.3f)",
 					guidingAlphaScale, positiveSampleDensity, indirectEnergyFraction, indirectCoV, covScale, energyScale );
 			}
@@ -312,7 +312,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			{
 				guidingAlphaScale = energyScale;
 
-				GlobalLog()->PrintEx( eLog_Event,
+				GlobalLog()->PrintEx( eLog_Info,
 					"PathGuidingField:: PT alpha scaled to %.3f (density %.3f, indirect fraction %.3f, indirect CoV %.3f, covScale %.3f, energyScale %.3f)",
 					guidingAlphaScale, positiveSampleDensity, indirectEnergyFraction, indirectCoV, covScale, energyScale );
 			}
@@ -337,7 +337,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 				if( trainIter >= 3 && lowGainPasses >= 2 )
 				{
-					GlobalLog()->PrintEx( eLog_Event,
+					GlobalLog()->PrintEx( eLog_Info,
 						"PathGuidingField:: Stopping PT training after iteration %u (relative gain %.3f, energy gain %.3f, %u low-gain passes)",
 						trainIter + 1,
 						relativeGain,

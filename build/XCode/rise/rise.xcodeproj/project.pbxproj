@@ -1430,6 +1430,8 @@
 		F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */; };
 		F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C52F89F7B40077A171 /* AliasTable.h */; };
 		F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */; };
+		F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */; };
+		F2D9B0CD2F8A8DEC0077A171 /* PathTransportUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2190,6 +2192,8 @@
 		F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveSamplingConfig.h; sourceTree = "<group>"; };
 		F2D9B0C52F89F7B40077A171 /* AliasTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AliasTable.h; sourceTree = "<group>"; };
 		F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTUtilities.h; sourceTree = "<group>"; };
+		F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTransportUtilities.h; sourceTree = "<group>"; };
+		F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathVertexEval.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -3044,6 +3048,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */,
+				F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */,
 				F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */,
 				F2D9B0C52F89F7B40077A171 /* AliasTable.h */,
 				F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */,
@@ -3270,6 +3276,8 @@
 				F27F0A87069C42910069C9E5 /* QuarticFunction.h in Headers */,
 				F27F0A89069C42910069C9E5 /* Resultant.h in Headers */,
 				F27F0A8A069C42910069C9E5 /* 3DS_Defines.h in Headers */,
+				F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */,
+				F2D9B0CD2F8A8DEC0077A171 /* PathTransportUtilities.h in Headers */,
 				F2C5D5712F6E44CD00546C97 /* BDPTVertex.h in Headers */,
 				F2C5D5722F6E44CD00546C97 /* BDPTIntegrator.h in Headers */,
 				F27F0A8C069C42910069C9E5 /* BezierPatchGeometry.h in Headers */,

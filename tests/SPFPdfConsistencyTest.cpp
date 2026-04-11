@@ -58,6 +58,8 @@
 #include "../src/Library/Materials/CompositeSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 
+#include "TestStubObject.h"
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -87,6 +89,12 @@ static double Chi2Critical( int df, double alpha )
     double term = 1.0 - 2.0/(9.0*k) + z * sqrt(2.0/(9.0*k));
     return k * term * term * term;
 }
+
+// ============================================================
+//  Stub object for IOR stack operations
+// ============================================================
+
+static StubObject* g_stubObject = 0;
 
 // ============================================================
 //  Synthetic intersection setup
@@ -179,6 +187,7 @@ static TestResult TestSPF(
 
     RandomNumberGenerator rng;
     Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
 
     // ================================================================
     //  Part 1: Cross-validation
@@ -197,7 +206,7 @@ static TestResult TestSPF(
     for( int i = 0; i < NUM_CROSS_VALIDATE; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, iorStack );
 
         if( scattered.Count() == 0 ) continue;
 
@@ -212,7 +221,7 @@ static TestResult TestSPF(
             if( pSelected->pdf <= 0 ) continue;
 
             Vector3 wo = Vector3Ops::Normalize( pSelected->ray.Dir() );
-            Scalar pdfEval = spf.Pdf( ri, wo, 0 );
+            Scalar pdfEval = spf.Pdf( ri, wo, iorStack );
 
             double err = fabs( pSelected->pdf - pdfEval );
             double denom = r_max( fabs(pSelected->pdf), fabs(pdfEval) );
@@ -246,7 +255,7 @@ static TestResult TestSPF(
                 if( scat.pdf <= 0 ) continue;
 
                 Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
-                Scalar pdfEval = spf.Pdf( ri, wo, 0 );
+                Scalar pdfEval = spf.Pdf( ri, wo, iorStack );
 
                 // Pdf() must be positive for any sampled direction
                 if( pdfEval <= 0 )
@@ -299,7 +308,7 @@ static TestResult TestSPF(
             Vector3 wo( sinT * cos(phi), sinT * sin(phi), cosT );
             wo = Vector3Ops::Normalize( wo );
 
-            Scalar pdfVal = spf.Pdf( ri, wo, 0 );
+            Scalar pdfVal = spf.Pdf( ri, wo, iorStack );
             pdfIntegral += pdfVal * sinT * dTheta * dPhi;
         }
     }
@@ -328,7 +337,7 @@ static TestResult TestSPF(
     for( int i = 0; i < NUM_SAMPLES; i++ )
     {
         ScatteredRayContainer scattered;
-        spf.Scatter( ri, sampler, scattered, 0 );
+        spf.Scatter( ri, sampler, scattered, iorStack );
 
         // Use RandomlySelect to pick one ray, as the path tracer does
         ScatteredRay* selected = scattered.RandomlySelect( rng.CanonicalRandom(), false );
@@ -384,7 +393,7 @@ static TestResult TestSPF(
                     Vector3 wo( sinT * cos(phi), sinT * sin(phi), cosT );
                     wo = Vector3Ops::Normalize( wo );
 
-                    Scalar pdfVal = spf.Pdf( ri, wo, 0 );
+                    Scalar pdfVal = spf.Pdf( ri, wo, iorStack );
                     integral += pdfVal * sinT * dTheta * dPhi;
                 }
             }
@@ -446,6 +455,10 @@ int main()
     std::cout << "Bins: " << NUM_THETA_BINS << " x " << NUM_PHI_BINS
               << " = " << NUM_THETA_BINS * NUM_PHI_BINS << std::endl;
     std::cout << std::endl;
+
+    // Stub object for IOR stack operations (mimics scene object identity)
+    g_stubObject = new StubObject();
+    g_stubObject->addref();
 
     // Create uniform painters (heap-allocated, reference-counted)
     UniformColorPainter* white      = new UniformColorPainter( RISEPel(0.8, 0.8, 0.8) );  white->addref();
@@ -759,6 +772,8 @@ int main()
             std::cout << " [chi2: " << r.chi2Stat << " > " << r.chi2Crit << "]";
         std::cout << std::endl;
     }
+
+    g_stubObject->release();
 
     if( numFailed > 0 )
     {
