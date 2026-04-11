@@ -45,7 +45,7 @@ public:
 		const RISE::RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		const RISE::DimensionalRandomNumberSequence& random,				///< [in] Random number generator
 		RISE::ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-		const RISE::IORStack* const ior_stack								///< [in/out] Index of refraction stack
+		const RISE::IORStack& ior_stack										///< [in/out] Index of refraction stack
 		) const
 	{
 		const RISE::Point2 ptrand( random.CanonicalRandom(0), random.CanonicalRandom(1) );
@@ -66,12 +66,12 @@ public:
 		scattered.AddScatteredRay( diffuse );
 	}
 
-	void ScatterNM( 
+	void ScatterNM(
 		const RISE::RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 		const RISE::DimensionalRandomNumberSequence& random,				///< [in] Random number generator
 		const RISE::Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 		RISE::ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-		const RISE::IORStack* const ior_stack								///< [in/out] Index of refraction stack
+		const RISE::IORStack& ior_stack										///< [in/out] Index of refraction stack
 		) const
 	{
 		// Unsupported

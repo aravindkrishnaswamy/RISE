@@ -114,7 +114,7 @@ void GenericHumanTissueSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay trans;
@@ -127,7 +127,7 @@ void GenericHumanTissueSPF::Scatter(
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DielectricSPF for detailed rationale)
-	if( ior_stack ? ior_stack->containsCurrent() : (cos_alpha < NEARZERO) ) {
+	if( ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 
@@ -180,7 +180,7 @@ void GenericHumanTissueSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay trans;
@@ -193,7 +193,7 @@ void GenericHumanTissueSPF::ScatterNM(
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DielectricSPF for detailed rationale)
-	if( ior_stack ? ior_stack->containsCurrent() : (cos_alpha > NEARZERO) ) {
+	if( ior_stack.containsCurrent() ) {
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 
 		// Check if it gets absorbed

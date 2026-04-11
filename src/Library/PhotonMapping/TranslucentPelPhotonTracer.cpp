@@ -50,12 +50,12 @@ TranslucentPelPhotonTracer::~TranslucentPelPhotonTracer( )
 }
 
 
-void TranslucentPelPhotonTracer::TracePhoton( 
-	const Ray& ray, 
-	const RISEPel& power, 
+void TranslucentPelPhotonTracer::TracePhoton(
+	const Ray& ray,
+	const RISEPel& power,
 	const bool bFromTranslucent,
 	TranslucentPelPhotonMap& pPhotonMap,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	static unsigned int		numRecursions = 0;
@@ -94,9 +94,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 
@@ -107,7 +105,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 
 			IndependentSampler samplerWrapper( random );
 		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
-		
+
 			RISEPel accum_scattered;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];

@@ -118,14 +118,14 @@ namespace RISE
 			Scalar Pdf(
 				const Vector3& vToLight,
 				const RayIntersectionGeometric& ri,
-				const IORStack* ior_stack
+				const IORStack& ior_stack
 				) const;
 
 			Scalar PdfNM(
 				const Vector3& vToLight,
 				const RayIntersectionGeometric& ri,
 				const Scalar nm,
-				const IORStack* ior_stack
+				const IORStack& ior_stack
 				) const;
 		};
 

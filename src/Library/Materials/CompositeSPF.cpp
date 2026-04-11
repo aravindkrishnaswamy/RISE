@@ -83,7 +83,7 @@ void CompositeSPF::ProcessTopLayer(
 				ISampler& sampler,				///< Sampler for the MC process
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 {
 	if( steps >= max_recur || ColorMath::MaxValue(importance) < NEARZERO ) {
@@ -125,7 +125,7 @@ void CompositeSPF::ProcessBottomLayer(
 		ISampler& sampler,				///< Sampler for the MC process
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+		const IORStack& ior_stack								///< [in/out] Index of refraction stack
 		) const
 {
 	if( steps >= max_recur || ColorMath::MaxValue(importance) < NEARZERO ) {
@@ -168,7 +168,7 @@ void CompositeSPF::ProcessTopLayerNM(
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 				const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 {
 	if( steps >= max_recur || importance < NEARZERO ) {
@@ -212,7 +212,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 		const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 		const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+		const IORStack& ior_stack								///< [in/out] Index of refraction stack
 		) const
 {
 	if( steps >= max_recur || importance < NEARZERO ) {
@@ -253,7 +253,7 @@ void CompositeSPF::Scatter(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 			ISampler& sampler,				///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			const IORStack& ior_stack								///< [in/out] Index of refraction stack
 			) const
 {
 	// We do a random walk process between the materials until the rays
@@ -276,7 +276,7 @@ void CompositeSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	// We do a random walk process between the materials until the rays
@@ -297,7 +297,7 @@ void CompositeSPF::ScatterNM(
 Scalar CompositeSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	// The composite SPF uses a random walk between top and bottom layers,
@@ -312,7 +312,7 @@ Scalar CompositeSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	// See Pdf() comment — random walk makes exact weights impractical.

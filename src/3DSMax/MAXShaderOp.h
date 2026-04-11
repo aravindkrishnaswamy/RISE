@@ -42,25 +42,25 @@ public:
 	~MAXShaderOp();
 
 	//! Tells the shader to apply shade to the given intersection point
-	void PerformOperation( 
-		const RISE::RayIntersection& ri,					///< [in] Intersection information 
+	void PerformOperation(
+		const RISE::RayIntersection& ri,					///< [in] Intersection information
 		const RISE::IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 		const RISE::IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 		RISE::RISEPel& c,									///< [in/out] Resultant color from op
-		const RISE::IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+		const RISE::IORStack& ior_stack,					///< [in/out] Index of refraction stack
 		const RISE::ScatteredRayContainer* pScat,			///< [in] Scattering information
 		const RISE::RandomNumberGenerator& random			///< [in] Random number generator
 		) const;
 
 	//! Tells the shader to apply shade to the given intersection point for the given wavelength
-	/// \return Amplitude of spectral function 
-	RISE::Scalar PerformOperationNM( 
-		const RISE::RayIntersection& ri,					///< [in] Intersection information 
+	/// \return Amplitude of spectral function
+	RISE::Scalar PerformOperationNM(
+		const RISE::RayIntersection& ri,					///< [in] Intersection information
 		const RISE::IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 		const RISE::IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 		const RISE::Scalar caccum,						///< [in] Current value for wavelength
 		const RISE::Scalar nm,							///< [in] Wavelength to shade
-		const RISE::IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+		const RISE::IORStack& ior_stack,					///< [in/out] Index of refraction stack
 		const RISE::ScatteredRayContainer* pScat,			///< [in] Scattering information
 		const RISE::RandomNumberGenerator& random			///< [in] Random number generator
 		) const;

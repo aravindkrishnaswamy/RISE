@@ -43,17 +43,15 @@ namespace RISE
 		///
 		/// \return Pointer to the current medium, or NULL for vacuum
 		inline const IMedium* GetCurrentMedium(
-			const IORStack* ior_stack,					///< [in] Current IOR stack (may be NULL)
+			const IORStack& ior_stack,					///< [in] Current IOR stack
 			const IScene* pScene						///< [in] Scene (may be NULL)
 			)
 		{
-			if( ior_stack ) {
-				const IObject* pObj = ior_stack->topObject();
-				if( pObj ) {
-					const IMedium* m = pObj->GetInteriorMedium();
-					if( m ) {
-						return m;
-					}
+			const IObject* pObj = ior_stack.topObject();
+			if( pObj ) {
+				const IMedium* m = pObj->GetInteriorMedium();
+				if( m ) {
+					return m;
 				}
 			}
 			return pScene ? pScene->GetGlobalMedium() : 0;
@@ -64,20 +62,18 @@ namespace RISE
 		/// pEnclosingObject is set to the IOR stack top object when
 		/// the medium is per-object, or NULL for the global medium.
 		inline const IMedium* GetCurrentMediumWithObject(
-			const IORStack* ior_stack,
+			const IORStack& ior_stack,
 			const IScene* pScene,
 			const IObject*& pEnclosingObject
 			)
 		{
 			pEnclosingObject = 0;
-			if( ior_stack ) {
-				const IObject* pObj = ior_stack->topObject();
-				if( pObj ) {
-					const IMedium* m = pObj->GetInteriorMedium();
-					if( m ) {
-						pEnclosingObject = pObj;
-						return m;
-					}
+			const IObject* pObj = ior_stack.topObject();
+			if( pObj ) {
+				const IMedium* m = pObj->GetInteriorMedium();
+				if( m ) {
+					pEnclosingObject = pObj;
+					return m;
 				}
 			}
 			return pScene ? pScene->GetGlobalMedium() : 0;

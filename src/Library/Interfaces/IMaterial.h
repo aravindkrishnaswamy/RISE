@@ -124,7 +124,7 @@ namespace RISE
 		/// (DielectricMaterial, PerfectReflectorMaterial, etc.) override this.
 		virtual SpecularInfo GetSpecularInfo(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			return SpecularInfo();
@@ -135,7 +135,7 @@ namespace RISE
 		/// to use wavelength-specific IOR for dispersion.
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack,
+			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
@@ -152,7 +152,7 @@ namespace RISE
 		virtual Scalar Pdf(
 			const Vector3& wo,
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const;
 
 		/// Spectral variant of Pdf.
@@ -160,7 +160,7 @@ namespace RISE
 			const Vector3& wo,
 			const RayIntersectionGeometric& ri,
 			const Scalar nm,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const;
 	};
 }

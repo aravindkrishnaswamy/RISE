@@ -49,13 +49,13 @@ CausticSpectralPhotonTracer::~CausticSpectralPhotonTracer( )
 {
 }
 
-void CausticSpectralPhotonTracer::TracePhoton( 
-	const Ray& ray, 
-	const Scalar power, 
+void CausticSpectralPhotonTracer::TracePhoton(
+	const Ray& ray,
+	const Scalar power,
 	const Scalar nm,
-	bool bFromSpecular, 
+	bool bFromSpecular,
 	CausticSpectralPhotonMap& pPhotonMap,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	static unsigned int		numRecursions = 0;
@@ -94,29 +94,27 @@ void CausticSpectralPhotonTracer::TracePhoton(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 		IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
 		if( pSPF )
 		{
-			// Get information from the material as to what to do			
+			// Get information from the material as to what to do
 			ScatteredRayContainer		scattered;
 
 			IndependentSampler samplerWrapper( random );
 		pSPF->ScatterNM( ri.geometric, samplerWrapper, nm, scattered, ior_stack );
-		
+
 			// The material record will tell us what to do!
 
 			// For caustic maps, we only deposit and continue tracing if the
-			// material ray isn't blended.  
+			// material ray isn't blended.
 
 			// Only deposit if the photon came from a specular bounce, multiple
 			// specular bounces are ok!
-	
+
 			if( bFromSpecular && pBRDF )
 			{
 				pPhotonMap.Store( power, nm, ri.geometric.ptIntersection, -ray.Dir() );
@@ -132,7 +130,7 @@ void CausticSpectralPhotonTracer::TracePhoton(
 						) {
 						// Trace all non-diffuse rays
 						scat.ray.Advance( 1e-8 );
-						TracePhoton( scat.ray, power*scat.krayNM, nm, true, pPhotonMap, scat.ior_stack?scat.ior_stack:ior_stack );
+						TracePhoton( scat.ray, power*scat.krayNM, nm, true, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack );
 					}
 				}
 			} else {
@@ -142,7 +140,7 @@ void CausticSpectralPhotonTracer::TracePhoton(
 						(bTraceRefractions&&pScat->type==ScatteredRay::eRayRefraction)
 						) {
 						pScat->ray.Advance( 1e-8 );
-						TracePhoton( pScat->ray, power*pScat->krayNM, nm, true, pPhotonMap, pScat->ior_stack?pScat->ior_stack:ior_stack );
+						TracePhoton( pScat->ray, power*pScat->krayNM, nm, true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack );
 					}
 				}
 			}

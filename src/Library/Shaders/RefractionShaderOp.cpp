@@ -34,7 +34,7 @@ void RefractionShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -63,7 +63,7 @@ void RefractionShaderOp::PerformOperation(
 				rs2.considerEmission = true;
 				rs2.type = IRayCaster::RAY_STATE::eRaySpecular;
 
-				caster.CastRay( rc, ri.geometric.rast, ray, refractedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+				caster.CastRay( rc, ri.geometric.rast, ray, refractedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 				c = c + (refractedPixel * scat.kray);
 			}
 		}
@@ -79,7 +79,7 @@ Scalar RefractionShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -108,7 +108,7 @@ Scalar RefractionShaderOp::PerformOperationNM(
 				rs2.considerEmission = true;
 				rs2.type = IRayCaster::RAY_STATE::eRaySpecular;
 
-				caster.CastRayNM( rc, ri.geometric.rast, ray, refracted, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+				caster.CastRayNM( rc, ri.geometric.rast, ray, refracted, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 				c = c + (refracted * scat.krayNM);
 			}
 		}

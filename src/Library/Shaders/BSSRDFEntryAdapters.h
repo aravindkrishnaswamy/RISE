@@ -149,7 +149,7 @@ namespace BSSRDFAdapters
 		Scalar Pdf(
 			const Vector3& wo,
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			const Scalar cosTheta = Vector3Ops::Dot( wo, ri.vNormal );
@@ -160,7 +160,7 @@ namespace BSSRDFAdapters
 			const Vector3& wo,
 			const RayIntersectionGeometric& ri,
 			const Scalar nm,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			return Pdf( wo, ri, ior_stack );

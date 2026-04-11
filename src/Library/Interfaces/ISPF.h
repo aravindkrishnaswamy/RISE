@@ -132,7 +132,7 @@ namespace RISE
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 			ISampler& sampler,											///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			const IORStack& ior_stack									///< [in/out] Index of refraction stack
 			) const = 0;
 
 		//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -143,7 +143,7 @@ namespace RISE
 			ISampler& sampler,											///< [in] Sampler
 			const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			const IORStack& ior_stack									///< [in/out] Index of refraction stack
 			) const = 0;
 
 		//! Evaluates the PDF (probability density function) for scattering from the incoming
@@ -154,7 +154,7 @@ namespace RISE
 		virtual Scalar	Pdf(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details (incoming direction is ri.ray.Dir())
 			const Vector3& wo,											///< [in] Outgoing scattered direction to evaluate PDF for
-			const IORStack* const ior_stack								///< [in] Index of refraction stack
+			const IORStack& ior_stack									///< [in] Index of refraction stack
 			) const { return 0; }
 
 		//! Spectral version of Pdf evaluation
@@ -163,7 +163,7 @@ namespace RISE
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details (incoming direction is ri.ray.Dir())
 			const Vector3& wo,											///< [in] Outgoing scattered direction to evaluate PDF for
 			const Scalar nm,											///< [in] Wavelength
-			const IORStack* const ior_stack								///< [in] Index of refraction stack
+			const IORStack& ior_stack									///< [in] Index of refraction stack
 			) const { return 0; }
 
 		//! Returns specular (delta distribution) information for this SPF.
@@ -171,7 +171,7 @@ namespace RISE
 		//! PerfectReflectorSPF, PolishedSPF to report their specular nature and IOR.
 		virtual SpecularInfo GetSpecularInfo(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			return SpecularInfo();
@@ -180,7 +180,7 @@ namespace RISE
 		//! Spectral variant of GetSpecularInfo.
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack,
+			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
@@ -208,7 +208,7 @@ namespace RISE
 			const Vector3& outDir,
 			ScatteredRay::ScatRayType rayType,
 			Scalar nm,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			return -1;

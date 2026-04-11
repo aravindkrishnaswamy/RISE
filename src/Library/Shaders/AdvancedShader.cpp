@@ -44,7 +44,7 @@ void AdvancedShader::Shade(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [out] RISEPel value at the point
-	const IORStack* const ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in/out] Index of refraction stack
 			) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -106,7 +106,7 @@ Scalar AdvancedShader::ShadeNM(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in/out] Index of refraction stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -171,7 +171,7 @@ void AdvancedShader::ShadeHWSS(
 	const IRayCaster::RAY_STATE& rs,
 	Scalar c[SampledWavelengths::N],
 	SampledWavelengths& swl,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();

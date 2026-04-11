@@ -71,7 +71,7 @@ void GGXSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,
 	ScatteredRayContainer& scattered,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -249,7 +249,7 @@ void GGXSPF::ScatterNM(
 	ISampler& sampler,
 	const Scalar nm,
 	ScatteredRayContainer& scattered,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -417,7 +417,7 @@ void GGXSPF::ScatterNM(
 Scalar GGXSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -459,7 +459,7 @@ Scalar GGXSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;

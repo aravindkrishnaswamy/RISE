@@ -62,7 +62,7 @@ void PathTracingShaderOp::PerformOperation(
 	const IRayCaster& caster,
 	const IRayCaster::RAY_STATE& rs,
 	RISEPel& c,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {
@@ -76,8 +76,7 @@ void PathTracingShaderOp::PerformOperation(
 	if( !pScene ) return;
 
 	IndependentSampler sampler( rc.random );
-	IORStack localIorStack( 1.0 );
-	if( ior_stack ) localIorStack = *ior_stack;
+	IORStack localIorStack( ior_stack );
 
 	c = pIntegrator->IntegrateFromHit(
 		rc, ri.geometric.rast, ri, *pScene, caster, sampler,
@@ -102,7 +101,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,
 	const Scalar caccum,
 	const Scalar nm,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {
@@ -114,8 +113,7 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 	if( !pScene ) return 0;
 
 	IndependentSampler sampler( rc.random );
-	IORStack localIorStack( 1.0 );
-	if( ior_stack ) localIorStack = *ior_stack;
+	IORStack localIorStack( ior_stack );
 
 	// bsdfTimesCos is stored as RISEPel; extract the scalar NM value
 	const Scalar bsdfTimesCosNM = rs.bsdfTimesCos.r;
@@ -143,7 +141,7 @@ void PathTracingShaderOp::PerformOperationHWSS(
 	const IRayCaster::RAY_STATE& rs,
 	const Scalar caccum[SampledWavelengths::N],
 	SampledWavelengths& swl,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat,
 	Scalar result[SampledWavelengths::N]
 	) const
@@ -160,8 +158,7 @@ void PathTracingShaderOp::PerformOperationHWSS(
 	if( !pScene ) return;
 
 	IndependentSampler sampler( rc.random );
-	IORStack localIorStack( 1.0 );
-	if( ior_stack ) localIorStack = *ior_stack;
+	IORStack localIorStack( ior_stack );
 
 	pIntegrator->IntegrateFromHitHWSS(
 		rc, ri.geometric.rast, ri, swl, *pScene, caster, sampler,

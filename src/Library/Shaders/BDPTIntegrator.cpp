@@ -197,7 +197,7 @@ namespace
 		const Scalar samplePdf,
 		const unsigned int rayDepth,
 		const Scalar nm,
-		const IORStack* const ior_stack
+		const IORStack& ior_stack
 		)
 	{
 		if( !pGuidingField || !pGuidingField->IsCollectingTrainingSamples() ||
@@ -1373,7 +1373,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMedObj );
+				iorStack, &scene, pMedObj );
 			pMedObj_light = pMedObj;
 			pMed_light = pMed;
 
@@ -1599,7 +1599,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, &iorStack );
+		pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2238,7 +2238,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMedObj );
+				iorStack, &scene, pMedObj );
 			pMedObj_eye = pMedObj;
 			pMed_eye = pMed;
 
@@ -2495,7 +2495,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// Sample the SPF for the next direction
 		//
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, &iorStack );
+		pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -4488,7 +4488,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMedObj );
+				iorStack, &scene, pMedObj );
 			pMedObj_nmLight = pMedObj;
 			pMed_nmLight = pMed;
 
@@ -4693,7 +4693,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, &iorStack );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -5236,7 +5236,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		{
 			const IObject* pMedObj = 0;
 			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMedObj );
+				iorStack, &scene, pMedObj );
 			pMedObj_nmEye = pMedObj;
 			pMed_nmEye = pMed;
 
@@ -5429,7 +5429,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 		// Sample the SPF at this wavelength
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, &iorStack );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -5742,9 +5742,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		{
 			const Ray trainingRay = usedGuidedDirection ?
 				Ray( pScat->ray.origin, guidedDir ) : pScat->ray;
-			const IORStack* trainingIorStack = usedGuidedDirection ?
-				(&iorStack) :
-				(pScat->ior_stack ? pScat->ior_stack : (&iorStack));
+			const IORStack& trainingIorStack = usedGuidedDirection ?
+				iorStack :
+				(pScat->ior_stack ? *pScat->ior_stack : iorStack);
 			RecordGuidingTrainingSampleNM(
 				pGuidingField,
 				rc,

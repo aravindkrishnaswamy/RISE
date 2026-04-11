@@ -58,16 +58,13 @@ namespace RISE
 		/// Reconstructs an IOR stack from the vertex's stored medium IOR
 		/// and object membership state.  Used by EvalPdfAtVertex to
 		/// provide the correct IOR context for SPF::Pdf evaluation.
-		///
-		/// \return Pointer to the populated stack, or NULL if the vertex
-		///         has no associated object.
-		inline const IORStack* BuildVertexIORStack(
+		inline void BuildVertexIORStack(
 			const BDPTVertex& vertex,
 			IORStack& stack
 			)
 		{
 			if( !vertex.pObject ) {
-				return 0;
+				return;
 			}
 
 			if( vertex.insideObject ) {
@@ -78,8 +75,6 @@ namespace RISE
 				stack = IORStack( vertex.mediumIOR );
 				stack.SetCurrentObject( vertex.pObject );
 			}
-
-			return &stack;
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -227,7 +222,8 @@ namespace RISE
 			ri.onb = vertex.onb;
 
 			IORStack stack( 1.0 );
-			return pSPF->Pdf( ri, wo, BuildVertexIORStack( vertex, stack ) );
+			BuildVertexIORStack( vertex, stack );
+			return pSPF->Pdf( ri, wo, stack );
 		}
 
 		//////////////////////////////////////////////////////////////////////
@@ -354,7 +350,8 @@ namespace RISE
 			ri.onb = vertex.onb;
 
 			IORStack stack( 1.0 );
-			return pSPF->PdfNM( ri, wo, nm, BuildVertexIORStack( vertex, stack ) );
+			BuildVertexIORStack( vertex, stack );
+			return pSPF->PdfNM( ri, wo, nm, stack );
 		}
 		//////////////////////////////////////////////////////////////////////
 		// PT-compatible overloads
@@ -391,10 +388,10 @@ namespace RISE
 			const ISPF* pSPF,
 			const RayIntersectionGeometric& ri,
 			const Vector3& wi,
-			const IORStack* pIorStack
+			const IORStack& ior_stack
 			)
 		{
-			return pSPF ? pSPF->Pdf( ri, wi, pIorStack ) : 0;
+			return pSPF ? pSPF->Pdf( ri, wi, ior_stack ) : 0;
 		}
 
 		/// Evaluate BSDF at a PT surface point (spectral).
@@ -427,10 +424,10 @@ namespace RISE
 			const RayIntersectionGeometric& ri,
 			const Vector3& wi,
 			const Scalar nm,
-			const IORStack* pIorStack
+			const IORStack& ior_stack
 			)
 		{
-			return pSPF ? pSPF->PdfNM( ri, wi, nm, pIorStack ) : 0;
+			return pSPF ? pSPF->PdfNM( ri, wi, nm, ior_stack ) : 0;
 		}
 	}
 }

@@ -35,23 +35,23 @@ namespace RISE
 			virtual ~GlobalSpectralPhotonTracer();
 
 			// Traces a single photon through the scene until it can't trace it any longer
-			void TracePhoton( 
-				const Ray& ray, 
-				const Scalar power, 
-				const Scalar nm, 
-				bool bStorePhoton, 
-				GlobalSpectralPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			void TracePhoton(
+				const Ray& ray,
+				const Scalar power,
+				const Scalar nm,
+				bool bStorePhoton,
+				GlobalSpectralPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			inline void TraceSinglePhoton( 
+			inline void TraceSinglePhoton(
 				const Ray& ray,
-				const Scalar power, 
+				const Scalar power,
 				const Scalar nm,
-				GlobalSpectralPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				GlobalSpectralPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, nm, true, pPhotonMap, ior_stack);

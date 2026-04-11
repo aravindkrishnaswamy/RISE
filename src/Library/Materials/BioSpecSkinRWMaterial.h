@@ -195,7 +195,7 @@ namespace RISE
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
-				const IORStack* ior_stack
+				const IORStack& ior_stack
 				) const
 			{
 				SpecularInfo info;
@@ -208,7 +208,7 @@ namespace RISE
 
 			SpecularInfo GetSpecularInfoNM(
 				const RayIntersectionGeometric& ri,
-				const IORStack* ior_stack,
+				const IORStack& ior_stack,
 				const Scalar nm
 				) const
 			{

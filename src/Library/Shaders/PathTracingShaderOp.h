@@ -59,7 +59,7 @@ namespace RISE
 				const IRayCaster& caster,
 				const IRayCaster::RAY_STATE& rs,
 				RISEPel& c,
-				const IORStack* const ior_stack,
+				const IORStack& ior_stack,
 				const ScatteredRayContainer* pScat
 				) const;
 
@@ -70,7 +70,7 @@ namespace RISE
 				const IRayCaster::RAY_STATE& rs,
 				const Scalar caccum,
 				const Scalar nm,
-				const IORStack* const ior_stack,
+				const IORStack& ior_stack,
 				const ScatteredRayContainer* pScat
 				) const;
 
@@ -93,7 +93,7 @@ namespace RISE
 				const IRayCaster::RAY_STATE& rs,
 				const Scalar caccum[SampledWavelengths::N],
 				SampledWavelengths& swl,
-				const IORStack* const ior_stack,
+				const IORStack& ior_stack,
 				const ScatteredRayContainer* pScat,
 				Scalar result[SampledWavelengths::N]
 				) const;

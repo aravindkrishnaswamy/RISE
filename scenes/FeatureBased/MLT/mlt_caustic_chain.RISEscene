@@ -31,7 +31,7 @@ standard_shader
 	name		global
 	shaderop	DefaultPathTracing
 }
-
+/*
 mlt_rasterizer
 {
 	max_eye_depth		12
@@ -41,7 +41,22 @@ mlt_rasterizer
 	mutations_per_pixel	200
 	large_step_prob		0.25
 }
-
+*/
+/*
+pathtracing_pel_rasterizer
+{
+	samples                       512
+	lum_samples                   1
+	pathguiding                   true
+	pathguiding_sampling_type     RIS
+	pathguiding_iterations        3
+	pathguiding_spp               12
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
+	adaptive_max_samples	1024
+	adaptive_threshold		0.05
+}
+*/
 file_rasterizeroutput
 {
 	pattern				rendered/mlt_caustic_chain

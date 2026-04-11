@@ -54,7 +54,7 @@ void TranslucentSPF::Scatter(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 			ISampler& sampler,				///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			const IORStack& ior_stack								///< [in/out] Index of refraction stack
 			) const
 {
 	ScatteredRay	front;
@@ -71,7 +71,7 @@ void TranslucentSPF::Scatter(
 	// based dot-product test is unreliable for nested translucent objects
 	// because a back-scattered ray hitting an enclosing surface from
 	// inside the cavity is misclassified as "exiting."
-	const bool bEntering = ior_stack ? !ior_stack->containsCurrent() : (Vector3Ops::Dot(n,r) < 0.0);
+	const bool bEntering = !ior_stack.containsCurrent();
 
 	if( bEntering )
 	{
@@ -108,11 +108,9 @@ void TranslucentSPF::Scatter(
 				const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 				trans.pdf = (Nfactor[0] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[0] );
 				trans.isDelta = false;
-				if( ior_stack ) {
-					trans.ior_stack = new IORStack( *ior_stack );
-					trans.ior_stack->push( 1.0 );
-					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
-				}
+				trans.ior_stack = new IORStack( ior_stack );
+				trans.ior_stack->push( 1.0 );
+				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 				scattered.AddScatteredRay( trans );
 			} else {
 				// Add a new ray for each color component
@@ -131,11 +129,9 @@ void TranslucentSPF::Scatter(
 					const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 					trans.pdf = (Nfactor[i] + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nfactor[i] );
 					trans.isDelta = false;
-					if( ior_stack ) {
-						trans.ior_stack = new IORStack( *ior_stack );
-						trans.ior_stack->push( 1.0 );
-						GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
-					}
+					trans.ior_stack = new IORStack( ior_stack );
+					trans.ior_stack->push( 1.0 );
+					GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 					scattered.AddScatteredRay( trans );
 				}
 			}
@@ -215,21 +211,19 @@ void TranslucentSPF::Scatter(
 		front.ray.Set( ri.ptIntersection, rv );
 		front.pdf = fabs( Vector3Ops::Dot( front.ray.Dir(), ri.onb.w() ) ) * INV_PI;
 		front.isDelta = false;
-		if( ior_stack ) {
-			front.ior_stack = new IORStack( *ior_stack );
-			front.ior_stack->pop();
-			GlobalLog()->PrintNew( front.ior_stack, __FILE__, __LINE__, "ior stack" );
-		}
+		front.ior_stack = new IORStack( ior_stack );
+		front.ior_stack->pop();
+		GlobalLog()->PrintNew( front.ior_stack, __FILE__, __LINE__, "ior stack" );
 		scattered.AddScatteredRay( front );
 	}
 }
 
-void TranslucentSPF::ScatterNM( 
+void TranslucentSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay	front;
@@ -241,7 +235,7 @@ void TranslucentSPF::ScatterNM(
 	const Vector3	r = ri.ray.Dir();
 	Vector3		rv;
 
-	const bool bEnteringNM = ior_stack ? !ior_stack->containsCurrent() : (Vector3Ops::Dot(n,r) < 0.0);
+	const bool bEnteringNM = !ior_stack.containsCurrent();
 
 	if( bEnteringNM )
 	{
@@ -276,11 +270,9 @@ void TranslucentSPF::ScatterNM(
 			const Scalar cosAlpha = fabs( Vector3Ops::Dot( trans.ray.Dir(), myonb.w() ) );
 			trans.pdf = (Nval + 1.0) * 0.5 * INV_PI * pow( cosAlpha, Nval );
 			trans.isDelta = false;
-			if( ior_stack ) {
-				trans.ior_stack = new IORStack( *ior_stack );
-				trans.ior_stack->push( 1.0 );
-				GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			trans.ior_stack = new IORStack( ior_stack );
+			trans.ior_stack->push( 1.0 );
+			GlobalLog()->PrintNew( trans.ior_stack, __FILE__, __LINE__, "ior stack" );
 			scattered.AddScatteredRay( trans );
 		}
 	}
@@ -335,11 +327,9 @@ void TranslucentSPF::ScatterNM(
 			front.isDelta = false;
 		}
 
-		if( ior_stack ) {
-			front.ior_stack = new IORStack( *ior_stack );
-			front.ior_stack->pop();
-			GlobalLog()->PrintNew( front.ior_stack, __FILE__, __LINE__, "ior stack" );
-		}
+		front.ior_stack = new IORStack( ior_stack );
+		front.ior_stack->pop();
+		GlobalLog()->PrintNew( front.ior_stack, __FILE__, __LINE__, "ior stack" );
 		scattered.AddScatteredRay( front );
 	}
 }
@@ -347,7 +337,7 @@ void TranslucentSPF::ScatterNM(
 Scalar TranslucentSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	// For the front hemisphere diffuse component, return cosine-weighted PDF
@@ -364,7 +354,7 @@ Scalar TranslucentSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return Pdf( ri, wo, ior_stack );

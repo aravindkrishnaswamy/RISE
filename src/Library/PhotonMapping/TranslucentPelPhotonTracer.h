@@ -38,21 +38,21 @@ namespace RISE
 			virtual ~TranslucentPelPhotonTracer();
 
 			// Traces a single photon through the scene until it can't trace it any longer
-			void TracePhoton( 
+			void TracePhoton(
 				const Ray& ray,
-				const RISEPel& power, 
+				const RISEPel& power,
 				const bool bFromTranslucent,
 				TranslucentPelPhotonMap& pPhotonMap,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			inline void TraceSinglePhoton( 
+			inline void TraceSinglePhoton(
 				const Ray& ray,
-				const RISEPel& power, 
-				TranslucentPelPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const RISEPel& power,
+				TranslucentPelPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, false, pPhotonMap, ior_stack);

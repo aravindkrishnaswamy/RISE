@@ -503,7 +503,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			// Medium transport
 			const IObject* pMediumObject = 0;
 			const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMediumObject );
+				iorStack, &scene, pMediumObject );
 
 			if( pCurrentMedium )
 			{
@@ -673,7 +673,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		// shadow rays use the medium the ray was traveling through.
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-			&iorStack, &scene, pMediumObject );
+			iorStack, &scene, pMediumObject );
 
 		// Apply intersection modifier (bump maps etc.)
 		if( ri.pModifier ) {
@@ -889,7 +889,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 										rs2.glossyFilterWidth = glossyFilterWidth;
 
 										caster.CastRay( rc, rast, continuationRay,
-											cthis, rs2, 0, pRadianceMap, &iorStack );
+											cthis, rs2, 0, pRadianceMap, iorStack );
 
 										RISEPel indirect = sssThroughput * cthis;
 										if( depth > 0 ) {
@@ -1005,7 +1005,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 										rs2.glossyFilterWidth = glossyFilterWidth;
 
 										caster.CastRay( rc, rast, continuationRay,
-											cthis, rs2, 0, pRadianceMap, &iorStack );
+											cthis, rs2, 0, pRadianceMap, iorStack );
 
 										RISEPel indirect = sssThroughput * cthis;
 										if( depth > 0 ) {
@@ -1033,7 +1033,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			}
 
 			ScatteredRayContainer scattered;
-			pSPF->Scatter( ri.geometric, sampler, scattered, &iorStack );
+			pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
 
 			if( scattered.Count() == 0 ) {
 				break;
@@ -1067,7 +1067,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						ray.Advance( 1e-8 );
 						caster.CastRay( rc, rast, ray, cthis, rs2, 0,
 							pRadianceMap,
-							scat.ior_stack ? scat.ior_stack : &iorStack );
+							scat.ior_stack ? *scat.ior_stack : iorStack );
 
 						RISEPel indirect = scat.kray * cthis;
 						if( depth > 0 ) {
@@ -1106,7 +1106,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						ray.Advance( 1e-8 );
 						caster.CastRay( rc, rast, ray, cthis, rs2, 0,
 							pRadianceMap,
-							scat.ior_stack ? scat.ior_stack : &iorStack );
+							scat.ior_stack ? *scat.ior_stack : iorStack );
 
 						RISEPel indirect = scat.kray * cthis;
 						if( depth > 0 ) {
@@ -1224,7 +1224,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		}
 
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, &iorStack );
+		pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -1272,7 +1272,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					ray.Advance( 1e-8 );
 					caster.CastRay( rc, rast, ray, cthis, rs2, 0,
 						pRadianceMap,
-						scat.ior_stack ? scat.ior_stack : &iorStack );
+						scat.ior_stack ? *scat.ior_stack : iorStack );
 
 					RISEPel indirect = scat.kray * cthis;
 					if( depth > 0 ) {
@@ -1325,7 +1325,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					ray.Advance( 1e-8 );
 					caster.CastRay( rc, rast, ray, cthis, rs2, 0,
 						pRadianceMap,
-						scat.ior_stack ? scat.ior_stack : &iorStack );
+						scat.ior_stack ? *scat.ior_stack : iorStack );
 
 					RISEPel indirect = scat.kray * cthis;
 					if( depth > 0 ) {
@@ -1407,7 +1407,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								c.bsdfEval = PathVertexEval::EvalBSDFAtSurface(
 									pBRDF, c.direction, ri.geometric );
 								c.bsdfPdf = PathVertexEval::EvalPdfAtSurface(
-									pSPF, ri.geometric, c.direction, &iorStack );
+									pSPF, ri.geometric, c.direction, iorStack );
 								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
 								c.cosTheta = fabs(
 									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
@@ -1469,7 +1469,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								const RISEPel fGuided = PathVertexEval::EvalBSDFAtSurface(
 									pBRDF, guidedDir, ri.geometric );
 								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurface(
-									pSPF, ri.geometric, guidedDir, &iorStack );
+									pSPF, ri.geometric, guidedDir, iorStack );
 								const Scalar combinedPdf =
 									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
 
@@ -1653,7 +1653,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	// Medium transport for first bounce
 	const IObject* pMediumObject = 0;
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-		&iorStack, &scene, pMediumObject );
+		iorStack, &scene, pMediumObject );
 
 	if( pCurrentMedium )
 	{
@@ -1877,7 +1877,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			// Medium transport (spectral)
 			const IObject* pMediumObject = 0;
 			const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMediumObject );
+				iorStack, &scene, pMediumObject );
 
 			if( pCurrentMedium )
 			{
@@ -2026,7 +2026,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		// ============================================================
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-			&iorStack, &scene, pMediumObject );
+			iorStack, &scene, pMediumObject );
 
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
@@ -2228,7 +2228,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 										}
 
 										caster.CastRayNM( rc, rast, continuationRay, cthis,
-											rs2, nm, 0, pRadianceMap, &iorStack );
+											rs2, nm, 0, pRadianceMap, iorStack );
 
 										Scalar indirectNM = sssThroughputNM * cthis;
 										if( depth > 0 ) {
@@ -2358,7 +2358,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 										}
 
 										caster.CastRayNM( rc, rast, continuationRay, cthis,
-											rs2, nm, 0, pRadianceMap, &iorStack );
+											rs2, nm, 0, pRadianceMap, iorStack );
 
 										Scalar indirectNM = sssThroughputNM * cthis;
 										if( depth > 0 ) {
@@ -2386,7 +2386,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			}
 
 			ScatteredRayContainer scattered;
-			pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, &iorStack );
+			pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
 
 			if( scattered.Count() == 0 ) {
 				break;
@@ -2419,7 +2419,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						ray.Advance( 1e-8 );
 						caster.CastRayNM( rc, rast, ray, cthis,
 							rs2, nm, 0, pRadianceMap,
-							scat.ior_stack ? scat.ior_stack : &iorStack );
+							scat.ior_stack ? *scat.ior_stack : iorStack );
 
 						Scalar indirectNM = cthis * scat.krayNM;
 						if( depth > 0 ) {
@@ -2457,7 +2457,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						ray.Advance( 1e-8 );
 						caster.CastRayNM( rc, rast, ray, cthis,
 							rs2, nm, 0, pRadianceMap,
-							scat.ior_stack ? scat.ior_stack : &iorStack );
+							scat.ior_stack ? *scat.ior_stack : iorStack );
 
 						Scalar indirectNM = cthis * scat.krayNM;
 						if( depth > 0 ) {
@@ -2564,7 +2564,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		}
 
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, &iorStack );
+		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -2611,7 +2611,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					ray.Advance( 1e-8 );
 					caster.CastRayNM( rc, rast, ray, cthis,
 						rs2, nm, 0, pRadianceMap,
-						scat.ior_stack ? scat.ior_stack : &iorStack );
+						scat.ior_stack ? *scat.ior_stack : iorStack );
 
 					Scalar indirectNM = cthis * scat.krayNM;
 					if( depth > 0 ) {
@@ -2663,7 +2663,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					ray.Advance( 1e-8 );
 					caster.CastRayNM( rc, rast, ray, cthis,
 						rs2, nm, 0, pRadianceMap,
-						scat.ior_stack ? scat.ior_stack : &iorStack );
+						scat.ior_stack ? *scat.ior_stack : iorStack );
 
 					Scalar indirectNM = cthis * scat.krayNM;
 					if( depth > 0 ) {
@@ -2746,7 +2746,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 								c.bsdfEvalNM = PathVertexEval::EvalBSDFAtSurfaceNM(
 									pBRDF, c.direction, ri.geometric, nm );
 								c.bsdfPdf = PathVertexEval::EvalPdfAtSurfaceNM(
-									pSPF, ri.geometric, c.direction, nm, &iorStack );
+									pSPF, ri.geometric, c.direction, nm, iorStack );
 								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
 								c.cosTheta = fabs(
 									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
@@ -2808,7 +2808,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 								const Scalar fGuided = PathVertexEval::EvalBSDFAtSurfaceNM(
 									pBRDF, guidedDir, ri.geometric, nm );
 								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurfaceNM(
-									pSPF, ri.geometric, guidedDir, nm, &iorStack );
+									pSPF, ri.geometric, guidedDir, nm, iorStack );
 								const Scalar combinedPdf =
 									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
 
@@ -3070,7 +3070,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			const IObject* pMediumObject = 0;
 			const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-				&iorStack, &scene, pMediumObject );
+				iorStack, &scene, pMediumObject );
 
 			if( pCurrentMedium )
 			{
@@ -3191,7 +3191,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		// ============================================================
 		const IObject* pMediumObject = 0;
 		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-			&iorStack, &scene, pMediumObject );
+			iorStack, &scene, pMediumObject );
 
 		if( ri.pModifier ) {
 			ri.pModifier->Modify( ri.geometric );
@@ -3397,7 +3397,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, heroNM, scattered, &iorStack );
+		pSPF->ScatterNM( ri.geometric, sampler, heroNM, scattered, iorStack );
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -3414,14 +3414,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		if( pS->isDelta && !swl.SecondaryTerminated() )
 		{
 			SpecularInfo heroInfo = pSPF->GetSpecularInfoNM(
-				ri.geometric, &iorStack, heroNM );
+				ri.geometric, iorStack, heroNM );
 			if( heroInfo.valid && heroInfo.canRefract )
 			{
 				for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
 				{
 					if( swl.terminated[w] ) continue;
 					SpecularInfo compInfo = pSPF->GetSpecularInfoNM(
-						ri.geometric, &iorStack, swl.lambda[w] );
+						ri.geometric, iorStack, swl.lambda[w] );
 					if( compInfo.valid && fabs( compInfo.ior - heroInfo.ior ) > 1e-8 )
 					{
 						swl.TerminateSecondary();
@@ -3452,7 +3452,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			{
 				compWeight = pSPF->EvaluateKrayNM(
 					ri.geometric, pS->ray.Dir(), pS->type,
-					swl.lambda[w], &iorStack );
+					swl.lambda[w], iorStack );
 			}
 
 			if( compWeight < 0 && pBRDFCur )
@@ -3568,7 +3568,7 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	// Medium transport for first bounce (spectral)
 	const IObject* pMediumObject = 0;
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-		&iorStack, &scene, pMediumObject );
+		iorStack, &scene, pMediumObject );
 
 	if( pCurrentMedium )
 	{
@@ -3717,7 +3717,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	const Scalar heroNM = swl.HeroLambda();
 	const IObject* pMediumObject = 0;
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-		&iorStack, &scene, pMediumObject );
+		iorStack, &scene, pMediumObject );
 
 	if( pCurrentMedium )
 	{

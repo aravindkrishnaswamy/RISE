@@ -166,10 +166,10 @@ bool RayCaster::CastRay(
 			) const
 {
 	IORStack ior_stack( 1.0 );
-	return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, &ior_stack );
+	return CastRay( rc, rast, ray, c, rs, distance, pRadianceMap, ior_stack );
 }
 
-bool RayCaster::CastRay( 
+bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
 			const Ray& ray,										///< [in] Ray to cast
@@ -177,7 +177,7 @@ bool RayCaster::CastRay(
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in/out] Index of refraction stack
 			) const
 {
 #ifdef ENABLE_MAX_RECURSION
@@ -727,9 +727,7 @@ bool RayCaster::CastRay(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		// Apply shade by calling the appropriate shader
 		if( ri.pShader ) {
@@ -832,12 +830,12 @@ bool RayCaster::CastRayNM(
 	) const
 {
 	IORStack ior_stack( 1.0 );
-	return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, &ior_stack );
+	return CastRayNM( rc, rast, ray, c, rs, nm, distance, pRadianceMap, ior_stack );
 }
 
 //! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
 /// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-bool RayCaster::CastRayNM( 
+bool RayCaster::CastRayNM(
     const RuntimeContext& rc,							///< [in] The runtime context
 	const RasterizerState& rast,						///< [in] Current state of the rasterizer
 	const Ray& ray,										///< [in] Ray to cast
@@ -846,7 +844,7 @@ bool RayCaster::CastRayNM(
 	const Scalar nm,									///< [in] Wavelength to cast
 	Scalar* distance,									///< [in] If there was a hit, how far?
 	const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-	const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+	const IORStack& ior_stack							///< [in/out] Index of refraction stack
 	) const
 {
 #ifdef ENABLE_MAX_RECURSION
@@ -1256,9 +1254,7 @@ bool RayCaster::CastRayNM(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		// Apply shade by calling the appropriate shader
 		if( ri.pShader ) {
@@ -1404,7 +1400,7 @@ bool RayCaster::CastRayHWSS(
 	SampledWavelengths& swl,
 	Scalar* distance,
 	const IRadianceMap* pRadianceMap,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
@@ -1471,9 +1467,7 @@ bool RayCaster::CastRayHWSS(
 		}
 
 		// IOR stack (shared geometry)
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		// Dispatch to ShadeHWSS — this routes through
 		// PerformOperationHWSS, enabling hero-wavelength

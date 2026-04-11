@@ -76,14 +76,14 @@ void SubSurfaceScatteringSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,
 	ScatteredRayContainer& scattered,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar cosine = -Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	const RISEPel iorVal = ior.GetColor( ri );
 	const Scalar n = iorVal[0];
 
-	const bool bFromInside = ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO);
+	const bool bFromInside = ior_stack.containsCurrent();
 
 	if( !bFromInside )
 	{
@@ -93,7 +93,7 @@ void SubSurfaceScatteringSPF::Scatter(
 		// sampling in the integrator, not by the SPF.
 		//
 
-		const Scalar Ni = ior_stack ? ior_stack->top() : 1.0;
+		const Scalar Ni = ior_stack.top();
 
 		// Compute Fresnel reflectance at the boundary
 		Vector3 refracted = ri.ray.Dir();
@@ -176,7 +176,7 @@ void SubSurfaceScatteringSPF::Scatter(
 		// medium from behind.  Emit delta Fresnel reflection.
 		//
 
-		const Scalar Nt = ior_stack ? ior_stack->top() : 1.0;
+		const Scalar Nt = ior_stack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -194,10 +194,8 @@ void SubSurfaceScatteringSPF::Scatter(
 		reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		reflectedRay.kray = RISEPel( R, R, R );
 
-		if( ior_stack ) {
-			reflectedRay.ior_stack = new IORStack( *ior_stack );
-			GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
-		}
+		reflectedRay.ior_stack = new IORStack( ior_stack );
+		GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 		scattered.AddScatteredRay( reflectedRay );
 
@@ -212,11 +210,9 @@ void SubSurfaceScatteringSPF::Scatter(
 			exitRay.ray = Ray( ri.ptIntersection, refracted );
 			exitRay.kray = RISEPel( 1.0-R, 1.0-R, 1.0-R );
 
-			if( ior_stack ) {
-				exitRay.ior_stack = new IORStack( *ior_stack );
-				exitRay.ior_stack->pop();
-				GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			exitRay.ior_stack = new IORStack( ior_stack );
+			exitRay.ior_stack->pop();
+			GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 			scattered.AddScatteredRay( exitRay );
 		}
@@ -232,13 +228,13 @@ void SubSurfaceScatteringSPF::ScatterNM(
 	ISampler& sampler,
 	const Scalar nm,
 	ScatteredRayContainer& scattered,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar cosine = -Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	const Scalar n = ior.GetColorNM( ri, nm );
 
-	const bool bFromInside = ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO);
+	const bool bFromInside = ior_stack.containsCurrent();
 
 	if( !bFromInside )
 	{
@@ -246,7 +242,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		// Front face hit: surface reflection only.
 		//
 
-		const Scalar Ni = ior_stack ? ior_stack->top() : 1.0;
+		const Scalar Ni = ior_stack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -317,7 +313,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		// Back face hit (from inside): delta reflection + exit refraction
 		//
 
-		const Scalar Nt = ior_stack ? ior_stack->top() : 1.0;
+		const Scalar Nt = ior_stack.top();
 
 		Vector3 refracted = ri.ray.Dir();
 		Scalar R;
@@ -334,10 +330,8 @@ void SubSurfaceScatteringSPF::ScatterNM(
 		reflectedRay.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		reflectedRay.krayNM = R;
 
-		if( ior_stack ) {
-			reflectedRay.ior_stack = new IORStack( *ior_stack );
-			GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
-		}
+		reflectedRay.ior_stack = new IORStack( ior_stack );
+		GlobalLog()->PrintNew( reflectedRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 		scattered.AddScatteredRay( reflectedRay );
 
@@ -350,11 +344,9 @@ void SubSurfaceScatteringSPF::ScatterNM(
 			exitRay.ray = Ray( ri.ptIntersection, refracted );
 			exitRay.krayNM = 1.0 - R;
 
-			if( ior_stack ) {
-				exitRay.ior_stack = new IORStack( *ior_stack );
-				exitRay.ior_stack->pop();
-				GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			exitRay.ior_stack = new IORStack( ior_stack );
+			exitRay.ior_stack->pop();
+			GlobalLog()->PrintNew( exitRay.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 			scattered.AddScatteredRay( exitRay );
 		}
@@ -368,11 +360,11 @@ void SubSurfaceScatteringSPF::ScatterNM(
 Scalar SubSurfaceScatteringSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar cosine = -Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
-	const bool bFromInside = ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO);
+	const bool bFromInside = ior_stack.containsCurrent();
 
 	if( !bFromInside )
 	{
@@ -398,7 +390,7 @@ Scalar SubSurfaceScatteringSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return Pdf( ri, wo, ior_stack );

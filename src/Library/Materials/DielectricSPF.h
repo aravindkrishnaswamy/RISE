@@ -45,14 +45,14 @@ namespace RISE
 				const Point2& random,										///< [in] Two canonical random numbers
 				const Scalar scatfunc,
 				const Scalar rIndex,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			void DoSingleRGBComponent(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				const Point2& random,										///< [in] Two canonical random numbers
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack,							///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,							///< [in/out] Index of refraction stack
 				const int oneofthree,
 				const Scalar newIOR,
 				const Scalar scattering,
@@ -69,7 +69,7 @@ namespace RISE
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
-				const IORStack* ior_stack
+				const IORStack& ior_stack
 				) const
 			{
 				SpecularInfo info;
@@ -83,7 +83,7 @@ namespace RISE
 
 			SpecularInfo GetSpecularInfoNM(
 				const RayIntersectionGeometric& ri,
-				const IORStack* ior_stack,
+				const IORStack& ior_stack,
 				const Scalar nm
 				) const
 			{
@@ -101,7 +101,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -112,14 +112,14 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			//! Returns the PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack* const ior_stack ) const;
+			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
 
 			//! Returns the spectral PDF for sampling the given outgoing direction (always 0 for delta distributions)
-			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack* const ior_stack ) const;
+			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;
 		};
 	}
 }

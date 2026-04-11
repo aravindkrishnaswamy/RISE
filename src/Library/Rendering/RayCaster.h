@@ -98,12 +98,12 @@ namespace RISE
 				const RAY_STATE& rs,								///< [in] The ray state
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in/out] Index of refraction stack
 				) const;
 
 			//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-			bool CastRayNM( 
+			bool CastRayNM(
 				const RuntimeContext& rc,							///< [in] The runtime context
 				const RasterizerState& rast,						///< [in] Current state of the rasterizer
 				const Ray& ray,										///< [in] Ray to cast
@@ -112,7 +112,7 @@ namespace RISE
 				const Scalar nm,									///< [in] Wavelength to cast
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-				const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in/out] Index of refraction stack
 				) const;
 
 			//! Casts a ray for a bundle of HWSS wavelengths with shared
@@ -129,7 +129,7 @@ namespace RISE
 				SampledWavelengths& swl,							///< [in/out] Wavelength bundle
 				Scalar* distance,									///< [in] If there was a hit, how far?
 				const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
-				const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+				const IORStack& ior_stack							///< [in/out] Index of refraction stack
 				) const;
 
 			//! This function casts a ray into the scene and only checks to see if it intersects something.

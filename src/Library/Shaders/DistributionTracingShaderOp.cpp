@@ -69,7 +69,7 @@ void DistributionTracingShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -150,7 +150,7 @@ void DistributionTracingShaderOp::PerformOperation(
 							rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
 
 							RISEPel	cThisIndirectSample(0,0,0);
-							if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack ) ) {
+							if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack ) ) {
 								rsum += 1.0/t;
 								hits++;
 							}
@@ -170,7 +170,7 @@ void DistributionTracingShaderOp::PerformOperation(
 								scat.ray.Advance( 1e-8 );
 								rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
 								RISEPel	cThisIndirectSample(0,0,0);
-								if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack ) ) {
+								if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack ) ) {
 									rsum += 1.0/t;
 									hits++;
 								}
@@ -183,7 +183,7 @@ void DistributionTracingShaderOp::PerformOperation(
 							pScatRay->ray.Advance( 1e-8 );
 							rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray);
 							RISEPel	cThisIndirectSample(0,0,0);
-							if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack ) ) {
+							if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack ) ) {
 								rsum += 1.0/t;
 								hits++;
 							}
@@ -222,7 +222,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -261,7 +261,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 						rs2.importance = rs.importance * scat.krayNM;
 
 						Scalar	cThisIndirectSample = 0;
-						caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+						caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 
 						c = c + cThisIndirectSample * scat.krayNM;
 						numshot++;
@@ -277,7 +277,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 							scat.ray.Advance( 1e-8 );
 							rs2.importance = rs.importance * scat.krayNM;
 							Scalar	cThisIndirectSample = 0;
-							caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+							caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 							c = c + cThisIndirectSample * scat.krayNM;
 						}
 					}
@@ -287,7 +287,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 						pScatRay->ray.Advance( 1e-8 );
 						rs2.importance = rs.importance * pScatRay->krayNM;
 						Scalar	cThisIndirectSample = 0;
-						caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack );
+						caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack );
 						c = c + cThisIndirectSample * pScatRay->krayNM;
 					}
 				}

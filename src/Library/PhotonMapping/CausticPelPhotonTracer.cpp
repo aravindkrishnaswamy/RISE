@@ -49,12 +49,12 @@ CausticPelPhotonTracer::~CausticPelPhotonTracer( )
 }
 
 
-void CausticPelPhotonTracer::TracePhoton( 
-	const Ray& ray, 
-	const RISEPel& power, 
-	bool bFromSpecular, 
+void CausticPelPhotonTracer::TracePhoton(
+	const Ray& ray,
+	const RISEPel& power,
+	bool bFromSpecular,
 	CausticPelPhotonMap& pPhotonMap,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	static unsigned int		numRecursions = 0;
@@ -93,9 +93,7 @@ void CausticPelPhotonTracer::TracePhoton(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 		IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
@@ -107,11 +105,11 @@ void CausticPelPhotonTracer::TracePhoton(
 
 			IndependentSampler samplerWrapper( random );
 		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
-		
+
 			// The material record will tell us what to do!
 
 			// For caustic maps, we only deposit and continue tracing if the
-			// material ray isn't view independent.  
+			// material ray isn't view independent.
 
 			// Only deposit if the photon came from a specular bounce, multiple
 			// specular bounces are ok!
@@ -130,7 +128,7 @@ void CausticPelPhotonTracer::TracePhoton(
 						) {
 						// Trace all non-diffuse rays
 						scat.ray.Advance( 1e-8 );
-						TracePhoton( scat.ray, power*scat.kray, true, pPhotonMap, scat.ior_stack?scat.ior_stack:ior_stack );
+						TracePhoton( scat.ray, power*scat.kray, true, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack );
 					}
 				}
 			} else {
@@ -141,7 +139,7 @@ void CausticPelPhotonTracer::TracePhoton(
 						(bTraceRefractions&&pScat->type==ScatteredRay::eRayRefraction)
 						) {
 						pScat->ray.Advance( 1e-8 );
-						TracePhoton( pScat->ray, power*pScat->kray, true, pPhotonMap, pScat->ior_stack?pScat->ior_stack:ior_stack );
+						TracePhoton( pScat->ray, power*pScat->kray, true, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack );
 					}
 				}
 			}

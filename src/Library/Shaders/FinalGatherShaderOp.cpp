@@ -197,7 +197,7 @@ namespace
 		const IBSDF& brdf,
 		const RayIntersectionGeometric& shading,
 		const IRadianceMap* pRadianceMap,
-		const IORStack* const ior_stack
+		const IORStack& ior_stack
 		)
 	{
 		GradientEstimatorSample sample;
@@ -308,7 +308,7 @@ void FinalGatherShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -349,7 +349,7 @@ void FinalGatherShaderOp::PerformOperation(
 				rs2.considerEmission = false;
 				rs2.type = IRayCaster::RAY_STATE::eRayFinalGather;
 
-				caster.CastRay( rc, ri.geometric.rast, scat.ray, reflectedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+				caster.CastRay( rc, ri.geometric.rast, scat.ray, reflectedPixel, rs2, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 				c = c + (reflectedPixel * scat.kray);
 			}
 		}
@@ -656,7 +656,7 @@ void FinalGatherShaderOp::PerformOperation(
 							Scalar t = 0;
 							scat->ray.Advance( kRayBias );
 
-							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack?scat->ior_stack:ior_stack ) ) {
+							if( caster.CastRay( rc, ri.geometric.rast, scat->ray, cthis, rs2, &t, ri.pRadianceMap, scat->ior_stack ? *scat->ior_stack : ior_stack ) ) {
 								if (t > kMinHitDistance) {
 									rsum += 1.0/t;
 									hits++;
@@ -711,7 +711,7 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {

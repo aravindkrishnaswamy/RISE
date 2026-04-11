@@ -194,7 +194,7 @@ void CircularDiskDetector::PerformMeasurement(
 			ScatteredRayContainer scattered;
 
 			IndependentSampler samplerWrapper( random );
-			pSPF->Scatter( ri, samplerWrapper, scattered, 0 );
+			pSPF->Scatter( ri, samplerWrapper, scattered, ior_stack );
 
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 

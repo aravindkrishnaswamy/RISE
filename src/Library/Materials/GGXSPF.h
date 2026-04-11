@@ -57,7 +57,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,
 				ISampler& sampler,
 				ScatteredRayContainer& scattered,
-				const IORStack* const ior_stack
+				const IORStack& ior_stack
 				) const;
 
 			void	ScatterNM(
@@ -65,20 +65,20 @@ namespace RISE
 				ISampler& sampler,
 				const Scalar nm,
 				ScatteredRayContainer& scattered,
-				const IORStack* const ior_stack
+				const IORStack& ior_stack
 				) const;
 
 			Scalar	Pdf(
 				const RayIntersectionGeometric& ri,
 				const Vector3& wo,
-				const IORStack* const ior_stack
+				const IORStack& ior_stack
 				) const;
 
 			Scalar	PdfNM(
 				const RayIntersectionGeometric& ri,
 				const Vector3& wo,
 				const Scalar nm,
-				const IORStack* const ior_stack
+				const IORStack& ior_stack
 				) const;
 		};
 	}

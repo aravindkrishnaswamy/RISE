@@ -711,7 +711,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	const IRayCaster& caster,
 	const IRayCaster::RAY_STATE& rs,
 	RISEPel& c,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {
@@ -873,7 +873,7 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,
 	const Scalar caccum,
 	const Scalar nm,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {

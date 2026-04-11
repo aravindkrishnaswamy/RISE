@@ -54,7 +54,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Point2& random,										///< [in] Two canonical random numbers
 	const Scalar scatfunc,
 	const Scalar rIndex,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
@@ -74,19 +74,14 @@ Scalar DielectricSPF::GenerateScatteredRay(
 		// Determine the exit IOR: the medium the ray enters after leaving
 		// this object.  Pop the current object from a temporary copy of
 		// the stack so that top() reveals the underlying medium's IOR.
-		Scalar exitIOR = 1.0;
-		if( ior_stack ) {
-			IORStack exitStack( *ior_stack );
-			exitStack.pop();
-			exitIOR = exitStack.top();
-		}
+		IORStack exitStack( ior_stack );
+		exitStack.pop();
+		Scalar exitIOR = exitStack.top();
 
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
-			if( ior_stack ) {
-				dielectric.ior_stack = new IORStack( *ior_stack );
-				dielectric.ior_stack->pop();
-				GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			dielectric.ior_stack = new IORStack( ior_stack );
+			dielectric.ior_stack->pop();
+			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
 			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
 		} else {
 			// Total internal reflection
@@ -95,13 +90,11 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	}
 	else
 	{
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex, refracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex );
-			if( ior_stack ) {
-				dielectric.ior_stack = new IORStack( *ior_stack );
-				dielectric.ior_stack->push( rIndex );
-				GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+			dielectric.ior_stack = new IORStack( ior_stack );
+			dielectric.ior_stack->push( rIndex );
+			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
 		} else {
 			ref = 1.0;
 		}
@@ -110,10 +103,8 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// reflect ray
 	{
 		if( bFromInside ) {
-			if( ior_stack ) {
-				fresnel.ior_stack = new IORStack( *ior_stack );
-				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			fresnel.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		} else {
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
@@ -162,7 +153,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 const Point2& random,										///< [in] Two canonical random numbers
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	 const IORStack* const ior_stack,							///< [in/out] Index of refraction stack
+	 const IORStack& ior_stack,							///< [in/out] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar scattering,
@@ -179,7 +170,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	// is currently inside, so if this object is in the stack we must be
 	// exiting. This is more robust than the normal-based cosine test at
 	// grazing angles where numerical precision can give wrong results.
-	if( ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO) ) {
+	if( ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -226,7 +217,7 @@ void DielectricSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
@@ -268,7 +259,7 @@ void DielectricSPF::ScatterNM(
 	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay dielectric;
@@ -279,7 +270,7 @@ void DielectricSPF::ScatterNM(
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DoSingleRGBComponent for details)
-	if( ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO) ) {
+	if( ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -306,7 +297,7 @@ void DielectricSPF::ScatterNM(
 Scalar DielectricSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return 0;
@@ -316,7 +307,7 @@ Scalar DielectricSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return 0;

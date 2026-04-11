@@ -70,12 +70,12 @@ namespace RISE
 			
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			virtual void TraceSinglePhoton( 
+			virtual void TraceSinglePhoton(
 				const Ray& ray,
-				const Scalar power, 
+				const Scalar power,
 				const Scalar nm,
 				PhotonMapType& pPhotonMap,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const = 0;
 
 			// Tells the tracer to set the photon map specifically for the scene
@@ -146,7 +146,7 @@ namespace RISE
 						const Scalar power = pEmitter->averageRadiantExitanceNM(nm) * area_premul;
 
 						// Now shoot that ray as a photon
-						TraceSinglePhoton( r, power, nm, *pPhotonMap, &ior_stack );
+						TraceSinglePhoton( r, power, nm, *pPhotonMap, ior_stack );
 
 						numshot++;
 					}

@@ -56,7 +56,7 @@ void CookTorranceSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,
 	ScatteredRayContainer& scattered,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -214,7 +214,7 @@ void CookTorranceSPF::ScatterNM(
 	ISampler& sampler,
 	const Scalar nm,
 	ScatteredRayContainer& scattered,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -358,7 +358,7 @@ void CookTorranceSPF::ScatterNM(
 Scalar CookTorranceSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -396,7 +396,7 @@ Scalar CookTorranceSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return Pdf( ri, wo, ior_stack );

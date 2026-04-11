@@ -68,7 +68,7 @@ namespace RISE
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
 				ISampler& sampler,									///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -79,7 +79,7 @@ namespace RISE
 				ISampler& sampler,									///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 		};
 	}
