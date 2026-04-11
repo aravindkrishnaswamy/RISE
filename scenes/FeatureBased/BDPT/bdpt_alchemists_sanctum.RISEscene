@@ -80,7 +80,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		14
 	max_light_depth		14
 	samples				256
-	lum_samples			1
 	max_volume_bounce	64
 }
 

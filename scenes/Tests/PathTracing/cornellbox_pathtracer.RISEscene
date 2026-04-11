@@ -22,7 +22,6 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples                       16
-	lum_samples                   1
 	adaptive_max_samples          64
 	adaptive_threshold            0.1
 	show_adaptive_map             FALSE

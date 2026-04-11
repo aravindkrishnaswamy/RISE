@@ -35,7 +35,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		14
 	max_light_depth		12
 	samples				128
-	lum_samples			1
 	pathguiding				FALSE
 	pathguiding_iterations	4
 	pathguiding_spp			4
@@ -89,7 +88,6 @@ mlt_rasterizer
 pathtracing_pel_rasterizer
 {
 	samples				128
-	lum_samples			1
 	pathguiding				TRUE
 	pathguiding_iterations	6
 	pathguiding_spp			4

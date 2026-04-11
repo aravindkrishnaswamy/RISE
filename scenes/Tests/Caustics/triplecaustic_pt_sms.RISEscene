@@ -25,8 +25,7 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples                       16
-	lum_samples                   1
+	samples                       256
 	sms_enabled                   TRUE
 	sms_max_iterations            20
 	sms_threshold                 1e-5

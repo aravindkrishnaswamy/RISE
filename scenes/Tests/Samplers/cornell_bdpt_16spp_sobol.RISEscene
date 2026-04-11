@@ -23,7 +23,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		8
 	max_light_depth		8
 	samples				16
-	lum_samples			1
 }
 
 file_rasterizeroutput

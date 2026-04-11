@@ -51,7 +51,6 @@ mlt_rasterizer
 pathtracing_pel_rasterizer
 {
 	samples                       64
-	lum_samples                   1
 	oidn_denoise                  TRUE
 	pathguiding                   true
 	pathguiding_sampling_type     RIS

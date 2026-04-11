@@ -19,7 +19,6 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples                       64
-	lum_samples                   1
 	indirect_clamp                5.0
 }
 

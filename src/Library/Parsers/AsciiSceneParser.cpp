@@ -5588,7 +5588,6 @@ namespace RISE
 				{
 					String defaultshader = "global";
 					unsigned int numSamples = 1;
-					unsigned int numLumSamples = 1;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
 					String radiancemap = "none";
@@ -5597,9 +5596,7 @@ namespace RISE
 					bool radback = true;
 					String pixelFilter = "none";
 					String pixelSampler = "none";
-					String luminarySampler = "none";
 					double pixelSamplerParam = 1.0;
-					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
 					double pixelFilterParamA = 1.0/3.0;
@@ -5635,8 +5632,6 @@ namespace RISE
 							maxLightDepth = pvalue.toUInt();
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
-						} else if( pname == "lum_samples" ) {
-							numLumSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
 							radiancemap = pvalue;
 						} else if( pname == "radiance_scale" ) {
@@ -5652,10 +5647,6 @@ namespace RISE
 							pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
 							pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "luminary_sampler" ) {
-							luminarySampler = pvalue;
-						} else if( pname == "luminary_sampler_param" ) {
-							luminarySamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
 							pixelFilter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
@@ -5755,11 +5746,10 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetBDPTPelRasterizer( numSamples, numLumSamples,
+					return pJob.SetBDPTPelRasterizer( numSamples,
 						maxEyeDepth, maxLightDepth,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
 						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
@@ -5772,7 +5762,6 @@ namespace RISE
 				{
 					String defaultshader = "global";
 					unsigned int numSamples = 1;
-					unsigned int numLumSamples = 1;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
 					String radiancemap = "none";
@@ -5781,9 +5770,7 @@ namespace RISE
 					bool radback = true;
 					String pixelFilter = "none";
 					String pixelSampler = "none";
-					String luminarySampler = "none";
 					double pixelSamplerParam = 1.0;
-					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
 					double pixelFilterParamA = 1.0/3.0;
@@ -5823,8 +5810,6 @@ namespace RISE
 							maxLightDepth = pvalue.toUInt();
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
-						} else if( pname == "lum_samples" ) {
-							numLumSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
 							radiancemap = pvalue;
 						} else if( pname == "radiance_scale" ) {
@@ -5840,10 +5825,6 @@ namespace RISE
 							pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
 							pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "luminary_sampler" ) {
-							luminarySampler = pvalue;
-						} else if( pname == "luminary_sampler_param" ) {
-							luminarySamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
 							pixelFilter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
@@ -5941,11 +5922,10 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetBDPTSpectralRasterizer( numSamples, numLumSamples,
+					return pJob.SetBDPTSpectralRasterizer( numSamples,
 						maxEyeDepth, maxLightDepth,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
@@ -5959,16 +5939,13 @@ namespace RISE
 				{
 					String defaultshader = "global";
 					unsigned int numSamples = 1;
-					unsigned int numLumSamples = 1;
 					String radiancemap = "none";
 					double radianceScale = 1.0;
 					double radorient[3] = {0};
 					bool radback = true;
 					String pixelFilter = "none";
 					String pixelSampler = "none";
-					String luminarySampler = "none";
 					double pixelSamplerParam = 1.0;
-					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
 					double pixelFilterParamA = 1.0/3.0;
@@ -6000,8 +5977,6 @@ namespace RISE
 							defaultshader = pvalue;
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
-						} else if( pname == "lum_samples" ) {
-							numLumSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
 							radiancemap = pvalue;
 						} else if( pname == "radiance_scale" ) {
@@ -6017,10 +5992,6 @@ namespace RISE
 							pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
 							pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "luminary_sampler" ) {
-							luminarySampler = pvalue;
-						} else if( pname == "luminary_sampler_param" ) {
-							luminarySamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
 							pixelFilter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
@@ -6120,10 +6091,9 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetPathTracingPelRasterizer( numSamples, numLumSamples,
+					return pJob.SetPathTracingPelRasterizer( numSamples,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
 						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
@@ -6136,16 +6106,13 @@ namespace RISE
 				{
 					String defaultshader = "global";
 					unsigned int numSamples = 1;
-					unsigned int numLumSamples = 1;
 					String radiancemap = "none";
 					double radianceScale = 1.0;
 					double radorient[3] = {0};
 					bool radback = true;
 					String pixelFilter = "none";
 					String pixelSampler = "none";
-					String luminarySampler = "none";
 					double pixelSamplerParam = 1.0;
-					double luminarySamplerParam = 1.0;
 					double pixelFilterWidth = 1.0;
 					double pixelFilterHeight = 1.0;
 					double pixelFilterParamA = 1.0/3.0;
@@ -6181,8 +6148,6 @@ namespace RISE
 							defaultshader = pvalue;
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
-						} else if( pname == "lum_samples" ) {
-							numLumSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
 							radiancemap = pvalue;
 						} else if( pname == "radiance_scale" ) {
@@ -6198,10 +6163,6 @@ namespace RISE
 							pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
 							pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "luminary_sampler" ) {
-							luminarySampler = pvalue;
-						} else if( pname == "luminary_sampler_param" ) {
-							luminarySamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
 							pixelFilter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
@@ -6285,10 +6246,9 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetPathTracingSpectralRasterizer( numSamples, numLumSamples,
+					return pJob.SetPathTracingSpectralRasterizer( numSamples,
 						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,

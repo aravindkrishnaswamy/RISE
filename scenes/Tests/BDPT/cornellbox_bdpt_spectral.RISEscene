@@ -24,7 +24,6 @@ bdpt_spectral_rasterizer
 	max_eye_depth		4
 	max_light_depth		4
 	samples				16
-	lum_samples			1
 	nmbegin				405
 	nmend				705
 	num_wavelengths		8

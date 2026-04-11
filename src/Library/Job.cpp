@@ -4411,7 +4411,6 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 //! Sets the rasterizer type to be BDPT (bidirectional path tracing)
 bool Job::SetBDPTPelRasterizer(
 	const unsigned int numPixelSamples,
-	const unsigned int numLumSamples,
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
@@ -4421,8 +4420,6 @@ bool Job::SetBDPTPelRasterizer(
 	const double orient[3],
 	const char* pixelSampler,
 	const double pixelSamplerParam,
-	const char* luminarySampler,
-	const double luminarySamplerParam,
 	const char* pixelFilter,
 	const double pixelFilterWidth,
 	const double pixelFilterHeight,
@@ -4448,8 +4445,8 @@ bool Job::SetBDPTPelRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
-	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
 	{
 		return false;
 	}
@@ -4476,10 +4473,6 @@ bool Job::SetBDPTPelRasterizer(
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::SetBDPTPelRasterizer:: Global Radiance Map painter not found \'%s\'", p );
 		}
-	}
-
-	if( pLumSampler ) {
-		pCaster->SetLuminaireSampling( pLumSampler );
 	}
 
 	if( lightSampleRRThreshold > 0 ) {
@@ -4511,7 +4504,6 @@ bool Job::SetBDPTPelRasterizer(
 
 bool Job::SetBDPTSpectralRasterizer(
 	const unsigned int numPixelSamples,
-	const unsigned int numLumSamples,
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
@@ -4521,8 +4513,6 @@ bool Job::SetBDPTSpectralRasterizer(
 	const double orient[3],
 	const char* pixelSampler,
 	const double pixelSamplerParam,
-	const char* luminarySampler,
-	const double luminarySamplerParam,
 	const char* pixelFilter,
 	const double pixelFilterWidth,
 	const double pixelFilterHeight,
@@ -4552,8 +4542,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
-	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
 	{
 		return false;
 	}
@@ -4580,10 +4570,6 @@ bool Job::SetBDPTSpectralRasterizer(
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::SetBDPTSpectralRasterizer:: Global Radiance Map painter not found \'%s\'", p );
 		}
-	}
-
-	if( pLumSampler ) {
-		pCaster->SetLuminaireSampling( pLumSampler );
 	}
 
 	if( lightSampleRRThreshold > 0 ) {
@@ -4616,7 +4602,6 @@ bool Job::SetBDPTSpectralRasterizer(
 
 bool Job::SetPathTracingPelRasterizer(
 	const unsigned int numPixelSamples,
-	const unsigned int numLumSamples,
 	const char* shader,
 	const char* globalRadianceMap,
 	const bool bBackground,
@@ -4624,8 +4609,6 @@ bool Job::SetPathTracingPelRasterizer(
 	const double orient[3],
 	const char* pixelSampler,
 	const double pixelSamplerParam,
-	const char* luminarySampler,
-	const double luminarySamplerParam,
 	const char* pixelFilter,
 	const double pixelFilterWidth,
 	const double pixelFilterHeight,
@@ -4651,8 +4634,8 @@ bool Job::SetPathTracingPelRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
-	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
 	{
 		return false;
 	}
@@ -4679,10 +4662,6 @@ bool Job::SetPathTracingPelRasterizer(
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::SetPathTracingPelRasterizer:: Global Radiance Map painter not found \'%s\'", p );
 		}
-	}
-
-	if( pLumSampler ) {
-		pCaster->SetLuminaireSampling( pLumSampler );
 	}
 
 	if( lightSampleRRThreshold > 0 ) {
@@ -4714,7 +4693,6 @@ bool Job::SetPathTracingPelRasterizer(
 
 bool Job::SetPathTracingSpectralRasterizer(
 	const unsigned int numPixelSamples,
-	const unsigned int numLumSamples,
 	const char* shader,
 	const char* globalRadianceMap,
 	const bool bBackground,
@@ -4722,8 +4700,6 @@ bool Job::SetPathTracingSpectralRasterizer(
 	const double orient[3],
 	const char* pixelSampler,
 	const double pixelSamplerParam,
-	const char* luminarySampler,
-	const double luminarySamplerParam,
 	const char* pixelFilter,
 	const double pixelFilterWidth,
 	const double pixelFilterHeight,
@@ -4753,8 +4729,8 @@ bool Job::SetPathTracingSpectralRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 
-	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
 	{
 		return false;
 	}
@@ -4781,10 +4757,6 @@ bool Job::SetPathTracingSpectralRasterizer(
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::SetPathTracingSpectralRasterizer:: Global Radiance Map painter not found \'%s\'", p );
 		}
-	}
-
-	if( pLumSampler ) {
-		pCaster->SetLuminaireSampling( pLumSampler );
 	}
 
 	if( lightSampleRRThreshold > 0 ) {

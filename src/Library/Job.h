@@ -1423,7 +1423,6 @@ namespace RISE
 		//! Sets the rasterizer type to be Pel (RGB) BDPT
 		bool SetBDPTPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
@@ -1433,8 +1432,6 @@ namespace RISE
 			const double orient[3],									///< [in] Euler angles for orienting the radiance map
 			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
 			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
 			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
 			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
 			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
@@ -1459,7 +1456,6 @@ namespace RISE
 		//! Sets the rasterizer type to be spectral BDPT
 		bool SetBDPTSpectralRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
@@ -1469,8 +1465,6 @@ namespace RISE
 			const double orient[3],									///< [in] Euler angles for orienting the radiance map
 			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
 			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
 			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
 			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
 			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
@@ -1498,7 +1492,6 @@ namespace RISE
 
 		bool SetPathTracingPelRasterizer(
 			const unsigned int numPixelSamples,
-			const unsigned int numLumSamples,
 			const char* shader,
 			const char* globalRadianceMap,
 			const bool bBackground,
@@ -1506,8 +1499,6 @@ namespace RISE
 			const double orient[3],
 			const char* pixelSampler,
 			const double pixelSamplerParam,
-			const char* luminarySampler,
-			const double luminarySamplerParam,
 			const char* pixelFilter,
 			const double pixelFilterWidth,
 			const double pixelFilterHeight,
@@ -1531,7 +1522,6 @@ namespace RISE
 
 		bool SetPathTracingSpectralRasterizer(
 			const unsigned int numPixelSamples,
-			const unsigned int numLumSamples,
 			const char* shader,
 			const char* globalRadianceMap,
 			const bool bBackground,
@@ -1539,8 +1529,6 @@ namespace RISE
 			const double orient[3],
 			const char* pixelSampler,
 			const double pixelSamplerParam,
-			const char* luminarySampler,
-			const double luminarySamplerParam,
 			const char* pixelFilter,
 			const double pixelFilterWidth,
 			const double pixelFilterHeight,

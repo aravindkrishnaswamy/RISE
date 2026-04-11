@@ -43,8 +43,8 @@ pinhole_camera
 	location			0 0 10
 	lookat				0 0 0
 	up					0 1 0
-	width				256
-	height				256
+	width				512
+	height				512
 	fov					39.0
 }
 
@@ -101,7 +101,7 @@ standard_object
 omni_light
 {
 	name		light
-	power		3.1
+	power		3000.1
 	color		1.0 1.0 1.0
 	position	0.0 0.0 100.0
 }

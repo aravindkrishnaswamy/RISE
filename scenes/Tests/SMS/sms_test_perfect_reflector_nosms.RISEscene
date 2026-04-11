@@ -15,7 +15,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		8
 	max_light_depth		6
 	samples				256
-	lum_samples			1
 	sms_enabled			FALSE
 	sms_max_iterations	20
 	sms_threshold		1e-5
