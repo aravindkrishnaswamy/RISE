@@ -26,9 +26,67 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Lights/LightSampler.h"
 #include <cmath>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// SMS diagnostic counters (thread-safe)
+static std::atomic<unsigned long long> g_smsAttempts(0);
+static std::atomic<unsigned long long> g_smsSeedFound(0);
+static std::atomic<unsigned long long> g_smsConverged(0);
+static std::atomic<unsigned long long> g_smsVisible(0);
+static std::atomic<unsigned long long> g_smsContributed(0);
+
+// Newton failure breakdown
+static std::atomic<unsigned long long> g_newtonEarlyOut(0);    // constraint norm > 2.0
+static std::atomic<unsigned long long> g_newtonDerivFail(0);   // ComputeVertexDerivatives failed
+static std::atomic<unsigned long long> g_newtonSingular(0);    // singular Jacobian
+static std::atomic<unsigned long long> g_newtonNoImprove(0);   // line search failed
+static std::atomic<unsigned long long> g_newtonMaxIter(0);     // exceeded max iterations
+static std::atomic<unsigned long long> g_newtonUpdateFail(0);  // UpdateVertexOnSurface failed
+
+// Per-chain-length convergence (k=1 and k=2)
+static std::atomic<unsigned long long> g_seedK1(0);
+static std::atomic<unsigned long long> g_seedK2(0);
+static std::atomic<unsigned long long> g_convK1(0);
+static std::atomic<unsigned long long> g_convK2(0);
+
+// Newton failure iter distribution (which iteration does noImprove happen?)
+static std::atomic<unsigned long long> g_noImproveIter0(0);
+static std::atomic<unsigned long long> g_noImproveIter1(0);
+static std::atomic<unsigned long long> g_noImproveIter2plus(0);
+
+static void LogSMSStats()
+{
+	unsigned long long att = g_smsAttempts.load();
+	if( att == 0 ) return;
+	unsigned long long seed = g_smsSeedFound.load();
+	unsigned long long conv = g_smsConverged.load();
+	unsigned long long vis  = g_smsVisible.load();
+	unsigned long long cont = g_smsContributed.load();
+
+	unsigned long long sk1 = g_seedK1.load(), sk2 = g_seedK2.load();
+	unsigned long long ck1 = g_convK1.load(), ck2 = g_convK2.load();
+	unsigned long long ni0 = g_noImproveIter0.load(), ni1 = g_noImproveIter1.load(), ni2p = g_noImproveIter2plus.load();
+
+	fprintf( stderr,
+		"SMS Stats: attempts=%llu seed=%llu(%.1f%%) conv=%llu(%.1f%%) vis=%llu(%.1f%%) contrib=%llu(%.1f%%)\n"
+		"  Seeds: k1=%llu(conv %.1f%%) k2=%llu(conv %.1f%%)\n"
+		"  Newton fail: earlyOut=%llu singular=%llu noImprove=%llu(iter0=%llu,1=%llu,2+=%llu) maxIter=%llu\n",
+		att, seed, 100.0*seed/att, conv, 100.0*conv/att,
+		vis, 100.0*vis/att, cont, 100.0*cont/att,
+		sk1, sk1>0?100.0*ck1/sk1:0.0, sk2, sk2>0?100.0*ck2/sk2:0.0,
+		g_newtonEarlyOut.load(), g_newtonSingular.load(), g_newtonNoImprove.load(),
+		ni0, ni1, ni2p, g_newtonMaxIter.load() );
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"SMS Stats: attempts=%llu seed=%llu(%.1f%%) conv=%llu(%.1f%%) vis=%llu(%.1f%%) contrib=%llu(%.1f%%)",
+		att, seed, 100.0*seed/att, conv, 100.0*conv/att,
+		vis, 100.0*vis/att, cont, 100.0*cont/att );
+}
 
 //////////////////////////////////////////////////////////////////////
 // Construction / Destruction
@@ -39,10 +97,16 @@ config( cfg ),
 pLightSampler( 0 )
 {
 	pLightSampler = new LightSampler();
+	static bool atexitRegistered = false;
+	if( !atexitRegistered ) {
+		atexitRegistered = true;
+		atexit( LogSMSStats );
+	}
 }
 
 ManifoldSolver::~ManifoldSolver()
 {
+	LogSMSStats();
 	safe_release( pLightSampler );
 }
 
@@ -772,33 +836,21 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 		);
 	newNormal = Vector3Ops::Normalize( newNormal );
 
-	// For small steps, skip the expensive ray-cast re-snap.
-	// The linear approximation is accurate to second order and the
-	// tangent-frame re-orthogonalization keeps the constraint well-posed.
+	// For small steps, use linear approximation for position/normal
+	// but always re-snap to the actual surface via intersection so
+	// we get accurate derivatives for the next Newton step.
 	const Scalar stepSize = sqrt( du * du + dv * dv );
-	if( stepSize < 0.1 )
+	if( stepSize < 1e-8 )
 	{
-		vertex.position = newPos;
-		vertex.normal = newNormal;
-
-		// Re-orthogonalize tangent frame against perturbed normal
-		Scalar d_u = Vector3Ops::Dot( vertex.dpdu, newNormal );
-		vertex.dpdu = Vector3(
-			vertex.dpdu.x - newNormal.x * d_u,
-			vertex.dpdu.y - newNormal.y * d_u,
-			vertex.dpdu.z - newNormal.z * d_u );
-		Scalar d_v = Vector3Ops::Dot( vertex.dpdv, newNormal );
-		vertex.dpdv = Vector3(
-			vertex.dpdv.x - newNormal.x * d_v,
-			vertex.dpdv.y - newNormal.y * d_v,
-			vertex.dpdv.z - newNormal.z * d_v );
-
+		// Negligible step — no change needed
 		vertex.valid = true;
 		return true;
 	}
 
-	// For larger steps, project back onto the surface via ray intersection
-	const Scalar probeOffset = 0.5;
+	// Project back onto the surface via ray intersection.
+	// The probe offset should be small enough to stay near the current
+	// surface but large enough to clear the local geometry.
+	const Scalar probeOffset = fmin( fmax( stepSize * 2.0, 0.01 ), 0.5 );
 	bool snapped = false;
 
 	// Try from the normal side first
@@ -868,10 +920,11 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		return false;
 	}
 
-	// Compute derivatives numerically via finite differences using
-	// ray-surface intersection.  This is robust and works regardless
-	// of whether the geometry provides analytical derivatives.
-	const Scalar eps = 1e-5;
+	// Compute derivatives numerically via central finite differences
+	// using ray-surface intersection.  Central differences give O(eps²)
+	// accuracy vs O(eps) for forward differences, which is critical for
+	// Newton convergence on curved meshes.
+	const Scalar eps = 5e-4;
 
 	Vector3 tangent_u, tangent_v;
 
@@ -883,98 +936,163 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 	}
 	else
 	{
-		// Build a tangent frame from the normal
 		tangent_u = Vector3Ops::Perpendicular( vertex.normal );
 		tangent_u = Vector3Ops::Normalize( tangent_u );
 		tangent_v = Vector3Ops::Cross( vertex.normal, tangent_u );
 		tangent_v = Vector3Ops::Normalize( tangent_v );
 	}
 
-	// Probe function: perturb position along a direction and re-intersect
-	// to find the actual surface point and normal
-	Point3 pos_u_plus, pos_v_plus;
-	Vector3 norm_u_plus, norm_v_plus;
-	bool ok_u = false, ok_v = false;
-
-	// Helper lambda-like blocks for probing in each direction
-	for( int axis = 0; axis < 2; axis++ )
+	// Probe a surface point near vertex.position along a tangent direction.
+	// Returns true if successful, filling outPos and outNormal.
+	// Use a small probeOffset proportional to eps to avoid punching through
+	// thin geometry (the displaced slab is only ~0.15 thick).
+	struct ProbeResult { Point3 pos; Vector3 normal; bool ok; };
+	const Scalar derivProbeOffset = fmin( eps * 20.0, 0.02 );
+	auto probeAt = [&]( const Point3& testPos ) -> ProbeResult
 	{
-		const Vector3& tangent = (axis == 0) ? tangent_u : tangent_v;
-		const Point3 testPos = Point3Ops::mkPoint3( vertex.position, tangent * eps );
+		ProbeResult r;
+		r.ok = false;
+		const Scalar probeOffset = derivProbeOffset;
 
-		const Scalar probeOffset = 1e-4;
-
-		// Probe from above
+		// Probe from the normal side
 		{
 			const Ray probeRay(
 				Point3Ops::mkPoint3( testPos, vertex.normal * probeOffset ),
-				Vector3( -vertex.normal.x, -vertex.normal.y, -vertex.normal.z )
-				);
-
+				Vector3( -vertex.normal.x, -vertex.normal.y, -vertex.normal.z ) );
 			RayIntersection ri( probeRay, nullRasterizerState );
-			vertex.pObject->IntersectRay( ri, RISE_INFINITY, true, true, false );
-
+			vertex.pObject->IntersectRay( ri, 2.0 * probeOffset, true, true, false );
 			if( ri.geometric.bHit )
 			{
-				if( axis == 0 ) { pos_u_plus = ri.geometric.ptIntersection; norm_u_plus = ri.geometric.vNormal; ok_u = true; }
-				else            { pos_v_plus = ri.geometric.ptIntersection; norm_v_plus = ri.geometric.vNormal; ok_v = true; }
-				continue;
+				r.pos = ri.geometric.ptIntersection;
+				r.normal = ri.geometric.vNormal;
+				r.ok = true;
+				return r;
 			}
 		}
 
-		// Try from below
+		// Try from the other side
 		{
 			const Ray probeRay2(
 				Point3Ops::mkPoint3( testPos, vertex.normal * (-probeOffset) ),
-				vertex.normal
-				);
-
+				vertex.normal );
 			RayIntersection ri2( probeRay2, nullRasterizerState );
-			vertex.pObject->IntersectRay( ri2, RISE_INFINITY, true, true, false );
-
+			vertex.pObject->IntersectRay( ri2, 2.0 * probeOffset, true, true, false );
 			if( ri2.geometric.bHit )
 			{
-				if( axis == 0 ) { pos_u_plus = ri2.geometric.ptIntersection; norm_u_plus = ri2.geometric.vNormal; ok_u = true; }
-				else            { pos_v_plus = ri2.geometric.ptIntersection; norm_v_plus = ri2.geometric.vNormal; ok_v = true; }
+				r.pos = ri2.geometric.ptIntersection;
+				r.normal = ri2.geometric.vNormal;
+				r.ok = true;
 			}
 		}
-	}
 
-	if( !ok_u || !ok_v )
+		return r;
+	};
+
+	// Central differences: probe at +eps and -eps in each tangent direction
+	ProbeResult u_plus  = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_u * eps ) );
+	ProbeResult u_minus = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_u * (-eps) ) );
+	ProbeResult v_plus  = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_v * eps ) );
+	ProbeResult v_minus = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_v * (-eps) ) );
+
+	if( u_plus.ok && u_minus.ok )
 	{
-		// Set reasonable defaults
+		const Scalar inv2eps = 1.0 / (2.0 * eps);
+		vertex.dpdu = Vector3(
+			(u_plus.pos.x - u_minus.pos.x) * inv2eps,
+			(u_plus.pos.y - u_minus.pos.y) * inv2eps,
+			(u_plus.pos.z - u_minus.pos.z) * inv2eps );
+		vertex.dndu = Vector3(
+			(u_plus.normal.x - u_minus.normal.x) * inv2eps,
+			(u_plus.normal.y - u_minus.normal.y) * inv2eps,
+			(u_plus.normal.z - u_minus.normal.z) * inv2eps );
+	}
+	else if( u_plus.ok )
+	{
+		// Fall back to forward difference
+		const Scalar invEps = 1.0 / eps;
+		vertex.dpdu = Vector3(
+			(u_plus.pos.x - vertex.position.x) * invEps,
+			(u_plus.pos.y - vertex.position.y) * invEps,
+			(u_plus.pos.z - vertex.position.z) * invEps );
+		vertex.dndu = Vector3(
+			(u_plus.normal.x - vertex.normal.x) * invEps,
+			(u_plus.normal.y - vertex.normal.y) * invEps,
+			(u_plus.normal.z - vertex.normal.z) * invEps );
+	}
+	else
+	{
 		vertex.dpdu = tangent_u;
-		vertex.dpdv = tangent_v;
 		vertex.dndu = Vector3( 0, 0, 0 );
-		vertex.dndv = Vector3( 0, 0, 0 );
-		return true;
 	}
 
-	// dpdu = d(position)/du ~ (pos_u_plus - position) / eps
-	vertex.dpdu = Vector3(
-		(pos_u_plus.x - vertex.position.x) / eps,
-		(pos_u_plus.y - vertex.position.y) / eps,
-		(pos_u_plus.z - vertex.position.z) / eps
-		);
+	if( v_plus.ok && v_minus.ok )
+	{
+		const Scalar inv2eps = 1.0 / (2.0 * eps);
+		vertex.dpdv = Vector3(
+			(v_plus.pos.x - v_minus.pos.x) * inv2eps,
+			(v_plus.pos.y - v_minus.pos.y) * inv2eps,
+			(v_plus.pos.z - v_minus.pos.z) * inv2eps );
+		vertex.dndv = Vector3(
+			(v_plus.normal.x - v_minus.normal.x) * inv2eps,
+			(v_plus.normal.y - v_minus.normal.y) * inv2eps,
+			(v_plus.normal.z - v_minus.normal.z) * inv2eps );
+	}
+	else if( v_plus.ok )
+	{
+		const Scalar invEps = 1.0 / eps;
+		vertex.dpdv = Vector3(
+			(v_plus.pos.x - vertex.position.x) * invEps,
+			(v_plus.pos.y - vertex.position.y) * invEps,
+			(v_plus.pos.z - vertex.position.z) * invEps );
+		vertex.dndv = Vector3(
+			(v_plus.normal.x - vertex.normal.x) * invEps,
+			(v_plus.normal.y - vertex.normal.y) * invEps,
+			(v_plus.normal.z - vertex.normal.z) * invEps );
+	}
+	else
+	{
+		vertex.dpdv = tangent_v;
+		vertex.dndv = Vector3( 0, 0, 0 );
+	}
 
-	vertex.dpdv = Vector3(
-		(pos_v_plus.x - vertex.position.x) / eps,
-		(pos_v_plus.y - vertex.position.y) / eps,
-		(pos_v_plus.z - vertex.position.z) / eps
-		);
+	// Project dpdu and dpdv into the tangent plane and orthogonalize.
+	// Finite difference probes on curved surfaces can produce tangent
+	// vectors with a normal component, which makes the Jacobian
+	// inconsistent with the constraint's tangent-plane projection.
+	{
+		const Vector3& n = vertex.normal;
 
-	// dndu = d(normal)/du ~ (norm_u_plus - normal) / eps
-	vertex.dndu = Vector3(
-		(norm_u_plus.x - vertex.normal.x) / eps,
-		(norm_u_plus.y - vertex.normal.y) / eps,
-		(norm_u_plus.z - vertex.normal.z) / eps
-		);
+		// Project dpdu into tangent plane
+		Scalar d_n = Vector3Ops::Dot( vertex.dpdu, n );
+		vertex.dpdu = Vector3(
+			vertex.dpdu.x - n.x * d_n,
+			vertex.dpdu.y - n.y * d_n,
+			vertex.dpdu.z - n.z * d_n );
 
-	vertex.dndv = Vector3(
-		(norm_v_plus.x - vertex.normal.x) / eps,
-		(norm_v_plus.y - vertex.normal.y) / eps,
-		(norm_v_plus.z - vertex.normal.z) / eps
-		);
+		// Project dpdv into tangent plane
+		d_n = Vector3Ops::Dot( vertex.dpdv, n );
+		vertex.dpdv = Vector3(
+			vertex.dpdv.x - n.x * d_n,
+			vertex.dpdv.y - n.y * d_n,
+			vertex.dpdv.z - n.z * d_n );
+
+		// Gram-Schmidt: make dpdv orthogonal to dpdu
+		const Scalar dpdu_sq = Vector3Ops::SquaredModulus( vertex.dpdu );
+		if( dpdu_sq > NEARZERO )
+		{
+			const Scalar proj = Vector3Ops::Dot( vertex.dpdv, vertex.dpdu ) / dpdu_sq;
+			vertex.dpdv = Vector3(
+				vertex.dpdv.x - vertex.dpdu.x * proj,
+				vertex.dpdv.y - vertex.dpdu.y * proj,
+				vertex.dpdv.z - vertex.dpdu.z * proj );
+		}
+
+		// If dpdv collapsed, reconstruct from cross product
+		if( Vector3Ops::SquaredModulus( vertex.dpdv ) < NEARZERO )
+		{
+			vertex.dpdv = Vector3Ops::Cross( n, vertex.dpdu );
+		}
+	}
 
 	return true;
 }
@@ -1026,6 +1144,7 @@ bool ManifoldSolver::NewtonSolve(
 		std::vector<Scalar> delta;
 		if( !SolveBlockTridiagonal( diag, upper_blocks, lower_blocks, C, k, delta ) )
 		{
+			g_newtonSingular.fetch_add(1);
 			return false;  // Singular Jacobian
 		}
 
@@ -1038,7 +1157,7 @@ bool ManifoldSolver::NewtonSolve(
 		// Save chain state
 		std::vector<ManifoldVertex> savedChain( chain );
 
-		for( unsigned int attempt = 0; attempt < 5; attempt++ )
+		for( unsigned int attempt = 0; attempt < 10; attempt++ )
 		{
 			// Restore chain from saved state
 			chain = savedChain;
@@ -1087,6 +1206,10 @@ bool ManifoldSolver::NewtonSolve(
 		{
 			// Even the smallest step didn't improve — give up
 			chain = savedChain;
+			g_newtonNoImprove.fetch_add(1);
+			if( iter == 0 ) g_noImproveIter0.fetch_add(1);
+			else if( iter == 1 ) g_noImproveIter1.fetch_add(1);
+			else g_noImproveIter2plus.fetch_add(1);
 			return false;
 		}
 
@@ -1094,10 +1217,12 @@ bool ManifoldSolver::NewtonSolve(
 		{
 			// Restore and report failure
 			chain = savedChain;
+			g_newtonUpdateFail.fetch_add(1);
 			return false;
 		}
 	}
 
+	g_newtonMaxIter.fetch_add(1);
 	return false;  // Did not converge within maxIterations
 }
 
@@ -1141,6 +1266,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 
 	// Track IOR of current medium (start outside in air)
 	Scalar currentIOR = 1.0;
+
 
 	for( unsigned int depth = 0; depth < config.maxChainDepth; depth++ )
 	{
@@ -1565,6 +1691,10 @@ ManifoldResult ManifoldSolver::Solve(
 		return result;
 	}
 
+	const unsigned int chainK = static_cast<unsigned int>( specularChain.size() );
+	if( chainK == 1 ) g_seedK1.fetch_add(1);
+	else if( chainK == 2 ) g_seedK2.fetch_add(1);
+
 	// Quick early-out: build minimal tangent frames from normals
 	// and evaluate the initial constraint.  If the norm is too large,
 	// bail before computing expensive surface derivatives.
@@ -1593,7 +1723,10 @@ ManifoldResult ManifoldSolver::Solve(
 		for( unsigned int i = 0; i < C0.size(); i++ )
 			norm2 += C0[i] * C0[i];
 		if( sqrt(norm2) > 2.0 )
+		{
+			g_newtonEarlyOut.fetch_add(1);
 			return result;  // Seed too far from valid path
+		}
 	}
 
 	// Now compute full surface derivatives (the expensive part)
@@ -1604,6 +1737,7 @@ ManifoldResult ManifoldSolver::Solve(
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
+				g_newtonDerivFail.fetch_add(1);
 				return result;
 			}
 		}
@@ -1627,6 +1761,9 @@ ManifoldResult ManifoldSolver::Solve(
 
 	if( converged )
 	{
+		if( chainK == 1 ) g_convK1.fetch_add(1);
+		else if( chainK == 2 ) g_convK2.fetch_add(1);
+
 		result.valid = true;
 		result.specularChain = specularChain;
 
@@ -1689,7 +1826,11 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const IBSDF* pBSDF = pMaterial->GetBSDF();
 	if( !pBSDF ) return result;
 
-	// Sample a light
+	// Use the caster's prepared LightSampler (which has the alias table
+	// built during scene preparation) rather than our own uninitialized one.
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS ) return result;
+
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	LuminaryManager::LuminariesList emptyList;
 	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
@@ -1697,8 +1838,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	LightSample lightSample;
-	if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) )
+	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
+
+	g_smsAttempts.fetch_add(1);
 
 	// Build seed chain
 	std::vector<ManifoldVertex> seedChain;
@@ -1707,7 +1850,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		scene, caster, seedChain );
 
 	if( chainLen == 0 || seedChain.empty() )
+	{
+		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
+	}
+
+	g_smsSeedFound.fetch_add(1);
 
 	// Run manifold solve
 	ManifoldResult mResult = Solve(
@@ -1716,12 +1864,22 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		seedChain, sampler );
 
 	if( !mResult.valid )
+	{
+		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
+	}
+
+	g_smsConverged.fetch_add(1);
 
 	// Visibility: check external segments of the specular chain
 	if( !CheckChainVisibility( pos, lightSample.position,
 		mResult.specularChain, caster ) )
+	{
+		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
+	}
+
+	g_smsVisible.fetch_add(1);
 
 	// Direction from shading point toward first specular vertex
 	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
@@ -1801,6 +1959,9 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
 
+	g_smsContributed.fetch_add(1);
+	if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
+
 	return result;
 }
 
@@ -1831,7 +1992,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const IBSDF* pBSDF = pMaterial->GetBSDF();
 	if( !pBSDF ) return result;
 
-	// Sample a light
+	// Use the caster's prepared LightSampler
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS ) return result;
+
 	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
 	LuminaryManager::LuminariesList emptyList;
 	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
@@ -1839,8 +2003,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	LightSample lightSample;
-	if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) )
+	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
+
+	g_smsAttempts.fetch_add(1);
 
 	// Build seed chain (uses RGB IOR for approximate positions)
 	std::vector<ManifoldVertex> seedChain;
@@ -1849,7 +2015,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		scene, caster, seedChain );
 
 	if( chainLen == 0 || seedChain.empty() )
+	{
+		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
+	}
+
+	g_smsSeedFound.fetch_add(1);
 
 	// Override each vertex's IOR with the wavelength-dependent value.
 	// This is what makes dispersion work — the Newton solver will find
@@ -1878,12 +2049,22 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		seedChain, sampler );
 
 	if( !mResult.valid )
+	{
+		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
+	}
+
+	g_smsConverged.fetch_add(1);
 
 	// Visibility: check external segments of the specular chain
 	if( !CheckChainVisibility( pos, lightSample.position,
 		mResult.specularChain, caster ) )
+	{
+		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
+	}
+
+	g_smsVisible.fetch_add(1);
 
 	// Direction from shading point toward first specular vertex
 	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
@@ -1952,6 +2133,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
 
+	g_smsContributed.fetch_add(1);
+	if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
+
 	return result;
 }
 
@@ -1982,29 +2166,68 @@ bool ManifoldSolver::CheckChainVisibility(
 	if( chain.empty() ) return true;
 
 	// Segment 1: shading point to first specular vertex
+	//
+	// The shading point sits on a non-specular surface.  The first
+	// specular vertex is on the glass surface facing the shading
+	// point.  We offset the ray endpoint by a small amount to
+	// avoid hitting the glass surface at the target vertex.
 	{
-		Vector3 dir = Vector3Ops::mkVector3(
-			chain.front().position, shadingPoint );
+		const ManifoldVertex& vFirst = chain.front();
+
+		// Determine the outward normal at the first vertex (pointing
+		// toward the shading point, i.e. away from the glass interior)
+		Vector3 dirToShading = Vector3Ops::mkVector3( shadingPoint, vFirst.position );
+		const Scalar nDotDir = Vector3Ops::Dot( vFirst.normal, dirToShading );
+		const Vector3 outwardN = (nDotDir >= 0)
+			? vFirst.normal
+			: Vector3( -vFirst.normal.x, -vFirst.normal.y, -vFirst.normal.z );
+
+		// Biased endpoint: pull back from the glass surface along its
+		// outward normal.  This prevents the shadow ray from hitting
+		// the glass mesh at or near the target vertex.
+		const Scalar endBias = 1e-3;
+		const Point3 biasedEnd = Point3Ops::mkPoint3(
+			vFirst.position, outwardN * endBias );
+
+		Vector3 dir = Vector3Ops::mkVector3( biasedEnd, shadingPoint );
 		Scalar dist = Vector3Ops::NormalizeMag( dir );
-		if( dist > 1e-6 )
+		if( dist > 1e-4 )
 		{
 			Ray ray( shadingPoint, dir );
-			ray.Advance( 1e-6 );
-			if( caster.CastShadowRay( ray, dist - 2e-6 ) )
+			ray.Advance( 1e-4 );
+			if( caster.CastShadowRay( ray, dist - 2e-4 ) )
 				return false;
 		}
 	}
 
-	// Segment 2: last specular vertex to light
+	// Segment 2: last specular vertex to light source
+	//
+	// The last specular vertex sits on the glass surface facing the
+	// light.  On a displaced mesh, nearby bumps can easily block a
+	// ray launched with only a tiny directional bias.  We offset the
+	// ray origin along the surface normal at the vertex to clear the
+	// local surface geometry before testing for external occlusion.
 	{
-		Vector3 dir = Vector3Ops::mkVector3(
-			lightPoint, chain.back().position );
-		Scalar dist = Vector3Ops::NormalizeMag( dir );
-		if( dist > 1e-6 )
+		const ManifoldVertex& vLast = chain.back();
+
+		// Outward normal: pointing toward the light (away from glass)
+		Vector3 dirToLight = Vector3Ops::mkVector3( lightPoint, vLast.position );
+		const Scalar nDotDir = Vector3Ops::Dot( vLast.normal, dirToLight );
+		const Vector3 outwardN = (nDotDir >= 0)
+			? vLast.normal
+			: Vector3( -vLast.normal.x, -vLast.normal.y, -vLast.normal.z );
+
+		// Offset start along outward normal to clear displaced surface
+		const Scalar normalBias = 1e-2;
+		const Point3 biasedStart = Point3Ops::mkPoint3(
+			vLast.position, outwardN * normalBias );
+
+		Vector3 newDir = Vector3Ops::mkVector3( lightPoint, biasedStart );
+		Scalar newDist = Vector3Ops::NormalizeMag( newDir );
+		if( newDist > 1e-4 )
 		{
-			Ray ray( chain.back().position, dir );
-			ray.Advance( 1e-6 );
-			if( caster.CastShadowRay( ray, dist - 2e-6 ) )
+			Ray ray( biasedStart, newDir );
+			if( caster.CastShadowRay( ray, newDist - 1e-4 ) )
 				return false;
 		}
 	}

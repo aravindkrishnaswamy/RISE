@@ -282,7 +282,7 @@ public:
 					if( !ri.bHit || (ri.range > ranges[0]) ) {
 						RayIntersectionGeometric myRI( ri.ray, ri.rast );
 
-						childrenhit[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[0] );
+						childrenhit[0]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[0] );
 
 						if( myRI.bHit && myRI.range < ri.range ) {
 							ri = myRI;
@@ -291,10 +291,10 @@ public:
 				} else {
 					// Do 2 first!
 					childrenhit[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[0] );
-					if( !ri.bHit || (ri.range > ranges[1]) ) {\
+					if( !ri.bHit || (ri.range > ranges[1]) ) {
 						RayIntersectionGeometric myRI( ri.ray, ri.rast );
 
-						childrenhit[1]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[1] );
+						childrenhit[1]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[1] );
 
 						if( myRI.bHit && myRI.range < ri.range ) {
 							ri = myRI;
@@ -337,7 +337,7 @@ public:
 				if( !ri.bHit || (ri.range > ranges[b]) ) {
 					RayIntersectionGeometric myRI( ri.ray, ri.rast );
 
-					childrenhit[b]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[b] );
+					childrenhit[b]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[b] );
 
 					if( myRI.bHit && myRI.range < ri.range ) {
 						ri = myRI;
@@ -346,7 +346,7 @@ public:
 				if( !ri.bHit || (ri.range > ranges[c]) ) {
 					RayIntersectionGeometric myRI( ri.ray, ri.rast );
 
-					childrenhit[c]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[c] );
+					childrenhit[c]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, my_bb, nodeid[c] );
 
 					if( myRI.bHit && myRI.range < ri.range ) {
 						ri = myRI;
@@ -455,7 +455,7 @@ public:
 					if( !ri.geometric.bHit || (ri.geometric.range > ranges[0]) ) {
 						RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
 
-						childrenhit[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[0] );
+						childrenhit[0]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[0] );
 
 						if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 							ri = myRI;
@@ -464,10 +464,10 @@ public:
 				} else {
 					// Do 2 first!
 					childrenhit[0]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[0] );
-					if( !ri.geometric.bHit || (ri.geometric.range > ranges[1]) ) {\
+					if( !ri.geometric.bHit || (ri.geometric.range > ranges[1]) ) {
 						RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
 
-						childrenhit[1]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[1] );
+						childrenhit[1]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[1] );
 
 						if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 							ri = myRI;
@@ -510,7 +510,7 @@ public:
 				if( !ri.geometric.bHit || (ri.geometric.range > ranges[b]) ) {
 					RayIntersection		myRI( ri.geometric.ray, ri.geometric.rast );
 
-					childrenhit[b]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[b] );
+					childrenhit[b]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[b] );
 
 					if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 						ri = myRI;
@@ -519,7 +519,7 @@ public:
 				if( !ri.geometric.bHit || (ri.geometric.range > ranges[c]) ) {
 					RayIntersection		myRI( ri.geometric.ray, ri.geometric.rast );
 
-					childrenhit[c]->IntersectRay( ep, ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[c] );
+					childrenhit[c]->IntersectRay( ep, myRI, bHitFrontFaces, bHitBackFaces, bComputeExitInfo, my_bb, nodeid[c] );
 
 					if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
 						ri = myRI;
