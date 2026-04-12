@@ -29,6 +29,10 @@ namespace RISE
 			RasterizerOutputListType				outs;
 			IProgressCallback*						pProgressFunc;
 
+#ifdef RISE_ENABLE_OIDN
+			bool									bDenoisingEnabled;
+#endif
+
 			Rasterizer();
 			virtual ~Rasterizer();
 
@@ -41,6 +45,10 @@ namespace RISE
 			virtual void FreeRasterizerOutputs( );
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc );
+
+#ifdef RISE_ENABLE_OIDN
+			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
+#endif
 		};
 	}
 }

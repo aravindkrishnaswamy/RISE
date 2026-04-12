@@ -54,14 +54,33 @@ namespace RISE
 				ty_minus_sy = dKernelHeightOV2 - s_y;
 			}
 
+			inline Scalar weight1D_x( const Scalar x ) const
+			{
+				const Scalar ax = fabs(x);
+				if( ax >= dKernelWidthOV2 ) return 0.0;
+				if( ax < s_x ) return 1.0 - (x*x)/(s_x*dKernelWidthOV2);
+				const Scalar d = dKernelWidthOV2 - ax;
+				return d*d / (dKernelWidthOV2*tx_minus_sx);
+			}
+
+			inline Scalar weight1D_y( const Scalar y ) const
+			{
+				const Scalar ay = fabs(y);
+				if( ay >= dKernelHeightOV2 ) return 0.0;
+				if( ay < s_y ) return 1.0 - (y*y)/(s_y*dKernelHeightOV2);
+				const Scalar d = dKernelHeightOV2 - ay;
+				return d*d / (dKernelHeightOV2*ty_minus_sy);
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				return weight1D_x(dx) * weight1D_y(dy);
+			}
+
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
 			{
 				warped = Point2( canonical.x*dKernelWidth - dKernelWidthOV2, canonical.y*dKernelHeight - dKernelHeightOV2 );
-
-				// Compute the weight
-				const Scalar weight_x = fabs(warped.x) < s_x ? (1.0 - (warped.x*warped.x)/(s_x*dKernelWidthOV2)) : ((dKernelWidthOV2-fabs(warped.x))*(dKernelWidthOV2-fabs(warped.x)) / (dKernelWidthOV2*tx_minus_sx));
-				const Scalar weight_y = fabs(warped.y) < s_y ? (1.0 - (warped.y*warped.y)/(s_x*dKernelHeightOV2)) : ((dKernelHeightOV2-fabs(warped.y))*(dKernelHeightOV2-fabs(warped.y)) / (dKernelHeightOV2*ty_minus_sy));
-				return weight_x * weight_y;
+				return weight1D_x(warped.x) * weight1D_y(warped.y);
 			}
 		};
 	}

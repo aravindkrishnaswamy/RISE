@@ -77,9 +77,9 @@ static void GenerateSpecularRay(
 
 void IsotropicPhongSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
@@ -89,7 +89,7 @@ void IsotropicPhongSPF::Scatter(
 	const RISEPel N = exponent.GetColor(ri);
 
 	ScatteredRay diffuse, specular;
-	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ) );
+	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
 
 	// Set PDF for diffuse ray: cosine-weighted hemisphere sampling
 	{
@@ -99,8 +99,14 @@ void IsotropicPhongSPF::Scatter(
 	}
 
 	if( N[0] == N[1] && N[1] == N[2] ) {
-		GenerateSpecularRay( specular, n, reflected, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ), N[0] );
-		specular.kray = Rs.GetColor(ri);
+		GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ), N[0] );
+
+		// kray = BRDF * cos_o / pdf = Rs * (N+2)/(2*pi) * cos^N(alpha) * cos_o
+		//        / [(N+1)/(2*pi) * cos^N(alpha)]
+		//      = Rs * (N+2)/(N+1) * cos_o
+		// This is bounded since cos_o ∈ [0,1] and (N+2)/(N+1) ∈ (1,2]
+		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
+		specular.kray = Rs.GetColor(ri) * ((N[0]+2.0)/(N[0]+1.0)) * r_max(cos_o, 0.0);
 
 		// PDF for phong lobe: (N+1)/(2*pi) * cos^N(alpha), alpha = angle from reflection direction
 		const Scalar cosAlpha = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), Vector3Ops::Normalize(reflected) );
@@ -114,11 +120,13 @@ void IsotropicPhongSPF::Scatter(
 		scattered.AddScatteredRay( specular );
 	} else {
 		const RISEPel spec = Rs.GetColor(ri);
-		const Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+		const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( specular, n, reflected, ri,  ptrand, N[i] );
+
+			const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
 			specular.kray = 0.0;
-			specular.kray[i] = spec[i];
+			specular.kray[i] = spec[i] * ((N[i]+2.0)/(N[i]+1.0)) * r_max(cos_o, 0.0);
 
 			// PDF for phong lobe per channel
 			const Scalar cosAlpha = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), Vector3Ops::Normalize(reflected) );
@@ -140,10 +148,10 @@ void IsotropicPhongSPF::Scatter(
 
 void IsotropicPhongSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
@@ -152,11 +160,14 @@ void IsotropicPhongSPF::ScatterNM(
 
 	ScatteredRay diffuse, specular;
 	const Scalar N = exponent.GetColorNM(ri,nm);
-	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ) );
-	GenerateSpecularRay( specular, n, reflected, ri,  Point2( random.CanonicalRandom(), random.CanonicalRandom() ),  N );
+	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
+	GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ),  N );
 
 	diffuse.krayNM = Rd.GetColorNM(ri,nm);
-	specular.krayNM = Rs.GetColorNM(ri,nm);
+	{
+		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
+		specular.krayNM = Rs.GetColorNM(ri,nm) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
+	}
 
 	// Set PDF for diffuse ray
 	{
@@ -183,7 +194,7 @@ void IsotropicPhongSPF::ScatterNM(
 Scalar IsotropicPhongSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
@@ -220,7 +231,7 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);

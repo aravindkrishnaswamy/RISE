@@ -32,8 +32,6 @@ namespace RISE
 			Scalar		radiantEnergy;
 			Point3		ptPosition;
 			RISEPel		cColor;
-			Scalar		linearAttenuation;
-			Scalar		quadraticAttenuation;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
 			virtual ~PointLight( );
@@ -44,6 +42,8 @@ namespace RISE
 				return bShootPhotons;
 			}
 
+			inline bool IsPositionalLight() const { return true; }
+
 			inline RISEPel radiantExitance() const
 			{
 				return (cColor * radiantEnergy * FOUR_PI);
@@ -52,6 +52,11 @@ namespace RISE
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
 			{
 				return (cColor * radiantEnergy);
+			}
+
+			inline Point3 position() const
+			{
+				return ptPosition;
 			}
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
@@ -72,9 +77,7 @@ namespace RISE
 			PointLight(
 				const Scalar radiantEnergy_,
 				const RISEPel& c,
-				const Scalar linearAtten,
-				const Scalar quadraticAtten,
-				const bool shootPhotons = true
+				const bool shootPhotons
 				);
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;

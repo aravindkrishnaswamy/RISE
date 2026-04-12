@@ -35,15 +35,18 @@ rendered_output_folder						str		C:\Program Files\RISE Rendered\
 ################################
 
 # Set this for the type of raster sequence
-#  0 = One scanline at a time
-#  1 = Blocks
-#  2 = Hilbert space filling curve
-#  3 = Randomly pick one
-raster_sequence_type						3
+#  0 = One scanline at a time (deprecated)
+#  1 = Blocks (deprecated)
+#  2 = Hilbert space filling curve (deprecated)
+#  3 = Randomly pick one (deprecated)
+#  4 = Morton Z-order curve (optimal cache locality, default)
+raster_sequence_type						4
 
 # These are options for the raster sequence type you picked
-# Only valid for block and hilbert
-# For block, they are the width of the block, height of the block and block order where block order is:
+# For Morton (type 4), option is the tile size (default 32):
+#raster_sequence_options						str			32
+#
+# For block (type 1), options are width, height, and block order where block order is:
 #    0 = From center out in a flowering pattern
 #    1 = Random shuffle (disabled in the code, so only does left to right, top to bottom)
 #    2 = From top left to bottom right in flowering pattern
@@ -54,5 +57,5 @@ raster_sequence_type						3
 #    7 = From right to left in vertical order
 #    8 = From bottom to top in horizontal order
 #
-# For hilbert, it is the recursive depth of the curve only, 4 is a good number
+# For hilbert (type 2), it is the recursive depth of the curve only, 4 is a good number
 #raster_sequence_options						str			24 24 0

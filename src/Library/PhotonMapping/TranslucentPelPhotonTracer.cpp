@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "TranslucentPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -30,13 +31,12 @@ TranslucentPelPhotonTracer::TranslucentPelPhotonTracer(
 	const bool refract,
 	const bool direct_translucent,
 	const bool shootFromNonMeshLights,
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
 	const bool regenerate,
 	const bool shootFromMeshLights
 	) :
-  PhotonTracer<TranslucentPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
+  PhotonTracer<TranslucentPelPhotonMap>( shootFromNonMeshLights, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bTraceReflections( reflect ),
@@ -50,12 +50,12 @@ TranslucentPelPhotonTracer::~TranslucentPelPhotonTracer( )
 }
 
 
-void TranslucentPelPhotonTracer::TracePhoton( 
-	const Ray& ray, 
-	const RISEPel& power, 
+void TranslucentPelPhotonTracer::TracePhoton(
+	const Ray& ray,
+	const RISEPel& power,
 	const bool bFromTranslucent,
 	TranslucentPelPhotonMap& pPhotonMap,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	static unsigned int		numRecursions = 0;
@@ -94,9 +94,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 
@@ -105,8 +103,9 @@ void TranslucentPelPhotonTracer::TracePhoton(
 			// Get information from the material as to what to do
 			ScatteredRayContainer		scattered;
 
-			pSPF->Scatter( ri.geometric, random, scattered, ior_stack );
-		
+			IndependentSampler samplerWrapper( random );
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
+
 			RISEPel accum_scattered;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];

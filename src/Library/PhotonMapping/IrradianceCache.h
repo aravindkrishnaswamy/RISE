@@ -99,7 +99,7 @@ namespace RISE
 				void Clear();
 			};
 
-			CacheNode		root;
+			mutable CacheNode		root;
 			Scalar			tolerance;
 			Scalar			invTolerance;
 			Scalar			min_spacing;
@@ -109,7 +109,7 @@ namespace RISE
 
 			mutable RMutexReadWrite	mutex;				// Mutex to control access
 
-			bool			bPreComputed;				// Has the cache been pre-computed?
+			mutable bool			bPreComputed;				// Has the cache been pre-computed?
 
 			virtual ~IrradianceCache( );
 
@@ -123,7 +123,7 @@ namespace RISE
 				const Scalar		r0_,
 				const RISEPel*		rot,
 				const RISEPel*		trans
-				)
+				) const
 			{
 				#ifdef _DEBUG
 				assert( !bPreComputed );
@@ -177,16 +177,16 @@ namespace RISE
 				const unsigned int minEffectiveContributors
 				) const;
 
-			inline Scalar GetTolerance(){ return tolerance; };
-			inline void Clear()
+			inline Scalar GetTolerance() const { return tolerance; };
+			inline void Clear() const
 			{
 				root.Clear();
 				bPreComputed = false;
 			};
 
-			void FinishedPrecomputation();
+			void FinishedPrecomputation() const;
 
-			bool Precomputed()
+			bool Precomputed() const
 			{
 				return bPreComputed;
 			}

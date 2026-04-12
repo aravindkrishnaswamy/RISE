@@ -27,7 +27,8 @@
 //       to eyeVerts[t-1], check visibility, evaluate BSDFs, compute
 //       the geometric term, and return the unweighted contribution.
 //       Special cases: s=0 (eye path hits emitter), s=1 (next event
-//       estimation), t=0/t=1 (light path connects to camera/sensor).
+//       estimation), and t=1 (light path connects to the camera,
+//       with the camera stored as eye vertex 0).
 //
 //    3. MISWeight:
 //       Balance heuristic weight computed by walking along the full
@@ -77,7 +78,13 @@
 #include "../Utilities/ISampler.h"
 #include "../Lights/LightSampler.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/CompletePathGuide.h"
+#include "../Utilities/PathGuidingField.h"
+#include "../Utilities/StabilityConfig.h"
+#include "../Utilities/BSSRDFSampling.h"
 #include "BDPTVertex.h"
+#include "../Utilities/RandomNumbers.h"
+#include <atomic>
 #include <vector>
 
 namespace RISE
@@ -93,19 +100,78 @@ namespace RISE
 		protected:
 			unsigned int		maxEyeDepth;
 			unsigned int		maxLightDepth;
-			LightSampler*		pLightSampler;
+			const LightSampler*	pLightSampler;
 			ManifoldSolver*		pManifoldSolver;
+			StabilityConfig		stabilityConfig;
+
+#ifdef RISE_ENABLE_OPENPGL
+			PathGuidingField*	pGuidingField;
+			PathGuidingField*	pLightGuidingField;	///< Separate field for light subpath guiding (Option B)
+			CompletePathGuide*	pCompletePathGuide;
+			Scalar				guidingAlpha;
+			unsigned int		maxGuidingDepth;
+			unsigned int		maxLightGuidingDepth;
+			GuidingSamplingType	guidingSamplingType;
+			unsigned int		guidingRISCandidates;
+			bool				completePathStrategySelectionEnabled;
+			unsigned int		completePathStrategySampleCount;
+			mutable std::atomic<unsigned long long> strategySelectionPathCount;
+			mutable std::atomic<unsigned long long> strategySelectionCandidateCount;
+			mutable std::atomic<unsigned long long> strategySelectionEvaluatedCount;
+
+		public:
+			struct GuidingTrainingStats
+			{
+				Scalar	totalEnergy;
+				Scalar	firstSurfaceConnectionEnergy;
+				Scalar	deepEyeConnectionEnergy;
+				size_t	firstSurfaceConnectionCount;
+				size_t	deepEyeConnectionCount;
+
+				GuidingTrainingStats() :
+					totalEnergy( 0 ),
+					firstSurfaceConnectionEnergy( 0 ),
+					deepEyeConnectionEnergy( 0 ),
+					firstSurfaceConnectionCount( 0 ),
+					deepEyeConnectionCount( 0 )
+				{
+				}
+			};
+
+		protected:
+			mutable GuidingTrainingStats guidingTrainingStats;
+#endif
 
 			virtual ~BDPTIntegrator();
 
 		public:
 			BDPTIntegrator(
 				unsigned int maxEye,
-				unsigned int maxLight
+				unsigned int maxLight,
+				const StabilityConfig& stabilityCfg
 				);
 
-			void SetLightSampler( LightSampler* pSampler );
+			void SetLightSampler( const LightSampler* pSampler );
 			void SetManifoldSolver( ManifoldSolver* pSolver );
+
+#ifdef RISE_ENABLE_OPENPGL
+			void SetGuidingField( PathGuidingField* pField, PathGuidingField* pLightField, Scalar alpha, unsigned int maxDepth, unsigned int maxLightDepth, GuidingSamplingType samplingType, unsigned int risCandidates );
+			void SetCompletePathGuide(
+				CompletePathGuide* pGuide,
+				bool enableStrategySelection = false,
+				unsigned int strategySamples = 0 );
+			void ResetGuidingTrainingStats() const;
+			const GuidingTrainingStats& GetGuidingTrainingStats() const;
+			void ResetStrategySelectionStats() const;
+			void GetStrategySelectionStats(
+				unsigned long long& pathCount,
+				unsigned long long& candidateCount,
+				unsigned long long& evaluatedCount
+				) const;
+#endif
+
+			unsigned int GetMaxEyeDepth() const { return maxEyeDepth; }
+			unsigned int GetMaxLightDepth() const { return maxLightDepth; }
 
 			/// Result of connecting a single (s,t) strategy
 			struct ConnectionResult
@@ -113,18 +179,30 @@ namespace RISE
 				RISEPel		contribution;	///< Unweighted path contribution
 				Scalar		misWeight;		///< MIS weight for this (s,t) strategy
 				Point2		rasterPos;		///< Pixel position for splatting (valid if needsSplat)
-				bool		needsSplat;		///< True for light-side connections (s>=1, t<=1)
+				unsigned int s;				///< Number of light subpath vertices
+				unsigned int t;				///< Number of eye subpath vertices
+				bool		needsSplat;		///< True for light-side camera connections (active case: t==1)
 				bool		valid;			///< False if connection is invalid
+				RISEPel		guidingLocalContribution;	///< Contribution at eye vertex before eye-prefix throughput
+				unsigned int guidingEyeVertexIndex;	///< Eye vertex receiving guidingLocalContribution
+				bool		guidingUseDirectContribution;	///< Store guidingLocalContribution as OpenPGL directContribution
+				bool		guidingValid;	///< True if the result contributes to an eye-path training segment
 
 				ConnectionResult() :
 				contribution( RISEPel( 0, 0, 0 ) ),
 				misWeight( 0 ),
 				rasterPos( Point2( 0, 0 ) ),
+				s( 0 ),
+				t( 0 ),
 				needsSplat( false ),
-				valid( false )
+				valid( false ),
+				guidingLocalContribution( RISEPel( 0, 0, 0 ) ),
+				guidingEyeVertexIndex( 0 ),
+				guidingUseDirectContribution( false ),
+				guidingValid( false )
 				{
 				}
-			};
+		};
 
 			/// Generates a light subpath starting from a sampled light source.
 			/// \return Number of vertices stored
@@ -132,7 +210,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				std::vector<BDPTVertex>& vertices
+				std::vector<BDPTVertex>& vertices,
+				const RandomNumberGenerator& random
 				) const;
 
 			/// Generates an eye subpath from a camera ray.
@@ -164,7 +243,8 @@ namespace RISE
 				const std::vector<BDPTVertex>& eyeVerts,
 				const IScene& scene,
 				const IRayCaster& caster,
-				const ICamera& camera
+				const ICamera& camera,
+				ISampler* pSampler
 				) const;
 
 			/// Computes MIS weight using the balance heuristic (power=1).
@@ -185,6 +265,7 @@ namespace RISE
 				Scalar		contribution;
 				Scalar		misWeight;
 				Point2		rasterPos;
+				unsigned int s;				///< Number of light subpath vertices
 				bool		needsSplat;
 				bool		valid;
 
@@ -192,6 +273,7 @@ namespace RISE
 				contribution( 0 ),
 				misWeight( 0 ),
 				rasterPos( Point2( 0, 0 ) ),
+				s( 0 ),
 				needsSplat( false ),
 				valid( false )
 				{
@@ -203,7 +285,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
-				const Scalar nm
+				const Scalar nm,
+				const RandomNumberGenerator& random
 				) const;
 
 			unsigned int GenerateEyeSubpathNM(
@@ -246,7 +329,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 
 			/// Spectral variant of EvaluateSMSStrategies.
@@ -255,7 +338,7 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				const ICamera& camera,
-				const RandomNumberGenerator& rng,
+				ISampler& sampler,
 				const Scalar nm
 				) const;
 
@@ -305,50 +388,78 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			/// Result of BSSRDF importance sampling at a surface vertex
-			struct BSSRDFSampleResult
-			{
-				Point3				entryPoint;		///< Entry point on the surface
-				Vector3				entryNormal;	///< Surface normal at entry point
-				OrthonormalBasis3D	entryONB;		///< ONB at entry point
-				Ray					scatteredRay;	///< Cosine-weighted ray from entry point
-				RISEPel				weight;			///< BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
-				Scalar				weightNM;		///< Scalar weight for spectral path
-				Scalar				cosinePdf;		///< PDF of the cosine-weighted direction
-				Scalar				pdfSurface;		///< Spatial sampling PDF in area measure
-				bool				valid;			///< True if sampling succeeded
-
-				BSSRDFSampleResult() :
-				weight( RISEPel(0,0,0) ), weightNM(0),
-				cosinePdf(0), pdfSurface(0), valid(false) {}
-			};
-
-			/// Attempts BSSRDF importance sampling at a front-face hit
-			/// on a material with a diffusion profile.
+			/// Helper: evaluate transmittance along a connection edge
+			/// between two points, accounting for participating media.
 			///
-			/// Uses the disk projection method (Christensen & Burley 2015):
-			///   1. Choose a spectral channel uniformly (R, G, B)
-			///   2. Choose a projection axis:
-			///      normal (50%), tangent (25%), bitangent (25%)
-			///   3. Sample radius r from the profile CDF for the channel
-			///   4. Sample angle phi uniformly on [0, 2pi)
-			///   5. Compute probe origin offset in the perpendicular plane
-			///   6. Cast a probe ray along +-axis through the object
-			///   7. If hit: evaluate Rd(r_actual), compute weight
-			///   8. Generate cosine-weighted scattered ray from entry normal
-			///
-			/// The probe ray is cast against the specific object (pObject),
-			/// not the whole scene, to ensure the entry point is on the
-			/// same translucent surface.
-			///
-			/// \return A BSSRDFSampleResult with valid=true on success
-			BSSRDFSampleResult SampleBSSRDFEntryPoint(
-				const RayIntersectionGeometric& ri,		///< [in] Exit point intersection
-				const IObject* pObject,					///< [in] Object to cast probe rays against
-				const IMaterial* pMaterial,				///< [in] Material with diffusion profile
-				const RandomNumberGenerator& rng,		///< [in] RNG
-				const Scalar nm = 0						///< [in] Wavelength for NM path (0 = RGB)
+			/// Connection edge transmittance: the connection between light
+			/// and eye subpath endpoints passes through potentially multiple
+			/// media.  We evaluate Tr by walking the connection segment and
+			/// accumulating per-segment Beer-Lambert transmittance.
+			/// This Tr multiplies the connection contribution but is NOT
+			/// included in MIS PDFs (see note on transmittance cancellation
+			/// in the MISWeight documentation).
+			RISEPel EvalConnectionTransmittance(
+				const Point3& p1,
+				const Point3& p2,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium
 				) const;
+
+			/// Spectral variant of EvalConnectionTransmittance
+			Scalar EvalConnectionTransmittanceNM(
+				const Point3& p1,
+				const Point3& p2,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const Scalar nm,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium
+				) const;
+
+			// BSSRDF sampling is provided by the shared utility
+			// BSSRDFSampling::SampleEntryPoint() in
+			// ../Utilities/BSSRDFSampling.h
+
+		public:
+			/// Recompute throughputNM for each vertex in a stored subpath
+			/// at a companion wavelength.  Used by HWSS BDPT to re-evaluate
+			/// spectral transport along the hero's geometric path.
+			///
+			/// Walks the stored vertex array and adjusts throughputNM by
+			/// the ratio of BSDF values at the companion vs hero wavelength.
+			/// Delta vertices use a ratio of 1.0 (exact for non-dispersive
+			/// specular interactions).  Light endpoint emission is re-evaluated
+			/// at the companion wavelength.
+			///
+			/// @param verts        Vertex array (modified in place)
+			/// @param isLightPath  True for light subpath, false for eye subpath
+			/// @param heroNM       Hero wavelength (nm)
+			/// @param companionNM  Companion wavelength (nm)
+			/// @param scene        Scene reference
+			/// @param caster       Ray caster reference
+			void RecomputeSubpathThroughputNM(
+				std::vector<BDPTVertex>& verts,
+				bool isLightPath,
+				Scalar heroNM,
+				Scalar companionNM,
+				const IScene& scene,
+				const IRayCaster& caster
+				) const;
+
+			/// Checks whether any delta vertex in the given subpath has
+			/// wavelength-dependent IOR (dispersion).  If so, returns
+			/// true — the caller should terminate companion wavelengths.
+			///
+			/// Walks the stored vertices, reconstructs a minimal
+			/// RayIntersectionGeometric from vertex geometry, and
+			/// compares GetSpecularInfoNM at hero vs companion wavelength.
+			static bool HasDispersiveDeltaVertex(
+				const std::vector<BDPTVertex>& verts,
+				Scalar heroNM,
+				Scalar companionNM
+				);
 		};
 	}
 }

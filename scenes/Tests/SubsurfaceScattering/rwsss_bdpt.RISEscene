@@ -1,0 +1,186 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           rwsss_bdpt.RISEscene                                                                   #
+#   Description:    Random-walk SSS sphere rendered with BDPT for PT/BDPT convergence                      #
+#                   comparison.  Same coefficients as rwsss_sphere.RISEscene.                               #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 7, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+bdpt_pel_rasterizer
+{
+	max_eye_depth		16
+	max_light_depth		16
+	samples				64
+}
+
+/*
+mlt_rasterizer
+{
+	max_eye_depth		16
+	max_light_depth		16
+	bootstrap_samples	10000
+	chains				32
+	mutations_per_pixel	5000
+	large_step_prob		0.3
+}
+*/
+
+file_rasterizeroutput
+{
+	pattern				rendered/rwsss_bdpt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 0 5
+	lookat				0 0 0
+	up					0 1 0
+	width				480
+	height				360
+	fov					40.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_absorption
+	color				0.01 0.3 1.0
+	colorspace			ROMMRGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				pnt_scattering
+	color				2.0 2.0 2.0
+	colorspace			ROMMRGB_Linear
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				lum
+	exitance			pnt_light
+	scale				8
+	material			none
+}
+
+randomwalk_sss_material
+{
+	name				rwsss
+	ior					1.3
+	absorption			pnt_absorption
+	scattering			pnt_scattering
+	g					0.0
+	roughness			0.05
+	max_bounces			64
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				1.0
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0 0
+	material			rwsss
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					-10 -10 0
+	ptb					10 -10 0
+	ptc					10 10 0
+	ptd					-10 10 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 -1 0
+	orientation			-90 0 0
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			floorgeom
+	position			0 0 -3
+	orientation			0 0 0
+	material			white
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					-2 -2 0
+	ptb					2 -2 0
+	ptc					2 2 0
+	ptd					-2 2 0
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			lum
+	position			0 2 -2.5
+	orientation			45 0 0
+}

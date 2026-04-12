@@ -38,21 +38,21 @@ namespace RISE
 			virtual ~CausticPelPhotonTracer();
 
 			// Traces a single photon through the scene until it can't trace it any longer
-			void TracePhoton( 
-				const Ray& ray, 
-				const RISEPel& power, 
-				bool bFromSpecular, 
+			void TracePhoton(
+				const Ray& ray,
+				const RISEPel& power,
+				bool bFromSpecular,
 				CausticPelPhotonMap& pPhotonMap,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			inline void TraceSinglePhoton( 
+			inline void TraceSinglePhoton(
 				const Ray& ray,
-				const RISEPel& power, 
+				const RISEPel& power,
 				CausticPelPhotonMap& pPhotonMap,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, false, pPhotonMap, ior_stack);
@@ -74,7 +74,6 @@ namespace RISE
 				const bool reflect,
 				const bool refract,
 				const bool shootFromNonMeshLights,
-				const bool useiorstack,
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
 				const bool regenerate,

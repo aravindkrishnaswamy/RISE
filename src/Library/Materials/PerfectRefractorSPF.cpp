@@ -39,7 +39,7 @@ PerfectRefractorSPF::~PerfectRefractorSPF( )
 void PerfectRefractorSPF::DoSingleRGBComponent( 
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	 const IORStack* const ior_stack,							///< [in/out] Index of refraction stack
+	 const IORStack& ior_stack,							///< [in/out] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar cosine
@@ -62,19 +62,17 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	// we are entering (push). If it IS in the stack, we are exiting (pop).
 	// Note: cosine convention here is opposite to DielectricSPF:
 	//   cosine = dot(normal, ray_dir), so cosine < NEARZERO means entering.
-	const bool bEntering = ior_stack ? !ior_stack->containsCurrent() : (cosine < NEARZERO);
+	const bool bEntering = !ior_stack.containsCurrent();
 
 	Scalar ref = 0;
 	if( bEntering )
 	{
 		// Going in
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
-			if( ior_stack ) {
-				specular.ior_stack = new IORStack( *ior_stack );
-				specular.ior_stack->push( newIOR );
-				GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), newIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack.top(), newIOR );
+			specular.ior_stack = new IORStack( ior_stack );
+			specular.ior_stack->push( newIOR );
+			GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
 		} else {
 			// TIR, so reflect
 			ref = 1.0;
@@ -86,11 +84,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	}
 	else
 	{
-		if( ior_stack ) {
-			specular.ior_stack = new IORStack( *ior_stack );
-			specular.ior_stack->pop();
-			GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
-		}
+		specular.ior_stack = new IORStack( ior_stack );
+		specular.ior_stack->pop();
+		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 		// Coming out, IOR becomes air
 		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, specular.ior_stack?specular.ior_stack->top():1.0, vRefracted ) ) {
@@ -102,10 +98,8 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 		}
 
 		if( ref > 0.0 ) {
-			if( ior_stack ) {
-				fresnel.ior_stack = new IORStack( *ior_stack );
-				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			fresnel.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 		}
 	}
@@ -135,9 +129,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 
 void PerfectRefractorSPF::Scatter( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
@@ -158,10 +152,10 @@ void PerfectRefractorSPF::Scatter(
 
 void PerfectRefractorSPF::ScatterNM( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay specular;
@@ -174,26 +168,23 @@ void PerfectRefractorSPF::ScatterNM(
 	specular.isDelta = true;
 	specular.pdf = 1.0;
 
-	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 	Vector3	vRefracted = ri.ray.Dir();
 
 	Scalar newIOR = Nt.GetColorNM(ri,nm);
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DoSingleRGBComponent for details)
-	const bool bEntering = ior_stack ? !ior_stack->containsCurrent() : (cosine < NEARZERO);
+	const bool bEntering = !ior_stack.containsCurrent();
 
 	Scalar ref = 0;
 	if( bEntering )
 	{
 		// Going in
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, newIOR );
-			if( ior_stack ) {
-				specular.ior_stack = new IORStack( *ior_stack );
-				specular.ior_stack->push( newIOR );
-				GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), newIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, ri.onb.w(), ior_stack.top(), newIOR );
+			specular.ior_stack = new IORStack( ior_stack );
+			specular.ior_stack->push( newIOR );
+			GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
 		} else {
 			// TIR, so reflect
 			ref = 1.0;
@@ -205,15 +196,14 @@ void PerfectRefractorSPF::ScatterNM(
 	}
 	else
 	{
-		if( ior_stack ) {
-			specular.ior_stack = new IORStack( *ior_stack );
-			specular.ior_stack->pop();
-			GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
-		}
+		specular.ior_stack = new IORStack( ior_stack );
+		specular.ior_stack->pop();
+		GlobalLog()->PrintNew( specular.ior_stack, __FILE__, __LINE__, "ior stack" );
 
 		// Coming out, IOR becomes whatever was there before
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0, vRefracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, ior_stack?ior_stack->top():1.0 );
+		const Scalar exitIOR = specular.ior_stack ? specular.ior_stack->top() : 1.0;
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), newIOR, exitIOR, vRefracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, -ri.onb.w(), newIOR, exitIOR );
 		} else {
 			// TIR, so reflect
 			// We're still in the material
@@ -221,10 +211,8 @@ void PerfectRefractorSPF::ScatterNM(
 		}
 
 		if( ref > 0.0 ) {
-			if( ior_stack ) {
-				fresnel.ior_stack = new IORStack( *ior_stack );
-				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			fresnel.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
 		}
 	}
@@ -246,7 +234,7 @@ void PerfectRefractorSPF::ScatterNM(
 Scalar PerfectRefractorSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return 0;
@@ -256,7 +244,7 @@ Scalar PerfectRefractorSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return 0;

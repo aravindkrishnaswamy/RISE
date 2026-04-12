@@ -47,13 +47,29 @@ namespace RISE
 
 		//! Warps some value as a point on a virtual screen
 		/// \return The weight of the warped sample
-		virtual Scalar warpOnScreen( 
+		virtual Scalar warpOnScreen(
 			const RandomNumberGenerator& random,///< [in] Random number generator
 			const Point2& canonical,			///< [in] Value to warp
 			Point2& warped,						///< [in] Warped value
 			const unsigned int x,				///< [in] Screen x value
 			const unsigned int y				///< [in] Screen y value
 			) const = 0;
+
+		//! Evaluates the filter at an offset (dx, dy) from the pixel center.
+		//! Used by film-based reconstruction to splat contributions to
+		//! neighboring pixels within the filter's support.
+		/// \return The filter weight at the given offset
+		virtual Scalar EvaluateFilter(
+			const Scalar dx,					///< [in] Horizontal offset from pixel center
+			const Scalar dy						///< [in] Vertical offset from pixel center
+			) const { return 0; }
+
+		//! Returns the half-width and half-height of the filter's support
+		//! region in pixels.  A filter with support [-2,2] returns 2.0.
+		virtual void GetFilterSupport(
+			Scalar& halfWidth,					///< [out] Half-width of support in pixels
+			Scalar& halfHeight					///< [out] Half-height of support in pixels
+			) const { halfWidth = 0.5; halfHeight = 0.5; }
 	};
 }
 

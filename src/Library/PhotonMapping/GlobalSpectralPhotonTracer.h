@@ -35,23 +35,23 @@ namespace RISE
 			virtual ~GlobalSpectralPhotonTracer();
 
 			// Traces a single photon through the scene until it can't trace it any longer
-			void TracePhoton( 
-				const Ray& ray, 
-				const Scalar power, 
-				const Scalar nm, 
-				bool bStorePhoton, 
-				GlobalSpectralPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			void TracePhoton(
+				const Ray& ray,
+				const Scalar power,
+				const Scalar nm,
+				bool bStorePhoton,
+				GlobalSpectralPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			inline void TraceSinglePhoton( 
+			inline void TraceSinglePhoton(
 				const Ray& ray,
-				const Scalar power, 
+				const Scalar power,
 				const Scalar nm,
-				GlobalSpectralPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				GlobalSpectralPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, nm, true, pPhotonMap, ior_stack);
@@ -72,7 +72,6 @@ namespace RISE
 				const Scalar nm_begin,						///< [in] Wavelength to start shooting photons at
 				const Scalar nm_end,						///< [in] Wavelength to end shooting photons at
 				const unsigned int num_wavelengths,			///< [in] Number of wavelengths to shoot photons at
-				const bool useiorstack,						///< [in] Should we use an ior stack ?
 				const bool branch,							///< [in] Should the tracer branch or only follow one path?
 				const Scalar powerscale,
 				const unsigned int temporal_samples,

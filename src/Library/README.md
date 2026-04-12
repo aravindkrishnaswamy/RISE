@@ -42,9 +42,9 @@ Important anchors:
 - `Parsers/`: `.RISEscene`, script, command, and options parsing
 - `PhotonMapping/`: photon maps, tracers, and irradiance cache
 - `RasterImages/`: image representation, readers, writers, and accessors
-- `Rendering/`: rasterizers, ray caster, raster sequences, outputs
+- `Rendering/`: rasterizers, ray caster, raster sequences, outputs, FilteredFilm, AOVBuffers
 - `Sampling/`: sample generators and pixel filters
-- `Shaders/`: shader ops, shader composition, and volume shaders
+- `Shaders/`: shader ops, shader composition, volume shaders, PathTracingIntegrator, BDPTIntegrator
 - `Utilities/`: reference counting, logging, media paths, math, optics, threading
 - `Volume/`: volume data and accessors
 
@@ -71,6 +71,7 @@ The project intentionally favors physically motivated, readable code over aggres
 - Add a `Job` wrapper if the type should be reachable through `IJob`.
 - Add parser support if the type should be usable from `.RISEscene`.
 - Add a scene and or test that demonstrates the feature.
+  Use `scenes/Tests` for focused regression or baseline scenes, and `scenes/FeatureBased` for curated showcase scenes when the feature is user-facing.
 - Update [../../build/make/rise/Filelist](../../build/make/rise/Filelist) if you added new `.cpp` files.
 
 ### Adding a new scene-visible feature
@@ -78,13 +79,44 @@ The project intentionally favors physically motivated, readable code over aggres
 - Decide whether the feature belongs in `Geometry`, `Materials`, `Shaders`, `PhotonMapping`, `Sampling`, or `Rendering`.
 - Confirm the feature can be named and resolved through the appropriate manager.
 - Register it in the scene parser if users need to author it directly.
-- Add at least one representative scene under `scenes/FeatureBased`.
+- Add at least one focused regression scene under `scenes/Tests`.
+- Add a curated scene under `scenes/FeatureBased` as well if the feature benefits from a showcase-quality example.
 
 ### Changing rasterization behavior
 
 - Inspect [Job.cpp](Job.cpp) for rasterizer setup and option wiring.
-- Inspect [Rendering/PixelBasedRasterizerHelper.cpp](Rendering/PixelBasedRasterizerHelper.cpp) for pass structure.
+- Inspect [Rendering/PixelBasedRasterizerHelper.cpp](Rendering/PixelBasedRasterizerHelper.cpp) for pass structure, filtered film lifecycle, and OIDN denoiser integration.
 - Inspect [Rendering/RayCaster.cpp](Rendering/RayCaster.cpp) if the change affects intersection and shading dispatch.
+
+### Rasterizer hierarchy
+
+Pixel-based rasterizers form two parallel inheritance chains:
+
+**Shader-dispatch rasterizers** (use `RayCaster::CastRay` → ShaderOp dispatch):
+- `PixelBasedPelRasterizer` — standard RGB
+- `PixelBasedSpectralIntegratingRasterizer` — standard spectral
+- `BDPTRasterizerBase` → `BDPTPelRasterizer` / `BDPTSpectralRasterizer` — bidirectional
+
+**Pure integrator rasterizers** (bypass shader ops, call `PathTracingIntegrator` directly):
+- `PathTracingPelRasterizer` (extends `PixelBasedPelRasterizer`) — iterative PT, RGB
+- `PathTracingSpectralRasterizer` (extends `PixelBasedSpectralIntegratingRasterizer`) — iterative PT, spectral
+
+All inherit from `PixelBasedRasterizerHelper`, which provides the common block dispatch, filtered film lifecycle, OIDN denoising, and output flushing.  The pure integrator rasterizers override only `IntegratePixel()` and delegate to `PathTracingIntegrator` for the actual path tracing.
+
+## Path Guiding And Adaptive Alpha
+
+The path guiding subsystem uses Intel OpenPGL to learn incident radiance distributions during training passes, then samples from them during the final render.  Two directional sampling strategies are available: one-sample MIS (default) and RIS (Resampled Importance Sampling, selectable via `pathguiding_sampling_type ris`).
+
+The guiding alpha (blend probability) is adaptively scaled each training iteration.  The current approach uses a variance-aware scheme inspired by Rath et al. 2020: the coefficient of variation (CoV) of indirect sample energy determines how much guiding helps.  A simpler Cycles-style approach (using `sqrt(indirectFraction)`) was also tested and can be substituted — see the inline comments in `Rendering/PixelBasedPelRasterizer.cpp` and `Rendering/BDPTRasterizerBase.cpp`.
+
+Key files:
+- `Utilities/PathGuidingField.h` / `.cpp` — OpenPGL wrapper, config, training statistics including `indirectSampleEnergySquaredSum` for variance estimation.
+- `Utilities/PathTransportUtilities.h` — RIS helper structs and functions (`GuidingRISTarget`, `GuidingRISProposalPdf`, `GuidingRISSelectCandidate`).
+- `Rendering/PixelBasedPelRasterizer.cpp` — PT adaptive alpha logic.
+- `Rendering/BDPTRasterizerBase.cpp` — BDPT adaptive alpha logic.
+- `Shaders/PathTracingIntegrator.cpp` — Iterative PT integrator with inline guiding dispatch (RGB, NM, and HWSS).
+- `Shaders/PathTracingShaderOp.cpp` — PT ShaderOp wrapper, delegates to PathTracingIntegrator.
+- `Shaders/BDPTIntegrator.cpp` — BDPT RIS/MIS dispatch (RGB and spectral).
 
 ## Docs Nearby
 

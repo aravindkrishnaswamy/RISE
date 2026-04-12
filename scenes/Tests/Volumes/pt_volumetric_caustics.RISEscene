@@ -1,0 +1,284 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_volumetric_caustics.RISEscene                                                      #
+#   Description:    Cornell box with a dielectric sphere and global homogeneous fog.                        #
+#                                                                                                           #
+#                   Light refracting through the glass sphere focuses into a caustic                        #
+#                   that is made visible by in-scattering in the participating medium.                      #
+#                   The volumetric caustic should appear as a bright cone/pool of                           #
+#                   concentrated light beneath (and slightly behind) the sphere.                            #
+#                                                                                                           #
+#                   sigma_a = 0.0005 (low absorption)                                                       #
+#                   sigma_s = 0.002  (moderate scattering)                                                  #
+#                   phase   = isotropic                                                                     #
+#                                                                                                           #
+#       For a final render with dispersion a 1024x1024 with 2000 samples takes 8 hours, turn on OIDN.       # 
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 5, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       128
+	pathguiding                   true
+	pathguiding_iterations        6
+	pathguiding_spp               6
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
+	pathguiding_sampling_type     ris
+	pathguiding_ris_candidates    2
+	oidn_denoise                  TRUE
+	max_glossy_bounce             2
+	max_transmission_bounce       2
+	max_volume_bounce             2
+	max_translucent_bounce        2
+	adaptive_max_samples	1024
+	adaptive_threshold		0.1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_volumetric_caustics
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_volumetric_caustics
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 300
+	up					0 1 0
+	width				512
+	height				512
+	fov					37.0
+}
+
+##################################################
+# Participating Medium -- global fog
+##################################################
+
+homogeneous_medium
+{
+	name		fog
+	absorption	0.0005 0.0005 0.0005
+	scattering	0.0004 0.0004 0.0004
+	phase		isotropic
+}
+
+> set global_medium fog
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.9999 0.9999 0.9999
+	colorspace			RISERGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_ior
+# This will cause dispersion which will create a lot of branching in rays
+#	color				2.79 2.2 1.5
+	color 				2.5 2.5 2.5
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				1000.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					pnt_glass_tau
+	ior					pnt_glass_ior
+}
+
+##################################################
+# Geometry -- Cornell Box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343.0 548.7999 227.0
+	ptb					343.0 548.7999 332.0
+	ptc					213.0 548.7999 332.0
+	ptd					213.0 548.7999 227.0
+}
+
+##################################################
+# Geometry -- Glass sphere
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				150
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}
+
+standard_object
+{
+	name				glass_sphere
+	geometry			spheregeom
+	material			glass
+	position			278 350 300
+}

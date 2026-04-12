@@ -82,6 +82,11 @@
 #include "../Utilities/Profiling.h"
 #include "../Utilities/RTime.h"
 
+#ifdef RISE_ENABLE_OIDN
+#include "AOVBuffers.h"
+#include "OIDNDenoiser.h"
+#endif
+
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -109,8 +114,7 @@ MLTRasterizer::MLTRasterizer(
 		pCaster->addref();
 	}
 
-	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth );
-	pIntegrator->addref();
+	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, StabilityConfig() );
 }
 
 MLTRasterizer::~MLTRasterizer()
@@ -147,8 +151,9 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 {
 	MLTSample result;
 
-	// Stream 0: film position samples
-	sampler.StartStream( 0 );
+	// Stream 48: film position samples.  Must not conflict with
+	// BDPTIntegrator's internal streams (0-47).
+	sampler.StartStream( 48 );
 
 	// Use the first 2D sample to pick a film position.
 	// This means mutations to these two values move the path
@@ -156,7 +161,7 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	const Point2 filmSample = sampler.Get2D();
 	const unsigned int px = std::min( static_cast<unsigned int>( filmSample.x * width ), width - 1 );
 	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
-	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - 1 - py) );
+	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - py) );
 
 	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
 
@@ -169,25 +174,24 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 		return result;
 	}
 
-	// Stream 1: light subpath samples
-	sampler.StartStream( 1 );
-
 	// Generate light and eye subpaths using the MLT sampler.
-	// BDPTIntegrator consumes samples from the sampler in a
-	// deterministic order, which is exactly what PSSMLT requires.
+	// BDPTIntegrator manages its own streams internally (0-47).
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
 
-	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts );
-
-	// Stream 2: eye subpath and connection samples
-	sampler.StartStream( 2 );
+	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, rc.random );
 
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts );
 
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =
-		pIntegrator->EvaluateAllStrategies( lightVerts, eyeVerts, scene, *pCaster, camera );
+		pIntegrator->EvaluateAllStrategies(
+			lightVerts,
+			eyeVerts,
+			scene,
+			*pCaster,
+			camera,
+			&sampler );
 
 	// Collect per-strategy contributions, each with its correct pixel
 	// position.  Strategies with t<=1 (needsSplat=true) use the pixel
@@ -221,8 +225,11 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 		splat.color = weighted;
 
 		if( cr.needsSplat ) {
-			// t<=1 strategies: use the strategy's own pixel position
-			splat.rasterPos = cr.rasterPos;
+			// t<=1 strategies: use the strategy's own pixel position.
+			// Rasterize returns screen coordinates (y=0 at bottom);
+			// convert to image buffer coordinates (y=0 at top).
+			splat.rasterPos = Point2( cr.rasterPos.x,
+				static_cast<Scalar>(height) - cr.rasterPos.y );
 		} else {
 			// t>=2 strategies: use the camera pixel position
 			splat.rasterPos = cameraRasterPos;
@@ -288,7 +295,6 @@ void MLTRasterizer::InitChain(
 	) const
 {
 	state.pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-	state.pSampler->addref();
 	state.chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
 
 	// Evaluate the initial state
@@ -506,12 +512,13 @@ void MLTRasterizer::RasterizeScene(
 	const unsigned int width = pCamera->GetWidth();
 	const unsigned int height = pCamera->GetHeight();
 
-	// Initialize the light sampler from the scene
-	LightSampler* pLS = new LightSampler();
-	pIntegrator->SetLightSampler( pLS );
-	safe_release( pLS );
-
+	// AttachScene creates and Prepare()s the unified LightSampler
 	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+
+	// Share the RayCaster's prepared LightSampler with the integrator
+	const LightSampler* pLS = pCaster->GetLightSampler();
+	pIntegrator->SetLightSampler( pLS );
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Starting PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap samples: %u, Chains: %u, Mutations/pixel: %u, Large step prob: %.2f",
@@ -540,12 +547,9 @@ void MLTRasterizer::RasterizeScene(
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
 		RandomNumberGenerator bootRNG( i );
-		IndependentSampler* pBootSampler = new IndependentSampler( bootRNG );
-		pBootSampler->addref();
+		IndependentSampler bootSampler( bootRNG );
 
-		MLTSample sample = EvaluateSample( pScene, *pCamera, *pBootSampler, width, height );
-
-		safe_release( pBootSampler );
+		MLTSample sample = EvaluateSample( pScene, *pCamera, bootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;
@@ -712,7 +716,6 @@ void MLTRasterizer::RasterizeScene(
 	//////////////////////////////////////////////////////////////////
 
 	SplatFilm* pSplatFilm = new SplatFilm( width, height );
-	pSplatFilm->addref();
 
 	if( pProgressFunc ) {
 		pProgressFunc->SetTitle( "MLT Rendering: " );
@@ -815,6 +818,13 @@ void MLTRasterizer::RasterizeScene(
 		// valid image at whatever quality was reached.
 		if( isFinalRound || cancelled )
 		{
+#ifdef RISE_ENABLE_OIDN
+			if( bDenoisingEnabled ) {
+				AOVBuffers aovBuffers( width, height );
+				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
+			}
+#endif
 			RasterizerOutputListType::const_iterator r, s;
 			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 				(*r)->OutputImage( *pImage, 0, 0 );

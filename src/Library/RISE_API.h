@@ -56,6 +56,8 @@
 #include "Interfaces/IShaderManager.h"
 #include "Interfaces/IShaderOp.h"
 #include "Interfaces/IShaderOpManager.h"
+#include "Interfaces/IPhaseFunction.h"
+#include "Interfaces/IMedium.h"
 #include "Interfaces/ITriangleMeshGeometry.h"
 #include "Interfaces/ITriangleMeshLoader.h"
 #include "Interfaces/ITwoColorOperator.h"
@@ -211,9 +213,7 @@ namespace RISE
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
 		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
-		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-		const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		);
 
 	//! Creates a infinite point spot light
@@ -225,9 +225,7 @@ namespace RISE
 		const Point3& foc,										///< [in] Point the center of the light is focussing on
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
-		const Scalar linearAttenuation,							///< [in] Amount of linear attenuation
-		const Scalar quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-		const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		);
 
 	//! Creates the ambient light
@@ -491,6 +489,18 @@ namespace RISE
 								const Scalar roughness			///< [in] Surface roughness [0,1]
 								);
 
+	//! Creates a Random Walk SSS material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateRandomWalkSSSMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& absorption,		///< [in] Absorption coefficient
+								const IPainter& scattering,		///< [in] Scattering coefficient
+								const Scalar g,					///< [in] HG asymmetry parameter
+								const Scalar roughness,			///< [in] Surface roughness [0,1]
+								const unsigned int maxBounces	///< [in] Maximum walk steps
+								);
+
 	//! Creates an isotropic phong material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIsotropicPhongMaterial(
@@ -589,6 +599,32 @@ namespace RISE
 								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
 								);
 
+	//! Creates a BioSpec skin random-walk SSS material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBioSpecSkinRWMaterial(
+								IMaterial** ppi,											///< [out] Pointer to recieve the material
+								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+								const Scalar roughness,										///< Surface roughness for microfacet boundary [0, 1]
+								const unsigned int maxBounces								///< Maximum random walk steps
+								);
+
 	//! Creates a Donner & Jensen 2008 spectral skin BSSRDF material (BDPT-compatible)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
@@ -650,6 +686,18 @@ namespace RISE
 								const IPainter& specular,		///< [in] Specular reflectance
 								const IPainter& alphax,			///< [in] Standard deviation (RMS) of surface slope in x
 								const IPainter& alphay			///< [in] Standard deviation (RMS) of surface slope in y
+								);
+
+	//! Creates a GGX anisotropic microfacet material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& diffuse,		///< [in] Diffuse reflectance
+								const IPainter& specular,		///< [in] Specular reflectance
+								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
+								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
+								const IPainter& ior,			///< [in] Index of refraction
+								const IPainter& ext				///< [in] Extinction coefficient
 								);
 
 	//! Creates a Cook Torrance material
@@ -1096,6 +1144,14 @@ namespace RISE
 								const Scalar height				///< [in] Height of the kernel
 								);
 
+	//! Creates an Owen-scrambled Sobol (0,2)-net sampling kernel
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSobolSampling2D(
+								ISampling2D** ppi,				///< [out] Pointer to recieve the sampling2D object
+								const Scalar width,				///< [in] Width of the kernel
+								const Scalar height				///< [in] Height of the kernel
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Managers
@@ -1363,7 +1419,6 @@ namespace RISE
 								const bool reflect,					///< [in] Should we trace reflected rays?
 								const bool refract,					///< [in] Should we trace refracted rays?
 								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
 								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
@@ -1378,7 +1433,6 @@ namespace RISE
 								const Scalar minImp,				///< [in] Minimum photon importance before giving up
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
 								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
@@ -1395,7 +1449,6 @@ namespace RISE
 								const bool refract,					///< [in] Should we trace refracted rays?
 								const bool direct_translucent,		///< [in] Should we trace translucent primary interaction rays?
 								const bool shootFromNonMeshLights,	///< [in] Should we shoot from non mesh based lights?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
 								const bool regenerate,				///< [in] Should the tracer regenerate a new photon each time the scene time changes?
@@ -1411,7 +1464,6 @@ namespace RISE
 								const Scalar nm_begin,				///< [in] Wavelength to start shooting photons at
 								const Scalar nm_end,				///< [in] Wavelength to end shooting photons at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to shoot photons at
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const bool reflect,					///< [in] Should we trace reflected rays?
 								const bool refract,					///< [in] Should we trace refracted rays?
@@ -1429,7 +1481,6 @@ namespace RISE
 								const Scalar nm_begin,				///< [in] Wavelength to start shooting photons at
 								const Scalar nm_end,				///< [in] Wavelength to end shooting photons at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to shoot photons at
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const bool branch,					///< [in] Should the tracer branch or follow a single path?
 								const Scalar power_scale,			///< [in] How much to scale light power by
 								const unsigned int temporal_samples,///< [in] Number of temporal samples to take for animation frames
@@ -1490,7 +1541,14 @@ bool RISE_API_CreateIrradianceCache(
 	// Rasterize Sequeces
 	//////////////////////////////////////////////////////////
 
-	//! Creates a block rasterize sequence
+	//! Creates a Morton (Z-order) curve rasterize sequence for optimal cache locality
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMortonRasterizeSequence(
+								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
+								const unsigned int tileSize			///< [in] Width and height of each square tile
+								);
+
+	//! Creates a block rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBlockRasterizeSequence(
 								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
@@ -1499,13 +1557,13 @@ bool RISE_API_CreateIrradianceCache(
 								const char order					///< [in] Block ordering type
 								);
 
-	//! Creates a scanline rasterize sequence
+	//! Creates a scanline rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateScanlineRasterizeSequence(
 								IRasterizeSequence** ppi			///< [out] Pointer to recieve the rasterize sequence
 								);
 
-	//! Creates a hilbert space filling curve rasterize sequence
+	//! Creates a hilbert space filling curve rasterize sequence (deprecated: prefer Morton sequence)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateHilbertRasterizeSequence(
 								IRasterizeSequence** ppi,			///< [out] Pointer to recieve the rasterize sequence
@@ -1954,10 +2012,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRayCaster** ppi,					///< [out] Pointer to recieve the ray caster
 								const bool seeRadianceMap,			///< [in] Is the radiance map (environment) visible to the view rays?
 								const unsigned int maxR,			///< [in] Maximum recursion level
-								const Scalar minI,					///< [in] Minimum path importance before giving up
 								const IShader& pDefaultShader,		///< [in] The default global shader
 								const bool showLuminaires,			///< [in] Should we be able to see luminaries?
-								const bool useiorstack,				///< [in] Should the ray caster use a index of refraction stack?
 								const bool chooseonlyonelight		///< [in] For luminaire sampling, a random light is chosen for each sample
 								);
 
@@ -1971,7 +2027,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
 								IRayCaster* caster,					///< [in] Ray caster to use for rays
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter				///< [in] Pixel Filter for samples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -1983,32 +2044,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int specSamples,		///< [in] Number of spectral samples / pixel
 								const Scalar lambda_begin,			///< [in] nm to begin sampling at
 								const Scalar lambda_end,			///< [in] nm to end sampling at
-								const unsigned int num_wavelengths	///< [in] Number of wavelengths to sample
-								);
-
-	//! Creates an adaptive sampling pixel based rasterizer
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateAdaptiveSamplingPixelBasedPelRasterizer(
-								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
-								IRayCaster* caster,					///< [in] Ray caster to use for rays
-								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
-								unsigned int maxS,					///< [in] Maximum number of samples to take
-								Scalar var,							///< [in] Variance threshold
-								unsigned int numsteps,				///< [in] Number of steps to take from base sampling to max samples
-								bool bOutputSamples					///< [in] Should the renderer show how many samples rather than an image
-								);
-
-	//! Creates a pixel based pel rasterizer that does adaptive sampling based on
-	//! contrast differences in regions
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreatePixelBasedPelRasterizerContrastAA(
-								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
-								IRayCaster* caster,					///< [in] Ray caster to use for rays
-								ISampling2D* pSamples,				///< [in] Sampler for subsamples
-								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
-								const RISEPel& contrast_threshold,	///< [in] Contrast threhold for each color component
-								const bool bShowSamples				///< [in] Show the regions in which more samples were taken
+								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
 								);
 
 	//! Creates a Pel (RGB) BDPT rasterizer
@@ -2025,7 +2065,12 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const double smsThreshold,			///< [in] SMS convergence threshold
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2046,7 +2091,64 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const double smsThreshold,			///< [in] SMS convergence threshold
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								);
+
+	//! Creates a pure path tracing Pel rasterizer (bypasses shader ops)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathTracingPelRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								);
+
+	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathTracingSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
+								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
+								const double smsThreshold,			///< [in] SMS convergence threshold
+								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
+								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
+								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								);
+
+	//! Configures progressive multi-pass rendering on a pixel-based rasterizer.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_SetRasterizerProgressiveRendering(
+								IRasterizer* pRasterizer,			///< [in] Rasterizer to configure
+								const bool enabled,					///< [in] Enable progressive multi-pass rendering
+								const unsigned int samplesPerPass	///< [in] SPP per progressive pass
 								);
 
 	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
@@ -2059,7 +2161,26 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nBootstrap,				///< [in] Number of bootstrap samples
 								const unsigned int nChains,					///< [in] Number of Markov chains
 								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
-								const Scalar largeStepProb					///< [in] Large step probability
+								const Scalar largeStepProb,					///< [in] Large step probability
+								const bool oidnDenoise						///< [in] Enable OIDN denoising post-process
+								);
+
+	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,		///< [in] Number of bootstrap samples
+								const unsigned int nChains,			///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,	///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,			///< [in] Large step probability
+								const Scalar lambda_begin,			///< [in] Start of spectral range (nm)
+								const Scalar lambda_end,			///< [in] End of spectral range (nm)
+								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
 								);
 
 	//////////////////////////////////////////////////////////
@@ -2092,6 +2213,81 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_CreateOptionsParser(
 								IOptions** ppi,						///< [out] Pointer to recieve the parser
 								const char* name					///< [in] Name of the file to load
+								);
+
+
+	//////////////////////////////////////////////////////////
+	// Phase functions and participating media
+	//////////////////////////////////////////////////////////
+
+	//! Creates an isotropic phase function (uniform scattering over the sphere)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateIsotropicPhaseFunction(
+								IPhaseFunction** ppi				///< [out] Pointer to recieve the phase function
+								);
+
+	//! Creates a Henyey-Greenstein phase function with given asymmetry factor
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHenyeyGreensteinPhaseFunction(
+								IPhaseFunction** ppi,				///< [out] Pointer to recieve the phase function
+								const Scalar g						///< [in] Asymmetry factor [-1, 1]
+								);
+
+	//! Creates a homogeneous participating medium with constant coefficients
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								);
+
+	//! Creates a homogeneous participating medium with emission
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHomogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& sigma_a,				///< [in] Absorption coefficient
+								const RISEPel& sigma_s,				///< [in] Scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase			///< [in] Phase function for scattering
+								);
+
+
+	//! Creates a heterogeneous participating medium driven by a volume dataset
+	/// Uses delta tracking for distance sampling and deterministic ray
+	/// marching for transmittance.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const char* szVolumeFilePattern,	///< [in] File pattern for volume slices
+								const unsigned int volWidth,		///< [in] Volume width in voxels
+								const unsigned int volHeight,		///< [in] Volume height in voxels
+								const unsigned int volStartZ,		///< [in] Starting z slice index
+								const unsigned int volEndZ,			///< [in] Ending z slice index
+								const char accessor,				///< [in] Volume accessor type: 'n'=NNB, 't'=trilinear
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+	//! Creates a heterogeneous participating medium with emission
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHeterogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const char* szVolumeFilePattern,	///< [in] File pattern for volume slices
+								const unsigned int volWidth,		///< [in] Volume width in voxels
+								const unsigned int volHeight,		///< [in] Volume height in voxels
+								const unsigned int volStartZ,		///< [in] Starting z slice index
+								const unsigned int volEndZ,			///< [in] Ending z slice index
+								const char accessor,				///< [in] Volume accessor type: 'n'=NNB, 't'=trilinear
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
 								);
 
 

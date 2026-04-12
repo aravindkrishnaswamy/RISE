@@ -70,6 +70,9 @@ namespace RISE
 			const bool low_discrepancy;
 
 			typedef std::map<const IObject*,PointSetOctree*> PointSetMap;
+			// Known scene-immutability exception: pointsets are lazily built on first
+			// access because construction requires ray tracing the scene. Access is
+			// serialized by create_mutex (double-checked locking), so this is thread-safe.
 			mutable PointSetMap	pointsets;
 
 			const RMutex create_mutex;
@@ -96,7 +99,7 @@ namespace RISE
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [in/out] Resultant color from op
-				const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 
@@ -109,7 +112,7 @@ namespace RISE
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar caccum,						///< [in] Current value for wavelength
 				const Scalar nm,							///< [in] Wavelength to shade
-				const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+				const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 				const ScatteredRayContainer* pScat			///< [in] Scattering information
 				) const;
 

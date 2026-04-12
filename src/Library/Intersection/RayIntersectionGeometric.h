@@ -63,15 +63,18 @@ namespace RISE
 		//! to refactor the entire idea of RayIntersection and RayIntersectionGeometric
 		//! into a ShaderContext, BSDFContext, PainterContext, so that they
 		//! can ask for whatever information they want.
-		IReference*					pCustom;		
+		IReference*					pCustom;
 
-		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) : 
+		Scalar						glossyFilterWidth;	///< Accumulated glossy filter blur from StabilityConfig (0 = off)
+
+		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),
 		  bHit( false ),
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
-		  pCustom( 0 )
+		  pCustom( 0 ),
+		  glossyFilterWidth( 0 )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -86,14 +89,15 @@ namespace RISE
 		  range( r.range ),
 		  range2( r.range2 ),
 		  vNormal( r.vNormal ),
-		  vNormal2( r.vNormal ),
+		  vNormal2( r.vNormal2 ),
 		  ptCoord( r.ptCoord ),
 		  ptIntersection( r.ptIntersection ),
 		  ptExit( r.ptExit ),
 		  ptObjIntersec( r.ptObjIntersec ),
 		  ptObjExit( r.ptObjExit ),
 		  onb( r.onb ),
-		  pCustom( r.pCustom )
+		  pCustom( r.pCustom ),
+		  glossyFilterWidth( r.glossyFilterWidth )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -115,6 +119,7 @@ namespace RISE
 			ptObjIntersec = r.ptObjIntersec;
 			ptObjExit = r.ptObjExit;
 			onb = r.onb;
+			glossyFilterWidth = r.glossyFilterWidth;
 
 			safe_release( pCustom );
 			pCustom = r.pCustom;

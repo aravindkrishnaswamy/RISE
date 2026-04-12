@@ -1,0 +1,351 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_guiding_stress.RISEscene                                                             #
+#   Description:    Path guiding stress test (UNGUIDED baseline).                                           #
+#                                                                                                           #
+#                   Two-room Cornell box with a moderate opening (140x140).                                  #
+#                   The light is a POINT light placed on the ceiling of Room B.                             #
+#                   From Room A, shadow rays to the point light are blocked by the                          #
+#                   dividing wall, so NEE contributes nothing.  ALL illumination in                         #
+#                   Room A comes via BSDF bounces through the opening.                                      #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 29, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_guiding_stress
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			278 200 340
+	lookat				278 200 560
+	up					0 1 0
+	width				512
+	height				512
+	fov					80.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.73 0.71 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.10 0.15 0.50
+}
+
+uniformcolor_painter
+{
+	name				pnt_yellow
+	color				0.65 0.55 0.10
+}
+
+##################################################
+# Materials (all Lambertian)
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_warm_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			pnt_blue
+}
+
+lambertian_material
+{
+	name				yellow
+	reflectance			pnt_yellow
+}
+
+##################################################
+# Point light in Room B (ceiling, NOT visible to
+# Room A NEE due to dividing wall blocking)
+##################################################
+
+omni_light
+{
+	name				room_b_light
+	power				500000
+	color				1.0 0.95 0.80
+	position			278 520 140
+}
+
+##################################################
+# Geometry
+# Full box: x=[0,556], y=[0,549], z=[0,560]
+# Dividing wall at z=280
+# Opening: x=[208,348], y=[205,345] (140x140 centered)
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 560
+	ptd					556 0 560
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556 549 0
+	ptb					556 549 560
+	ptc					0 549 560
+	ptd					0 549 0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					556 0 0
+	ptb					556 549 0
+	ptc					0 549 0
+	ptd					0 0 0
+}
+
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					0 0 560
+	ptb					0 549 560
+	ptc					556 549 560
+	ptd					556 0 560
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 560
+	ptb					0 0 0
+	ptc					0 549 0
+	ptd					0 549 560
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 0
+	ptb					556 0 560
+	ptc					556 549 560
+	ptd					556 549 0
+}
+
+# Dividing wall panels around 140x140 opening
+# Opening: x=[208,348], y=[205,345]
+
+clippedplane_geometry
+{
+	name				div_left_geom
+	pta					0 0 280
+	ptb					0 549 280
+	ptc					208 549 280
+	ptd					208 0 280
+}
+
+clippedplane_geometry
+{
+	name				div_right_geom
+	pta					348 0 280
+	ptb					348 549 280
+	ptc					556 549 280
+	ptd					556 0 280
+}
+
+clippedplane_geometry
+{
+	name				div_bottom_geom
+	pta					208 0 280
+	ptb					208 205 280
+	ptc					348 205 280
+	ptd					348 0 280
+}
+
+clippedplane_geometry
+{
+	name				div_top_geom
+	pta					208 345 280
+	ptb					208 549 280
+	ptc					348 549 280
+	ptd					348 345 280
+}
+
+# Objects in Room A
+sphere_geometry
+{
+	name				sphere_large_geom
+	radius				60
+}
+
+sphere_geometry
+{
+	name				sphere_small_geom
+	radius				40
+}
+
+box_geometry
+{
+	name				tallbox_geom
+	width				90
+	height				180
+	depth				90
+}
+
+##################################################
+# Scene objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				frontwall
+	geometry			frontwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				div_left
+	geometry			div_left_geom
+	material			white
+}
+
+standard_object
+{
+	name				div_right
+	geometry			div_right_geom
+	material			white
+}
+
+standard_object
+{
+	name				div_bottom
+	geometry			div_bottom_geom
+	material			white
+}
+
+standard_object
+{
+	name				div_top
+	geometry			div_top_geom
+	material			white
+}
+
+standard_object
+{
+	name				sphere_large
+	geometry			sphere_large_geom
+	position			160 60 420
+	material			blue
+}
+
+standard_object
+{
+	name				sphere_small
+	geometry			sphere_small_geom
+	position			400 40 350
+	material			yellow
+}
+
+standard_object
+{
+	name				tallbox
+	geometry			tallbox_geom
+	position			370 90 450
+	orientation			0 25 0
+	material			white
+}

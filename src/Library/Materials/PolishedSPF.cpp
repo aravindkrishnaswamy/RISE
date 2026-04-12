@@ -56,15 +56,15 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 	const Point2& random,										///< [in] Random numbers
 	const Scalar scatfunc,
 	const Scalar ior,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	Vector3	vRefracted = ri.ray.Dir();
 	const Vector3	vIn = vRefracted;
 
 	Scalar		Rs = 0.0;
-	if( Optics::CalculateRefractedRay( normal, ior_stack?ior_stack->top():1.0, ior, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance( vIn, vRefracted, normal, ior_stack?ior_stack->top():1.0, ior );
+	if( Optics::CalculateRefractedRay( normal, ior_stack.top(), ior, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance( vIn, vRefracted, normal, ior_stack.top(), ior );
 	}
 
 	Vector3	rv = reflected;
@@ -122,9 +122,9 @@ Scalar PolishedSPF::GenerateScatteredRayFromPolish(
 
 void PolishedSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay	dielectric;
@@ -140,7 +140,7 @@ void PolishedSPF::Scatter(
 	if( scattering[0] == scattering[1] && scattering[1] == scattering[2] &&
 		ior[0] == ior[1] && ior[1] == ior[2] )
 	{
-		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scattering[0], ior[0], ior_stack );
+		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scattering[0], ior[0], ior_stack );
 		dielectric.kray = tau.GetColor(ri) * Rs;
 
 		if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
@@ -149,7 +149,7 @@ void PolishedSPF::Scatter(
 	}
 	else
 	{
-		Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			Rs[i] = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, ptrand, scattering[i], ior[i], ior_stack );
 			dielectric.kray = 0;
@@ -171,7 +171,7 @@ void PolishedSPF::Scatter(
 		diffuse.kray = Rd.GetColor(ri) * (1.0-Rs);
  		diffuse.ray.Set(
 			ri.ptIntersection,
-			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
+			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
 			);
 		// Cosine-weighted hemisphere: pdf = cos(theta) / PI
 		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
@@ -185,10 +185,10 @@ void PolishedSPF::Scatter(
 
 void PolishedSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay	dielectric;
@@ -197,7 +197,7 @@ void PolishedSPF::ScatterNM(
 	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
-	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scat.GetColorNM(ri,nm), Nt.GetColorNM(ri,nm), ior_stack );
+	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetColorNM(ri,nm), Nt.GetColorNM(ri,nm), ior_stack );
 	dielectric.krayNM = tau.GetColorNM(ri,nm) * Rs;
 
 
@@ -215,7 +215,7 @@ void PolishedSPF::ScatterNM(
 		diffuse.krayNM = Rd.GetColorNM(ri,nm) * (1.0-Rs);
 		diffuse.ray.Set(
 			ri.ptIntersection,
-			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) )
+			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
 			);
 		const Scalar cos_theta = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
 		diffuse.pdf = r_max( 0.0, cos_theta ) * INV_PI;
@@ -226,6 +226,46 @@ void PolishedSPF::ScatterNM(
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// EvaluateKrayNM — HWSS companion throughput evaluation.
+//
+// Returns the krayNM that ScatterNM would have produced for the
+// given lobe at wavelength nm.  Both lobes are direction-independent:
+//   coat:    tau(nm) * Rs(nm, theta_i)
+//   diffuse: Rd(nm) * (1 - Rs(nm, theta_i))
+// where Rs is the Fresnel reflectance at the incident angle.
+//////////////////////////////////////////////////////////////////////
+Scalar PolishedSPF::EvaluateKrayNM(
+	const RayIntersectionGeometric& ri,
+	const Vector3& outDir,
+	ScatteredRay::ScatRayType rayType,
+	Scalar nm,
+	const IORStack& ior_stack
+	) const
+{
+	// Compute Fresnel reflectance at the incident angle (same logic
+	// as GenerateScatteredRayFromPolish lines 62-68).
+	const Vector3 n = Vector3Ops::Dot( ri.vNormal, ri.ray.Dir() ) > 0
+		? -ri.vNormal : ri.vNormal;
+	Vector3 vRefracted = ri.ray.Dir();
+	Scalar Rs = 0.0;
+	const Scalar iorTop = ior_stack.top();
+	const Scalar iorCoat = Nt.GetColorNM( ri, nm );
+	if( Optics::CalculateRefractedRay( n, iorTop, iorCoat, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance(
+			ri.ray.Dir(), vRefracted, n, iorTop, iorCoat );
+	}
+
+	if( rayType == ScatteredRay::eRayReflection ) {
+		return tau.GetColorNM( ri, nm ) * Rs;
+	}
+	else if( rayType == ScatteredRay::eRayDiffuse ) {
+		return Rd.GetColorNM( ri, nm ) * ( 1.0 - Rs );
+	}
+
+	return -1;
+}
+
 // Computes the Polished SPF PDF for a given direction
 static Scalar PolishedPdf(
 	const RayIntersectionGeometric& ri,
@@ -233,7 +273,7 @@ static Scalar PolishedPdf(
 	const Scalar scatfunc,
 	const Scalar ior,
 	const bool bHG,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const Scalar wSpec,
 	const Scalar wDiff
 	)
@@ -296,7 +336,7 @@ static Scalar PolishedPdf(
 Scalar PolishedSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const RISEPel s = scat.GetColor(ri);
@@ -309,8 +349,8 @@ Scalar PolishedSPF::Pdf(
 	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
 	Vector3 vRefracted = ri.ray.Dir();
 	Scalar Rs = 0.0;
-	if( Optics::CalculateRefractedRay( n, ior_stack?ior_stack->top():1.0, ior_avg, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack?ior_stack->top():1.0, ior_avg );
+	if( Optics::CalculateRefractedRay( n, ior_stack.top(), ior_avg, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack.top(), ior_avg );
 	}
 
 	// Weight by MaxValue(kray) to match RandomlySelect:
@@ -325,7 +365,7 @@ Scalar PolishedSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar s_val = scat.GetColorNM(ri,nm);
@@ -335,8 +375,8 @@ Scalar PolishedSPF::PdfNM(
 	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
 	Vector3 vRefracted = ri.ray.Dir();
 	Scalar Rs = 0.0;
-	if( Optics::CalculateRefractedRay( n, ior_stack?ior_stack->top():1.0, ior_val, vRefracted ) ) {
-		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack?ior_stack->top():1.0, ior_val );
+	if( Optics::CalculateRefractedRay( n, ior_stack.top(), ior_val, vRefracted ) ) {
+		Rs = Optics::CalculateDielectricReflectance( ri.ray.Dir(), vRefracted, n, ior_stack.top(), ior_val );
 	}
 
 	// Weight by krayNM magnitude: specular = tau*Rs, diffuse = Rd*(1-Rs)

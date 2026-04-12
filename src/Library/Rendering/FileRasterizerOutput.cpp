@@ -165,5 +165,5 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 	GlobalLog()->PrintEx( eLog_Event, "FileRasterizerOutput:: Written to \'%s\'", buf );
 
 	GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
-	delete pWriter;
+	safe_release( pWriter );
 }

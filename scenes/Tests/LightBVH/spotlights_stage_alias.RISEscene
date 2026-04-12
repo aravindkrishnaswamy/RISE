@@ -1,0 +1,350 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           spotlights_stage_alias.RISEscene                                                        #
+#   Description:    Stage-like room with 12 spotlights pointing in various directions.                      #
+#                   Tests orientation cone importance in the Light BVH.  From any                            #
+#                   shading point, only a few spots actually illuminate it; the rest                         #
+#                   point away.  Alias table wastes samples on misdirected spots.                            #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 9, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/spotlights_stage_alias
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			250 150 50
+	lookat				250 100 300
+	up					0 1 0
+	width				512
+	height				512
+	fov					70.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.73 0.71 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_lightgray
+	color				0.6 0.6 0.6
+}
+
+uniformcolor_painter
+{
+	name				pnt_darkred
+	color				0.5 0.15 0.1
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_warm_white
+}
+
+lambertian_material
+{
+	name				gray
+	reflectance			pnt_lightgray
+}
+
+lambertian_material
+{
+	name				darkred
+	reflectance			pnt_darkred
+}
+
+##################################################
+# 12 spotlights in various positions/orientations
+# Room: x=[0,500], y=[0,300], z=[0,500]
+##################################################
+
+# Front row - pointing down at stage center
+spot_light
+{
+	name		spot_01
+	power		200000.0
+	color		1.0 0.95 0.85
+	position	100 280 100
+	target		200 0 250
+	inner		10.0
+	outer		25.0
+}
+
+spot_light
+{
+	name		spot_02
+	power		200000.0
+	color		1.0 0.95 0.85
+	position	250 280 100
+	target		250 0 250
+	inner		10.0
+	outer		25.0
+}
+
+spot_light
+{
+	name		spot_03
+	power		200000.0
+	color		1.0 0.95 0.85
+	position	400 280 100
+	target		300 0 250
+	inner		10.0
+	outer		25.0
+}
+
+# Back row - pointing down at stage center
+spot_light
+{
+	name		spot_04
+	power		200000.0
+	color		0.85 0.90 1.0
+	position	100 280 400
+	target		200 0 250
+	inner		10.0
+	outer		25.0
+}
+
+spot_light
+{
+	name		spot_05
+	power		200000.0
+	color		0.85 0.90 1.0
+	position	250 280 400
+	target		250 0 250
+	inner		10.0
+	outer		25.0
+}
+
+spot_light
+{
+	name		spot_06
+	power		200000.0
+	color		0.85 0.90 1.0
+	position	400 280 400
+	target		300 0 250
+	inner		10.0
+	outer		25.0
+}
+
+# Side spots - pointing inward from walls
+spot_light
+{
+	name		spot_07
+	power		150000.0
+	color		1.0 0.7 0.5
+	position	10 200 150
+	target		250 50 250
+	inner		15.0
+	outer		35.0
+}
+
+spot_light
+{
+	name		spot_08
+	power		150000.0
+	color		1.0 0.7 0.5
+	position	10 200 350
+	target		250 50 250
+	inner		15.0
+	outer		35.0
+}
+
+spot_light
+{
+	name		spot_09
+	power		150000.0
+	color		0.5 0.7 1.0
+	position	490 200 150
+	target		250 50 250
+	inner		15.0
+	outer		35.0
+}
+
+spot_light
+{
+	name		spot_10
+	power		150000.0
+	color		0.5 0.7 1.0
+	position	490 200 350
+	target		250 50 250
+	inner		15.0
+	outer		35.0
+}
+
+# Upward-pointing accent spots (pointing at ceiling)
+spot_light
+{
+	name		spot_11
+	power		100000.0
+	color		0.8 1.0 0.8
+	position	150 10 200
+	target		150 300 200
+	inner		20.0
+	outer		40.0
+}
+
+spot_light
+{
+	name		spot_12
+	power		100000.0
+	color		0.8 1.0 0.8
+	position	350 10 300
+	target		350 300 300
+	inner		20.0
+	outer		40.0
+}
+
+##################################################
+# Room geometry: 500 wide, 300 tall, 500 deep
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					500 0 0
+	ptb					0 0 0
+	ptc					0 0 500
+	ptd					500 0 500
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					500 300 0
+	ptb					500 300 500
+	ptc					0 300 500
+	ptd					0 300 0
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 500
+	ptb					0 0 0
+	ptc					0 300 0
+	ptd					0 300 500
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					500 0 0
+	ptb					500 0 500
+	ptc					500 300 500
+	ptd					500 300 0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 500
+	ptb					0 300 500
+	ptc					500 300 500
+	ptd					500 0 500
+}
+
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					500 0 0
+	ptb					500 300 0
+	ptc					0 300 0
+	ptd					0 0 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			gray
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			darkred
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			darkred
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			gray
+}
+
+# Front wall removed to allow camera view into the room
+
+# Stage platform
+box_geometry
+{
+	name				stagegeom
+	width				300
+	height				20
+	depth				200
+}
+
+standard_object
+{
+	name				stage
+	geometry			stagegeom
+	material			white
+	position			250 10 250
+}

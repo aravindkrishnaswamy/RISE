@@ -92,11 +92,26 @@ namespace RISE
 			}
 
 			//! Sets the orientation of this map from the given matrix
-			void SetTransformation( 
+			void SetTransformation(
 				const Matrix4& mx				///< [in] Transformation matrix for the map
 				)
 			{
 				mxtransform = mx;
+			}
+
+			const IPainter& GetPainter() const
+			{
+				return pRadianceMap;
+			}
+
+			Scalar GetScale() const
+			{
+				return dScale;
+			}
+
+			const Matrix4& GetTransform() const
+			{
+				return mxtransform;
 			}
 
 		};

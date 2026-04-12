@@ -22,6 +22,7 @@ namespace RISE
 {
 	class RayIntersection;
 	class IMaterial;
+	class IMedium;
 	class Ray;
 
 	//! An object combines both geometric and material information into a 
@@ -65,8 +66,11 @@ namespace RISE
 		/// \return TRUE if the object receive shadows, FALSE otherwise
 		virtual bool DoesReceiveShadows() const = 0;
 
-		//! Reteives the material associated to this object
+		//! Retrieves the material associated to this object
 		virtual const IMaterial* GetMaterial() const = 0;
+
+		//! Retrieves the interior medium of this object (NULL if vacuum)
+		virtual const IMedium* GetInteriorMedium() const = 0;
 		
 		//! Generates a uniform random point on the object.  Needed to sample luminary geometry surfaces
 		//! This function guarantees that for the same prand, the same data is returned

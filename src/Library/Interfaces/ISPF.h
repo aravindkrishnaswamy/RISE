@@ -22,6 +22,7 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/IORStack.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/ISampler.h"
 #include "../Utilities/Ray.h"
 #include "IReference.h"
 #include "SpecularInfo.h"
@@ -95,7 +96,7 @@ namespace RISE
 		inline ScatteredRay& operator[] ( const unsigned int i ) const { return rays[i]; };
 
 		//! From the rays stored, randomly returns one given a value
-		ScatteredRay* RandomlySelect( 
+		ScatteredRay* RandomlySelect(
 			const double random,										///< [in] Random number to use in ray selection
 			const bool bNM												///< [in] Should the spectral values be used when selecting?
 			) const;
@@ -127,11 +128,11 @@ namespace RISE
 
 		//! Given parameters describing the intersection of a ray with a surface, this will return
 		//! the reflected and transmitted rays along with attenuation factors.  
-		virtual void	Scatter( 
+		virtual void	Scatter(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-			const RandomNumberGenerator& random,				///< [in] Random number generator
+			ISampler& sampler,											///< [in] Sampler
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			const IORStack& ior_stack									///< [in/out] Index of refraction stack
 			) const = 0;
 
 		//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -139,10 +140,10 @@ namespace RISE
 		//! account spectral affects.
 		virtual void	ScatterNM(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-			const RandomNumberGenerator& random,				///< [in] Random number generator
+			ISampler& sampler,											///< [in] Sampler
 			const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 			ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-			const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+			const IORStack& ior_stack									///< [in/out] Index of refraction stack
 			) const = 0;
 
 		//! Evaluates the PDF (probability density function) for scattering from the incoming
@@ -153,7 +154,7 @@ namespace RISE
 		virtual Scalar	Pdf(
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details (incoming direction is ri.ray.Dir())
 			const Vector3& wo,											///< [in] Outgoing scattered direction to evaluate PDF for
-			const IORStack* const ior_stack								///< [in] Index of refraction stack
+			const IORStack& ior_stack									///< [in] Index of refraction stack
 			) const { return 0; }
 
 		//! Spectral version of Pdf evaluation
@@ -162,7 +163,7 @@ namespace RISE
 			const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details (incoming direction is ri.ray.Dir())
 			const Vector3& wo,											///< [in] Outgoing scattered direction to evaluate PDF for
 			const Scalar nm,											///< [in] Wavelength
-			const IORStack* const ior_stack								///< [in] Index of refraction stack
+			const IORStack& ior_stack									///< [in] Index of refraction stack
 			) const { return 0; }
 
 		//! Returns specular (delta distribution) information for this SPF.
@@ -170,7 +171,7 @@ namespace RISE
 		//! PerfectReflectorSPF, PolishedSPF to report their specular nature and IOR.
 		virtual SpecularInfo GetSpecularInfo(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			return SpecularInfo();
@@ -179,11 +180,38 @@ namespace RISE
 		//! Spectral variant of GetSpecularInfo.
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack,
+			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
 			return GetSpecularInfo( ri, ior_stack );
+		}
+
+		/// Evaluate the spectral throughput weight (krayNM) for a
+		/// previously sampled scattered ray at a different wavelength.
+		///
+		/// Given a ray that was produced by ScatterNM at some hero
+		/// wavelength, this method returns what krayNM would be for
+		/// the same geometric event at wavelength @a nm.
+		///
+		/// @a rayType identifies the lobe (eRayDiffuse, eRayReflection,
+		/// etc.) so the match is correct even if the container layout
+		/// changes across wavelengths.
+		///
+		/// @return  krayNM >= 0 on success, or < 0 if not implemented
+		///          (caller should fall back to BSDF evaluation).
+		///
+		/// Default: returns -1 (not implemented).  SPFs whose lobes are
+		/// not fully represented by the material's IBSDF must override.
+		virtual Scalar EvaluateKrayNM(
+			const RayIntersectionGeometric& ri,
+			const Vector3& outDir,
+			ScatteredRay::ScatRayType rayType,
+			Scalar nm,
+			const IORStack& ior_stack
+			) const
+		{
+			return -1;
 		}
 	};
 }

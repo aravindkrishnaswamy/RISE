@@ -22,6 +22,7 @@
 #include "ISPF.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/Color_Template.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 #include "../Utilities/RandomNumbers.h"
 
 namespace RISE
@@ -38,28 +39,62 @@ namespace RISE
 
 	public:
 		//! Tells the shader to apply shade to the given intersection point
-		virtual void PerformOperation( 
+		virtual void PerformOperation(
 			const RuntimeContext& rc,					///< [in] Runtime context
-			const RayIntersection& ri,					///< [in] Intersection information 
+			const RayIntersection& ri,					///< [in] Intersection information
 			const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			RISEPel& c,									///< [in/out] Resultant color from op
-			const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+			const IORStack& ior_stack,					///< [in/out] Index of refraction stack
 			const ScatteredRayContainer* pScat			///< [in] Scattering information
 			) const = 0;
 
 		//! Tells the shader to apply shade to the given intersection point for the given wavelength
 		/// \return Amplitude of spectral function 
-		virtual Scalar PerformOperationNM( 
+		virtual Scalar PerformOperationNM(
 			const RuntimeContext& rc,					///< [in] Runtime context
-			const RayIntersection& ri,					///< [in] Intersection information 
+			const RayIntersection& ri,					///< [in] Intersection information
 			const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 			const Scalar c,								///< [in] Current value for wavelength
 			const Scalar nm,							///< [in] Wavelength to shade
-			const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+			const IORStack& ior_stack,					///< [in/out] Index of refraction stack
 			const ScatteredRayContainer* pScat			///< [in] Scattering information
 			) const = 0;
+
+		//! Tells the shader to apply shade for a bundle of HWSS wavelengths.
+		//! The hero wavelength (swl.HeroLambda()) drives all directional
+		//! decisions; companion wavelengths evaluate throughput at the hero's
+		//! geometric direction.
+		//!
+		//! Default implementation: evaluate each wavelength independently
+		//! via PerformOperationNM.  PathTracingShaderOp overrides this to
+		//! share directional decisions across the wavelength bundle.
+		virtual void PerformOperationHWSS(
+			const RuntimeContext& rc,					///< [in] Runtime context
+			const RayIntersection& ri,					///< [in] Intersection information
+			const IRayCaster& caster,					///< [in] The Ray Caster
+			const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
+			const Scalar caccum[SampledWavelengths::N],	///< [in] Current accumulated values per wavelength
+			SampledWavelengths& swl,					///< [in/out] Wavelength bundle (may be modified by termination)
+			const IORStack& ior_stack,					///< [in/out] Index of refraction stack
+			const ScatteredRayContainer* pScat,			///< [in] Scattering information
+			Scalar result[SampledWavelengths::N]		///< [out] Result values per wavelength
+			) const
+		{
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+			{
+				if( !swl.terminated[i] )
+				{
+					result[i] = PerformOperationNM( rc, ri, caster, rs,
+						caccum[i], swl.lambda[i], ior_stack, pScat );
+				}
+				else
+				{
+					result[i] = 0;
+				}
+			}
+		}
 
 		//! Tells the ShaderOp to reset itself
 		virtual void ResetRuntimeData() const {};

@@ -117,7 +117,7 @@ int SchedulerConnection::ProcessSchedulerRequest( WorkerRenderer* pRenderer, Wor
 			GlobalLog()->PrintEx( eLog_Event, TYPICAL_PRIORITY, "Received new cell: top=%d, left=%d, bottom=%d, right=%d", rc.top, rc.left, rc.bottom, rc.right );
 
 			// Convert the Rect into the series of rays
-			ICamera* pCamera = pRenderer->pRise->GetJob()->pScene->GetCamera();
+			const ICamera* pCamera = pRenderer->pRise->GetJob()->pScene->GetCamera();
 
 			for( int y=rc.top; y<=rc.bottom; y++ ) {
 				for( int x=rc.left; x<=rc.right; x++ ) {

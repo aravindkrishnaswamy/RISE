@@ -28,7 +28,6 @@ advanced_shader
 pixelpel_rasterizer
 {
 	max_recursion		10
-	min_importance		0.001
 	samples				16
 	lum_samples			4
 	pixel_filter		tent
@@ -374,7 +373,7 @@ spot_light
 	position			0 8 2
 	target				0 -2 -0.5
 	color				1.0 0.98 0.92
-	power				150.0
+	power				2000.0
 	inner				25
 	outer				60
 }
@@ -386,7 +385,7 @@ spot_light
 	position			-3 6 -2
 	target				0 -2 0
 	color				0.7 0.85 1.0
-	power				60.0
+	power				200.0
 	inner				30
 	outer				70
 }

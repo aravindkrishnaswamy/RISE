@@ -22,6 +22,7 @@
 #include "IRayIntersectionModifier.h"
 #include "IShader.h"
 #include "IRadianceMap.h"
+#include "IMedium.h"
 
 namespace RISE
 {
@@ -65,6 +66,11 @@ namespace RISE
 		//! Assigns a ray intersection modifier to the object
 		virtual bool AssignModifier(
 			const IRayIntersectionModifier& pMod					///< [in] The modifier to assign
+			) = 0;
+
+		//! Assigns an interior participating medium to the object
+		virtual bool AssignInteriorMedium(
+			const IMedium& medium									///< [in] The medium to assign
 			) = 0;
 
 		//! Sets the epsilon error threshold to use when computing intersections

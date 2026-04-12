@@ -28,6 +28,7 @@
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Utilities/Color/CIE_XYZ.h"
+#include <stdint.h>
 
 namespace RISE
 {
@@ -42,7 +43,11 @@ namespace RISE
 
 			const char* GetProgressTitle() const { return "BDPT Spectral Rasterizing: "; }
 
-			Scalar GetSplatSampleScale() const { return static_cast<Scalar>( nSpectralSamples ); }
+			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
+			/// the default from PixelBasedRasterizerHelper.
+			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			Scalar GetSplatSampleScale() const { return bUseHWSS ? static_cast<Scalar>( nSpectralSamples * SampledWavelengths::N ) : static_cast<Scalar>( nSpectralSamples ); }
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -59,21 +64,35 @@ namespace RISE
 			/// Spectral integration for a single pixel sample.
 			/// Samples nSpectralSamples wavelengths and returns accumulated XYZ.
 			/// Splats are XYZ-converted and written to pSplatFilm.
+			/// pixelSampleIndex is the raw [0, SPP) index before Morton remapping.
+			/// mortonIndex and log2SPP drive the ZSobol mapping when useZSobol
+			/// is true; otherwise they are ignored.
+			/// When pAOV is non-null, extracts first-hit AOV from the first wavelength.
 			XYZPel IntegratePixelSpectral(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
-				const ICamera& camera
+				const ICamera& camera,
+				uint32_t pixelSampleIndex,
+				uint32_t pixelSeed,
+				uint32_t mortonIndex,
+				uint32_t log2SPP,
+				PixelAOV* pAOV
 				) const;
 
 			/// Evaluates BDPT at a specific wavelength for a single camera ray.
 			/// Returns the scalar radiance estimate.
+			/// sampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
+			/// When pAOV is non-null, extracts first-hit albedo and normal.
 			Scalar IntegratePixelNM(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
 				const ICamera& camera,
-				const Scalar nm
+				const Scalar nm,
+				uint32_t sampleIndex,
+				uint32_t pixelSeed,
+				PixelAOV* pAOV
 				) const;
 
 		public:
@@ -85,7 +104,11 @@ namespace RISE
 				const Scalar lambda_end,
 				const unsigned int num_wavelengths,
 				const unsigned int spectralSamples,
-				const ManifoldSolverConfig& smsConfig
+				const ManifoldSolverConfig& smsConfig,
+				const PathGuidingConfig& guidingConfig,
+				const StabilityConfig& stabilityConfig,
+				bool useZSobol_,
+				bool useHWSS_
 				);
 		};
 	}

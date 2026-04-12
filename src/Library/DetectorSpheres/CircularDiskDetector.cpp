@@ -17,6 +17,7 @@
 #include "../RISE_API.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/RTime.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
@@ -192,7 +193,8 @@ void CircularDiskDetector::PerformMeasurement(
 			// which detector it hits
 			ScatteredRayContainer scattered;
 
-			pSPF->Scatter( ri, random, scattered, 0 );
+			IndependentSampler samplerWrapper( random );
+			pSPF->Scatter( ri, samplerWrapper, scattered, ior_stack );
 
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 

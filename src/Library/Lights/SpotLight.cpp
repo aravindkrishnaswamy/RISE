@@ -24,8 +24,6 @@ SpotLight::SpotLight(
 	const Scalar inner,
 	const Scalar outer,
 	const RISEPel& c,
-	const Scalar linearAtten,
-	const Scalar quadraticAtten,
 	const bool shootPhotons
 	) :
   radiantEnergy( radiantEnergy_ ),
@@ -34,8 +32,6 @@ SpotLight::SpotLight(
   dInnerAngle( inner ),
   dOuterAngle( outer ),
   cColor( c ),
-  linearAttenuation( linearAtten ),
-  quadraticAttenuation( quadraticAtten ),
   bShootPhotons( shootPhotons )
 {
 	vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
@@ -46,11 +42,11 @@ SpotLight::~SpotLight( )
 }
 
 void SpotLight::ComputeDirectLighting(
-	const RayIntersectionGeometric& ri, 
-	const IRayCaster& pCaster, 
-	const IBSDF& brdf, 
-	const bool bReceivesShadows, 
-	RISEPel& amount 
+	const RayIntersectionGeometric& ri,
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
+	const bool bReceivesShadows,
+	RISEPel& amount
 	) const
 {
 	//
@@ -64,10 +60,10 @@ void SpotLight::ComputeDirectLighting(
 
 	// This dot product tells us the angle of incidence between the light ray
 	// and the surface normal.  This angle tells us what illumination this surface
-	// should recieve.  If this value is negative, then the light is 
+	// should recieve.  If this value is negative, then the light is
 	// behind the object and we can stop.
 
-	// Also if this angle is greater than the outer angle, then we stop because 
+	// Also if this angle is greater than the outer angle, then we stop because
 	// we limit the spot light's effect.  If its between the outer and inner
 	// angles, then we linearly scale it.  If its within the inner angle, then its
 	// at full power.
@@ -92,22 +88,15 @@ void SpotLight::ComputeDirectLighting(
 			}
 		}
 
-		Scalar attenuation = 1.0;
-
-		if( linearAttenuation ) {
-			attenuation += (linearAttenuation * fDistFromLight);
-		}
-
-		if( quadraticAttenuation) {
-			attenuation += (quadraticAttenuation * fDistFromLight * fDistFromLight);
-		}
+		// Physically-based inverse-square falloff
+		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			amount = (cColor * brdf.value( vToLight, ri )) * ((1.0/attenuation) * fDot * radiantEnergy);
+			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy);
 		} else {
-			// It isn't so, apply the falloff model
-			const Scalar fMul = 1.0-(fAngleOfIncidence - dInnerAngle/2.0)/(dOuterAngle/2-dInnerAngle/2);
-			amount = (cColor * brdf.value( vToLight, ri )) * ((1.0/attenuation) * fMul * fDot * radiantEnergy);
+			// Quadratic falloff between inner and outer half-angles
+			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
+			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * t * t * fDot * radiantEnergy);
 		}
 	}
 }
@@ -125,8 +114,6 @@ void SpotLight::FinalizeTransformations( )
 static const unsigned int TARGET_ID = 100;
 static const unsigned int COLOR_ID = 101;
 static const unsigned int ENERGY_ID = 102;
-static const unsigned int LINEARATTEN_ID = 103;
-static const unsigned int QUADRATICATTEN_ID = 104;
 static const unsigned int INNER_ANGLE_ID = 105;
 static const unsigned int OUTER_ANGLE_ID = 106;
 
@@ -147,10 +134,6 @@ IKeyframeParameter* SpotLight::KeyframeFromParameters( const String& name, const
 		}
 	} else if( name == "energy" ) {
 		p = new Parameter<Scalar>( atof(value.c_str()), ENERGY_ID );
-	} else if( name == "linear_attenuation" ) {
-		p = new Parameter<Scalar>( atof(value.c_str()), LINEARATTEN_ID );
-	} else if( name == "quadratic_attenuation" ) {
-		p = new Parameter<Scalar>( atof(value.c_str()), QUADRATICATTEN_ID );
 	} else if( name == "inner_angle" ) {
 		p = new Parameter<Scalar>( atof(value.c_str())*DEG_TO_RAD, INNER_ANGLE_ID );
 	} else if( name == "outer_angle" ) {
@@ -180,16 +163,6 @@ void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 	case ENERGY_ID:
 		{
 			radiantEnergy = *(Scalar*)val.getValue();
-		}
-		break;
-	case LINEARATTEN_ID:
-		{
-			linearAttenuation = *(Scalar*)val.getValue();
-		}
-		break;
-	case QUADRATICATTEN_ID:
-		{
-			quadraticAttenuation = *(Scalar*)val.getValue();
 		}
 		break;
 	case INNER_ANGLE_ID:

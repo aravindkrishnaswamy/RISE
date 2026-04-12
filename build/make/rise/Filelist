@@ -49,8 +49,12 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/GeometricUtilities.cpp				\
 	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
 	$(PATHLIBRARY)Utilities/MemoryBuffer.cpp					\
+	$(PATHLIBRARY)Utilities/BSSRDFSampling.cpp					\
+	$(PATHLIBRARY)Utilities/RandomWalkSSS.cpp					\
 	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
 	$(PATHLIBRARY)Utilities/ManifoldSolver.cpp					\
+	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\
+	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\
 	$(PATHLIBRARY)Utilities/OrthonormalBasis3D.cpp				\
 	$(PATHLIBRARY)Utilities/Primes.cpp				\
@@ -60,6 +64,9 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
 	$(PATHLIBRARY)Utilities/Transformable.cpp					\
+	$(PATHLIBRARY)Utilities/MediumTransport.cpp				\
+	$(PATHLIBRARY)Utilities/MajorantGrid.cpp				\
+	$(PATHLIBRARY)Utilities/OptimalMISAccumulator.cpp		\
 	$(PATHLIBRARY)Functions/BezierRootFinder.cpp				\
 	$(PATHLIBRARY)Functions/Polynomial.cpp					\
 	$(PATHLIBRARY)Functions/PolynomialGCD.cpp				\
@@ -95,6 +102,7 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
 	$(PATHLIBRARY)Materials/BioSpecDiffusionProfile.cpp					\
+	$(PATHLIBRARY)Materials/BioSpecSkinRWMaterial.cpp					\
 	$(PATHLIBRARY)Materials/DonnerJensenSkinDiffusionProfile.cpp			\
 	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
@@ -103,7 +111,12 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/CookTorranceSPF.cpp								\
 	$(PATHLIBRARY)Materials/DataDrivenBSDF.cpp								\
 	$(PATHLIBRARY)Materials/DielectricSPF.cpp								\
+	$(PATHLIBRARY)Materials/GGXBRDF.cpp										\
+	$(PATHLIBRARY)Materials/GGXSPF.cpp										\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
+	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
+	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\
+	$(PATHLIBRARY)Materials/HomogeneousMedium.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongBRDF.cpp							\
 	$(PATHLIBRARY)Materials/IsotropicPhongSPF.cpp							\
 	$(PATHLIBRARY)Materials/LambertianBRDF.cpp								\
@@ -186,7 +199,8 @@ SRCLIBSAMPLINGFILTERING =\
 	$(PATHLIBRARY)Sampling/SincPixelFilter.cpp					\
 	$(PATHLIBRARY)Sampling/StratifiedSampling2D.cpp				\
 	$(PATHLIBRARY)Sampling/UniformSampling1D.cpp				\
-	$(PATHLIBRARY)Sampling/UniformSampling2D.cpp
+	$(PATHLIBRARY)Sampling/UniformSampling2D.cpp				\
+	$(PATHLIBRARY)Sampling/SobolSampling2D.cpp
 
 # Photon mapping
 SRCLIBPHOTONMAPPING =\
@@ -217,24 +231,28 @@ SRCLIBCAMERA =\
 SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
 	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
-	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizerAdaptiveSampling.cpp		\
-	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizerContrastAA.cpp			\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedSpectralIntegratingRasterizer.cpp		\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
+	$(PATHLIBRARY)Rendering/EnvironmentSampler.cpp							\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
+	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
+	$(PATHLIBRARY)Rendering/PathTracingPelRasterizer.cpp					\
+	$(PATHLIBRARY)Rendering/PathTracingSpectralRasterizer.cpp				\
 	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\
-	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp
+	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
+	$(PATHLIBRARY)Rendering/MLTSpectralRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/AOVBuffers.cpp									\
+	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/SSS/PointSetOctree.cpp							\
 	$(PATHLIBRARY)Shaders/SSS/SubSurfaceScatteringShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/SSS/DonnerJensenSkinSSSShaderOp.cpp			\
-	$(PATHLIBRARY)Shaders/SSS/BioSpecSkinSSSShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/AmbientOcclusionShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/AreaLightShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/CausticPelPhotonMapShaderOp.cpp					\
@@ -246,6 +264,7 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/GlobalPelPhotonMapShaderOp.cpp					\
 	$(PATHLIBRARY)Shaders/GlobalSpectralPhotonMapShaderOp.cpp				\
 	$(PATHLIBRARY)Shaders/PathTracingShaderOp.cpp							\
+	$(PATHLIBRARY)Shaders/PathTracingIntegrator.cpp							\
 	$(PATHLIBRARY)Shaders/SMSShaderOp.cpp								\
 	$(PATHLIBRARY)Shaders/ReflectionShaderOp.cpp							\
 	$(PATHLIBRARY)Shaders/RefractionShaderOp.cpp							\
@@ -291,6 +310,7 @@ SRCLIBRASTERIMAGES =\
 # Lights 
 SRCLIBLIGHTS =\
 	$(PATHLIBRARY)Lights/DirectionalLight.cpp					\
+	$(PATHLIBRARY)Lights/LightBVH.cpp							\
 	$(PATHLIBRARY)Lights/PointLight.cpp							\
 	$(PATHLIBRARY)Lights/SpotLight.cpp							\
 	$(PATHLIBRARY)Lights/LightSampler.cpp
@@ -341,5 +361,4 @@ SRCLIB =\
 	$(SRCLIBPARSERS)				\
 	$(SRCLIBMISC)					\
 	$(SRCLIBSCENEMANAGEMENT)
-
 

@@ -39,7 +39,6 @@ config( cfg ),
 pLightSampler( 0 )
 {
 	pLightSampler = new LightSampler();
-	pLightSampler->addref();
 }
 
 ManifoldSolver::~ManifoldSolver()
@@ -421,11 +420,9 @@ void ManifoldSolver::BuildJacobian(
 
 		// Half-vector (unnormalized)
 		Vector3 h_raw;
-		Scalar sign;
 		if( v.isReflection )
 		{
 			h_raw = Vector3( wi.x + wo.x, wi.y + wo.y, wi.z + wo.z );
-			sign = 1.0;
 		}
 		else
 		{
@@ -433,7 +430,6 @@ void ManifoldSolver::BuildJacobian(
 				-(wi.x + eta_eff * wo.x),
 				-(wi.y + eta_eff * wo.y),
 				-(wi.z + eta_eff * wo.z) );
-			sign = -1.0;
 		}
 
 		Scalar h_len = Vector3Ops::Magnitude( h_raw );
@@ -1481,7 +1477,7 @@ Scalar ManifoldSolver::EstimatePDF(
 	const Point3& shadingPoint,
 	const Point3& emitterPoint,
 	const std::vector<ManifoldVertex>& seedTemplate,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	if( !solution.valid )
@@ -1502,8 +1498,8 @@ Scalar ManifoldSolver::EstimatePDF(
 		for( unsigned int i = 0; i < testChain.size(); i++ )
 		{
 			// Random perturbation in tangent plane
-			const Scalar ru = rng.RandomScalar( -0.1, 0.1 );
-			const Scalar rv = rng.RandomScalar( -0.1, 0.1 );
+			const Scalar ru = sampler.Get1D() * 0.2 - 0.1;
+			const Scalar rv = sampler.Get1D() * 0.2 - 0.1;
 
 			testChain[i].position = Point3Ops::mkPoint3(
 				testChain[i].position,
@@ -1559,7 +1555,7 @@ ManifoldResult ManifoldSolver::Solve(
 	const Point3& emitterPoint,
 	const Vector3& emitterNormal,
 	std::vector<ManifoldVertex>& specularChain,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	ManifoldResult result;
@@ -1653,7 +1649,7 @@ ManifoldResult ManifoldSolver::Solve(
 		// PDF estimation
 		if( !config.biased )
 		{
-			result.pdf = EstimatePDF( result, shadingPoint, emitterPoint, seedTemplate, rng );
+			result.pdf = EstimatePDF( result, shadingPoint, emitterPoint, seedTemplate, sampler );
 		}
 		else
 		{
@@ -1683,7 +1679,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const Vector3& woOutgoing,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const RandomNumberGenerator& rng
+	ISampler& sampler
 	) const
 {
 	SMSContribution result;
@@ -1701,7 +1697,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	LightSample lightSample;
-	if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) )
+	if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
 	// Build seed chain
@@ -1717,9 +1713,14 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	ManifoldResult mResult = Solve(
 		pos, normal,
 		lightSample.position, lightSample.normal,
-		seedChain, rng );
+		seedChain, sampler );
 
 	if( !mResult.valid )
+		return result;
+
+	// Visibility: check external segments of the specular chain
+	if( !CheckChainVisibility( pos, lightSample.position,
+		mResult.specularChain, caster ) )
 		return result;
 
 	// Direction from shading point toward first specular vertex
@@ -1757,39 +1758,45 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( distSpecToLight < 1e-8 ) return result;
 	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
-	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-	if( cosAtLight <= 0 ) return result;
+	// For delta-position lights (point/spot), there is no surface at the
+	// light — the geometric coupling has no cosine term.  The emitted
+	// radiance must also be re-evaluated for the actual direction from the
+	// light toward the last specular vertex, since the LightSample's Le
+	// was evaluated at a random photon direction.
+	Scalar cosAtLight;
+	RISEPel actualLe;
+	if( lightSample.isDelta ) {
+		cosAtLight = 1.0;
+		if( lightSample.pLight ) {
+			actualLe = lightSample.pLight->emittedRadiance( dirSpecToLight );
+		} else {
+			actualLe = lightSample.Le;
+		}
+	} else {
+		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		if( cosAtLight <= 0 ) return result;
+		actualLe = lightSample.Le;
+	}
 
-	// SMS contribution for one specific light:
-	//   Le * BSDF * cos_shading * T_chain * cos_light * Area / dist²
+	// SMS contribution via standard Monte Carlo estimator:
+	//   f(x) / p(x)  where we sampled one light with probability pdfSelect.
 	//
-	// This matches what LuminaryManager::ComputeDirectLightingForLuminary
-	// computes for one luminary (Le * cos * cos_light * Area/dist² * BSDF).
-	// We do NOT divide by pdfSelect because NEE iterates all luminaries
-	// without selection probability, and SMS fills in for the specific
-	// light that was blocked by glass.
+	// pdfPosition = 1/Area for mesh lights, so 1/pdfPosition = Area.
+	// Dividing by pdfSelect is required because we sample ONE light
+	// from the full set — without it the expected contribution is
+	// attenuated by pdfSelect, causing systematic underestimation
+	// in multi-light scenes.  (Single-light scenes are unaffected
+	// since pdfSelect = 1.)  This matches the NM (spectral) SMS path
+	// in BDPTIntegrator::EvaluateSMSStrategiesNM.
 	//
-	// pdfPosition = 1/Area, so dividing by it gives * Area.
 	// No intermediate geometric terms — delta BSDFs at specular vertices
 	// cancel with the geometric terms in the path integral.
 	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
 
-	// Match the NEE formula exactly:
-	//   LuminaryManager computes: Le * cos_shading * cos_light * (Area / dist²) * BSDF
-	//   It iterates all luminaries, no pdfSelect division.
-	//
-	// SMS picks ONE light via LightSampler. To match, we compute the
-	// same per-luminary contribution (no pdfSelect). Over many samples,
-	// SMS will pick each light 1/N of the time, so the expected SMS
-	// contribution per light is 1/N of the single-light value — but
-	// that's correct because NEE already contributes for the N-1 lights
-	// that AREN'T blocked by glass. SMS only fills in for the one that IS.
-	//
-	// pdfPosition = 1/Area for mesh lights, so 1/pdfPosition = Area.
 	result.contribution = fBSDF * cosAtShading
 		* mResult.contribution
-		* lightSample.Le * lightGeom
-		/ lightSample.pdfPosition;
+		* actualLe * lightGeom
+		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
@@ -1813,7 +1820,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const Vector3& woOutgoing,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const RandomNumberGenerator& rng,
+	ISampler& sampler,
 	const Scalar nm
 	) const
 {
@@ -1832,7 +1839,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
 
 	LightSample lightSample;
-	if( !pLightSampler->SampleLight( scene, luminaries, rng, lightSample ) )
+	if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
 	// Build seed chain (uses RGB IOR for approximate positions)
@@ -1868,9 +1875,14 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	ManifoldResult mResult = Solve(
 		pos, normal,
 		lightSample.position, lightSample.normal,
-		seedChain, rng );
+		seedChain, sampler );
 
 	if( !mResult.valid )
+		return result;
+
+	// Visibility: check external segments of the specular chain
+	if( !CheckChainVisibility( pos, lightSample.position,
+		mResult.specularChain, caster ) )
 		return result;
 
 	// Direction from shading point toward first specular vertex
@@ -1909,21 +1921,93 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( distSpecToLight < 1e-8 ) return result;
 	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
-	Scalar cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-	if( cosAtLight <= 0 ) return result;
+	// For delta-position lights (point/spot), there is no surface at the
+	// light — the geometric coupling has no cosine term.  The emitted
+	// radiance must also be re-evaluated for the actual direction from the
+	// light toward the last specular vertex, since the LightSample's Le
+	// was evaluated at a random photon direction.
+	Scalar cosAtLight;
+	Scalar Le;
+	if( lightSample.isDelta ) {
+		cosAtLight = 1.0;
+		if( lightSample.pLight ) {
+			Le = ColorMath::Luminance(
+				lightSample.pLight->emittedRadiance( dirSpecToLight ) );
+		} else {
+			Le = ColorMath::Luminance( lightSample.Le );
+		}
+	} else {
+		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		if( cosAtLight <= 0 ) return result;
+		Le = ColorMath::Luminance( lightSample.Le );
+	}
 
 	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
-
-	// Emitted radiance (spectral)
-	Scalar Le = ColorMath::MaxValue( lightSample.Le );  // approximate
 
 	result.contribution = fBSDF * cosAtShading
 		* chainThroughput
 		* Le * lightGeom
-		/ lightSample.pdfPosition;
+		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
 
 	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// CheckChainVisibility
+//
+//   Tests whether the external segments of an SMS specular chain
+//   are unoccluded.  Only the two external segments are tested:
+//
+//     1. Shading point  ->  first specular vertex
+//     2. Last specular vertex  ->  light source
+//
+//   Inter-specular segments (through refractive geometry) are not
+//   tested because CastShadowRay tests all objects, including the
+//   glass surfaces themselves, which would always report a hit.
+//   The external-segment checks catch the dominant occlusion cases
+//   (opaque walls between receiver and glass, or between glass
+//   and light).
+//////////////////////////////////////////////////////////////////////
+
+bool ManifoldSolver::CheckChainVisibility(
+	const Point3& shadingPoint,
+	const Point3& lightPoint,
+	const std::vector<ManifoldVertex>& chain,
+	const IRayCaster& caster
+	) const
+{
+	if( chain.empty() ) return true;
+
+	// Segment 1: shading point to first specular vertex
+	{
+		Vector3 dir = Vector3Ops::mkVector3(
+			chain.front().position, shadingPoint );
+		Scalar dist = Vector3Ops::NormalizeMag( dir );
+		if( dist > 1e-6 )
+		{
+			Ray ray( shadingPoint, dir );
+			ray.Advance( 1e-6 );
+			if( caster.CastShadowRay( ray, dist - 2e-6 ) )
+				return false;
+		}
+	}
+
+	// Segment 2: last specular vertex to light
+	{
+		Vector3 dir = Vector3Ops::mkVector3(
+			lightPoint, chain.back().position );
+		Scalar dist = Vector3Ops::NormalizeMag( dir );
+		if( dist > 1e-6 )
+		{
+			Ray ray( chain.back().position, dir );
+			ray.Advance( 1e-6 );
+			if( caster.CastShadowRay( ray, dist - 2e-6 ) )
+				return false;
+		}
+	}
+
+	return true;
 }

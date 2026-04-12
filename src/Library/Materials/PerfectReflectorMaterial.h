@@ -53,7 +53,7 @@ namespace RISE
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
-				const IORStack* ior_stack
+				const IORStack& ior_stack
 				) const
 			{
 				return pSPF->GetSpecularInfo( ri, ior_stack );

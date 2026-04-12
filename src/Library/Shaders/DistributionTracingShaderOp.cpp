@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "DistributionTracingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -68,7 +69,7 @@ void DistributionTracingShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
@@ -80,10 +81,10 @@ void DistributionTracingShaderOp::PerformOperation(
 	if( pScene && pSPF ) {
 
 		bool bComputeIrradiance = true;
-		IIrradianceCache* pCache = pScene->GetIrradianceCache();
+		const IIrradianceCache* pCache = pScene->GetIrradianceCache();
 
 		// If we are to use irradiance caching and we are in a normal pass, look it up
-		if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
+		if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
 			// Look it up
 			std::vector<IIrradianceCache::CacheElement> results;
             const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
@@ -132,7 +133,11 @@ void DistributionTracingShaderOp::PerformOperation(
 				Scalar t = 0;
 
 				ScatteredRayContainer scattered;
-				pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );
+				{
+					IndependentSampler fallbackSampler( rc.random );
+					ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+					pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
+				}
 
 				if( bBranch ) {
 					// Branch
@@ -145,7 +150,7 @@ void DistributionTracingShaderOp::PerformOperation(
 							rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
 
 							RISEPel	cThisIndirectSample(0,0,0);
-							if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack ) ) {
+							if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack ) ) {
 								rsum += 1.0/t;
 								hits++;
 							}
@@ -156,20 +161,34 @@ void DistributionTracingShaderOp::PerformOperation(
 					}
 					c = c * (1.0/numshot);
 				} else {
-					// No branching, process all the rays
-					ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), false );
-
-					if( pScatRay && ShouldTraceRay( pScatRay->type ) ) {
-						pScatRay->ray.Advance( 1e-8 );
-						rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray);
-
-						RISEPel	cThisIndirectSample(0,0,0);
-						if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack ) ) {
-							rsum += 1.0/t;
-							hits++;
+					// No branching
+					if( scattered.Count() > 1 ) {
+						// Multiple rays: trace all to avoid high-variance correction
+						for( unsigned int i=0; i<scattered.Count(); i++ ) {
+							ScatteredRay& scat = scattered[i];
+							if( ShouldTraceRay( scat.type ) ) {
+								scat.ray.Advance( 1e-8 );
+								rs2.importance = rs.importance * ColorMath::MaxValue(scat.kray);
+								RISEPel	cThisIndirectSample(0,0,0);
+								if( caster.CastRay( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack ) ) {
+									rsum += 1.0/t;
+									hits++;
+								}
+								accruedIndirect = accruedIndirect + cThisIndirectSample * scat.kray;
+							}
 						}
-
-						accruedIndirect = accruedIndirect + cThisIndirectSample * pScatRay->kray;
+					} else {
+						ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), false );
+						if( pScatRay && ShouldTraceRay( pScatRay->type ) ) {
+							pScatRay->ray.Advance( 1e-8 );
+							rs2.importance = rs.importance * ColorMath::MaxValue(pScatRay->kray);
+							RISEPel	cThisIndirectSample(0,0,0);
+							if( caster.CastRay( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, &t, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack ) ) {
+								rsum += 1.0/t;
+								hits++;
+							}
+							accruedIndirect = accruedIndirect + cThisIndirectSample * pScatRay->kray;
+						}
 					}
 				}
 			}
@@ -203,14 +222,14 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 
@@ -225,7 +244,11 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 			rs2.considerEmission = (pScene->GetCausticSpectralMap())?false:true;
 
 			ScatteredRayContainer scattered;
-			pSPF->Scatter( ri.geometric, rc.random, scattered, ior_stack );
+			{
+				IndependentSampler fallbackSampler( rc.random );
+				ISampler& scatterSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+				pSPF->Scatter( ri.geometric, scatterSampler, scattered, ior_stack );
+			}
 
 			if( bBranch ) {
 				// Branch
@@ -238,7 +261,7 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 						rs2.importance = rs.importance * scat.krayNM;
 
 						Scalar	cThisIndirectSample = 0;
-						caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack?scat.ior_stack:ior_stack );
+						caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
 
 						c = c + cThisIndirectSample * scat.krayNM;
 						numshot++;
@@ -246,16 +269,27 @@ Scalar DistributionTracingShaderOp::PerformOperationNM(
 				}
 				c /= Scalar(numshot);
 			} else {
-				// No branching, randomly select a ray
-				ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), true );
-				if( pScatRay && ShouldTraceRay(pScatRay->type) ) {
-					pScatRay->ray.Advance( 1e-8 );
-					rs2.importance = rs.importance * pScatRay->krayNM;
-
-					Scalar	cThisIndirectSample = 0;
-					caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack?pScatRay->ior_stack:ior_stack );
-
-					c = c + cThisIndirectSample * pScatRay->krayNM;
+				// No branching
+				if( scattered.Count() > 1 ) {
+					for( unsigned int i=0; i<scattered.Count(); i++ ) {
+						ScatteredRay& scat = scattered[i];
+						if( ShouldTraceRay( scat.type ) ) {
+							scat.ray.Advance( 1e-8 );
+							rs2.importance = rs.importance * scat.krayNM;
+							Scalar	cThisIndirectSample = 0;
+							caster.CastRayNM( rc, ri.geometric.rast, scat.ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, scat.ior_stack ? *scat.ior_stack : ior_stack );
+							c = c + cThisIndirectSample * scat.krayNM;
+						}
+					}
+				} else {
+					ScatteredRay* pScatRay = scattered.RandomlySelect( rc.random.CanonicalRandom(), true );
+					if( pScatRay && ShouldTraceRay(pScatRay->type) ) {
+						pScatRay->ray.Advance( 1e-8 );
+						rs2.importance = rs.importance * pScatRay->krayNM;
+						Scalar	cThisIndirectSample = 0;
+						caster.CastRayNM( rc, ri.geometric.rast, pScatRay->ray, cThisIndirectSample, rs2, nm, 0, ri.pRadianceMap, pScatRay->ior_stack ? *pScatRay->ior_stack : ior_stack );
+						c = c + cThisIndirectSample * pScatRay->krayNM;
+					}
 				}
 			}
 		}

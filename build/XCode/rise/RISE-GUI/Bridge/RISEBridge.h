@@ -68,6 +68,12 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// Returns YES if the loaded scene has any keyframed (animated) objects.
 - (BOOL)hasAnimatedObjects;
 
+/// Returns the width of the loaded scene's camera, or 0 if no scene is loaded.
+- (uint32_t)cameraWidth;
+
+/// Returns the height of the loaded scene's camera, or 0 if no scene is loaded.
+- (uint32_t)cameraHeight;
+
 /// Rasterizes the entire scene. This is BLOCKING -- call from a background thread.
 - (BOOL)rasterize;
 

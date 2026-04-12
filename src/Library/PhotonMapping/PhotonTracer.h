@@ -30,7 +30,6 @@ namespace RISE
 		protected:
 			const bool					bShootFromNonMeshLights;///< Should we shoot from non mesh based lights?
 			const bool					bShootFromMeshLights;	///< Should we shoot from mesh based lights (luminaries)?
-			const bool					bUseIORStack;			///< Should we use an ior stack ?
 			const Scalar				dPowerScale;			///< How much to scale shooting power by
 			const unsigned int			nNumTemporalSamples;	///< Number of temporal samples to take when tracing at a particular time
 			const bool					bRegenerateSpecificTime;///< Should the photon map regenerate when asked to for a specific time?
@@ -42,7 +41,6 @@ namespace RISE
 
 			PhotonTracer(
 				const bool shootFromNonMeshLights,
-				const bool useiorstack,
 				const Scalar power_scale,
 				const unsigned int temporal_samples,
 				const bool regenerate,
@@ -50,7 +48,6 @@ namespace RISE
 				) :
 			  bShootFromNonMeshLights( shootFromNonMeshLights ),
 			  bShootFromMeshLights( shootFromMeshLights ),
-			  bUseIORStack( useiorstack ),
 			  dPowerScale( power_scale ),
 			  nNumTemporalSamples( temporal_samples ),
 			  bRegenerateSpecificTime( regenerate ),
@@ -69,11 +66,11 @@ namespace RISE
 			
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			virtual void TraceSinglePhoton( 
+			virtual void TraceSinglePhoton(
 				const Ray& ray,
-				const RISEPel& power, 
-				PhotonMapType& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const RISEPel& power,
+				PhotonMapType& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const = 0;
 
 			// Tells the tracer to set the photon map specifically for the scene
@@ -138,7 +135,7 @@ namespace RISE
 						r.SetDir(pEmitter->getEmmittedPhotonDir( rig, Point2( geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom() ) ));
 
 						// Now shoot that ray as a photon
-						TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );
+						TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
 
 						numshot_thislum++;
 					}
@@ -157,7 +154,6 @@ namespace RISE
 							const RISEPel totalpower = l->radiantExitance();
 							unsigned int thislummax = (unsigned int)(ColorMath::MaxValue(totalpower)/total_exitance * numPhotons) + pPhotonMap->NumStored();
 							thislummax = thislummax > pPhotonMap->MaxPhotons() ? pPhotonMap->MaxPhotons() : thislummax;
-							const RISEPel power = l->radiantExitance() * dPowerScale;
 
 							unsigned int numshot_thislum = 0;
 							const unsigned int numstored_sofar = pPhotonMap->NumStored();
@@ -181,7 +177,15 @@ namespace RISE
 								Ray r;
 								r = l->generateRandomPhoton( Point3(geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom(), geomsampler.CanonicalRandom()) );
 
-								TraceSinglePhoton( r, power, *pPhotonMap, bUseIORStack?&ior_stack:0 );
+								// Weight each photon by emittedRadiance/pdfDirection so that
+								// lights with non-uniform emission profiles (e.g. spot light
+								// inner/outer cone falloff) produce correctly weighted photons.
+								const Scalar pdf = l->pdfDirection( r.Dir() );
+								const RISEPel power = (pdf > 0) ?
+									l->emittedRadiance( r.Dir() ) * (dPowerScale / pdf) :
+									RISEPel(0,0,0);
+
+								TraceSinglePhoton( r, power, *pPhotonMap, ior_stack );
 
 								numshot_thislum++;
 							}

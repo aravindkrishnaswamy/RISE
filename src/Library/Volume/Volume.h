@@ -47,7 +47,8 @@ namespace RISE
 		//
 		virtual ~Volume( )
 		{
-			safe_delete( m_pData );
+			delete [] m_pData;
+			m_pData = 0;
 
 			m_nWidth = 0;
 			m_nHeight = 0;

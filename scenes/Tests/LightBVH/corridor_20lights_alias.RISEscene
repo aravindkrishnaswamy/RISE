@@ -1,0 +1,351 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           torture_corridor_pt.RISEscene                                                           #
+#   Description:    Torture test: long corridor (4000 units) with 20 equally-spaced                         #
+#                   point lights.  From any shading point, only 2-3 nearby lights                           #
+#                   contribute significantly (1/d^2), but the alias table distributes                       #
+#                   samples uniformly across all 20.  ~85% of sampling budget wasted.                       #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 30, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/corridor_20lights_alias
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera near start of corridor
+##################################################
+
+pinhole_camera
+{
+	location			100 100 200
+	lookat				100 80 2000
+	up					0 1 0
+	width				512
+	height				512
+	fov					70.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_warm_white
+	color				0.73 0.71 0.68
+}
+
+uniformcolor_painter
+{
+	name				pnt_lightgray
+	color				0.6 0.6 0.6
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_warm_white
+}
+
+lambertian_material
+{
+	name				gray
+	reflectance			pnt_lightgray
+}
+
+##################################################
+# 20 point lights evenly spaced along corridor ceiling
+# Corridor: x=[0,200], y=[0,200], z=[0,4000]
+# Lights at y=190 (near ceiling), spacing=200
+##################################################
+
+omni_light
+{
+	name		light_01
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 100
+}
+
+omni_light
+{
+	name		light_02
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 300
+}
+
+omni_light
+{
+	name		light_03
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 500
+}
+
+omni_light
+{
+	name		light_04
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 700
+}
+
+omni_light
+{
+	name		light_05
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 900
+}
+
+omni_light
+{
+	name		light_06
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 1100
+}
+
+omni_light
+{
+	name		light_07
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 1300
+}
+
+omni_light
+{
+	name		light_08
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 1500
+}
+
+omni_light
+{
+	name		light_09
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 1700
+}
+
+omni_light
+{
+	name		light_10
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 1900
+}
+
+omni_light
+{
+	name		light_11
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 2100
+}
+
+omni_light
+{
+	name		light_12
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 2300
+}
+
+omni_light
+{
+	name		light_13
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 2500
+}
+
+omni_light
+{
+	name		light_14
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 2700
+}
+
+omni_light
+{
+	name		light_15
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 2900
+}
+
+omni_light
+{
+	name		light_16
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 3100
+}
+
+omni_light
+{
+	name		light_17
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 3300
+}
+
+omni_light
+{
+	name		light_18
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 3500
+}
+
+omni_light
+{
+	name		light_19
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 3700
+}
+
+omni_light
+{
+	name		light_20
+	power		80000.0
+	color		1.0 0.95 0.85
+	position	100 190 3900
+}
+
+##################################################
+# Corridor geometry: 200 wide, 200 tall, 4000 deep
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					200 0 0
+	ptb					0 0 0
+	ptc					0 0 4000
+	ptd					200 0 4000
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					200 200 0
+	ptb					200 200 4000
+	ptc					0 200 4000
+	ptd					0 200 0
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 4000
+	ptb					0 0 0
+	ptc					0 200 0
+	ptd					0 200 4000
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					200 0 0
+	ptb					200 0 4000
+	ptc					200 200 4000
+	ptd					200 200 0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					200 0 0
+	ptb					200 200 0
+	ptc					0 200 0
+	ptd					0 0 0
+}
+
+clippedplane_geometry
+{
+	name				farwallgeom
+	pta					0 0 4000
+	ptb					0 200 4000
+	ptc					200 200 4000
+	ptd					200 0 4000
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			gray
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			gray
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				farwall
+	geometry			farwallgeom
+	material			white
+}

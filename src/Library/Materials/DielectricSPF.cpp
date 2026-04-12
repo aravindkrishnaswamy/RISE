@@ -54,7 +54,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Point2& random,										///< [in] Two canonical random numbers
 	const Scalar scatfunc,
 	const Scalar rIndex,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	dielectric.type = ScatteredRay::eRayRefraction;
@@ -71,27 +71,30 @@ Scalar DielectricSPF::GenerateScatteredRay(
 
 	if( bFromInside )
 	{
-		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, ior_stack?ior_stack->top():1.0, refracted ) ) {
-			if( ior_stack ) {
-				dielectric.ior_stack = new IORStack( *ior_stack );
-				dielectric.ior_stack->pop();
-				GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, ior_stack?ior_stack->top():1.0 );
+		// Determine the exit IOR: the medium the ray enters after leaving
+		// this object.  Pop the current object from a temporary copy of
+		// the stack so that top() reveals the underlying medium's IOR.
+		IORStack exitStack( ior_stack );
+		exitStack.pop();
+		Scalar exitIOR = exitStack.top();
+
+		if( Optics::CalculateRefractedRay( -ri.onb.w(), rIndex, exitIOR, refracted ) ) {
+			dielectric.ior_stack = new IORStack( ior_stack );
+			dielectric.ior_stack->pop();
+			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
 		} else {
-			// We're still in the material
+			// Total internal reflection
 			ref = 1.0;
 		}
 	}
 	else
 	{
-		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex, refracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack?ior_stack->top():1.0, rIndex );
-			if( ior_stack ) {
-				dielectric.ior_stack = new IORStack( *ior_stack );
-				dielectric.ior_stack->push( rIndex );
-				GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
+			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+			dielectric.ior_stack = new IORStack( ior_stack );
+			dielectric.ior_stack->push( rIndex );
+			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
 		} else {
 			ref = 1.0;
 		}
@@ -100,10 +103,8 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	// reflect ray
 	{
 		if( bFromInside ) {
-			if( ior_stack ) {
-				fresnel.ior_stack = new IORStack( *ior_stack );
-				GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
-			}
+			fresnel.ior_stack = new IORStack( ior_stack );
+			GlobalLog()->PrintNew( fresnel.ior_stack, __FILE__, __LINE__, "ior stack" );
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
 		} else {
 			fresnel.ray = Ray( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), -ri.onb.w() ) );
@@ -152,7 +153,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	 const RayIntersectionGeometric& ri,						///< [in] Geometric intersection details for point of intersection
 	 const Point2& random,										///< [in] Two canonical random numbers
 	 ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	 const IORStack* const ior_stack,							///< [in/out] Index of refraction stack
+	 const IORStack& ior_stack,							///< [in/out] Index of refraction stack
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar scattering,
@@ -169,7 +170,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	// is currently inside, so if this object is in the stack we must be
 	// exiting. This is more robust than the normal-based cosine test at
 	// grazing angles where numerical precision can give wrong results.
-	if( ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO) ) {
+	if( ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -214,9 +215,9 @@ void DielectricSPF::DoSingleRGBComponent(
 
 void DielectricSPF::Scatter( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
@@ -224,15 +225,29 @@ void DielectricSPF::Scatter(
 	const RISEPel ior = rIndex.GetColor(ri);
 	const RISEPel scattering = scat.GetColor(ri);
 
-	// Check to see if we have any dispersion
-	const bool disperse = (ior[0] != ior[1]) || (ior[1] != ior[2]) || (scattering[0] != scattering[1]) || (scattering[1] != scattering[2]);
+	// Check to see if we have any dispersion.
+	// Use relative tolerance to avoid false positives from color space
+	// conversion artifacts.  Physical quantities like IOR and scattering
+	// are often specified through painters that undergo sRGB-to-ROMM
+	// conversion, which can introduce small per-channel differences
+	// even for intentionally uniform values.
+	const Scalar iorMax = r_max( r_max( ior[0], ior[1] ), ior[2] );
+	const Scalar scatMax = r_max( r_max( scattering[0], scattering[1] ), scattering[2] );
+	static const Scalar DISPERSE_REL_TOL = 1e-4;
+	const bool iorDisperse = iorMax > NEARZERO &&
+		(fabs(ior[0] - ior[1]) > iorMax * DISPERSE_REL_TOL ||
+		 fabs(ior[1] - ior[2]) > iorMax * DISPERSE_REL_TOL);
+	const bool scatDisperse = scatMax > NEARZERO &&
+		(fabs(scattering[0] - scattering[1]) > scatMax * DISPERSE_REL_TOL ||
+		 fabs(scattering[1] - scattering[2]) > scatMax * DISPERSE_REL_TOL);
+	const bool disperse = iorDisperse || scatDisperse;
 
 	if( !disperse ) {
 		// No dispersion
-		DoSingleRGBComponent( ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scattered, ior_stack, false, ior[0], scattering[0], cosine );
+		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, ior[0], scattering[0], cosine );
 	} else {
 		// We have dispersion, so we must process each component seperately
-		Point2 ptrand( random.CanonicalRandom(), random.CanonicalRandom() );
+		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, ior[i], scattering[i], cosine );
 		}
@@ -241,21 +256,20 @@ void DielectricSPF::Scatter(
 
 void DielectricSPF::ScatterNM( 
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	ScatteredRay dielectric;
 	ScatteredRay fresnel;
 
-	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
 	bool		bFromInside = false;
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DoSingleRGBComponent for details)
-	if( ior_stack ? ior_stack->containsCurrent() : (cosine < NEARZERO) ) {
+	if( ior_stack.containsCurrent() ) {
 		// We are coming from the inside of the object
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
@@ -266,7 +280,7 @@ void DielectricSPF::ScatterNM(
 	}
 
 	bool bDielectric, bFresnel;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), scat.GetColorNM(ri,nm), rIndex.GetColorNM(ri,nm), ior_stack );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetColorNM(ri,nm), rIndex.GetColorNM(ri,nm), ior_stack );
 	
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);
@@ -282,7 +296,7 @@ void DielectricSPF::ScatterNM(
 Scalar DielectricSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return 0;
@@ -292,7 +306,7 @@ Scalar DielectricSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	return 0;

@@ -116,6 +116,18 @@ namespace RISE
 			return (c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]));
 		}
 
+		// Returns the CIE luminance (Y) of an RGB triplet using
+		// Rec.709 luminance coefficients.  Used as a scalar
+		// approximation when spectral evaluation is not available
+		// (e.g. non-mesh lights in spectral rendering).
+		template< class T >
+		static inline Scalar Luminance( const T& c )
+		{
+			return Scalar(0.2126) * c[0]
+				 + Scalar(0.7152) * c[1]
+				 + Scalar(0.0722) * c[2];
+		}
+
 	};
 
 	// This is to help out someone

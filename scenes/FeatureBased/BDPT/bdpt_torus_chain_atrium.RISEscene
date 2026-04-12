@@ -24,32 +24,50 @@ RISE ASCII SCENE 5
 # and SMS strategies on top — those are separate from the shader.
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
-
+/*
 bdpt_pel_rasterizer
 {
-	max_recursion		14
-	min_importance		0.003
 	max_eye_depth		14
 	max_light_depth		12
 	samples				128
-	lum_samples			1
-	ior_stack			TRUE
-	sms_enabled			FALSE
+	pathguiding				FALSE
+	pathguiding_iterations	4
+	pathguiding_spp			4
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	3
+    pathguiding_light_max_depth 0
+	pathguiding_sampling_type	ris
+	sms_enabled			TRUE
 	sms_max_iterations	20
 	sms_threshold		1e-3
 	sms_max_chain_depth	20
 	sms_biased			TRUE
+	oidn_denoise 		TRUE
+	blue_noise_sampler	TRUE
+	adaptive_max_samples	4096
+	adaptive_threshold		0.01
+#	show_adaptive_map		FALSE
+	progressive_rendering          TRUE
+	progressive_samples_per_pass   32
 }
+*/
+
+/*
+mlt_rasterizer
+{
+	max_eye_depth		12
+	max_light_depth		12
+	bootstrap_samples	100000
+	chains				64
+	mutations_per_pixel	10000
+	large_step_prob		0.25
+}
+*/
 
 
 ##################################################
@@ -66,32 +84,30 @@ bdpt_pel_rasterizer
 # subpaths directly carry energy through the glass, which the
 # unidirectional PT cannot do.
 ##################################################
-/*
-pathtracing_shaderop
+
+pathtracing_pel_rasterizer
 {
-	name				mis_pt
-	branch				false
+	samples				128
+	pathguiding				TRUE
+	pathguiding_iterations	6
+	pathguiding_spp			4
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	3
+    pathguiding_light_max_depth 0
+	pathguiding_sampling_type	ris
 	sms_enabled			TRUE
 	sms_max_iterations	20
-	sms_threshold		1e-5
-	sms_max_chain_depth	10
+	sms_threshold		1e-3
+	sms_max_chain_depth	20
 	sms_biased			TRUE
+	oidn_denoise 		TRUE
+	blue_noise_sampler	TRUE
+	adaptive_max_samples	4096
+	adaptive_threshold		0.01
+	progressive_rendering          TRUE
+	progressive_samples_per_pass   32
 }
 
-standard_shader
-{
-	name		global
-	shaderop	mis_pt
-}
-
-pixelpel_rasterizer
-{
-	max_recursion		10
-	min_importance		0.00001
-	samples				128
-	lum_samples			1
-}
-*/
 
 file_rasterizeroutput
 {
@@ -110,8 +126,8 @@ pinhole_camera
 	location			0 5.5 19.0
 	lookat				0 3.5 4.0
 	up					0 1 0
-	width				800
-	height				800
+	width				400
+	height				400
 	fov					50.0
 }
 
@@ -168,7 +184,7 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				pnt_checker_dark
-	color				0.55 0.52 0.48
+	color				0.2 0.2 0.2
 }
 
 checker_painter
@@ -212,7 +228,7 @@ lambertian_luminaire_material
 {
 	name				warm_lum
 	exitance			pnt_warm_light
-	scale				200.0
+	scale				100.0
 	material			none
 }
 
@@ -220,7 +236,7 @@ lambertian_luminaire_material
 {
 	name				cool_lum
 	exitance			pnt_cool_light
-	scale				200.0
+	scale				100.0
 	material			none
 }
 
@@ -380,6 +396,7 @@ standard_object
 	name				light_warm_left
 	geometry			lightpanel_large
 	position			-3.5 7.98 4.0
+	orientation			180 0 0
 	material			warm_lum
 }
 
@@ -388,6 +405,7 @@ standard_object
 	name				light_warm_right
 	geometry			lightpanel_large
 	position			3.5 7.98 4.0
+	orientation			180 0 0
 	material			warm_lum
 }
 
@@ -397,6 +415,7 @@ standard_object
 	name				light_cool_left
 	geometry			lightpanel_small
 	position			-2.0 7.98 8.0
+	orientation			180 0 0
 	material			cool_lum
 }
 
@@ -405,6 +424,7 @@ standard_object
 	name				light_cool_right
 	geometry			lightpanel_small
 	position			2.0 7.98 8.0
+	orientation			180 0 0
 	material			cool_lum
 }
 
@@ -413,21 +433,23 @@ standard_object
 {
 	name				light_neutral
 	geometry			lightpanel_small
-	position			0 7.98 2.0
+	position			0 7.98 6.0
+	orientation			180 0 0
 	material			neutral_lum
 }
-
+/*
 # Accent spot light aimed down at the chain center
 spot_light
 {
 	name				center_spot
-	position			0 7.5 4.0
-	target				0 3.5 4.0
-	color				1.0 0.98 0.94
-	power				4.0
+	position			0 7.9 4.0
+	target				0 0 4.0
+	color				1.0 1.0 1.0
+	power				500.0
 	inner				10
 	outer				25
 }
+*/
 
 ##################################################
 # Torus Chain -- 30 interlocking glass links

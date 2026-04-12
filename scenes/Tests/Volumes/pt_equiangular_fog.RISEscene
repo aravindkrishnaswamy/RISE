@@ -1,0 +1,271 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_equiangular_fog.RISEscene                                                            #
+#   Description:    Point light in dense homogeneous fog — ideal case for equiangular sampling.             #
+#                                                                                                           #
+#                   A single omni point light sits in the center of a Cornell box filled with               #
+#                   dense fog.  This is the canonical test for the Kulla-Fajardo 2012 equiangular           #
+#                   sampling technique: the 1/r^2 term from the point light concentrates                    #
+#                   in-scattering near the light, and equiangular sampling matches this geometry.           #
+#                                                                                                           #
+#                   Without equiangular sampling, delta tracking wastes many samples at distances           #
+#                   far from the light where the integrand is small.  With equiangular MIS,                #
+#                   samples are concentrated near the light, dramatically reducing variance.                #
+#                                                                                                           #
+#                   sigma_a = 0.001  (moderate absorption)                                                  #
+#                   sigma_s = 0.003  (dense scattering)                                                     #
+#                   phase   = isotropic                                                                     #
+#                   optical depth across box ~ 0.004 * 560 ~ 2.24                                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 8, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       256
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_equiangular_fog
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_equiangular_fog
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -280
+	lookat				278 273 280
+	up					0 1 0
+	width				512
+	height				512
+	fov					65.0
+}
+
+##################################################
+# Participating Medium
+##################################################
+
+homogeneous_medium
+{
+	name		fog
+	absorption	0.001 0.001 0.0008
+	scattering	0.003 0.003 0.002
+	phase		isotropic
+}
+
+> set global_medium fog
+
+##################################################
+# Point Light (ideal for equiangular sampling)
+##################################################
+
+omni_light
+{
+	name				pointlight
+	power				40000.0
+	color				1.0 0.95 0.85
+	position			278 280 280
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+##################################################
+# Geometry -- Cornell Box
+##################################################
+
+# --- Floor ---
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 560
+	ptd					556 0 560
+}
+
+# --- Ceiling ---
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556 549 0
+	ptb					556 549 560
+	ptc					0 549 560
+	ptd					0 549 0
+}
+
+# --- Back wall (z=560) ---
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 560
+	ptb					0 549 560
+	ptc					556 549 560
+	ptd					556 0 560
+}
+
+# --- Left wall (x=0) ---
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 560
+	ptb					0 0 0
+	ptc					0 549 0
+	ptd					0 549 560
+}
+
+# --- Right wall (x=556) ---
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 0
+	ptb					556 0 560
+	ptc					556 549 560
+	ptd					556 549 0
+}
+
+# --- Tall box ---
+box_geometry
+{
+	name				tallboxgeom
+	width				100
+	height				330
+	depth				100
+}
+
+# --- Short box ---
+box_geometry
+{
+	name				shortboxgeom
+	width				100
+	height				165
+	depth				100
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				tallbox
+	geometry			tallboxgeom
+	position			368 165 351
+	orientation			0 -17 0
+	material			white
+}
+
+standard_object
+{
+	name				shortbox
+	geometry			shortboxgeom
+	position			186 82.5 169
+	orientation			0 17 0
+	material			white
+}

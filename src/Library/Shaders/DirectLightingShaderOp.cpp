@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "DirectLightingShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -48,14 +49,14 @@ void DirectLightingShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 
@@ -80,7 +81,9 @@ void DirectLightingShaderOp::PerformOperation(
 		// Account for lights from luminaries
 		const ILuminaryManager* pLumManager = caster.GetLuminaries();
 		if( pLumManager && meshlights) {
-			c = c + pLumManager->ComputeDirectLighting( ri, *pBRDF, rc.random, caster, pScene->GetShadowMap() );			
+			IndependentSampler fallbackSampler( rc.random );
+			ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+			c = c + pLumManager->ComputeDirectLighting( ri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
 		}
 
 		// Add the result to the rasterizer state cache
@@ -99,14 +102,14 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 
@@ -117,7 +120,9 @@ Scalar DirectLightingShaderOp::PerformOperationNM(
 		// Account for lights from luminaries
 		const ILuminaryManager* pLumManager = caster.GetLuminaries();
 		if( pLumManager && meshlights ) {
-			c = pLumManager->ComputeDirectLightingNM( ri, *pBRDF, nm, rc.random, caster, pScene->GetShadowMap() );			
+			IndependentSampler fallbackSamplerNM( rc.random );
+			ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+			c = pLumManager->ComputeDirectLightingNM( ri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
 		}
 	}
 

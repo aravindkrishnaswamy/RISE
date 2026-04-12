@@ -1,0 +1,618 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           torture_manydistant_pt.RISEscene                                                        #
+#   Description:    Torture test for global exitance-proportional light selection.                           #
+#                   One point light 10 units above the floor center; 50 identical-power                     #
+#                   point lights near the ceiling.  The floor receives ~2500x more                          #
+#                   irradiance from the nearby light, but the alias table gives it                           #
+#                   only 1/51 selection probability, wasting ~98% of NEE samples.                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 30, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/torture_manydistant_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera: low angle looking at floor near nearby light
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				512
+	height				512
+	fov					37.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+##################################################
+# The nearby light: 10 units above floor center
+# At d=10, irradiance ~ 100000/(10^2) = 1000
+##################################################
+
+omni_light
+{
+	name				nearby_light
+	power				100000.0
+	color				1.0 0.95 0.8
+	position			278 50 280
+}
+
+##################################################
+# 50 distant lights near ceiling (y=540)
+# At d~530, irradiance ~ 100000/(530^2) ~ 0.36
+# Ratio: nearby contributes ~2800x more per light
+# But alias table gives nearby only 1/51 = 1.96%
+##################################################
+
+omni_light
+{
+	name		far_01
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	56 540 56
+}
+
+omni_light
+{
+	name		far_02
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	156 540 56
+}
+
+omni_light
+{
+	name		far_03
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	256 540 56
+}
+
+omni_light
+{
+	name		far_04
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	356 540 56
+}
+
+omni_light
+{
+	name		far_05
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	456 540 56
+}
+
+omni_light
+{
+	name		far_06
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	56 540 168
+}
+
+omni_light
+{
+	name		far_07
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	156 540 168
+}
+
+omni_light
+{
+	name		far_08
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	256 540 168
+}
+
+omni_light
+{
+	name		far_09
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	356 540 168
+}
+
+omni_light
+{
+	name		far_10
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	456 540 168
+}
+
+omni_light
+{
+	name		far_11
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	56 540 280
+}
+
+omni_light
+{
+	name		far_12
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	156 540 280
+}
+
+omni_light
+{
+	name		far_13
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	256 540 280
+}
+
+omni_light
+{
+	name		far_14
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	356 540 280
+}
+
+omni_light
+{
+	name		far_15
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	456 540 280
+}
+
+omni_light
+{
+	name		far_16
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	56 540 392
+}
+
+omni_light
+{
+	name		far_17
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	156 540 392
+}
+
+omni_light
+{
+	name		far_18
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	256 540 392
+}
+
+omni_light
+{
+	name		far_19
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	356 540 392
+}
+
+omni_light
+{
+	name		far_20
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	456 540 392
+}
+
+omni_light
+{
+	name		far_21
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	56 540 504
+}
+
+omni_light
+{
+	name		far_22
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	156 540 504
+}
+
+omni_light
+{
+	name		far_23
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	256 540 504
+}
+
+omni_light
+{
+	name		far_24
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	356 540 504
+}
+
+omni_light
+{
+	name		far_25
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	456 540 504
+}
+
+omni_light
+{
+	name		far_26
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	100 540 112
+}
+
+omni_light
+{
+	name		far_27
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	200 540 112
+}
+
+omni_light
+{
+	name		far_28
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	300 540 112
+}
+
+omni_light
+{
+	name		far_29
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	400 540 112
+}
+
+omni_light
+{
+	name		far_30
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	500 540 112
+}
+
+omni_light
+{
+	name		far_31
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	100 540 224
+}
+
+omni_light
+{
+	name		far_32
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	200 540 224
+}
+
+omni_light
+{
+	name		far_33
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	300 540 224
+}
+
+omni_light
+{
+	name		far_34
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	400 540 224
+}
+
+omni_light
+{
+	name		far_35
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	500 540 224
+}
+
+omni_light
+{
+	name		far_36
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	100 540 336
+}
+
+omni_light
+{
+	name		far_37
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	200 540 336
+}
+
+omni_light
+{
+	name		far_38
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	300 540 336
+}
+
+omni_light
+{
+	name		far_39
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	400 540 336
+}
+
+omni_light
+{
+	name		far_40
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	500 540 336
+}
+
+omni_light
+{
+	name		far_41
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	100 540 448
+}
+
+omni_light
+{
+	name		far_42
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	200 540 448
+}
+
+omni_light
+{
+	name		far_43
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	300 540 448
+}
+
+omni_light
+{
+	name		far_44
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	400 540 448
+}
+
+omni_light
+{
+	name		far_45
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	500 540 448
+}
+
+omni_light
+{
+	name		far_46
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	78 540 336
+}
+
+omni_light
+{
+	name		far_47
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	178 540 168
+}
+
+omni_light
+{
+	name		far_48
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	378 540 448
+}
+
+omni_light
+{
+	name		far_49
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	478 540 280
+}
+
+omni_light
+{
+	name		far_50
+	power		100000.0
+	color		0.8 0.85 1.0
+	position	278 540 504
+}
+
+##################################################
+# Objects - Cornell box walls + front wall
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# Blocks for visual reference
+##################################################
+
+rawmesh_geometry
+{
+	name				tallblockgeom
+	file				models/raw/cornellbox_tallblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp				true
+}
+
+rawmesh_geometry
+{
+	name				shortblockgeom
+	file				models/raw/cornellbox_shortblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp				true
+}
+
+standard_object
+{
+	name				tallblock
+	geometry			tallblockgeom
+	material			white
+}
+
+standard_object
+{
+	name				shortblock
+	geometry			shortblockgeom
+	material			white
+}

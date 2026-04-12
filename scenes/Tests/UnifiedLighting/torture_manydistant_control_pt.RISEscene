@@ -1,0 +1,180 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Control scene: same as torture_manydistant but with ONLY the nearby light.                              #
+#   This shows what proper sampling looks like — 100% of NEE budget goes to the                             #
+#   dominant light.  Compare noise levels against the 51-light version.                                     #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/torture_manydistant_control_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				512
+	height				512
+	fov					37.0
+}
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Only the nearby light — all 64 samples go to it
+omni_light
+{
+	name				nearby_light
+	power				100000.0
+	color				1.0 0.95 0.8
+	position			278 50 280
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+rawmesh_geometry
+{
+	name				tallblockgeom
+	file				models/raw/cornellbox_tallblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp				true
+}
+
+rawmesh_geometry
+{
+	name				shortblockgeom
+	file				models/raw/cornellbox_shortblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp				true
+}
+
+standard_object
+{
+	name				tallblock
+	geometry			tallblockgeom
+	material			white
+}
+
+standard_object
+{
+	name				shortblock
+	geometry			shortblockgeom
+	material			white
+}

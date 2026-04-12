@@ -1,0 +1,228 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Test scene for light-sample Russian roulette (Stage 1D).                                                #
+#   A Cornell box with a single mesh light ceiling panel.  Rendered with light_rr_threshold = 0.5            #
+#   to verify the RR mechanism works without introducing visible bias.                                       #
+#############################################################################################################
+
+> set accelerator B 10 8
+> set light_rr_threshold 0.5
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/meshlight_rr_test_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					39.3
+}
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.065 0.05
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.14 0.45 0.091
+}
+
+uniformcolor_painter
+{
+	name				pnt_emit
+	color				1.0 0.96 0.92
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_luminaire_material
+{
+	name				ceiling_lum
+	exitance			pnt_emit
+	scale				40.0
+	material			none
+}
+
+##################################################
+# Geometry
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552 0 0
+	ptb					0 0 0
+	ptc					0 0 559
+	ptd					552 0 559
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					552 548 0
+	ptb					552 548 559
+	ptc					0 548 559
+	ptd					0 548 0
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					552 0 559
+	ptb					0 0 559
+	ptc					0 548 559
+	ptd					552 548 559
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					552 0 0
+	ptb					552 0 559
+	ptc					552 548 559
+	ptd					552 548 0
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					0 0 559
+	ptb					0 0 0
+	ptc					0 548 0
+	ptd					0 548 559
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343 547 227
+	ptb					343 547 332
+	ptc					213 547 332
+	ptd					213 547 227
+}
+
+box_geometry
+{
+	name				shortboxgeom
+	width				166
+	height				165
+	depth				166
+}
+
+box_geometry
+{
+	name				tallboxgeom
+	width				166
+	height				330
+	depth				166
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				ceilinglight
+	geometry			lightgeom
+	material			ceiling_lum
+}
+
+standard_object
+{
+	name				shortbox
+	geometry			shortboxgeom
+	position			186 82.5 169
+	orientation			0 -17 0
+	material			white
+}
+
+standard_object
+{
+	name				tallbox
+	geometry			tallboxgeom
+	position			368 165 351
+	orientation			0 17 0
+	material			white
+}

@@ -41,24 +41,24 @@ void AmbientOcclusionShaderOp::PerformOperation(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [in/out] Resultant color from op
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
 	c = RISEPel(0.0);
 
 	// Only do stuff on a normal pass or on final gather
-//	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+//	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 //		return;
 //	}
 
 	const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
 	bool bComputeAmbOcc = true;
-	IIrradianceCache* pCache = caster.GetAttachedScene()->GetIrradianceCache();
+	const IIrradianceCache* pCache = caster.GetAttachedScene()->GetIrradianceCache();
 
 	// If we are to use irradiance caching and we are in a normal pass, look it up
-	if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.pass == RuntimeContext::PASS_NORMAL ) {
+	if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
 		// Look it up
 		std::vector<IIrradianceCache::CacheElement> results;
         const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
@@ -188,14 +188,14 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar caccum,						///< [in] Current value for wavelength
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack,			///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,			///< [in/out] Index of refraction stack
 	const ScatteredRayContainer* pScat			///< [in] Scattering information
 	) const
 {
 	Scalar c=0;
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 

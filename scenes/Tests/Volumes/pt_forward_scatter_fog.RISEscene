@@ -1,0 +1,246 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_forward_scatter_fog.RISEscene                                                        #
+#   Description:    Strong forward-scattering fog (HG g=0.8) with a spot light.                            #
+#                                                                                                           #
+#                   Tests Henyey-Greenstein phase function anisotropy.  With g=0.8,                         #
+#                   light scatters predominantly forward.  The camera looks toward                           #
+#                   the ceiling light, so the medium above appears brighter than a                           #
+#                   comparable isotropic scene due to forward-scatter back toward                            #
+#                   the camera.  A tall box casts a visible shadow through the fog.                          #
+#                                                                                                           #
+#                   sigma_a = 0.0002                                                                        #
+#                   sigma_s = 0.003                                                                         #
+#                   phase   = hg 0.8                                                                        #
+#                   optical depth across box ≈ 0.0032 * 556 ≈ 1.8                                           #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 31, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       512
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_forward_scatter_fog
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_forward_scatter_fog
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera -- inside the box, looking up toward the
+# ceiling light.  Forward scattering (g=0.8) sends
+# light preferentially toward the camera.
+##################################################
+
+pinhole_camera
+{
+	location			278 100 280
+	lookat				278 400 280
+	up					0 0 -1
+	width				512
+	height				512
+	fov					65.0
+}
+
+##################################################
+# Participating Medium -- strong forward scatter
+##################################################
+
+homogeneous_medium
+{
+	name		fog
+	absorption	0.0002 0.0002 0.0002
+	scattering	0.003 0.003 0.003
+	phase		hg 0.8
+}
+
+> set global_medium fog
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				150.0
+	material			none
+}
+
+##################################################
+# Geometry
+##################################################
+
+# --- Floor ---
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 560
+	ptd					556 0 560
+}
+
+# --- Back wall ---
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 560
+	ptb					0 549 560
+	ptc					556 549 560
+	ptd					556 0 560
+}
+
+# --- Ceiling ---
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556 549 0
+	ptb					556 549 560
+	ptc					0 549 560
+	ptd					0 549 0
+}
+
+# --- Left wall ---
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 560
+	ptb					0 0 0
+	ptc					0 549 0
+	ptd					0 549 560
+}
+
+# --- Right wall ---
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 0
+	ptb					556 0 560
+	ptc					556 549 560
+	ptd					556 549 0
+}
+
+# --- Ceiling area light ---
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343 548.8 227
+	ptb					343 548.8 332
+	ptc					213 548.8 332
+	ptd					213 548.8 227
+}
+
+# --- Tall box to cast shadow through fog ---
+box_geometry
+{
+	name				tallboxgeom
+	width				80
+	height				280
+	depth				80
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}
+
+standard_object
+{
+	name				tallbox
+	geometry			tallboxgeom
+	position			278 140 280
+	material			white
+}

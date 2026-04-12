@@ -74,7 +74,6 @@ final class RISESceneSyntaxHighlighter: NSObject, NSTextStorageDelegate {
         "directvolumerendering_shader", "spectraldirectvolumerendering_shader",
         // Rasterizers
         "pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
-        "adaptivepixelpel_rasterizer", "contrastAApixelpel_rasterizer",
         // Output
         "file_rasterizeroutput",
         // Lights

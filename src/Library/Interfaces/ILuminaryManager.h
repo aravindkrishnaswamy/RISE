@@ -24,6 +24,7 @@
 #include "../Intersection/RayIntersection.h"
 #include "IPhotonMap.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/ISampler.h"
 #include <vector>
 
 namespace RISE
@@ -54,21 +55,21 @@ namespace RISE
 
 		//! Computes direct lighting for all luminaires
 		/// \return Direct lighting value as an RISEPel
-		virtual RISEPel ComputeDirectLighting( 
+		virtual RISEPel ComputeDirectLighting(
 			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
 			const IBSDF& pBRDF,												///< [in] BRDF of the material
-			const RandomNumberGenerator& random,							///< [in] Random number generator
+			ISampler& sampler,												///< [in] Low-discrepancy sampler
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
 			) const = 0;
 
 		//! Computes direct lighting for a single wavelength
 		/// \return Direct lighting value for the particular wavelength as a scalar
-		virtual	Scalar ComputeDirectLightingNM( 
+		virtual	Scalar ComputeDirectLightingNM(
 			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
 			const IBSDF& pBRDF,												///< [in] BRDF of the material
 			const Scalar nm,												///< [in] Wavelength
-			const RandomNumberGenerator& random,							///< [in] Random number generator
+			ISampler& sampler,												///< [in] Low-discrepancy sampler
 			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
 			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
 			) const = 0;

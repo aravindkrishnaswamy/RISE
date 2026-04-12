@@ -56,7 +56,7 @@ namespace RISE
 			const Scalar		invR0,
 			const RISEPel*		rot,
 			const RISEPel*		trans
-			) = 0;
+			) const = 0;
 
 		virtual Scalar Query( const Point3& ptPosition, const Vector3& vNormal, std::vector<CacheElement>& results ) const = 0;
 		virtual bool IsSampleNeeded( const Point3& ptPosition, const Vector3& vNormal ) const = 0;
@@ -65,10 +65,10 @@ namespace RISE
 			const Vector3& vNormal,
 			const unsigned int minEffectiveContributors
 			) const = 0;
-		virtual Scalar GetTolerance() = 0;
-		virtual void Clear() = 0;
-		virtual bool Precomputed() = 0;
-		virtual void FinishedPrecomputation() = 0;
+		virtual Scalar GetTolerance() const = 0;
+		virtual void Clear() const = 0;
+		virtual bool Precomputed() const = 0;
+		virtual void FinishedPrecomputation() const = 0;
 	};
 }
 

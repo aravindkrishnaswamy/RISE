@@ -4,26 +4,17 @@ RISE ASCII SCENE 5
 
 > set accelerator B 10 8
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 bdpt_pel_rasterizer
 {
-	max_recursion		8
-	min_importance		0.003
 	max_eye_depth		8
 	max_light_depth		6
 	samples				256
-	lum_samples			1
-	ior_stack			TRUE
 	sms_enabled			FALSE
 	sms_max_iterations	20
 	sms_threshold		1e-5
@@ -77,7 +68,7 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_light
-	scale				500.0
+	scale				100.0
 	material			none
 }
 
@@ -107,9 +98,9 @@ clippedplane_geometry
 {
 	name				light_geom
 	pta					-1.5 0.0 -1.5
-	ptb					-1.5 0.0 1.5
+	ptb					1.5 0.0 -1.5
 	ptc					1.5 0.0 1.5
-	ptd					1.5 0.0 -1.5
+	ptd					-1.5 0.0 1.5
 }
 
 standard_object

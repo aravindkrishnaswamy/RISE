@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "GlobalPelPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -28,13 +29,12 @@ GlobalPelPhotonTracer::GlobalPelPhotonTracer(
 	const Scalar ext,
 	const bool branch,
 	const bool shootFromNonMeshLights,
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
 	const bool regenerate,
 	const bool shootFromMeshLights
 	) :
-  PhotonTracer<GlobalPelPhotonMap>( shootFromNonMeshLights, useiorstack, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
+  PhotonTracer<GlobalPelPhotonMap>( shootFromNonMeshLights, powerscale, temporal_samples, regenerate, shootFromMeshLights ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bBranch( branch )
@@ -46,12 +46,12 @@ GlobalPelPhotonTracer::~GlobalPelPhotonTracer( )
 }
 
 
-void GlobalPelPhotonTracer::TracePhoton( 
+void GlobalPelPhotonTracer::TracePhoton(
 	const Ray& ray,
 	const RISEPel& power,
 	GlobalPelPhotonMap& pPhotonMap,
 	const bool bStorePhoton,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	static unsigned int		numRecursions = 0;
@@ -90,9 +90,7 @@ void GlobalPelPhotonTracer::TracePhoton(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial->GetSPF();
 
@@ -101,7 +99,8 @@ void GlobalPelPhotonTracer::TracePhoton(
 			// Get information from the material as to what to do
 			ScatteredRayContainer		scattered;
 
-			pSPF->Scatter( ri.geometric, random, scattered, ior_stack );
+			IndependentSampler samplerWrapper( random );
+		pSPF->Scatter( ri.geometric, samplerWrapper, scattered, ior_stack );
 
 			bool bDiffuseComponentAvailable = false;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
@@ -120,13 +119,13 @@ void GlobalPelPhotonTracer::TracePhoton(
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?scat.ior_stack:ior_stack );
+					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack );
 				}
 			} else {
 				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?pScat->ior_stack:ior_stack );
+					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack );
 				}
 			}
 		}

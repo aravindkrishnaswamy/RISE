@@ -22,26 +22,40 @@ RISE ASCII SCENE 5
 # Setup a renderer
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
-	name				global
-	shaderop			pt
+	name		global
+	shaderop	DefaultPathTracing
 }
 
+/*
 bdpt_pel_rasterizer
 {
-	max_recursion		10
-	min_importance		0.001
 	max_eye_depth		10
 	max_light_depth		10
+	samples				256
+}
+*/
+
+pathtracing_pel_rasterizer
+{
 	samples				64
-	lum_samples			1
-	ior_stack			TRUE
+	pathguiding				TRUE
+	pathguiding_iterations	6
+	pathguiding_spp			6
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	3
+    pathguiding_light_max_depth 0
+	pathguiding_sampling_type	ris
+	sms_enabled			TRUE
+	sms_max_iterations	20
+	sms_threshold		1e-3
+	sms_max_chain_depth	20
+	sms_biased			TRUE
+	oidn_denoise 		TRUE
+	blue_noise_sampler	TRUE
+	adaptive_max_samples	1024
+	adaptive_threshold		0.1
 }
 
 file_rasterizeroutput
@@ -61,8 +75,8 @@ pinhole_camera
 	location			0 2.9 8.8
 	lookat				0 1.8 -1.2
 	up					0 1 0
-	width				480
-	height				360
+	width				960
+	height				720
 	fov					42.0
 }
 
@@ -489,6 +503,7 @@ FOR IX -1 1 1
 		name			ceilingdiskwarm@IX
 		geometry		lightdiskgeom
 		position		@LX 5.92 -2.2
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 
@@ -497,6 +512,7 @@ FOR IX -1 1 1
 		name			ceilingdiskcool@IX
 		geometry		lightdiskgeom
 		position		@LX 5.92 0.0
+		orientation		180 0 0
 		material		ceiling_lum
 	}
 

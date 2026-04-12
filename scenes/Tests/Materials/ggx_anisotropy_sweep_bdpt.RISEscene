@@ -1,0 +1,402 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           ggx_anisotropy_sweep.RISEscene                                                         #
+#   Description:    3x3 grid of GGX spheres varying alpha_x (columns) vs alpha_y (rows). Diagonal          #
+#                   entries (alpha_x == alpha_y) should match isotropic GGX. Off-diagonal entries            #
+#                   show anisotropic highlight stretching.                                                   #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 6, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+bdpt_pel_rasterizer
+{
+	max_eye_depth		10
+	max_light_depth		8
+	samples				64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/ggx_anisotropy_sweep_bdpt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				512
+	height				512
+	fov					39.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_silver_spec
+	color				0.95 0.93 0.88
+}
+
+##################################################
+# GGX Materials - 3x3 grid: alpha_x in {0.05, 0.2, 0.6}, alpha_y in {0.05, 0.2, 0.6}
+# Aluminum conductor: IOR=1.37, k=7.62
+##################################################
+
+# Row 0 (top): alpha_y = 0.05
+ggx_material
+{
+	name				mat_ax005_ay005
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.05
+	alphay				0.05
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				mat_ax02_ay005
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.2
+	alphay				0.05
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				mat_ax06_ay005
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.6
+	alphay				0.05
+	ior					1.37
+	extinction			7.62
+}
+
+# Row 1 (middle): alpha_y = 0.2
+ggx_material
+{
+	name				mat_ax005_ay02
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.05
+	alphay				0.2
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				mat_ax02_ay02
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.2
+	alphay				0.2
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				mat_ax06_ay02
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.6
+	alphay				0.2
+	ior					1.37
+	extinction			7.62
+}
+
+# Row 2 (bottom): alpha_y = 0.6
+ggx_material
+{
+	name				mat_ax005_ay06
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.05
+	alphay				0.6
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				mat_ax02_ay06
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.2
+	alphay				0.6
+	ior					1.37
+	extinction			7.62
+}
+
+ggx_material
+{
+	name				mat_ax06_ay06
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.6
+	alphay				0.6
+	ior					1.37
+	extinction			7.62
+}
+
+##################################################
+# Wall materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				70.0
+	material			none
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					393.0 548.7999 177.0
+	ptb					393.0 548.7999 382.0
+	ptc					163.0 548.7999 382.0
+	ptd					163.0 548.7999 177.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Sphere geometry
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				65.0
+}
+
+##################################################
+# 3x3 grid of spheres
+# Columns (X): alpha_x = 0.05, 0.2, 0.6
+# Rows (Y): alpha_y = 0.05, 0.2, 0.6
+##################################################
+
+# Top row: alpha_y = 0.05
+standard_object
+{
+	name				sphere_00
+	geometry			spheregeom
+	position			140 400 300
+	material			mat_ax005_ay005
+}
+
+standard_object
+{
+	name				sphere_10
+	geometry			spheregeom
+	position			278 400 300
+	material			mat_ax02_ay005
+}
+
+standard_object
+{
+	name				sphere_20
+	geometry			spheregeom
+	position			416 400 300
+	material			mat_ax06_ay005
+}
+
+# Middle row: alpha_y = 0.2
+standard_object
+{
+	name				sphere_01
+	geometry			spheregeom
+	position			140 265 280
+	material			mat_ax005_ay02
+}
+
+standard_object
+{
+	name				sphere_11
+	geometry			spheregeom
+	position			278 265 280
+	material			mat_ax02_ay02
+}
+
+standard_object
+{
+	name				sphere_21
+	geometry			spheregeom
+	position			416 265 280
+	material			mat_ax06_ay02
+}
+
+# Bottom row: alpha_y = 0.6
+standard_object
+{
+	name				sphere_02
+	geometry			spheregeom
+	position			140 130 260
+	material			mat_ax005_ay06
+}
+
+standard_object
+{
+	name				sphere_12
+	geometry			spheregeom
+	position			278 130 260
+	material			mat_ax02_ay06
+}
+
+standard_object
+{
+	name				sphere_22
+	geometry			spheregeom
+	position			416 130 260
+	material			mat_ax06_ay06
+}

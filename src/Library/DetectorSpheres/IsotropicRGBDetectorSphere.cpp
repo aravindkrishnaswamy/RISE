@@ -16,6 +16,7 @@
 #include "IsotropicRGBDetectorSphere.h"
 #include "../Geometry/SphereGeometry.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/RTime.h"
 #include "../Interfaces/ILog.h"
 #include <algorithm>
@@ -237,11 +238,13 @@ void IsotropicRGBDetectorSphere::PerformMeasurement(
 			// which detector it hits
 			ScatteredRayContainer scattered;
 
+			IndependentSampler samplerWrapper( random );
+			IORStack iorStack( 1.0 );
 			if( bSpectral ) {
 				nm = nmdiff*random.CanonicalRandom() + nmbegin;
-				pSPF->ScatterNM( ri, random, nm, scattered, 0 );
+				pSPF->ScatterNM( ri, samplerWrapper, nm, scattered, iorStack );
 			} else {
-				pSPF->Scatter( ri, random, scattered, 0 );
+				pSPF->Scatter( ri, samplerWrapper, scattered, iorStack );
 			}
 
 			ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );

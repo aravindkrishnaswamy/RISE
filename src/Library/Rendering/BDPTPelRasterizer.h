@@ -21,6 +21,8 @@
 
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedPelRasterizer.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
+#include <stdint.h>
 
 namespace RISE
 {
@@ -34,6 +36,13 @@ namespace RISE
 			virtual ~BDPTPelRasterizer();
 
 			const char* GetProgressTitle() const { return "BDPT Rasterizing: "; }
+
+			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
+			/// the default-constructed PixelBasedPelRasterizer copy.
+			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			/// Override to use this BDPT rasterizer's adaptive sampling config.
+			unsigned int GetProgressiveTotalSPP() const;
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -49,19 +58,30 @@ namespace RISE
 
 			/// RGB integration for a single pixel sample.
 			/// Returns the non-splat contribution; splats are written to pSplatFilm.
+			/// sampleIndex and pixelSeed drive the Owen-scrambled Sobol sampler.
+			/// When pAOV is non-null, extracts first-hit albedo and normal.
 			RISEPel IntegratePixelRGB(
 				const RuntimeContext& rc,
 				const Point2& ptOnScreen,
 				const IScene& pScene,
-				const ICamera& camera
+				const ICamera& camera,
+				uint32_t sampleIndex,
+				uint32_t pixelSeed,
+				PixelAOV* pAOV
 				) const;
+
+			AdaptiveSamplingConfig		adaptiveConfig;
 
 		public:
 			BDPTPelRasterizer(
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
-				const ManifoldSolverConfig& smsConfig
+				const ManifoldSolverConfig& smsConfig,
+				const PathGuidingConfig& guidingConfig,
+				const AdaptiveSamplingConfig& adaptiveConfig,
+				const StabilityConfig& stabilityConfig,
+				bool useZSobol_
 				);
 		};
 	}

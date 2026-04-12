@@ -49,14 +49,29 @@ namespace RISE
 		//! Asks the light for its emitted radiance in a particular direction
 		virtual RISEPel emittedRadiance( const Vector3& vLightOut ) const = 0;
 
+		//! Returns the light's world-space position (for spatial importance estimation)
+		virtual Point3 position() const = 0;
+
 		//! Asks the light to generate a random emitted photon
 		virtual Ray generateRandomPhoton( const Point3& ptrand ) const = 0;
 
 		//! Returns the solid angle PDF for the directional sampling used by generateRandomPhoton
 		virtual Scalar pdfDirection( const Vector3& dir ) const = 0;
 
+		//! Is this a positional (point/spot) light suitable for equiangular sampling?
+		//! Returns false for directional and ambient lights.
+		virtual bool IsPositionalLight() const { return false; }
+
+		//! Returns the primary emission direction (unit vector).
+		//! Default is (0,1,0); overridden by directional lights (e.g. spot).
+		virtual Vector3 emissionDirection() const { return Vector3(0,1,0); }
+
+		//! Returns the half-angle (radians) of the emission cone.
+		//! PI means full-sphere (isotropic, e.g. point lights).
+		virtual Scalar emissionConeHalfAngle() const { return PI; }
+
 		//! Computes direct lighting
-		virtual void ComputeDirectLighting( 
+		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information
 			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
 			const IBSDF& brdf,								///< [in] BRDF of the object 

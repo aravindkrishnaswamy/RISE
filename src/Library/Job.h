@@ -34,7 +34,11 @@
 #include "Interfaces/IModifierManager.h"
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
+#include "Interfaces/IMedium.h"
 #include "Utilities/Reference.h"
+#include "Utilities/RString.h"
+#include "Utilities/ProgressiveConfig.h"
+#include <map>
 
 namespace RISE
 {
@@ -59,6 +63,11 @@ namespace RISE
 		IRasterizer*								pRasterizer;		// A job can have at most one rasterizer
 
 		IProgressCallback*							pGlobalProgress;	// A global progress reporter
+
+		double										lightSampleRRThreshold;	// Light-sample RR threshold (0=disabled)
+
+		typedef std::map<String, IMedium*>		MediumMap;
+		MediumMap									mediaMap;				// Named participating media
 
 		//
 		// Helper functions
@@ -119,6 +128,10 @@ namespace RISE
 			const bool bUseOctree,									///< [in] Use Octrees for spatial partitioning
 			const unsigned int nMaxObjectsPerNode,					///< [in] Maximum number of elements / node
 			const unsigned int nMaxTreeDepth						///< [in] Maximum tree depth
+			);
+
+		bool SetLightSampleRRThreshold(
+			const double threshold									///< [in] RR threshold (0=disabled)
 			);
 
 		//
@@ -468,6 +481,18 @@ namespace RISE
 									const char* roughness			///< [in] Surface roughness [0,1]
 									);
 
+		//! Creates a Random Walk SSS material
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddRandomWalkSSSMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* ior,				///< [in] Index of refraction
+									const char* absorption,			///< [in] Absorption coefficient
+									const char* scattering,			///< [in] Scattering coefficient
+									const char* g,					///< [in] HG asymmetry parameter
+									const char* roughness,			///< [in] Surface roughness [0,1]
+									const char* maxBounces			///< [in] Maximum walk steps
+									);
+
 		//! Creates an isotropic phong material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddIsotropicPhongMaterial(
@@ -566,6 +591,31 @@ namespace RISE
 			const char* roughness
 			);
 
+		//! Adds a BioSpec skin random-walk SSS material
+		bool AddBioSpecSkinRWMaterial(
+			const char* name,
+			const char* thickness_SC_,
+			const char* thickness_epidermis_,
+			const char* thickness_papillary_dermis_,
+			const char* thickness_reticular_dermis_,
+			const char* ior_SC_,
+			const char* ior_epidermis_,
+			const char* ior_papillary_dermis_,
+			const char* ior_reticular_dermis_,
+			const char* concentration_eumelanin_,
+			const char* concentration_pheomelanin_,
+			const char* melanosomes_in_epidermis_,
+			const char* hb_ratio_,
+			const char* whole_blood_in_papillary_dermis_,
+			const char* whole_blood_in_reticular_dermis_,
+			const char* bilirubin_concentration_,
+			const char* betacarotene_concentration_SC_,
+			const char* betacarotene_concentration_epidermis_,
+			const char* betacarotene_concentration_dermis_,
+			const char* roughness,
+			const char* maxBounces
+			);
+
 		//! Adds a Donner & Jensen 2008 spectral skin BSSRDF material
 		bool AddDonnerJensenSkinBSSRDFMaterial(
 			const char* name,
@@ -626,6 +676,18 @@ namespace RISE
 			const char* specular,										///< [in] Specular reflectance
 			const char* alphax,											///< [in] Standard deviation (RMS) of surface slope in x
 			const char* alphay											///< [in] Standard deviation (RMS) of surface slope in y
+			);
+
+		//! Adds GGX anisotropic microfacet material
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddGGXMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* diffuse,										///< [in] Diffuse reflectance
+			const char* specular,										///< [in] Specular reflectance
+			const char* alphaX,											///< [in] Roughness in tangent u direction
+			const char* alphaY,											///< [in] Roughness in tangent v direction
+			const char* ior,											///< [in] Index of refraction
+			const char* ext												///< [in] Extinction coefficient
 			);
 
 		//! Adds Cook Torrance material
@@ -895,9 +957,7 @@ namespace RISE
 			const double power,										///< [in] Power of the light in watts
 			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
 			const double pos[3],									///< [in] Position of the light
-			const double linearAttenuation,							///< [in] Amount of linear attenuation
-			const double quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-			const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			);
 
 		//! Creates a infinite point spot light
@@ -910,9 +970,7 @@ namespace RISE
 			const double inner,										///< [in] Angle of the inner cone in radians
 			const double outer,										///< [in] Angle of the outer cone in radians
 			const double pos[3],									///< [in] Position of the light
-			const double linearAttenuation,							///< [in] Amount of linear attenuation
-			const double quadraticAttenuation,						///< [in] Amount of quadratic attenuation
-			const bool shootPhotons = true							///< [in] Should this light shoot photons for photon mapping?
+			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			);
 
 		//! Creates the ambient light
@@ -931,6 +989,53 @@ namespace RISE
 			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
 			const double dir[3]										///< [in] Direction of the light
 			);
+
+		//
+		// Participating media
+		//
+
+		//! Adds a homogeneous participating medium
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddHomogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double sigma_a[3],								///< [in] Absorption coefficient (linear RGB)
+			const double sigma_s[3],								///< [in] Scattering coefficient (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g									///< [in] Asymmetry factor for HG (ignored for isotropic)
+			);
+
+		//! Adds a heterogeneous participating medium driven by volume data
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddHeterogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double max_sigma_a[3],							///< [in] Max absorption coefficient (linear RGB)
+			const double max_sigma_s[3],							///< [in] Max scattering coefficient (linear RGB)
+			const double emission[3],								///< [in] Volumetric emission (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g,									///< [in] Asymmetry factor for HG
+			const char* szVolumeFilePattern,						///< [in] File pattern for volume slices
+			const unsigned int volWidth,							///< [in] Volume width in voxels
+			const unsigned int volHeight,							///< [in] Volume height in voxels
+			const unsigned int volStartZ,							///< [in] Starting z slice index
+			const unsigned int volEndZ,								///< [in] Ending z slice index
+			const char accessor,									///< [in] Volume accessor type: 'n', 't', or 'c'
+			const double bboxMin[3],								///< [in] World-space AABB minimum corner
+			const double bboxMax[3]									///< [in] World-space AABB maximum corner
+			);
+
+		//! Sets the scene's global participating medium
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetGlobalMedium(
+			const char* name										///< [in] Name of a previously added medium
+			);
+
+		//! Assigns an interior participating medium to an object
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetObjectInteriorMedium(
+			const char* object_name,								///< [in] Name of the object
+			const char* medium_name									///< [in] Name of the medium
+			);
+
 
 		//
 		// Adds modifiers
@@ -1166,31 +1271,6 @@ namespace RISE
 			const char* hemoglobin_dermis_offset
 			);
 
-		bool AddBioSpecSkinSSSShaderOp(
-			const char* name,
-			const unsigned int numPoints,
-			const double error,
-			const unsigned int maxPointsPerNode,
-			const unsigned char maxDepth,
-			const double irrad_scale,
-			const char* shader,
-			const bool cache,
-			const double thickness_SC, const double thickness_epidermis,
-			const double thickness_papillary, const double thickness_reticular,
-			const double ior_SC, const double ior_epidermis,
-			const double ior_papillary, const double ior_reticular,
-			const double concentration_eumelanin, const double concentration_pheomelanin,
-			const double melanosomes_in_epidermis,
-			const double hb_ratio,
-			const double whole_blood_papillary, const double whole_blood_reticular,
-			const double bilirubin_concentration,
-			const double betacarotene_SC, const double betacarotene_epidermis,
-			const double betacarotene_dermis,
-			const char* melanosomes_offset,
-			const char* blood_papillary_offset,
-			const char* blood_reticular_offset
-			);
-
 		bool AddAreaLightShaderOp(
 			const char* name,										///< [in] Name of the shaderop
 			const double width,										///< [in] Width of the light source
@@ -1279,7 +1359,6 @@ namespace RISE
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const char* shader,										///< [in] The default shader
 			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 			const bool bBackground,									///< [in] Is the radiance map a background object
@@ -1295,8 +1374,13 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			);
 
 		//! Sets the rasterizer type to be pixel based spectral integrating
@@ -1308,7 +1392,6 @@ namespace RISE
 			const double lambda_end,								///< [in] Wavelength to finish sampling at
 			const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const char* shader,										///< [in] The default shader
 			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
 			const bool bBackground,									///< [in] Is the radiance map a background object
@@ -1324,79 +1407,22 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLIght,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 			const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
 			const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
 			const double rgb_spd_r[],								///< [in] Array that contains the RGB SPD amplitudes for red
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
-			const double rgb_spd_b[]								///< [in] Array that contains the RGB SPD amplitudes for blue
+			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
 			);
-
-		//! Sets the rasterizer type to be adaptive pixel based PEL
-		bool SetAdaptivePixelBasedPelRasterizer(
-			const unsigned int numMinPixelSamples,					///< [in] Minimum or base number of samples to start with
-			const unsigned int numMaxPixelSamples,					///< [in] Maximum number of samples to go to
-			const unsigned int numSteps,							///< [in] Number of steps to maximum sampling level
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const double threshold,									///< [in] Threshold at which to stop sampling further
-			const bool bOutputSamples,								///< [in] Should the renderer show how many samples rather than an image
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
-			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
-			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			);
-
-		//! Sets the rasterizer type to be contrast AA pixel pel
-		bool SetContrastAAPixelBasedPelRasterizer(
-			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
-			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
-			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double contrast_threshold[3],						///< [in] Contrast threshold for each color component
-			const bool show_samples									///< [in] Should the number of samples be taken be shown?
-			);
-
 
 		//! Sets the rasterizer type to be Pel (RGB) BDPT
 		bool SetBDPTPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
@@ -1406,30 +1432,30 @@ namespace RISE
 			const double orient[3],									///< [in] Euler angles for orienting the radiance map
 			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
 			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
 			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
 			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
 			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
 			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
 			const double smsThreshold,								///< [in] SMS convergence threshold
 			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
 			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
+			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			);
 
 		//! Sets the rasterizer type to be spectral BDPT
 		bool SetBDPTSpectralRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
-			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
@@ -1439,15 +1465,12 @@ namespace RISE
 			const double orient[3],									///< [in] Euler angles for orienting the radiance map
 			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
 			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
-			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
 			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
 			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
 			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
 			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
 			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const double nmbegin,									///< [in] Start wavelength (nm)
 			const double nmend,										///< [in] End wavelength (nm)
@@ -1458,12 +1481,80 @@ namespace RISE
 			const double smsThreshold,								///< [in] SMS convergence threshold
 			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
 			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials					///< [in] SMS Bernoulli trials for unbiased PDF
+			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			);
+
+		bool SetPathTracingPelRasterizer(
+			const unsigned int numPixelSamples,
+			const char* shader,
+			const char* globalRadianceMap,
+			const bool bBackground,
+			const double scale,
+			const double orient[3],
+			const char* pixelSampler,
+			const double pixelSamplerParam,
+			const char* pixelFilter,
+			const double pixelFilterWidth,
+			const double pixelFilterHeight,
+			const double pixelFilterParamA,
+			const double pixelFilterParamB,
+			const bool bShowLuminaires,
+			const bool bChooseOnlyOneLight,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased,
+			const unsigned int smsBernoulliTrials,
+			const bool oidnDenoise,
+			const PathGuidingConfig& guidingConfig,
+			const AdaptiveSamplingConfig& adaptiveConfig,
+			const StabilityConfig& stabilityConfig,
+			const bool useZSobol,
+			const ProgressiveConfig& progressiveConfig
+			);
+
+		bool SetPathTracingSpectralRasterizer(
+			const unsigned int numPixelSamples,
+			const char* shader,
+			const char* globalRadianceMap,
+			const bool bBackground,
+			const double scale,
+			const double orient[3],
+			const char* pixelSampler,
+			const double pixelSamplerParam,
+			const char* pixelFilter,
+			const double pixelFilterWidth,
+			const double pixelFilterHeight,
+			const double pixelFilterParamA,
+			const double pixelFilterParamB,
+			const bool bShowLuminaires,
+			const bool bChooseOnlyOneLight,
+			const double nmbegin,
+			const double nmend,
+			const unsigned int num_wavelengths,
+			const unsigned int spectral_samples,
+			const bool smsEnabled,
+			const unsigned int smsMaxIterations,
+			const double smsThreshold,
+			const unsigned int smsMaxChainDepth,
+			const bool smsBiased,
+			const unsigned int smsBernoulliTrials,
+			const bool oidnDenoise,
+			const AdaptiveSamplingConfig& adaptiveConfig,
+			const StabilityConfig& stabilityConfig,
+			const bool useZSobol,
+			const bool useHWSS,
+			const ProgressiveConfig& progressiveConfig
 			);
 
 		bool SetMLTRasterizer(
-			const unsigned int maxRecur,							///< [in] Maximum recursion level
-			const double minImportance,								///< [in] Minimum importance to stop at
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const unsigned int nBootstrap,							///< [in] Number of bootstrap samples
@@ -1472,8 +1563,27 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bUseIORStack,								///< [in] Should we use an index of refraction stack?
-			const bool bChooseOnlyOneLight							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			);
+
+		bool SetMLTSpectralRasterizer(
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const unsigned int nBootstrap,							///< [in] Number of bootstrap samples
+			const unsigned int nChains,								///< [in] Number of Markov chains
+			const unsigned int nMutationsPerPixel,					///< [in] Mutations per pixel budget
+			const double largeStepProb,								///< [in] Large step probability
+			const char* shader,										///< [in] The default shader
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const double nmbegin,									///< [in] Start of spectral range (nm)
+			const double nmend,										///< [in] End of spectral range (nm)
+			const unsigned int nSpectralSamples,					///< [in] Spectral samples per evaluation
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
 
 		//
@@ -1658,7 +1768,6 @@ namespace RISE
 			const bool reflect,								///< [in] Should we trace reflected rays?
 			const bool refract,								///< [in] Should we trace refracted rays?
 			const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 			const bool shootFromMeshLights = true			///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -1673,7 +1782,6 @@ namespace RISE
 			const double minImportance,						///< [in] Minimum importance when a photon is discarded
 			const bool branch,								///< [in] Should the tracer branch or follow a single path?
 			const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 			const bool shootFromMeshLights = true			///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -1690,7 +1798,6 @@ namespace RISE
 			const bool refract,								///< [in] Should we trace refracted rays?
 			const bool direct_translucent,					///< [in] Should we trace translucent primary interaction rays?
 			const bool shootFromNonMeshLights,				///< [in] Should we shoot from non mesh based lights?
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate,							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 			const bool shootFromMeshLights = true			///< [in] Should we shoot from mesh based lights (luminaries)?
@@ -1706,7 +1813,6 @@ namespace RISE
 			const double nm_begin,							///< [in] Wavelength to start shooting photons at
 			const double nm_end,							///< [in] Wavelength to end shooting photons at
 			const unsigned int num_wavelengths,				///< [in] Number of wavelengths to shoot photons at
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const bool branch,								///< [in] Should the tracer branch or follow a single path?
 			const bool reflect,								///< [in] Should we trace reflected rays?
 			const bool refract,								///< [in] Should we trace refracted rays?
@@ -1724,7 +1830,6 @@ namespace RISE
 			const double nm_begin,							///< [in] Wavelength to start shooting photons at
 			const double nm_end,							///< [in] Wavelength to end shooting photons at
 			const unsigned int num_wavelengths,				///< [in] Number of wavelengths to shoot photons at
-			const bool useiorstack,							///< [in] Should the ray caster use a index of refraction stack?
 			const bool branch,								///< [in] Should the tracer branch or follow a single path?
 			const unsigned int temporal_samples,			///< [in] Number of temporal samples to take for animation frames
 			const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?

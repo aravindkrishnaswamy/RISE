@@ -7,7 +7,7 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: February 23, 2002
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -19,7 +19,15 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IPixelFilter.h"
+#include "../Utilities/PathGuidingField.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
+#include "../Utilities/StabilityConfig.h"
 #include "PixelBasedRasterizerHelper.h"
+
+#ifdef RISE_ENABLE_OPENPGL
+namespace RISE { namespace Implementation { class PathGuidingField; } }
+#endif
+namespace RISE { namespace Implementation { class OptimalMISAccumulator; } }
 
 namespace RISE
 {
@@ -30,7 +38,7 @@ namespace RISE
 		protected:
 			virtual ~PixelBasedPelRasterizer( );
 
-			inline bool TakeSingleSample( 
+			inline bool TakeSingleSample(
 				const RuntimeContext& rc,
 				const RasterizerState& rast,
 				const Ray& ray,
@@ -45,18 +53,36 @@ namespace RISE
 				const unsigned int x,
 				const unsigned int y,
 				const unsigned int height,
-				const IScene& pScene,	
+				const IScene& pScene,
 				RISEColor& cret,
 				const bool temporal_samples,
 				const Scalar temporal_start,
 				const Scalar temporal_exposure
 				) const;
 
+			unsigned int GetProgressiveTotalSPP() const;
+
+#ifdef RISE_ENABLE_OPENPGL
+			mutable PathGuidingField*	pGuidingField;
+			mutable Scalar				guidingAlphaScale;
+#endif
+			mutable OptimalMISAccumulator*	pOptimalMISAccumulator;
+			PathGuidingConfig			guidingConfig;
+			AdaptiveSamplingConfig		adaptiveConfig;
+			StabilityConfig				stabilityConfig;
+
 		public:
-			PixelBasedPelRasterizer( 
-				IRayCaster* pCaster_
+			PixelBasedPelRasterizer(
+				IRayCaster* pCaster_,
+				const PathGuidingConfig& guidingCfg,
+				const AdaptiveSamplingConfig& adaptiveCfg,
+				const StabilityConfig& stabilityCfg,
+				bool useZSobol_
 				);
 
+			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+			void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+			void PostRenderCleanup() const;
 		};
 	}
 }

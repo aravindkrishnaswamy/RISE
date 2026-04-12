@@ -184,12 +184,6 @@ void DAGObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFa
 	// Tricky
 }
 
-bool DAGObjectManager::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
-{
-	// Tricky
-	return false;
-}
-
 void DAGObjectManager::EnumerateObjects( IEnumCallback<IObject>& pFunc ) const
 {
 	GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;

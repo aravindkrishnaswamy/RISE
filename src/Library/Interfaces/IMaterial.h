@@ -16,6 +16,7 @@
 
 #include "IReference.h"
 #include "SpecularInfo.h"
+#include "../Utilities/Math3D/Math3D.h"
 
 namespace RISE
 {
@@ -25,6 +26,26 @@ namespace RISE
 	class ISubSurfaceDiffusionProfile;
 	class RayIntersectionGeometric;
 	class IORStack;
+
+	/// Parameters for random-walk subsurface scattering.
+	/// Stored on the material and queried by the integrators.
+	struct RandomWalkSSSParams
+	{
+		RISEPel			sigma_a;		///< Absorption coefficient [1/m]
+		RISEPel			sigma_s;		///< Scattering coefficient [1/m]
+		RISEPel			sigma_t;		///< Extinction coefficient [1/m]
+		Scalar			g;				///< HG asymmetry factor (-1 to 1)
+		Scalar			ior;			///< Index of refraction at boundary
+		unsigned int	maxBounces;		///< Maximum walk steps
+		Scalar			boundaryFilter;	///< Multiplicative weight for boundary
+										///< absorption layers (e.g. melanin
+										///< double-pass).  Default 1.0.
+		Scalar			maxDepth;		///< Maximum walk depth below the entry
+										///< surface [scene units].  Walks that
+										///< scatter beyond this depth are
+										///< terminated (absorbed).  0 = unlimited.
+		RandomWalkSSSParams() : g(0), ior(1.0), maxBounces(64), boundaryFilter(1.0), maxDepth(0) {}
+	};
 
 	//! The IMaterial interface is basically an aggregate of other interfaces.  Though we don't actually
 	//! aggregate the interfaces, in essense what is all it does
@@ -65,6 +86,37 @@ namespace RISE
 		/// this profile's Rd(r) for weighting and sampling.
 		virtual ISubSurfaceDiffusionProfile* GetDiffusionProfile() const { return 0; }
 
+		/// \return Parameters for random-walk subsurface scattering.
+		/// NULL if this material does not use random-walk SSS.
+		/// When non-NULL, the integrator traces a volumetric random
+		/// walk inside the mesh instead of using disk-projection
+		/// sampling.  Mutually exclusive with GetDiffusionProfile().
+		virtual const RandomWalkSSSParams* GetRandomWalkSSSParams() const { return 0; }
+
+		/// Compute wavelength-dependent random-walk SSS parameters.
+		/// Returns true if this material provides spectral RW SSS.
+		///
+		/// Used by materials whose scattering coefficients vary
+		/// strongly with wavelength (e.g. BioSpec skin), where
+		/// packing 3 wavelengths into RGB channels produces
+		/// intolerable per-channel weight variance.  These
+		/// materials return NULL from GetRandomWalkSSSParams()
+		/// (disabling RGB mode) and implement this method for
+		/// the spectral (NM) rendering path.
+		///
+		/// The output params_out has all 3 RGB channels set to
+		/// the same scalar value for the requested wavelength,
+		/// so the walk's luminance-derived NM path uses the
+		/// correct per-wavelength extinction.
+		///
+		/// \param nm         Wavelength in nm
+		/// \param params_out Filled with coefficients at this wavelength
+		/// \return true if spectral RW params are available
+		virtual bool GetRandomWalkSSSParamsNM(
+			const Scalar nm,
+			RandomWalkSSSParams& params_out
+			) const { return false; }
+
 		/// \return Information about this material's specular (delta) behavior.
 		/// Used by the specular manifold sampling solver to determine constraint
 		/// type and IOR at each specular vertex in the chain.
@@ -72,7 +124,7 @@ namespace RISE
 		/// (DielectricMaterial, PerfectReflectorMaterial, etc.) override this.
 		virtual SpecularInfo GetSpecularInfo(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const
 		{
 			return SpecularInfo();
@@ -83,7 +135,7 @@ namespace RISE
 		/// to use wavelength-specific IOR for dispersion.
 		virtual SpecularInfo GetSpecularInfoNM(
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack,
+			const IORStack& ior_stack,
 			const Scalar nm
 			) const
 		{
@@ -100,7 +152,7 @@ namespace RISE
 		virtual Scalar Pdf(
 			const Vector3& wo,
 			const RayIntersectionGeometric& ri,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const;
 
 		/// Spectral variant of Pdf.
@@ -108,7 +160,7 @@ namespace RISE
 			const Vector3& wo,
 			const RayIntersectionGeometric& ri,
 			const Scalar nm,
-			const IORStack* ior_stack
+			const IORStack& ior_stack
 			) const;
 	};
 }

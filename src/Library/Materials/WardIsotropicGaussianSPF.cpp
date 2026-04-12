@@ -100,9 +100,9 @@ static void GenerateSpecularRay(
 
 void WardIsotropicGaussianSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
@@ -111,7 +111,7 @@ void WardIsotropicGaussianSPF::Scatter(
 	}
 
 	ScatteredRay d, s;
-	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
+	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.kray = diffuse.GetColor(ri);
@@ -125,7 +125,7 @@ void WardIsotropicGaussianSPF::Scatter(
 
 	if( a[0] == a[1] && a[1] == a[2] )
 	{
-		GenerateSpecularRay( s, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), a[0] );
+		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), a[0] );
 
 		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			s.kray = specular.GetColor(ri);
@@ -134,7 +134,7 @@ void WardIsotropicGaussianSPF::Scatter(
 	}
 	else
 	{
-		const Point2 ptrand( random.CanonicalRandom(),random.CanonicalRandom() );
+		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
 		const RISEPel spec = specular.GetColor(ri);
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( s, myonb, ri, ptrand, a[i] );
@@ -151,10 +151,10 @@ void WardIsotropicGaussianSPF::Scatter(
 
 void WardIsotropicGaussianSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
@@ -163,8 +163,8 @@ void WardIsotropicGaussianSPF::ScatterNM(
 	}
 
 	ScatteredRay d, s;
-	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
-	GenerateSpecularRay( s, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), alpha.GetColorNM(ri,nm) );
+	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
+	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), alpha.GetColorNM(ri,nm) );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.krayNM = diffuse.GetColorNM(ri,nm);
@@ -232,7 +232,7 @@ static Scalar WardIsotropicPdf(
 Scalar WardIsotropicGaussianSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const RISEPel a = alpha.GetColor(ri);
@@ -250,7 +250,7 @@ Scalar WardIsotropicGaussianSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar alpha_val = alpha.GetColorNM(ri,nm);

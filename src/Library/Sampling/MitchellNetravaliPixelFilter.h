@@ -60,6 +60,10 @@ namespace RISE
 
 			inline Scalar ComputeWeight( const Scalar x ) const
 			{
+				if( x >= 2.0 ) {
+					return 0.0;
+				}
+
 				const Scalar x2 = x*x;
 				const Scalar x3 = x2*x;
 
@@ -68,6 +72,17 @@ namespace RISE
 				}
 
 				return (1.0/6.0)*(va*x3 + vb*x2 + vc*x + vd);
+			}
+
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				return ComputeWeight(fabs(dx)) * ComputeWeight(fabs(dy));
+			}
+
+			void GetFilterSupport( Scalar& halfWidth, Scalar& halfHeight ) const
+			{
+				halfWidth = 2.0;
+				halfHeight = 2.0;
 			}
 
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const

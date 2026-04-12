@@ -55,6 +55,11 @@ namespace RISE
 				return (cColor * radiantEnergy);
 			}
 
+			inline Point3 position() const
+			{
+				return Point3( 0, 0, 0 );
+			}
+
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
 				return Ray();

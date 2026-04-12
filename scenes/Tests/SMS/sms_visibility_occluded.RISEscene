@@ -1,0 +1,174 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   SMS Visibility Test: Glass sphere with opaque wall between floor and sphere.
+#   The wall blocks the shading-point-to-first-specular-vertex segment.
+#   Expected: NO caustic on the floor behind the wall.
+#   Before the visibility fix, SMS would "leak" caustic light through the wall.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       256
+	sms_enabled                   TRUE
+	sms_max_iterations            20
+	sms_threshold                 1e-5
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_visibility_occluded
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 4 8
+	lookat				0 0.5 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					45.0
+}
+
+# Painters
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.7 0.7 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				0.999 0.999 0.999
+}
+
+uniformcolor_painter
+{
+	name				pnt_scatter
+	color				100000.0 100000.0 100000.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall
+	color				0.5 0.5 0.5
+}
+
+# Materials
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				500.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass_mat
+	tau					pnt_glass_tau
+	ior					1.5
+	scattering			pnt_scatter
+}
+
+lambertian_material
+{
+	name				wall_mat
+	reflectance			pnt_wall
+}
+
+# Geometry
+sphere_geometry
+{
+	name				sphere_geom
+	radius				1.0
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-5.0 0.0 -5.0
+	ptb					-5.0 0.0 5.0
+	ptc					5.0 0.0 5.0
+	ptd					5.0 0.0 -5.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-1.5 0.0 -1.5
+	ptb					1.5 0.0 -1.5
+	ptc					1.5 0.0 1.5
+	ptd					-1.5 0.0 1.5
+}
+
+# Occluding wall: opaque plane between glass sphere and the
+# caustic receiver area (the floor beneath the sphere).
+# Positioned at y=0.4, spans x=[-3,3] z=[-3,3] — blocks the
+# path from floor points to the glass sphere base.
+clippedplane_geometry
+{
+	name				wall_geom
+	pta					-3.0 0.0 -3.0
+	ptb					-3.0 0.0 3.0
+	ptc					3.0 0.0 3.0
+	ptd					3.0 0.0 -3.0
+}
+
+# Objects
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				glass_sphere
+	geometry			sphere_geom
+	position			0 1.5 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			0 5.0 0
+	material			light_mat
+}
+
+# Occluding wall at y=0.4 (between floor and glass sphere bottom)
+standard_object
+{
+	name				occluder_wall
+	geometry			wall_geom
+	position			0 0.4 0
+	material			wall_mat
+}

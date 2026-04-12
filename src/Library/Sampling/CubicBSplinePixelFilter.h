@@ -52,12 +52,23 @@ namespace RISE
 				return 0.0;
 			}
 
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				return bsp_weight(dx) * bsp_weight(dy);
+			}
+
+			void GetFilterSupport( Scalar& halfWidth, Scalar& halfHeight ) const
+			{
+				halfWidth = 2.0;
+				halfHeight = 2.0;
+			}
+
 			Scalar warp( const RandomNumberGenerator&, const Point2& canonical, Point2& warped ) const
 			{
 				warped = Point2( canonical.x*4.0 - 2.0, canonical.y*4.0 - 2.0 );
 
 				// Compute the weight
-				return bsp_weight(warped.x) * bsp_weight(warped.y);				
+				return bsp_weight(warped.x) * bsp_weight(warped.y);
 			}
 		};
 	}

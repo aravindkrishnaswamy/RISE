@@ -18,6 +18,7 @@
 #include "../Volume/Volume.h"
 #include "../Volume/VolumeAccessor_NNB.h"
 #include "../Volume/VolumeAccessor_TRI.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Volume/VolumeAccessor_TriCubic.h"
 #include "../Volume/VolumeOp_Average.h"
 #include "../Volume/VolumeOp_Composite.h"
@@ -217,7 +218,7 @@ void DirectVolumeRenderingShader::Shade(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	RISEPel& c,									///< [out] RISEPel value at the point
-	const IORStack* const ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in/out] Index of refraction stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -226,7 +227,7 @@ void DirectVolumeRenderingShader::Shade(
 	}
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 
@@ -311,7 +312,9 @@ void DirectVolumeRenderingShader::Shade(
 						const ILuminaryManager* pLumManager = caster.GetLuminaries();
 						// Account for lighting from luminaries
 						if( pLumManager ) {
-							diffuse = diffuse + pLumManager->ComputeDirectLighting( myri, *pBRDF, rc.random, caster, pScene->GetShadowMap() );			
+							IndependentSampler fallbackSampler( rc.random );
+							ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+							diffuse = diffuse + pLumManager->ComputeDirectLighting( myri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
 						}
 
 						cPel.base = cPel.base * diffuse;
@@ -357,7 +360,7 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 	const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 	const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 	const Scalar nm,							///< [in] Wavelength to shade
-	const IORStack* const ior_stack				///< [in/out] Index of refraction stack
+	const IORStack& ior_stack				///< [in/out] Index of refraction stack
 	) const
 {
 	const IScene* pScene = caster.GetAttachedScene();
@@ -366,7 +369,7 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 	}
 
 	// Only do stuff on a normal pass or on final gather
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 
@@ -444,7 +447,9 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 						const ILuminaryManager* pLumManager = caster.GetLuminaries();
 						// Account for lighting from luminaries
 						if( pLumManager ) {
-							cPel.second *= pLumManager->ComputeDirectLightingNM( myri, *pBRDF, nm, rc.random, caster, pScene->GetShadowMap() );
+							IndependentSampler fallbackSamplerNM( rc.random );
+							ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+							cPel.second *= pLumManager->ComputeDirectLightingNM( myri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
 						}						
 					}
 				}

@@ -46,11 +46,19 @@ LambertianEmitter::~LambertianEmitter( )
 
 RISEPel LambertianEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N) const
 {
+	// One-sided emission: only emit from the front hemisphere (where
+	// the outgoing direction is on the same side as the surface normal).
+	if( Vector3Ops::Dot( out, N ) <= 0 ) {
+		return RISEPel( 0, 0, 0 );
+	}
 	return (radExPainter.GetColor( ri ) * INV_PI * scale);
 }
 
 Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm ) const
 {
+	if( Vector3Ops::Dot( out, N ) <= 0 ) {
+		return 0;
+	}
 	return (radExPainter.GetColorNM( ri, nm ) * INV_PI * scale);
 }
 

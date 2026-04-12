@@ -18,28 +18,20 @@ RISE ASCII SCENE 5
 # Renderer -- Bidirectional Path Tracing
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 mlt_rasterizer
 {
-	max_recursion		20
-	min_importance		0.0001
 	max_eye_depth		10
 	max_light_depth		10
 	bootstrap_samples	1000000
 	chains				64
 	mutations_per_pixel	1000
 	large_step_prob		0.25
-	ior_stack			TRUE
 }
 
 file_rasterizeroutput

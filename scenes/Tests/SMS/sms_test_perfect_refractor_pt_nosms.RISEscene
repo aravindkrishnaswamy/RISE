@@ -5,26 +5,15 @@ RISE ASCII SCENE 5
 
 > set accelerator B 10 8
 
-pathtracing_shaderop
-{
-	name		pt
-	branch		false
-	force_check_emitters	true
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		8
-	min_importance		0.003
-	samples				256
-	lum_samples			1
-	ior_stack			FALSE
+	samples                       256
 }
 
 file_rasterizeroutput
@@ -103,9 +92,9 @@ clippedplane_geometry
 {
 	name				light_geom
 	pta					-1.5 0.0 -1.5
-	ptb					-1.5 0.0 1.5
+	ptb					1.5 0.0 -1.5
 	ptc					1.5 0.0 1.5
-	ptd					1.5 0.0 -1.5
+	ptd					-1.5 0.0 1.5
 }
 
 standard_object

@@ -17,31 +17,152 @@ RISE ASCII SCENE 5
 
 ##################################################
 # Setup a renderer
+# Note: SSS shaders are defined after the painters section
+# because they need color_white from the colors script.
 ##################################################
+
+distributiontracing_shaderop
+{
+	name				dt
+	samples				4
+	diffuse				false
+	reflections			TRUE
+}
+
+standard_shader
+{
+	name		floor_shader
+	shaderop	dt
+	shaderop	DefaultDirectLighting
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/spotlight_drama
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+thinlens_camera
+{
+	location			0 10 18
+	lookat				0 3 3
+	up					0 1 0
+	width				800
+	height				600
+	fov					42.0
+	aperture_size		0.3
+	focal_length		4.0
+	focus_distance		15
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_jade_ref
+	color				0.15 0.25 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_jade_tau
+	color				0.2 0.4 0.25
+}
+
+uniformcolor_painter
+{
+	name				pnt_wax_ref
+	color				0.3 0.28 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_wax_tau
+	color				0.55 0.5 0.4
+}
+
+uniformcolor_painter
+{
+	name				pnt_stage_floor
+	color				0.3 0.3 0.35
+}
+
+uniformcolor_painter
+{
+	name				pnt_curtain
+	color				0.25 0.05 0.05
+}
+
+##################################################
+# SSS Shaders (after colors script so color_white is available)
+##################################################
+
+# White lambertian BSDF for SSS irradiance capture - ensures maximum
+# irradiance is gathered regardless of the object's actual material
+lambertian_material
+{
+	name				sss_white
+	reflectance			color_white
+}
+
+directlighting_shaderop
+{
+	name				sss_dl
+	bsdf				sss_white
+}
 
 standard_shader
 {
 	name		sss_irrad
-	shaderop	DefaultDirectLighting
+	shaderop	sss_dl
 }
 
-# Simple SSS for the dragon
+# Simple SSS for the dragon (~6 units tall after 10x scale)
+# geometric_scale converts scene meters to mm for extinction:
+#   r_mm = r_meters * 1000 * geometric_scale
+# At 0.1, a 0.3m thick section gives exp(-0.05 * 300 * 0.1) = exp(-1.5) ≈ 0.22
+# which produces visible colored translucency without going fully opaque or white.
 simple_sss_shaderop
 {
 	name				sss_simple
-	numpoints			2000
-	irrad_scale			60
+	numpoints			200000
+	irrad_scale			100
 	geometric_scale		1.5
 	shader				sss_irrad
 }
 
-# Diffusion approximation SSS for the bunny (wax-like)
+# Diffusion approximation SSS for the bunny (~6 units tall after 30x scale)
+# At 0.05, the diffusion profile spreads a few cm in scene units,
+# giving a visible waxy glow without being fully transparent.
 diffusion_approximation_sss_shaderop
 {
 	name				sss_wax
-	numpoints			1000
-	irrad_scale			2000
-	geometric_scale		0.08
+	numpoints			200000
+	irrad_scale			50000
+	geometric_scale		0.05
 
 	scattering			0.74 0.88 1.01
 	absorption			0.032 0.17 0.48
@@ -63,113 +184,31 @@ standard_shader
 	shaderop	sss_wax
 }
 
-distributiontracing_shaderop
-{
-	name				dt
-	samples				64
-	diffuse				false
-	reflections			TRUE
-}
-
-standard_shader
-{
-	name		floor_shader
-	shaderop	dt
-	shaderop	DefaultDirectLighting
-}
-
-standard_shader
-{
-	name		global
-	shaderop	DefaultDirectLighting
-}
-
-pixelpel_rasterizer
-{
-	max_recursion		4
-	min_importance		0.001
-	samples				25
-	lum_samples			1
-}
-
-file_rasterizeroutput
-{
-	pattern				rendered/spotlight_drama
-	type				PNG
-	bpp					8
-	color_space			sRGB
-}
-
-##################################################
-# Cameras
-##################################################
-
-thinlens_camera
-{
-	location			0 5 18
-	lookat				0 2 0
-	up					0 1 0
-	width				800
-	height				600
-	fov					40.0
-	aperture_size		0.06
-	focal_length		4.0
-	focus_distance		16.5
-}
-
-##################################################
-# Painters
-##################################################
-
-> run scenes/colors.RISEscript
-
-uniformcolor_painter
-{
-	name				pnt_jade
-	color				0.4 0.7 0.45
-}
-
-uniformcolor_painter
-{
-	name				pnt_wax_cream
-	color				0.95 0.9 0.75
-}
-
-uniformcolor_painter
-{
-	name				pnt_stage_floor
-	color				0.12 0.12 0.14
-}
-
-uniformcolor_painter
-{
-	name				pnt_curtain
-	color				0.25 0.05 0.05
-}
-
 ##################################################
 # Materials
 ##################################################
 
 # Translucent jade-like material for the dragon
+# ref + tau must be <= 1.0 per channel to conserve energy
 translucent_material
 {
 	name				jade
-	ref					pnt_jade
-	tau					pnt_jade
+	ref					pnt_jade_ref
+	tau					pnt_jade_tau
 	ext					color_black
-	N					1.0
+	N					1.4
 	scattering			0.7
 }
 
 # Wax-like material for the bunny
+# ref + tau must be <= 1.0 per channel to conserve energy
 translucent_material
 {
 	name				wax
-	ref					pnt_wax_cream
-	tau					pnt_wax_cream
+	ref					pnt_wax_ref
+	tau					pnt_wax_tau
 	ext					color_black
-	N					1.0
+	N					1.5
 	scattering			0.5
 }
 
@@ -236,7 +275,7 @@ standard_object
 }
 
 # Dragon - translucent jade with simple SSS
-# Dragon model is ~10 units tall natively
+# Dragon model is ~0.6 units tall natively, scaled 10x to ~6 units
 risemesh_geometry
 {
 	name				dragongeom
@@ -247,8 +286,9 @@ standard_object
 {
 	name				dragon
 	geometry			dragongeom
-	position			-5 0 0
-	orientation			0 -30 0
+	position			-4 -1.5 3
+	orientation			0 30 0
+	scale				30 30 30
 	material			jade
 	shader				dragon_shader
 }
@@ -265,7 +305,7 @@ standard_object
 {
 	name				bunny
 	geometry			bunnygeom
-	position			5 0 1
+	position			4 -1.2 2
 	orientation			0 20 0
 	scale				30 30 30
 	material			wax
@@ -312,24 +352,24 @@ standard_object
 spot_light
 {
 	name				spot_red
-	position			-8 10 6
-	target				-5 3 0
+	position			-7 10 6
+	target				-4 3 1
 	color				1.0 0.2 0.15
-	power				40.0
-	inner				20
-	outer				55
+	power				20000.0
+	inner				30
+	outer				80
 }
 
 # Blue spot from upper right - illuminates the bunny
 spot_light
 {
 	name				spot_blue
-	position			8 10 6
-	target				5 3 1
+	position			7 10 6
+	target				4 3 2
 	color				0.2 0.3 1.0
-	power				40.0
-	inner				20
-	outer				55
+	power				30000.0
+	inner				30
+	outer				80
 }
 
 # Warm amber spot from directly above center
@@ -339,16 +379,16 @@ spot_light
 	position			0 12 4
 	target				0 2 -2
 	color				1.0 0.8 0.4
-	power				30.0
-	inner				20
-	outer				55
+	power				15000.0
+	inner				30
+	outer				80
 }
 
-# Cool backlight from behind the curtain
+# Subtle cool rim light from behind
 directional_light
 {
 	name				backlight
-	power				4.0
+	power				30.0
 	color				0.6 0.65 0.8
 	direction			0 -0.3 1
 }

@@ -1,0 +1,960 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_alchemists_sanctum.RISEscene                                                         #
+#   Description:    Participating-media torture test: "The Alchemist's Sanctum"                             #
+#                                                                                                           #
+#                   An underground chamber where magical artifacts sit amid layered fog and                  #
+#                   refracted light.  The scene exercises every medium-transport path using                  #
+#                   a variety of geometric primitives (sphere, ellipsoid, torus, cylinder,                   #
+#                   box, CSG) to stress non-spherical medium boundaries.                                    #
+#                                                                                                           #
+#                   MEDIA TOPOLOGY:                                                                         #
+#                     - Global haze: thin golden atmospheric fog (forward-scatter g=0.76)                   #
+#                       filling the entire chamber.  Makes light shafts visible.                             #
+#                     - Crystal orb (SPHERE): glass sphere (IOR 1.52) with dense amber                     #
+#                       interior fog.  Volumetric caustics — light refracts through glass                   #
+#                       into the fog, scatters forward, glows.                                              #
+#                     - Elixir flask (ELLIPSOID): elongated glass vessel (IOR 1.48) with                   #
+#                       emerald-green interior fog.  Tests non-spherical IOR-stack tracking.                 #
+#                     - Fog ring (TORUS): ethereal blue-violet ring hovering above the                      #
+#                       scene.  Pure volume (casts_shadows FALSE).  Tests toroidal medium                   #
+#                       boundaries — shadow rays enter and exit the torus tube, potentially                  #
+#                       multiple times for rays crossing both tube walls.                                    #
+#                     - Fog pillar (CYLINDER): column of dense crimson fog rising from                      #
+#                       the floor.  Pure volume.  Tests cylindrical medium boundaries.                      #
+#                     - Pillar core (BOX): dense cyan fog box nested inside the cylinder.                   #
+#                       Tests nested media with mixed geometry (box inside cylinder) in the                  #
+#                       shadow-walk boundary stack.                                                         #
+#                     - Aureole (ELLIPSOID): warm golden wisp partially overlapping the                     #
+#                       torus.  Tests non-LIFO stack removal when the shadow walk exits                     #
+#                       the aureole before the torus.                                                       #
+#                                                                                                           #
+#                   LIGHTING:                                                                               #
+#                     - Narrow skylight slot overhead creates a defined shaft of warm light                  #
+#                       through the global haze.  Volumetric shadows are cast by the fog                    #
+#                       volumes (colored shadow patches on the floor).                                      #
+#                     - Small bright emitter behind the CSG glass lens drives refracted                     #
+#                       caustic beams through the fog.                                                      #
+#                                                                                                           #
+#                   GEOMETRY VARIETY:                                                                       #
+#                     - Sphere: crystal orb, mirror sphere, caustic emitter                                 #
+#                     - Ellipsoid: elixir flask, aureole wisp                                               #
+#                     - Torus: fog ring                                                                     #
+#                     - Cylinder: fog pillar, stone pillars, pedestal                                       #
+#                     - Box: pillar core fog, room shell, pedestals                                         #
+#                     - CSG intersection: glass lens (two sphere halves)                                    #
+#                     - ClippedPlane: floor, walls, skylight emitter                                        #
+#                                                                                                           #
+#                   EXPECTED VISUAL RESULT:                                                                  #
+#                     - Warm light shaft from skylight visible in global haze                                #
+#                     - Crystal orb glows amber from internal forward-scattered light                        #
+#                     - Torus fog ring casts ring-shaped blue shadow on the floor                            #
+#                     - Cylindrical fog pillar casts rectangular/oval crimson shadow                         #
+#                     - Within the crimson shadow, a sharper cyan rectangle from nested box                  #
+#                     - Elongated green shadow from the ellipsoidal flask                                    #
+#                     - Aureole overlap with torus shows combined attenuation                                #
+#                     - Caustic beam from lens visible as bright streak in the haze                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 1, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       128
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_alchemists_sanctum
+	type				HDR
+	bpp					16
+	color_space			ROMMRGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_alchemists_sanctum
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+#
+# Front-right vantage looking across the chamber.
+# Low enough to see floor shadows, high enough to
+# see the hovering torus and pillar.
+##################################################
+
+pinhole_camera
+{
+	location			5.0 3.5 8.0
+	lookat				-0.5 1.5 2.5
+	up					0 1 0
+	width				768
+	height				512
+	fov					60.0
+}
+
+##################################################
+# Participating Media
+#
+# Seven distinct media exercising the full transport:
+#   1. Global haze     (scene-wide, forward-scatter)
+#   2. Orb interior    (per-object, glass sphere)
+#   3. Elixir interior (per-object, glass ellipsoid)
+#   4. Fog ring        (per-object, pure-volume torus)
+#   5. Fog pillar      (per-object, pure-volume cylinder)
+#   6. Pillar core     (per-object, nested box in cylinder)
+#   7. Aureole         (per-object, overlapping ellipsoid)
+##################################################
+
+# 1. Global haze: visible atmospheric fog.
+#    Scattering ~0.015 over 12-unit room gives optical depth
+#    ~0.18, enough for visible light shafts and atmosphere.
+#    Forward-scattering (g=0.76) concentrates scattered light
+#    near the beam direction for well-defined shafts.
+homogeneous_medium
+{
+	name		global_haze
+	absorption	0.002 0.0015 0.004
+	scattering	0.015 0.013 0.009
+	phase		hg 0.76
+}
+
+> set global_medium global_haze
+
+# 2. Crystal orb interior: dense amber smoke (SPHERE).
+#    Strong blue absorption gives a warm amber glow.
+homogeneous_medium
+{
+	name		orb_fog
+	absorption	0.08 0.25 0.90
+	scattering	0.25 0.22 0.12
+	phase		hg 0.65
+}
+
+# 3. Elixir flask interior: emerald-green fog (ELLIPSOID).
+#    Absorbs red and blue, transmits green.
+homogeneous_medium
+{
+	name		elixir_fog
+	absorption	0.60 0.06 0.55
+	scattering	0.15 0.20 0.15
+	phase		hg 0.4
+}
+
+# 4. Fog ring: ethereal blue-violet haze (TORUS).
+#    Absorbs red/green, transmits blue.
+#    Torus tube radius ~0.3 units, so need higher density
+#    for visible effect (optical depth ~0.6 across tube).
+homogeneous_medium
+{
+	name		ring_fog
+	absorption	0.50 0.35 0.04
+	scattering	0.40 0.30 0.55
+	phase		hg 0.3
+}
+
+# 5. Fog pillar: dense crimson column (CYLINDER).
+#    Absorbs green/blue strongly, transmits red.
+#    Cylinder diameter 1.2 units, optical depth ~0.9.
+homogeneous_medium
+{
+	name		pillar_fog
+	absorption	0.05 0.55 0.70
+	scattering	0.20 0.10 0.08
+	phase		hg 0.2
+}
+
+# 6. Pillar core: dense luminous cyan box (BOX, nested in cylinder).
+#    Strong red absorption, very strong scattering.
+homogeneous_medium
+{
+	name		core_fog
+	absorption	0.50 0.08 0.02
+	scattering	0.55 0.50 0.65
+	phase		hg 0.0
+}
+
+# 7. Aureole: warm golden wisp (ELLIPSOID, overlapping torus).
+#    Tests non-LIFO stack removal.
+homogeneous_medium
+{
+	name		aureole_fog
+	absorption	0.04 0.08 0.25
+	scattering	0.10 0.10 0.06
+	phase		hg 0.5
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# ---- Light ----
+uniformcolor_painter
+{
+	name				pnt_skylight
+	color				1.0 0.92 0.78
+}
+
+uniformcolor_painter
+{
+	name				pnt_caustic_light
+	color				1.0 0.96 0.88
+}
+
+# ---- Floor: polished dark stone ----
+uniformcolor_painter
+{
+	name				pnt_floor_rd
+	color				0.08 0.07 0.06
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor_rs
+	color				0.06 0.055 0.05
+	colorspace			RISERGB
+}
+
+# ---- Walls: warm sandstone ----
+uniformcolor_painter
+{
+	name				pnt_wall_back
+	color				0.42 0.32 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall_side_warm
+	color				0.48 0.35 0.20
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall_side_cool
+	color				0.28 0.30 0.34
+}
+
+uniformcolor_painter
+{
+	name				pnt_ceiling
+	color				0.35 0.30 0.25
+}
+
+# ---- Pedestals ----
+uniformcolor_painter
+{
+	name				pnt_ped_stone
+	color				0.22 0.20 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_ped_copper_diff
+	color				0.08 0.03 0.01
+}
+
+uniformcolor_painter
+{
+	name				pnt_ped_copper_spec
+	color				0.55 0.28 0.12
+	colorspace			RISERGB
+}
+
+# ---- Pillars ----
+uniformcolor_painter
+{
+	name				pnt_pillar_stone
+	color				0.30 0.28 0.25
+}
+
+# ---- Glass ----
+uniformcolor_painter
+{
+	name				pnt_clear_glass
+	color				0.998 0.998 0.998
+	colorspace			RISERGB
+}
+
+uniformcolor_painter
+{
+	name				pnt_tinted_glass
+	color				0.96 0.98 0.96
+	colorspace			RISERGB
+}
+
+# ---- Fog volume shell (near-invisible dielectric surface) ----
+#      IOR 1.001 gives near-zero Fresnel reflectance so camera
+#      rays transmit through and scatter in the interior medium.
+uniformcolor_painter
+{
+	name				pnt_fog_shell
+	color				0.999 0.999 0.999
+	colorspace			RISERGB
+}
+
+# ---- Mirror ----
+uniformcolor_painter
+{
+	name				pnt_mirror
+	color				0.92 0.92 0.94
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+# Polished stone floor
+ward_isotropic_material
+{
+	name				floor_mat
+	rd					pnt_floor_rd
+	rs					pnt_floor_rs
+	alpha				0.06
+}
+
+# Walls
+orennayar_material
+{
+	name				backwall_mat
+	reflectance			pnt_wall_back
+	roughness			0.3
+}
+
+lambertian_material
+{
+	name				warmwall_mat
+	reflectance			pnt_wall_side_warm
+}
+
+lambertian_material
+{
+	name				coolwall_mat
+	reflectance			pnt_wall_side_cool
+}
+
+lambertian_material
+{
+	name				ceiling_mat
+	reflectance			pnt_ceiling
+}
+
+# Stone pedestal
+orennayar_material
+{
+	name				pedestal_mat
+	reflectance			pnt_ped_stone
+	roughness			0.2
+}
+
+# Copper pedestal
+ward_isotropic_material
+{
+	name				copper_ped_mat
+	rd					pnt_ped_copper_diff
+	rs					pnt_ped_copper_spec
+	alpha				0.08
+}
+
+# Stone pillars
+orennayar_material
+{
+	name				pillar_stone_mat
+	reflectance			pnt_pillar_stone
+	roughness			0.15
+}
+
+# Clear glass (crystal orb shell, lens)
+dielectric_material
+{
+	name				clear_glass
+	tau					pnt_clear_glass
+	ior					1.52
+	scattering			100000.0
+}
+
+# Tinted glass (elixir flask)
+dielectric_material
+{
+	name				green_glass
+	tau					pnt_tinted_glass
+	ior					1.48
+	scattering			100000.0
+}
+
+# Fog volume shell: near-invisible dielectric (IOR 1.001).
+# Camera rays transmit through with negligible reflection,
+# enter the IOR stack, activate the interior medium, and
+# volume scattering in CastRay produces visible fog.
+dielectric_material
+{
+	name				fog_shell_mat
+	tau					pnt_fog_shell
+	ior					1.001
+	scattering			100000.0
+}
+
+# Mirror sphere
+perfectreflector_material
+{
+	name				mirror_mat
+	reflectance			pnt_mirror
+}
+
+# Skylight emitter
+lambertian_luminaire_material
+{
+	name				skylight_mat
+	exitance			pnt_skylight
+	scale				4000.0
+	material			none
+}
+
+# Caustic light
+lambertian_luminaire_material
+{
+	name				caustic_light_mat
+	exitance			pnt_caustic_light
+	scale				800.0
+	material			none
+}
+
+##################################################
+# Geometry
+#
+# Room: x=[-6, 6], y=[0, 7], z=[-1, 11]
+##################################################
+
+# ---- Room shell ----
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					6 0 -1
+	ptb					-6 0 -1
+	ptc					-6 0 11
+	ptd					6 0 11
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					-6 0 -1
+	ptb					6 0 -1
+	ptc					6 0 11
+	ptd					-6 0 11
+}
+
+clippedplane_geometry
+{
+	name				backwall_lower_geom
+	pta					-6 5.6 0
+	ptb					-6 0 0
+	ptc					6 0 0
+	ptd					6 5.6 0
+}
+
+clippedplane_geometry
+{
+	name				backwall_upper_geom
+	pta					-6 7 0
+	ptb					-6 6.1 0
+	ptc					6 6.1 0
+	ptd					6 7 0
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 7 11
+	ptb					0 0 11
+	ptc					0 0 -1
+	ptd					0 7 -1
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					0 7 -1
+	ptb					0 0 -1
+	ptc					0 0 11
+	ptd					0 7 11
+}
+
+clippedplane_geometry
+{
+	name				frontwallgeom
+	pta					6 7 0
+	ptb					6 0 0
+	ptc					-6 0 0
+	ptd					-6 7 0
+}
+
+# ---- Skylight slot emitter ----
+clippedplane_geometry
+{
+	name				skylight_geom
+	pta					-2.0 5.65 -0.5
+	ptb					2.0 5.65 -0.5
+	ptc					2.0 6.05 -0.5
+	ptd					-2.0 6.05 -0.5
+}
+
+# Light channel boxes
+box_geometry
+{
+	name				light_channel_top_geom
+	width				12
+	height				1.0
+	depth				0.6
+}
+
+box_geometry
+{
+	name				light_channel_bot_geom
+	width				12
+	height				5.7
+	depth				0.6
+}
+
+# ---- Crystal orb (SPHERE) ----
+sphere_geometry
+{
+	name				orb_geom
+	radius				1.3
+}
+
+# ---- Elixir flask (ELLIPSOID) ----
+ellipsoid_geometry
+{
+	name				elixir_geom
+	radii				0.35 0.75 0.35
+}
+
+# ---- Fog ring (TORUS) ----
+torus_geometry
+{
+	name				ring_geom
+	majorradius			1.2
+	minorratio			0.25
+}
+
+# ---- Fog pillar (CYLINDER) ----
+cylinder_geometry
+{
+	name				pillar_fog_geom
+	axis				y
+	radius				0.6
+	height				2.5
+}
+
+# ---- Pillar core (BOX, nested inside cylinder) ----
+box_geometry
+{
+	name				core_box_geom
+	width				0.5
+	height				1.8
+	depth				0.5
+}
+
+# ---- Aureole wisp (ELLIPSOID, overlapping torus) ----
+ellipsoid_geometry
+{
+	name				aureole_geom
+	radii				0.9 0.4 0.5
+}
+
+# ---- Caustic light emitter (small sphere) ----
+sphere_geometry
+{
+	name				caustic_light_geom
+	radius				0.12
+}
+
+# ---- Glass lens (CSG intersection of two spheres) ----
+sphere_geometry
+{
+	name				lens_top_geom
+	radius				0.55
+}
+
+sphere_geometry
+{
+	name				lens_bot_geom
+	radius				0.55
+}
+
+standard_object
+{
+	name				lens_half_a
+	geometry			lens_top_geom
+	position			0 0.36 0
+	material			clear_glass
+}
+
+standard_object
+{
+	name				lens_half_b
+	geometry			lens_bot_geom
+	position			0 -0.36 0
+	material			clear_glass
+}
+
+# ---- Mirror sphere ----
+sphere_geometry
+{
+	name				mirror_sphere_geom
+	radius				0.45
+}
+
+# ---- Architectural stone pillars (CYLINDER) ----
+cylinder_geometry
+{
+	name				arch_pillar_geom
+	axis				y
+	radius				0.3
+	height				7.0
+}
+
+# ---- Pedestals ----
+box_geometry
+{
+	name				ped_tall_geom
+	width				1.0
+	height				1.0
+	depth				1.0
+}
+
+cylinder_geometry
+{
+	name				ped_round_geom
+	axis				y
+	radius				0.38
+	height				0.7
+}
+
+box_geometry
+{
+	name				ped_small_geom
+	width				0.6
+	height				0.5
+	depth				0.6
+}
+
+##################################################
+# Room structure
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	position			0 7 0
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				backwall_lower
+	geometry			backwall_lower_geom
+	material			backwall_mat
+}
+
+standard_object
+{
+	name				backwall_upper
+	geometry			backwall_upper_geom
+	material			backwall_mat
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	position			-6 0 0
+	material			warmwall_mat
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	position			6 0 0
+	material			coolwall_mat
+}
+
+standard_object
+{
+	name				frontwall
+	geometry			frontwallgeom
+	position			0 0 11
+	material			backwall_mat
+}
+
+##################################################
+# Skylight slot + channel
+##################################################
+
+standard_object
+{
+	name				skylight
+	geometry			skylight_geom
+	material			skylight_mat
+}
+
+standard_object
+{
+	name				light_channel_top
+	geometry			light_channel_top_geom
+	position			0 6.55 -0.25
+	material			ceiling_mat
+}
+
+standard_object
+{
+	name				light_channel_bot
+	geometry			light_channel_bot_geom
+	position			0 2.85 -0.25
+	material			ceiling_mat
+}
+
+##################################################
+# Architectural stone pillars
+#
+# Four cylinders framing the chamber, adding visual
+# structure and demonstrating cylinder geometry.
+##################################################
+
+standard_object
+{
+	name				pillar_fl
+	geometry			arch_pillar_geom
+	position			-4.5 3.5 1.5
+	material			pillar_stone_mat
+}
+
+standard_object
+{
+	name				pillar_fr
+	geometry			arch_pillar_geom
+	position			4.5 3.5 1.5
+	material			pillar_stone_mat
+}
+
+standard_object
+{
+	name				pillar_bl
+	geometry			arch_pillar_geom
+	position			-4.5 3.5 8.5
+	material			pillar_stone_mat
+}
+
+standard_object
+{
+	name				pillar_br
+	geometry			arch_pillar_geom
+	position			4.5 3.5 8.5
+	material			pillar_stone_mat
+}
+
+##################################################
+# Pedestals
+##################################################
+
+# Orb pedestal: tall copper, center-left
+standard_object
+{
+	name				ped_orb
+	geometry			ped_tall_geom
+	position			-1.2 0.5 3.5
+	material			copper_ped_mat
+}
+
+# Elixir pedestal: cylindrical stone, right of orb
+standard_object
+{
+	name				ped_elixir
+	geometry			ped_round_geom
+	position			2.0 0.35 4.5
+	material			pedestal_mat
+}
+
+# Lens pedestal: small stone box, far left
+standard_object
+{
+	name				ped_lens
+	geometry			ped_small_geom
+	position			-4.0 0.25 2.0
+	material			pedestal_mat
+}
+
+##################################################
+# Artifacts
+##################################################
+
+# ---- Crystal orb (SPHERE): glass shell + amber fog ----
+#
+# Glass sphere with IOR 1.52 enclosing dense amber fog.
+# Light refracts into the sphere, forward-scatters in
+# the fog, producing a warm internal glow (volumetric
+# caustic).  The primary glass-enclosed medium test.
+standard_object
+{
+	name				crystal_orb
+	geometry			orb_geom
+	position			-1.2 2.3 3.5
+	material			clear_glass
+	interior_medium		orb_fog
+}
+
+# ---- Elixir flask (ELLIPSOID): tinted glass + emerald fog ----
+#
+# Elongated ellipsoidal glass vessel.  Tests non-spherical
+# IOR-stack medium tracking — the ellipsoid entry/exit
+# boundaries are computed differently from spheres, and
+# the medium walk must handle the elongated shape correctly.
+standard_object
+{
+	name				elixir_flask
+	geometry			elixir_geom
+	position			2.0 1.45 4.5
+	material			green_glass
+	interior_medium		elixir_fog
+}
+
+# ---- Glass lens (CSG intersection) ----
+#
+# Positioned between the caustic point light and the orb.
+# Focuses light into a caustic beam visible in the haze.
+csg_object
+{
+	name				glass_lens
+	obja				lens_half_a
+	objb				lens_half_b
+	operation			intersection
+	position			-4.0 0.95 2.0
+	orientation			20 15 0
+}
+
+# ---- Caustic point light behind the lens ----
+standard_object
+{
+	name				caustic_source
+	geometry			caustic_light_geom
+	position			-5.2 1.0 0.8
+	material			caustic_light_mat
+}
+
+# ---- Fog ring (TORUS): blue-violet ethereal ring ----
+#
+# Pure volume (casts_shadows FALSE).  Hovers above and
+# slightly behind center.  The toroidal boundary means
+# shadow rays can enter and exit the tube section
+# multiple times — a more complex crossing pattern than
+# a sphere.  Floor shadow should show a ring-shaped
+# blue-tinted pattern.
+standard_object
+{
+	name				fog_ring
+	geometry			ring_geom
+	position			-1.0 4.2 5.5
+	orientation			15 0 10
+	material			fog_shell_mat
+	interior_medium		ring_fog
+	casts_shadows		FALSE
+}
+
+# ---- Fog pillar (CYLINDER): crimson column ----
+#
+# Pure volume rising from near the floor.  Cylindrical
+# medium boundary — shadow rays from the floor beneath
+# cross the cylinder walls and accumulate pillar_fog
+# transmittance.  The rectangular shadow cross-section
+# contrasts with the spherical shadows from other objects.
+standard_object
+{
+	name				fog_pillar
+	geometry			pillar_fog_geom
+	position			3.0 1.25 7.0
+	material			fog_shell_mat
+	interior_medium		pillar_fog
+	casts_shadows		FALSE
+}
+
+# ---- Pillar core (BOX): cyan fog nested inside cylinder ----
+#
+# Nested inside the fog pillar.  The shadow-walk boundary
+# stack pushes pillar_fog on entering the cylinder, then
+# pushes core_fog on entering this box (core becomes
+# active), pops core on exit, then pops pillar on exiting
+# the cylinder.  Tests nested media with mixed geometry
+# types (box inside cylinder).
+standard_object
+{
+	name				pillar_core
+	geometry			core_box_geom
+	position			3.0 1.25 7.0
+	material			fog_shell_mat
+	interior_medium		core_fog
+	casts_shadows		FALSE
+}
+
+# ---- Aureole (ELLIPSOID): warm golden wisp ----
+#
+# Partially overlaps the torus fog ring.  The shadow
+# walk enters the torus, then enters the aureole.  When
+# the ray exits the aureole before the torus, the stack
+# must do non-LIFO removal (remove aureole entry while
+# torus stays active).  Ellipsoidal shape adds boundary
+# variety to the overlap test.
+standard_object
+{
+	name				aureole
+	geometry			aureole_geom
+	position			0.3 4.0 6.5
+	material			fog_shell_mat
+	interior_medium		aureole_fog
+	casts_shadows		FALSE
+}
+
+# ---- Mirror sphere: reflects the fog volumes ----
+#
+# Sits on the floor, right side.  Reflects the glowing
+# orb, the blue ring, the crimson pillar, and the light
+# shaft — creating complex reflected-medium light paths.
+standard_object
+{
+	name				mirror_sphere
+	geometry			mirror_sphere_geom
+	position			3.8 0.45 3.0
+	material			mirror_mat
+}

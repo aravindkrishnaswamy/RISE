@@ -447,18 +447,17 @@ void TestIterativeTraversalCorrectness()
 	// unnecessary far-child traversal while still finding the closest hit.
 	std::vector<Point3> verts;
 
-	// 8 layers of triangles at y = 0, 0.5, 1.0, ... 3.5
-	// Each layer is a 4x4 grid of quads (32 triangles per layer = 256 total)
-	const int layers = 8;
-	const int gridN = 4;
-	for( int layer = 0; layer < layers; layer++ ) {
-		const Scalar y = Scalar(layer) * 0.5;
-		const unsigned int baseVert = static_cast<unsigned int>(verts.size());
-		for( int iz = 0; iz <= gridN; iz++ ) {
-			for( int ix = 0; ix <= gridN; ix++ ) {
-				verts.push_back( Point3( Scalar(ix), y, Scalar(iz) ) );
+		// 8 layers of triangles at y = 0, 0.5, 1.0, ... 3.5
+		// Each layer is a 4x4 grid of quads (32 triangles per layer = 256 total)
+		const int layers = 8;
+		const int gridN = 4;
+		for( int layer = 0; layer < layers; layer++ ) {
+			const Scalar y = Scalar(layer) * 0.5;
+			for( int iz = 0; iz <= gridN; iz++ ) {
+				for( int ix = 0; ix <= gridN; ix++ ) {
+					verts.push_back( Point3( Scalar(ix), y, Scalar(iz) ) );
+				}
 			}
-		}
 	}
 
 	std::vector<unsigned int> indices;

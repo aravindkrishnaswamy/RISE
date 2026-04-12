@@ -19,6 +19,7 @@
 #include "IRadianceMap.h"
 #include "../Utilities/Ray.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 
 namespace RISE
 {
@@ -26,6 +27,8 @@ namespace RISE
 	class IScene;
 	class IORStack;
 	struct RuntimeContext;
+
+	namespace Implementation { class LightSampler; }
 
 	//! A ray caster traces a ray generated on the virtual screen and traces it through the 
 	//! scene
@@ -54,8 +57,21 @@ namespace RISE
 			bool considerEmission;				///< Should shader consider direct emission
 			RayType type;						///< The type of ray
 			Scalar bsdfPdf;						///< BSDF sampling PDF for MIS weighting (0 = not set / delta)
+			RISEPel bsdfTimesCos;				///< BSDF * cos at scatter point (RGB), for optimal MIS full-integrand training
 
-			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ) {}
+			// Per-type bounce counters for StabilityConfig bounce limits
+			unsigned int diffuseBounces;		///< Accumulated diffuse bounces
+			unsigned int glossyBounces;			///< Accumulated glossy/reflection bounces
+			unsigned int transmissionBounces;	///< Accumulated refraction/transmission bounces
+			unsigned int translucentBounces;	///< Accumulated translucent bounces
+
+			Scalar glossyFilterWidth;			///< Accumulated glossy filter roughness increase (0 = no filtering)
+
+			unsigned int volumeBounces;			///< Accumulated volume scattering bounces
+
+			RAY_STATE() : depth( 1 ), importance( 1.0 ), considerEmission( true ), type( eRayView ), bsdfPdf( 0 ),
+				diffuseBounces( 0 ), glossyBounces( 0 ), transmissionBounces( 0 ), translucentBounces( 0 ),
+				glossyFilterWidth( 0 ), volumeBounces( 0 ) {}
 		};
 
 		//! Tells the ray caster to cast the specified ray into the scene
@@ -85,7 +101,7 @@ namespace RISE
 
 		//! Tells the ray caster to cast the specified ray into the scene
 		/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-		virtual bool CastRay( 
+		virtual bool CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
 			const Ray& ray,										///< [in] Ray to cast
@@ -93,12 +109,12 @@ namespace RISE
 			const RAY_STATE& rs,								///< [in] The ray state
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in/out] Index of refraction stack
 			) const = 0;
 
 		//! Tells the ray caster to cast the specified ray into the scene for the specific wavelength
 		/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-		virtual bool CastRayNM( 
+		virtual bool CastRayNM(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
 			const Ray& ray,										///< [in] Ray to cast
@@ -107,8 +123,38 @@ namespace RISE
 			const Scalar nm,									///< [in] Wavelength to cast
 			Scalar* distance,									///< [in] If there was a hit, how far?
 			const IRadianceMap* pRadianceMap,					///< [in] Radiance map to use in case there is no hit
-			const IORStack* const ior_stack						///< [in/out] Index of refraction stack
+			const IORStack& ior_stack							///< [in/out] Index of refraction stack
 			) const = 0;
+
+		//! Casts a ray for a bundle of HWSS wavelengths.
+		//! Default implementation calls CastRayNM independently for each
+		//! active wavelength.  RayCaster overrides for shared intersection.
+		/// \return TRUE if any wavelength produced a hit
+		virtual bool CastRayHWSS(
+			const RuntimeContext& rc,							///< [in] The runtime context
+			const RasterizerState& rast,						///< [in] Current state of the rasterizer
+			const Ray& ray,										///< [in] Ray to cast
+			Scalar c[SampledWavelengths::N],					///< [out] Per-wavelength amplitudes
+			const RAY_STATE& rs,								///< [in] The ray state
+			SampledWavelengths& swl,							///< [in/out] Wavelength bundle
+			Scalar* distance,									///< [in] If there was a hit, how far?
+			const IRadianceMap* pRadianceMap,					///< [in] Radiance map for misses
+			const IORStack& ior_stack							///< [in/out] Index of refraction stack
+			) const
+		{
+			bool anyHit = false;
+			for( unsigned int i = 0; i < SampledWavelengths::N; i++ )
+			{
+				c[i] = 0;
+				if( !swl.terminated[i] )
+				{
+					bool hit = CastRayNM( rc, rast, ray, c[i], rs,
+						swl.lambda[i], distance, pRadianceMap, ior_stack );
+					if( hit ) anyHit = true;
+				}
+			}
+			return anyHit;
+		}
 
 		//! This function casts a ray into the scene and only checks to see if it intersects something.
 		//! Very useful for shadow checks
@@ -134,6 +180,27 @@ namespace RISE
 
 		/// \return The luminary manager for the current scene
 		virtual const ILuminaryManager* GetLuminaries() const = 0;
+
+		/// \return The unified light sampler for the current scene, or NULL if not available
+		virtual const Implementation::LightSampler* GetLightSampler() const = 0;
+
+		/// Sets the number of RIS candidates for spatially-aware light
+		/// selection.  Must be called after AttachScene().
+		virtual void SetRISCandidates(
+			const unsigned int M								///< [in] Number of RIS candidates (0=disabled)
+			) = 0;
+
+		/// Sets the threshold for light-sample Russian roulette.
+		/// Must be called after AttachScene().
+		virtual void SetLightSampleRRThreshold(
+			const Scalar threshold								///< [in] RR threshold (0=disabled)
+			) = 0;
+
+		/// Enables or disables the light BVH for importance-weighted
+		/// many-light selection.  Must be called before AttachScene().
+		virtual void SetUseLightBVH(
+			const bool enable									///< [in] True to enable light BVH
+			) = 0;
 	};
 }
 

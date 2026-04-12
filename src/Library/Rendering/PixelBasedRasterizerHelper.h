@@ -20,7 +20,10 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Interfaces/IPixelFilter.h"
 #include "Rasterizer.h"
+#include "FilteredFilm.h"
+#include "AOVBuffers.h"
 #include "../Utilities/RuntimeContext.h"
+#include "../Utilities/ProgressiveConfig.h"
 
 namespace RISE
 {
@@ -65,10 +68,12 @@ namespace RISE
 				const double toggle_size 
 				) const;
 
-			void RasterizeScenePass( 
+			/// Renders one pass. Returns false if the progress callback
+			/// requested cancellation during the pass.
+			bool RasterizeScenePass(
 				const RuntimeContext::PASS pass,
-				const IScene& scene, 
-				IRasterImage& image, 
+				const IScene& scene,
+				IRasterImage& image,
 				const Rect* pRect, 
 				IRasterizeSequence& seq 
 				) const;
@@ -89,6 +94,22 @@ namespace RISE
 			IRayCaster*			pCaster;
 			ISampling2D*		pSampling;
 			IPixelFilter*		pPixelFilter;
+			bool				useZSobol;		///< Use Morton-indexed Sobol (blue-noise error distribution)
+
+			mutable FilteredFilm*	pFilteredFilm;		///< Film buffer for wide-support filter reconstruction
+			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
+			ProgressiveConfig		progressiveConfig;	///< Multi-pass progressive rendering configuration
+
+			mutable ProgressiveFilm*	mProgressiveFilm;	///< Per-pixel state for progressive multi-pass rendering
+			mutable unsigned int		mTotalProgressiveSPP;	///< Total SPP budget across all progressive passes
+
+#ifdef RISE_ENABLE_OIDN
+			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
+#endif
+
+			/// Returns true when the pixel filter's support extends beyond
+			/// a single pixel, requiring film-based reconstruction.
+			bool UseFilteredFilm() const;
 
 			virtual ~PixelBasedRasterizerHelper( );
 
@@ -156,11 +177,53 @@ namespace RISE
 				}
 			}
 
+			/// Returns a reference to the image that should be sent to
+			/// OutputIntermediateImage.  The default just returns the
+			/// primary image.  BDPT overrides this to return a scratch
+			/// copy with resolved splats composited in, avoiding any
+			/// mutation of the primary accumulation buffer.
+			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
+
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 
+			/// Reuses the normal block dispatcher for internal passes such as
+			/// path-guiding training, so derived rasterizers can run those
+			/// passes multithreaded without duplicating dispatch logic.
+			/// Returns false if the progress callback requested cancellation.
+			bool RasterizeBlocksForPass(
+				const RuntimeContext::PASS pass,
+				const IScene& scene,
+				IRasterImage& image,
+				const Rect* pRect,
+				IRasterizeSequence& seq
+				) const
+			{
+				return RasterizeScenePass( pass, scene, image, pRect, seq );
+			}
+
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ );
+
+			/// Called after a RuntimeContext is created, before any rendering
+			/// with it.  Subclasses can override to inject per-context state
+			/// (e.g. path guiding field pointers).  Default installs shared
+			/// progressive render state.
+			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			/// Total sample budget for progressive rendering.  Rasterizers with
+			/// adaptive sampling override this to use their adaptive max.
+			virtual unsigned int GetProgressiveTotalSPP() const;
+
+		/// Called at the beginning of RasterizeScene, before the main
+		/// render pass.  Subclasses can override to perform setup such
+		/// as path guiding training.  Default does nothing.
+		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
+
+		/// Called at the end of RasterizeScene, after the main render
+		/// pass and output flush.  Subclasses can override to perform
+		/// cleanup.  Default does nothing.
+		virtual void PostRenderCleanup() const {}
 
 			// Rasterizer interface implementations
 			virtual void AttachToScene( const IScene* ){};		// We don't need to do anything to attach
@@ -174,6 +237,8 @@ namespace RISE
 			virtual void RasterizeSceneAnimation( const IScene& pScene, const Scalar time_start, const Scalar time_end, const unsigned int num_frames, const bool do_fields, const bool invert_fields, const Rect* pRect, const unsigned int* specificFrame, IRasterizeSequence* pRasterSequence ) const;
 
 			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
+			void SetProgressiveConfig( const ProgressiveConfig& config );
+
 		};
 	}
 }

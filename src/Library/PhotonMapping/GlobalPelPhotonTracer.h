@@ -36,21 +36,21 @@ namespace RISE
 			virtual ~GlobalPelPhotonTracer();
 
 			// Traces a single photon through the scene until it can't trace it any longer
-			void TracePhoton( 
+			void TracePhoton(
 				const Ray& ray,
 				const RISEPel& power,
 				GlobalPelPhotonMap& pPhotonMap,
 				const bool bStorePhoton,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			inline void TraceSinglePhoton( 
+			inline void TraceSinglePhoton(
 				const Ray& ray,
-				const RISEPel& power, 
-				GlobalPelPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const RISEPel& power,
+				GlobalPelPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, pPhotonMap, true, ior_stack );
@@ -70,7 +70,6 @@ namespace RISE
 				const Scalar ext,
 				const bool branch,
 				const bool shootFromNonMeshLights,
-				const bool useiorstack,						///< [in] Should we use an ior stack ?
 				const Scalar powerscale,
 				const unsigned int temporal_samples,
 				const bool regenerate,

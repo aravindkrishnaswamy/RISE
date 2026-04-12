@@ -472,8 +472,6 @@
 		F24B73822F52A632008304C4 /* TIFFWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0994069C42900069C9E5 /* TIFFWriter.cpp */; };
 		F24B73832F52A632008304C4 /* TIFFWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0995069C42900069C9E5 /* TIFFWriter.h */; };
 		F24B73842F52A632008304C4 /* WriteOnlyRasterImage.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0996069C42900069C9E5 /* WriteOnlyRasterImage.h */; };
-		F24B73852F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */; };
-		F24B73862F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.h in Sources */ = {isa = PBXBuildFile; fileRef = F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */; };
 		F24B73872F52A632008304C4 /* BlockRasterizeSequence.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0998069C42900069C9E5 /* BlockRasterizeSequence.h */; };
 		F24B73882F52A632008304C4 /* FileRasterizerOutput.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0999069C42900069C9E5 /* FileRasterizerOutput.cpp */; };
 		F24B73892F52A632008304C4 /* FileRasterizerOutput.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099A069C42900069C9E5 /* FileRasterizerOutput.h */; };
@@ -482,8 +480,6 @@
 		F24B738C2F52A632008304C4 /* LuminaryManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099D069C42900069C9E5 /* LuminaryManager.h */; };
 		F24B738D2F52A632008304C4 /* PixelBasedPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */; };
 		F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */; };
-		F24B738F2F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */; };
-		F24B73902F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */; };
 		F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
 		F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */; };
 		F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
@@ -696,14 +692,61 @@
 		F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E032F54FB56005DA46B /* AVFoundation.framework */; };
 		F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E052F54FB5E005DA46B /* CoreMedia.framework */; };
 		F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E072F54FB64005DA46B /* CoreVideo.framework */; };
+		F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54322F79FFF1009AF16D /* CompletePathGuide.h */; };
+		F24C54352F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
+		F24C54362F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */; };
+		F24C54392F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
+		F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */; };
+		F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */; };
+		F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */; };
+		F24C543F2F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */; };
+		F24C54402F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */; };
+		F24C54452F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */; };
+		F24C54462F7CAB4F009AF16D /* HomogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */; };
+		F24C54472F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */; };
+		F24C54482F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */; };
+		F24C54492F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */; };
+		F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */; };
+		F24C54502F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
+		F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */; };
+		F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */; };
+		F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544B2F7CAB67009AF16D /* MediumTracking.h */; };
+		F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544C2F7CAB67009AF16D /* MediumTransport.h */; };
+		F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
+		F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */; };
+		F24C54592F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
+		F24C545A2F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */; };
+		F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
+		F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
+		F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545B2F84597B009AF16D /* GGXBRDF.h */; };
+		F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545D2F84597B009AF16D /* GGXMaterial.h */; };
+		F24C54642F84597B009AF16D /* GGXSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545E2F84597B009AF16D /* GGXSPF.h */; };
+		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
+		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
+		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
+		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
+		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
+		F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
+		F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */; };
+		F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
+		F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
+		F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548A2F87D990009AF16D /* MajorantGrid.h */; };
+		F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
+		F24C54912F87F453009AF16D /* LightBVH.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548F2F87F453009AF16D /* LightBVH.h */; };
+		F24C54922F87F453009AF16D /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
+		F24C54932F87F453009AF16D /* LightBVH.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54902F87F453009AF16D /* LightBVH.cpp */; };
+		F24C54962F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
+		F24C54972F88556A009AF16D /* OptimalMISAccumulator.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */; };
+		F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */; };
+		F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
+		F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */; };
+		F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
 		F277340D07ECCB7300C0B600 /* HaltonPointsSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340A07ECCB7300C0B600 /* HaltonPointsSampling2D.h */; };
 		F277341D07ECCBB200C0B600 /* AdvancedShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341B07ECCBB200C0B600 /* AdvancedShader.cpp */; };
 		F277341E07ECCBB200C0B600 /* AdvancedShader.h in Headers */ = {isa = PBXBuildFile; fileRef = F277341C07ECCBB200C0B600 /* AdvancedShader.h */; };
-		F277342107ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */; };
-		F277342207ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h in Headers */ = {isa = PBXBuildFile; fileRef = F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */; };
 		F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */; };
 		F277342F07ECCC2F00C0B600 /* AdaptiveDetectorSphere.h in Headers */ = {isa = PBXBuildFile; fileRef = F277342707ECCC2F00C0B600 /* AdaptiveDetectorSphere.h */; };
 		F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */; };
@@ -1131,8 +1174,6 @@
 		F27F0BFD069C42910069C9E5 /* LuminaryManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F099D069C42900069C9E5 /* LuminaryManager.h */; };
 		F27F0BFE069C42910069C9E5 /* PixelBasedPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */; };
 		F27F0BFF069C42910069C9E5 /* PixelBasedPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */; };
-		F27F0C00069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */; };
-		F27F0C01069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */; };
 		F27F0C02069C42910069C9E5 /* PixelBasedRasterizerHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */; };
 		F27F0C03069C42910069C9E5 /* PixelBasedRasterizerHelper.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */; };
 		F27F0C04069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */; };
@@ -1353,9 +1394,6 @@
 		F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
 		F2C5D5F32F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */; };
 		F2C5D5F42F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */; };
-		F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
-		F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */; };
-		F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */; };
 		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
 		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
@@ -1364,6 +1402,36 @@
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
 		F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */; };
+		F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
+		F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */; };
+		F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */; };
+		F2C7C8ED2F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
+		F2C7C8EE2F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
+		F2C7C8EF2F7881E80030CB78 /* OIDNDenoiser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */; };
+		F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */; };
+		F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
+		F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
+		F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
+		F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
+		F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */; };
+		F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */; };
+		F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
+		F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
+		F2D9B0852F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */; };
+		F2D9B0862F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */; };
+		F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */; };
+		F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */; };
+		F2D9B0892F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */; };
+		F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */; };
+		F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
+		F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */; };
+		F2D9B08F2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
+		F2D9B0C32F89F5070077A171 /* ProgressiveConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */; };
+		F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */; };
+		F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C52F89F7B40077A171 /* AliasTable.h */; };
+		F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */; };
+		F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */; };
+		F2D9B0CD2F8A8DEC0077A171 /* PathTransportUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1429,14 +1497,46 @@
 		F24C3E032F54FB56005DA46B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		F24C3E052F54FB5E005DA46B /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		F24C3E072F54FB64005DA46B /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
+		F24C54322F79FFF1009AF16D /* CompletePathGuide.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompletePathGuide.h; sourceTree = "<group>"; };
+		F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompletePathGuide.cpp; sourceTree = "<group>"; };
+		F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EnvironmentSampler.h; sourceTree = "<group>"; };
+		F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = EnvironmentSampler.cpp; sourceTree = "<group>"; };
+		F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSSRDFSampling.h; sourceTree = "<group>"; };
+		F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BSSRDFSampling.cpp; sourceTree = "<group>"; };
+		F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HenyeyGreensteinPhaseFunction.h; sourceTree = "<group>"; };
+		F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HenyeyGreensteinPhaseFunction.cpp; sourceTree = "<group>"; };
+		F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HomogeneousMedium.h; sourceTree = "<group>"; };
+		F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HomogeneousMedium.cpp; sourceTree = "<group>"; };
+		F24C544B2F7CAB67009AF16D /* MediumTracking.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTracking.h; sourceTree = "<group>"; };
+		F24C544C2F7CAB67009AF16D /* MediumTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTransport.h; sourceTree = "<group>"; };
+		F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MediumTransport.cpp; sourceTree = "<group>"; };
+		F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetEnergyLUT.h; sourceTree = "<group>"; };
+		F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetUtils.h; sourceTree = "<group>"; };
+		F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HeterogeneousMedium.h; sourceTree = "<group>"; };
+		F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HeterogeneousMedium.cpp; sourceTree = "<group>"; };
+		F24C545B2F84597B009AF16D /* GGXBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXBRDF.h; sourceTree = "<group>"; };
+		F24C545C2F84597B009AF16D /* GGXBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXBRDF.cpp; sourceTree = "<group>"; };
+		F24C545D2F84597B009AF16D /* GGXMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXMaterial.h; sourceTree = "<group>"; };
+		F24C545E2F84597B009AF16D /* GGXSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXSPF.h; sourceTree = "<group>"; };
+		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
+		F24C54672F859F87009AF16D /* RandomWalkSSS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSS.h; sourceTree = "<group>"; };
+		F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RandomWalkSSS.cpp; sourceTree = "<group>"; };
+		F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinRWMaterial.h; sourceTree = "<group>"; };
+		F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinRWMaterial.cpp; sourceTree = "<group>"; };
+		F24C548A2F87D990009AF16D /* MajorantGrid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MajorantGrid.h; sourceTree = "<group>"; };
+		F24C548B2F87D990009AF16D /* MajorantGrid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MajorantGrid.cpp; sourceTree = "<group>"; };
+		F24C548F2F87F453009AF16D /* LightBVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LightBVH.h; sourceTree = "<group>"; };
+		F24C54902F87F453009AF16D /* LightBVH.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = LightBVH.cpp; sourceTree = "<group>"; };
+		F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OptimalMISAccumulator.h; sourceTree = "<group>"; };
+		F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OptimalMISAccumulator.cpp; sourceTree = "<group>"; };
+		F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTSpectralRasterizer.h; sourceTree = "<group>"; };
+		F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
 		F277340A07ECCB7300C0B600 /* HaltonPointsSampling2D.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPointsSampling2D.h; sourceTree = "<group>"; };
 		F277341B07ECCBB200C0B600 /* AdvancedShader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AdvancedShader.cpp; sourceTree = "<group>"; };
 		F277341C07ECCBB200C0B600 /* AdvancedShader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AdvancedShader.h; sourceTree = "<group>"; };
-		F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedPelRasterizerContrastAA.cpp; sourceTree = "<group>"; };
-		F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizerContrastAA.h; sourceTree = "<group>"; };
 		F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = AdaptiveDetectorSphere.cpp; path = DetectorSpheres/AdaptiveDetectorSphere.cpp; sourceTree = "<group>"; };
 		F277342707ECCC2F00C0B600 /* AdaptiveDetectorSphere.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; name = AdaptiveDetectorSphere.h; path = DetectorSpheres/AdaptiveDetectorSphere.h; sourceTree = "<group>"; };
 		F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = CircularDiskDetector.cpp; path = DetectorSpheres/CircularDiskDetector.cpp; sourceTree = "<group>"; };
@@ -1864,8 +1964,6 @@
 		F27F099D069C42900069C9E5 /* LuminaryManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LuminaryManager.h; sourceTree = "<group>"; };
 		F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedPelRasterizer.cpp; sourceTree = "<group>"; };
 		F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizer.h; sourceTree = "<group>"; };
-		F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedPelRasterizerAdaptiveSampling.cpp; sourceTree = "<group>"; };
-		F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedPelRasterizerAdaptiveSampling.h; sourceTree = "<group>"; };
 		F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedRasterizerHelper.cpp; sourceTree = "<group>"; };
 		F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelBasedRasterizerHelper.h; sourceTree = "<group>"; };
 		F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PixelBasedSpectralIntegratingRasterizer.cpp; sourceTree = "<group>"; };
@@ -2069,13 +2167,33 @@
 		F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinDiffusionProfile.cpp; sourceTree = "<group>"; };
 		F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DonnerJensenSkinSSSShaderOp.h; sourceTree = "<group>"; };
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
-		F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinSSSShaderOp.h; sourceTree = "<group>"; };
-		F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
 		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
+		F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SobolSampling2D.h; sourceTree = "<group>"; };
+		F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SobolSampling2D.cpp; sourceTree = "<group>"; };
+		F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AOVBuffers.h; sourceTree = "<group>"; };
+		F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AOVBuffers.cpp; sourceTree = "<group>"; };
+		F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OIDNDenoiser.h; sourceTree = "<group>"; };
+		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
+		F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathGuidingField.h; sourceTree = "<group>"; };
+		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
+		F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FilteredFilm.h; sourceTree = "<group>"; };
+		F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FilteredFilm.cpp; sourceTree = "<group>"; };
+		F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingPelRasterizer.h; sourceTree = "<group>"; };
+		F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingPelRasterizer.cpp; sourceTree = "<group>"; };
+		F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingSpectralRasterizer.h; sourceTree = "<group>"; };
+		F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingSpectralRasterizer.cpp; sourceTree = "<group>"; };
+		F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingIntegrator.h; sourceTree = "<group>"; };
+		F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingIntegrator.cpp; sourceTree = "<group>"; };
+		F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ProgressiveConfig.h; sourceTree = "<group>"; };
+		F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveSamplingConfig.h; sourceTree = "<group>"; };
+		F2D9B0C52F89F7B40077A171 /* AliasTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AliasTable.h; sourceTree = "<group>"; };
+		F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTUtilities.h; sourceTree = "<group>"; };
+		F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTransportUtilities.h; sourceTree = "<group>"; };
+		F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathVertexEval.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2143,8 +2261,6 @@
 		6DBFAA4A09C4D2A20048A09D /* SSS */ = {
 			isa = PBXGroup;
 			children = (
-				F2C5D5F52F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h */,
-				F2C5D5F62F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp */,
 				F2C5D5F02F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.h */,
 				F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */,
 				6DBFAA4B09C4D2A20048A09D /* DiffusionApproximationExtinction.h */,
@@ -2464,6 +2580,8 @@
 		F27F08B5069C428F0069C9E5 /* Lights */ = {
 			isa = PBXGroup;
 			children = (
+				F24C548F2F87F453009AF16D /* LightBVH.h */,
+				F24C54902F87F453009AF16D /* LightBVH.cpp */,
 				F2C5D5732F6E44DE00546C97 /* LightSampler.h */,
 				F2C5D5742F6E44DE00546C97 /* LightSampler.cpp */,
 				F27F08B6069C428F0069C9E5 /* AmbientLight.h */,
@@ -2502,6 +2620,19 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
+				F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */,
+				F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */,
+				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
+				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
+				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
+				F24C545E2F84597B009AF16D /* GGXSPF.h */,
+				F24C545F2F84597B009AF16D /* GGXSPF.cpp */,
+				F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */,
+				F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */,
+				F24C54412F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h */,
+				F24C54422F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp */,
+				F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */,
+				F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */,
 				F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */,
 				F2C5D5E92F722D4600546C97 /* DonnerJensenSkinBSSRDFMaterial.h */,
 				F2C5D5EA2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.h */,
@@ -2769,6 +2900,20 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */,
+				F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */,
+				F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */,
+				F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */,
+				F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */,
+				F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */,
+				F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */,
+				F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */,
+				F24C54372F7B30B3009AF16D /* EnvironmentSampler.h */,
+				F24C54382F7B30B3009AF16D /* EnvironmentSampler.cpp */,
+				F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */,
+				F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */,
+				F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */,
+				F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */,
 				F2C5D5E42F716C5000546C97 /* BDPTPelRasterizer.h */,
 				F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */,
 				F2C5D5DA2F716BAA00546C97 /* BDPTRasterizerBase.h */,
@@ -2780,8 +2925,6 @@
 				F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */,
 				F2C5D5632F6E447400546C97 /* SplatFilm.h */,
 				F2C5D5642F6E447400546C97 /* SplatFilm.cpp */,
-				F277341F07ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp */,
-				F277342007ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h */,
 				F27F0998069C42900069C9E5 /* BlockRasterizeSequence.h */,
 				F27F0999069C42900069C9E5 /* FileRasterizerOutput.cpp */,
 				F27F099A069C42900069C9E5 /* FileRasterizerOutput.h */,
@@ -2790,8 +2933,6 @@
 				F27F099D069C42900069C9E5 /* LuminaryManager.h */,
 				F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */,
 				F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */,
-				F27F09A0069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp */,
-				F27F09A1069C42900069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h */,
 				F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */,
 				F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */,
 				F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */,
@@ -2810,6 +2951,8 @@
 		F27F09B2069C42900069C9E5 /* Sampling */ = {
 			isa = PBXGroup;
 			children = (
+				F2C7C8E42F777BD60030CB78 /* SobolSampling2D.h */,
+				F2C7C8E52F777BD60030CB78 /* SobolSampling2D.cpp */,
 				F277340807ECCB7300C0B600 /* HaltonPoints.h */,
 				F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */,
 				F277340A07ECCB7300C0B600 /* HaltonPointsSampling2D.h */,
@@ -2852,6 +2995,8 @@
 		F27F09D5069C42900069C9E5 /* Shaders */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */,
+				F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */,
 				F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */,
 				F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */,
 				F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */,
@@ -2903,6 +3048,29 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */,
+				F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */,
+				F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */,
+				F2D9B0C52F89F7B40077A171 /* AliasTable.h */,
+				F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */,
+				F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */,
+				F24C54942F88556A009AF16D /* OptimalMISAccumulator.h */,
+				F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */,
+				F24C548A2F87D990009AF16D /* MajorantGrid.h */,
+				F24C548B2F87D990009AF16D /* MajorantGrid.cpp */,
+				F24C54672F859F87009AF16D /* RandomWalkSSS.h */,
+				F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */,
+				F24C544B2F7CAB67009AF16D /* MediumTracking.h */,
+				F24C544C2F7CAB67009AF16D /* MediumTransport.h */,
+				F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */,
+				F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */,
+				F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */,
+				F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */,
+				F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */,
+				F24C54322F79FFF1009AF16D /* CompletePathGuide.h */,
+				F24C54332F79FFF1009AF16D /* CompletePathGuide.cpp */,
+				F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */,
+				F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */,
 				F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */,
 				F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */,
 				F2C5D5D62F70D4D000546C97 /* HankelTransform.h */,
@@ -3083,7 +3251,9 @@
 				F27F0A5D069C42910069C9E5 /* Animator.h in Headers */,
 				F27F0A5F069C42910069C9E5 /* ElementTimeline.h in Headers */,
 				F27F0A61069C42910069C9E5 /* KeyframableHelper.h in Headers */,
+				F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */,
 				F27F0A62069C42910069C9E5 /* Keyframe.h in Headers */,
+				F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */,
 				F27F0A64069C42910069C9E5 /* Timeline.h in Headers */,
 				F27F0A65069C42910069C9E5 /* BSPTree.h in Headers */,
 				F27F0A66069C42910069C9E5 /* BSPTreeNode.h in Headers */,
@@ -3106,9 +3276,12 @@
 				F27F0A87069C42910069C9E5 /* QuarticFunction.h in Headers */,
 				F27F0A89069C42910069C9E5 /* Resultant.h in Headers */,
 				F27F0A8A069C42910069C9E5 /* 3DS_Defines.h in Headers */,
+				F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */,
+				F2D9B0CD2F8A8DEC0077A171 /* PathTransportUtilities.h in Headers */,
 				F2C5D5712F6E44CD00546C97 /* BDPTVertex.h in Headers */,
 				F2C5D5722F6E44CD00546C97 /* BDPTIntegrator.h in Headers */,
 				F27F0A8C069C42910069C9E5 /* BezierPatchGeometry.h in Headers */,
+				F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */,
 				F27F0A8E069C42910069C9E5 /* BezierTesselation.h in Headers */,
 				F27F0A8F069C42910069C9E5 /* BezierValueGenerator.h in Headers */,
 				F27F0A91069C42910069C9E5 /* BilinearPatchGeometry.h in Headers */,
@@ -3124,6 +3297,9 @@
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
+				F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */,
+				F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */,
+				F24C54642F84597B009AF16D /* GGXSPF.h in Headers */,
 				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
 				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
 				F27F0AAB069C42910069C9E5 /* TorusGeometry.h in Headers */,
@@ -3133,6 +3309,7 @@
 				F27F0AB1069C42910069C9E5 /* TriangleMeshGeometrySpecializations.h in Headers */,
 				F27F0AB3069C42910069C9E5 /* TriangleMeshLoader3DS.h in Headers */,
 				F27F0AB5069C42910069C9E5 /* TriangleMeshLoaderBezier.h in Headers */,
+				F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */,
 				F27F0AB7069C42910069C9E5 /* TriangleMeshLoaderPLY.h in Headers */,
 				F27F0AB9069C42910069C9E5 /* TriangleMeshLoaderPSurf.h in Headers */,
 				F27F0ABB069C42910069C9E5 /* TriangleMeshLoaderRAW.h in Headers */,
@@ -3145,13 +3322,17 @@
 				F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */,
 				F27F0AC5069C42910069C9E5 /* ICubicInterpolator.h in Headers */,
 				F27F0AC6069C42910069C9E5 /* IDeletedCallback.h in Headers */,
-				F2C5D5F92F736DEF00546C97 /* BioSpecSkinSSSShaderOp.h in Headers */,
 				F27F0AC7069C42910069C9E5 /* IDetectorSphere.h in Headers */,
 				F27F0AC8069C42910069C9E5 /* IEmitter.h in Headers */,
 				F27F0AC9069C42910069C9E5 /* IEnumCallback.h in Headers */,
+				F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */,
 				F27F0ACA069C42910069C9E5 /* IFullInterpolator.h in Headers */,
 				F27F0ACB069C42910069C9E5 /* IFunction1D.h in Headers */,
 				F27F0ACC069C42910069C9E5 /* IFunction1DManager.h in Headers */,
+				F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */,
+				F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */,
+				F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */,
+				F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */,
 				F27F0ACD069C42910069C9E5 /* IFunction2D.h in Headers */,
 				F27F0ACE069C42910069C9E5 /* IFunction2DManager.h in Headers */,
 				F27F0ACF069C42910069C9E5 /* IFunction3D.h in Headers */,
@@ -3170,6 +3351,7 @@
 				F27F0ADA069C42910069C9E5 /* ILightPriv.h in Headers */,
 				F27F0ADB069C42910069C9E5 /* ILog.h in Headers */,
 				F27F0ADC069C42910069C9E5 /* ILogPrinter.h in Headers */,
+				F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */,
 				F2C5D57B2F6E450F00546C97 /* CameraUtilities.h in Headers */,
 				F27F0ADD069C42910069C9E5 /* ILogPriv.h in Headers */,
 				F27F0ADE069C42910069C9E5 /* ILuminaryManager.h in Headers */,
@@ -3187,6 +3369,7 @@
 				F27F0AE8069C42910069C9E5 /* IOptions.h in Headers */,
 				F27F0AE9069C42910069C9E5 /* IPainter.h in Headers */,
 				F27F0AEA069C42910069C9E5 /* IPainterManager.h in Headers */,
+				F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */,
 				F27F0AEB069C42910069C9E5 /* IParametricSurface.h in Headers */,
 				F2C7C8DA2F75DF1C0030CB78 /* SMSShaderOp.h in Headers */,
 				F27F0AEC069C42910069C9E5 /* IPhotonMap.h in Headers */,
@@ -3199,6 +3382,9 @@
 				F27F0AF3069C42910069C9E5 /* IRasterImage.h in Headers */,
 				F27F0AF4069C42910069C9E5 /* IRasterImageAccessor.h in Headers */,
 				F27F0AF5069C42910069C9E5 /* IRasterImageReader.h in Headers */,
+				F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */,
+				F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */,
+				F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */,
 				F27F0AF6069C42910069C9E5 /* IRasterImageWriter.h in Headers */,
 				F27F0AF7069C42910069C9E5 /* IRasterizer.h in Headers */,
 				F27F0AF8069C42910069C9E5 /* IRasterizerOutput.h in Headers */,
@@ -3211,6 +3397,8 @@
 				F27F0AFF069C42910069C9E5 /* ISampling2D.h in Headers */,
 				F27F0B00069C42910069C9E5 /* IScene.h in Headers */,
 				F27F0B01069C42910069C9E5 /* ISceneParser.h in Headers */,
+				F24C54452F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.h in Headers */,
+				F24C54462F7CAB4F009AF16D /* HomogeneousMedium.h in Headers */,
 				F27F0B02069C42910069C9E5 /* IScenePriv.h in Headers */,
 				F27F0B03069C42910069C9E5 /* ISerializable.h in Headers */,
 				F27F0B04069C42910069C9E5 /* IShader.h in Headers */,
@@ -3240,6 +3428,7 @@
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
 				F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */,
 				F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */,
+				F24C54972F88556A009AF16D /* OptimalMISAccumulator.h in Headers */,
 				F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */,
 				F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */,
 				F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */,
@@ -3273,6 +3462,7 @@
 				F27F0B58069C42910069C9E5 /* LambertianLuminaireMaterial.h in Headers */,
 				F27F0B59069C42910069C9E5 /* LambertianMaterial.h in Headers */,
 				F27F0B5B069C42910069C9E5 /* LambertianSPF.h in Headers */,
+				F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */,
 				F27F0B5C069C42910069C9E5 /* Material.h in Headers */,
 				F27F0B5E069C42910069C9E5 /* OrenNayarBRDF.h in Headers */,
 				F27F0B5F069C42910069C9E5 /* OrenNayarMaterial.h in Headers */,
@@ -3280,6 +3470,7 @@
 				F27F0B62069C42910069C9E5 /* PerfectReflectorMaterial.h in Headers */,
 				F27F0B64069C42910069C9E5 /* PerfectReflectorSPF.h in Headers */,
 				F27F0B65069C42910069C9E5 /* PerfectRefractorMaterial.h in Headers */,
+				F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */,
 				F27F0B67069C42910069C9E5 /* PerfectRefractorSPF.h in Headers */,
 				F27F0B69069C42910069C9E5 /* PhongEmitter.h in Headers */,
 				F27F0B6A069C42910069C9E5 /* PhongLuminaireMaterial.h in Headers */,
@@ -3349,6 +3540,7 @@
 				F27F0BDB069C42910069C9E5 /* TranslucentPelPhotonTracer.h in Headers */,
 				F27F0BDC069C42910069C9E5 /* Polygon.h in Headers */,
 				F27F0BDD069C42910069C9E5 /* BicubicRasterImageAccessor.h in Headers */,
+				F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */,
 				F27F0BDE069C42910069C9E5 /* BilinRasterImageAccessor.h in Headers */,
 				F27F0BE0069C42910069C9E5 /* HDRReader.h in Headers */,
 				F27F0BE2069C42910069C9E5 /* HDRWriter.h in Headers */,
@@ -3374,7 +3566,6 @@
 				F27F0BFB069C42910069C9E5 /* HilbertRasterizeSequence.h in Headers */,
 				F27F0BFD069C42910069C9E5 /* LuminaryManager.h in Headers */,
 				F27F0BFF069C42910069C9E5 /* PixelBasedPelRasterizer.h in Headers */,
-				F27F0C01069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.h in Headers */,
 				F27F0C03069C42910069C9E5 /* PixelBasedRasterizerHelper.h in Headers */,
 				F27F0C05069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.h in Headers */,
 				F27F0C08069C42910069C9E5 /* RadianceMap.h in Headers */,
@@ -3387,11 +3578,13 @@
 				F27F0C13069C42910069C9E5 /* CatmullRomPixelFilter.h in Headers */,
 				F27F0C14069C42910069C9E5 /* CookPixelFilter.h in Headers */,
 				F27F0C15069C42910069C9E5 /* CubicBSplinePixelFilter.h in Headers */,
+				F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */,
 				F27F0C16069C42910069C9E5 /* GaussianPixelFilter.h in Headers */,
 				F27F0C18069C42910069C9E5 /* JitteredSampling1D.h in Headers */,
 				F27F0C19069C42910069C9E5 /* LanczosPixelFilter.h in Headers */,
 				F27F0C1A069C42910069C9E5 /* MaxPixelFilter.h in Headers */,
 				F27F0C1B069C42910069C9E5 /* MitchellNetravaliPixelFilter.h in Headers */,
+				F24C54912F87F453009AF16D /* LightBVH.h in Headers */,
 				F27F0C1D069C42910069C9E5 /* MultiJitteredSampling2D.h in Headers */,
 				F2C5D5802F6EA5B300546C97 /* PSSMLTSampler.h in Headers */,
 				F27F0C1F069C42910069C9E5 /* NRooksSampling2D.h in Headers */,
@@ -3453,6 +3646,7 @@
 				F27F0C78069C42910069C9E5 /* Math3D.h in Headers */,
 				F27F0C79069C42910069C9E5 /* Matrices.h in Headers */,
 				F27F0C7A069C42910069C9E5 /* MatricesOps.h in Headers */,
+				F2D9B0C32F89F5070077A171 /* ProgressiveConfig.h in Headers */,
 				F27F0C7B069C42910069C9E5 /* Points.h in Headers */,
 				F27F0C7C069C42910069C9E5 /* PointsOps.h in Headers */,
 				F27F0C7D069C42910069C9E5 /* Quaternion.h in Headers */,
@@ -3490,6 +3684,8 @@
 				F27F0CA7069C42910069C9E5 /* VolumeAccessor_TRI.h in Headers */,
 				F27F0CA8069C42910069C9E5 /* VolumeAccessorHelper.h in Headers */,
 				F27F0CA9069C42910069C9E5 /* VolumeOp_AlphaScaledComposite.h in Headers */,
+				F2C7C8EF2F7881E80030CB78 /* OIDNDenoiser.h in Headers */,
+				F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */,
 				F27F0CAA069C42910069C9E5 /* VolumeOp_Average.h in Headers */,
 				F27F0CAB069C42910069C9E5 /* VolumeOp_Composite.h in Headers */,
 				F27F0CAC069C42910069C9E5 /* VolumeOp_GradISO.h in Headers */,
@@ -3503,13 +3699,14 @@
 				F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */,
 				F277340D07ECCB7300C0B600 /* HaltonPointsSampling2D.h in Headers */,
 				F277341E07ECCBB200C0B600 /* AdvancedShader.h in Headers */,
-				F277342207ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.h in Headers */,
 				F277342F07ECCC2F00C0B600 /* AdaptiveDetectorSphere.h in Headers */,
 				F277343107ECCC2F00C0B600 /* CircularDiskDetector.h in Headers */,
 				F277343307ECCC2F00C0B600 /* DetectorSphere.h in Headers */,
 				F277343507ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.h in Headers */,
 				F277345507ECCEDC00C0B600 /* DataDrivenBSDF.h in Headers */,
 				F277345607ECCEDC00C0B600 /* DataDrivenMaterial.h in Headers */,
+				F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */,
+				F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */,
 				F277345807ECCEDC00C0B600 /* TranslucentBSDF.h in Headers */,
 				F27734A107ECD64300C0B600 /* MediaPathLocator.h in Headers */,
 				F27734A207ECD64300C0B600 /* Optics.hpp in Headers */,
@@ -3524,6 +3721,7 @@
 				6DBFAA6609C4D2A20048A09D /* GlobalPelPhotonMapShaderOp.h in Headers */,
 				6DBFAA6809C4D2A20048A09D /* GlobalSpectralPhotonMapShaderOp.h in Headers */,
 				6DBFAA6A09C4D2A20048A09D /* PathTracingShaderOp.h in Headers */,
+				F2C7C8E82F777BD60030CB78 /* SobolSampling2D.h in Headers */,
 				6DBFAA6C09C4D2A20048A09D /* ReflectionShaderOp.h in Headers */,
 				6DBFAA6E09C4D2A20048A09D /* RefractionShaderOp.h in Headers */,
 				6DBFAA7009C4D2A20048A09D /* ShadowPhotonMapShaderOp.h in Headers */,
@@ -3631,6 +3829,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F24C54592F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */,
 				F27F0A5C069C42910069C9E5 /* Animator.cpp in Sources */,
 				F27F0A5E069C42910069C9E5 /* ElementTimeline.cpp in Sources */,
 				F27F0A60069C42910069C9E5 /* KeyframableHelper.cpp in Sources */,
@@ -3643,9 +3842,12 @@
 				F27F0A77069C42910069C9E5 /* BezierRootFinder.cpp in Sources */,
 				F27F0A79069C42910069C9E5 /* CubicFunction.cpp in Sources */,
 				F27F0A7B069C42910069C9E5 /* KleinBottleParametricFunctions.cpp in Sources */,
+				F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */,
 				F27F0A7D069C42910069C9E5 /* LinearFunction.cpp in Sources */,
 				F27F0A7F069C42910069C9E5 /* ParametricSurface.cpp in Sources */,
 				F27F0A81069C42910069C9E5 /* Polynomial.cpp in Sources */,
+				F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */,
+				F2D9B08F2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */,
 				F27F0A83069C42910069C9E5 /* PolynomialGCD.cpp in Sources */,
 				F27F0A84069C42910069C9E5 /* QuadraticFunction.cpp in Sources */,
 				F27F0A86069C42910069C9E5 /* QuarticFunction.cpp in Sources */,
@@ -3653,6 +3855,7 @@
 				F27F0A8B069C42910069C9E5 /* BezierPatchGeometry.cpp in Sources */,
 				F27F0A8D069C42910069C9E5 /* BezierTesselation.cpp in Sources */,
 				F27F0A90069C42910069C9E5 /* BilinearPatchGeometry.cpp in Sources */,
+				F2C7C8E72F777BD60030CB78 /* SobolSampling2D.cpp in Sources */,
 				F27F0A92069C42910069C9E5 /* BoxGeometry.cpp in Sources */,
 				F27F0A94069C42910069C9E5 /* BoxUVGenerator.cpp in Sources */,
 				F27F0A96069C42910069C9E5 /* CircularDiskGeometry.cpp in Sources */,
@@ -3666,6 +3869,8 @@
 				F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */,
 				F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */,
 				F27F0AAA069C42910069C9E5 /* TorusGeometry.cpp in Sources */,
+				F2C7C8ED2F7881E80030CB78 /* AOVBuffers.cpp in Sources */,
+				F2C7C8EE2F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */,
 				F27F0AAC069C42910069C9E5 /* TriangleMeshGeometry.cpp in Sources */,
 				F27F0AAE069C42910069C9E5 /* TriangleMeshGeometryIndexed.cpp in Sources */,
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
@@ -3685,10 +3890,14 @@
 				F27F0B1A069C42910069C9E5 /* RaySphereIntersection.cpp in Sources */,
 				F27F0B1B069C42910069C9E5 /* RayTorusIntersection.cpp in Sources */,
 				F27F0B1C069C42910069C9E5 /* RayTriangleIntersection.cpp in Sources */,
+				F24C543F2F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */,
+				F24C54922F87F453009AF16D /* LightBVH.cpp in Sources */,
+				F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F27F0B1E069C42910069C9E5 /* Job.cpp in Sources */,
 				F27F0B21069C42910069C9E5 /* DirectionalLight.cpp in Sources */,
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
 				F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */,
+				F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */,
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
 				F27F0B33069C42910069C9E5 /* ObjectManager.cpp in Sources */,
@@ -3699,6 +3908,7 @@
 				F27F0B42069C42910069C9E5 /* CompositeSPF.cpp in Sources */,
 				F27F0B44069C42910069C9E5 /* CookTorranceBRDF.cpp in Sources */,
 				F27F0B47069C42910069C9E5 /* CookTorranceSPF.cpp in Sources */,
+				F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F27F0B4A069C42910069C9E5 /* DielectricSPF.cpp in Sources */,
 				F27F0B4D069C42910069C9E5 /* GenericHumanTissueSPF.cpp in Sources */,
 				F27F0B4F069C42910069C9E5 /* IsotropicPhongBRDF.cpp in Sources */,
@@ -3711,6 +3921,7 @@
 				F27F0B63069C42910069C9E5 /* PerfectReflectorSPF.cpp in Sources */,
 				F27F0B66069C42910069C9E5 /* PerfectRefractorSPF.cpp in Sources */,
 				F27F0B68069C42910069C9E5 /* PhongEmitter.cpp in Sources */,
+				F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F27F0B6B069C42910069C9E5 /* PolishedBRDF.cpp in Sources */,
 				F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */,
 				F27F0B70069C42910069C9E5 /* ScatteredRayContainer.cpp in Sources */,
@@ -3731,6 +3942,7 @@
 				F27F0B92069C42910069C9E5 /* Object.cpp in Sources */,
 				F27F0B96069C42910069C9E5 /* Options.cpp in Sources */,
 				F27F0B98069C42910069C9E5 /* BlackBodyPainter.cpp in Sources */,
+				F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
 				F27F0B9B069C42910069C9E5 /* CheckerPainter.cpp in Sources */,
 				F27F0B9E069C42910069C9E5 /* IridescentPainter.cpp in Sources */,
 				F27F0BA0069C42910069C9E5 /* LinesPainter.cpp in Sources */,
@@ -3762,26 +3974,29 @@
 				F27F0BCE069C42910069C9E5 /* IrradianceCache.cpp in Sources */,
 				F27F0BD3069C42910069C9E5 /* ShadowPhotonMap.cpp in Sources */,
 				F2C5D5702F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
+				F24C54472F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */,
+				F24C54482F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F27F0BD5069C42910069C9E5 /* ShadowPhotonTracer.cpp in Sources */,
 				F27F0BD8069C42910069C9E5 /* TranslucentPelPhotonMap.cpp in Sources */,
 				F2C5D57C2F6E450F00546C97 /* CameraUtilities.cpp in Sources */,
 				F27F0BDA069C42910069C9E5 /* TranslucentPelPhotonTracer.cpp in Sources */,
 				F27F0BDF069C42910069C9E5 /* HDRReader.cpp in Sources */,
 				F27F0BE1069C42910069C9E5 /* HDRWriter.cpp in Sources */,
+				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
+				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				F27F0BE4069C42910069C9E5 /* PNGReader.cpp in Sources */,
 				F27F0BE6069C42910069C9E5 /* PNGWriter.cpp in Sources */,
 				F27F0BE8069C42910069C9E5 /* PPMWriter.cpp in Sources */,
 				F27F0BEC069C42910069C9E5 /* RGBEAWriter.cpp in Sources */,
 				F27F0BEE069C42910069C9E5 /* TGAReader.cpp in Sources */,
 				F27F0BF0069C42910069C9E5 /* TGAWriter.cpp in Sources */,
-				F2C5D5F82F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */,
 				F27F0BF3069C42910069C9E5 /* TIFFReader.cpp in Sources */,
 				F27F0BF5069C42910069C9E5 /* TIFFWriter.cpp in Sources */,
 				F2C7C8DE2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
 				F27F0BF9069C42910069C9E5 /* FileRasterizerOutput.cpp in Sources */,
+				F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F27F0BFC069C42910069C9E5 /* LuminaryManager.cpp in Sources */,
 				F27F0BFE069C42910069C9E5 /* PixelBasedPelRasterizer.cpp in Sources */,
-				F27F0C00069C42910069C9E5 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */,
 				F27F0C02069C42910069C9E5 /* PixelBasedRasterizerHelper.cpp in Sources */,
 				F27F0C04069C42910069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
 				F27F0C09069C42910069C9E5 /* Rasterizer.cpp in Sources */,
@@ -3810,6 +4025,7 @@
 				F27F0C5E069C42910069C9E5 /* DiskBuffer.cpp in Sources */,
 				F27F0C60069C42910069C9E5 /* DiskFileReadBuffer.cpp in Sources */,
 				F27F0C62069C42910069C9E5 /* DiskFileWriteBuffer.cpp in Sources */,
+				F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */,
 				F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
 				F27F0C66069C42910069C9E5 /* GeometricUtilities.cpp in Sources */,
@@ -3831,10 +4047,11 @@
 				F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */,
 				F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */,
 				F277341D07ECCBB200C0B600 /* AdvancedShader.cpp in Sources */,
-				F277342107ECCBCA00C0B600 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */,
 				F2C5D5D32F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */,
 				F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */,
 				F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */,
+				F2D9B0892F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */,
+				F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F277343207ECCC2F00C0B600 /* DetectorSphere.cpp in Sources */,
 				F277343407ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp in Sources */,
 				F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */,
@@ -3860,6 +4077,7 @@
 				6DBFAA6F09C4D2A20048A09D /* ShadowPhotonMapShaderOp.cpp in Sources */,
 				6DBFAA7209C4D2A20048A09D /* PointSetOctree.cpp in Sources */,
 				6DBFAA7509C4D2A20048A09D /* SubSurfaceScatteringShaderOp.cpp in Sources */,
+				F24C54352F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */,
 				6DBFAA7709C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.cpp in Sources */,
 				6DBFAA7909C4D2A20048A09D /* TransparencyShaderOp.cpp in Sources */,
 				6DBFAA8209C4D2CD0048A09D /* commandconsole.cpp in Sources */,
@@ -3935,6 +4153,7 @@
 				F24B72182F52A632008304C4 /* BilinearPatchGeometry.cpp in Sources */,
 				F24B72192F52A632008304C4 /* BilinearPatchGeometry.h in Sources */,
 				F24B721A2F52A632008304C4 /* BoxGeometry.cpp in Sources */,
+				F24C54932F87F453009AF16D /* LightBVH.cpp in Sources */,
 				F24B721B2F52A632008304C4 /* BoxGeometry.h in Sources */,
 				F24B721C2F52A632008304C4 /* BoxUVGenerator.cpp in Sources */,
 				F24B721D2F52A632008304C4 /* BoxUVGenerator.h in Sources */,
@@ -3948,6 +4167,7 @@
 				F24B72252F52A632008304C4 /* CylindricalUVGenerator.h in Sources */,
 				F24B72262F52A632008304C4 /* EllipsoidGeometry.cpp in Sources */,
 				F24B72272F52A632008304C4 /* EllipsoidGeometry.h in Sources */,
+				F24C54362F79FFF1009AF16D /* CompletePathGuide.cpp in Sources */,
 				F24B72282F52A632008304C4 /* Geometry.cpp in Sources */,
 				F24B72292F52A632008304C4 /* Geometry.h in Sources */,
 				F24B722A2F52A632008304C4 /* GeometryUtilities.cpp in Sources */,
@@ -4034,6 +4254,7 @@
 				F24B727B2F52A632008304C4 /* IRasterImage.h in Sources */,
 				F24B727C2F52A632008304C4 /* IRasterImageAccessor.h in Sources */,
 				F24B727D2F52A632008304C4 /* IRasterImageReader.h in Sources */,
+				F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */,
 				F24B727E2F52A632008304C4 /* IRasterImageWriter.h in Sources */,
 				F24B727F2F52A632008304C4 /* IRasterizer.h in Sources */,
 				F24B72802F52A632008304C4 /* IRasterizerOutput.h in Sources */,
@@ -4041,6 +4262,7 @@
 				F24B72822F52A632008304C4 /* IRayCaster.h in Sources */,
 				F24B72832F52A632008304C4 /* IRayIntersectionModifier.h in Sources */,
 				F24B72842F52A632008304C4 /* IReadBuffer.h in Sources */,
+				F24C54962F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F24B72852F52A632008304C4 /* IReference.h in Sources */,
 				F24B72862F52A632008304C4 /* ISampling1D.h in Sources */,
 				F24B72872F52A632008304C4 /* ISampling2D.h in Sources */,
@@ -4100,6 +4322,7 @@
 				F24B72BC2F52A632008304C4 /* ShaderManager.h in Sources */,
 				F24B72BD2F52A632008304C4 /* DataDrivenBSDF.cpp in Sources */,
 				F24B72BE2F52A632008304C4 /* DataDrivenBSDF.h in Sources */,
+				F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F24B72BF2F52A632008304C4 /* DataDrivenMaterial.h in Sources */,
 				F24B72C02F52A632008304C4 /* TranslucentBSDF.cpp in Sources */,
 				F24B72C12F52A632008304C4 /* TranslucentBSDF.h in Sources */,
@@ -4124,6 +4347,7 @@
 				F24B72D42F52A632008304C4 /* DielectricMaterial.h in Sources */,
 				F24B72D52F52A632008304C4 /* DielectricSPF.cpp in Sources */,
 				F24B72D62F52A632008304C4 /* DielectricSPF.h in Sources */,
+				F24C54402F7C107E009AF16D /* BSSRDFSampling.cpp in Sources */,
 				F2C5D5EF2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp in Sources */,
 				F24B72D72F52A632008304C4 /* GenericHumanTissueMaterial.h in Sources */,
 				F24B72D82F52A632008304C4 /* GenericHumanTissueSPF.cpp in Sources */,
@@ -4134,7 +4358,6 @@
 				F24B72DD2F52A632008304C4 /* IsotropicPhongSPF.cpp in Sources */,
 				F24B72DE2F52A632008304C4 /* IsotropicPhongSPF.h in Sources */,
 				F24B72DF2F52A632008304C4 /* LambertianBRDF.cpp in Sources */,
-				F2C5D5F72F736DEF00546C97 /* BioSpecSkinSSSShaderOp.cpp in Sources */,
 				F24B72E02F52A632008304C4 /* LambertianBRDF.h in Sources */,
 				F2C5D5E82F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */,
 				F24B72E12F52A632008304C4 /* LambertianEmitter.cpp in Sources */,
@@ -4149,13 +4372,16 @@
 				F24B72EA2F52A632008304C4 /* OrenNayarMaterial.h in Sources */,
 				F24B72EB2F52A632008304C4 /* OrenNayarSPF.cpp in Sources */,
 				F24B72EC2F52A632008304C4 /* OrenNayarSPF.h in Sources */,
+				F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */,
 				F24B72ED2F52A632008304C4 /* PerfectReflectorMaterial.h in Sources */,
+				F24C54392F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
 				F24B72EE2F52A632008304C4 /* PerfectReflectorSPF.cpp in Sources */,
 				F24B72EF2F52A632008304C4 /* PerfectReflectorSPF.h in Sources */,
 				F24B72F02F52A632008304C4 /* PerfectRefractorMaterial.h in Sources */,
 				F24B72F12F52A632008304C4 /* PerfectRefractorSPF.cpp in Sources */,
 				F24B72F22F52A632008304C4 /* PerfectRefractorSPF.h in Sources */,
 				F2C5D5DE2F716BAA00546C97 /* BDPTRasterizerBase.cpp in Sources */,
+				F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F2C5D5DF2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp in Sources */,
 				F24B72F32F52A632008304C4 /* PhongEmitter.cpp in Sources */,
 				F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */,
@@ -4193,6 +4419,7 @@
 				F2C5D5CD2F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */,
 				F24B73132F52A632008304C4 /* NoiseUtils.h in Sources */,
 				F24B73142F52A632008304C4 /* PerlinNoise.h in Sources */,
+				F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */,
 				F24B73152F52A632008304C4 /* PerlinNoise1D.cpp in Sources */,
 				F24B73162F52A632008304C4 /* PerlinNoise2D.cpp in Sources */,
 				F24B73172F52A632008304C4 /* PerlinNoise3D.cpp in Sources */,
@@ -4214,6 +4441,7 @@
 				F24B73272F52A632008304C4 /* IridescentPainter.cpp in Sources */,
 				F24B73282F52A632008304C4 /* IridescentPainter.h in Sources */,
 				F24B73292F52A632008304C4 /* LinesPainter.cpp in Sources */,
+				F2C7C8E62F777BD60030CB78 /* SobolSampling2D.cpp in Sources */,
 				F24B732A2F52A632008304C4 /* LinesPainter.h in Sources */,
 				F24B732B2F52A632008304C4 /* MandelbrotPainter.cpp in Sources */,
 				F24B732C2F52A632008304C4 /* MandelbrotPainter.h in Sources */,
@@ -4227,6 +4455,8 @@
 				F24B73342F52A632008304C4 /* SpectralColorPainter.h in Sources */,
 				F24B73352F52A632008304C4 /* TexturePainter.cpp in Sources */,
 				F24B73362F52A632008304C4 /* TexturePainter.h in Sources */,
+				F24C54492F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */,
+				F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */,
 				F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */,
 				F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */,
@@ -4291,10 +4521,13 @@
 				F24B73732F52A632008304C4 /* PNGWriter.cpp in Sources */,
 				F24B73742F52A632008304C4 /* PNGWriter.h in Sources */,
 				F24B73752F52A632008304C4 /* PPMWriter.cpp in Sources */,
+				F24C545A2F7CC591009AF16D /* HeterogeneousMedium.cpp in Sources */,
 				F24B73762F52A632008304C4 /* PPMWriter.h in Sources */,
 				F24B73772F52A632008304C4 /* RasterImage.h in Sources */,
 				F24B73782F52A632008304C4 /* ReadOnlyRasterImage.h in Sources */,
 				F24B73792F52A632008304C4 /* RGBEAWriter.cpp in Sources */,
+				F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */,
+				F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */,
 				F24B737A2F52A632008304C4 /* RGBEAWriter.h in Sources */,
 				F24B737B2F52A632008304C4 /* TGAReader.cpp in Sources */,
 				F24B737C2F52A632008304C4 /* TGAReader.h in Sources */,
@@ -4308,8 +4541,6 @@
 				F24B73832F52A632008304C4 /* TIFFWriter.h in Sources */,
 				F24B73842F52A632008304C4 /* WriteOnlyRasterImage.h in Sources */,
 				F2C5D5862F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
-				F24B73852F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.cpp in Sources */,
-				F24B73862F52A632008304C4 /* PixelBasedPelRasterizerContrastAA.h in Sources */,
 				F24B73872F52A632008304C4 /* BlockRasterizeSequence.h in Sources */,
 				F2C5D56F2F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
 				F24B73882F52A632008304C4 /* FileRasterizerOutput.cpp in Sources */,
@@ -4320,8 +4551,6 @@
 				F24B738D2F52A632008304C4 /* PixelBasedPelRasterizer.cpp in Sources */,
 				F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */,
 				F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */,
-				F24B738F2F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.cpp in Sources */,
-				F24B73902F52A632008304C4 /* PixelBasedPelRasterizerAdaptiveSampling.h in Sources */,
 				F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */,
 				F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */,
 				F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,
@@ -4361,6 +4590,8 @@
 				F24B73B32F52A632008304C4 /* RandomSampling2D.cpp in Sources */,
 				F24B73B42F52A632008304C4 /* RandomSampling2D.h in Sources */,
 				F24B73B52F52A632008304C4 /* Sampling1D.h in Sources */,
+				F2D9B0852F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */,
+				F2D9B0862F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F24B73B62F52A632008304C4 /* Sampling2D.h in Sources */,
 				F24B73B72F52A632008304C4 /* SincPixelFilter.cpp in Sources */,
 				F24B73B82F52A632008304C4 /* SincPixelFilter.h in Sources */,
@@ -4383,6 +4614,7 @@
 				F24B73C92F52A632008304C4 /* CausticSpectralPhotonMapShaderOp.cpp in Sources */,
 				F24B73CA2F52A632008304C4 /* CausticSpectralPhotonMapShaderOp.h in Sources */,
 				F24B73CB2F52A632008304C4 /* DirectLightingShaderOp.cpp in Sources */,
+				F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */,
 				F24B73CC2F52A632008304C4 /* DirectLightingShaderOp.h in Sources */,
 				F24B73CD2F52A632008304C4 /* DistributionTracingShaderOp.cpp in Sources */,
 				F24B73CE2F52A632008304C4 /* DistributionTracingShaderOp.h in Sources */,
@@ -4477,6 +4709,8 @@
 				F24B74242F52A632008304C4 /* MemoryTracker.h in Sources */,
 				F24B74252F52A632008304C4 /* StreamPrinter.cpp in Sources */,
 				F24B74262F52A632008304C4 /* StreamPrinter.h in Sources */,
+				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
+				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				F24B74272F52A632008304C4 /* Constants.h in Sources */,
 				F24B74282F52A632008304C4 /* Direction.h in Sources */,
 				F24B74292F52A632008304C4 /* Math3D.cpp in Sources */,
@@ -4501,9 +4735,11 @@
 				F24B743C2F52A632008304C4 /* OrthonormalBasis3D.h in Sources */,
 				F24B743D2F52A632008304C4 /* PEL.h in Sources */,
 				F24B743E2F52A632008304C4 /* PiecewiseLinearFunction.h in Sources */,
+				F24C54502F7CAB67009AF16D /* MediumTransport.cpp in Sources */,
 				F24B743F2F52A632008304C4 /* Plane.h in Sources */,
 				F24B74402F52A632008304C4 /* ProbabilityDensityFunction.cpp in Sources */,
 				F24B74412F52A632008304C4 /* ProbabilityDensityFunction.h in Sources */,
+				F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */,
 				F24B74422F52A632008304C4 /* RandomNumbers.h in Sources */,
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,
 				F24B74442F52A632008304C4 /* Reference.cpp in Sources */,
@@ -4575,6 +4811,8 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4618,6 +4856,8 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4660,6 +4900,8 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = "";
 				PRODUCT_NAME = rise;
@@ -4698,6 +4940,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = fast;
 				GCC_PREPROCESSOR_DEFINITIONS = NO_EXR_SUPPORT;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
@@ -4706,6 +4949,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				LLVM_LTO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
@@ -4737,6 +4981,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = fast;
 				GCC_PREPROCESSOR_DEFINITIONS = NO_EXR_SUPPORT;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
@@ -4745,6 +4990,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
@@ -4776,6 +5022,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_MODEL_TUNING = G5;
 				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = fast;
 				GCC_PREPROCESSOR_DEFINITIONS = NO_EXR_SUPPORT;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES;
@@ -4784,6 +5031,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = "";
+				LLVM_LTO = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
 			name = Default;
@@ -4858,6 +5106,7 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+					/opt/homebrew/lib,
 				);
 				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
@@ -4871,6 +5120,8 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -4881,6 +5132,8 @@
 					"-lImath",
 					"-lIex",
 					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -4967,6 +5220,7 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+					/opt/homebrew/lib,
 				);
 				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
@@ -4980,6 +5234,8 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -4990,6 +5246,8 @@
 					"-lImath",
 					"-lIex",
 					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -5076,6 +5334,7 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
+					/opt/homebrew/lib,
 				);
 				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
@@ -5089,6 +5348,8 @@
 					"-DMERSENNE53",
 					"-DUSE_PRECOMPILED_HEADER_",
 					"-DRISE_ENABLE_MAILBOXING",
+					"-DRISE_ENABLE_OIDN",
+					"-DRISE_ENABLE_OPENPGL",
 				);
 				OTHER_LDFLAGS = (
 					"-lpng",
@@ -5099,6 +5360,8 @@
 					"-lImath",
 					"-lIex",
 					"-lIlmThread",
+					"-lOpenImageDenoise",
+					"-lopenpgl",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "akimagery.RISE-GUI";
 				PRODUCT_NAME = "$(TARGET_NAME)";

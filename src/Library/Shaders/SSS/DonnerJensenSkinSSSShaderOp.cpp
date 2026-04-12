@@ -711,7 +711,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	const IRayCaster& caster,
 	const IRayCaster::RAY_STATE& rs,
 	RISEPel& c,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {
@@ -721,7 +721,7 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	if( !pScene ) return;
 
 	// Only on normal pass for view rays
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) return;
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) return;
 
 	// State cache check
 	if( cache )
@@ -873,7 +873,7 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,
 	const Scalar caccum,
 	const Scalar nm,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {

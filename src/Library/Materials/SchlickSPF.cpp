@@ -235,9 +235,9 @@ static Scalar ComputeSchlickSpecularPdf(
 
 void SchlickSPF::Scatter(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
@@ -246,7 +246,7 @@ void SchlickSPF::Scatter(
 	}
 
 	ScatteredRay d, s;
-	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
+	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.kray = pDiffuse.GetColor(ri);
@@ -257,14 +257,22 @@ void SchlickSPF::Scatter(
 		scattered.AddScatteredRay( d );
 	}
 
-	const RISEPel roughness = pRoughness.GetColor(ri);
+	RISEPel roughness = pRoughness.GetColor(ri);
 	const RISEPel isotropy = pIsotropy.GetColor(ri);
+
+	// Glossy filtering: increase effective roughness to blur
+	// secondary glossy reflections, reducing caustic noise.
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			roughness[ch] = r_min( roughness[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
 
 	if( roughness[0] == roughness[1] && roughness[1] == roughness[2] &&
 		isotropy[0] == isotropy[1] && isotropy[1] == isotropy[2] )
 	{
 		Scalar fresnel = 0;
-		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), roughness[0], isotropy[0] );
+		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughness[0], isotropy[0] );
 
 		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			const RISEPel rho = pSpecular.GetColor(ri);
@@ -276,7 +284,7 @@ void SchlickSPF::Scatter(
 	}
 	else
 	{
-		const Point2 ptrand( random.CanonicalRandom(),random.CanonicalRandom() );
+		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
 		const RISEPel rho = pSpecular.GetColor(ri);
 
 		for( int i=0; i<3; i++ ) {
@@ -296,10 +304,10 @@ void SchlickSPF::Scatter(
 
 void SchlickSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
@@ -309,8 +317,16 @@ void SchlickSPF::ScatterNM(
 
 	ScatteredRay d, s;
 	Scalar fresnel = 0;
-	GenerateDiffuseRay( d, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()) );
-	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), pRoughness.GetColorNM(ri,nm), pIsotropy.GetColorNM(ri,nm) );
+	Scalar roughnessNM = pRoughness.GetColorNM(ri,nm);
+	const Scalar isotropyNM = pIsotropy.GetColorNM(ri,nm);
+
+	// Glossy filtering: increase effective roughness
+	if( ri.glossyFilterWidth > 0 ) {
+		roughnessNM = r_min( roughnessNM + ri.glossyFilterWidth, Scalar(1.0) );
+	}
+
+	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
+	GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughnessNM, isotropyNM );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.krayNM = pDiffuse.GetColorNM(ri,nm);
@@ -323,7 +339,7 @@ void SchlickSPF::ScatterNM(
 	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		const Scalar rho = pSpecular.GetColorNM(ri,nm);
 		s.krayNM = rho + (1.0-rho) * fresnel;
-		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), pRoughness.GetColorNM(ri,nm), pIsotropy.GetColorNM(ri,nm) );
+		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughnessNM, isotropyNM );
 		s.isDelta = false;
 		scattered.AddScatteredRay( s );
 	}
@@ -332,7 +348,7 @@ void SchlickSPF::ScatterNM(
 Scalar SchlickSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -350,8 +366,13 @@ Scalar SchlickSPF::Pdf(
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
 	// Specular PDF: Schlick half-vector sampling (use average roughness/isotropy)
-	const RISEPel roughness = pRoughness.GetColor(ri);
+	RISEPel roughness = pRoughness.GetColor(ri);
 	const RISEPel isotropy = pIsotropy.GetColor(ri);
+	if( ri.glossyFilterWidth > 0 ) {
+		for( int ch = 0; ch < 3; ch++ ) {
+			roughness[ch] = r_min( roughness[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+		}
+	}
 	const Scalar rAvg = (roughness[0] + roughness[1] + roughness[2]) / 3.0;
 	const Scalar pAvg = (isotropy[0] + isotropy[1] + isotropy[2]) / 3.0;
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, rAvg, pAvg );
@@ -374,7 +395,7 @@ Scalar SchlickSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	OrthonormalBasis3D myonb = ri.onb;
@@ -392,8 +413,11 @@ Scalar SchlickSPF::PdfNM(
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
 	// Specular PDF
-	const Scalar r = pRoughness.GetColorNM(ri,nm);
+	Scalar r = pRoughness.GetColorNM(ri,nm);
 	const Scalar p = pIsotropy.GetColorNM(ri,nm);
+	if( ri.glossyFilterWidth > 0 ) {
+		r = r_min( r + ri.glossyFilterWidth, Scalar(1.0) );
+	}
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, r, p );
 
 	// Weight

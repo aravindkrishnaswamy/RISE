@@ -27,6 +27,34 @@ namespace RISE
 
 	public:
 		//
+		// Non-const accessors for privileged mutation
+		//
+
+		/// \return Non-const camera for setup
+		virtual ICamera*				GetCameraMutable() = 0;
+
+		/// \return Non-const caustic PEL photon map
+		virtual IPhotonMap*				GetCausticPelMapMutable() = 0;
+
+		/// \return Non-const global PEL photon map
+		virtual IPhotonMap*				GetGlobalPelMapMutable() = 0;
+
+		/// \return Non-const translucent PEL photon map
+		virtual IPhotonMap*				GetTranslucentPelMapMutable() = 0;
+
+		/// \return Non-const caustic spectral photon map
+		virtual ISpectralPhotonMap*		GetCausticSpectralMapMutable() = 0;
+
+		/// \return Non-const global spectral photon map
+		virtual ISpectralPhotonMap*		GetGlobalSpectralMapMutable() = 0;
+
+		/// \return Non-const shadow photon map
+		virtual IShadowPhotonMap*		GetShadowMapMutable() = 0;
+
+		/// \return Non-const irradiance cache
+		virtual IIrradianceCache*		GetIrradianceCacheMutable() = 0;
+
+		//
 		// Added interface functions
 		//
 
@@ -85,9 +113,9 @@ namespace RISE
 			IIrradianceCache* pCache							///< [in] Cache to set
 			) = 0;
 
-		//! Sets the global atmopsherics processor
-		virtual void SetGlobalAtmosphere( 
-			const IAtmosphere* pAtmosphere						///< [in] Global atmopshere to set
+		//! Sets the global participating medium
+		virtual void SetGlobalMedium(
+			const IMedium* pMedium								///< [in] Global medium to set
 			) = 0;
 
 		//! Shutsdown the scene, forces the deletion and clearing of everything

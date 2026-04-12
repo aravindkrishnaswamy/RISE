@@ -42,6 +42,7 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/ISampler.h"
 #include "../Utilities/IORStack.h"
 #include <vector>
 
@@ -157,7 +158,7 @@ namespace RISE
 			/// \param emitterPoint   Light sample point
 			/// \param emitterNormal  Normal at light sample
 			/// \param specularChain  Initial seed vertices on specular surfaces
-			/// \param rng            Random number generator (for Bernoulli trials)
+			/// \param sampler            Sampler with dimensional management (for Bernoulli trials)
 			/// \return ManifoldResult with converged chain and contribution info
 			ManifoldResult Solve(
 				const Point3& shadingPoint,
@@ -165,7 +166,7 @@ namespace RISE
 				const Point3& emitterPoint,
 				const Vector3& emitterNormal,
 				std::vector<ManifoldVertex>& specularChain,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 
 			/// Traces a seed ray from start toward end, collecting intersections
@@ -231,7 +232,7 @@ namespace RISE
 			/// \param woOutgoing   Direction toward the viewer/previous vertex
 			/// \param scene        Scene for ray casting and light access
 			/// \param caster       Ray caster
-			/// \param rng          Random number generator
+			/// \param sampler          Sampler with proper dimensional seperation
 			SMSContribution EvaluateAtShadingPoint(
 				const Point3& pos,
 				const Vector3& normal,
@@ -240,7 +241,7 @@ namespace RISE
 				const Vector3& woOutgoing,
 				const IScene& scene,
 				const IRayCaster& caster,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 
 			/// Spectral variant of SMS evaluation.
@@ -261,8 +262,35 @@ namespace RISE
 				const Vector3& woOutgoing,
 				const IScene& scene,
 				const IRayCaster& caster,
-				const RandomNumberGenerator& rng,
+				ISampler& sampler,
 				const Scalar nm
+				) const;
+
+			/// Tests whether the external segments of an SMS specular
+			/// chain are unoccluded.  Checks two segments:
+			///   1. shading point -> first specular vertex
+			///   2. last specular vertex -> light source
+			///
+			/// LIMITATION: Inter-specular segments (vertices inside
+			/// the glass body) are NOT tested.  CastShadowRay uses
+			/// the scene's acceleration structure which includes the
+			/// glass geometry itself, so any ray between two glass
+			/// vertices would report a false self-intersection.
+			/// Filtering specular objects from shadow tests would
+			/// require per-object exclusion lists, which is a more
+			/// invasive change.  This means an opaque object placed
+			/// entirely inside a glass body (between two specular
+			/// vertices) would not be caught.  In practice this is
+			/// rare; the common occlusion case (wall between the
+			/// floor and the glass, or between the glass and the
+			/// light) is handled by the external-segment checks.
+			///
+			/// \return True if both external segments are unoccluded.
+			bool CheckChainVisibility(
+				const Point3& shadingPoint,
+				const Point3& lightPoint,
+				const std::vector<ManifoldVertex>& chain,
+				const IRayCaster& caster
 				) const;
 
 		protected:
@@ -368,7 +396,7 @@ namespace RISE
 				const Point3& shadingPoint,
 				const Point3& emitterPoint,
 				const std::vector<ManifoldVertex>& seedTemplate,
-				const RandomNumberGenerator& rng
+				ISampler& sampler
 				) const;
 		};
 	}

@@ -37,23 +37,23 @@ namespace RISE
 			virtual ~CausticSpectralPhotonTracer();
 
 			// Traces a single photon through the scene until it can't trace it any longer
-			void TracePhoton( 
-				const Ray& ray, 
-				const Scalar power, 
-				const Scalar nm, 
-				bool bFromSpecular, 
+			void TracePhoton(
+				const Ray& ray,
+				const Scalar power,
+				const Scalar nm,
+				bool bFromSpecular,
 				CausticSpectralPhotonMap& pPhotonMap,
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			// Traces a single photon through the scene until it can't trace it any longer
 			// This is what the specific instances must extend
-			inline void TraceSinglePhoton( 
+			inline void TraceSinglePhoton(
 				const Ray& ray,
-				const Scalar power, 
+				const Scalar power,
 				const Scalar nm,
-				CausticSpectralPhotonMap& pPhotonMap, 
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				CausticSpectralPhotonMap& pPhotonMap,
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const
 			{
 				TracePhoton( ray, power, nm, false, pPhotonMap, ior_stack);
@@ -74,7 +74,6 @@ namespace RISE
 				const Scalar nm_begin,						///< [in] Wavelength to start shooting photons at
 				const Scalar nm_end,						///< [in] Wavelength to end shooting photons at
 				const unsigned int num_wavelengths,			///< [in] Number of wavelengths to shoot photons at
-				const bool useiorstack,						///< [in] Should we use an ior stack ?
 				const bool branch,							///< [in] Should the tracer branch or only follow one path?
 				const bool reflect,							///< Should we trace reflected rays?
 				const bool refract,							///< Should we trace refracted rays?

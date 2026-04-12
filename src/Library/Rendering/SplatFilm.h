@@ -3,7 +3,7 @@
 //  SplatFilm.h - Thread-safe film buffer for accumulating
 //  contributions that land at arbitrary pixel positions.
 //
-//  In BDPT, connection strategies where t<=1 (light subpath
+//  In BDPT, connection strategies where t==1 (light subpath
 //  connects to camera) produce contributions at pixel positions
 //  determined by projecting the light vertex onto the camera,
 //  NOT the pixel currently being rendered.  These cannot be added
@@ -82,6 +82,14 @@ namespace RISE
 			void Resolve(
 				IRasterImage& target,					///< [in/out] Target image to receive resolved splats
 				const Scalar sampleCount				///< [in] Total number of samples taken
+				) const;
+
+			//! Subtracts previously resolved splats from the image (inverse of Resolve).
+			//! Used for progressive display: Resolve before intermediate output,
+			//! Unresolve afterward to avoid double-counting.
+			void Unresolve(
+				IRasterImage& target,					///< [in/out] Target image to undo resolved splats
+				const Scalar sampleCount				///< [in] Same sample count used in Resolve
 				) const;
 
 			//! Clears all accumulated splat data

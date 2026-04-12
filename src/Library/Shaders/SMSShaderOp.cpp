@@ -12,6 +12,7 @@
 
 #include "pch.h"
 #include "SMSShaderOp.h"
+#include "../Utilities/IndependentSampler.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -20,7 +21,6 @@ SMSShaderOp::SMSShaderOp( const ManifoldSolverConfig& config ) :
   pSolver( 0 )
 {
 	pSolver = new ManifoldSolver( config );
-	pSolver->addref();
 }
 
 SMSShaderOp::~SMSShaderOp()
@@ -34,12 +34,12 @@ void SMSShaderOp::PerformOperation(
 	const IRayCaster& caster,
 	const IRayCaster::RAY_STATE& rs,
 	RISEPel& c,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {
 	// Only run on normal passes
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return;
 	}
 
@@ -63,6 +63,9 @@ void SMSShaderOp::PerformOperation(
 		-ri.geometric.ray.Dir().y,
 		-ri.geometric.ray.Dir().z );
 
+	IndependentSampler fallbackSampler( rc.random );
+	ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+
 	ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 		ri.geometric.ptIntersection,
 		ri.geometric.vNormal,
@@ -71,7 +74,7 @@ void SMSShaderOp::PerformOperation(
 		woOutgoing,
 		*pScene,
 		caster,
-		rc.random );
+		smsSampler );
 
 	if( sms.valid )
 	{
@@ -86,13 +89,13 @@ Scalar SMSShaderOp::PerformOperationNM(
 	const IRayCaster::RAY_STATE& rs,
 	const Scalar caccum,
 	const Scalar nm,
-	const IORStack* const ior_stack,
+	const IORStack& ior_stack,
 	const ScatteredRayContainer* pScat
 	) const
 {
-	// SMS spectral variant: use the RGB contribution's max component
-	// as an approximation for the spectral contribution.
-	if( rc.pass != RuntimeContext::PASS_NORMAL && rs.type == rs.eRayView ) {
+	// SMS spectral variant: uses per-wavelength IOR for dispersion
+	// and scalar (single-wavelength) evaluation throughout.
+	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) {
 		return 0;
 	}
 
@@ -110,7 +113,10 @@ Scalar SMSShaderOp::PerformOperationNM(
 		-ri.geometric.ray.Dir().y,
 		-ri.geometric.ray.Dir().z );
 
-	ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
+	IndependentSampler fallbackSamplerNM( rc.random );
+	ISampler& smsSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+
+	ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 		ri.geometric.ptIntersection,
 		ri.geometric.vNormal,
 		ri.geometric.onb,
@@ -118,11 +124,12 @@ Scalar SMSShaderOp::PerformOperationNM(
 		woOutgoing,
 		*pScene,
 		caster,
-		rc.random );
+		smsSamplerNM,
+		nm );
 
 	if( sms.valid )
 	{
-		return ColorMath::MaxValue( sms.contribution ) * sms.misWeight;
+		return sms.contribution * sms.misWeight;
 	}
 
 	return 0;

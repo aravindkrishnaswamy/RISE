@@ -103,10 +103,14 @@ namespace RISE
 			unsigned int					sampleIndex;		///< Current consumption position within current stream
 			unsigned int					currentIteration;	///< Global mutation counter
 
-			// Stream multiplexing: separate film, light subpath, and eye
-			// subpath/connection samples into independent streams so that
-			// small mutations to one part of the path don't disturb others.
-			static const int				kNumStreams = 3;	///< Number of sample streams
+			// Stream multiplexing: each stream gets its own lane in the
+			// primary sample vector so that mutations to one part of the
+			// path don't disturb others.  BDPTIntegrator uses streams
+			// 0-47 internally (light source=0, light bounces=1-16,
+			// eye bounces=16-31, SMS=47).  Stream 48 is reserved for
+			// the MLT film position.  kNumStreams must exceed the
+			// maximum stream index used by any consumer.
+			static const int				kNumStreams = 49;	///< Number of sample streams
 			int								streamIndex;		///< Current active stream
 
 			// Mutation parameters
@@ -159,8 +163,8 @@ namespace RISE
 			Point2 Get2D();
 
 			/// Switch to a new sample stream and reset the within-stream
-			/// sample index.  Stream 0 = film position, stream 1 = light
-			/// subpath, stream 2 = eye subpath / connections.
+			/// sample index.  Streams 0-47 are used by BDPTIntegrator;
+			/// stream 48 is reserved for the MLT film position.
 			void StartStream( int streamIndex );
 
 			//////////////////////////////////////////////////////////////

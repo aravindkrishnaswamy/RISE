@@ -16,7 +16,7 @@ using namespace RISE;
 Scalar IMaterial::Pdf(
 	const Vector3& wo,
 	const RayIntersectionGeometric& ri,
-	const IORStack* ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const ISPF* pSPF = GetSPF();
@@ -27,7 +27,7 @@ Scalar IMaterial::PdfNM(
 	const Vector3& wo,
 	const RayIntersectionGeometric& ri,
 	const Scalar nm,
-	const IORStack* ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const ISPF* pSPF = GetSPF();

@@ -1,0 +1,555 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           composite_material_test.RISEscene                                                       #
+#   Description:    Test scene for composite materials with various layer combinations.                     #
+#                   Uses path tracing since composite BSDF is not yet implemented.                          #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 19, 2026                                                                          #
+#                                                                                                           #
+#   Test objects (left to right):                                                                           #
+#     1. Dielectric over diffuse red   - clear coat over paint (no absorption)                              #
+#     2. Dielectric over diffuse red   - with strong colored absorption (amber tint)                        #
+#     3. Dielectric over diffuse white - with blue absorption (warm light filters through)                  #
+#     4. Translucent over diffuse gold - wax/skin-like scattering layer over metallic base                  #
+#     5. Dielectric over emissive      - glowing orb under glass (tests composite emitter)                  #
+#     6. Double composite              - dielectric over (translucent over diffuse)                         #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - path tracing only (no BSDF)
+##################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	branch		true
+	reflections	true
+	refractions	true
+	diffuse		true
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+adaptivepixelpel_rasterizer
+{
+	max_recursion		10
+	min_samples			16
+	max_samples			256
+	num_steps			4
+	threshold			0.01
+	lum_samples			1
+	defaultshader		global
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/composite_material_test
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			0 130 -380
+	lookat				0 40 30
+	up					0 1 0
+	width				1024
+	height				576
+	fov				50.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Surface colors
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.8 0.1 0.1
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.85 0.65 0.13
+}
+
+uniformcolor_painter
+{
+	name				pnt_light_emit
+	color				1.0 0.95 0.8
+}
+
+# Extinction painters for absorption between layers
+uniformcolor_painter
+{
+	name				pnt_no_extinction
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_amber_extinction
+	color				0.5 2.0 8.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue_extinction
+	color				0.2 0.5 6.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_mild_extinction
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_warm_extinction
+	color				0.3 1.5 4.0
+}
+
+# Translucent layer painters
+uniformcolor_painter
+{
+	name				pnt_translucent_ref
+	color				0.9 0.85 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_translucent_tau
+	color				0.7 0.6 0.4
+}
+
+uniformcolor_painter
+{
+	name				pnt_translucent_ext
+	color				2.0 3.0 5.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_translucent_scat
+	color				0.5 0.5 0.5
+}
+
+# Dielectric transmittance
+uniformcolor_painter
+{
+	name				pnt_glass_tau
+	color				1.0 1.0 1.0
+	colorspace			RISERGB
+}
+
+# Floor
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.7 0.7 0.7
+}
+
+uniformcolor_painter
+{
+	name				pnt_wall
+	color				0.6 0.6 0.65
+}
+
+##################################################
+# Base materials (used as layers)
+##################################################
+
+# Diffuse layers
+lambertian_material
+{
+	name				mat_diffuse_red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				mat_diffuse_white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				mat_diffuse_gold
+	reflectance			pnt_gold
+}
+
+lambertian_material
+{
+	name				mat_floor
+	reflectance			pnt_floor
+}
+
+lambertian_material
+{
+	name				mat_wall
+	reflectance			pnt_wall
+}
+
+# Dielectric (glass/clearcoat) layer
+dielectric_material
+{
+	name				mat_glass
+	tau					pnt_glass_tau
+	ior					1.5
+}
+
+# Translucent layer (wax/skin-like)
+translucent_material
+{
+	name				mat_translucent
+	ref					pnt_translucent_ref
+	tau					pnt_translucent_tau
+	ext					pnt_translucent_ext
+	N					10.0
+	scattering			pnt_translucent_scat
+}
+
+# Emissive layer
+lambertian_luminaire_material
+{
+	name				mat_emissive
+	exitance			pnt_light_emit
+	scale				50.0
+	material			none
+}
+
+# Emissive layer with diffuse base for compositing
+lambertian_luminaire_material
+{
+	name				mat_emissive_with_diffuse
+	exitance			pnt_light_emit
+	scale				30.0
+	material			mat_diffuse_white
+}
+
+##################################################
+# Composite materials
+##################################################
+
+# 1. Clear coat over red paint - no absorption
+#    Should look like glossy red paint with Fresnel reflections at grazing angles
+composite_material
+{
+	name				mat_clearcoat_red
+	top					mat_glass
+	bottom				mat_diffuse_red
+	max_recursion		5
+	max_reflection_recursion	3
+	max_refraction_recursion	3
+	max_diffuse_recursion		3
+	max_translucent_recursion	3
+	thickness			0.5
+	extinction			pnt_no_extinction
+}
+
+# 2. Amber-tinted coat over red paint - strong colored absorption
+#    Should look warm/amber with the red coming through with a color shift
+composite_material
+{
+	name				mat_amber_red
+	top					mat_glass
+	bottom				mat_diffuse_red
+	max_recursion		5
+	max_reflection_recursion	3
+	max_refraction_recursion	3
+	max_diffuse_recursion		3
+	max_translucent_recursion	3
+	thickness			2.0
+	extinction			pnt_amber_extinction
+}
+
+# 3. Blue-absorbing coat over white - warm light filters through, blue absorbed
+#    Should look warm-tinted white, more so at grazing angles
+composite_material
+{
+	name				mat_warm_white
+	top					mat_glass
+	bottom				mat_diffuse_white
+	max_recursion		5
+	max_reflection_recursion	3
+	max_refraction_recursion	3
+	max_diffuse_recursion		3
+	max_translucent_recursion	3
+	thickness			1.0
+	extinction			pnt_blue_extinction
+}
+
+# 4. Translucent wax over gold base - subsurface scattering over metallic
+#    Should look like a waxy/fleshy layer with gold peeking through
+composite_material
+{
+	name				mat_wax_gold
+	top					mat_translucent
+	bottom				mat_diffuse_gold
+	max_recursion		5
+	max_reflection_recursion	3
+	max_refraction_recursion	3
+	max_diffuse_recursion		3
+	max_translucent_recursion	3
+	thickness			3.0
+	extinction			pnt_warm_extinction
+}
+
+# 5. Glass over emissive - glowing orb under glass
+#    Tests the composite emitter: emission attenuated by Beer's law
+composite_material
+{
+	name				mat_glass_emissive
+	top					mat_glass
+	bottom				mat_emissive_with_diffuse
+	max_recursion		5
+	max_reflection_recursion	3
+	max_refraction_recursion	3
+	max_diffuse_recursion		3
+	max_translucent_recursion	3
+	thickness			1.5
+	extinction			pnt_warm_extinction
+}
+
+# 6. Double composite - dielectric over (translucent over diffuse gold)
+#    Tests compositing a composite: clearcoat over waxy gold
+composite_material
+{
+	name				mat_double_composite
+	top					mat_glass
+	bottom				mat_wax_gold
+	max_recursion		6
+	max_reflection_recursion	4
+	max_refraction_recursion	4
+	max_diffuse_recursion		4
+	max_translucent_recursion	4
+	thickness			0.5
+	extinction			pnt_mild_extinction
+}
+
+##################################################
+# Geometry - varied shapes
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				55
+}
+
+ellipsoid_geometry
+{
+	name				ellipsoidgeom
+	radii				65 40 55
+}
+
+box_geometry
+{
+	name				boxgeom
+	width				80
+	height				80
+	depth				80
+}
+
+cylinder_geometry
+{
+	name				cylindergeom
+	radius				35
+	height				90
+}
+
+torus_geometry
+{
+	name				torusgeom
+	majorradius			45
+	minorratio			0.35
+}
+
+sphere_geometry
+{
+	name				smallspheregeom
+	radius				28
+}
+
+infiniteplane_geometry
+{
+	name				floorgeom
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					-400 0 350
+	ptb					400 0 350
+	ptc					400 400 350
+	ptd					-400 400 350
+}
+
+##################################################
+# Scene objects
+##################################################
+
+# Floor
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 0 0
+	orientation			-90 0 0
+	material			mat_floor
+}
+
+# Back wall
+standard_object
+{
+	name				backwall
+	geometry			bwallgeom
+	material			mat_wall
+}
+
+# Front row - composite materials on varied shapes
+
+# 1. Clear coat red - sphere
+standard_object
+{
+	name				obj_clearcoat_red
+	geometry			spheregeom
+	material			mat_clearcoat_red
+	position			-225 55 0
+}
+
+# 2. Amber tinted red - box (rotated)
+standard_object
+{
+	name				obj_amber_red
+	geometry			boxgeom
+	material			mat_amber_red
+	position			-135 45 0
+	orientation			0 30 15
+}
+
+# 3. Warm white - ellipsoid
+standard_object
+{
+	name				obj_warm_white
+	geometry			ellipsoidgeom
+	material			mat_warm_white
+	position			-45 40 0
+}
+
+# 4. Wax over gold - torus
+standard_object
+{
+	name				obj_wax_gold
+	geometry			torusgeom
+	material			mat_wax_gold
+	position			45 35 0
+	orientation			-20 15 0
+}
+
+# 5. Glass over emissive - sphere
+standard_object
+{
+	name				obj_glass_emissive
+	geometry			spheregeom
+	material			mat_glass_emissive
+	position			135 55 0
+}
+
+# 6. Double composite - cylinder
+standard_object
+{
+	name				obj_double_composite
+	geometry			cylindergeom
+	material			mat_double_composite
+	position			225 45 0
+	orientation			0 -25 10
+}
+
+# Back row - reference objects (uncoated base materials)
+standard_object
+{
+	name				ref_diffuse_red
+	geometry			smallspheregeom
+	material			mat_diffuse_red
+	position			-180 115 150
+}
+
+standard_object
+{
+	name				ref_diffuse_white
+	geometry			smallspheregeom
+	material			mat_diffuse_white
+	position			-90 115 150
+}
+
+standard_object
+{
+	name				ref_diffuse_gold
+	geometry			smallspheregeom
+	material			mat_diffuse_gold
+	position			0 115 150
+}
+
+standard_object
+{
+	name				ref_glass
+	geometry			smallspheregeom
+	material			mat_glass
+	position			90 115 150
+}
+
+standard_object
+{
+	name				ref_emissive
+	geometry			smallspheregeom
+	material			mat_emissive_with_diffuse
+	position			180 115 150
+}
+
+##################################################
+# Lights
+##################################################
+
+# Key light from upper left
+directional_light
+{
+	name				keylight
+	direction			0.5 0.8 -0.3
+	color				1.0 0.98 0.95
+	power				3.0
+}
+
+# Fill light from upper right
+directional_light
+{
+	name				filllight
+	direction			-0.4 0.6 -0.2
+	color				0.7 0.75 0.9
+	power				1.5
+}
+
+# Subtle ambient
+ambient_light
+{
+	name				ambientlight
+	color				0.3 0.3 0.35
+	power				0.8
+}

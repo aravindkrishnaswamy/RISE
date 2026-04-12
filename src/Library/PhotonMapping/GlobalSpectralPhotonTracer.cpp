@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "GlobalSpectralPhotonTracer.h"
 #include "../Utilities/RandomNumbers.h"
+#include "../Utilities/IndependentSampler.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -28,13 +29,12 @@ GlobalSpectralPhotonTracer::GlobalSpectralPhotonTracer(
 	const Scalar nm_begin_,						///< [in] Wavelength to start shooting photons at
 	const Scalar nm_end_,						///< [in] Wavelength to end shooting photons at
 	const unsigned int num_wavelengths_,		///< [in] Number of wavelengths to shoot photons at
-	const bool useiorstack,						///< [in] Should we use an ior stack ?
 	const bool branch,							///< [in] Should the tracer branch or only follow one path?
 	const Scalar powerscale,
 	const unsigned int temporal_samples,
 	const bool regenerate
 	) : 
-  SpectralPhotonTracer<GlobalSpectralPhotonMap>( nm_begin_, nm_end_, num_wavelengths_, useiorstack, powerscale, temporal_samples, regenerate ),
+  SpectralPhotonTracer<GlobalSpectralPhotonMap>( nm_begin_, nm_end_, num_wavelengths_, powerscale, temporal_samples, regenerate ),
   nMaxRecursions( maxR ),
   dExtinction( ext ),
   bBranch( branch )
@@ -45,13 +45,13 @@ GlobalSpectralPhotonTracer::~GlobalSpectralPhotonTracer( )
 {
 }
 
-void GlobalSpectralPhotonTracer::TracePhoton( 
-	const Ray& ray, 
-	const Scalar power, 
+void GlobalSpectralPhotonTracer::TracePhoton(
+	const Ray& ray,
+	const Scalar power,
 	const Scalar nm,
-	bool bStorePhoton, 
+	bool bStorePhoton,
 	GlobalSpectralPhotonMap& pPhotonMap,
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	static unsigned int		numRecursions = 0;
@@ -90,19 +90,18 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 		}
 
 		// Set the current object on the IOR stack
-		if( ior_stack ) {
-			ior_stack->SetCurrentObject( ri.pObject );
-		}
+		ior_stack.SetCurrentObject( ri.pObject );
 
 		ISPF* pSPF = ri.pMaterial->GetSPF();
 
 		if( pSPF )
 		{
-			// Get information from the material as to what to do			
+			// Get information from the material as to what to do
 			ScatteredRayContainer		scattered;
 
-			pSPF->ScatterNM( ri.geometric, random, nm, scattered, ior_stack );
-		
+			IndependentSampler samplerWrapper( random );
+		pSPF->ScatterNM( ri.geometric, samplerWrapper, nm, scattered, ior_stack );
+
 			bool bDiffuseComponentAvailable = false;
 			for( unsigned int i=0; i<scattered.Count(); i++ ) {
 				ScatteredRay& scat = scattered[i];
@@ -120,13 +119,13 @@ void GlobalSpectralPhotonTracer::TracePhoton(
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.krayNM, nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?scat.ior_stack:ior_stack );
+					TracePhoton( scat.ray, power*scat.krayNM, nm, scat.type==ScatteredRay::eRayDiffuse, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack );
 				}
 			} else {
 				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), true );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->krayNM, nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?pScat->ior_stack:ior_stack );
+					TracePhoton( pScat->ray, power*pScat->krayNM, nm, pScat->type==ScatteredRay::eRayDiffuse, pPhotonMap, pScat->ior_stack?*pScat->ior_stack:ior_stack );
 				}
 			}
 		}

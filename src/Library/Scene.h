@@ -46,7 +46,7 @@ namespace RISE
 
 			IAnimator*					pAnimator;
 
-			const IAtmosphere*			pGlobalAtmosphere;
+			const IMedium*				pGlobalMedium;
 
 			virtual ~Scene( );
 
@@ -56,21 +56,30 @@ namespace RISE
 			const IObjectManager*		GetObjects( )	const	{ return pObjectManager; }
 			const ILightManager*		GetLights( )	const	{ return pLightManager; }
 			const ILuminaryManager*		GetLuminaries() const	{ return pLuminaryManager; }
-			ICamera*					GetCamera( )	const	{ return pCamera; }
+			const ICamera*				GetCamera( )	const	{ return pCamera; }
 
-			inline const IRadianceMap*	GetGlobalRadianceMap() const { return pGlobalRadianceMap; }
-			inline IPhotonMap*			GetCausticPelMap()	const	{ return pCausticMap; }
-			inline IPhotonMap*			GetGlobalPelMap()	const	{ return pGlobalMap; }
-			inline IPhotonMap*			GetTranslucentPelMap() const { return pTranslucentMap; }
-			inline ISpectralPhotonMap*	GetCausticSpectralMap() const{ return pCausticSpectralMap; }
-			inline ISpectralPhotonMap*	GetGlobalSpectralMap() const{ return pGlobalSpectralMap; }
-			inline IShadowPhotonMap*	GetShadowMap() const{ return pShadowMap; }
-			inline IIrradianceCache*	GetIrradianceCache() const  { return pIrradianceCache; }
+			inline const IRadianceMap*			GetGlobalRadianceMap() const { return pGlobalRadianceMap; }
+			inline const IPhotonMap*			GetCausticPelMap()	const	{ return pCausticMap; }
+			inline const IPhotonMap*			GetGlobalPelMap()	const	{ return pGlobalMap; }
+			inline const IPhotonMap*			GetTranslucentPelMap() const { return pTranslucentMap; }
+			inline const ISpectralPhotonMap*	GetCausticSpectralMap() const{ return pCausticSpectralMap; }
+			inline const ISpectralPhotonMap*	GetGlobalSpectralMap() const{ return pGlobalSpectralMap; }
+			inline const IShadowPhotonMap*		GetShadowMap() const{ return pShadowMap; }
+			inline const IIrradianceCache*		GetIrradianceCache() const  { return pIrradianceCache; }
 
-			inline IAnimator*			GetAnimator() const { return pAnimator; }
+			inline IAnimator*					GetAnimator() const { return pAnimator; }
 
-			inline const IAtmosphere*	GetGlobalAtmosphere() const { return pGlobalAtmosphere; }
+			inline const IMedium*		GetGlobalMedium() const { return pGlobalMedium; }
 
+			// Non-const accessors from IScenePriv
+			ICamera*				GetCameraMutable()				{ return pCamera; }
+			IPhotonMap*				GetCausticPelMapMutable()		{ return pCausticMap; }
+			IPhotonMap*				GetGlobalPelMapMutable()		{ return pGlobalMap; }
+			IPhotonMap*				GetTranslucentPelMapMutable()	{ return pTranslucentMap; }
+			ISpectralPhotonMap*		GetCausticSpectralMapMutable()	{ return pCausticSpectralMap; }
+			ISpectralPhotonMap*		GetGlobalSpectralMapMutable()	{ return pGlobalSpectralMap; }
+			IShadowPhotonMap*		GetShadowMapMutable()			{ return pShadowMap; }
+			IIrradianceCache*		GetIrradianceCacheMutable()		{ return pIrradianceCache; }
 			void		SetCamera( ICamera* pCamera_ );
 			void		SetObjectManager( const IObjectManager* pObjectManager_ );
 			void		SetLightManager( const ILightManager* pLightManager_ );
@@ -83,7 +92,7 @@ namespace RISE
 			void		SetGlobalSpectralMap( ISpectralPhotonMap* pPhotonMap );
 			void		SetShadowMap( IShadowPhotonMap* pPhotonMap );
 			void		SetIrradianceCache( IIrradianceCache* pCache );
-			void		SetGlobalAtmosphere( const IAtmosphere* pAtmosphere );
+			void		SetGlobalMedium( const IMedium* pMedium );
 
 			void		SetSceneTime( const Scalar time ) const ;
 

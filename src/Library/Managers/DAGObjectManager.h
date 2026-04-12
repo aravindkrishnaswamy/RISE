@@ -36,7 +36,7 @@ namespace RISE
 				ObjectListType					objects;				///< Objects at this particular level
 				typedef std::map<String,DAGNode*>	ChildrenListType;
 				ChildrenListType				children;				///< Children of this node
-				
+
 			public:
 				DAGNode();
 				virtual ~DAGNode();
@@ -56,12 +56,16 @@ namespace RISE
 
 			bool AddItem( IObjectPriv* pObject, const char * szName );
 			bool RemoveItem( const char * szName );
-			void Shutdown();		
+			void Shutdown();
 
 			void IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			bool IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const { return false; }
 			void EnumerateObjects( IEnumCallback<IObject>& pFunc ) const;
 			void EnumerateObjects( IEnumCallback<IObjectPriv>& pFunc ) const;
+
+			void ResetRuntimeData() const {}
+			void PrepareForRendering() const {}
+			void InvalidateSpatialStructure() const {}
 		};
 	}
 }

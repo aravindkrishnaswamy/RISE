@@ -22,3 +22,11 @@ build/VS2022/UpgradeLog.htm
 *.exe
 /scenes/Internal
 /models/risemesh/internal
+*.md
+!AGENTS.md
+!CLAUDE.md
+!README.md
+!docs/*.md
+!src/**/README.md
+!scenes/**/README.md
+!tests/README.md

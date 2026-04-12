@@ -1,0 +1,90 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  OIDNDenoiser.h - Wrapper around Intel Open Image Denoise for
+//  post-process denoising of rendered images.  Entire file is
+//  compiled only when RISE_ENABLE_OIDN is defined.
+//
+//  Author: Aravind Krishnaswamy
+//  Date of Birth: March 28, 2026
+//  Tabs: 4
+//  Comments:
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef OIDN_DENOISER_H_
+#define OIDN_DENOISER_H_
+
+#include "../Interfaces/IRasterImage.h"
+#include "../Utilities/Math3D/Math3D.h"
+
+namespace RISE
+{
+	class IScene;
+	class IRayCaster;
+
+	namespace Implementation
+	{
+		class AOVBuffers;
+
+		class OIDNDenoiser
+		{
+		public:
+
+			/// Converts an IRasterImage (double-precision RISEColor pixels)
+			/// to an interleaved float RGB buffer for OIDN consumption.
+			static void ImageToFloatBuffer(
+				const IRasterImage& img,
+				float* buf,
+				unsigned int w,
+				unsigned int h
+				);
+
+			/// Converts an interleaved float RGB buffer back into an
+			/// IRasterImage, promoting float to double-precision channels.
+			static void FloatBufferToImage(
+				const float* buf,
+				IRasterImage& img,
+				unsigned int w,
+				unsigned int h
+				);
+
+#ifdef RISE_ENABLE_OIDN
+			/// Runs the OIDN RT filter on the given buffers.
+			/// beautyBuffer is the noisy input (w*h*3 floats, HDR).
+			/// albedoBuffer and normalBuffer are optional (may be NULL).
+			/// outputBuffer receives the denoised result (may alias beautyBuffer).
+			static void Denoise(
+				float* beautyBuffer,
+				const float* albedoBuffer,
+				const float* normalBuffer,
+				unsigned int w,
+				unsigned int h,
+				float* outputBuffer
+				);
+
+			/// Collects first-hit albedo and normal AOVs by casting one
+			/// primary ray per pixel through the scene.  Generic method
+			/// that works with any rasterizer type.
+			static void CollectFirstHitAOVs(
+				const IScene& scene,
+				IRayCaster& caster,
+				AOVBuffers& aovBuffers
+				);
+
+			/// Convenience method: runs the full denoise pipeline on an
+			/// image using the given AOV buffers.  Allocates temporary
+			/// float buffers, converts, denoises, and writes back.
+			static void ApplyDenoise(
+				IRasterImage& image,
+				const AOVBuffers& aovBuffers,
+				unsigned int w,
+				unsigned int h
+				);
+#endif
+		};
+	}
+}
+
+#endif

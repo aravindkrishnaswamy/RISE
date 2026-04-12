@@ -1,0 +1,244 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           cornellbox_bdpt_thinlens.RISEscene                                                      #
+#   Description:    Cornell box with thin lens camera to test BDPT depth-of-field.                          #
+#                   Focus is set on the short block; the tall block is out of focus.                        #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      March 20, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+bdpt_pel_rasterizer
+{
+	max_eye_depth		8
+	max_light_depth		8
+	samples				64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cornellbox_bdpt_thinlens
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+# Camera brought closer to exaggerate depth separation.
+# Short block front face at z~130, tall block back face at z~382.
+# Focus on the short block (~490 units from camera).
+# Very large aperture for dramatic depth-of-field blur.
+
+thinlens_camera
+{
+	location			278 200 -350
+	lookat				278 200 280
+	up					0 1 0
+	width				512
+	height				512
+	fov					50.0
+	aperture_size		80.0
+	focal_length		18.0
+	focus_distance		490.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.9 0.7
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Glossy material on short block to make focus vs blur more visible
+isotropic_phong_material
+{
+	name				glossy_white
+	rd					color_white
+	rs					color_white
+	N					80.0
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				100.0
+	material			none
+}
+
+##################################################
+# Objects - walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343.0 548.7999 227.0
+	ptb					343.0 548.7999 332.0
+	ptc					213.0 548.7999 332.0
+	ptd					213.0 548.7999 227.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# Objects - blocks
+##################################################
+
+rawmesh_geometry
+{
+	name				tallblockgeom
+	file				models/raw/cornellbox_tallblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp					true
+}
+
+rawmesh_geometry
+{
+	name				shortblockgeom
+	file				models/raw/cornellbox_shortblock.rawmesh
+	maxpolygons			100
+	maxdepth			6
+	bsp					true
+}
+
+standard_object
+{
+	name				tallblock
+	geometry			tallblockgeom
+	material			white
+}
+
+standard_object
+{
+	name				shortblock
+	geometry			shortblockgeom
+	material			glossy_white
+}

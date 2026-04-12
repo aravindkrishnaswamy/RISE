@@ -150,9 +150,9 @@ static bool GenerateSpecularRay(
 
 void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-		const RandomNumberGenerator& random,				///< [in] Random number generator
+		ISampler& sampler,				///< [in] Sampler
 		ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-		const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+		const IORStack& ior_stack								///< [in/out] Index of refraction stack
 		) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
@@ -165,7 +165,6 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
-	RISEPel df=0.0;
 
 	const RISEPel rho = Rs.GetColor(ri);
 
@@ -173,52 +172,62 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		NV[0] == NV[1] && NV[1] == NV[2]
 		)
 	{
-		Scalar diffuseFactor=0, specFactor=0;
-		if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), NU[0], NV[0], ColorMath::MaxValue(rho) ) ) {
-			if( specFactor > 1.0 ) {
-				specFactor = 1.0;
-			}
-
-			specular.kray = rho * specFactor;
+		Scalar diffuseFactor_unused=0, specFactor=0;
+		if( GenerateSpecularRay( specular, diffuseFactor_unused, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU[0], NV[0], ColorMath::MaxValue(rho) ) ) {
+			// specFactor = brdf_spec/pdf.  For correct IS: kray = BRDF*cos/pdf.
+			// specularFactor already includes Fresnel (which contains Rs),
+			// so no extra Rs multiplication.  Add cos_o for the missing cosine.
+			const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
+			specular.kray = RISEPel(1,1,1) * specFactor * cos_o;
 			scattered.AddScatteredRay( specular );
 		}
-		df = diffuseFactor;
 	}
 	else
 	{
-		const Point2 ptrand(random.CanonicalRandom(),random.CanonicalRandom());
+		const Point2 ptrand(sampler.Get1D(),sampler.Get1D());
 		for( int i=0; i<3; i++ ) {
 			Scalar specFactor=0;
-			if( GenerateSpecularRay( specular, df[i], specFactor, myonb, ri, ptrand, NU[i], NV[i], rho[i] ) ) {
-				if( specFactor > 1.0 ) {
-					specFactor = 1.0;
-				}
+			Scalar df_unused=0;
+			if( GenerateSpecularRay( specular, df_unused, specFactor, myonb, ri, ptrand, NU[i], NV[i], rho[i] ) ) {
+				const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
 				specular.kray = 0.0;
-				specular.kray[i] = rho[i] * specFactor;
+				specular.kray[i] = specFactor * cos_o;
 				scattered.AddScatteredRay( specular );
 			}
 		}
 	}
 
-	// The rest is diffuse
+	// Generate diffuse ray and compute the diffuse factor at the actual
+	// diffuse direction (not the specular direction).
 	ScatteredRay	diffuse;
 	diffuse.type = ScatteredRay::eRayDiffuse;
 	diffuse.isDelta = false;
-	diffuse.kray = Rd.GetColor(ri)*df;
-	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) ) );
-	// Cosine-weighted hemisphere: pdf = cos(theta) / PI
-	const Scalar cos_theta_d = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
-	diffuse.pdf = r_max( 0.0, cos_theta_d ) * INV_PI;
+	diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(sampler.Get1D(),sampler.Get1D()) ) );
+
+	const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
+	diffuse.pdf = r_max( 0.0, cos_o_diff ) * INV_PI;
+
+	// Compute diffuse IS weight: kray = BRDF_diff * cos / pdf
+	// BRDF_diff = Rd * (1-Rs) * (28/(23π)) * fromK1(wo) * fromK2(wi)
+	// pdf = cos/π, so kray = Rd * (1-Rs) * (28/23) * fromK1 * fromK2
+	// (the π from the BRDF normalisation cancels with the π in the pdf)
+	const Scalar cos_i = Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() );
+	const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
+	const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
+	static const Scalar diffuseNorm = 28.0 / 23.0;
+
+	const RISEPel oneMinusRs = RISEPel(1,1,1) - rho;
+	diffuse.kray = Rd.GetColor(ri) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
 
 	scattered.AddScatteredRay( diffuse );
 }
 
 void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 	const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-	const RandomNumberGenerator& random,				///< [in] Random number generator
+	ISampler& sampler,				///< [in] Sampler
 	const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 	ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-	const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
 	OrthonormalBasis3D	myonb = ri.onb;
@@ -236,21 +245,29 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 
 	const Scalar rho = Rs.GetColorNM(ri,nm);
 
-	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(random.CanonicalRandom(),random.CanonicalRandom()), NU, NV, rho ) ) {
-		specular.krayNM = rho * specFactor;
+	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU, NV, rho ) ) {
+		// specFactor already includes Fresnel (which contains Rs) — no extra rho.
+		// Add cos_o for correct IS weight.
+		const Scalar cos_o = Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() );
+		specular.krayNM = specFactor * cos_o;
 		scattered.AddScatteredRay( specular );
 	}
 
-	// The rest is diffuse
-	if( specFactor < 1.0 ) {
+	// Generate diffuse ray and compute factor at actual diffuse direction
+	{
 		ScatteredRay	diffuse;
 		diffuse.type = ScatteredRay::eRayDiffuse;
 		diffuse.isDelta = false;
-		diffuse.krayNM = Rd.GetColorNM(ri,nm) * diffuseFactor;
-		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(random.CanonicalRandom(),random.CanonicalRandom()) ) );
-		const Scalar cos_theta_d = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
-		diffuse.pdf = r_max( 0.0, cos_theta_d ) * INV_PI;
+		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( myonb, Point2(sampler.Get1D(),sampler.Get1D()) ) );
+		const Scalar cos_o_diff = Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() );
+		diffuse.pdf = r_max( 0.0, cos_o_diff ) * INV_PI;
 
+		const Scalar cos_i = Vector3Ops::Dot( Vector3Ops::Normalize(-ri.ray.Dir()), ri.onb.w() );
+		const Scalar fromK1 = 1.0 - pow( 1.0 - r_max(0.0, cos_o_diff) * 0.5, 5.0 );
+		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
+		static const Scalar diffuseNorm = 28.0 / 23.0;
+
+		diffuse.krayNM = Rd.GetColorNM(ri,nm) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
 		scattered.AddScatteredRay( diffuse );
 	}
 }
@@ -320,7 +337,7 @@ static Scalar AshikminShirleySpecularPdf(
 Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const RISEPel nu = Nu.GetColor(ri);
@@ -329,9 +346,30 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	const Scalar nu_val = (nu[0] + nu[1] + nu[2]) / 3.0;
 	const Scalar nv_val = (nv[0] + nv[1] + nv[2]) / 3.0;
 
-	// Weight by MaxValue(kray) to match RandomlySelect
-	const Scalar wSpec = ColorMath::MaxValue( Rs.GetColor(ri) );
-	const Scalar wDiff = ColorMath::MaxValue( Rd.GetColor(ri) );
+	// Compute representative weights at the mirror reflection direction.
+	// In Scatter: kray_spec = Rs * specFactor, kray_diff = Rd * diffFactor,
+	// where specFactor = fresnel/max(cos_i,cos_o) and diffFactor depends on
+	// the direction.  Using the mirror direction gives constant weights that
+	// are much more representative than raw Rs/Rd, especially at grazing.
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3& n = ri.onb.w();
+	const Scalar cos_i = Vector3Ops::Dot( wi, n );
+
+	if( cos_i <= 0 ) {
+		return 0;
+	}
+
+	// At mirror reflection, h = n, hdotk = cos_i
+	const Scalar rs_val = ColorMath::MaxValue( Rs.GetColor(ri) );
+	const Scalar fresnel_m = rs_val + (1.0 - rs_val) * pow(1.0 - cos_i, 5.0);
+	const Scalar specFactor_m = r_min( fresnel_m / cos_i, 1.0 );
+
+	static const Scalar energyConservation = 28.0 / (23.0 * PI);
+	const Scalar fromK = 1.0 - pow( 1.0 - cos_i * 0.5, 5.0 );
+	const Scalar diffFactor_m = energyConservation * fromK * fromK;
+
+	const Scalar wSpec = rs_val * specFactor_m;
+	const Scalar wDiff = ColorMath::MaxValue( Rd.GetColor(ri) ) * diffFactor_m;
 
 	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
 }
@@ -340,15 +378,31 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const RayIntersectionGeometric& ri,
 	const Vector3& wo,
 	const Scalar nm,
-	const IORStack* const ior_stack
+	const IORStack& ior_stack
 	) const
 {
 	const Scalar nu_val = Nu.GetColorNM(ri,nm);
 	const Scalar nv_val = Nv.GetColorNM(ri,nm);
 
-	// Weight by krayNM magnitude to match RandomlySelect
-	const Scalar wSpec = fabs( Rs.GetColorNM(ri,nm) );
-	const Scalar wDiff = fabs( Rd.GetColorNM(ri,nm) );
+	// Representative weights at mirror direction (same as Pdf)
+	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
+	const Vector3& n = ri.onb.w();
+	const Scalar cos_i = Vector3Ops::Dot( wi, n );
+
+	if( cos_i <= 0 ) {
+		return 0;
+	}
+
+	const Scalar rs_val = fabs( Rs.GetColorNM(ri,nm) );
+	const Scalar fresnel_m = rs_val + (1.0 - rs_val) * pow(1.0 - cos_i, 5.0);
+	const Scalar specFactor_m = r_min( fresnel_m / cos_i, 1.0 );
+
+	static const Scalar energyConservation = 28.0 / (23.0 * PI);
+	const Scalar fromK = 1.0 - pow( 1.0 - cos_i * 0.5, 5.0 );
+	const Scalar diffFactor_m = energyConservation * fromK * fromK;
+
+	const Scalar wSpec = rs_val * specFactor_m;
+	const Scalar wDiff = fabs( Rd.GetColorNM(ri,nm) ) * diffFactor_m;
 
 	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
 }

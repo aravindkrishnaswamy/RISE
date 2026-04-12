@@ -27,6 +27,7 @@ Object::Object( ) :
   pModifier( 0 ),
   pShader( 0 ),
   pRadianceMap( 0 ),
+  pInteriorMedium( 0 ),
   bIsWorldVisible( true ),
   bCastsShadows( true ),
   bReceivesShadows( true ),
@@ -42,6 +43,7 @@ Object::Object( const IGeometry* pGeometry_ ) :
   pModifier( 0 ),
   pShader( 0 ),
   pRadianceMap( 0 ),
+  pInteriorMedium( 0 ),
   bIsWorldVisible( true ),
   bCastsShadows( true ),
   bReceivesShadows( true ),
@@ -62,6 +64,7 @@ Object::~Object( )
 	safe_release( pShader );
 	safe_release( pUVGenerator );
 	safe_release( pRadianceMap );
+	safe_release( pInteriorMedium );
 }
 
 IObjectPriv* Object::CloneFull()
@@ -151,9 +154,24 @@ void Object::SetShadowParams( const bool bCasts, const bool bReceives )
 	bReceivesShadows = bReceives;
 }
 
+bool Object::AssignInteriorMedium( const IMedium& medium )
+{
+	safe_release( pInteriorMedium );
+
+	pInteriorMedium = &medium;
+	pInteriorMedium->addref();
+
+	return true;
+}
+
 const IMaterial* Object::GetMaterial() const
 {
 	return pMaterial;
+}
+
+const IMedium* Object::GetInteriorMedium() const
+{
+	return pInteriorMedium;
 }
 
 const BoundingBox Object::getBoundingBox() const

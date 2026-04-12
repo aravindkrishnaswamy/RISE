@@ -26,30 +26,36 @@ RISE ASCII SCENE 5
 # Renderer setup
 ##################################################
 
-pathtracing_shaderop
-{
-	name		pt
-}
-
 standard_shader
 {
 	name		global
-	shaderop	pt
+	shaderop	DefaultPathTracing
 }
 
 mlt_rasterizer
 {
-	max_recursion		16
-	min_importance		0.0001
 	max_eye_depth		12
 	max_light_depth		12
 	bootstrap_samples	100000
 	chains				64
 	mutations_per_pixel	200
 	large_step_prob		0.25
-	ior_stack			TRUE
 }
 
+/*
+pathtracing_pel_rasterizer
+{
+	samples                       512
+	pathguiding                   true
+	pathguiding_sampling_type     RIS
+	pathguiding_iterations        3
+	pathguiding_spp               12
+	pathguiding_alpha             0.5
+	pathguiding_max_depth         8
+	adaptive_max_samples	1024
+	adaptive_threshold		0.05
+}
+*/
 file_rasterizeroutput
 {
 	pattern				rendered/mlt_caustic_chain

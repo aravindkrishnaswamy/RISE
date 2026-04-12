@@ -19,28 +19,13 @@ RISE ASCII SCENE 5
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
-}
-
-distributiontracing_shaderop
-{
-	name			dt
-	samples			64
-	diffuse			false
-}
-
-standard_shader
-{
-	name			dt_shader
-	shaderop		dt
-	shaderop		DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 pixelpel_rasterizer
 {
 	max_recursion		4
-	min_importance		0.001
-	samples				36
+	samples				128
 	lum_samples			1
 }
 
@@ -137,7 +122,7 @@ bumpmap_modifier
 {
 	name				clay_bump
 	function			pnt_clay_bump
-	scale				0.003
+	scale				0.5
 	windowsize			0.005
 }
 
@@ -167,7 +152,7 @@ polished_material
 	reflectance			pnt_cream
 	tau					pnt_cream
 	ior					1.5
-	scattering			500.0
+	scattering			50.0
 }
 
 # Metallic tools - isotropic phong
@@ -269,10 +254,10 @@ clippedplane_geometry
 clippedplane_geometry
 {
 	name				backwallgeom
-	pta					-6.0 5.0 0.0
+	pta					-6.0 7.0 0.0
 	ptb					-6.0 0.0 0.0
 	ptc					6.0 0.0 0.0
-	ptd					6.0 5.0 0.0
+	ptd					6.0 7.0 0.0
 }
 
 ##################################################
@@ -344,7 +329,7 @@ standard_object
 {
 	name				teapot
 	geometry			teapotgeom
-	position			0.0 0.1 0.0
+	position			0.0 2 0.0
 	orientation			10 -30 0
 	material			clay
 	modifier			clay_bump
@@ -357,7 +342,6 @@ standard_object
 	geometry			pedestalgeom
 	position			-1.8 0.75 -0.3
 	material			polished_marble
-	shader				dt_shader
 }
 
 # Oren-Nayar clay torus sitting on the pedestal
@@ -426,7 +410,7 @@ spot_light
 	position			-4 8 6
 	target				0 0 0
 	color				1.0 0.95 0.85
-	power				3.0
+	power				180.0
 	inner				20
 	outer				45
 }
@@ -438,7 +422,7 @@ spot_light
 	position			5 6 4
 	target				0 0 0
 	color				0.85 0.9 1.0
-	power				2.0
+	power				1200.0
 	inner				25
 	outer				50
 }
@@ -447,7 +431,7 @@ spot_light
 omni_light
 {
 	name				fill_omni
-	power				0.5
+	power				300.0
 	color				0.9 0.9 1.0
 	position			5 4 5
 }
@@ -459,7 +443,7 @@ spot_light
 	position			-2 5 2
 	target				-1.8 1.5 -0.3
 	color				1.0 1.0 0.9
-	power				3.0
+	power				1800.0
 	inner				10
 	outer				25
 }

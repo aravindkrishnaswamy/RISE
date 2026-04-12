@@ -22,6 +22,14 @@
 #include "ScanlineRasterizeSequence.h"
 #include "BlockRasterizeSequence.h"
 #include "HilbertRasterizeSequence.h"
+#include "MortonRasterizeSequence.h"
+#include "ProgressiveFilm.h"
+#include "../RISE_API.h"
+
+#ifdef RISE_ENABLE_OIDN
+#include "AOVBuffers.h"
+#include "OIDNDenoiser.h"
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -31,7 +39,15 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
 	) :
   pCaster( pCaster_ ),
   pSampling( 0 ),
-  pPixelFilter( 0 )
+  pPixelFilter( 0 ),
+  useZSobol( false ),
+  pFilteredFilm( 0 ),
+  pFilteredScratch( 0 ),
+  mProgressiveFilm( 0 ),
+  mTotalProgressiveSPP( 0 )
+#ifdef RISE_ENABLE_OIDN
+  ,pAOVBuffers( 0 )
+#endif
 {
 	if( pCaster ) {
 		pCaster->addref();
@@ -45,6 +61,52 @@ PixelBasedRasterizerHelper::~PixelBasedRasterizerHelper( )
 	safe_release( pSampling );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+#ifdef RISE_ENABLE_OIDN
+	delete pAOVBuffers;
+#endif
+}
+
+void PixelBasedRasterizerHelper::PrepareRuntimeContext( RuntimeContext& rc ) const
+{
+	rc.pProgressiveFilm = mProgressiveFilm;
+	rc.totalProgressiveSPP = mTotalProgressiveSPP;
+}
+
+unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
+{
+	return pSampling ? pSampling->GetNumSamples() : 0;
+}
+
+bool PixelBasedRasterizerHelper::UseFilteredFilm() const
+{
+	if( !pPixelFilter ) return false;
+	Scalar hw, hh;
+	pPixelFilter->GetFilterSupport( hw, hh );
+	return hw > 0.501 || hh > 0.501;
+}
+
+IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterImage& primary ) const
+{
+	if( !pFilteredFilm || !pFilteredScratch ) {
+		return primary;
+	}
+
+	const unsigned int w = primary.GetWidth();
+	const unsigned int h = primary.GetHeight();
+
+	// Copy the current primary image into the scratch buffer
+	for( unsigned int y=0; y<h; y++ ) {
+		for( unsigned int x=0; x<w; x++ ) {
+			pFilteredScratch->SetPEL( x, y, primary.GetPEL( x, y ) );
+		}
+	}
+
+	// Resolve the film into the scratch copy
+	pFilteredFilm->Resolve( *pFilteredScratch );
+
+	return *pFilteredScratch;
 }
 
 unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const
@@ -71,6 +133,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 	const unsigned int height = pScene.GetCamera()->GetHeight();
 
 	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
 
 	ISampling2D::SamplesList2D samples;
 	pSampling.GenerateSamplePoints(rc.random, samples);
@@ -184,6 +247,11 @@ void* RasterizeBlockAnimation_ThreadProc( void* ptr )
 
 void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& rc, IRasterImage& image, const IScene& scene, const Rect& rect, const unsigned int height ) const
 {
+	// Progressive tile-level early-out: skip if no pixel in the tile needs more samples.
+	if( rc.pProgressiveFilm && rc.pProgressiveFilm->IsTileDone( rect, rc.totalProgressiveSPP ) ) {
+		return;
+	}
+
 	// Draw red toggles to show we are working on this tile
 	DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
 
@@ -205,9 +273,13 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		}
 	}
 
+	// Get the image for intermediate output.  BDPT returns a scratch
+	// copy with resolved splats; other rasterizers return the primary.
+	IRasterImage& outputImage = GetIntermediateOutputImage( image );
+
 	// Also iterate through outputs and get them to intermediate rasterize
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputIntermediateImage( image, &rect );
+		(*r)->OutputIntermediateImage( outputImage, &rect );
 	}
 }
 
@@ -266,7 +338,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	}
 }
 
-void PixelBasedRasterizerHelper::RasterizeScenePass(
+bool PixelBasedRasterizerHelper::RasterizeScenePass(
 	const RuntimeContext::PASS pass,
 	const IScene& scene,
 	IRasterImage& image,
@@ -306,29 +378,36 @@ void PixelBasedRasterizerHelper::RasterizeScenePass(
 		for( int i=0; i<threads; i++ ) {
 			Threading::riseWaitUntilThreadFinishes( thread_ids[i], 0 );
 		}
+
+		return !dispatcher.WasCancelled();
 	} else {
 
 		// Otherwise call the SP code
 		// Create a runtime context
 		RuntimeContext rc( GlobalRNG(), pass, false );
+		PrepareRuntimeContext( rc );
 
 		// Get all the parts of the scene we have to render in the order we have to
 		// render them
 		seq.Begin( startx, endx, starty, endy );
 
 		const unsigned int numseq = seq.NumRegions();
+		bool completed = true;
 
 		for( unsigned int i=0; i<numseq; i++ ) {
 			const Rect rect = seq.GetNextRegion();
 
 			if( pProgressFunc && i>0 )	{
 				if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) {
+					completed = false;
 					break;		// abort the render
 				}
 			}
 
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 		}
+
+		return completed;
 	}
 }
 
@@ -350,6 +429,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
 
+	// Allocate film buffer for wide-support pixel filter reconstruction
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+	if( UseFilteredFilm() ) {
+		pFilteredFilm = new FilteredFilm( width, height );
+		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	}
+
 	{
 		// GlobalRNG is ok here since this part will always be single threaded
 		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
@@ -363,17 +450,24 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	pCaster->AttachScene( &pScene );
 
+	// Eagerly build spatial acceleration structures (BSP/octree) from current
+	// world-space bounding boxes before any multi-threaded rendering begins.
+	pScene.GetObjects()->PrepareForRendering();
+
+	// Pre-render hook (e.g. path guiding training)
+	PreRenderSetup( pScene, pRect );
+
 	// If there is no raster sequence, create a default one
-	BlockRasterizeSequence* blocks = 0;
+	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new BlockRasterizeSequence( 64, 64, 2 );
+		blocks = new MortonRasterizeSequence( 32 );
 		pRasterSequence = blocks;
 	}
 
 	// We should do the irradiance pass to populate the cache
-	IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
+	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
-		BlockRasterizeSequence* irrad_seq = new BlockRasterizeSequence( 64, 64, 6 );
+		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( 32 );
 		if( pProgressFunc ) {
 			pProgressFunc->SetTitle( "Irradiance Pass: " );
 		}
@@ -388,9 +482,129 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		}
 	}
 
-	RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
+#ifdef RISE_ENABLE_OIDN
+	delete pAOVBuffers;
+	pAOVBuffers = 0;
+	if( bDenoisingEnabled ) {
+		pAOVBuffers = new AOVBuffers( width, height );
+	}
+#endif
+
+	if( progressiveConfig.enabled && pSampling )
+	{
+		// Progressive multi-pass rendering: split the total SPP budget
+		// into passes of samplesPerPass each.  Between passes, flush
+		// intermediate images to output callbacks for live preview.
+		// Converged pixels (via Welford variance) are skipped in later
+		// passes; when all pixels converge, break early.
+
+		const unsigned int totalSPP = GetProgressiveTotalSPP();
+		const unsigned int spp = progressiveConfig.samplesPerPass > 0 ? progressiveConfig.samplesPerPass : 1;
+		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
+
+		ProgressiveFilm progFilm( width, height );
+		mProgressiveFilm = &progFilm;
+		mTotalProgressiveSPP = totalSPP;
+
+		ISampling2D* pSavedSampling = pSampling;
+
+		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
+		{
+			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
+
+			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			pPassSampling->SetNumSamples( passSPP );
+			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+
+			if( pProgressFunc ) {
+				char title[128];
+				snprintf( title, sizeof(title), "Progressive Pass [%u/%u]: ", passIdx+1, numPasses );
+				pProgressFunc->SetTitle( title );
+			}
+
+			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( 32 );
+			const bool passCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
+			safe_release( pPassSeq );
+
+			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
+			safe_release( pPassSampling );
+
+			// Intermediate preview: rebuild the displayed image from the
+			// accumulated progressive state so every update is cumulative.
+			progFilm.Resolve( *pImage );
+
+			IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+			RasterizerOutputListType::const_iterator r, s;
+			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+				(*r)->OutputIntermediateImage( outputImage, pRect );
+			}
+
+			if( !passCompleted ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"Progressive:: Cancelled after pass %u/%u",
+					passIdx+1, numPasses );
+				break;
+			}
+
+			// Check whether every pixel has converged or reached the sample cap.
+			const unsigned int doneCount = progFilm.CountDone( totalSPP );
+			if( doneCount >= width * height ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"Progressive:: All pixels complete after pass %u/%u",
+					passIdx+1, numPasses );
+				break;
+			}
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		if( pAOVBuffers ) {
+			for( unsigned int y=0; y<height; y++ ) {
+				for( unsigned int x=0; x<width; x++ ) {
+					const ProgressivePixel& px = progFilm.Get( x, y );
+					if( px.alphaSum > 0 ) {
+						pAOVBuffers->Normalize( x, y, 1.0 / px.alphaSum );
+					}
+				}
+			}
+		}
+#endif
+
+		mProgressiveFilm = 0;
+		mTotalProgressiveSPP = 0;
+	}
+	else
+	{
+		RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
+	}
+
+	// Resolve filtered film: overwrites per-pixel inline estimates with
+	// properly filter-reconstructed values.
+	// When OIDN denoising is active, skip the film resolve: OIDN is
+	// trained on raw MC noise and works poorly on filter-reconstructed
+	// images (negative lobes / ringing confuse the denoiser).  The
+	// inline box-filtered estimate provides the clean input OIDN needs.
+	if( pFilteredFilm ) {
+#ifdef RISE_ENABLE_OIDN
+		if( !bDenoisingEnabled ) {
+			pFilteredFilm->Resolve( *pImage );
+		}
+#else
+		pFilteredFilm->Resolve( *pImage );
+#endif
+	}
 
 	RISE_PROFILE_REPORT(GlobalLog());
+
+#ifdef RISE_ENABLE_OIDN
+	if( bDenoisingEnabled && pAOVBuffers ) {
+		if( !pAOVBuffers->HasData() ) {
+			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers );
+		}
+		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
+		delete pAOVBuffers;
+		pAOVBuffers = 0;
+	}
+#endif
 
 	if( blocks ) {
 		safe_release( blocks );
@@ -399,6 +613,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	FlushToOutputs( *pImage, pRect, 0 );
 
+	// Post-render hook (e.g. path guiding cleanup)
+	PostRenderCleanup();
+
+	safe_release( pFilteredFilm );
+	pFilteredFilm = 0;
+	safe_release( pFilteredScratch );
+	pFilteredScratch = 0;
 	safe_release( pImage );
 }
 
@@ -450,6 +671,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		// Create a runtime context
 		RuntimeContext rc( GlobalRNG(), pass, false );
+		PrepareRuntimeContext( rc );
 
 		seq.Begin( startx, endx, starty, endy );
 		const unsigned int numseq = seq.NumRegions();
@@ -507,9 +729,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	framedata.pixelRate = pixelRate;
 	framedata.scanningRate = scanningRate;
 
-	IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
+	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
-		BlockRasterizeSequence* irrad_seq = new BlockRasterizeSequence( 32, 24, 6 );
+		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( 32 );
 		pProgressFunc->SetTitle( "Irradiance Pass: " );
 		RenderFrameOfAnimationPass( RuntimeContext::PASS_IRRADIANCE_CACHE, pScene, pRect, field, image, time, *irrad_seq, framedata );
 		pIrradianceCache->FinishedPrecomputation();
@@ -519,6 +741,12 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 	// Do a pass
 	RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq, framedata );
+
+	// Resolve filtered film for this frame
+	if( pFilteredFilm ) {
+		pFilteredFilm->Resolve( image );
+		pFilteredFilm->Clear();
+	}
 }
 
 void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
@@ -545,9 +773,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	const Scalar step_size = num_frames>1?(time_end-time_start)/Scalar(num_frames-1):0;
 
 	// If there is no raster sequence, create a default one
-	BlockRasterizeSequence* blocks = 0;
+	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new BlockRasterizeSequence( 32, 24, 2 );
+		blocks = new MortonRasterizeSequence( 32 );
 		pRasterSequence = blocks;
 	}
 
@@ -555,8 +783,18 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
 
+	// Allocate film buffer for wide-support pixel filter reconstruction
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+	if( UseFilteredFilm() ) {
+		pFilteredFilm = new FilteredFilm( width, height );
+		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	}
+
 	// Get the ray caster ready to roll
 	pCaster->AttachScene( &pScene );
+
+	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
 
 	for( unsigned int i=0; i<(specificFrame?1:num_frames); i++ )
 	{
@@ -567,12 +805,22 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 			// Upper field
 			pScene.GetAnimator()->EvaluateAtTime( curtime_upper );
+			// Rebuild spatial structure after transforms update but before
+			// SetSceneTime, which regenerates photon maps via ray tracing.
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence );
 
 			// Lower field
 			pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
 			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence );
@@ -580,6 +828,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
 			pScene.GetAnimator()->EvaluateAtTime( curtime );
+			// Rebuild spatial structure after transforms update but before
+			// SetSceneTime, which regenerates photon maps via ray tracing.
+			if( bHasKeyframedObjects ) {
+				pScene.GetObjects()->InvalidateSpatialStructure();
+			}
+			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
@@ -597,6 +851,10 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		blocks = 0;
 	}
 
+	safe_release( pFilteredFilm );
+	pFilteredFilm = 0;
+	safe_release( pFilteredScratch );
+	pFilteredScratch = 0;
 	safe_release( pImage );
 }
 
@@ -610,6 +868,14 @@ void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const 
 }
 
 // Our own functions
+void PixelBasedRasterizerHelper::SetProgressiveConfig( const ProgressiveConfig& config )
+{
+	progressiveConfig = config;
+	if( progressiveConfig.samplesPerPass == 0 ) {
+		progressiveConfig.samplesPerPass = 1;
+	}
+}
+
 void PixelBasedRasterizerHelper::SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ )
 {
 	if( pSampling_ )

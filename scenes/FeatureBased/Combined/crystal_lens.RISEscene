@@ -34,10 +34,8 @@ hdr_painter
 pixelpel_rasterizer
 {
 	max_recursion		6
-	min_importance		0.001
 	samples				16
 	lum_samples			4
-	ior_stack			TRUE
 	radiance_map		pnt_env
 	radiance_background	TRUE
 }
@@ -340,7 +338,6 @@ caustic_pel_photonmap
 	reflect				TRUE
 	refract				TRUE
 	shootFromNonMeshLights		TRUE
-	ior_stack			TRUE
 }
 
 caustic_pel_gather

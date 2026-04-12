@@ -73,9 +73,9 @@ namespace RISE
 			//! the reflected and transmitted rays along with attenuation factors.
 			void	Scatter(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-				const RandomNumberGenerator& random,						///< [in] Random number generator
+				ISampler& sampler,										///< [in] Sampler
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
@@ -83,18 +83,18 @@ namespace RISE
 			//! account spectral affects.
 			void	ScatterNM(
 				const RayIntersectionGeometric& ri,							///< [in] Geometric intersection details for point of intersection
-				const RandomNumberGenerator& random,						///< [in] Random number generator
+				ISampler& sampler,										///< [in] Sampler
 				const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 				ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
-				const IORStack* const ior_stack								///< [in/out] Index of refraction stack
+				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
 			//! Evaluates the PDF for the scattered direction.
 			//! Returns GGX reflection PDF for front face hits, 0 otherwise.
-			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack* const ior_stack ) const;
+			Scalar Pdf( const RayIntersectionGeometric& ri, const Vector3& wo, const IORStack& ior_stack ) const;
 
 			//! Spectral version of Pdf evaluation
-			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack* const ior_stack ) const;
+			Scalar PdfNM( const RayIntersectionGeometric& ri, const Vector3& wo, const Scalar nm, const IORStack& ior_stack ) const;
 		};
 	}
 }
