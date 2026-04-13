@@ -26,68 +26,9 @@
 #include "../Intersection/RayIntersection.h"
 #include "../Lights/LightSampler.h"
 #include <cmath>
-#include <atomic>
-#include <cstdio>
-#include <cstdlib>
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-// SMS diagnostic counters (thread-safe)
-static std::atomic<unsigned long long> g_smsAttempts(0);
-static std::atomic<unsigned long long> g_smsSeedFound(0);
-static std::atomic<unsigned long long> g_smsConverged(0);
-static std::atomic<unsigned long long> g_smsVisible(0);
-static std::atomic<unsigned long long> g_smsContributed(0);
-
-// Newton failure breakdown
-static std::atomic<unsigned long long> g_newtonEarlyOut(0);    // constraint norm > 2.0
-static std::atomic<unsigned long long> g_newtonDerivFail(0);   // ComputeVertexDerivatives failed
-static std::atomic<unsigned long long> g_newtonSingular(0);    // singular Jacobian
-static std::atomic<unsigned long long> g_newtonNoImprove(0);   // line search failed
-static std::atomic<unsigned long long> g_newtonMaxIter(0);     // exceeded max iterations
-static std::atomic<unsigned long long> g_newtonUpdateFail(0);  // UpdateVertexOnSurface failed
-
-// Per-chain-length convergence (k=1 and k=2)
-static std::atomic<unsigned long long> g_seedK1(0);
-static std::atomic<unsigned long long> g_seedK2(0);
-static std::atomic<unsigned long long> g_convK1(0);
-static std::atomic<unsigned long long> g_convK2(0);
-
-// Newton failure iter distribution (which iteration does noImprove happen?)
-static std::atomic<unsigned long long> g_noImproveIter0(0);
-static std::atomic<unsigned long long> g_noImproveIter1(0);
-static std::atomic<unsigned long long> g_noImproveIter2plus(0);
-
-
-static void LogSMSStats()
-{
-	unsigned long long att = g_smsAttempts.load();
-	if( att == 0 ) return;
-	unsigned long long seed = g_smsSeedFound.load();
-	unsigned long long conv = g_smsConverged.load();
-	unsigned long long vis  = g_smsVisible.load();
-	unsigned long long cont = g_smsContributed.load();
-
-	unsigned long long sk1 = g_seedK1.load(), sk2 = g_seedK2.load();
-	unsigned long long ck1 = g_convK1.load(), ck2 = g_convK2.load();
-	unsigned long long ni0 = g_noImproveIter0.load(), ni1 = g_noImproveIter1.load(), ni2p = g_noImproveIter2plus.load();
-
-	fprintf( stderr,
-		"SMS Stats: attempts=%llu seed=%llu(%.1f%%) conv=%llu(%.1f%%) vis=%llu(%.1f%%) contrib=%llu(%.1f%%)\n"
-		"  Seeds: k1=%llu(conv %.1f%%) k2=%llu(conv %.1f%%)\n"
-		"  Newton fail: earlyOut=%llu singular=%llu noImprove=%llu(iter0=%llu,1=%llu,2+=%llu) maxIter=%llu\n",
-		att, seed, 100.0*seed/att, conv, 100.0*conv/att,
-		vis, 100.0*vis/att, cont, 100.0*cont/att,
-		sk1, sk1>0?100.0*ck1/sk1:0.0, sk2, sk2>0?100.0*ck2/sk2:0.0,
-		g_newtonEarlyOut.load(), g_newtonSingular.load(), g_newtonNoImprove.load(),
-		ni0, ni1, ni2p, g_newtonMaxIter.load() );
-
-	GlobalLog()->PrintEx( eLog_Info,
-		"SMS Stats: attempts=%llu seed=%llu(%.1f%%) conv=%llu(%.1f%%) vis=%llu(%.1f%%) contrib=%llu(%.1f%%)",
-		att, seed, 100.0*seed/att, conv, 100.0*conv/att,
-		vis, 100.0*vis/att, cont, 100.0*cont/att );
-}
 
 //////////////////////////////////////////////////////////////////////
 // Construction / Destruction
@@ -98,16 +39,10 @@ config( cfg ),
 pLightSampler( 0 )
 {
 	pLightSampler = new LightSampler();
-	static bool atexitRegistered = false;
-	if( !atexitRegistered ) {
-		atexitRegistered = true;
-		atexit( LogSMSStats );
-	}
 }
 
 ManifoldSolver::~ManifoldSolver()
 {
-	LogSMSStats();
 	safe_release( pLightSampler );
 }
 
@@ -1145,7 +1080,6 @@ bool ManifoldSolver::NewtonSolve(
 		std::vector<Scalar> delta;
 		if( !SolveBlockTridiagonal( diag, upper_blocks, lower_blocks, C, k, delta ) )
 		{
-			g_newtonSingular.fetch_add(1);
 			return false;  // Singular Jacobian
 		}
 
@@ -1207,10 +1141,6 @@ bool ManifoldSolver::NewtonSolve(
 		{
 			// Even the smallest step didn't improve — give up
 			chain = savedChain;
-			g_newtonNoImprove.fetch_add(1);
-			if( iter == 0 ) g_noImproveIter0.fetch_add(1);
-			else if( iter == 1 ) g_noImproveIter1.fetch_add(1);
-			else g_noImproveIter2plus.fetch_add(1);
 			return false;
 		}
 
@@ -1218,12 +1148,10 @@ bool ManifoldSolver::NewtonSolve(
 		{
 			// Restore and report failure
 			chain = savedChain;
-			g_newtonUpdateFail.fetch_add(1);
 			return false;
 		}
 	}
 
-	g_newtonMaxIter.fetch_add(1);
 	return false;  // Did not converge within maxIterations
 }
 
@@ -1754,8 +1682,6 @@ ManifoldResult ManifoldSolver::Solve(
 	}
 
 	const unsigned int chainK = static_cast<unsigned int>( specularChain.size() );
-	if( chainK == 1 ) g_seedK1.fetch_add(1);
-	else if( chainK == 2 ) g_seedK2.fetch_add(1);
 
 	// Quick early-out: build minimal tangent frames from normals
 	// and evaluate the initial constraint.  If the norm is too large,
@@ -1786,8 +1712,7 @@ ManifoldResult ManifoldSolver::Solve(
 			norm2 += C0[i] * C0[i];
 		if( sqrt(norm2) > 2.0 )
 		{
-			g_newtonEarlyOut.fetch_add(1);
-			return result;  // Seed too far from valid path
+				return result;  // Seed too far from valid path
 		}
 	}
 
@@ -1799,7 +1724,6 @@ ManifoldResult ManifoldSolver::Solve(
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
-				g_newtonDerivFail.fetch_add(1);
 				return result;
 			}
 		}
@@ -1823,8 +1747,6 @@ ManifoldResult ManifoldSolver::Solve(
 
 	if( converged )
 	{
-		if( chainK == 1 ) g_convK1.fetch_add(1);
-		else if( chainK == 2 ) g_convK2.fetch_add(1);
 
 		result.valid = true;
 		result.specularChain = specularChain;
@@ -1940,7 +1862,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
-	g_smsAttempts.fetch_add(1);
 
 	// Build seed chain toward the light sample.  If that ray misses the
 	// specular geometry, try fallback directions.  The Newton solver only
@@ -1984,7 +1905,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		return result;
 	}
 
-	g_smsSeedFound.fetch_add(1);
 
 	// Run manifold solve
 	ManifoldResult mResult = Solve(
@@ -1993,22 +1913,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		seedChain, sampler );
 
 	if( !mResult.valid )
-	{
-		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
-	}
-
-	g_smsConverged.fetch_add(1);
 
 	// Visibility: check external segments of the specular chain
 	if( !CheckChainVisibility( pos, lightSample.position,
 		mResult.specularChain, caster ) )
-	{
-		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
-	}
-
-	g_smsVisible.fetch_add(1);
 
 	// Direction from shading point toward first specular vertex
 	const ManifoldVertex& firstSpec = mResult.specularChain[0];
@@ -2103,9 +2013,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
 
-	g_smsContributed.fetch_add(1);
-	if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
-
 	return result;
 }
 
@@ -2150,7 +2057,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
-	g_smsAttempts.fetch_add(1);
 
 	// Build seed chain toward light, with fallbacks (see RGB variant).
 	std::vector<ManifoldVertex> seedChain;
@@ -2185,7 +2091,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		return result;
 	}
 
-	g_smsSeedFound.fetch_add(1);
 
 	// Override each vertex's IOR with the wavelength-dependent value.
 	// This is what makes dispersion work — the Newton solver will find
@@ -2214,22 +2119,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		seedChain, sampler );
 
 	if( !mResult.valid )
-	{
-		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
-	}
-
-	g_smsConverged.fetch_add(1);
 
 	// Visibility: check external segments of the specular chain
 	if( !CheckChainVisibility( pos, lightSample.position,
 		mResult.specularChain, caster ) )
-	{
-		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 		return result;
-	}
-
-	g_smsVisible.fetch_add(1);
 
 	// Direction from shading point toward first specular vertex
 	const ManifoldVertex& firstSpec = mResult.specularChain[0];
@@ -2300,9 +2195,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
-
-	g_smsContributed.fetch_add(1);
-	if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
 
 	return result;
 }
