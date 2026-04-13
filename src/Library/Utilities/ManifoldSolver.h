@@ -106,7 +106,7 @@ namespace RISE
 			maxBernoulliTrials( 100 ),
 			biased( true ),
 			maxChainDepth( 30 ),
-			maxGeometricTerm( 10.0 )
+			maxGeometricTerm( 1e6 )
 			{
 			}
 		};
@@ -400,6 +400,37 @@ namespace RISE
 				const Vector3& dpdu,
 				const Vector3& dpdv,
 				const Vector3& normal
+				) const;
+
+			/// Evaluates the angle-difference constraint at a single specular
+			/// vertex (Zeltner et al. 2020).  The constraint measures the
+			/// angular deviation between the actual outgoing direction and the
+			/// specularly scattered direction in the local tangent frame:
+			///   C0 = theta_actual - theta_specular
+			///   C1 = wrapToPi(phi_actual - phi_specular)
+			void EvaluateConstraintAtVertex(
+				const Point3& vertexPos,
+				const Vector3& vertexNormal,
+				const Vector3& vertexDpdu,
+				const Vector3& vertexDpdv,
+				Scalar vertexEta,
+				bool vertexIsReflection,
+				const Point3& prevPos,
+				const Point3& nextPos,
+				Scalar& C0,
+				Scalar& C1
+				) const;
+
+			/// Builds the block-tridiagonal Jacobian via central finite
+			/// differences on the constraint function.  Matches whichever
+			/// constraint formulation EvaluateConstraint uses.
+			void BuildJacobianNumerical(
+				const std::vector<ManifoldVertex>& chain,
+				const Point3& fixedStart,
+				const Point3& fixedEnd,
+				std::vector<Scalar>& diag,
+				std::vector<Scalar>& upper,
+				std::vector<Scalar>& lower
 				) const;
 
 			/// Bernoulli trial estimator for unbiased PDF of solution k.

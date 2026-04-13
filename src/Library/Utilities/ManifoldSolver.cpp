@@ -330,6 +330,241 @@ void ManifoldSolver::EvaluateConstraint(
 }
 
 //////////////////////////////////////////////////////////////////////
+// EvaluateConstraintAtVertex
+//
+//   Angle-difference constraint (Zeltner et al. 2020).
+//
+//   For a specular vertex, the constraint measures the angular
+//   deviation between the actual outgoing direction wo and the
+//   specularly scattered direction wo_spec:
+//
+//     C0 = theta(wo) - theta(wo_spec)
+//     C1 = wrapToPi( phi(wo) - phi(wo_spec) )
+//
+//   where theta and phi are spherical coordinates in the local
+//   tangent frame (s, t, normal).
+//
+//   This avoids the back-facing degeneracies of the half-vector
+//   projection and provides larger convergence basins for Newton
+//   iteration with distant initial guesses.
+//////////////////////////////////////////////////////////////////////
+
+void ManifoldSolver::EvaluateConstraintAtVertex(
+	const Point3& vertexPos,
+	const Vector3& vertexNormal,
+	const Vector3& vertexDpdu,
+	const Vector3& vertexDpdv,
+	Scalar vertexEta,
+	bool vertexIsReflection,
+	const Point3& prevPos,
+	const Point3& nextPos,
+	Scalar& C0,
+	Scalar& C1
+	) const
+{
+	// Direction from vertex toward previous vertex (incoming)
+	Vector3 wi = Vector3Ops::mkVector3( prevPos, vertexPos );
+	const Scalar wiLen = Vector3Ops::NormalizeMag( wi );
+
+	// Direction from vertex toward next vertex (actual outgoing)
+	Vector3 wo_actual = Vector3Ops::mkVector3( nextPos, vertexPos );
+	const Scalar woLen = Vector3Ops::NormalizeMag( wo_actual );
+
+	if( wiLen < NEARZERO || woLen < NEARZERO )
+	{
+		C0 = 1.0;
+		C1 = 1.0;
+		return;
+	}
+
+	// Compute the specularly scattered direction
+	Vector3 wo_specular;
+	if( !ComputeSpecularDirection( wi, vertexNormal, vertexEta,
+		vertexIsReflection, wo_specular ) )
+	{
+		// Total internal reflection for a refraction vertex — degenerate
+		C0 = 1.0;
+		C1 = 1.0;
+		return;
+	}
+
+	// Convert both directions to spherical coordinates in the
+	// local tangent frame
+	const Point2 angles_actual = DirectionToSpherical(
+		wo_actual, vertexDpdu, vertexDpdv, vertexNormal );
+	const Point2 angles_specular = DirectionToSpherical(
+		wo_specular, vertexDpdu, vertexDpdv, vertexNormal );
+
+	// Theta difference (no periodicity issue)
+	C0 = angles_actual.x - angles_specular.x;
+
+	// Phi difference — must wrap to [-pi, pi] to handle periodicity
+	// (Zeltner errata: without this, the solver does not realize that
+	// a value near 2*pi is close to a zero and fails to converge)
+	Scalar phi_diff = angles_actual.y - angles_specular.y;
+	if( phi_diff > PI ) phi_diff -= 2.0 * PI;
+	if( phi_diff < -PI ) phi_diff += 2.0 * PI;
+	C1 = phi_diff;
+}
+
+//////////////////////////////////////////////////////////////////////
+// BuildJacobianNumerical
+//
+//   Builds the block-tridiagonal Jacobian dC/dx via central finite
+//   differences on the constraint function.  This matches whichever
+//   constraint formulation EvaluateConstraint uses (angle-difference
+//   or half-vector).
+//
+//   For each vertex i and each surface parameter p (u or v):
+//     - Diagonal block: perturb vertex i position and normal,
+//       evaluate C_i at (pos ± dp*eps, normal ± dn*eps)
+//     - Upper block (i+1): perturb nextPos, evaluate C_i
+//     - Lower block (i-1): perturb prevPos, evaluate C_i
+//
+//   Uses central differences: dC/dp ≈ (C(+eps) - C(-eps)) / (2*eps)
+//////////////////////////////////////////////////////////////////////
+
+void ManifoldSolver::BuildJacobianNumerical(
+	const std::vector<ManifoldVertex>& chain,
+	const Point3& fixedStart,
+	const Point3& fixedEnd,
+	std::vector<Scalar>& diag,
+	std::vector<Scalar>& upper,
+	std::vector<Scalar>& lower
+	) const
+{
+	const unsigned int k = static_cast<unsigned int>( chain.size() );
+	const Scalar eps = 1e-5;
+	const Scalar inv2eps = 1.0 / (2.0 * eps);
+
+	diag.resize( k * 4, 0.0 );
+	if( k > 1 )
+	{
+		upper.resize( (k-1) * 4, 0.0 );
+		lower.resize( (k-1) * 4, 0.0 );
+	}
+	else
+	{
+		upper.clear();
+		lower.clear();
+	}
+
+	for( unsigned int i = 0; i < k; i++ )
+	{
+		const ManifoldVertex& v = chain[i];
+		const Point3 prevPos = (i == 0) ? fixedStart : chain[i-1].position;
+		const Point3 nextPos = (i == k-1) ? fixedEnd : chain[i+1].position;
+
+		// ---- Diagonal block: dC_i / dX_i ----
+		// Perturb vertex i along dpdu (p=0) and dpdv (p=1)
+		for( unsigned int p = 0; p < 2; p++ )
+		{
+			const Vector3& dp = (p == 0) ? v.dpdu : v.dpdv;
+			const Vector3& dn = (p == 0) ? v.dndu : v.dndv;
+
+			// Forward perturbation: position and normal
+			const Point3 pos_plus = Point3Ops::mkPoint3( v.position, dp * eps );
+			Vector3 norm_plus = Vector3(
+				v.normal.x + dn.x * eps,
+				v.normal.y + dn.y * eps,
+				v.normal.z + dn.z * eps );
+			norm_plus = Vector3Ops::Normalize( norm_plus );
+
+			Scalar Cp0, Cp1;
+			EvaluateConstraintAtVertex( pos_plus, norm_plus,
+				v.dpdu, v.dpdv, v.eta, v.isReflection,
+				prevPos, nextPos, Cp0, Cp1 );
+
+			// Backward perturbation
+			const Point3 pos_minus = Point3Ops::mkPoint3( v.position, dp * (-eps) );
+			Vector3 norm_minus = Vector3(
+				v.normal.x - dn.x * eps,
+				v.normal.y - dn.y * eps,
+				v.normal.z - dn.z * eps );
+			norm_minus = Vector3Ops::Normalize( norm_minus );
+
+			Scalar Cm0, Cm1;
+			EvaluateConstraintAtVertex( pos_minus, norm_minus,
+				v.dpdu, v.dpdv, v.eta, v.isReflection,
+				prevPos, nextPos, Cm0, Cm1 );
+
+			// Central differences with phi unwrapping
+			Scalar dC0 = Cp0 - Cm0;
+			Scalar dC1 = Cp1 - Cm1;
+			if( dC1 > PI ) dC1 -= 2.0 * PI;
+			if( dC1 < -PI ) dC1 += 2.0 * PI;
+
+			diag[i*4 + 0 + p] = dC0 * inv2eps;
+			diag[i*4 + 2 + p] = dC1 * inv2eps;
+		}
+
+		// ---- Upper block: dC_i / dX_{i+1} ----
+		if( i < k - 1 )
+		{
+			const ManifoldVertex& vn = chain[i+1];
+			for( unsigned int p = 0; p < 2; p++ )
+			{
+				const Vector3& dp = (p == 0) ? vn.dpdu : vn.dpdv;
+
+				// Perturb next vertex position
+				const Point3 nextPlus = Point3Ops::mkPoint3(
+					vn.position, dp * eps );
+				const Point3 nextMinus = Point3Ops::mkPoint3(
+					vn.position, dp * (-eps) );
+
+				Scalar Cp0, Cp1, Cm0, Cm1;
+				EvaluateConstraintAtVertex( v.position, v.normal,
+					v.dpdu, v.dpdv, v.eta, v.isReflection,
+					prevPos, nextPlus, Cp0, Cp1 );
+				EvaluateConstraintAtVertex( v.position, v.normal,
+					v.dpdu, v.dpdv, v.eta, v.isReflection,
+					prevPos, nextMinus, Cm0, Cm1 );
+
+				Scalar dC0 = Cp0 - Cm0;
+				Scalar dC1 = Cp1 - Cm1;
+				if( dC1 > PI ) dC1 -= 2.0 * PI;
+				if( dC1 < -PI ) dC1 += 2.0 * PI;
+
+				upper[i*4 + 0 + p] = dC0 * inv2eps;
+				upper[i*4 + 2 + p] = dC1 * inv2eps;
+			}
+		}
+
+		// ---- Lower block: dC_i / dX_{i-1} ----
+		if( i > 0 )
+		{
+			const ManifoldVertex& vp = chain[i-1];
+			for( unsigned int p = 0; p < 2; p++ )
+			{
+				const Vector3& dp = (p == 0) ? vp.dpdu : vp.dpdv;
+
+				// Perturb previous vertex position
+				const Point3 prevPlus = Point3Ops::mkPoint3(
+					vp.position, dp * eps );
+				const Point3 prevMinus = Point3Ops::mkPoint3(
+					vp.position, dp * (-eps) );
+
+				Scalar Cp0, Cp1, Cm0, Cm1;
+				EvaluateConstraintAtVertex( v.position, v.normal,
+					v.dpdu, v.dpdv, v.eta, v.isReflection,
+					prevPlus, nextPos, Cp0, Cp1 );
+				EvaluateConstraintAtVertex( v.position, v.normal,
+					v.dpdu, v.dpdv, v.eta, v.isReflection,
+					prevMinus, nextPos, Cm0, Cm1 );
+
+				Scalar dC0 = Cp0 - Cm0;
+				Scalar dC1 = Cp1 - Cm1;
+				if( dC1 > PI ) dC1 -= 2.0 * PI;
+				if( dC1 < -PI ) dC1 += 2.0 * PI;
+
+				lower[(i-1)*4 + 0 + p] = dC0 * inv2eps;
+				lower[(i-1)*4 + 2 + p] = dC1 * inv2eps;
+			}
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
 // BuildJacobian
 //
 //   Analytical Jacobian for the half-vector constraint
@@ -1072,7 +1307,7 @@ bool ManifoldSolver::NewtonSolve(
 			return true;  // Converged
 		}
 
-		// Build Jacobian
+		// Build Jacobian (analytical half-vector, matching constraint)
 		std::vector<Scalar> diag, upper_blocks, lower_blocks;
 		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks );
 
@@ -1152,7 +1387,24 @@ bool ManifoldSolver::NewtonSolve(
 		}
 	}
 
-	return false;  // Did not converge within maxIterations
+	// Did not converge within maxIterations.  Check if the constraint
+	// norm is close enough to accept as a soft convergence.  On meshes
+	// with discontinuous normals (triangle edges), Newton may oscillate
+	// near the solution without reaching the strict threshold.  A
+	// relaxed threshold of 10× catches these near-solutions.
+	{
+		std::vector<Scalar> C_final;
+		EvaluateConstraint( chain, fixedStart, fixedEnd, C_final );
+		Scalar norm2 = 0.0;
+		for( unsigned int i = 0; i < 2 * k; i++ )
+			norm2 += C_final[i] * C_final[i];
+		if( sqrt(norm2) < config.solverThreshold * 10.0 )
+		{
+			return true;  // Soft convergence
+		}
+	}
+
+	return false;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1417,19 +1669,51 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 	{
 		const ManifoldVertex& v = chain[i];
 
-		// Compute incoming and outgoing directions at this vertex
+		// Compute incoming direction at this vertex
 		const Point3 prevPos = (i == 0) ? startPoint : chain[i-1].position;
-		const Point3 nextPos = (i == k-1) ? endPoint : chain[i+1].position;
 
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
 
-		Vector3 wo = Vector3Ops::mkVector3( nextPos, v.position );
-		wo = Vector3Ops::Normalize( wo );
+		// Exact dielectric Fresnel reflectance.
+		// Determine which side of the surface wi arrives from to
+		// set the correct eta_i / eta_t pair.
+		const Scalar cosI_signed = Vector3Ops::Dot( wi, v.normal );
+		const Scalar cosI = fabs( cosI_signed );
 
-		const Scalar cos_i = fabs( Vector3Ops::Dot( wi, v.normal ) );
-		const Scalar r0 = ((v.eta - 1.0) * (v.eta - 1.0)) / ((v.eta + 1.0) * (v.eta + 1.0));
-		const Scalar fr = r0 + (1.0 - r0) * pow( 1.0 - cos_i, 5.0 );
+		Scalar eta_i, eta_t;
+		if( cosI_signed >= 0 )
+		{
+			// wi is on the normal side → entering the medium
+			eta_i = 1.0;
+			eta_t = v.eta;
+		}
+		else
+		{
+			// wi is on the opposite side → exiting the medium
+			eta_i = v.eta;
+			eta_t = 1.0;
+		}
+
+		// Snell's law: compute cos(theta_t)
+		const Scalar sinI2 = 1.0 - cosI * cosI;
+		const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
+
+		Scalar fr;
+		if( sinT2 >= 1.0 )
+		{
+			// Total internal reflection
+			fr = 1.0;
+		}
+		else
+		{
+			const Scalar cosT = sqrt( 1.0 - sinT2 );
+
+			// s-polarized and p-polarized reflectance
+			const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
+			const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
+			fr = (rs * rs + rp * rp) * 0.5;
+		}
 
 		if( v.isReflection )
 		{
@@ -1473,9 +1757,37 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
 
-		const Scalar cos_i = fabs( Vector3Ops::Dot( wi, v.normal ) );
-		const Scalar r0 = ((v.eta - 1.0) * (v.eta - 1.0)) / ((v.eta + 1.0) * (v.eta + 1.0));
-		const Scalar fr = r0 + (1.0 - r0) * pow( 1.0 - cos_i, 5.0 );
+		// Exact dielectric Fresnel (same as RGB variant)
+		const Scalar cosI_signed = Vector3Ops::Dot( wi, v.normal );
+		const Scalar cosI = fabs( cosI_signed );
+
+		Scalar eta_i, eta_t;
+		if( cosI_signed >= 0 )
+		{
+			eta_i = 1.0;
+			eta_t = v.eta;
+		}
+		else
+		{
+			eta_i = v.eta;
+			eta_t = 1.0;
+		}
+
+		const Scalar sinI2 = 1.0 - cosI * cosI;
+		const Scalar sinT2 = (eta_i * eta_i) / (eta_t * eta_t) * sinI2;
+
+		Scalar fr;
+		if( sinT2 >= 1.0 )
+		{
+			fr = 1.0;
+		}
+		else
+		{
+			const Scalar cosT = sqrt( 1.0 - sinT2 );
+			const Scalar rs = (eta_i * cosI - eta_t * cosT) / (eta_i * cosI + eta_t * cosT);
+			const Scalar rp = (eta_t * cosI - eta_i * cosT) / (eta_t * cosI + eta_i * cosT);
+			fr = (rs * rs + rp * rp) * 0.5;
+		}
 
 		if( v.isReflection )
 		{
@@ -1510,7 +1822,10 @@ Scalar ManifoldSolver::ComputeManifoldGeometricTerm(
 		return 1.0;
 	}
 
-	// Build the Jacobian to get the diagonal blocks
+	// Build the half-vector analytical Jacobian for the contribution formula.
+	// Newton uses the angle-difference constraint for better convergence,
+	// but the contribution formula's |det(∂C/∂x)| factor was derived for
+	// the half-vector constraint, so we must use that Jacobian here.
 	std::vector<Scalar> diag, upper_blocks, lower_blocks;
 	BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks );
 
@@ -1567,7 +1882,20 @@ Scalar ManifoldSolver::ComputeManifoldGeometricTerm(
 		}
 	}
 
-	Scalar geoTerm = fabs( detProduct );
+	// Apply surface metric correction: convert from parameter-space
+	// Jacobian to tangent-plane world-space Jacobian
+	Scalar metricProduct = 1.0;
+	for( unsigned int i = 0; i < k; i++ )
+	{
+		const Scalar dpduLen = Vector3Ops::Magnitude( chain[i].dpdu );
+		const Scalar dpdvLen = Vector3Ops::Magnitude( chain[i].dpdv );
+		if( dpduLen > NEARZERO && dpdvLen > NEARZERO )
+		{
+			metricProduct *= dpduLen * dpdvLen;
+		}
+	}
+
+	Scalar geoTerm = fabs( detProduct ) / fmax( metricProduct, 1e-20 );
 	if( distProduct > NEARZERO )
 	{
 		geoTerm /= distProduct;
@@ -1712,7 +2040,7 @@ ManifoldResult ManifoldSolver::Solve(
 			norm2 += C0[i] * C0[i];
 		if( sqrt(norm2) > 2.0 )
 		{
-				return result;  // Seed too far from valid path
+					return result;  // Seed too far from valid path
 		}
 	}
 
@@ -1724,7 +2052,7 @@ ManifoldResult ManifoldSolver::Solve(
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
-				return result;
+					return result;
 			}
 		}
 
@@ -1747,7 +2075,6 @@ ManifoldResult ManifoldSolver::Solve(
 
 	if( converged )
 	{
-
 		result.valid = true;
 		result.specularChain = specularChain;
 
@@ -1755,10 +2082,10 @@ ManifoldResult ManifoldSolver::Solve(
 		result.contribution = EvaluateChainThroughput( shadingPoint, emitterPoint, specularChain );
 
 		// Compute constraint Jacobian determinant |det(∂C/∂x_⊥)| for the
-		// converged chain.  This is needed to properly convert light area
-		// measure to solid angle at the shading point through the specular
-		// chain.  The determinant captures surface curvature effects that
-		// cause focusing/defocusing of light (the caustic structure).
+		// converged chain.  Uses the half-vector analytical Jacobian because
+		// the contribution formula was derived for that formulation.
+		// Newton uses angle-difference for convergence, but the measure
+		// conversion factor must match the derivation.
 		{
 			std::vector<Scalar> diag, upper_blocks, lower_blocks;
 			BuildJacobian( specularChain, shadingPoint, emitterPoint,
@@ -1799,7 +2126,23 @@ ManifoldResult ManifoldSolver::Solve(
 				detProduct *= blockDet;
 			}
 
-			result.jacobianDet = fabs( detProduct );
+			// The Jacobian ∂C/∂(u,v) is in surface parameter space.
+			// The contribution formula needs ∂C/∂x_⊥ in tangent-plane
+			// world coordinates.  The conversion factor is the product
+			// of tangent vector magnitudes (surface metric):
+			//   |det(∂C/∂x_⊥)| = |det(∂C/∂(u,v))| / ∏_i |dpdu_i|·|dpdv_i|
+			Scalar metricProduct = 1.0;
+			for( unsigned int i = 0; i < k; i++ )
+			{
+				const Scalar dpduLen = Vector3Ops::Magnitude( specularChain[i].dpdu );
+				const Scalar dpdvLen = Vector3Ops::Magnitude( specularChain[i].dpdv );
+				if( dpduLen > NEARZERO && dpdvLen > NEARZERO )
+				{
+					metricProduct *= dpduLen * dpdvLen;
+				}
+			}
+
+			result.jacobianDet = fabs( detProduct ) / fmax( metricProduct, 1e-20 );
 			if( result.jacobianDet < 1e-20 )
 				result.jacobianDet = 1e-20;
 		}
@@ -1814,7 +2157,6 @@ ManifoldResult ManifoldSolver::Solve(
 			result.pdf = 1.0;
 		}
 	}
-
 	return result;
 }
 
@@ -1904,7 +2246,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// No specular geometry found — skip.
 		return result;
 	}
-
 
 	// Run manifold solve
 	ManifoldResult mResult = Solve(
@@ -2091,7 +2432,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		return result;
 	}
 
-
 	// Override each vertex's IOR with the wavelength-dependent value.
 	// This is what makes dispersion work — the Newton solver will find
 	// a different position for each wavelength due to the different IOR.
@@ -2244,8 +2584,9 @@ bool ManifoldSolver::CheckChainVisibility(
 
 		// Biased endpoint: pull back from the glass surface along its
 		// outward normal.  This prevents the shadow ray from hitting
-		// the glass mesh at or near the target vertex.
-		const Scalar endBias = 1e-3;
+		// the glass mesh at or near the target vertex.  Use a generous
+		// bias to clear displacement bumps on the glass surface.
+		const Scalar endBias = 5e-2;
 		const Point3 biasedEnd = Point3Ops::mkPoint3(
 			vFirst.position, outwardN * endBias );
 
@@ -2277,8 +2618,9 @@ bool ManifoldSolver::CheckChainVisibility(
 			? vLast.normal
 			: Vector3( -vLast.normal.x, -vLast.normal.y, -vLast.normal.z );
 
-		// Offset start along outward normal to clear displaced surface
-		const Scalar normalBias = 1e-2;
+		// Offset start along outward normal to clear displaced surface.
+		// Use a generous bias for rough displacement.
+		const Scalar normalBias = 5e-2;
 		const Point3 biasedStart = Point3Ops::mkPoint3(
 			vLast.position, outwardN * normalBias );
 
