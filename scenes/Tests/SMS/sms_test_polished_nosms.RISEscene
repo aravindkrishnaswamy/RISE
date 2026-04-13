@@ -35,8 +35,8 @@ pinhole_camera
 	location			0 4 8
 	lookat				0 0.5 0
 	up					0 1 0
-	width				200
-	height				200
+	width				400
+	height				400
 	fov					45.0
 }
 
@@ -86,7 +86,7 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_light
-	scale				100.0
+	scale				30.0
 	material			none
 }
 

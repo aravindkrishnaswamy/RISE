@@ -118,12 +118,14 @@ namespace RISE
 			RISEPel						contribution;	///< Path contribution (RGB)
 			Scalar						contributionNM;	///< Path contribution (spectral)
 			Scalar						pdf;			///< SMS PDF (1/p_k or 1.0 for biased)
+			Scalar						jacobianDet;	///< |det(∂C/∂x_⊥)| of constraint Jacobian
 			bool						valid;			///< True if Newton converged
 
 			ManifoldResult() :
 			contribution( RISEPel(0,0,0) ),
 			contributionNM( 0 ),
 			pdf( 1.0 ),
+			jacobianDet( 1.0 ),
 			valid( false )
 			{
 			}
@@ -184,6 +186,16 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				std::vector<ManifoldVertex>& chain
+				) const;
+
+			/// Computes the geometric coupling factor through a specular
+			/// chain for the path integral (incoming cosines / dist² at
+			/// each specular vertex, plus 1/dist² for the last segment).
+			/// Caller multiplies by cosAtShading and cosAtLight separately.
+			Scalar EvaluateChainGeometry(
+				const Point3& startPoint,
+				const Point3& endPoint,
+				const std::vector<ManifoldVertex>& chain
 				) const;
 
 			/// Computes Fresnel-weighted transmittance/reflectance product

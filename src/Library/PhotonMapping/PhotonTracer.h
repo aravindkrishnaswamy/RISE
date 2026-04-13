@@ -315,7 +315,8 @@ namespace RISE
 				}
 
 				// After shooting, scale the values in the photon map
-				pPhotonMap->ScalePhotonPower( 1.0/Scalar(numshot) ); 
+				GlobalLog()->PrintEx( eLog_Event, "TracePhotons:: Stored %d of %d requested photons (%d shot)", pPhotonMap->NumStored(), numPhotons, numshot );
+				pPhotonMap->ScalePhotonPower( 1.0/Scalar(numshot) );
 
 				// Tell the photon map to balance itself!
 				GlobalLog()->PrintEasyEvent( "TracePhotons:: Balancing KD-Tree" );

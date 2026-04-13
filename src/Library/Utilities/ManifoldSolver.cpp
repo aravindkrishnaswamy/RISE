@@ -59,6 +59,17 @@ static std::atomic<unsigned long long> g_noImproveIter0(0);
 static std::atomic<unsigned long long> g_noImproveIter1(0);
 static std::atomic<unsigned long long> g_noImproveIter2plus(0);
 
+// SMS geometric factor diagnostics
+static std::atomic<unsigned long long> g_smsGeomClamped(0);
+static std::atomic<unsigned long long> g_smsGeomTotal(0);
+// Use doubles + mutex for running stats (atomics don't support double add)
+#include <mutex>
+static std::mutex g_geomStatsMutex;
+static double g_smsGeomSum = 0;
+static double g_smsGeomMax = 0;
+static double g_smsDetSum = 0;
+static double g_smsAreaProdSum = 0;
+
 static void LogSMSStats()
 {
 	unsigned long long att = g_smsAttempts.load();
@@ -81,6 +92,19 @@ static void LogSMSStats()
 		sk1, sk1>0?100.0*ck1/sk1:0.0, sk2, sk2>0?100.0*ck2/sk2:0.0,
 		g_newtonEarlyOut.load(), g_newtonSingular.load(), g_newtonNoImprove.load(),
 		ni0, ni1, ni2p, g_newtonMaxIter.load() );
+
+	unsigned long long geomN = g_smsGeomTotal.load();
+	unsigned long long geomClamped = g_smsGeomClamped.load();
+	{
+		std::lock_guard<std::mutex> lock( g_geomStatsMutex );
+		double geomAvg = geomN > 0 ? g_smsGeomSum / geomN : 0;
+		double detAvg = geomN > 0 ? g_smsDetSum / geomN : 0;
+		double areaAvg = geomN > 0 ? g_smsAreaProdSum / geomN : 0;
+		fprintf( stderr,
+			"  Geom: n=%llu clamped=%llu(%.1f%%) avg=%.6g max=%.6g jacDetAvg=%.6g chainGeomAvg=%.6g\n",
+			geomN, geomClamped, geomN>0?100.0*geomClamped/geomN:0.0,
+			geomAvg, g_smsGeomMax, detAvg, areaAvg );
+	}
 
 	GlobalLog()->PrintEx( eLog_Info,
 		"SMS Stats: attempts=%llu seed=%llu(%.1f%%) conv=%llu(%.1f%%) vis=%llu(%.1f%%) contrib=%llu(%.1f%%)",
@@ -1408,6 +1432,67 @@ unsigned int ManifoldSolver::BuildSeedChain(
 //   Computes Fresnel-weighted transmittance/reflectance product
 //   along a converged specular chain, including Beer's law.
 //////////////////////////////////////////////////////////////////////
+// EvaluateChainGeometry
+//
+//   Computes the geometric coupling factor through a specular chain
+//   for the path integral.  For delta BSDFs, integrating the delta
+//   function cancels the outgoing cosine at each specular vertex.
+//   What remains per segment is cos(θ_incoming) / dist².
+//
+//   For chain  x → v_1 → ... → v_k → y  the result is:
+//
+//     cos(θ_x) × ∏_{j=1}^{k} [cos(θ_{vj,in}) / dist(prev,vj)²]
+//              × cos(θ_y) / dist(vk,y)²
+//
+//   The caller supplies cosAtShading (= cos θ_x) and cosAtLight
+//   (= cos θ_y) separately, so this function returns the product
+//   of the segment factors only:
+//
+//     ∏_{j=1}^{k} [cos(θ_{vj,in}) / dist(prev,vj)²]  ×  1/dist(vk,y)²
+//
+//   cosAtShading and cosAtLight are multiplied by the caller.
+//////////////////////////////////////////////////////////////////////
+
+Scalar ManifoldSolver::EvaluateChainGeometry(
+	const Point3& startPoint,
+	const Point3& endPoint,
+	const std::vector<ManifoldVertex>& chain
+	) const
+{
+	const unsigned int k = static_cast<unsigned int>( chain.size() );
+	if( k == 0 ) return 1.0;
+
+	Scalar geom = 1.0;
+
+	for( unsigned int i = 0; i < k; i++ )
+	{
+		const Point3 prevPos = (i == 0) ? startPoint : chain[i-1].position;
+
+		Vector3 dir = Vector3Ops::mkVector3( chain[i].position, prevPos );
+		const Scalar dist = Vector3Ops::Magnitude( dir );
+		if( dist < 1e-8 ) return 0.0;
+		dir = dir * (1.0 / dist);
+
+		// Incoming cosine at this specular vertex
+		const Scalar cosIn = fabs( Vector3Ops::Dot( chain[i].normal, dir ) );
+
+		geom *= cosIn / (dist * dist);
+	}
+
+	// Last segment: chain[k-1] to endPoint (the light).
+	// Only 1/dist² here — cosAtLight is supplied by the caller.
+	{
+		Vector3 dir = Vector3Ops::mkVector3( endPoint, chain[k-1].position );
+		const Scalar dist = Vector3Ops::Magnitude( dir );
+		if( dist < 1e-8 ) return 0.0;
+
+		geom *= 1.0 / (dist * dist);
+	}
+
+	return geom;
+}
+
+//////////////////////////////////////////////////////////////////////
 
 RISEPel ManifoldSolver::EvaluateChainThroughput(
 	const Point3& startPoint,
@@ -1770,18 +1855,55 @@ ManifoldResult ManifoldSolver::Solve(
 		// Evaluate throughput (Fresnel * Beer's law along the chain)
 		result.contribution = EvaluateChainThroughput( shadingPoint, emitterPoint, specularChain );
 
-		// For the deterministic seed approach (straight-line trace + Newton),
-		// the geometric coupling between endpoints is handled by the standard
-		// geometric term G(eye, first_spec) in the integrator's contribution
-		// formula.  The specular chain's internal geometric terms cancel with
-		// the delta BSDF PDFs (Veach's formulation for specular vertices).
-		// We only need the Fresnel throughput, not a separate manifold
-		// geometric term.
-		//
-		// The manifold geometric term (Jacobian determinant) is needed for
-		// random seed approaches where we sample seed positions on the
-		// specular surfaces — it converts from seed area measure to path
-		// measure.  For deterministic seeds, it is not applicable.
+		// Compute constraint Jacobian determinant |det(∂C/∂x_⊥)| for the
+		// converged chain.  This is needed to properly convert light area
+		// measure to solid angle at the shading point through the specular
+		// chain.  The determinant captures surface curvature effects that
+		// cause focusing/defocusing of light (the caustic structure).
+		{
+			std::vector<Scalar> diag, upper_blocks, lower_blocks;
+			BuildJacobian( specularChain, shadingPoint, emitterPoint,
+				diag, upper_blocks, lower_blocks );
+
+			// det(J) = ∏ det(Dp[i]) from block-tridiagonal forward sweep
+			Scalar detProduct = 1.0;
+			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
+			std::vector<Scalar> Dp( k * 4 );
+
+			for( unsigned int i = 0; i < k; i++ )
+			{
+				if( i == 0 )
+				{
+					for( int q = 0; q < 4; q++ )
+						Dp[q] = diag[q];
+				}
+				else
+				{
+					Scalar invDp[4];
+					if( !Invert2x2( &Dp[(i-1)*4], invDp ) )
+					{
+						detProduct = 1.0;
+						break;
+					}
+
+					Scalar LiInvDp[4];
+					Mul2x2( &lower_blocks[(i-1)*4], invDp, LiInvDp );
+
+					Scalar LiInvDpUi[4];
+					Mul2x2( LiInvDp, &upper_blocks[(i-1)*4], LiInvDpUi );
+
+					Sub2x2( &diag[i*4], LiInvDpUi, &Dp[i*4] );
+				}
+
+				// Accumulate det of this 2x2 block
+				const Scalar blockDet = Dp[i*4+0]*Dp[i*4+3] - Dp[i*4+1]*Dp[i*4+2];
+				detProduct *= blockDet;
+			}
+
+			result.jacobianDet = fabs( detProduct );
+			if( result.jacobianDet < 1e-20 )
+				result.jacobianDet = 1e-20;
+		}
 
 		// PDF estimation
 		if( !config.biased )
@@ -1843,7 +1965,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	g_smsAttempts.fetch_add(1);
 
-	// Build seed chain
+	// Build seed chain toward the light sample.  If that ray misses the
+	// specular geometry, try fallback directions.  The Newton solver only
+	// needs the correct chain topology — it will reposition vertices to
+	// satisfy the specular constraint for the actual light sample.
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
@@ -1851,7 +1976,34 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
-		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
+		// Fallback: trace along the surface normal.
+		const Point3 normalTarget = Point3Ops::mkPoint3(
+			pos, normal * 100.0 );
+		chainLen = BuildSeedChain(
+			pos, normalTarget,
+			scene, caster, seedChain );
+	}
+
+	if( chainLen == 0 || seedChain.empty() )
+	{
+		// Fallback: try tracing toward the midpoint between pos and
+		// the light.  For tilted geometry, the specular object may lie
+		// between the two endpoints at a position that neither the
+		// light-direction nor the normal-direction ray can reach.
+		const Point3 midpoint(
+			(pos.x + lightSample.position.x) * 0.5,
+			(pos.y + lightSample.position.y) * 0.5,
+			(pos.z + lightSample.position.z) * 0.5 );
+		const Point3 midTarget = Point3Ops::mkPoint3(
+			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
+		chainLen = BuildSeedChain(
+			pos, midTarget,
+			scene, caster, seedChain );
+	}
+
+	if( chainLen == 0 || seedChain.empty() )
+	{
+		// No specular geometry found — skip.
 		return result;
 	}
 
@@ -1882,11 +2034,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	g_smsVisible.fetch_add(1);
 
 	// Direction from shading point toward first specular vertex
+	const ManifoldVertex& firstSpec = mResult.specularChain[0];
 	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
-		mResult.specularChain[0].position, pos );
-	Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
-	if( distToSpec < 1e-8 ) return result;
-	dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
+		firstSpec.position, pos );
+	Scalar distToFirstSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+	if( distToFirstSpec < 1e-8 ) return result;
+	dirToFirstSpec = dirToFirstSpec * (1.0 / distToFirstSpec);
 
 	const Vector3 wiAtShading = dirToFirstSpec;
 
@@ -1903,12 +2056,13 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( ColorMath::MaxValue( fBSDF ) <= 0 )
 		return result;
 
-	// Cosine at shading point (from rendering equation)
+	// Cosine at shading point: uses the actual direction toward the
+	// first specular vertex (where light arrives from after refraction).
 	const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
 	if( cosAtShading <= 0 ) return result;
 
-	// Cosine at light surface and distance from last specular vertex
-	// to light (for area-to-solid-angle conversion at the light end)
+	// Direction and distance from last specular vertex to light
+	// (needed for cosine evaluation at the light surface).
 	const ManifoldVertex& lastSpec = mResult.specularChain.back();
 	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
 		lastSpec.position, lightSample.position );
@@ -1936,24 +2090,49 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		actualLe = lightSample.Le;
 	}
 
-	// SMS contribution via standard Monte Carlo estimator:
-	//   f(x) / p(x)  where we sampled one light with probability pdfSelect.
+	// SMS geometric factor (Zeltner et al. 2020).
 	//
-	// pdfPosition = 1/Area for mesh lights, so 1/pdfPosition = Area.
-	// Dividing by pdfSelect is required because we sample ONE light
-	// from the full set — without it the expected contribution is
-	// attenuated by pdfSelect, causing systematic underestimation
-	// in multi-light scenes.  (Single-light scenes are unaffected
-	// since pdfSelect = 1.)  This matches the NM (spectral) SMS path
-	// in BDPTIntegrator::EvaluateSMSStrategiesNM.
+	// The path integral for a specular chain includes geometric coupling
+	// at every edge (G terms) in the numerator, divided by the constraint
+	// Jacobian determinant |det(∂C/∂x_⊥)| which converts the light-area
+	// sampling density to the path-space density:
 	//
-	// No intermediate geometric terms — delta BSDFs at specular vertices
-	// cancel with the geometric terms in the path integral.
-	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
+	//   L = f_s · cos(θ_x) · T_chain · Le · cos(θ_y) · G_chain
+	//       / (p(y) · |det(∂C/∂x_⊥)|)
+	//
+	// G_chain = ∏[cos(θ_in_vi)/dist²] · 1/dist²(vk,y)  (via EvaluateChainGeometry)
+	//
+	// Both G_chain and |det| blow up for thin slabs (small internal
+	// distances), but their RATIO is well-behaved — the determinant
+	// encodes the same 1/dist scaling from its direction derivatives.
+	//
+	// Our BuildJacobian + Solve compute jacobianDet = |det(∂C/∂(u,v))|.
+	// With ||dpdu|| ≈ ||dpdv|| ≈ 1 (unit tangents from finite differences),
+	// this equals |det(∂C/∂x_⊥)| in projected-area coordinates.
+	const Scalar chainGeom = EvaluateChainGeometry(
+		pos, lightSample.position, mResult.specularChain );
 
-	result.contribution = fBSDF * cosAtShading
+	const Scalar smsGeometric = cosAtLight * chainGeom
+		/ fmax( mResult.jacobianDet, 1e-20 );
+
+	// Clamp to prevent fireflies from near-singular Jacobians
+	const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+
+	// Track geometric factor statistics (sampled to reduce mutex contention)
+	if( (g_smsContributed.load() & 0xFF) == 0 )
+	{
+		g_smsGeomTotal.fetch_add(1);
+		if( smsGeometric >= config.maxGeometricTerm ) g_smsGeomClamped.fetch_add(1);
+		std::lock_guard<std::mutex> lock( g_geomStatsMutex );
+		g_smsGeomSum += smsGeometric;
+		if( smsGeometric > g_smsGeomMax ) g_smsGeomMax = smsGeometric;
+		g_smsDetSum += mResult.jacobianDet;
+		g_smsAreaProdSum += chainGeom;
+	}
+
+	result.contribution = fBSDF
 		* mResult.contribution
-		* actualLe * lightGeom
+		* actualLe * cosAtShading * clampedGeometric
 		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
@@ -2008,7 +2187,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	g_smsAttempts.fetch_add(1);
 
-	// Build seed chain (uses RGB IOR for approximate positions)
+	// Build seed chain toward light, with fallbacks (see RGB variant).
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
@@ -2016,7 +2195,28 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
-		if( (g_smsAttempts.load() % 50000) == 0 ) LogSMSStats();
+		const Point3 normalTarget = Point3Ops::mkPoint3(
+			pos, normal * 100.0 );
+		chainLen = BuildSeedChain(
+			pos, normalTarget,
+			scene, caster, seedChain );
+	}
+
+	if( chainLen == 0 || seedChain.empty() )
+	{
+		const Point3 midpoint(
+			(pos.x + lightSample.position.x) * 0.5,
+			(pos.y + lightSample.position.y) * 0.5,
+			(pos.z + lightSample.position.z) * 0.5 );
+		const Point3 midTarget = Point3Ops::mkPoint3(
+			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
+		chainLen = BuildSeedChain(
+			pos, midTarget,
+			scene, caster, seedChain );
+	}
+
+	if( chainLen == 0 || seedChain.empty() )
+	{
 		return result;
 	}
 
@@ -2067,11 +2267,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	g_smsVisible.fetch_add(1);
 
 	// Direction from shading point toward first specular vertex
+	const ManifoldVertex& firstSpec = mResult.specularChain[0];
 	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
-		mResult.specularChain[0].position, pos );
-	Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
-	if( distToSpec < 1e-8 ) return result;
-	dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
+		firstSpec.position, pos );
+	Scalar distToFirstSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+	if( distToFirstSpec < 1e-8 ) return result;
+	dirToFirstSpec = dirToFirstSpec * (1.0 / distToFirstSpec);
 
 	const Vector3 wiAtShading = dirToFirstSpec;
 
@@ -2087,6 +2288,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( fBSDF <= 0 )
 		return result;
 
+	// Cosine at shading point
 	Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
 	if( cosAtShading <= 0 ) return result;
 
@@ -2094,7 +2296,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	Scalar chainThroughput = EvaluateChainThroughputNM(
 		pos, lightSample.position, mResult.specularChain, nm );
 
-	// Cosine at light surface
+	// Direction from last specular vertex to light (for cosine eval)
 	const ManifoldVertex& lastSpec = mResult.specularChain.back();
 	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
 		lastSpec.position, lightSample.position );
@@ -2102,11 +2304,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( distSpecToLight < 1e-8 ) return result;
 	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
-	// For delta-position lights (point/spot), there is no surface at the
-	// light — the geometric coupling has no cosine term.  The emitted
-	// radiance must also be re-evaluated for the actual direction from the
-	// light toward the last specular vertex, since the LightSample's Le
-	// was evaluated at a random photon direction.
 	Scalar cosAtLight;
 	Scalar Le;
 	if( lightSample.isDelta ) {
@@ -2123,11 +2320,17 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		Le = ColorMath::Luminance( lightSample.Le );
 	}
 
-	const Scalar lightGeom = cosAtLight / (distSpecToLight * distSpecToLight);
+	// SMS geometric factor (see RGB variant for derivation).
+	const Scalar chainGeom = EvaluateChainGeometry(
+		pos, lightSample.position, mResult.specularChain );
 
-	result.contribution = fBSDF * cosAtShading
+	const Scalar smsGeometric = cosAtLight * chainGeom
+		/ fmax( mResult.jacobianDet, 1e-20 );
+	const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+
+	result.contribution = fBSDF
 		* chainThroughput
-		* Le * lightGeom
+		* Le * cosAtShading * clampedGeometric
 		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 	result.misWeight = 1.0 / mResult.pdf;
