@@ -1541,6 +1541,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
 		v.onb = ri.geometric.onb;
+		v.ptCoord = ri.geometric.ptCoord;
+		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -2447,6 +2449,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
 		v.onb = ri.geometric.onb;
+		v.ptCoord = ri.geometric.ptCoord;
+		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -4082,6 +4086,75 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 		}
 	}
 
+	// ----------------------------------------------------------------
+	// Deterministic evaluation of zero-exitance lights (directional,
+	// ambient).  These lights have radiantExitance() == 0, so they are
+	// excluded from the alias table and invisible to every (s,t)
+	// strategy.  Since no strategy can produce their contribution, the
+	// MIS weight is trivially 1.0 — this is the unique unbiased
+	// estimator.  Mirrors Step 1 of LightSampler::EvaluateDirectLighting.
+	// ----------------------------------------------------------------
+	{
+		const ILightManager* pLightMgr = scene.GetLights();
+		if( pLightMgr )
+		{
+			const ILightManager::LightsList& lights = pLightMgr->getLights();
+			for( ILightManager::LightsList::const_iterator m = lights.begin(),
+				n = lights.end(); m != n; m++ )
+			{
+				const ILightPriv* l = *m;
+				if( ColorMath::MaxValue( l->radiantExitance() ) > 0 ) {
+					continue;
+				}
+
+				for( unsigned int t = 2; t <= nEye; t++ )
+				{
+					const BDPTVertex& eyeEnd = eyeVerts[t - 1];
+
+					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
+					if( !eyeEnd.isConnectible ) continue;
+					if( !eyeEnd.pMaterial ) continue;
+
+					const IBSDF* pBSDF = eyeEnd.pMaterial->GetBSDF();
+					if( !pBSDF ) continue;
+
+					// Incoming viewer direction (from previous eye vertex)
+					Vector3 wo = Vector3Ops::mkVector3(
+						eyeVerts[t - 2].position, eyeEnd.position );
+					wo = Vector3Ops::Normalize( wo );
+
+					Ray evalRay( eyeEnd.position, -wo );
+					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+					ri.bHit = true;
+					ri.ptIntersection = eyeEnd.position;
+					ri.vNormal = eyeEnd.normal;
+					ri.onb = eyeEnd.onb;
+					ri.ptCoord = eyeEnd.ptCoord;
+					ri.ptObjIntersec = eyeEnd.ptObjIntersec;
+
+					const bool bReceivesShadows = eyeEnd.pObject
+						? eyeEnd.pObject->DoesReceiveShadows() : true;
+
+					RISEPel amount( 0, 0, 0 );
+					l->ComputeDirectLighting( ri, caster, *pBSDF,
+						bReceivesShadows, amount );
+
+					if( ColorMath::MaxValue( amount ) > 0 )
+					{
+						ConnectionResult cr;
+						cr.contribution = eyeEnd.throughput * amount;
+						cr.misWeight = 1.0;
+						cr.needsSplat = false;
+						cr.valid = true;
+						cr.s = 1;
+						cr.t = t;
+						results.push_back( cr );
+					}
+				}
+			}
+		}
+	}
+
 #ifdef RISE_ENABLE_OPENPGL
 	if( pCompletePathGuide && pCompletePathGuide->IsCollectingTrainingSamples() ) {
 		RecordCompletePathSamples( pCompletePathGuide, lightVerts, eyeVerts, results );
@@ -4646,6 +4719,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
 		v.onb = ri.geometric.onb;
+		v.ptCoord = ri.geometric.ptCoord;
+		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -5393,6 +5468,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
 		v.onb = ri.geometric.onb;
+		v.ptCoord = ri.geometric.ptCoord;
+		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -6646,6 +6723,71 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 
 			if( cr.valid ) {
 				results.push_back( cr );
+			}
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// Deterministic evaluation of zero-exitance lights (spectral).
+	// Same logic as the RGB path; converts RISEPel to scalar via
+	// luminance, matching LightSampler::EvaluateDirectLightingNM.
+	// ----------------------------------------------------------------
+	{
+		const ILightManager* pLightMgr = scene.GetLights();
+		if( pLightMgr )
+		{
+			const ILightManager::LightsList& lights = pLightMgr->getLights();
+			for( ILightManager::LightsList::const_iterator m = lights.begin(),
+				n = lights.end(); m != n; m++ )
+			{
+				const ILightPriv* l = *m;
+				if( ColorMath::MaxValue( l->radiantExitance() ) > 0 ) {
+					continue;
+				}
+
+				for( unsigned int t = 2; t <= nEye; t++ )
+				{
+					const BDPTVertex& eyeEnd = eyeVerts[t - 1];
+
+					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
+					if( !eyeEnd.isConnectible ) continue;
+					if( !eyeEnd.pMaterial ) continue;
+
+					const IBSDF* pBSDF = eyeEnd.pMaterial->GetBSDF();
+					if( !pBSDF ) continue;
+
+					Vector3 wo = Vector3Ops::mkVector3(
+						eyeVerts[t - 2].position, eyeEnd.position );
+					wo = Vector3Ops::Normalize( wo );
+
+					Ray evalRay( eyeEnd.position, -wo );
+					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
+					ri.bHit = true;
+					ri.ptIntersection = eyeEnd.position;
+					ri.vNormal = eyeEnd.normal;
+					ri.onb = eyeEnd.onb;
+					ri.ptCoord = eyeEnd.ptCoord;
+					ri.ptObjIntersec = eyeEnd.ptObjIntersec;
+
+					const bool bReceivesShadows = eyeEnd.pObject
+						? eyeEnd.pObject->DoesReceiveShadows() : true;
+
+					RISEPel amount( 0, 0, 0 );
+					l->ComputeDirectLighting( ri, caster, *pBSDF,
+						bReceivesShadows, amount );
+
+					const Scalar luminance = ColorMath::Luminance( amount );
+					if( luminance > 0 )
+					{
+						ConnectionResultNM cr;
+						cr.contribution = eyeEnd.throughputNM * luminance;
+						cr.misWeight = 1.0;
+						cr.needsSplat = false;
+						cr.valid = true;
+						cr.s = 1;
+						results.push_back( cr );
+					}
+				}
 			}
 		}
 	}
