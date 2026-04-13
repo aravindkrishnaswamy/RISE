@@ -17,6 +17,12 @@
 //    Supports both refraction and reflection at each vertex, with
 //    material-specific IOR via IMaterial::GetSpecularInfo().
 //
+//    SMS and BDPT occupy disjoint path spaces for delta materials:
+//    BDPT skips delta vertices in its MIS walk, so it cannot generate
+//    the caustic paths that SMS finds.  Simple addition of SMS and
+//    BDPT contributions is correct without cross-strategy MIS.
+//    See docs/SMS.md for the full analysis and glossy-extension notes.
+//
 //  References:
 //    - Zeltner, Georgiev, Jakob. "Specular Manifold Sampling."
 //      SIGGRAPH 2020.

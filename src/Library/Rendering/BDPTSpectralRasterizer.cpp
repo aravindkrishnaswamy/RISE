@@ -181,7 +181,9 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 		}
 	}
 
-	// SMS contributions for specular caustic chains (spectral)
+	// SMS contributions for specular caustic chains (spectral).
+	// Added without cross-strategy MIS — path spaces are disjoint
+	// for delta materials.  See docs/SMS.md for analysis.
 	if( pIntegrator ) {
 		sampler.StartStream( 31 );
 		std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
