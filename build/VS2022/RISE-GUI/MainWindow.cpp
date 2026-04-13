@@ -20,15 +20,22 @@
 #include <QLabel>
 #include <QApplication>
 #include <QScreen>
+#include <QSettings>
+#include <QFileInfo>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle("RISE - Realistic Image Synthesis Engine");
     setMinimumSize(900, 600);
+
+    // Load recent files from settings
+    QSettings settings;
+    m_recentFiles = settings.value("recentSceneFiles").toStringList();
 
     // Create the engine
     m_engine = new RenderEngine(this);
+
+    updateWindowTitle();
 
     // Create widgets
     m_renderWidget = new RenderWidget();
@@ -44,11 +51,11 @@ MainWindow::MainWindow(QWidget* parent)
     m_bottomSplitter->setStretchFactor(0, 0);
     m_bottomSplitter->setStretchFactor(1, 1);
 
-    // Right splitter: render view | bottom panel (220px fixed height)
+    // Right splitter: render view | bottom panel (280px fixed height)
     m_rightSplitter = new QSplitter(Qt::Vertical);
     m_rightSplitter->addWidget(m_renderWidget);
     m_rightSplitter->addWidget(m_bottomSplitter);
-    m_rightSplitter->setSizes({500, 220});
+    m_rightSplitter->setSizes({500, 280});
     m_rightSplitter->setStretchFactor(0, 1);
     m_rightSplitter->setStretchFactor(1, 0);
 
@@ -92,15 +99,22 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_sceneEditor, &SceneEditor::saveAndReloadRequested, this, &MainWindow::onSaveAndReload);
 
     // Set initial status
-    statusBar()->showMessage(QString("RISE %1 — Ready").arg(m_engine->versionString()));
+    statusBar()->showMessage(QString("RISE %1 \u2014 Ready").arg(m_engine->versionString()));
 }
 
 void MainWindow::createMenuBar()
 {
+    // --- File menu ---
     auto* fileMenu = menuBar()->addMenu("&File");
 
     auto* openAction = fileMenu->addAction("&Open Scene...", this, &MainWindow::onOpenScene);
     openAction->setShortcut(QKeySequence::Open);
+
+    // Open Recent submenu
+    m_recentFilesMenu = fileMenu->addMenu("Open &Recent");
+    updateRecentFilesMenu();
+
+    fileMenu->addSeparator();
 
     auto* saveAction = fileMenu->addAction("&Save Scene", [this]() {
         if (m_sceneEditor->isVisible()) m_sceneEditor->save();
@@ -111,6 +125,7 @@ void MainWindow::createMenuBar()
     auto* exitAction = fileMenu->addAction("E&xit", this, &QWidget::close);
     exitAction->setShortcut(QKeySequence::Quit);
 
+    // --- Edit menu ---
     auto* editMenu = menuBar()->addMenu("&Edit");
     auto* undoAction = editMenu->addAction("&Undo");
     undoAction->setShortcut(QKeySequence::Undo);
@@ -120,6 +135,7 @@ void MainWindow::createMenuBar()
     auto* findAction = editMenu->addAction("&Find...");
     findAction->setShortcut(QKeySequence::Find);
 
+    // --- Render menu ---
     auto* renderMenu = menuBar()->addMenu("&Render");
     renderMenu->addAction("&Render", this, &MainWindow::onRender);
     renderMenu->addAction("Render &Animation", this, &MainWindow::onRenderAnimation);
@@ -132,7 +148,86 @@ void MainWindow::createStatusBar()
     statusBar()->setSizeGripEnabled(true);
 }
 
-void MainWindow::onOpenScene()
+// ============================================================
+// Recent Files
+// ============================================================
+
+void MainWindow::addToRecentFiles(const QString& filePath)
+{
+    // Remove if already present, then insert at front
+    m_recentFiles.removeAll(filePath);
+    m_recentFiles.prepend(filePath);
+
+    // Cap at MAX_RECENT_FILES
+    while (m_recentFiles.size() > MAX_RECENT_FILES) {
+        m_recentFiles.removeLast();
+    }
+
+    // Persist
+    QSettings settings;
+    settings.setValue("recentSceneFiles", m_recentFiles);
+
+    updateRecentFilesMenu();
+}
+
+void MainWindow::updateRecentFilesMenu()
+{
+    m_recentFilesMenu->clear();
+
+    if (m_recentFiles.isEmpty()) {
+        auto* emptyAction = m_recentFilesMenu->addAction("No Recent Scenes");
+        emptyAction->setEnabled(false);
+    } else {
+        // Remove stale entries (files that no longer exist)
+        QStringList validFiles;
+        for (const QString& path : m_recentFiles) {
+            if (QFileInfo::exists(path)) {
+                validFiles.append(path);
+            }
+        }
+        m_recentFiles = validFiles;
+
+        for (const QString& path : m_recentFiles) {
+            QString label = QFileInfo(path).fileName();
+            auto* action = m_recentFilesMenu->addAction(label, [this, path]() {
+                onOpenRecentScene(path);
+            });
+            action->setToolTip(path);
+        }
+
+        m_recentFilesMenu->addSeparator();
+        m_recentFilesMenu->addAction("Clear Recent", this, &MainWindow::onClearRecentFiles);
+    }
+}
+
+void MainWindow::onOpenRecentScene(const QString& filePath)
+{
+    if (!QFileInfo::exists(filePath)) {
+        QMessageBox::warning(this, "File Not Found",
+            QString("The file no longer exists:\n%1").arg(filePath));
+        m_recentFiles.removeAll(filePath);
+        updateRecentFilesMenu();
+        return;
+    }
+
+    loadSceneFile(filePath);
+}
+
+void MainWindow::onClearRecentFiles()
+{
+    m_recentFiles.clear();
+
+    QSettings settings;
+    settings.setValue("recentSceneFiles", m_recentFiles);
+
+    updateRecentFilesMenu();
+}
+
+// ============================================================
+// Scene Loading
+// ============================================================
+
+void MainWindow::loadSceneFile(const QString& filePath)
 {
     // Check for unsaved editor changes
     if (m_sceneEditor->isVisible() && m_sceneEditor->isDirty()) {
@@ -143,17 +238,65 @@ void MainWindow::onOpenScene()
         if (result == QMessageBox::Save) m_sceneEditor->save();
     }
 
+    // If a scene is already loaded, ask whether to clear or merge
+    if (m_engine->state() != RenderEngine::Idle) {
+        auto result = QMessageBox::question(this, "Scene Already Loaded",
+            "A scene is already loaded. How would you like to proceed?",
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+        // Relabel buttons via the returned value
+        // Yes = Clear & Load, No = Merge, Cancel = Cancel
+        // Use a custom message box for clearer labels
+        QMessageBox msgBox(this);
+        msgBox.setWindowTitle("Scene Already Loaded");
+        msgBox.setText("A scene is already loaded. How would you like to proceed?");
+        auto* clearBtn = msgBox.addButton("Clear && Load", QMessageBox::AcceptRole);
+        auto* mergeBtn = msgBox.addButton("Merge", QMessageBox::ActionRole);
+        msgBox.addButton(QMessageBox::Cancel);
+        msgBox.exec();
+
+        if (msgBox.clickedButton() == clearBtn) {
+            m_engine->clearScene();
+        } else if (msgBox.clickedButton() == mergeBtn) {
+            // Don't clear — merge on top of existing scene
+        } else {
+            return; // Cancel
+        }
+    }
+
+    addToRecentFiles(filePath);
+    m_engine->loadScene(filePath);
+    updateWindowTitle();
+
+    // Auto-open editor when scene loads (matching Mac app behavior)
+    if (!m_editorVisible) {
+        onEditToggle();
+    } else {
+        // Refresh editor contents if already visible
+        m_sceneEditor->loadFile(filePath);
+    }
+}
+
+void MainWindow::onOpenScene()
+{
+    // Remember last directory
+    QSettings settings;
+    QString lastDir = settings.value("lastOpenDirectory").toString();
+
     QString filePath = QFileDialog::getOpenFileName(
-        this, "Open Scene", QString(),
+        this, "Open Scene", lastDir,
         "RISE Scene Files (*.RISEscene);;All Files (*)");
 
     if (filePath.isEmpty()) return;
 
-    // Clear previous scene
-    m_engine->clearScene();
+    // Save the directory for next time
+    settings.setValue("lastOpenDirectory", QFileInfo(filePath).absolutePath());
 
-    m_engine->loadScene(filePath);
+    loadSceneFile(filePath);
 }
+
+// ============================================================
+// Editor
+// ============================================================
 
 void MainWindow::onEditToggle()
 {
@@ -172,10 +315,15 @@ void MainWindow::onEditToggle()
     }
 }
 
+// ============================================================
+// Render controls
+// ============================================================
+
 void MainWindow::onClear()
 {
     m_engine->clearScene();
     m_controlsWidget->setHasScene(false);
+    updateWindowTitle();
     updateStatusBar();
 }
 
@@ -199,6 +347,10 @@ void MainWindow::onCancel()
     m_engine->cancelRender();
 }
 
+// ============================================================
+// State & UI updates
+// ============================================================
+
 void MainWindow::onStateChanged(int newState)
 {
     auto state = static_cast<RenderEngine::State>(newState);
@@ -209,25 +361,43 @@ void MainWindow::onStateChanged(int newState)
     bool hasScene = (state != RenderEngine::Idle);
     m_controlsWidget->setHasScene(hasScene);
 
+    // Disable Open Recent during active operations
+    bool canOpen = (state != RenderEngine::Rendering &&
+                    state != RenderEngine::Cancelling &&
+                    state != RenderEngine::Loading);
+    m_recentFilesMenu->setEnabled(canOpen);
+
     updateStatusBar();
+    updateWindowTitle();
 }
 
 void MainWindow::onSceneSizeDetected(int width, int height)
 {
     // Auto-resize window to fit scene, matching Mac app behavior
-    int bottomHeight = 220;
+    int bottomHeight = 280;
+    int statusHeight = 30;
     int menuHeight = menuBar()->height();
-    int statusHeight = statusBar()->height();
 
     int targetW = width + (m_editorVisible ? 600 : 0) + 40;
     int targetH = height + bottomHeight + menuHeight + statusHeight + 40;
 
-    // Clamp to screen size
+    // Clamp to screen size with smart scaling
     QScreen* screen = QApplication::primaryScreen();
     if (screen) {
         QRect available = screen->availableGeometry();
-        targetW = qMin(targetW, available.width() - 50);
-        targetH = qMin(targetH, available.height() - 50);
+        int maxW = available.width() - 50;
+        int maxH = available.height() - 50;
+
+        if (targetW > maxW || targetH > maxH) {
+            // Scale down while preserving aspect ratio of render area
+            double scaleW = static_cast<double>(maxW - (m_editorVisible ? 600 : 0) - 40) / width;
+            double scaleH = static_cast<double>(maxH - bottomHeight - menuHeight - statusHeight - 40) / height;
+            double scale = qMin(scaleW, scaleH);
+            scale = qMin(scale, 1.0); // Don't upscale
+
+            targetW = static_cast<int>(width * scale) + (m_editorVisible ? 600 : 0) + 40;
+            targetH = static_cast<int>(height * scale) + bottomHeight + menuHeight + statusHeight + 40;
+        }
     }
 
     // Only resize if larger than minimum
@@ -240,6 +410,18 @@ void MainWindow::onSaveAndReload(const QString& filePath)
 {
     m_engine->clearScene();
     m_engine->loadScene(filePath);
+}
+
+void MainWindow::updateWindowTitle()
+{
+    QString title;
+    if (!m_engine->loadedFilePath().isEmpty()) {
+        title = QFileInfo(m_engine->loadedFilePath()).fileName();
+    } else {
+        title = "RISE";
+    }
+    title += QString(" \u2014 RISE %1").arg(m_engine->versionString());
+    setWindowTitle(title);
 }
 
 void MainWindow::updateStatusBar()

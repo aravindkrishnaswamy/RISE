@@ -2,7 +2,7 @@
 //
 //  MainWindow.h - Main application window with 3-panel layout.
 //
-//  Ported from the Mac app's ContentView.swift.
+//  Ported from the Mac app's ContentView.swift + RISEApp.swift.
 //  Layout: [optional editor | [render view / [controls | log]]]
 //
 //////////////////////////////////////////////////////////////////////
@@ -12,7 +12,9 @@
 
 #include <QMainWindow>
 #include <QSplitter>
+#include <QStringList>
 
+class QMenu;
 class RenderEngine;
 class RenderWidget;
 class ControlsWidget;
@@ -28,6 +30,8 @@ public:
 
 private slots:
     void onOpenScene();
+    void onOpenRecentScene(const QString& filePath);
+    void onClearRecentFiles();
     void onEditToggle();
     void onClear();
     void onRender();
@@ -42,6 +46,15 @@ private:
     void createMenuBar();
     void createStatusBar();
     void updateStatusBar();
+    void updateWindowTitle();
+    void updateRecentFilesMenu();
+    void addToRecentFiles(const QString& filePath);
+    void loadSceneFile(const QString& filePath);
+
+    // Recent files
+    QStringList m_recentFiles;
+    QMenu* m_recentFilesMenu = nullptr;
+    static constexpr int MAX_RECENT_FILES = 10;
 
     RenderEngine* m_engine = nullptr;
     RenderWidget* m_renderWidget = nullptr;

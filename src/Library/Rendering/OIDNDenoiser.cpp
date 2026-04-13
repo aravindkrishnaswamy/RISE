@@ -89,20 +89,37 @@ void OIDNDenoiser::Denoise(
 	float* outputBuffer
 	)
 {
-	oidn::DeviceRef device = oidn::newDevice( oidn::DeviceType::Default );
+	// Use CPU device explicitly to ensure host pointers are accessible.
+	// The default device may select a GPU backend (SYCL/HIP) on some
+	// platforms, which requires device-allocated buffers.  Falling back
+	// to CPU keeps the code portable and avoids the
+	// "image data not accessible by the device" error.
+	oidn::DeviceRef device = oidn::newDevice( oidn::DeviceType::CPU );
 	device.commit();
 
-	oidn::FilterRef filter = device.newFilter( "RT" );
-	filter.setImage( "color", beautyBuffer, oidn::Format::Float3, w, h );
-	filter.setImage( "output", outputBuffer, oidn::Format::Float3, w, h );
+	const size_t pixelCount = static_cast<size_t>( w ) * h;
+	const size_t bufBytes   = pixelCount * 3 * sizeof( float );
 
+	// Wrap host memory in OIDNBuffers so all device types can access it
+	oidn::BufferRef colorBuf  = device.newBuffer( bufBytes );
+	oidn::BufferRef outputBuf = device.newBuffer( bufBytes );
+
+	std::memcpy( colorBuf.getData(), beautyBuffer, bufBytes );
+
+	oidn::FilterRef filter = device.newFilter( "RT" );
+	filter.setImage( "color",  colorBuf,  oidn::Format::Float3, w, h );
+	filter.setImage( "output", outputBuf, oidn::Format::Float3, w, h );
+
+	oidn::BufferRef albedoBuf, normalBuf;
 	if( albedoBuffer ) {
-		filter.setImage( "albedo", const_cast<float*>( albedoBuffer ),
-			oidn::Format::Float3, w, h );
+		albedoBuf = device.newBuffer( bufBytes );
+		std::memcpy( albedoBuf.getData(), albedoBuffer, bufBytes );
+		filter.setImage( "albedo", albedoBuf, oidn::Format::Float3, w, h );
 	}
 	if( normalBuffer ) {
-		filter.setImage( "normal", const_cast<float*>( normalBuffer ),
-			oidn::Format::Float3, w, h );
+		normalBuf = device.newBuffer( bufBytes );
+		std::memcpy( normalBuf.getData(), normalBuffer, bufBytes );
+		filter.setImage( "normal", normalBuf, oidn::Format::Float3, w, h );
 	}
 
 	filter.set( "hdr", true );
@@ -112,6 +129,9 @@ void OIDNDenoiser::Denoise(
 	const char* errorMessage;
 	if( device.getError( errorMessage ) != oidn::Error::None ) {
 		GlobalLog()->PrintEx( eLog_Error, "OIDN denoiser error: %s", errorMessage );
+	} else {
+		// Copy denoised result back to caller's buffer
+		std::memcpy( outputBuffer, outputBuf.getData(), bufBytes );
 	}
 }
 
