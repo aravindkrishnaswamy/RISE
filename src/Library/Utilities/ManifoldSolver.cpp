@@ -59,16 +59,6 @@ static std::atomic<unsigned long long> g_noImproveIter0(0);
 static std::atomic<unsigned long long> g_noImproveIter1(0);
 static std::atomic<unsigned long long> g_noImproveIter2plus(0);
 
-// SMS geometric factor diagnostics
-static std::atomic<unsigned long long> g_smsGeomClamped(0);
-static std::atomic<unsigned long long> g_smsGeomTotal(0);
-// Use doubles + mutex for running stats (atomics don't support double add)
-#include <mutex>
-static std::mutex g_geomStatsMutex;
-static double g_smsGeomSum = 0;
-static double g_smsGeomMax = 0;
-static double g_smsDetSum = 0;
-static double g_smsAreaProdSum = 0;
 
 static void LogSMSStats()
 {
@@ -92,19 +82,6 @@ static void LogSMSStats()
 		sk1, sk1>0?100.0*ck1/sk1:0.0, sk2, sk2>0?100.0*ck2/sk2:0.0,
 		g_newtonEarlyOut.load(), g_newtonSingular.load(), g_newtonNoImprove.load(),
 		ni0, ni1, ni2p, g_newtonMaxIter.load() );
-
-	unsigned long long geomN = g_smsGeomTotal.load();
-	unsigned long long geomClamped = g_smsGeomClamped.load();
-	{
-		std::lock_guard<std::mutex> lock( g_geomStatsMutex );
-		double geomAvg = geomN > 0 ? g_smsGeomSum / geomN : 0;
-		double detAvg = geomN > 0 ? g_smsDetSum / geomN : 0;
-		double areaAvg = geomN > 0 ? g_smsAreaProdSum / geomN : 0;
-		fprintf( stderr,
-			"  Geom: n=%llu clamped=%llu(%.1f%%) avg=%.6g max=%.6g jacDetAvg=%.6g chainGeomAvg=%.6g\n",
-			geomN, geomClamped, geomN>0?100.0*geomClamped/geomN:0.0,
-			geomAvg, g_smsGeomMax, detAvg, areaAvg );
-	}
 
 	GlobalLog()->PrintEx( eLog_Info,
 		"SMS Stats: attempts=%llu seed=%llu(%.1f%%) conv=%llu(%.1f%%) vis=%llu(%.1f%%) contrib=%llu(%.1f%%)",
@@ -2117,18 +2094,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	// Clamp to prevent fireflies from near-singular Jacobians
 	const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
-
-	// Track geometric factor statistics (sampled to reduce mutex contention)
-	if( (g_smsContributed.load() & 0xFF) == 0 )
-	{
-		g_smsGeomTotal.fetch_add(1);
-		if( smsGeometric >= config.maxGeometricTerm ) g_smsGeomClamped.fetch_add(1);
-		std::lock_guard<std::mutex> lock( g_geomStatsMutex );
-		g_smsGeomSum += smsGeometric;
-		if( smsGeometric > g_smsGeomMax ) g_smsGeomMax = smsGeometric;
-		g_smsDetSum += mResult.jacobianDet;
-		g_smsAreaProdSum += chainGeom;
-	}
 
 	result.contribution = fBSDF
 		* mResult.contribution
