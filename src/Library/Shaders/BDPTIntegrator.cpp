@@ -6903,11 +6903,36 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		LightSample lightSample;
 		if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) ) continue;
 
-		// Build seed chain using ManifoldSolver's BuildSeedChain
+		// Build seed chain with normal-direction fallback
 		std::vector<ManifoldVertex> seedChain;
 		unsigned int chainLen = pManifoldSolver->BuildSeedChain(
 			eyeVertex.position, lightSample.position,
 			scene, caster, seedChain );
+
+		if( chainLen == 0 || seedChain.empty() )
+		{
+			const Point3 normalTarget = Point3Ops::mkPoint3(
+				eyeVertex.position, eyeVertex.normal * 100.0 );
+			chainLen = pManifoldSolver->BuildSeedChain(
+				eyeVertex.position, normalTarget,
+				scene, caster, seedChain );
+		}
+
+		if( chainLen == 0 || seedChain.empty() )
+		{
+			// Fallback: midpoint direction (for tilted geometry)
+			const Point3 midpoint(
+				(eyeVertex.position.x + lightSample.position.x) * 0.5,
+				(eyeVertex.position.y + lightSample.position.y) * 0.5,
+				(eyeVertex.position.z + lightSample.position.z) * 0.5 );
+			const Point3 midTarget = Point3Ops::mkPoint3(
+				eyeVertex.position,
+				Vector3Ops::Normalize( Vector3Ops::mkVector3(
+					midpoint, eyeVertex.position ) ) * 100.0 );
+			chainLen = pManifoldSolver->BuildSeedChain(
+				eyeVertex.position, midTarget,
+				scene, caster, seedChain );
+		}
 
 		if( chainLen == 0 || seedChain.empty() ) continue;
 
@@ -6948,15 +6973,19 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		Scalar fEye = EvalBSDFAtVertexNM( eyeVertex, wiAtEye, woAtEye, nm );
 		if( fEye <= 0 ) continue;
 
-		// Geometric term: eye vertex to first specular vertex
-		const ManifoldVertex& firstSpec = mResult.specularChain[0];
-		Scalar G_eyeToSpec = BDPTUtilities::GeometricTerm(
-			eyeVertex.position, eyeVertex.normal,
-			firstSpec.position, firstSpec.normal );
+		// SMS geometric factor (Zeltner et al. 2020).
+		//
+		// The path integral for the specular chain includes G terms at
+		// every edge, divided by the constraint Jacobian determinant.
+		// After delta-BSDF cancellation, the surviving geometric terms
+		// are captured by EvaluateChainGeometry.  See the RGB variant
+		// in ManifoldSolver::EvaluateAtShadingPoint for the derivation.
 
-		if( G_eyeToSpec <= 0 ) continue;
+		// Cosine at eye vertex toward first specular vertex
+		const Scalar cosAtEye = fabs( Vector3Ops::Dot( eyeVertex.normal, wiAtEye ) );
+		if( cosAtEye <= 0 ) continue;
 
-		// Geometric term: last specular vertex to emitter
+		// Direction from last specular vertex to light
 		const ManifoldVertex& lastSpec = mResult.specularChain.back();
 		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
 			lastSpec.position, lightSample.position );
@@ -6964,12 +6993,6 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		if( distSpecToLight < 1e-8 ) continue;
 		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
 
-		// For delta-position lights (point/spot), there is no surface
-		// at the light — the geometric coupling has no cosine term.
-		// The emitted radiance must also be re-evaluated for the actual
-		// direction from the light toward the last specular vertex,
-		// since the LightSample's Le was evaluated at a random photon
-		// direction.  Matches ManifoldSolver::EvaluateAtShadingPointNM.
 		Scalar cosAtLight;
 		Scalar Le;
 		if( lightSample.isDelta ) {
@@ -6986,13 +7009,16 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 			Le = ColorMath::Luminance( lightSample.Le );
 		}
 
-		Scalar cosAtLastSpec = fabs( Vector3Ops::Dot( lastSpec.normal, dirSpecToLight ) );
-		Scalar G_specToLight = cosAtLastSpec * cosAtLight / (distSpecToLight * distSpecToLight);
+		// Chain geometry and manifold Jacobian
+		const Scalar chainGeom = pManifoldSolver->EvaluateChainGeometry(
+			eyeVertex.position, lightSample.position, mResult.specularChain );
 
-		if( G_specToLight <= 0 ) continue;
+		Scalar smsGeometric = cosAtLight * chainGeom
+			/ fmax( mResult.jacobianDet, 1e-20 );
+		smsGeometric = fmin( smsGeometric,
+			pManifoldSolver->GetConfig().maxGeometricTerm );
 
 		// Chain throughput: per-wavelength Fresnel evaluation
-		// instead of MaxValue of the RGB contribution.
 		Scalar smsChainContrib = pManifoldSolver->EvaluateChainThroughputNM(
 			eyeVertex.position, lightSample.position,
 			mResult.specularChain, nm );
@@ -7000,7 +7026,7 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		// Full contribution
 		ConnectionResultNM cr;
 		cr.contribution = eyeVertex.throughputNM * fEye
-			* G_eyeToSpec * smsChainContrib * G_specToLight * Le
+			* cosAtEye * smsChainContrib * smsGeometric * Le
 			/ (lightSample.pdfSelect * lightSample.pdfPosition);
 
 		cr.misWeight = 1.0 / mResult.pdf;

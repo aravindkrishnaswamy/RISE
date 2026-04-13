@@ -184,7 +184,18 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 		}
 	}
 
-	// SMS contributions for specular caustic chains
+	// SMS contributions for specular caustic chains.
+	//
+	// SMS results are added directly to the BDPT result without
+	// cross-strategy MIS.  This is correct because the path spaces
+	// are disjoint: BDPT only connects non-delta vertices, while
+	// SMS paths pass exclusively through delta (specular) surfaces.
+	// BDPT cannot generate caustic paths through perfect specular
+	// geometry, so no double-counting occurs.
+	//
+	// If SMS is extended to glossy (non-delta) specular materials,
+	// cross-MIS with BDPT would be required.  See docs/SMS.md for
+	// the full analysis.
 	if( pIntegrator ) {
 		sampler.StartStream( 31 );
 		std::vector<BDPTIntegrator::ConnectionResult> smsResults =
