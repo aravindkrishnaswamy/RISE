@@ -16,6 +16,7 @@
 
 #ifdef WIN32
 
+#include <intrin.h>
 
 namespace RISE
 {
@@ -33,53 +34,45 @@ namespace RISE
 
 	unsigned int HTSupported()
 	{
-		unsigned int Regedx      = 0,
-			         Regeax      = 0,
-			         VendorId[3] = {0, 0, 0};
+		int cpuInfo[4] = {0};
 
 		__try    // Verify cpuid instruction is supported
 		{
-			__asm
-			{
-				xor eax, eax          // call cpuid with eax = 0
-        		cpuid                 // Get vendor id string
-				mov VendorId, ebx
-				mov VendorId + 4, edx
-				mov VendorId + 8, ecx
+			__cpuid(cpuInfo, 0);   // eax=0: get vendor id
 
-				mov eax, 1            // call cpuid with eax = 1
-				cpuid
-				mov Regeax, eax      // eax contains family processor type
-				mov Regedx, edx      // edx has info about the availability of hyper-Threading
+			unsigned int VendorId[3];
+			VendorId[0] = cpuInfo[1];  // ebx
+			VendorId[1] = cpuInfo[3];  // edx
+			VendorId[2] = cpuInfo[2];  // ecx
 
-			}
+			__cpuid(cpuInfo, 1);   // eax=1: get feature info
+
+			unsigned int Regeax = cpuInfo[0];
+			unsigned int Regedx = cpuInfo[3];
+
+			if (((Regeax & FAMILY_ID) ==  PENTIUM4_ID) || (Regeax & EXT_FAMILY_ID))
+				if (VendorId[0] == 'uneG')
+					if (VendorId[1] == 'Ieni')
+						if (VendorId[2] == 'letn')
+							return(Regedx & HT_BIT);    // Genuine Intel with hyper-Threading technology
 		}
 		__except ( EXCEPTION_EXECUTE_HANDLER )
 		{
 			return 0;                   // cpuid is unavailable
 		}
 
-		if (((Regeax & FAMILY_ID) ==  PENTIUM4_ID) || (Regeax & EXT_FAMILY_ID))
-			if (VendorId[0] == 'uneG')
-				if (VendorId[1] == 'Ieni')
-					if (VendorId[2] == 'letn')
-						return(Regedx & HT_BIT);    // Genuine Intel with hyper-Threading technology
 		return 0;    // Not genuine Intel processor
 	}
 
 	unsigned int LogicalProcPerPhysicalProc()
 	{
-		unsigned int Regebx = 0;
 		if( !HTSupported() ) {
 			return 1;  // HT not supported, Logical processor = 1
 		}
 
-		__asm
-		{
-			mov eax, 1
-			cpuid
-			mov Regebx, ebx
-		}
+		int cpuInfo[4] = {0};
+		__cpuid(cpuInfo, 1);
+		unsigned int Regebx = cpuInfo[1];
 
 		return ((Regebx & NUM_LOGICAL_BITS) >> 16);
 	}
@@ -87,17 +80,13 @@ namespace RISE
 
 	unsigned int GetAPIC_ID(void)
 	{
-		unsigned int Regebx = 0;
 		if( !HTSupported() ) {
 			return (unsigned char) -1;  // HT not supported, Logical processor = 1
 		}
 
-		__asm
-		{
-			mov eax, 1
-			cpuid
-			mov Regebx, ebx
-		}
+		int cpuInfo[4] = {0};
+		__cpuid(cpuInfo, 1);
+		unsigned int Regebx = cpuInfo[1];
 
 		return ((Regebx & INITIAL_APIC_ID_BITS) >> 24);
 	}
@@ -136,8 +125,8 @@ namespace RISE
 				}
 
 				HANDLE hCurrentProcessHandle = GetCurrentProcess();
-				DWORD dwProcessAffinity;
-				DWORD dwSystemAffinity;
+				DWORD_PTR dwProcessAffinity;
+				DWORD_PTR dwSystemAffinity;
 				GetProcessAffinityMask( hCurrentProcessHandle, &dwProcessAffinity, &dwSystemAffinity );
 
 				// Check if available process affinity mask is equal to the
@@ -148,7 +137,7 @@ namespace RISE
 					return status;
 				}
 
-				DWORD dwAffinityMask = 1;
+				DWORD_PTR dwAffinityMask = 1;
 				while( dwAffinityMask != 0 && dwAffinityMask <= dwProcessAffinity )
 				{
 					// Check if this CPU is available

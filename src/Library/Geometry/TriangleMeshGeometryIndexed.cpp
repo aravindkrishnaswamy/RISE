@@ -267,10 +267,7 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 					)
 				{
 					GlobalLog()->PrintEasyError( "Bad index on IndexedTriangle, bad things will happen" );
-#ifdef WIN32
-					// break here
-					_asm int 3h;
-#endif
+					__debugbreak();
 				}
 #endif
 

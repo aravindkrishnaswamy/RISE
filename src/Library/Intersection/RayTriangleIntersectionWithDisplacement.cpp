@@ -137,7 +137,7 @@ namespace RISE
 			in!=-1 && out == -1 )
 		{
 			// Something is terribly wrong!
-			_asm int 3h;
+			__debugbreak();
 		}
 
 		// Now we check our bailing case
@@ -150,7 +150,7 @@ namespace RISE
 			// You can't enter and leave the volume on the same element
 			// Well actually you can, but until I add support for checking twice intersected
 			// bilinear patches, lets keep this here
-			_asm int 3h;
+			__debugbreak();
 		}
 
 		// Now we compute i,j,k which is the start co-ordinates and

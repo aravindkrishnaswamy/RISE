@@ -22,8 +22,8 @@
 
 namespace RISE
 {
-	typedef unsigned int RISEHMODULE;
-	typedef int (_stdcall *RISEFPROC)();
+	typedef uintptr_t RISEHMODULE;
+	typedef intptr_t (__stdcall *RISEFPROC)();
 
 	//! Utility load library functions
 	struct Libraries

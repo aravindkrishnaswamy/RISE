@@ -27,7 +27,7 @@ using namespace RISE;
 
 unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
-	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, (DWORD)thread_attributes, 0 );
+	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)), 0 );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)hThread;

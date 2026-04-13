@@ -168,12 +168,12 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	/* Not necessary, should never happen!
 	if( riObjA.geometric.bHit && riObjA.geometric.range2 == RISE_INFINITY ) {
 		riObjA.geometric.range2 = 0;
-		_asm int 3h;
+		__debugbreak();
 	}
 
 	if( riObjB.geometric.bHit && riObjB.geometric.range2 == RISE_INFINITY ) {
 		riObjB.geometric.range2 = 0;
-		_asm int 3h;
+		__debugbreak();
 	}
 	*/
 

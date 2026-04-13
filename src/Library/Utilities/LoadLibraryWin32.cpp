@@ -56,7 +56,7 @@ RISEFPROC Libraries::riseGetProcAddress(
 		return 0;
 	}
 
-	return GetProcAddress( (HMODULE)hmodule, szFunctionname );
+	return reinterpret_cast<RISEFPROC>(GetProcAddress( (HMODULE)hmodule, szFunctionname ));
 }
 
 #endif

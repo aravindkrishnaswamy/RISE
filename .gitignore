@@ -30,3 +30,12 @@ build/VS2022/UpgradeLog.htm
 !src/**/README.md
 !scenes/**/README.md
 !tests/README.md
+/build/VS2005/Library/Debug
+/build/VS2005
+/build/VS2022/RISE-GUI/x64
+*.tlog
+*.log
+/build/VS2022/vcpkg_installed
+/dbin
+/build/VS2022/Library
+/build/VS2022/x64
