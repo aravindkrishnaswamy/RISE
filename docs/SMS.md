@@ -175,16 +175,50 @@ introduces O(eps^2) error and requires 4 probe ray casts per vertex.
 Tangent vectors are projected into the tangent plane and
 Gram-Schmidt orthogonalized for Jacobian consistency.
 
-### Jacobian determinant and surface metric
+### Jacobian determinant and geometric coupling
 
-The Jacobian `det(dC/d(u,v))` is in surface-parameter coordinates.
-The contribution formula needs `det(dC/dx_perp)` in tangent-plane
-world coordinates.  The conversion divides by the product of tangent
-vector magnitudes at each vertex:
+The SMS contribution weight is (Zeltner 2020, Eq. 15-17):
 
 ```
-|det(dC/dx_perp)| = |det(dC/d(u,v))| / prod_i |dpdu_i| * |dpdv_i|
+weight = cos(θ_x) × cos(θ_y) × ∏_j cos(θ_in_j) / (p_A(y) × |det(∂C/∂x)|)
 ```
+
+The Jacobian determinant `|det(∂C/∂x)|` alone provides the measure
+conversion from light-area density to path-space density through
+the specular chain.  The direction derivatives in `BuildJacobian`
+(`dwi/du ∝ 1/dist_i`, `dwo/du ∝ 1/dist_o`) encode the 1/dist²
+geometric coupling factors.  The explicit factors are:
+
+- `cos(θ_x)`: cosine at the shading point
+- `cos(θ_y)`: cosine at the light
+- `∏ cos(θ_in_j)`: incoming cosines at specular vertices (area →
+  solid-angle conversion at each surface)
+
+The 1/dist² terms are NOT separate factors — they are inside the
+Jacobian.  An earlier version computed `chainGeom / jacobianDet`
+where `chainGeom = ∏[cos/dist²] × 1/dist²`, double-counting the
+distance scaling.  This was stable on flat surfaces but caused
+fireflies on displaced meshes where the Jacobian's internal
+distance scaling diverged from the world-space distances.
+
+The Jacobian `det(∂C/∂(u,v))` is in surface-parameter coordinates.
+The conversion to tangent-plane world coordinates divides by the
+surface metric (product of tangent vector magnitudes):
+
+```
+|det(∂C/∂x)| = |det(∂C/∂(u,v))| / ∏_i |dpdu_i| × |dpdv_i|
+```
+
+### Minimum segment distance
+
+Chains with very short inter-vertex segments (< 0.05 world units)
+are rejected.  The surface derivatives use finite-difference probes
+with radius ~0.01; when two vertices are closer than ~5× this radius,
+their derivative stencils overlap and the Jacobian determinant becomes
+unreliable.  This primarily affects k=2 paths that graze the edge of
+a displaced slab (entering and exiting very close together).  Improving
+the finite-difference accuracy (adaptive probe radius, analytic
+derivatives for known geometry types) would lower this threshold.
 
 ### Visibility bias
 

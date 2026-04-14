@@ -723,6 +723,65 @@ void TestTridiag_Verification()
 // Group 8: Chain Geometry & Throughput
 // ============================================================
 
+void TestCosineProduct_EmptyChain()
+{
+	std::cout << "Testing cosine product empty chain..." << std::endl;
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	Scalar cp = solver.EvaluateChainCosineProduct( Point3(0,0,0), Point3(0,1,0), chain );
+	assert( IsClose( cp, 1.0 ) );
+}
+
+void TestCosineProduct_SingleVertex_NormalIncidence()
+{
+	std::cout << "Testing cosine product single vertex normal incidence..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Start directly above vertex, normal = (0,1,0)
+	Point3 start( 0, 2, 0 );
+	Point3 end( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar cp = solver.EvaluateChainCosineProduct( start, end, chain );
+	// Direction from start to vertex = (0,-1,0), cos = |dot((0,1,0),(0,-1,0))| = 1.0
+	assert( IsClose( cp, 1.0 ) );
+}
+
+void TestCosineProduct_SingleVertex_ObliqueIncidence()
+{
+	std::cout << "Testing cosine product single vertex oblique incidence..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Start at 45 degrees
+	Point3 start( 1, 1, 0 );
+	Point3 end( 0, -2, 0 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar cp = solver.EvaluateChainCosineProduct( start, end, chain );
+	// Direction = normalize((0,0,0)-(1,1,0)) = (-1/sqrt2, -1/sqrt2, 0)
+	// cos = |dot((0,1,0),(-1/sqrt2,-1/sqrt2,0))| = 1/sqrt(2) ≈ 0.707
+	assert( IsClose( cp, 1.0 / sqrt(2.0), 1e-6 ) );
+}
+
+void TestCosineProduct_Range()
+{
+	std::cout << "Testing cosine product range [0,1]..." << std::endl;
+	TestableManifoldSolver solver;
+
+	Point3 start( 0.5, 2, 0.3 );
+	Point3 end( -0.3, -2, 0.1 );
+	ManifoldVertex v = MakeVertex( Point3(0,0,0), Vector3(0,1,0), Vector3(1,0,0), Vector3(0,0,1), 1.5, false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	Scalar cp = solver.EvaluateChainCosineProduct( start, end, chain );
+	assert( cp >= 0.0 && cp <= 1.0 );
+}
+
 void TestGeometry_EmptyChain()
 {
 	std::cout << "Testing chain geometry empty chain..." << std::endl;
@@ -1227,6 +1286,12 @@ int main()
 	TestTridiag_SingleBlock();
 	TestTridiag_Singular();
 	TestTridiag_Verification();
+
+	// Group 8a: Chain Cosine Product
+	TestCosineProduct_EmptyChain();
+	TestCosineProduct_SingleVertex_NormalIncidence();
+	TestCosineProduct_SingleVertex_ObliqueIncidence();
+	TestCosineProduct_Range();
 
 	// Group 8: Chain Geometry & Throughput
 	TestGeometry_EmptyChain();

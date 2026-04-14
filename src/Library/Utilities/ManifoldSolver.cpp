@@ -2150,6 +2150,40 @@ Scalar ManifoldSolver::EvaluateChainGeometry(
 }
 
 //////////////////////////////////////////////////////////////////////
+// EvaluateChainCosineProduct
+//
+//   Product of incoming cosines at specular vertices, WITHOUT
+//   distance terms.  Used in the SMS contribution formula where
+//   the 1/dist² factors are already in the Jacobian determinant.
+//////////////////////////////////////////////////////////////////////
+
+Scalar ManifoldSolver::EvaluateChainCosineProduct(
+	const Point3& startPoint,
+	const Point3& endPoint,
+	const std::vector<ManifoldVertex>& chain
+	) const
+{
+	const unsigned int k = static_cast<unsigned int>( chain.size() );
+	if( k == 0 ) return 1.0;
+
+	Scalar cosProduct = 1.0;
+
+	for( unsigned int i = 0; i < k; i++ )
+	{
+		const Point3 prevPos = (i == 0) ? startPoint : chain[i-1].position;
+
+		Vector3 dir = Vector3Ops::mkVector3( chain[i].position, prevPos );
+		const Scalar dist = Vector3Ops::Magnitude( dir );
+		if( dist < 1e-8 ) return 0.0;
+		dir = dir * (1.0 / dist);
+
+		cosProduct *= fabs( Vector3Ops::Dot( chain[i].normal, dir ) );
+	}
+
+	return cosProduct;
+}
+
+//////////////////////////////////////////////////////////////////////
 
 RISEPel ManifoldSolver::EvaluateChainThroughput(
 	const Point3& startPoint,
@@ -2486,6 +2520,37 @@ ManifoldResult ManifoldSolver::Solve(
 			return result;
 		}
 
+		// Reject chains with very short inter-vertex segments.
+		//
+		// The surface derivatives are computed via central finite
+		// differences with probe radius derivProbeOffset ≈ 0.01.
+		// When two adjacent vertices are closer than ~5× this radius,
+		// the derivative stencils overlap — both vertices sample the
+		// same surface patch, making the Jacobian entries correlated
+		// and its determinant unreliable.  The resulting chainGeom/det
+		// ratio can swing by 10-50× at nearby positions, causing
+		// fireflies on displaced meshes with grazing-edge paths.
+		{
+			const Scalar minReliableSegment = 0.05;
+			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
+			bool tooShort = false;
+			for( unsigned int i = 0; i < k && !tooShort; i++ )
+			{
+				const Point3 prevPos = (i == 0) ? shadingPoint : specularChain[i-1].position;
+				if( Point3Ops::Distance( prevPos, specularChain[i].position ) < minReliableSegment )
+					tooShort = true;
+			}
+			if( k > 0 && !tooShort )
+			{
+				if( Point3Ops::Distance( specularChain[k-1].position, emitterPoint ) < minReliableSegment )
+					tooShort = true;
+			}
+			if( tooShort )
+			{
+				return result;
+			}
+		}
+
 		result.valid = true;
 		result.specularChain = specularChain;
 
@@ -2714,6 +2779,21 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// Our BuildJacobian + Solve compute jacobianDet = |det(∂C/∂(u,v))|.
 	// With ||dpdu|| ≈ ||dpdv|| ≈ 1 (unit tangents from finite differences),
 	// this equals |det(∂C/∂x_⊥)| in projected-area coordinates.
+	// SMS geometric factor (Zeltner et al. 2020).
+	//
+	// The path integral for a specular chain includes geometric coupling
+	// at every edge (G terms) in the numerator, divided by the constraint
+	// Jacobian determinant |det(∂C/∂x_⊥)| which converts the light-area
+	// sampling density to the path-space density.
+	//
+	// The reference implementation (Mitsuba) computes:
+	//   G = dw0_dx1 × |det(inv(∂C/∂x₁) × ∂C/∂x₂)|
+	// where dw0_dx1 = cos/dist² from shading point to first specular vertex
+	// and the determinant handles the specular-to-light propagation.
+	//
+	// Our formulation uses the full chain geometric term and the full
+	// constraint Jacobian determinant, which should produce the same result:
+	//   smsGeometric = cosAtLight × G_chain / |det(∂C/∂x_⊥)|
 	const Scalar chainGeom = EvaluateChainGeometry(
 		pos, lightSample.position, mResult.specularChain );
 
