@@ -4802,6 +4802,7 @@ namespace RISE
 #include "Volume/VolumeAccessor_NNB.h"
 #include "Volume/VolumeAccessor_TRI.h"
 #include "Volume/VolumeAccessor_TriCubic.h"
+#include "Volume/VolumeAccessor_Painter.h"
 #include "Utilities/CubicInterpolator.h"
 
 namespace RISE
@@ -4960,6 +4961,67 @@ namespace RISE
 		safe_release( pAccessor );
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "heterogeneous medium with emission" );
+		return true;
+	}
+
+	bool RISE_API_CreatePainterHeterogeneousMedium(
+								IMedium** ppi,
+								const RISEPel& max_sigma_a,
+								const RISEPel& max_sigma_s,
+								const IPhaseFunction& phase,
+								const IPainter& densityPainter,
+								const unsigned int virtualResolution,
+								const char colorToScalar,
+								const Point3& bboxMin,
+								const Point3& bboxMax
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		IVolumeAccessor* pAccessor = new VolumeAccessor_Painter(
+			densityPainter, virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax, colorToScalar );
+
+		(*ppi) = new HeterogeneousMedium(
+			max_sigma_a, max_sigma_s, phase, *pAccessor,
+			virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax );
+		safe_release( pAccessor );
+
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter heterogeneous medium" );
+		return true;
+	}
+
+	bool RISE_API_CreatePainterHeterogeneousMediumWithEmission(
+								IMedium** ppi,
+								const RISEPel& max_sigma_a,
+								const RISEPel& max_sigma_s,
+								const RISEPel& emission,
+								const IPhaseFunction& phase,
+								const IPainter& densityPainter,
+								const unsigned int virtualResolution,
+								const char colorToScalar,
+								const Point3& bboxMin,
+								const Point3& bboxMax
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		IVolumeAccessor* pAccessor = new VolumeAccessor_Painter(
+			densityPainter, virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax, colorToScalar );
+
+		(*ppi) = new HeterogeneousMedium(
+			max_sigma_a, max_sigma_s, emission, phase, *pAccessor,
+			virtualResolution, virtualResolution, virtualResolution,
+			bboxMin, bboxMax );
+		safe_release( pAccessor );
+
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter heterogeneous medium with emission" );
 		return true;
 	}
 }

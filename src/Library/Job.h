@@ -1023,6 +1023,22 @@ namespace RISE
 			const double bboxMax[3]									///< [in] World-space AABB maximum corner
 			);
 
+		//! Adds a heterogeneous participating medium driven by a painter
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddPainterHeterogeneousMedium(
+			const char* name,										///< [in] Name of the medium
+			const double max_sigma_a[3],							///< [in] Max absorption coefficient (linear RGB)
+			const double max_sigma_s[3],							///< [in] Max scattering coefficient (linear RGB)
+			const double emission[3],								///< [in] Volumetric emission (linear RGB)
+			const char* phase_type,									///< [in] Phase function type ("isotropic" or "hg")
+			const double phase_g,									///< [in] Asymmetry factor for HG
+			const char* density_painter,							///< [in] Name of the painter to use for density
+			const unsigned int virtualResolution,					///< [in] Virtual grid resolution per axis
+			const char colorToScalar,								///< [in] Color-to-scalar mode: 'l', 'm', or 'r'
+			const double bboxMin[3],								///< [in] World-space AABB minimum corner
+			const double bboxMax[3]									///< [in] World-space AABB maximum corner
+			);
+
 		//! Sets the scene's global participating medium
 		/// \return TRUE if successful, FALSE otherwise
 		bool SetGlobalMedium(

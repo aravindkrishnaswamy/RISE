@@ -240,12 +240,6 @@ void MainWindow::loadSceneFile(const QString& filePath)
 
     // If a scene is already loaded, ask whether to clear or merge
     if (m_engine->state() != RenderEngine::Idle) {
-        auto result = QMessageBox::question(this, "Scene Already Loaded",
-            "A scene is already loaded. How would you like to proceed?",
-            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
-        // Relabel buttons via the returned value
-        // Yes = Clear & Load, No = Merge, Cancel = Cancel
-        // Use a custom message box for clearer labels
         QMessageBox msgBox(this);
         msgBox.setWindowTitle("Scene Already Loaded");
         msgBox.setText("A scene is already loaded. How would you like to proceed?");

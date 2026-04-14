@@ -3944,6 +3944,90 @@ namespace RISE
 			};
 
 
+			struct PainterHeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					double max_sigma_a[3] = {0};
+					double max_sigma_s[3] = {0};
+					double emission[3] = {0};
+					String phase_type = "isotropic";
+					double phase_g = 0.0;
+					String density_painter = "none";
+					unsigned int resolution = 64;
+					char color_to_scalar = 'l';
+					double bbox_min[3] = {0};
+					double bbox_max[3] = {0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "absorption" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_a[0], &max_sigma_a[1], &max_sigma_a[2] );
+						} else if( pname == "scattering" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_s[0], &max_sigma_s[1], &max_sigma_s[2] );
+						} else if( pname == "emission" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &emission[0], &emission[1], &emission[2] );
+						} else if( pname == "phase" ) {
+							String ptype;
+							String pval;
+							if( string_split( pvalue, ptype, pval, ' ' ) ) {
+								phase_type = ptype;
+								phase_g = pval.toDouble();
+							} else {
+								phase_type = pvalue;
+							}
+						} else if( pname == "density_painter" ) {
+							density_painter = pvalue;
+						} else if( pname == "resolution" ) {
+							resolution = pvalue.toUInt();
+						} else if( pname == "color_to_scalar" ) {
+							if( pvalue == "luminance" ) {
+								color_to_scalar = 'l';
+							} else if( pvalue == "max" ) {
+								color_to_scalar = 'm';
+							} else if( pvalue == "red" ) {
+								color_to_scalar = 'r';
+							} else {
+								GlobalLog()->PrintEx( eLog_Error, "PainterHeterogeneousMedium:: Unknown color_to_scalar `%s`, using luminance", pvalue.c_str() );
+								color_to_scalar = 'l';
+							}
+						} else if( pname == "bbox_min" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_min[0], &bbox_min[1], &bbox_min[2] );
+						} else if( pname == "bbox_max" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_max[0], &bbox_max[1], &bbox_max[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					if( density_painter == "none" ) {
+						GlobalLog()->PrintEasyError( "PainterHeterogeneousMedium:: density_painter is required" );
+						return false;
+					}
+
+					if( resolution == 0 ) {
+						GlobalLog()->PrintEasyError( "PainterHeterogeneousMedium:: resolution must be > 0" );
+						return false;
+					}
+
+					return pJob.AddPainterHeterogeneousMedium( name.c_str(),
+						max_sigma_a, max_sigma_s, emission, phase_type.c_str(), phase_g,
+						density_painter.c_str(), resolution, color_to_scalar,
+						bbox_min, bbox_max );
+				}
+			};
+
+
 			//////////////////////////////////////////
 			// Objects
 			//////////////////////////////////////////
@@ -7345,6 +7429,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 
 	chunks["homogeneous_medium"] = new HomogeneousMediumAsciiChunkParser();
 	chunks["heterogeneous_medium"] = new HeterogeneousMediumAsciiChunkParser();
+	chunks["painter_heterogeneous_medium"] = new PainterHeterogeneousMediumAsciiChunkParser();
 
 	chunks["standard_object"] = new StandardObjectAsciiChunkParser();
 	chunks["csg_object"] = new CSGObjectAsciiChunkParser();

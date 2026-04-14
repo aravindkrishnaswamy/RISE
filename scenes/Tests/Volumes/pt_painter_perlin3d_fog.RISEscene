@@ -1,0 +1,347 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           pt_painter_perlin3d_fog.RISEscene                                                       #
+#   Description:    Painter-driven heterogeneous medium test.  A Perlin3D noise painter                     #
+#                   drives the density field of a heterogeneous medium in a Cornell box.                     #
+#                   Reference spheres at different depths reveal density variation.                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 12, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer -- Unidirectional Path Tracing
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_painter_perlin3d_fog
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera -- inside the Cornell box
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -280
+	lookat				278 273 280
+	up					0 1 0
+	width				256
+	height				256
+	fov					65.0
+}
+
+##################################################
+# Density painter -- Perlin3D noise
+#
+# Scale controls the "zoom" of the noise pattern.
+# Larger values = smaller, more frequent features.
+# We want features roughly 100-150 units wide in a
+# 556-unit box, so scale ~ 0.008.
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_dense
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_sparse
+	color				0.0 0.0 0.0
+}
+
+perlin3d_painter
+{
+	name				pnt_density
+	persistence			0.65
+	octaves				4
+	colora				pnt_dense
+	colorb				pnt_sparse
+	scale				0.02 0.02 0.02
+	shift				0 0 0
+}
+
+##################################################
+# Painter-driven heterogeneous medium
+#
+# Strong scattering makes the fog clearly visible.
+# The bbox covers the full Cornell box interior.
+##################################################
+
+painter_heterogeneous_medium
+{
+	name			perlin_fog
+	absorption		0.004 0.004 0.004
+	scattering		0.035 0.035 0.035
+	phase			isotropic
+	density_painter	pnt_density
+	resolution		64
+	color_to_scalar	luminance
+	bbox_min		80 0 100
+	bbox_max		476 400 500
+}
+
+> set global_medium perlin_fog
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.9
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+uniformcolor_painter
+{
+	name				pnt_yellow
+	color				0.8 0.7 0.1
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.1 0.15 0.7
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				yellow
+	reflectance			pnt_yellow
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			pnt_blue
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				120.0
+	material			none
+}
+
+##################################################
+# Cornell box geometry
+##################################################
+
+# Floor
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 556
+	ptd					556 0 556
+}
+
+# Ceiling
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0 548 0
+	ptb					556 548 0
+	ptc					556 548 556
+	ptd					0 548 556
+}
+
+# Back wall
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 556
+	ptb					0 548 556
+	ptc					556 548 556
+	ptd					556 0 556
+}
+
+# Left wall (red)
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 0
+	ptb					0 548 0
+	ptc					0 548 556
+	ptd					0 0 556
+}
+
+# Right wall (green)
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 556
+	ptb					556 548 556
+	ptc					556 548 0
+	ptd					556 0 0
+}
+
+# Ceiling light (larger for more illumination through fog)
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					400 547.99 180
+	ptb					400 547.99 376
+	ptc					156 547.99 376
+	ptd					156 547.99 180
+}
+
+##################################################
+# Reference geometry -- spheres at different depths
+##################################################
+
+sphere_geometry
+{
+	name				sphere_near_geom
+	radius				55.0
+}
+
+sphere_geometry
+{
+	name				sphere_mid_geom
+	radius				55.0
+}
+
+sphere_geometry
+{
+	name				sphere_far_geom
+	radius				55.0
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}
+
+# Near sphere -- should be clearly visible
+standard_object
+{
+	name				sphere_near
+	geometry			sphere_near_geom
+	material			yellow
+	position			140 60 100
+}
+
+# Mid sphere -- partially obscured by fog
+standard_object
+{
+	name				sphere_mid
+	geometry			sphere_mid_geom
+	material			white
+	position			278 60 260
+}
+
+# Far sphere -- heavily obscured by fog
+standard_object
+{
+	name				sphere_far
+	geometry			sphere_far_geom
+	material			blue
+	position			416 60 420
+}

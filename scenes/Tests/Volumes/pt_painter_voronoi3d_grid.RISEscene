@@ -1,0 +1,607 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           pt_painter_voronoi3d_grid.RISEscene                                                     #
+#   Description:    3x3 grid of colored Voronoi3D fog volumes showing parameter variation.                  #
+#                                                                                                           #
+#                   Row 1 (bottom): Vary GENERATOR COUNT -- 3 / 6 / 12                                     #
+#                   Row 2 (middle): Vary BORDER SIZE     -- 2 / 15 / 35                                    #
+#                   Row 3 (top):    Vary DENSITY CONTRAST -- uniform / alternating / full range             #
+#                                                                                                           #
+#                   Each column has a different fog color (warm / neutral / cool).                           #
+#                   White spheres inside each volume serve as depth references.                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 13, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_painter_voronoi3d_grid
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera -- front view, same as Perlin grid
+##################################################
+
+pinhole_camera
+{
+	location			0 210 -500
+	lookat				0 210 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					50.0
+}
+
+##################################################
+# Cell density painters
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_full
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_high
+	color		0.8 0.8 0.8
+}
+
+uniformcolor_painter
+{
+	name		pnt_med
+	color		0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name		pnt_low
+	color		0.2 0.2 0.2
+}
+
+uniformcolor_painter
+{
+	name		pnt_empty
+	color		0.02 0.02 0.02
+}
+
+uniformcolor_painter
+{
+	name		pnt_white
+	color		1.0 1.0 1.0
+}
+
+##################################################
+# Row 1 (bottom, y=60): Vary GENERATOR COUNT
+# Same border=10, mixed densities
+##################################################
+
+# 3 generators -- large cells
+voronoi3d_painter
+{
+	name		pnt_r1c1
+	border		pnt_empty
+	bordersize	10.0
+	gen			-180 30 -20 pnt_full
+	gen			-140 90 30 pnt_med
+	gen			-120 60 -40 pnt_high
+}
+
+# 6 generators -- medium cells
+voronoi3d_painter
+{
+	name		pnt_r1c2
+	border		pnt_empty
+	bordersize	10.0
+	gen			-30 20 -30 pnt_full
+	gen			30 100 -10 pnt_med
+	gen			-20 60 30 pnt_high
+	gen			20 30 10 pnt_full
+	gen			-40 80 -20 pnt_low
+	gen			40 50 20 pnt_high
+}
+
+# 12 generators -- many small cells
+voronoi3d_painter
+{
+	name		pnt_r1c3
+	border		pnt_empty
+	bordersize	10.0
+	gen			110 15 -40 pnt_full
+	gen			170 15 -40 pnt_med
+	gen			140 15 0 pnt_high
+	gen			110 55 -40 pnt_low
+	gen			170 55 -40 pnt_full
+	gen			140 55 0 pnt_med
+	gen			110 95 -40 pnt_high
+	gen			170 95 -40 pnt_full
+	gen			140 95 0 pnt_low
+	gen			120 35 30 pnt_med
+	gen			160 35 30 pnt_high
+	gen			140 75 30 pnt_full
+}
+
+##################################################
+# Row 2 (middle, y=210): Vary BORDER SIZE
+# 6 generators, mixed densities
+##################################################
+
+# bordersize=2 (nearly invisible borders)
+voronoi3d_painter
+{
+	name		pnt_r2c1
+	border		pnt_empty
+	bordersize	2.0
+	gen			-180 180 -20 pnt_full
+	gen			-120 240 10 pnt_low
+	gen			-170 210 30 pnt_high
+	gen			-130 185 -10 pnt_full
+	gen			-160 245 20 pnt_med
+	gen			-110 210 0 pnt_high
+}
+
+# bordersize=15 (visible borders)
+voronoi3d_painter
+{
+	name		pnt_r2c2
+	border		pnt_empty
+	bordersize	15.0
+	gen			-30 180 -20 pnt_full
+	gen			30 240 10 pnt_low
+	gen			-20 210 30 pnt_high
+	gen			20 185 -10 pnt_full
+	gen			-10 245 20 pnt_med
+	gen			40 210 0 pnt_high
+}
+
+# bordersize=35 (very thick borders)
+voronoi3d_painter
+{
+	name		pnt_r2c3
+	border		pnt_empty
+	bordersize	35.0
+	gen			120 180 -20 pnt_full
+	gen			180 240 10 pnt_low
+	gen			130 210 30 pnt_high
+	gen			170 185 -10 pnt_full
+	gen			140 245 20 pnt_med
+	gen			190 210 0 pnt_high
+}
+
+##################################################
+# Row 3 (top, y=360): Vary DENSITY CONTRAST
+# 6 generators, bordersize=10
+##################################################
+
+# All uniform density (0.5)
+voronoi3d_painter
+{
+	name		pnt_r3c1
+	border		pnt_low
+	bordersize	10.0
+	gen			-180 330 -20 pnt_med
+	gen			-120 390 10 pnt_med
+	gen			-170 360 30 pnt_med
+	gen			-130 335 -10 pnt_med
+	gen			-160 395 20 pnt_med
+	gen			-110 355 0 pnt_med
+}
+
+# Alternating high/low
+voronoi3d_painter
+{
+	name		pnt_r3c2
+	border		pnt_low
+	bordersize	10.0
+	gen			-30 330 -20 pnt_full
+	gen			30 390 10 pnt_empty
+	gen			-20 360 30 pnt_full
+	gen			20 335 -10 pnt_empty
+	gen			-10 395 20 pnt_full
+	gen			40 355 0 pnt_empty
+}
+
+# Full range (empty to full)
+voronoi3d_painter
+{
+	name		pnt_r3c3
+	border		pnt_low
+	bordersize	10.0
+	gen			120 330 -20 pnt_full
+	gen			180 390 10 pnt_empty
+	gen			130 360 30 pnt_high
+	gen			170 335 -10 pnt_low
+	gen			140 395 20 pnt_full
+	gen			190 355 0 pnt_med
+}
+
+##################################################
+# 9 Media -- colored columns like Perlin grid
+# Col1: warm (orange), Col2: neutral, Col3: cool (cyan)
+##################################################
+
+# Row 1 (y=60): Vary GENERATOR COUNT
+painter_heterogeneous_medium
+{
+	name		med_r1c1
+	absorption	0.005 0.008 0.012
+	scattering	0.065 0.05 0.035
+	phase		isotropic
+	density_painter	pnt_r1c1
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	-210 0 -60
+	bbox_max	-90 120 60
+}
+
+painter_heterogeneous_medium
+{
+	name		med_r1c2
+	absorption	0.008 0.008 0.008
+	scattering	0.06 0.06 0.06
+	phase		isotropic
+	density_painter	pnt_r1c2
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	-60 0 -60
+	bbox_max	60 120 60
+}
+
+painter_heterogeneous_medium
+{
+	name		med_r1c3
+	absorption	0.012 0.008 0.005
+	scattering	0.035 0.05 0.065
+	phase		isotropic
+	density_painter	pnt_r1c3
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	90 0 -60
+	bbox_max	210 120 60
+}
+
+# Row 2 (y=210): Vary BORDER SIZE
+painter_heterogeneous_medium
+{
+	name		med_r2c1
+	absorption	0.005 0.008 0.012
+	scattering	0.065 0.05 0.035
+	phase		isotropic
+	density_painter	pnt_r2c1
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	-210 150 -60
+	bbox_max	-90 270 60
+}
+
+painter_heterogeneous_medium
+{
+	name		med_r2c2
+	absorption	0.008 0.008 0.008
+	scattering	0.06 0.06 0.06
+	phase		isotropic
+	density_painter	pnt_r2c2
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	-60 150 -60
+	bbox_max	60 270 60
+}
+
+painter_heterogeneous_medium
+{
+	name		med_r2c3
+	absorption	0.012 0.008 0.005
+	scattering	0.035 0.05 0.065
+	phase		isotropic
+	density_painter	pnt_r2c3
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	90 150 -60
+	bbox_max	210 270 60
+}
+
+# Row 3 (y=360): Vary DENSITY CONTRAST
+painter_heterogeneous_medium
+{
+	name		med_r3c1
+	absorption	0.005 0.008 0.012
+	scattering	0.065 0.05 0.035
+	phase		isotropic
+	density_painter	pnt_r3c1
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	-210 300 -60
+	bbox_max	-90 420 60
+}
+
+painter_heterogeneous_medium
+{
+	name		med_r3c2
+	absorption	0.008 0.008 0.008
+	scattering	0.06 0.06 0.06
+	phase		isotropic
+	density_painter	pnt_r3c2
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	-60 300 -60
+	bbox_max	60 420 60
+}
+
+painter_heterogeneous_medium
+{
+	name		med_r3c3
+	absorption	0.012 0.008 0.005
+	scattering	0.035 0.05 0.065
+	phase		isotropic
+	density_painter	pnt_r3c3
+	resolution	48
+	color_to_scalar	luminance
+	bbox_min	90 300 -60
+	bbox_max	210 420 60
+}
+
+##################################################
+# Materials
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_light
+	color		1.0 0.95 0.9
+}
+
+uniformcolor_painter
+{
+	name		pnt_sphere
+	color		0.9 0.9 0.9
+}
+
+perfectrefractor_material
+{
+	name		air
+	refractance	pnt_white
+	ior			1.0002
+}
+
+lambertian_material
+{
+	name		sphere_mat
+	reflectance	pnt_sphere
+}
+
+lambertian_luminaire_material
+{
+	name		light_mat
+	exitance	pnt_light
+	scale		55.0
+	material	none
+}
+
+##################################################
+# Geometry
+##################################################
+
+box_geometry
+{
+	name		boxgeom
+	width		120
+	height		120
+	depth		120
+}
+
+sphere_geometry
+{
+	name		spheregeom
+	radius		20.0
+}
+
+# Backlight behind volumes, facing -Z toward camera
+clippedplane_geometry
+{
+	name		lightgeom
+	pta			300 0 120
+	ptb			-300 0 120
+	ptc			-300 450 120
+	ptd			300 450 120
+}
+
+##################################################
+# Volume boxes (9)
+##################################################
+
+# Row 1 (y=60)
+standard_object
+{
+	name		vol_r1c1
+	geometry	boxgeom
+	material	air
+	position	-150 60 0
+	interior_medium	med_r1c1
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name		vol_r1c2
+	geometry	boxgeom
+	material	air
+	position	0 60 0
+	interior_medium	med_r1c2
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name		vol_r1c3
+	geometry	boxgeom
+	material	air
+	position	150 60 0
+	interior_medium	med_r1c3
+	casts_shadows	FALSE
+}
+
+# Row 2 (y=210)
+standard_object
+{
+	name		vol_r2c1
+	geometry	boxgeom
+	material	air
+	position	-150 210 0
+	interior_medium	med_r2c1
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name		vol_r2c2
+	geometry	boxgeom
+	material	air
+	position	0 210 0
+	interior_medium	med_r2c2
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name		vol_r2c3
+	geometry	boxgeom
+	material	air
+	position	150 210 0
+	interior_medium	med_r2c3
+	casts_shadows	FALSE
+}
+
+# Row 3 (y=360)
+standard_object
+{
+	name		vol_r3c1
+	geometry	boxgeom
+	material	air
+	position	-150 360 0
+	interior_medium	med_r3c1
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name		vol_r3c2
+	geometry	boxgeom
+	material	air
+	position	0 360 0
+	interior_medium	med_r3c2
+	casts_shadows	FALSE
+}
+
+standard_object
+{
+	name		vol_r3c3
+	geometry	boxgeom
+	material	air
+	position	150 360 0
+	interior_medium	med_r3c3
+	casts_shadows	FALSE
+}
+
+##################################################
+# Reference spheres
+##################################################
+
+standard_object
+{
+	name		sph_r1c1
+	geometry	spheregeom
+	material	sphere_mat
+	position	-150 60 -10
+}
+
+standard_object
+{
+	name		sph_r1c2
+	geometry	spheregeom
+	material	sphere_mat
+	position	0 60 -10
+}
+
+standard_object
+{
+	name		sph_r1c3
+	geometry	spheregeom
+	material	sphere_mat
+	position	150 60 -10
+}
+
+standard_object
+{
+	name		sph_r2c1
+	geometry	spheregeom
+	material	sphere_mat
+	position	-150 210 -10
+}
+
+standard_object
+{
+	name		sph_r2c2
+	geometry	spheregeom
+	material	sphere_mat
+	position	0 210 -10
+}
+
+standard_object
+{
+	name		sph_r2c3
+	geometry	spheregeom
+	material	sphere_mat
+	position	150 210 -10
+}
+
+standard_object
+{
+	name		sph_r3c1
+	geometry	spheregeom
+	material	sphere_mat
+	position	-150 360 -10
+}
+
+standard_object
+{
+	name		sph_r3c2
+	geometry	spheregeom
+	material	sphere_mat
+	position	0 360 -10
+}
+
+standard_object
+{
+	name		sph_r3c3
+	geometry	spheregeom
+	material	sphere_mat
+	position	150 360 -10
+}
+
+# Light
+standard_object
+{
+	name		light
+	geometry	lightgeom
+	material	light_mat
+}

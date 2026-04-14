@@ -3296,6 +3296,75 @@ bool Job::AddHeterogeneousMedium(
 	return true;
 }
 
+bool Job::AddPainterHeterogeneousMedium(
+	const char* name,
+	const double max_sigma_a[3],
+	const double max_sigma_s[3],
+	const double emission[3],
+	const char* phase_type,
+	const double phase_g,
+	const char* density_painter,
+	const unsigned int virtualResolution,
+	const char colorToScalar,
+	const double bboxMin[3],
+	const double bboxMax[3]
+	)
+{
+	// Look up the painter
+	IPainter* pPainter = pPntManager->GetItem( density_painter );
+	if( !pPainter ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddPainterHeterogeneousMedium:: Painter not found `%s`", density_painter );
+		return false;
+	}
+
+	// Create the phase function
+	IPhaseFunction* pPhase = 0;
+
+	if( strcmp( phase_type, "isotropic" ) == 0 ) {
+		RISE_API_CreateIsotropicPhaseFunction( &pPhase );
+	} else if( strcmp( phase_type, "hg" ) == 0 ) {
+		RISE_API_CreateHenyeyGreensteinPhaseFunction( &pPhase, phase_g );
+	} else {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddPainterHeterogeneousMedium:: Unknown phase function type `%s`", phase_type );
+		return false;
+	}
+
+	// Create the medium (with or without emission)
+	IMedium* pMedium = 0;
+	const RISEPel emissionPel( emission[0], emission[1], emission[2] );
+
+	if( ColorMath::MaxValue( emissionPel ) > 0 ) {
+		RISE_API_CreatePainterHeterogeneousMediumWithEmission( &pMedium,
+			RISEPel( max_sigma_a[0], max_sigma_a[1], max_sigma_a[2] ),
+			RISEPel( max_sigma_s[0], max_sigma_s[1], max_sigma_s[2] ),
+			emissionPel, *pPhase,
+			*pPainter, virtualResolution, colorToScalar,
+			Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+			Point3( bboxMax[0], bboxMax[1], bboxMax[2] ) );
+	} else {
+		RISE_API_CreatePainterHeterogeneousMedium( &pMedium,
+			RISEPel( max_sigma_a[0], max_sigma_a[1], max_sigma_a[2] ),
+			RISEPel( max_sigma_s[0], max_sigma_s[1], max_sigma_s[2] ),
+			*pPhase,
+			*pPainter, virtualResolution, colorToScalar,
+			Point3( bboxMin[0], bboxMin[1], bboxMin[2] ),
+			Point3( bboxMax[0], bboxMax[1], bboxMax[2] ) );
+	}
+
+	safe_release( pPhase );
+
+	// Store in our map
+	MediumMap::iterator existing = mediaMap.find( name );
+	if( existing != mediaMap.end() ) {
+		safe_release( existing->second );
+		existing->second = pMedium;
+	} else {
+		mediaMap[name] = pMedium;
+	}
+
+	return true;
+}
+
 bool Job::SetGlobalMedium(
 	const char* name										///< [in] Name of a previously added medium
 	)

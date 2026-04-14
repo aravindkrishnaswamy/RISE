@@ -2291,6 +2291,38 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								);
 
 
+	//! Creates a heterogeneous participating medium driven by a painter
+	/// The painter is evaluated at world-space points to produce density
+	/// values.  A virtual resolution controls the majorant grid granularity.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePainterHeterogeneousMedium(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const IPainter& densityPainter,		///< [in] Painter to evaluate for density
+								const unsigned int virtualResolution,///< [in] Virtual grid resolution per axis
+								const char colorToScalar,			///< [in] Color-to-scalar mode: 'l', 'm', or 'r'
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+	//! Creates a heterogeneous participating medium driven by a painter, with emission
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePainterHeterogeneousMediumWithEmission(
+								IMedium** ppi,						///< [out] Pointer to recieve the medium
+								const RISEPel& max_sigma_a,			///< [in] Max absorption coefficient
+								const RISEPel& max_sigma_s,		///< [in] Max scattering coefficient
+								const RISEPel& emission,			///< [in] Volumetric emission
+								const IPhaseFunction& phase,		///< [in] Phase function for scattering
+								const IPainter& densityPainter,		///< [in] Painter to evaluate for density
+								const unsigned int virtualResolution,///< [in] Virtual grid resolution per axis
+								const char colorToScalar,			///< [in] Color-to-scalar mode: 'l', 'm', or 'r'
+								const Point3& bboxMin,				///< [in] World-space AABB minimum corner
+								const Point3& bboxMax				///< [in] World-space AABB maximum corner
+								);
+
+
 	//////////////////////////////////////////////////////////
 	// Virtual measurement devices
 	//////////////////////////////////////////////////////////
