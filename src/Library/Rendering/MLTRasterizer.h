@@ -275,6 +275,16 @@ namespace RISE
 
 			/// Thread procedure for parallel round-based chain execution
 			static void* RoundThread_ThreadProc( void* lpParameter );
+
+		protected:
+			// Dispatch helpers mirroring the pattern used by other
+			// rasterizers.  File-based outputs write pattern.ext via the
+			// first two and pattern_denoised.ext via the third; non-file
+			// outputs observe a single OutputImage call with the denoised
+			// final (preserving pre-change behavior).
+			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 		};
 	}
 }

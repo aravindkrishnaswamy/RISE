@@ -820,14 +820,21 @@ void MLTRasterizer::RasterizeScene(
 		{
 #ifdef RISE_ENABLE_OIDN
 			if( bDenoisingEnabled ) {
+				// pImage is already the fully splatted image at this
+				// point (see pSplatFilm->Resolve above), so this is the
+				// pre-denoised-but-splatted snapshot the user wants to
+				// compare against the denoised result.
+				FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
 				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
-			}
+
+				FlushDenoisedToOutputs( *pImage, 0, 0 );
+			} else
 #endif
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputImage( *pImage, 0, 0 );
+			{
+				FlushToOutputs( *pImage, 0, 0 );
 			}
 		}
 
@@ -852,4 +859,28 @@ void MLTRasterizer::RasterizeScene(
 	}
 
 	safe_release( pSplatFilm );
+}
+
+void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	RasterizerOutputListType::const_iterator r, s;
+	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+		(*r)->OutputImage( img, rcRegion, frame );
+	}
+}
+
+void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	RasterizerOutputListType::const_iterator r, s;
+	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
+	}
+}
+
+void MLTRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	RasterizerOutputListType::const_iterator r, s;
+	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+		(*r)->OutputDenoisedImage( img, rcRegion, frame );
+	}
 }

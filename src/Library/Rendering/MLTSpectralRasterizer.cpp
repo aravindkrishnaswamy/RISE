@@ -791,14 +791,19 @@ void MLTSpectralRasterizer::RasterizeScene(
 		{
 #ifdef RISE_ENABLE_OIDN
 			if( bDenoisingEnabled ) {
+				// Pre-denoised but fully splatted image goes to file
+				// outputs under the normal filename first.
+				FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
 				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
-			}
+
+				FlushDenoisedToOutputs( *pImage, 0, 0 );
+			} else
 #endif
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputImage( *pImage, 0, 0 );
+			{
+				FlushToOutputs( *pImage, 0, 0 );
 			}
 		}
 

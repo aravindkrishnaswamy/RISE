@@ -867,6 +867,29 @@ void BDPTRasterizerBase::RasterizeScene(
 	RISE_PROFILE_REPORT(GlobalLog());
 
 #ifdef RISE_ENABLE_OIDN
+	const bool bWillDenoise = ( pAOVBuffers && bDenoisingEnabled );
+#else
+	const bool bWillDenoise = false;
+#endif
+
+	if( bWillDenoise ) {
+		// Build the pre-denoised (but fully splatted) image on a scratch
+		// buffer so we can write it out before denoising mutates pImage.
+		// pImage currently holds only the non-splat accumulations; copy
+		// it and then resolve splats onto the copy.
+		IRasterImage* pPreDenoised = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		GlobalLog()->PrintNew( pPreDenoised, __FILE__, __LINE__, "pre-denoised image" );
+		for( unsigned int y = 0; y < height; y++ ) {
+			for( unsigned int x = 0; x < width; x++ ) {
+				pPreDenoised->SetPEL( x, y, pImage->GetPEL( x, y ) );
+			}
+		}
+		pSplatFilm->Resolve( *pPreDenoised, GetEffectiveSplatSPP( width, height ) );
+		FlushPreDenoisedToOutputs( *pPreDenoised, pRect, 0 );
+		safe_release( pPreDenoised );
+	}
+
+#ifdef RISE_ENABLE_OIDN
 	// Denoise the non-splat image BEFORE resolving the splat film.
 	//
 	// OIDN documentation: "Weighted pixel sampling (sometimes called
@@ -881,7 +904,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	//
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
-	if( pAOVBuffers && bDenoisingEnabled ) {
+	if( bWillDenoise ) {
 		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
 	}
 #endif
@@ -919,8 +942,15 @@ void BDPTRasterizerBase::RasterizeScene(
 		safe_release( blocks );
 	}
 
-	// Final output
-	FlushToOutputs( *pImage, pRect, 0 );
+	// Final output.  When OIDN denoised, route the denoised image through
+	// the denoised-flush path so file outputs pick up the "_denoised"
+	// filename suffix; non-file outputs forward to OutputImage and still
+	// observe the denoised final.
+	if( bWillDenoise ) {
+		FlushDenoisedToOutputs( *pImage, pRect, 0 );
+	} else {
+		FlushToOutputs( *pImage, pRect, 0 );
+	}
 
 	safe_release( pImage );
 	safe_release( pSplatFilm );

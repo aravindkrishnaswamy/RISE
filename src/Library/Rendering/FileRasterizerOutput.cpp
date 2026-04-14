@@ -90,7 +90,7 @@ inline unsigned int VoidPtrToUInt( const void* v )
 	return (unsigned int)*((unsigned int*)(&v));
 }
 
-void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const unsigned int frame, const char* szSuffix )
 {
 	IRasterImageWriter*		pWriter = 0;
 
@@ -98,13 +98,13 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 	char	buf[MAX_BUFFER_SIZE];
 
 	if( bMultiple ) {
-		snprintf( buf, MAX_BUFFER_SIZE, "%s%.4d.%s", szPattern, frame, extensions[type] );
+		snprintf( buf, MAX_BUFFER_SIZE, "%s%s%.4d.%s", szPattern, szSuffix, frame, extensions[type] );
 	} else {
-		snprintf( buf, MAX_BUFFER_SIZE, "%s.%s", szPattern, extensions[type] );
+		snprintf( buf, MAX_BUFFER_SIZE, "%s%s.%s", szPattern, szSuffix, extensions[type] );
 	}
 
 	DiskFileWriteBuffer*		mb = new DiskFileWriteBuffer( buf );
-	
+
 	if( !mb->ReadyToWrite() ) {
 		// Some tragic error happened trying to open the required file for writing
 		// Note the error and write the results to a temp file so that the user doesn't
@@ -114,9 +114,9 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 
 		const FileRasterizerOutput* pMe = this;
 		if( bMultiple ) {
-			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d_%.4d.%s", VoidPtrToUInt((void*)pMe), frame, extensions[type] );
+			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d%s_%.4d.%s", VoidPtrToUInt((void*)pMe), szSuffix, frame, extensions[type] );
 		} else {
-			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d.%s", VoidPtrToUInt((void*)pMe), extensions[type] );
+			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d%s.%s", VoidPtrToUInt((void*)pMe), szSuffix, extensions[type] );
 		}
 
 		mb = new DiskFileWriteBuffer( buf );
@@ -166,4 +166,19 @@ void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* 
 
 	GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
 	safe_release( pWriter );
+}
+
+void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+{
+	WriteImageToFile( pImage, frame, "" );
+}
+
+void FileRasterizerOutput::OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+{
+	WriteImageToFile( pImage, frame, "" );
+}
+
+void FileRasterizerOutput::OutputDenoisedImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+{
+	WriteImageToFile( pImage, frame, "_denoised" );
 }

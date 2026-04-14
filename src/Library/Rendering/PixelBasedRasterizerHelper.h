@@ -187,6 +187,18 @@ namespace RISE
 			// Our own functions
 			virtual void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 
+			// Dispatch the pre-denoised splatted image to rasterizer outputs.
+			// File outputs write to the normal filename; non-file outputs
+			// no-op (they will receive the denoised final via
+			// FlushDenoisedToOutputs).
+			virtual void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+
+			// Dispatch the denoised final image to rasterizer outputs.  File
+			// outputs write with a "_denoised" filename suffix; non-file
+			// outputs forward to OutputImage so they still observe the
+			// denoised final (existing behavior).
+			virtual void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+
 			/// Reuses the normal block dispatcher for internal passes such as
 			/// path-guiding training, so derived rasterizers can run those
 			/// passes multithreaded without duplicating dispatch logic.

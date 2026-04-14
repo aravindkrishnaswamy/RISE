@@ -40,6 +40,33 @@ namespace RISE
 			const Rect* pRegion,						///< [in] Rasterized region, if its NULL then the entire image should be output
 			const unsigned int frame					///< [in] The frame we are outputting
 			) = 0;
+
+		//! Pre-denoised (but fully splatted) image, emitted by rasterizers
+		//! only when OIDN denoising is enabled.  File-based outputs should
+		//! write this using the normal filename; other outputs default to a
+		//! no-op so they only observe the denoised final via OutputImage.
+		virtual void OutputPreDenoisedImage(
+			const IRasterImage& /*pImage*/,
+			const Rect* /*pRegion*/,
+			const unsigned int /*frame*/
+			)
+		{
+		}
+
+		//! Denoised final image, emitted by rasterizers only when OIDN
+		//! denoising is enabled.  File-based outputs should write this with
+		//! "_denoised" appended to the filename stem.  The default
+		//! implementation forwards to OutputImage so non-file outputs
+		//! continue to observe the denoised final (preserving existing
+		//! window/store/callback behavior).
+		virtual void OutputDenoisedImage(
+			const IRasterImage& pImage,
+			const Rect* pRegion,
+			const unsigned int frame
+			)
+		{
+			OutputImage( pImage, pRegion, frame );
+		}
 	};
 }
 

@@ -27,7 +27,7 @@ bdpt_pel_rasterizer
 {
 	max_eye_depth		8
 	max_light_depth		8
-	samples				16
+	samples				32
 	sms_enabled			FALSE
 }
 
@@ -45,12 +45,12 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 5.5 11.0
-	lookat				0 1.5 4.0
+	location			0 6.5 11.0
+	lookat				0 1.0 4.0
 	up					0 1 0
-	width				800
+	width				600
 	height				600
-	fov					50.0
+	fov					60.0
 }
 
 ##################################################

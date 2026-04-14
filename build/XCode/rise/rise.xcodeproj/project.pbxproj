@@ -1432,6 +1432,66 @@
 		F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */; };
 		F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */; };
 		F2D9B0CD2F8A8DEC0077A171 /* PathTransportUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */; };
+		F2D9B0E22F8E96280077A171 /* Gabor3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0D22F8E96280077A171 /* Gabor3DPainter.h */; };
+		F2D9B0E32F8E96280077A171 /* DomainWarp3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0D02F8E96280077A171 /* DomainWarp3DPainter.h */; };
+		F2D9B0E42F8E96280077A171 /* PerlinWorley3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0D42F8E96280077A171 /* PerlinWorley3DPainter.h */; };
+		F2D9B0E52F8E96280077A171 /* CurlNoise3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CE2F8E96280077A171 /* CurlNoise3DPainter.h */; };
+		F2D9B0E62F8E96280077A171 /* Wavelet3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0DE2F8E96280077A171 /* Wavelet3DPainter.h */; };
+		F2D9B0E72F8E96280077A171 /* SDF3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0D82F8E96280077A171 /* SDF3DPainter.h */; };
+		F2D9B0E82F8E96280077A171 /* Simplex3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0DA2F8E96280077A171 /* Simplex3DPainter.h */; };
+		F2D9B0E92F8E96280077A171 /* Worley3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0E02F8E96280077A171 /* Worley3DPainter.h */; };
+		F2D9B0EA2F8E96280077A171 /* ReactionDiffusion3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0D62F8E96280077A171 /* ReactionDiffusion3DPainter.h */; };
+		F2D9B0EB2F8E96280077A171 /* Turbulence3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0DC2F8E96280077A171 /* Turbulence3DPainter.h */; };
+		F2D9B0EC2F8E96280077A171 /* CurlNoise3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0CF2F8E96280077A171 /* CurlNoise3DPainter.cpp */; };
+		F2D9B0ED2F8E96280077A171 /* Worley3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0E12F8E96280077A171 /* Worley3DPainter.cpp */; };
+		F2D9B0EE2F8E96280077A171 /* Wavelet3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DF2F8E96280077A171 /* Wavelet3DPainter.cpp */; };
+		F2D9B0EF2F8E96280077A171 /* PerlinWorley3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D52F8E96280077A171 /* PerlinWorley3DPainter.cpp */; };
+		F2D9B0F02F8E96280077A171 /* DomainWarp3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D12F8E96280077A171 /* DomainWarp3DPainter.cpp */; };
+		F2D9B0F12F8E96280077A171 /* Simplex3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DB2F8E96280077A171 /* Simplex3DPainter.cpp */; };
+		F2D9B0F22F8E96280077A171 /* Turbulence3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DD2F8E96280077A171 /* Turbulence3DPainter.cpp */; };
+		F2D9B0F32F8E96280077A171 /* SDF3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D92F8E96280077A171 /* SDF3DPainter.cpp */; };
+		F2D9B0F42F8E96280077A171 /* Gabor3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D32F8E96280077A171 /* Gabor3DPainter.cpp */; };
+		F2D9B0F52F8E96280077A171 /* ReactionDiffusion3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D72F8E96280077A171 /* ReactionDiffusion3DPainter.cpp */; };
+		F2D9B0F62F8E96280077A171 /* CurlNoise3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0CF2F8E96280077A171 /* CurlNoise3DPainter.cpp */; };
+		F2D9B0F72F8E96280077A171 /* Worley3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0E12F8E96280077A171 /* Worley3DPainter.cpp */; };
+		F2D9B0F82F8E96280077A171 /* Wavelet3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DF2F8E96280077A171 /* Wavelet3DPainter.cpp */; };
+		F2D9B0F92F8E96280077A171 /* PerlinWorley3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D52F8E96280077A171 /* PerlinWorley3DPainter.cpp */; };
+		F2D9B0FA2F8E96280077A171 /* DomainWarp3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D12F8E96280077A171 /* DomainWarp3DPainter.cpp */; };
+		F2D9B0FB2F8E96280077A171 /* Simplex3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DB2F8E96280077A171 /* Simplex3DPainter.cpp */; };
+		F2D9B0FC2F8E96280077A171 /* Turbulence3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0DD2F8E96280077A171 /* Turbulence3DPainter.cpp */; };
+		F2D9B0FD2F8E96280077A171 /* SDF3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D92F8E96280077A171 /* SDF3DPainter.cpp */; };
+		F2D9B0FE2F8E96280077A171 /* Gabor3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D32F8E96280077A171 /* Gabor3DPainter.cpp */; };
+		F2D9B0FF2F8E96280077A171 /* ReactionDiffusion3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0D72F8E96280077A171 /* ReactionDiffusion3DPainter.cpp */; };
+		F2D9B1142F8E96770077A171 /* ReactionDiffusion3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1092F8E96770077A171 /* ReactionDiffusion3D.cpp */; };
+		F2D9B1152F8E96770077A171 /* PerlinWorleyNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1072F8E96770077A171 /* PerlinWorleyNoise3D.cpp */; };
+		F2D9B1162F8E96770077A171 /* GaborNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1052F8E96770077A171 /* GaborNoise3D.cpp */; };
+		F2D9B1172F8E96770077A171 /* CurlNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1012F8E96770077A171 /* CurlNoise3D.cpp */; };
+		F2D9B1182F8E96770077A171 /* DomainWarpNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1032F8E96770077A171 /* DomainWarpNoise3D.cpp */; };
+		F2D9B1192F8E96770077A171 /* SDFPrimitives3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10B2F8E96770077A171 /* SDFPrimitives3D.cpp */; };
+		F2D9B11A2F8E96770077A171 /* TurbulenceNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10F2F8E96770077A171 /* TurbulenceNoise3D.cpp */; };
+		F2D9B11B2F8E96770077A171 /* SimplexNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10D2F8E96770077A171 /* SimplexNoise3D.cpp */; };
+		F2D9B11C2F8E96770077A171 /* WaveletNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1112F8E96770077A171 /* WaveletNoise3D.cpp */; };
+		F2D9B11D2F8E96770077A171 /* WorleyNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1132F8E96770077A171 /* WorleyNoise3D.cpp */; };
+		F2D9B11E2F8E96770077A171 /* ReactionDiffusion3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1092F8E96770077A171 /* ReactionDiffusion3D.cpp */; };
+		F2D9B11F2F8E96770077A171 /* PerlinWorleyNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1072F8E96770077A171 /* PerlinWorleyNoise3D.cpp */; };
+		F2D9B1202F8E96770077A171 /* GaborNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1052F8E96770077A171 /* GaborNoise3D.cpp */; };
+		F2D9B1212F8E96770077A171 /* CurlNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1012F8E96770077A171 /* CurlNoise3D.cpp */; };
+		F2D9B1222F8E96770077A171 /* DomainWarpNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1032F8E96770077A171 /* DomainWarpNoise3D.cpp */; };
+		F2D9B1232F8E96770077A171 /* SDFPrimitives3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10B2F8E96770077A171 /* SDFPrimitives3D.cpp */; };
+		F2D9B1242F8E96770077A171 /* TurbulenceNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10F2F8E96770077A171 /* TurbulenceNoise3D.cpp */; };
+		F2D9B1252F8E96770077A171 /* SimplexNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B10D2F8E96770077A171 /* SimplexNoise3D.cpp */; };
+		F2D9B1262F8E96770077A171 /* WaveletNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1112F8E96770077A171 /* WaveletNoise3D.cpp */; };
+		F2D9B1272F8E96770077A171 /* WorleyNoise3D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1132F8E96770077A171 /* WorleyNoise3D.cpp */; };
+		F2D9B1282F8E96770077A171 /* ReactionDiffusion.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1082F8E96770077A171 /* ReactionDiffusion.h */; };
+		F2D9B1292F8E96770077A171 /* PerlinWorleyNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1062F8E96770077A171 /* PerlinWorleyNoise.h */; };
+		F2D9B12A2F8E96770077A171 /* CurlNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1002F8E96770077A171 /* CurlNoise.h */; };
+		F2D9B12B2F8E96770077A171 /* SDFPrimitives.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B10A2F8E96770077A171 /* SDFPrimitives.h */; };
+		F2D9B12C2F8E96770077A171 /* TurbulenceNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B10E2F8E96770077A171 /* TurbulenceNoise.h */; };
+		F2D9B12D2F8E96770077A171 /* DomainWarpNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1022F8E96770077A171 /* DomainWarpNoise.h */; };
+		F2D9B12E2F8E96770077A171 /* SimplexNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B10C2F8E96770077A171 /* SimplexNoise.h */; };
+		F2D9B12F2F8E96770077A171 /* WaveletNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1102F8E96770077A171 /* WaveletNoise.h */; };
+		F2D9B1302F8E96770077A171 /* WorleyNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1122F8E96770077A171 /* WorleyNoise.h */; };
+		F2D9B1312F8E96770077A171 /* GaborNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1042F8E96770077A171 /* GaborNoise.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2194,6 +2254,46 @@
 		F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTUtilities.h; sourceTree = "<group>"; };
 		F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTransportUtilities.h; sourceTree = "<group>"; };
 		F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathVertexEval.h; sourceTree = "<group>"; };
+		F2D9B0CE2F8E96280077A171 /* CurlNoise3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CurlNoise3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0CF2F8E96280077A171 /* CurlNoise3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CurlNoise3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0D02F8E96280077A171 /* DomainWarp3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DomainWarp3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0D12F8E96280077A171 /* DomainWarp3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DomainWarp3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0D22F8E96280077A171 /* Gabor3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Gabor3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0D32F8E96280077A171 /* Gabor3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Gabor3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0D42F8E96280077A171 /* PerlinWorley3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PerlinWorley3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0D52F8E96280077A171 /* PerlinWorley3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PerlinWorley3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0D62F8E96280077A171 /* ReactionDiffusion3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ReactionDiffusion3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0D72F8E96280077A171 /* ReactionDiffusion3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ReactionDiffusion3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0D82F8E96280077A171 /* SDF3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SDF3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0D92F8E96280077A171 /* SDF3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SDF3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0DA2F8E96280077A171 /* Simplex3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Simplex3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0DB2F8E96280077A171 /* Simplex3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Simplex3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0DC2F8E96280077A171 /* Turbulence3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Turbulence3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0DD2F8E96280077A171 /* Turbulence3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Turbulence3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0DE2F8E96280077A171 /* Wavelet3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Wavelet3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0DF2F8E96280077A171 /* Wavelet3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Wavelet3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B0E02F8E96280077A171 /* Worley3DPainter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Worley3DPainter.h; sourceTree = "<group>"; };
+		F2D9B0E12F8E96280077A171 /* Worley3DPainter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Worley3DPainter.cpp; sourceTree = "<group>"; };
+		F2D9B1002F8E96770077A171 /* CurlNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CurlNoise.h; sourceTree = "<group>"; };
+		F2D9B1012F8E96770077A171 /* CurlNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CurlNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1022F8E96770077A171 /* DomainWarpNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DomainWarpNoise.h; sourceTree = "<group>"; };
+		F2D9B1032F8E96770077A171 /* DomainWarpNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DomainWarpNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1042F8E96770077A171 /* GaborNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GaborNoise.h; sourceTree = "<group>"; };
+		F2D9B1052F8E96770077A171 /* GaborNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GaborNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1062F8E96770077A171 /* PerlinWorleyNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PerlinWorleyNoise.h; sourceTree = "<group>"; };
+		F2D9B1072F8E96770077A171 /* PerlinWorleyNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PerlinWorleyNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1082F8E96770077A171 /* ReactionDiffusion.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ReactionDiffusion.h; sourceTree = "<group>"; };
+		F2D9B1092F8E96770077A171 /* ReactionDiffusion3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ReactionDiffusion3D.cpp; sourceTree = "<group>"; };
+		F2D9B10A2F8E96770077A171 /* SDFPrimitives.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SDFPrimitives.h; sourceTree = "<group>"; };
+		F2D9B10B2F8E96770077A171 /* SDFPrimitives3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SDFPrimitives3D.cpp; sourceTree = "<group>"; };
+		F2D9B10C2F8E96770077A171 /* SimplexNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SimplexNoise.h; sourceTree = "<group>"; };
+		F2D9B10D2F8E96770077A171 /* SimplexNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SimplexNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B10E2F8E96770077A171 /* TurbulenceNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TurbulenceNoise.h; sourceTree = "<group>"; };
+		F2D9B10F2F8E96770077A171 /* TurbulenceNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = TurbulenceNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1102F8E96770077A171 /* WaveletNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WaveletNoise.h; sourceTree = "<group>"; };
+		F2D9B1112F8E96770077A171 /* WaveletNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WaveletNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1122F8E96770077A171 /* WorleyNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorleyNoise.h; sourceTree = "<group>"; };
+		F2D9B1132F8E96770077A171 /* WorleyNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WorleyNoise3D.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2748,6 +2848,26 @@
 		F27F0920069C42900069C9E5 /* Noise */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B1002F8E96770077A171 /* CurlNoise.h */,
+				F2D9B1012F8E96770077A171 /* CurlNoise3D.cpp */,
+				F2D9B1022F8E96770077A171 /* DomainWarpNoise.h */,
+				F2D9B1032F8E96770077A171 /* DomainWarpNoise3D.cpp */,
+				F2D9B1042F8E96770077A171 /* GaborNoise.h */,
+				F2D9B1052F8E96770077A171 /* GaborNoise3D.cpp */,
+				F2D9B1062F8E96770077A171 /* PerlinWorleyNoise.h */,
+				F2D9B1072F8E96770077A171 /* PerlinWorleyNoise3D.cpp */,
+				F2D9B1082F8E96770077A171 /* ReactionDiffusion.h */,
+				F2D9B1092F8E96770077A171 /* ReactionDiffusion3D.cpp */,
+				F2D9B10A2F8E96770077A171 /* SDFPrimitives.h */,
+				F2D9B10B2F8E96770077A171 /* SDFPrimitives3D.cpp */,
+				F2D9B10C2F8E96770077A171 /* SimplexNoise.h */,
+				F2D9B10D2F8E96770077A171 /* SimplexNoise3D.cpp */,
+				F2D9B10E2F8E96770077A171 /* TurbulenceNoise.h */,
+				F2D9B10F2F8E96770077A171 /* TurbulenceNoise3D.cpp */,
+				F2D9B1102F8E96770077A171 /* WaveletNoise.h */,
+				F2D9B1112F8E96770077A171 /* WaveletNoise3D.cpp */,
+				F2D9B1122F8E96770077A171 /* WorleyNoise.h */,
+				F2D9B1132F8E96770077A171 /* WorleyNoise3D.cpp */,
 				F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */,
 				F27F0922069C42900069C9E5 /* InterpolatedNoise.h */,
 				F27F0923069C42900069C9E5 /* Noise.h */,
@@ -2775,6 +2895,26 @@
 		F27F0933069C42900069C9E5 /* Painters */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B0CE2F8E96280077A171 /* CurlNoise3DPainter.h */,
+				F2D9B0CF2F8E96280077A171 /* CurlNoise3DPainter.cpp */,
+				F2D9B0D02F8E96280077A171 /* DomainWarp3DPainter.h */,
+				F2D9B0D12F8E96280077A171 /* DomainWarp3DPainter.cpp */,
+				F2D9B0D22F8E96280077A171 /* Gabor3DPainter.h */,
+				F2D9B0D32F8E96280077A171 /* Gabor3DPainter.cpp */,
+				F2D9B0D42F8E96280077A171 /* PerlinWorley3DPainter.h */,
+				F2D9B0D52F8E96280077A171 /* PerlinWorley3DPainter.cpp */,
+				F2D9B0D62F8E96280077A171 /* ReactionDiffusion3DPainter.h */,
+				F2D9B0D72F8E96280077A171 /* ReactionDiffusion3DPainter.cpp */,
+				F2D9B0D82F8E96280077A171 /* SDF3DPainter.h */,
+				F2D9B0D92F8E96280077A171 /* SDF3DPainter.cpp */,
+				F2D9B0DA2F8E96280077A171 /* Simplex3DPainter.h */,
+				F2D9B0DB2F8E96280077A171 /* Simplex3DPainter.cpp */,
+				F2D9B0DC2F8E96280077A171 /* Turbulence3DPainter.h */,
+				F2D9B0DD2F8E96280077A171 /* Turbulence3DPainter.cpp */,
+				F2D9B0DE2F8E96280077A171 /* Wavelet3DPainter.h */,
+				F2D9B0DF2F8E96280077A171 /* Wavelet3DPainter.cpp */,
+				F2D9B0E02F8E96280077A171 /* Worley3DPainter.h */,
+				F2D9B0E12F8E96280077A171 /* Worley3DPainter.cpp */,
 				F27F0934069C42900069C9E5 /* BlackBodyPainter.cpp */,
 				F27F0935069C42900069C9E5 /* BlackBodyPainter.h */,
 				F27F0936069C42900069C9E5 /* BlendPainter.h */,
@@ -3293,6 +3433,16 @@
 				F27F0A9D069C42910069C9E5 /* CylindricalUVGenerator.h in Headers */,
 				F27F0A9F069C42910069C9E5 /* EllipsoidGeometry.h in Headers */,
 				F27F0AA1069C42910069C9E5 /* Geometry.h in Headers */,
+				F2D9B0E22F8E96280077A171 /* Gabor3DPainter.h in Headers */,
+				F2D9B0E32F8E96280077A171 /* DomainWarp3DPainter.h in Headers */,
+				F2D9B0E42F8E96280077A171 /* PerlinWorley3DPainter.h in Headers */,
+				F2D9B0E52F8E96280077A171 /* CurlNoise3DPainter.h in Headers */,
+				F2D9B0E62F8E96280077A171 /* Wavelet3DPainter.h in Headers */,
+				F2D9B0E72F8E96280077A171 /* SDF3DPainter.h in Headers */,
+				F2D9B0E82F8E96280077A171 /* Simplex3DPainter.h in Headers */,
+				F2D9B0E92F8E96280077A171 /* Worley3DPainter.h in Headers */,
+				F2D9B0EA2F8E96280077A171 /* ReactionDiffusion3DPainter.h in Headers */,
+				F2D9B0EB2F8E96280077A171 /* Turbulence3DPainter.h in Headers */,
 				F27F0AA3069C42910069C9E5 /* GeometryUtilities.h in Headers */,
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
@@ -3576,6 +3726,16 @@
 				F27F0C11069C42910069C9E5 /* RISE_API.h in Headers */,
 				F27F0C12069C42910069C9E5 /* BoxPixelFilter.h in Headers */,
 				F27F0C13069C42910069C9E5 /* CatmullRomPixelFilter.h in Headers */,
+				F2D9B1282F8E96770077A171 /* ReactionDiffusion.h in Headers */,
+				F2D9B1292F8E96770077A171 /* PerlinWorleyNoise.h in Headers */,
+				F2D9B12A2F8E96770077A171 /* CurlNoise.h in Headers */,
+				F2D9B12B2F8E96770077A171 /* SDFPrimitives.h in Headers */,
+				F2D9B12C2F8E96770077A171 /* TurbulenceNoise.h in Headers */,
+				F2D9B12D2F8E96770077A171 /* DomainWarpNoise.h in Headers */,
+				F2D9B12E2F8E96770077A171 /* SimplexNoise.h in Headers */,
+				F2D9B12F2F8E96770077A171 /* WaveletNoise.h in Headers */,
+				F2D9B1302F8E96770077A171 /* WorleyNoise.h in Headers */,
+				F2D9B1312F8E96770077A171 /* GaborNoise.h in Headers */,
 				F27F0C14069C42910069C9E5 /* CookPixelFilter.h in Headers */,
 				F27F0C15069C42910069C9E5 /* CubicBSplinePixelFilter.h in Headers */,
 				F24C543A2F7B30B3009AF16D /* EnvironmentSampler.h in Headers */,
@@ -4029,6 +4189,16 @@
 				F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */,
 				F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
 				F27F0C66069C42910069C9E5 /* GeometricUtilities.cpp in Sources */,
+				F2D9B0EC2F8E96280077A171 /* CurlNoise3DPainter.cpp in Sources */,
+				F2D9B0ED2F8E96280077A171 /* Worley3DPainter.cpp in Sources */,
+				F2D9B0EE2F8E96280077A171 /* Wavelet3DPainter.cpp in Sources */,
+				F2D9B0EF2F8E96280077A171 /* PerlinWorley3DPainter.cpp in Sources */,
+				F2D9B0F02F8E96280077A171 /* DomainWarp3DPainter.cpp in Sources */,
+				F2D9B0F12F8E96280077A171 /* Simplex3DPainter.cpp in Sources */,
+				F2D9B0F22F8E96280077A171 /* Turbulence3DPainter.cpp in Sources */,
+				F2D9B0F32F8E96280077A171 /* SDF3DPainter.cpp in Sources */,
+				F2D9B0F42F8E96280077A171 /* Gabor3DPainter.cpp in Sources */,
+				F2D9B0F52F8E96280077A171 /* ReactionDiffusion3DPainter.cpp in Sources */,
 				F27F0C6C069C42910069C9E5 /* Log.cpp in Sources */,
 				F27F0C6F069C42910069C9E5 /* MemoryTracker.cpp in Sources */,
 				F27F0C71069C42910069C9E5 /* StreamPrinter.cpp in Sources */,
@@ -4054,6 +4224,16 @@
 				F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F277343207ECCC2F00C0B600 /* DetectorSphere.cpp in Sources */,
 				F277343407ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp in Sources */,
+				F2D9B11E2F8E96770077A171 /* ReactionDiffusion3D.cpp in Sources */,
+				F2D9B11F2F8E96770077A171 /* PerlinWorleyNoise3D.cpp in Sources */,
+				F2D9B1202F8E96770077A171 /* GaborNoise3D.cpp in Sources */,
+				F2D9B1212F8E96770077A171 /* CurlNoise3D.cpp in Sources */,
+				F2D9B1222F8E96770077A171 /* DomainWarpNoise3D.cpp in Sources */,
+				F2D9B1232F8E96770077A171 /* SDFPrimitives3D.cpp in Sources */,
+				F2D9B1242F8E96770077A171 /* TurbulenceNoise3D.cpp in Sources */,
+				F2D9B1252F8E96770077A171 /* SimplexNoise3D.cpp in Sources */,
+				F2D9B1262F8E96770077A171 /* WaveletNoise3D.cpp in Sources */,
+				F2D9B1272F8E96770077A171 /* WorleyNoise3D.cpp in Sources */,
 				F277345407ECCEDC00C0B600 /* DataDrivenBSDF.cpp in Sources */,
 				F277345707ECCEDC00C0B600 /* TranslucentBSDF.cpp in Sources */,
 				F2C5D5F22F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp in Sources */,
@@ -4294,6 +4474,16 @@
 				F24B72A12F52A632008304C4 /* RayQuadricIntersection.cpp in Sources */,
 				F24B72A22F52A632008304C4 /* RaySphereIntersection.cpp in Sources */,
 				F24B72A32F52A632008304C4 /* RayTorusIntersection.cpp in Sources */,
+				F2D9B0F62F8E96280077A171 /* CurlNoise3DPainter.cpp in Sources */,
+				F2D9B0F72F8E96280077A171 /* Worley3DPainter.cpp in Sources */,
+				F2D9B0F82F8E96280077A171 /* Wavelet3DPainter.cpp in Sources */,
+				F2D9B0F92F8E96280077A171 /* PerlinWorley3DPainter.cpp in Sources */,
+				F2D9B0FA2F8E96280077A171 /* DomainWarp3DPainter.cpp in Sources */,
+				F2D9B0FB2F8E96280077A171 /* Simplex3DPainter.cpp in Sources */,
+				F2D9B0FC2F8E96280077A171 /* Turbulence3DPainter.cpp in Sources */,
+				F2D9B0FD2F8E96280077A171 /* SDF3DPainter.cpp in Sources */,
+				F2D9B0FE2F8E96280077A171 /* Gabor3DPainter.cpp in Sources */,
+				F2D9B0FF2F8E96280077A171 /* ReactionDiffusion3DPainter.cpp in Sources */,
 				F24B72A42F52A632008304C4 /* RayTriangleIntersection.cpp in Sources */,
 				F24B72A52F52A632008304C4 /* Job.cpp in Sources */,
 				F24B72A62F52A632008304C4 /* Job.h in Sources */,
@@ -4709,6 +4899,16 @@
 				F24B74242F52A632008304C4 /* MemoryTracker.h in Sources */,
 				F24B74252F52A632008304C4 /* StreamPrinter.cpp in Sources */,
 				F24B74262F52A632008304C4 /* StreamPrinter.h in Sources */,
+				F2D9B1142F8E96770077A171 /* ReactionDiffusion3D.cpp in Sources */,
+				F2D9B1152F8E96770077A171 /* PerlinWorleyNoise3D.cpp in Sources */,
+				F2D9B1162F8E96770077A171 /* GaborNoise3D.cpp in Sources */,
+				F2D9B1172F8E96770077A171 /* CurlNoise3D.cpp in Sources */,
+				F2D9B1182F8E96770077A171 /* DomainWarpNoise3D.cpp in Sources */,
+				F2D9B1192F8E96770077A171 /* SDFPrimitives3D.cpp in Sources */,
+				F2D9B11A2F8E96770077A171 /* TurbulenceNoise3D.cpp in Sources */,
+				F2D9B11B2F8E96770077A171 /* SimplexNoise3D.cpp in Sources */,
+				F2D9B11C2F8E96770077A171 /* WaveletNoise3D.cpp in Sources */,
+				F2D9B11D2F8E96770077A171 /* WorleyNoise3D.cpp in Sources */,
 				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				F24B74272F52A632008304C4 /* Constants.h in Sources */,

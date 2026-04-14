@@ -595,23 +595,39 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
+	if( blocks ) {
+		safe_release( blocks );
+		blocks = 0;
+	}
+
 #ifdef RISE_ENABLE_OIDN
-	if( bDenoisingEnabled && pAOVBuffers ) {
+	const bool bWillDenoise = ( bDenoisingEnabled && pAOVBuffers );
+#else
+	const bool bWillDenoise = false;
+#endif
+
+	if( bWillDenoise ) {
+		// Write the pre-denoised (but fully splatted) image to file-based
+		// outputs under the normal filename.  Non-file outputs no-op and
+		// wait for the denoised final via FlushDenoisedToOutputs.
+		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
+
+#ifdef RISE_ENABLE_OIDN
 		if( !pAOVBuffers->HasData() ) {
 			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers );
 		}
 		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
 		delete pAOVBuffers;
 		pAOVBuffers = 0;
-	}
 #endif
 
-	if( blocks ) {
-		safe_release( blocks );
-		blocks = 0;
+		// File outputs write the denoised image with a "_denoised" suffix;
+		// non-file outputs forward to OutputImage so they still see the
+		// denoised final (matching pre-change behavior).
+		FlushDenoisedToOutputs( *pImage, pRect, 0 );
+	} else {
+		FlushToOutputs( *pImage, pRect, 0 );
 	}
-
-	FlushToOutputs( *pImage, pRect, 0 );
 
 	// Post-render hook (e.g. path guiding cleanup)
 	PostRenderCleanup();
@@ -864,6 +880,22 @@ void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const 
 	RasterizerOutputListType::const_iterator	r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputImage( img, rcRegion, frame );
+	}
+}
+
+void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	RasterizerOutputListType::const_iterator	r, s;
+	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
+	}
+}
+
+void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
+{
+	RasterizerOutputListType::const_iterator	r, s;
+	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+		(*r)->OutputDenoisedImage( img, rcRegion, frame );
 	}
 }
 

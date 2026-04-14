@@ -47,8 +47,18 @@ namespace RISE
 
 			virtual ~FileRasterizerOutput( );
 
+			//! Shared writer used by OutputImage / OutputPreDenoisedImage /
+			//! OutputDenoisedImage.  szSuffix is inserted into the filename
+			//! stem ("" for the normal file, "_denoised" for the denoised
+			//! variant).
+			void WriteImageToFile(
+				const IRasterImage& pImage,
+				const unsigned int frame,
+				const char* szSuffix
+				);
+
 		public:
-			FileRasterizerOutput( 
+			FileRasterizerOutput(
 				const char* szPattern_,
 				const bool bMultiple_,
 				const FRO_TYPE type_,
@@ -58,6 +68,8 @@ namespace RISE
 
 			virtual void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion );
 			virtual void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
+			virtual void	OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
+			virtual void	OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
 		};
 	}
 }
