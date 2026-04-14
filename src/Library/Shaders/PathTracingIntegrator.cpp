@@ -453,7 +453,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	unsigned int transmissionBounces,
 	unsigned int translucentBounces,
 	unsigned int volumeBounces,
-	Scalar glossyFilterWidth
+	Scalar glossyFilterWidth,
+	bool smsPassedThroughSpecular_initial,
+	bool smsHadNonSpecularShading_initial
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -475,8 +477,11 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	// already accounts for those paths.  Without the non-specular
 	// check, paths like camera->glass->light would be incorrectly
 	// suppressed even though no SMS evaluation covered them.
-	bool bPassedThroughSpecular = false;
-	bool bHadNonSpecularShading = false;
+	// Initialize from caller so recursive CastRay calls (from the
+	// branching code path when dielectric SPFs produce multiple scattered
+	// rays) carry the suppression state from the parent call.
+	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
+	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
 
 	const LightSampler* pLS = caster.GetLightSampler();
 
@@ -1061,8 +1066,15 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				break;
 			}
 
-			if( bBranch )
+			if( bBranch && !(pSolver && bHadNonSpecularShading && scattered.Count() > 1 && scattered[0].isDelta) )
 			{
+				// Standard branching: spawn recursive CastRay for each
+				// scattered ray.  Disabled for delta multi-ray scattering
+				// (e.g., dielectric refraction + reflection) when SMS is
+				// active and a prior non-specular shading point exists,
+				// because the recursive CastRay goes through the shader
+				// system which has no SMS emission suppression — causing
+				// double-counting between SMS and PT delta-chain paths.
 				for( unsigned int i = 0; i < scattered.Count(); i++ )
 				{
 					ScatteredRay& scat = scattered[i];
@@ -1080,6 +1092,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						rs2.transmissionBounces = transmissionBounces;
 						rs2.translucentBounces = translucentBounces;
 						rs2.glossyFilterWidth = glossyFilterWidth;
+						rs2.smsPassedThroughSpecular = scat.isDelta ? true : false;
+						rs2.smsHadNonSpecularShading = bHadNonSpecularShading;
 						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
 							continue;
 						}
@@ -1102,42 +1116,56 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			}
 			else if( scattered.Count() > 1 )
 			{
-				for( unsigned int i = 0; i < scattered.Count(); i++ )
-				{
-					ScatteredRay& scat = scattered[i];
-					const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
-					if( scatmaxv > 0 )
-					{
-						IRayCaster::RAY_STATE rs2;
-						rs2.depth = depth + 1;
-						rs2.importance = importance * scatmaxv;
-						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-						rs2.type = PathTracingRayType( scat );
-						rs2.considerEmission = true;
-						rs2.diffuseBounces = diffuseBounces;
-						rs2.glossyBounces = glossyBounces;
-						rs2.transmissionBounces = transmissionBounces;
-						rs2.translucentBounces = translucentBounces;
-						rs2.glossyFilterWidth = glossyFilterWidth;
-						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-							continue;
-						}
-
-						RISEPel cthis( 0, 0, 0 );
-						Ray ray = scat.ray;
-						ray.Advance( 1e-8 );
-						caster.CastRay( rc, rast, ray, cthis, rs2, 0,
-							pRadianceMap,
-							scat.ior_stack ? *scat.ior_stack : iorStack );
-
-						RISEPel indirect = scat.kray * cthis;
-						if( depth > 0 ) {
-							indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
-						}
-						result = result + throughput * indirect;
-					}
+				// Multiple scattered rays (e.g., dielectric producing both
+				// refracted and reflected).  Randomly select one and continue
+				// iteratively rather than branching via CastRay.  This keeps
+				// the path inside IntegrateFromHit so SMS emission suppression
+				// flags are properly tracked.  CastRay would dispatch to the
+				// scene's shader-op chain which has no SMS suppression logic.
+				const Scalar xi = sampler.Get1D();
+				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
+				if( !pS ) {
+					break;
 				}
-				break;
+
+				IRayCaster::RAY_STATE rs2 = rs;
+				rs2.depth = depth + 1;
+				rs2.importance = importance * ColorMath::MaxValue( pS->kray );
+				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
+				rs2.type = PathTracingRayType( *pS );
+				rs2.considerEmission = true;
+				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
+					break;
+				}
+
+				throughput = throughput * pS->kray;
+				importance = rs2.importance;
+				bsdfPdf = rs2.bsdfPdf;
+				bsdfTimesCos = RISEPel( 0, 0, 0 );
+				considerEmission = true;
+				rayType = rs2.type;
+				diffuseBounces = rs2.diffuseBounces;
+				glossyBounces = rs2.glossyBounces;
+				transmissionBounces = rs2.transmissionBounces;
+				translucentBounces = rs2.translucentBounces;
+				glossyFilterWidth = rs2.glossyFilterWidth;
+
+				// Track specular transitions for SMS double-counting prevention
+				if( pS->isDelta ) {
+					bPassedThroughSpecular = true;
+				} else {
+					bPassedThroughSpecular = false;
+					bHadNonSpecularShading = true;
+				}
+
+				currentRay = pS->ray;
+				currentRay.Advance( 1e-8 );
+
+				if( pS->ior_stack ) {
+					iorStack = *pS->ior_stack;
+				}
+
+				continue;
 			}
 			else
 			{
@@ -1768,7 +1796,8 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				sampler, pRadianceMap, 1, iorStack, phasePdf,
 				RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayDiffuse,
-				0, 0, 0, 0, 1, 0 );
+				0, 0, 0, 0, 1, 0,
+				false, false );
 
 			return result + volThroughput * hitResult;
 		}
@@ -1789,7 +1818,8 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				sampler, pRadianceMap, 0, iorStack,
 				0, RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayView,
-				0, 0, 0, 0, 0, 0 );
+				0, 0, 0, 0, 0, 0,
+				false, false );
 
 			return Tr * hitResult;
 		}
@@ -1815,7 +1845,8 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 		sampler, pRadianceMap, 0, iorStack,
 		0, RISEPel( 0, 0, 0 ), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
-		0, 0, 0, 0, 0, 0 );
+		0, 0, 0, 0, 0, 0,
+		false, false );
 }
 
 

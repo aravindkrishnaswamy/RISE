@@ -112,7 +112,7 @@ namespace RISE
 			maxBernoulliTrials( 100 ),
 			biased( true ),
 			maxChainDepth( 30 ),
-			maxGeometricTerm( 1e6 )
+			maxGeometricTerm( 10.0 )
 			{
 			}
 		};
@@ -311,7 +311,112 @@ namespace RISE
 				const IRayCaster& caster
 				) const;
 
+			// ============================================================
+			// Static utility methods (2x2 block arithmetic, Fresnel, etc.)
+			// ============================================================
+
+			/// Derivative of a normalized vector: d/dx [v/|v|].
+			/// Given h = v/|v|, dv = derivative of unnormalized v, and
+			/// vLen = |v|, returns the derivative of h.
+			static Vector3 DeriveNormalized(
+				const Vector3& h, const Vector3& dv, Scalar vLen );
+
+			/// Inverts a 2x2 block stored as [a,b,c,d] row-major.
+			/// Returns false if the block is singular.
+			static bool Invert2x2( const Scalar* m, Scalar* inv );
+
+			/// Multiplies 2x2 blocks: C = A * B  (all row-major).
+			static void Mul2x2( const Scalar* A, const Scalar* B, Scalar* C );
+
+			/// Multiplies 2x2 block by 2-vector: r = A * v.
+			static void Mul2x2Vec( const Scalar* A, const Scalar* v, Scalar* r );
+
+			/// Subtracts 2x2 blocks: C = A - B.
+			static void Sub2x2( const Scalar* A, const Scalar* B, Scalar* C );
+
+			/// Exact dielectric Fresnel reflectance (unpolarized average).
+			/// \param cosI     Cosine of incidence angle (positive)
+			/// \param eta_i    IOR of the incoming medium
+			/// \param eta_t    IOR of the transmitted medium
+			/// \return Reflectance F in [0, 1].  Returns 1.0 for TIR.
+			static Scalar ComputeDielectricFresnel(
+				Scalar cosI, Scalar eta_i, Scalar eta_t );
+
+			/// Computes world-space gradients of spherical coordinates
+			/// (theta, phi) with respect to the direction vector.
+			/// \param dir       Direction vector (world space)
+			/// \param s         Normalized tangent u (= normalize(dpdu))
+			/// \param t         Normalized tangent v (= normalize(dpdv))
+			/// \param normal    Surface normal
+			/// \param dTheta_dDir  [out] World-space gradient of theta
+			/// \param dPhi_dDir    [out] World-space gradient of phi
+			static void ComputeSphericalDerivatives(
+				const Vector3& dir,
+				const Vector3& s,
+				const Vector3& t,
+				const Vector3& normal,
+				Vector3& dTheta_dDir,
+				Vector3& dPhi_dDir );
+
+			/// Computes 3x3 Jacobian d(wo)/d(wi) for the specular
+			/// direction (reflection or refraction).  Assumes unnormalized
+			/// wo; apply DeriveNormalized correction if chaining with
+			/// the normalized output of ComputeSpecularDirection.
+			static void ComputeSpecularDirectionDerivativeWrtWi(
+				const Vector3& wi,
+				const Vector3& normal,
+				Scalar eta,
+				bool isReflection,
+				Scalar dwo_dwi[9] );
+
 		protected:
+			/// Builds the block-tridiagonal Jacobian for the
+			/// angle-difference constraint via analytical derivatives.
+			/// Uses ComputeSphericalDerivatives, ComputeSpecularDirection
+			/// DerivativeWrtWi, and ComputeSpecularDirectionDerivative
+			/// WrtNormal for the chain rule through the constraint.
+			void BuildJacobianAngleDiff(
+				const std::vector<ManifoldVertex>& chain,
+				const Point3& fixedStart,
+				const Point3& fixedEnd,
+				std::vector<Scalar>& diag,
+				std::vector<Scalar>& upper,
+				std::vector<Scalar>& lower
+				) const;
+
+			/// Numerical Jacobian for the angle-difference constraint.
+			/// Finite-differences EvaluateConstraintAtVertex.
+			void BuildJacobianAngleDiffNumerical(
+				const std::vector<ManifoldVertex>& chain,
+				const Point3& fixedStart,
+				const Point3& fixedEnd,
+				std::vector<Scalar>& diag,
+				std::vector<Scalar>& upper,
+				std::vector<Scalar>& lower
+				) const;
+
+		protected:
+			/// Validates that converged specular chain vertices have
+			/// physically consistent ray geometry.  Refraction vertices
+			/// must have wi and wo on opposite sides of the surface;
+			/// reflection vertices must have both on the same side.
+			/// \return True if all vertices pass the check.
+			bool ValidateChainPhysics(
+				const std::vector<ManifoldVertex>& chain,
+				const Point3& fixedStart,
+				const Point3& fixedEnd
+				) const;
+
+			/// Computes the determinant of a block-tridiagonal matrix
+			/// via LU forward elimination.
+			/// \return det(J) = product of det(Dp[i]) diagonal blocks.
+			Scalar ComputeBlockTridiagonalDeterminant(
+				const std::vector<Scalar>& diag,
+				const std::vector<Scalar>& upper,
+				const std::vector<Scalar>& lower,
+				unsigned int k
+				) const;
+
 			/// Runs Newton iteration to solve C(x) = 0.
 			/// Modifies chain in-place. Returns true if converged.
 			bool NewtonSolve(

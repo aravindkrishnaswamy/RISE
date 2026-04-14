@@ -86,7 +86,8 @@ void PathTracingShaderOp::PerformOperation(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth );
+		0, rs.glossyFilterWidth,
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading );
 }
 
 
