@@ -468,6 +468,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
+	// When SMS is active, track whether the BSDF-sampled path went
+	// through a specular surface.  If it did AND there was a prior
+	// non-specular shading point where SMS was evaluated, the emission
+	// contribution from hitting a light is suppressed because SMS
+	// already accounts for those paths.  Without the non-specular
+	// check, paths like camera->glass->light would be incorrectly
+	// suppressed even though no SMS evaluation covered them.
+	bool bPassedThroughSpecular = false;
+	bool bHadNonSpecularShading = false;
+
 	const LightSampler* pLS = caster.GetLightSampler();
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -712,6 +722,17 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
 			if( pEmitter && considerEmission )
 			{
+				// When SMS is active, suppress emission from BSDF paths
+				// that passed through specular surfaces, but ONLY if
+				// there was a prior non-specular shading point where SMS
+				// was evaluated.  Without that check, camera->glass->light
+				// paths (with no diffuse receiver) would be killed.
+				if( pSolver && bPassedThroughSpecular && bHadNonSpecularShading )
+				{
+					// Skip emission entirely; SMS handles this contribution.
+				}
+				else
+				{
 				RISEPel emission = pEmitter->emittedRadiance(
 					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
 				const RISEPel rawEmission = emission;
@@ -795,6 +816,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					SetPTIGuidingDirectContribution( guidingSegment, rawEmission, emissionMiWeight );
 				}
 #endif
+			} // else (not suppressed by SMS)
 			}
 		}
 
@@ -1147,6 +1169,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				transmissionBounces = rs2.transmissionBounces;
 				translucentBounces = rs2.translucentBounces;
 				glossyFilterWidth = rs2.glossyFilterWidth;
+
+				// Track specular transitions for SMS double-counting prevention
+				if( pS->isDelta ) {
+					bPassedThroughSpecular = true;
+				} else {
+					bPassedThroughSpecular = false;
+					bHadNonSpecularShading = true;
+				}
 
 				currentRay = pS->ray;
 				currentRay.Advance( 1e-8 );

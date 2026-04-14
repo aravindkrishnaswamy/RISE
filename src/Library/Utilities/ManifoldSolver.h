@@ -17,6 +17,12 @@
 //    Supports both refraction and reflection at each vertex, with
 //    material-specific IOR via IMaterial::GetSpecularInfo().
 //
+//    SMS and BDPT occupy disjoint path spaces for delta materials:
+//    BDPT skips delta vertices in its MIS walk, so it cannot generate
+//    the caustic paths that SMS finds.  Simple addition of SMS and
+//    BDPT contributions is correct without cross-strategy MIS.
+//    See docs/SMS.md for the full analysis and glossy-extension notes.
+//
 //  References:
 //    - Zeltner, Georgiev, Jakob. "Specular Manifold Sampling."
 //      SIGGRAPH 2020.
@@ -106,7 +112,7 @@ namespace RISE
 			maxBernoulliTrials( 100 ),
 			biased( true ),
 			maxChainDepth( 30 ),
-			maxGeometricTerm( 10.0 )
+			maxGeometricTerm( 1e6 )
 			{
 			}
 		};
@@ -118,12 +124,14 @@ namespace RISE
 			RISEPel						contribution;	///< Path contribution (RGB)
 			Scalar						contributionNM;	///< Path contribution (spectral)
 			Scalar						pdf;			///< SMS PDF (1/p_k or 1.0 for biased)
+			Scalar						jacobianDet;	///< |det(∂C/∂x_⊥)| of constraint Jacobian
 			bool						valid;			///< True if Newton converged
 
 			ManifoldResult() :
 			contribution( RISEPel(0,0,0) ),
 			contributionNM( 0 ),
 			pdf( 1.0 ),
+			jacobianDet( 1.0 ),
 			valid( false )
 			{
 			}
@@ -184,6 +192,16 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				std::vector<ManifoldVertex>& chain
+				) const;
+
+			/// Computes the geometric coupling factor through a specular
+			/// chain for the path integral (incoming cosines / dist² at
+			/// each specular vertex, plus 1/dist² for the last segment).
+			/// Caller multiplies by cosAtShading and cosAtLight separately.
+			Scalar EvaluateChainGeometry(
+				const Point3& startPoint,
+				const Point3& endPoint,
+				const std::vector<ManifoldVertex>& chain
 				) const;
 
 			/// Computes Fresnel-weighted transmittance/reflectance product
@@ -388,6 +406,37 @@ namespace RISE
 				const Vector3& dpdu,
 				const Vector3& dpdv,
 				const Vector3& normal
+				) const;
+
+			/// Evaluates the angle-difference constraint at a single specular
+			/// vertex (Zeltner et al. 2020).  The constraint measures the
+			/// angular deviation between the actual outgoing direction and the
+			/// specularly scattered direction in the local tangent frame:
+			///   C0 = theta_actual - theta_specular
+			///   C1 = wrapToPi(phi_actual - phi_specular)
+			void EvaluateConstraintAtVertex(
+				const Point3& vertexPos,
+				const Vector3& vertexNormal,
+				const Vector3& vertexDpdu,
+				const Vector3& vertexDpdv,
+				Scalar vertexEta,
+				bool vertexIsReflection,
+				const Point3& prevPos,
+				const Point3& nextPos,
+				Scalar& C0,
+				Scalar& C1
+				) const;
+
+			/// Builds the block-tridiagonal Jacobian via central finite
+			/// differences on the constraint function.  Matches whichever
+			/// constraint formulation EvaluateConstraint uses.
+			void BuildJacobianNumerical(
+				const std::vector<ManifoldVertex>& chain,
+				const Point3& fixedStart,
+				const Point3& fixedEnd,
+				std::vector<Scalar>& diag,
+				std::vector<Scalar>& upper,
+				std::vector<Scalar>& lower
 				) const;
 
 			/// Bernoulli trial estimator for unbiased PDF of solution k.

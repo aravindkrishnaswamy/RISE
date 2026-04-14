@@ -1,8 +1,7 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#   SMS Test: Glass sphere on diffuse floor with area light above.
-#   Expected: focused caustic beneath the sphere.
-#   PT-only reference (no SMS, no BDPT)
+#   Double-Refractive Slab (Close, No SMS): Standard path tracing only — no SMS, so caustics beneath the    #
+#   slab will be mostly missing.                                                                            #
 #############################################################################################################
 
 > set accelerator B 10 8
@@ -15,12 +14,13 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples                       256
+	samples                       4096
+	oidn_denoise                  FALSE
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_test_sphere_pt_nosms
+	pattern				rendered/sms_slab_close_nosms
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -28,46 +28,32 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 4 8
-	lookat				0 0.5 0
+	location			0 2.0 3
+	lookat				0 0.2 0
 	up					0 1 0
-	width				200
-	height				200
+	width				400
+	height				300
 	fov					45.0
 }
 
-# Painters
 uniformcolor_painter
 {
 	name				pnt_floor
-	color				0.7 0.7 0.7
+	color				0.8 0.75 0.65
 }
 
 uniformcolor_painter
 {
 	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
 	color				1.0 1.0 1.0
 }
 
-uniformcolor_painter
-{
-	name				pnt_glass_tau
-	color				0.999 0.999 0.999
-}
-
-uniformcolor_painter
-{
-	name				pnt_glass_ior
-	color				1.5 1.5 1.5
-}
-
-uniformcolor_painter
-{
-	name				pnt_scatter
-	color				100000.0 100000.0 100000.0
-}
-
-# Materials
 lambertian_material
 {
 	name				floor_mat
@@ -78,44 +64,44 @@ lambertian_luminaire_material
 {
 	name				light_mat
 	exitance			pnt_light
-	scale				500.0
+	scale				2000.0
 	material			none
 }
 
-dielectric_material
+perfectrefractor_material
 {
 	name				glass_mat
-	tau					pnt_glass_tau
-	ior					1.5
-	scattering			pnt_scatter
+	refractance			pnt_glass
+	ior					2.2
 }
 
-# Geometry
-sphere_geometry
+rawmesh2_geometry
 {
-	name				sphere_geom
-	radius				1.0
+	name				slab_geom
+	file				models/raw/displaced_slab.raw
+	maxpolygons			10
+	maxdepth			24
+	double_sided		TRUE
 }
 
 clippedplane_geometry
 {
 	name				floor_geom
-	pta					-5.0 0.0 -5.0
-	ptb					-5.0 0.0 5.0
-	ptc					5.0 0.0 5.0
-	ptd					5.0 0.0 -5.0
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
 }
 
 clippedplane_geometry
 {
 	name				light_geom
-	pta					-1.5 0.0 -1.5
-	ptb					1.5 0.0 -1.5
-	ptc					1.5 0.0 1.5
-	ptd					-1.5 0.0 1.5
+	pta					-0.1 0.0 -0.1
+	ptb					0.1 0.0 -0.1
+	ptc					0.1 0.0 0.1
+	ptd					-0.1 0.0 0.1
 }
 
-# Objects
 standard_object
 {
 	name				floor
@@ -125,9 +111,10 @@ standard_object
 
 standard_object
 {
-	name				glass_sphere
-	geometry			sphere_geom
-	position			0 1.5 0
+	name				glass_slab
+	geometry			slab_geom
+	orientation			-45 0 0
+	position			0 0.5 0
 	material			glass_mat
 }
 
@@ -135,6 +122,8 @@ standard_object
 {
 	name				area_light
 	geometry			light_geom
-	position			0 5.0 0
+	position			0 1.2 -0.1
+	orientation 		-45 0 0
+	scale				0.4 0.4 0.4
 	material			light_mat
 }

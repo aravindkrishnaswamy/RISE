@@ -6,6 +6,10 @@ This directory holds focused design notes and planning docs. Start at [../README
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): focused deep dive on scene immutability, thread safety, render phases, and known exceptions. Read this when touching rasterizers, animation-time mutation, caches, or shared renderer state.
 
+## Subsystem Docs
+
+- [SMS.md](SMS.md): Specular Manifold Sampling solver design, constraint formulations, MIS analysis (SMS vs BDPT path-space disjointness), and tuning guidance.
+
 ## Planning Docs
 
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): ranked backlog of rendering improvements, including transport, materials, samplers, and volumes, with acceptance criteria and starting files per item.
