@@ -41,20 +41,20 @@ pathtracing_pel_rasterizer
 {
 	samples				64
 	pathguiding				TRUE
-	pathguiding_iterations	6
-	pathguiding_spp			6
+	pathguiding_iterations	3
+	pathguiding_spp			4
 	pathguiding_alpha		0.5
 	pathguiding_max_depth	3
     pathguiding_light_max_depth 0
 	pathguiding_sampling_type	ris
-	sms_enabled			TRUE
+	sms_enabled			FALSE
 	sms_max_iterations	20
 	sms_threshold		1e-3
 	sms_max_chain_depth	20
 	sms_biased			TRUE
 	oidn_denoise 		TRUE
 	blue_noise_sampler	TRUE
-	adaptive_max_samples	1024
+	adaptive_max_samples	256
 	adaptive_threshold		0.1
 }
 

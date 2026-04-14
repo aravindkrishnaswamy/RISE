@@ -7009,7 +7009,8 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 			Le = ColorMath::Luminance( lightSample.Le );
 		}
 
-		// Chain geometry and manifold Jacobian
+		// Chain geometry and manifold Jacobian (see RGB variant
+		// in ManifoldSolver::EvaluateAtShadingPoint for derivation).
 		const Scalar chainGeom = pManifoldSolver->EvaluateChainGeometry(
 			eyeVertex.position, lightSample.position, mResult.specularChain );
 

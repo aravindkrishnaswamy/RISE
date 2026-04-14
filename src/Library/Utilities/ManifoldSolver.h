@@ -198,7 +198,23 @@ namespace RISE
 			/// chain for the path integral (incoming cosines / dist² at
 			/// each specular vertex, plus 1/dist² for the last segment).
 			/// Caller multiplies by cosAtShading and cosAtLight separately.
+			/// NOTE: the 1/dist² terms overlap with the Jacobian determinant's
+			/// internal direction derivatives.  Prefer EvaluateChainCosineProduct
+			/// for the SMS contribution formula to avoid double-counting.
 			Scalar EvaluateChainGeometry(
+				const Point3& startPoint,
+				const Point3& endPoint,
+				const std::vector<ManifoldVertex>& chain
+				) const;
+
+			/// Computes the product of incoming cosines at each specular
+			/// vertex in the chain, WITHOUT distance terms.  The distance
+			/// factors (1/dist²) are already encoded in the Jacobian
+			/// determinant via its direction derivatives (dwi/du ∝ 1/dist_i).
+			/// Used in the SMS contribution formula: the weight is
+			///   cos(θ_x) × cos(θ_y) × ∏cos(θ_in_j) / |det(∂C/∂x)|
+			/// where only endpoint and vertex cosines are explicit.
+			Scalar EvaluateChainCosineProduct(
 				const Point3& startPoint,
 				const Point3& endPoint,
 				const std::vector<ManifoldVertex>& chain

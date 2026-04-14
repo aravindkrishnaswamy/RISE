@@ -1687,11 +1687,13 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
 
-	// Extract first-hit AOV data for the denoiser
+	// Extract first-hit AOV data for the denoiser.
+	// For delta/transparent surfaces (GetBSDF()==NULL), use white
+	// albedo per OIDN documentation: transparent surfaces should
+	// report albedo 1 since the beauty signal is pure illumination.
 	if( pAOV && ri.geometric.bHit )
 	{
 		pAOV->normal = ri.geometric.vNormal;
-		pAOV->albedo = RISEPel( 0, 0, 0 );
 
 		if( ri.pMaterial && ri.pMaterial->GetBSDF() )
 		{
@@ -1704,6 +1706,9 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			rig.onb = ri.geometric.onb;
 			pAOV->albedo = ri.pMaterial->GetBSDF()->value(
 				ri.geometric.vNormal, rig ) * PI;
+		} else {
+			// Delta/transparent surface: white albedo per OIDN spec
+			pAOV->albedo = RISEPel( 1, 1, 1 );
 		}
 		pAOV->valid = true;
 	}
