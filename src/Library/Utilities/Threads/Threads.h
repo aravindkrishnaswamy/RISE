@@ -36,12 +36,18 @@ namespace RISE
 	{
 		//! Creates and starts a thread running
 		/// \return 1 if successful, 0 otherwise
-		static unsigned int riseCreateThread( 
-			THREAD_FUNC pFunc, 
-			void* pParam, 
-			unsigned int initial_stack_size, 
-			void* thread_attributes, 
-			RISETHREADID* threadid 
+		static unsigned int riseCreateThread(
+			THREAD_FUNC pFunc,
+			void* pParam,
+			unsigned int initial_stack_size,
+			void* thread_attributes,
+			RISETHREADID* threadid
+			);
+
+		//! Lowers the priority of the given thread so rendering
+		//! does not starve the rest of the system
+		static void riseSetThreadLowPriority(
+			RISETHREADID threadid
 			);
 
 		//! Waits for a thread to finish execution

@@ -18,13 +18,62 @@
 
 #include "Threads.h"
 #include "../../Interfaces/ILog.h"
+#include "../../Interfaces/IOptions.h"
 #include "../RTime.h"
 #ifndef NO_PTHREAD_SUPPORT
 	#include <pthread.h>
 	#include <semaphore.h>
 #endif
+#ifdef __APPLE__
+	#include <pthread/qos.h>
+#endif
+#include <unistd.h>
 
 using namespace RISE;
+
+void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
+{
+	// On POSIX this must be called from within the target thread itself,
+	// since nice() and QoS APIs affect the calling thread.
+	(void)threadid;
+#ifndef NO_PTHREAD_SUPPORT
+#ifdef __APPLE__
+	// macOS: QoS classes are the preferred scheduling mechanism.
+	// QOS_CLASS_UTILITY is for long-running work that should not
+	// interfere with interactive responsiveness.
+	pthread_set_qos_class_self_np( QOS_CLASS_UTILITY, 0 );
+#else
+	// Linux / other POSIX: raise the nice value so the kernel
+	// schedules these threads with lower priority.
+	nice( 10 );
+#endif
+#endif
+}
+
+#ifndef NO_PTHREAD_SUPPORT
+namespace RISE {
+	// Wrapper that lowers priority before calling the real thread function
+	struct ThreadStartData
+	{
+		THREAD_FUNC realFunc;
+		void* realParam;
+	};
+
+	static void* LowPriorityThreadProc( void* arg )
+	{
+		ThreadStartData* data = static_cast<ThreadStartData*>( arg );
+		THREAD_FUNC func = data->realFunc;
+		void* param = data->realParam;
+		delete data;
+
+		if( GlobalOptions().ReadBool( "force_all_threads_low_priority", true ) ) {
+			Threading::riseSetThreadLowPriority( 0 );
+		}
+
+		return func( param );
+	}
+}
+#endif
 
 unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
@@ -37,8 +86,12 @@ unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsig
 	pthread_t			tid;
 	pthread_attr_t		attr;
 
+	ThreadStartData* startData = new ThreadStartData;
+	startData->realFunc = pFunc;
+	startData->realParam = pParam;
+
 	pthread_attr_init( &attr );
-	pthread_create( &tid, &attr, pFunc, pParam );
+	pthread_create( &tid, &attr, LowPriorityThreadProc, startData );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)tid;

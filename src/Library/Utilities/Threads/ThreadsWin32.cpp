@@ -25,6 +25,12 @@
 
 using namespace RISE;
 
+void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
+{
+	HANDLE hThread = (HANDLE)threadid;
+	SetThreadPriority( hThread, THREAD_PRIORITY_BELOW_NORMAL );
+}
+
 unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
 {
 	HANDLE hThread = CreateThread( 0, initial_stack_size, (LPTHREAD_START_ROUTINE)pFunc, pParam, static_cast<DWORD>(reinterpret_cast<uintptr_t>(thread_attributes)), 0 );
@@ -33,9 +39,8 @@ unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsig
 		*threadid = (RISETHREADID)hThread;
 	}
 
-	// Makes MP rendering not choke the poor system...  I know this is a hack
 	if( GlobalOptions().ReadBool( "force_all_threads_low_priority", true ) ) {
-		SetThreadPriority( hThread, THREAD_PRIORITY_BELOW_NORMAL );
+		riseSetThreadLowPriority( (RISETHREADID)hThread );
 	}
 
 	if( hThread ) {
