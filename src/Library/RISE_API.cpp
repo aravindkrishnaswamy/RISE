@@ -1434,6 +1434,16 @@ namespace RISE
 #include "Painters/MandelbrotPainter.h"
 #include "Painters/Perlin2DPainter.h"
 #include "Painters/Perlin3DPainter.h"
+#include "Painters/Turbulence3DPainter.h"
+#include "Painters/Worley3DPainter.h"
+#include "Painters/PerlinWorley3DPainter.h"
+#include "Painters/DomainWarp3DPainter.h"
+#include "Painters/CurlNoise3DPainter.h"
+#include "Painters/SDF3DPainter.h"
+#include "Painters/Simplex3DPainter.h"
+#include "Painters/Gabor3DPainter.h"
+#include "Painters/Wavelet3DPainter.h"
+#include "Painters/ReactionDiffusion3DPainter.h"
 #include "Painters/Voronoi2DPainter.h"
 #include "Painters/Voronoi3DPainter.h"
 #include "Painters/IridescentPainter.h"
@@ -1542,6 +1552,223 @@ namespace RISE
 
 		(*ppi) = new Perlin3DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift  );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "perlin 3D painter" );
+		return true;
+	}
+
+	//! Creates a 3D turbulence noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTurbulence3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dPersistence,		///< [in] Persistence
+								const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+								const IPainter& cA,				///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Turbulence3DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift  );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "turbulence 3D painter" );
+		return true;
+	}
+
+	//! Creates a 3D Worley (cellular) noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateWorley3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dJitter,			///< [in] Jitter amount [0,1]
+								const unsigned int nMetric,		///< [in] Distance metric
+								const unsigned int nOutput,		///< [in] Output mode
+								const IPainter& cA,				///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Worley3DPainter( dJitter,
+			(Implementation::WorleyDistanceMetric)nMetric,
+			(Implementation::WorleyOutputMode)nOutput,
+			cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "worley 3D painter" );
+		return true;
+	}
+
+	//! Creates a 3D Perlin-Worley hybrid (cloud noise) painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePerlinWorley3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dWorleyJitter,
+								const Scalar dBlend,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new PerlinWorley3DPainter( dPersistence, nOctaves, dWorleyJitter, dBlend, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "perlin-worley 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateDomainWarp3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dWarpAmplitude,
+								const unsigned int nWarpLevels,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new DomainWarp3DPainter( dPersistence, nOctaves, dWarpAmplitude, nWarpLevels, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "domain warp 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateCurlNoise3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dEpsilon,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new CurlNoise3DPainter( dPersistence, nOctaves, dEpsilon, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "curl noise 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateSDF3DPainter(
+								IPainter** ppi,
+								const unsigned int nType,
+								const Scalar dParam1,
+								const Scalar dParam2,
+								const Scalar dParam3,
+								const Scalar dShellThickness,
+								const Scalar dNoiseAmplitude,
+								const Scalar dNoiseFrequency,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new SDF3DPainter( (Implementation::SDFPrimitiveType)nType, dParam1, dParam2, dParam3, dShellThickness, dNoiseAmplitude, dNoiseFrequency, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "SDF 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateSimplex3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Simplex3DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "simplex 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateGabor3DPainter(
+								IPainter** ppi,
+								const Scalar dFrequency,
+								const Scalar dBandwidth,
+								const Vector3& vOrientation,
+								const Scalar dImpulseDensity,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Gabor3DPainter( dFrequency, dBandwidth, vOrientation, dImpulseDensity, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "gabor 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateWavelet3DPainter(
+								IPainter** ppi,
+								const unsigned int nTileSize,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Wavelet3DPainter( nTileSize, dPersistence, nOctaves, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "wavelet 3D painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateReactionDiffusion3DPainter(
+								IPainter** ppi,
+								const unsigned int nGridSize,
+								const Scalar dDa,
+								const Scalar dDb,
+								const Scalar dFeed,
+								const Scalar dKill,
+								const unsigned int nIterations,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ReactionDiffusion3DPainter( nGridSize, dDa, dDb, dFeed, dKill, nIterations, cA, cB, vScale, vShift );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reaction-diffusion 3D painter" );
 		return true;
 	}
 

@@ -920,6 +920,487 @@ namespace RISE
 				}
 			};
 
+			struct Wavelet3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					unsigned int tile_size = 32;
+					double persistence = 0.65;
+					unsigned int octaves = 4;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) return false;
+
+						if( pname == "name" ) name = pvalue;
+						else if( pname == "colora" ) colora = pvalue;
+						else if( pname == "colorb" ) colorb = pvalue;
+						else if( pname == "tile_size" ) tile_size = pvalue.toUInt();
+						else if( pname == "persistence" ) persistence = pvalue.toDouble();
+						else if( pname == "octaves" ) octaves = pvalue.toUInt();
+						else if( pname == "scale" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						else if( pname == "shift" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddWavelet3DPainter( name.c_str(), tile_size, persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct ReactionDiffusion3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					unsigned int grid_size = 32;
+					double da = 0.2;
+					double db = 0.1;
+					double feed = 0.037;
+					double kill = 0.06;
+					unsigned int iterations = 2000;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) return false;
+
+						if( pname == "name" ) name = pvalue;
+						else if( pname == "colora" ) colora = pvalue;
+						else if( pname == "colorb" ) colorb = pvalue;
+						else if( pname == "grid_size" ) grid_size = pvalue.toUInt();
+						else if( pname == "da" ) da = pvalue.toDouble();
+						else if( pname == "db" ) db = pvalue.toDouble();
+						else if( pname == "feed" ) feed = pvalue.toDouble();
+						else if( pname == "kill" ) kill = pvalue.toDouble();
+						else if( pname == "iterations" ) iterations = pvalue.toUInt();
+						else if( pname == "scale" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						else if( pname == "shift" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddReactionDiffusion3DPainter( name.c_str(), grid_size, da, db, feed, kill, iterations, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct Gabor3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double frequency = 4.0;
+					double bandwidth = 1.0;
+					double orientation[3] = {0,1,0};
+					double impulse_density = 4.0;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "frequency" ) {
+							frequency = pvalue.toDouble();
+						} else if( pname == "bandwidth" ) {
+							bandwidth = pvalue.toDouble();
+						} else if( pname == "orientation" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
+						} else if( pname == "impulse_density" ) {
+							impulse_density = pvalue.toDouble();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddGabor3DPainter( name.c_str(), frequency, bandwidth, orientation, impulse_density, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct Simplex3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double persistence = 0.65;
+					unsigned int octaves = 4;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "persistence" ) {
+							persistence = pvalue.toDouble();
+						} else if( pname == "octaves" ) {
+							octaves = pvalue.toUInt();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddSimplex3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct SDF3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					unsigned int type = 0;		// 0=sphere, 1=box, 2=torus, 3=cylinder
+					double param1 = 0.5;		// Primary parameter
+					double param2 = 0.3;		// Secondary parameter
+					double param3 = 0.3;		// Tertiary parameter (box z-extent)
+					double shell_thickness = 0.0;
+					double noise_amplitude = 0.0;
+					double noise_frequency = 1.0;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "type" ) {
+							if( pvalue == "sphere" ) type = 0;
+							else if( pvalue == "box" ) type = 1;
+							else if( pvalue == "torus" ) type = 2;
+							else if( pvalue == "cylinder" ) type = 3;
+							else type = pvalue.toUInt();
+						} else if( pname == "param1" ) {
+							param1 = pvalue.toDouble();
+						} else if( pname == "param2" ) {
+							param2 = pvalue.toDouble();
+						} else if( pname == "param3" ) {
+							param3 = pvalue.toDouble();
+						} else if( pname == "shell_thickness" ) {
+							shell_thickness = pvalue.toDouble();
+						} else if( pname == "noise_amplitude" ) {
+							noise_amplitude = pvalue.toDouble();
+						} else if( pname == "noise_frequency" ) {
+							noise_frequency = pvalue.toDouble();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct CurlNoise3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double persistence = 0.65;
+					unsigned int octaves = 4;
+					double epsilon = 0.01;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "persistence" ) {
+							persistence = pvalue.toDouble();
+						} else if( pname == "octaves" ) {
+							octaves = pvalue.toUInt();
+						} else if( pname == "epsilon" ) {
+							epsilon = pvalue.toDouble();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddCurlNoise3DPainter( name.c_str(), persistence, octaves, epsilon, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct DomainWarp3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double persistence = 0.65;
+					unsigned int octaves = 4;
+					double warp_amplitude = 4.0;
+					unsigned int warp_levels = 2;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "persistence" ) {
+							persistence = pvalue.toDouble();
+						} else if( pname == "octaves" ) {
+							octaves = pvalue.toUInt();
+						} else if( pname == "warp_amplitude" ) {
+							warp_amplitude = pvalue.toDouble();
+						} else if( pname == "warp_levels" ) {
+							warp_levels = pvalue.toUInt();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddDomainWarp3DPainter( name.c_str(), persistence, octaves, warp_amplitude, warp_levels, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct PerlinWorley3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double persistence = 0.65;
+					unsigned int octaves = 4;
+					double worley_jitter = 1.0;
+					double blend = 0.5;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "persistence" ) {
+							persistence = pvalue.toDouble();
+						} else if( pname == "octaves" ) {
+							octaves = pvalue.toUInt();
+						} else if( pname == "worley_jitter" ) {
+							worley_jitter = pvalue.toDouble();
+						} else if( pname == "blend" ) {
+							blend = pvalue.toDouble();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddPerlinWorley3DPainter( name.c_str(), persistence, octaves, worley_jitter, blend, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct Worley3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double jitter = 1.0;
+					unsigned int metric = 0;	// 0=Euclidean, 1=Manhattan, 2=Chebyshev
+					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "jitter" ) {
+							jitter = pvalue.toDouble();
+						} else if( pname == "metric" ) {
+							if( pvalue == "euclidean" ) metric = 0;
+							else if( pvalue == "manhattan" ) metric = 1;
+							else if( pvalue == "chebyshev" ) metric = 2;
+							else metric = pvalue.toUInt();
+						} else if( pname == "output" ) {
+							if( pvalue == "f1" ) output = 0;
+							else if( pvalue == "f2" ) output = 1;
+							else if( pvalue == "f2-f1" ) output = 2;
+							else output = pvalue.toUInt();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
+			struct Turbulence3DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					double persistence = 1.0;
+					double scale[3] = {1.0,1.0,1.0};
+					double shift[3] = {0,0,0};
+					unsigned int octaves = 4;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "persistence" ) {
+							persistence = pvalue.toDouble();
+						} else if( pname == "scale" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
+						} else if( pname == "shift" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
+						} else if( pname == "octaves" ) {
+							octaves = pvalue.toUInt();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddTurbulence3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+			};
+
 			struct Voronoi2DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -7367,6 +7848,16 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["mandelbrot_painter"] = new MandelbrotPainterAsciiChunkParser();
 	chunks["perlin2d_painter"] = new Perlin2DPainterAsciiChunkParser();
 	chunks["perlin3d_painter"] = new Perlin3DPainterAsciiChunkParser();
+	chunks["turbulence3d_painter"] = new Turbulence3DPainterAsciiChunkParser();
+	chunks["wavelet3d_painter"] = new Wavelet3DPainterAsciiChunkParser();
+	chunks["reactiondiffusion3d_painter"] = new ReactionDiffusion3DPainterAsciiChunkParser();
+	chunks["gabor3d_painter"] = new Gabor3DPainterAsciiChunkParser();
+	chunks["simplex3d_painter"] = new Simplex3DPainterAsciiChunkParser();
+	chunks["sdf3d_painter"] = new SDF3DPainterAsciiChunkParser();
+	chunks["curlnoise3d_painter"] = new CurlNoise3DPainterAsciiChunkParser();
+	chunks["domainwarp3d_painter"] = new DomainWarp3DPainterAsciiChunkParser();
+	chunks["perlinworley3d_painter"] = new PerlinWorley3DPainterAsciiChunkParser();
+	chunks["worley3d_painter"] = new Worley3DPainterAsciiChunkParser();
 	chunks["voronoi2d_painter"] = new Voronoi2DPainterAsciiChunkParser();
 	chunks["voronoi3d_painter"] = new Voronoi3DPainterAsciiChunkParser();
 	chunks["iridescent_painter"] = new IridescentPainterAsciiChunkParser();

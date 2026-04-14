@@ -449,6 +449,272 @@ bool Job::AddPerlin3DPainter(
 	return true;
 }
 
+bool Job::AddWavelet3DPainter(
+								const char* name,
+								const unsigned int nTileSize,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+	if( !pA || !pB ) return false;
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateWavelet3DPainter( &pPainter, nTileSize, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddReactionDiffusion3DPainter(
+								const char* name,
+								const unsigned int nGridSize,
+								const double dDa,
+								const double dDb,
+								const double dFeed,
+								const double dKill,
+								const unsigned int nIterations,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+	if( !pA || !pB ) return false;
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateReactionDiffusion3DPainter( &pPainter, nGridSize, dDa, dDb, dFeed, dKill, nIterations, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddGabor3DPainter(
+								const char* name,
+								const double dFrequency,
+								const double dBandwidth,
+								const double vOrientation[3],
+								const double dImpulseDensity,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateGabor3DPainter( &pPainter, dFrequency, dBandwidth, Vector3(vOrientation), dImpulseDensity, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddSimplex3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateSimplex3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddSDF3DPainter(
+								const char* name,
+								const unsigned int nType,
+								const double dParam1,
+								const double dParam2,
+								const double dParam3,
+								const double dShellThickness,
+								const double dNoiseAmplitude,
+								const double dNoiseFrequency,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateSDF3DPainter( &pPainter, nType, dParam1, dParam2, dParam3, dShellThickness, dNoiseAmplitude, dNoiseFrequency, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddCurlNoise3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const double dEpsilon,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateCurlNoise3DPainter( &pPainter, dPersistence, nOctaves, dEpsilon, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddDomainWarp3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const double dWarpAmplitude,
+								const unsigned int nWarpLevels,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateDomainWarp3DPainter( &pPainter, dPersistence, nOctaves, dWarpAmplitude, nWarpLevels, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddPerlinWorley3DPainter(
+								const char* name,
+								const double dPersistence,
+								const unsigned int nOctaves,
+								const double dWorleyJitter,
+								const double dBlend,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreatePerlinWorley3DPainter( &pPainter, dPersistence, nOctaves, dWorleyJitter, dBlend, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+//! Adds a 3D Worley (cellular) noise painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddWorley3DPainter(
+								const char* name,
+								const double dJitter,
+								const unsigned int nMetric,
+								const unsigned int nOutput,
+								const char* pa,
+								const char* pb,
+								const double vScale[3],
+								const double vShift[3]
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateWorley3DPainter( &pPainter, dJitter, nMetric, nOutput, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+//! Adds a 3D turbulence noise painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddTurbulence3DPainter(
+								const char* name,				///< [in] Name of the painter
+								const double dPersistence,		///< [in] Persistence
+								const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+								const char* pa,					///< [in] First painter
+								const char* pb,					///< [in] Second painter
+								const double vScale[3],			///< [in] How much to scale the function by
+								const double vShift[3]			///< [in] How much to shift the function by
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTurbulence3DPainter( &pPainter, dPersistence, nOctaves, *pA, *pB, Vector3(vScale), Vector3(vShift) );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a spectral color painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddSpectralColorPainter(

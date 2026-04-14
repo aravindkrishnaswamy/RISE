@@ -77,7 +77,17 @@ SRCLIBNOISE =\
 	$(PATHLIBRARY)Noise/InterpolatedNoise.cpp					\
 	$(PATHLIBRARY)Noise/PerlinNoise1D.cpp						\
 	$(PATHLIBRARY)Noise/PerlinNoise2D.cpp						\
-	$(PATHLIBRARY)Noise/PerlinNoise3D.cpp
+	$(PATHLIBRARY)Noise/PerlinNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/TurbulenceNoise3D.cpp					\
+	$(PATHLIBRARY)Noise/WorleyNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/PerlinWorleyNoise3D.cpp					\
+	$(PATHLIBRARY)Noise/DomainWarpNoise3D.cpp					\
+	$(PATHLIBRARY)Noise/CurlNoise3D.cpp							\
+	$(PATHLIBRARY)Noise/SDFPrimitives3D.cpp						\
+	$(PATHLIBRARY)Noise/SimplexNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/GaborNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/WaveletNoise3D.cpp						\
+	$(PATHLIBRARY)Noise/ReactionDiffusion3D.cpp
 
 
 # Painters
@@ -90,6 +100,16 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/Painter.cpp							\
 	$(PATHLIBRARY)Painters/Perlin2DPainter.cpp					\
 	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Turbulence3DPainter.cpp				\
+	$(PATHLIBRARY)Painters/Worley3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/PerlinWorley3DPainter.cpp			\
+	$(PATHLIBRARY)Painters/DomainWarp3DPainter.cpp				\
+	$(PATHLIBRARY)Painters/CurlNoise3DPainter.cpp				\
+	$(PATHLIBRARY)Painters/SDF3DPainter.cpp						\
+	$(PATHLIBRARY)Painters/Simplex3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Gabor3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/Wavelet3DPainter.cpp					\
+	$(PATHLIBRARY)Painters/ReactionDiffusion3DPainter.cpp		\
 	$(PATHLIBRARY)Painters/SpectralColorPainter.cpp				\
 	$(PATHLIBRARY)Painters/TexturePainter.cpp					\
 	$(PATHLIBRARY)Painters/Voronoi2DPainter.cpp					\

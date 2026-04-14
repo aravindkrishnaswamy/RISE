@@ -286,6 +286,128 @@ namespace RISE
 									const double vShift[3]			///< [in] How much to shift the function by
 									);
 
+		bool AddWavelet3DPainter(
+									const char* name,
+									const unsigned int nTileSize,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddReactionDiffusion3DPainter(
+									const char* name,
+									const unsigned int nGridSize,
+									const double dDa,
+									const double dDb,
+									const double dFeed,
+									const double dKill,
+									const unsigned int nIterations,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddGabor3DPainter(
+									const char* name,
+									const double dFrequency,
+									const double dBandwidth,
+									const double vOrientation[3],
+									const double dImpulseDensity,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddSimplex3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddSDF3DPainter(
+									const char* name,
+									const unsigned int nType,
+									const double dParam1,
+									const double dParam2,
+									const double dParam3,
+									const double dShellThickness,
+									const double dNoiseAmplitude,
+									const double dNoiseFrequency,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddCurlNoise3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const double dEpsilon,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddDomainWarp3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const double dWarpAmplitude,
+									const unsigned int nWarpLevels,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		bool AddPerlinWorley3DPainter(
+									const char* name,
+									const double dPersistence,
+									const unsigned int nOctaves,
+									const double dWorleyJitter,
+									const double dBlend,
+									const char* pa,
+									const char* pb,
+									const double vScale[3],
+									const double vShift[3]
+									);
+
+		//! Adds a 3D Worley (cellular) noise painter
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddWorley3DPainter(
+									const char* name,				///< [in] Name of the painter
+									const double dJitter,			///< [in] Jitter amount [0,1]
+									const unsigned int nMetric,		///< [in] Distance metric
+									const unsigned int nOutput,		///< [in] Output mode
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const double vScale[3],			///< [in] How much to scale the function by
+									const double vShift[3]			///< [in] How much to shift the function by
+									);
+
+		//! Adds a 3D turbulence noise painter
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddTurbulence3DPainter(
+									const char* name,				///< [in] Name of the painter
+									const double dPersistence,		///< [in] Persistence
+									const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+									const char* pa,					///< [in] First painter
+									const char* pb,					///< [in] Second painter
+									const double vScale[3],			///< [in] How much to scale the function by
+									const double vShift[3]			///< [in] How much to shift the function by
+									);
+
 		//! Adds a spectral color painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddSpectralColorPainter(

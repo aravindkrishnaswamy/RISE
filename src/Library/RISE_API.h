@@ -819,6 +819,135 @@ namespace RISE
 								);
 
 
+	bool RISE_API_CreateWavelet3DPainter(
+								IPainter** ppi,
+								const unsigned int nTileSize,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	bool RISE_API_CreateReactionDiffusion3DPainter(
+								IPainter** ppi,
+								const unsigned int nGridSize,
+								const Scalar dDa,
+								const Scalar dDb,
+								const Scalar dFeed,
+								const Scalar dKill,
+								const unsigned int nIterations,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	bool RISE_API_CreateGabor3DPainter(
+								IPainter** ppi,
+								const Scalar dFrequency,
+								const Scalar dBandwidth,
+								const Vector3& vOrientation,
+								const Scalar dImpulseDensity,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D simplex noise painter
+	bool RISE_API_CreateSimplex3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D SDF primitives painter
+	bool RISE_API_CreateSDF3DPainter(
+								IPainter** ppi,
+								const unsigned int nType,
+								const Scalar dParam1,
+								const Scalar dParam2,
+								const Scalar dParam3,
+								const Scalar dShellThickness,
+								const Scalar dNoiseAmplitude,
+								const Scalar dNoiseFrequency,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D curl noise painter
+	bool RISE_API_CreateCurlNoise3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dEpsilon,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D domain-warped noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateDomainWarp3DPainter(
+								IPainter** ppi,
+								const Scalar dPersistence,
+								const unsigned int nOctaves,
+								const Scalar dWarpAmplitude,
+								const unsigned int nWarpLevels,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Vector3& vScale,
+								const Vector3& vShift
+								);
+
+	//! Creates a 3D Perlin-Worley hybrid (cloud noise) painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePerlinWorley3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dPersistence,		///< [in] Persistence for Perlin FBM
+								const unsigned int nOctaves,	///< [in] Number of octaves for Perlin
+								const Scalar dWorleyJitter,		///< [in] Worley jitter [0,1]
+								const Scalar dBlend,			///< [in] Blend factor [0,1]: 0=Perlin, 1=Worley
+								const IPainter& cA,				///< [in] First painter
+								const IPainter& cB,				///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								);
+
+	//! Creates a 3D Worley (cellular) noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateWorley3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dJitter,			///< [in] Jitter amount [0,1]
+								const unsigned int nMetric,		///< [in] Distance metric (0=Euclidean, 1=Manhattan, 2=Chebyshev)
+								const unsigned int nOutput,		///< [in] Output mode (0=F1, 1=F2, 2=F2-F1)
+								const IPainter& cA, 			///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								);
+
+	//! Creates a 3D turbulence noise painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTurbulence3DPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const Scalar dPersistence,		///< [in] Persistence
+								const unsigned int nOctaves,	///< [in] Number of octaves to use in noise generation
+								const IPainter& cA, 			///< [in] First painter
+								const IPainter& cB, 			///< [in] Second painter
+								const Vector3& vScale,			///< [in] How much to scale the function by
+								const Vector3& vShift			///< [in] How much to shift the function by
+								);
+
 	//! Creates a spectral color painter
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSpectralColorPainter(

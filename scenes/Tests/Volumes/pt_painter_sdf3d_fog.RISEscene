@@ -1,0 +1,301 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           pt_painter_sdf3d_fog.RISEscene                                                          #
+#   Description:    Painter-driven heterogeneous medium using SDF primitives.                               #
+#                   A noise-displaced sphere SDF creates a pyroclastic-looking fog volume.                  #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 13, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       64
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pt_painter_sdf3d_fog
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			278 273 -280
+	lookat				278 273 280
+	up					0 1 0
+	width				256
+	height				256
+	fov					65.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_dense
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_sparse
+	color				0.0 0.0 0.0
+}
+
+# Pyroclastic sphere: noise-displaced sphere SDF
+# Scale maps the volume bbox to SDF space.
+# The sphere has radius 0.45 in SDF space (slightly smaller than unit cube half)
+# with noise displacement for an irregular, explosive look.
+sdf3d_painter
+{
+	name				pnt_density
+	type				sphere
+	param1				0.45
+	param2				0
+	param3				0
+	shell_thickness		0
+	noise_amplitude		0.1
+	noise_frequency		4.0
+	colora				pnt_dense
+	colorb				pnt_sparse
+	scale				0.005 0.005 0.005
+	shift				-1.39 -1.0 -1.5
+}
+
+painter_heterogeneous_medium
+{
+	name			sdf_fog
+	absorption		0.006 0.006 0.006
+	scattering		0.05 0.05 0.05
+	phase			isotropic
+	density_painter	pnt_density
+	resolution		64
+	color_to_scalar	luminance
+	bbox_min		80 0 100
+	bbox_max		476 400 500
+}
+
+> set global_medium sdf_fog
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.9
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+uniformcolor_painter
+{
+	name				pnt_yellow
+	color				0.8 0.7 0.1
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.1 0.15 0.7
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				yellow
+	reflectance			pnt_yellow
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			pnt_blue
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				120.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 556
+	ptd					556 0 556
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0 548 0
+	ptb					556 548 0
+	ptc					556 548 556
+	ptd					0 548 556
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 556
+	ptb					0 548 556
+	ptc					556 548 556
+	ptd					556 0 556
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 0
+	ptb					0 548 0
+	ptc					0 548 556
+	ptd					0 0 556
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 556
+	ptb					556 548 556
+	ptc					556 548 0
+	ptd					556 0 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					400 547.99 180
+	ptb					400 547.99 376
+	ptc					156 547.99 376
+	ptd					156 547.99 180
+}
+
+sphere_geometry
+{
+	name				sphere_near_geom
+	radius				55.0
+}
+
+sphere_geometry
+{
+	name				sphere_mid_geom
+	radius				55.0
+}
+
+sphere_geometry
+{
+	name				sphere_far_geom
+	radius				55.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}
+
+standard_object
+{
+	name				sphere_near
+	geometry			sphere_near_geom
+	material			yellow
+	position			140 60 100
+}
+
+standard_object
+{
+	name				sphere_mid
+	geometry			sphere_mid_geom
+	material			white
+	position			278 60 260
+}
+
+standard_object
+{
+	name				sphere_far
+	geometry			sphere_far_geom
+	material			blue
+	position			416 60 420
+}
