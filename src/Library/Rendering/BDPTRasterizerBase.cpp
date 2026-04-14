@@ -864,22 +864,35 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 	}
 
-	// Resolve splat film: add t==1 strategy contributions to the primary
-	// image.  Each pixel sample may have contributed one splat per (s,t)
-	// strategy with needsSplat=true, so we divide by the total number of
-	// pixel samples to get the correct per-pixel average.
-	// When adaptive sampling is active, use the average SPP across all
-	// pixels rather than the fixed per-pixel count.
-	pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );
-
 	RISE_PROFILE_REPORT(GlobalLog());
 
 #ifdef RISE_ENABLE_OIDN
-	// Run OIDN denoiser as a post-process on the fully-resolved image
+	// Denoise the non-splat image BEFORE resolving the splat film.
+	//
+	// OIDN documentation: "Weighted pixel sampling (sometimes called
+	// splatting) introduces correlation between neighboring pixels,
+	// which causes the denoising to fail [...] thus it is not
+	// supported."  BDPT's t==1 strategies use splatting (SplatFilm).
+	//
+	// All non-splat strategies (s=0 emission, s=1 NEE, s>=2 interior
+	// connections) are accumulated per-pixel via importance sampling,
+	// which OIDN fully supports.  The AOV buffers (first-hit albedo
+	// + normal from the eye subpath) correctly describe this signal.
+	//
+	// After denoising we add the splatted contributions raw — they
+	// may carry residual noise but their energy is unbiased.
 	if( pAOVBuffers && bDenoisingEnabled ) {
 		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
 	}
 #endif
+
+	// Resolve splat film: add t==1 strategy contributions to the
+	// denoised image.  Each pixel sample may have contributed one
+	// splat per (s,t) strategy with needsSplat=true, so we divide
+	// by the total number of pixel samples to get the correct
+	// per-pixel average.  Splats are added AFTER denoising because
+	// their splatted accumulation pattern is incompatible with OIDN.
+	pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );
 
 #ifdef RISE_ENABLE_OPENPGL
 	{

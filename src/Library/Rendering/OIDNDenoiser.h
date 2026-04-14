@@ -82,6 +82,7 @@ namespace RISE
 				unsigned int w,
 				unsigned int h
 				);
+
 #endif
 		};
 	}

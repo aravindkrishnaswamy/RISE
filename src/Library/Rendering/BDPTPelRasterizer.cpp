@@ -104,26 +104,32 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );
 
-	// Extract first-hit AOV data for the denoiser
-	if( pAOV ) {
-		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
-			const BDPTVertex& v = eyeVerts[i];
-			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
-				pAOV->normal = v.normal;
-				pAOV->albedo = RISEPel( 0, 0, 0 );
-				if( v.pMaterial->GetBSDF() ) {
-					// Construct a synthetic intersection for BSDF evaluation
-					// at normal incidence to approximate material albedo.
-					Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
-					RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-					rig.ptIntersection = v.position;
-					rig.vNormal = v.normal;
-					rig.onb = v.onb;
-					pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
-				}
-				pAOV->valid = true;
-				break;
+	// Extract first-hit AOV data for the denoiser.
+	// Use the actual first eye-subpath surface vertex (even if delta)
+	// so the albedo/normal buffers match what the unidirectional PT
+	// produces.  For delta (specular) surfaces like glass, GetBSDF()
+	// returns NULL; per OIDN documentation, transparent surfaces
+	// should use white albedo (1,1,1) rather than zero, since the
+	// beauty signal at those pixels is pure illumination with no
+	// surface modulation.  Zero albedo causes OIDN to misinterpret
+	// the energy balance, especially for BDPT where light subpath
+	// connections can deposit significant energy through glass.
+	if( pAOV && eyeVerts.size() > 1 ) {
+		const BDPTVertex& v = eyeVerts[1];
+		if( v.type == BDPTVertex::SURFACE && v.pMaterial ) {
+			pAOV->normal = v.normal;
+			if( v.pMaterial->GetBSDF() ) {
+				Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
+				RayIntersectionGeometric rig( aovRay, nullRasterizerState );
+				rig.ptIntersection = v.position;
+				rig.vNormal = v.normal;
+				rig.onb = v.onb;
+				pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+			} else {
+				// Delta/transparent surface: white albedo per OIDN spec
+				pAOV->albedo = RISEPel( 1, 1, 1 );
 			}
+			pAOV->valid = true;
 		}
 	}
 

@@ -123,6 +123,9 @@ void OIDNDenoiser::Denoise(
 	}
 
 	filter.set( "hdr", true );
+	if( albedoBuffer || normalBuffer ) {
+		filter.set( "cleanAux", true );
+	}
 	filter.commit();
 	filter.execute();
 
@@ -181,7 +184,9 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 			// Normal AOV
 			aovBuffers.AccumulateNormal( x, y, ri.geometric.vNormal, 1.0 );
 
-			// Albedo AOV: evaluate BSDF at normal incidence × PI
+			// Albedo AOV: evaluate BSDF at normal incidence × PI.
+			// For delta/transparent surfaces (GetBSDF()==NULL), use
+			// white albedo per OIDN documentation.
 			if( ri.pMaterial && ri.pMaterial->GetBSDF() )
 			{
 				Ray aovRay( Point3Ops::mkPoint3( ri.geometric.ptIntersection, ri.geometric.vNormal ),
@@ -193,6 +198,10 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 
 				RISEPel albedo = ri.pMaterial->GetBSDF()->value( ri.geometric.vNormal, rig ) * PI;
 				aovBuffers.AccumulateAlbedo( x, y, albedo, 1.0 );
+			}
+			else
+			{
+				aovBuffers.AccumulateAlbedo( x, y, RISEPel( 1, 1, 1 ), 1.0 );
 			}
 
 			aovBuffers.Normalize( x, y, 1.0 );
