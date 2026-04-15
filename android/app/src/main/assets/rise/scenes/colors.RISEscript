@@ -1,0 +1,12 @@
+RISE ASCII SCRIPT 3
+#############################################################################################################
+#									RISE Ascii Scene File													#
+#																											#
+#	File: 			colors.scn																				#
+#   Description:	Contains commonly used colors from all scenes											#
+#	Author: 		Aravind Krishnaswamy																	#
+#	Birthdate:		November 14, 2003																		#
+#																											#
+#############################################################################################################
+load scenes/standard_colors.RISEscene
+load scenes/povray_colors.RISEscene

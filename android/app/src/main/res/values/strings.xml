@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RISE</string>
+    <string name="btn_render">Render</string>
+    <string name="btn_cancel">Cancel</string>
+    <string name="btn_save">Save PNG</string>
+    <string name="label_thread_count">Worker threads: %1$d</string>
+    <string name="label_progress">%1$d%%</string>
+    <string name="label_no_scene">Pick a scene from the list</string>
+    <string name="label_extracting">Preparing bundled scenes…</string>
+    <string name="label_state_idle">Idle</string>
+    <string name="label_state_loading">Loading %1$s</string>
+    <string name="label_state_rendering">Rendering %1$dx%2$d</string>
+    <string name="label_state_done">Done</string>
+    <string name="label_state_cancelled">Cancelled</string>
+    <string name="label_state_error">Error: %1$s</string>
+</resources>
