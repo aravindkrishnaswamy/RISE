@@ -100,11 +100,21 @@ void RiseBridge::initialize(const std::string& projectRoot,
 
     // Many bundled scenes use file_rasterizeroutput with a pattern like
     // "rendered/<name>". The library's FileRasterizerOutput does NOT create
-    // the parent directory, so we pre-create a "rendered" subdir inside
-    // the project root. Harmless if it already exists.
-    const std::string renderedDir = projectRoot + "/rendered";
-    if (::mkdir(renderedDir.c_str(), 0755) != 0 && errno != EEXIST) {
-        LOGI("mkdir rendered (non-fatal): %s", std::strerror(errno));
+    // the parent directory, so we pre-create the directories the bundled
+    // scenes need. Harmless if they already exist.
+    //
+    // Add to this list whenever a new bundled scene writes to a nested
+    // output pattern. Plain "rendered/<sceneName>" only needs the top-level
+    // "rendered" directory to exist.
+    static const char* kRenderedDirs[] = {
+        "rendered",
+        "rendered/teapot",   // teapot.RISEscene writes "rendered/teapot/frame"
+    };
+    for (const char* sub : kRenderedDirs) {
+        const std::string dir = projectRoot + "/" + sub;
+        if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
+            LOGI("mkdir %s (non-fatal): %s", dir.c_str(), std::strerror(errno));
+        }
     }
 
     m_initialized = true;
