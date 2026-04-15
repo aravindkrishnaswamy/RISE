@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.risegfx.android"
     compileSdk = 35
-    ndkVersion = "26.3.11579264"
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.risegfx.android"
@@ -29,10 +29,11 @@ android {
             cmake {
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                     // Pass the path to our JNI C++ sources down to the shared
                     // CMake config so librise_jni.so gets built as part of the
                     // rise_android project.
-                    "-DRISE_JNI_SOURCES_DIR=${projectDir}/src/main/cpp"
+                    "-DRISE_JNI_SOURCES_DIR=${projectDir.absolutePath.replace("\\", "/")}/src/main/cpp"
                 )
                 cppFlags += "-std=c++17"
             }
@@ -74,6 +75,9 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 }
 
