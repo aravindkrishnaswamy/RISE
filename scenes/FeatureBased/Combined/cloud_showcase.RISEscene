@@ -1,0 +1,246 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   File:           cloud_showcase.RISEscene                                                                #
+#   Description:    Cloud showcase using global medium with enclosing sky dome geometry.                     #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 14, 2026                                                                          #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Sky painter for dome
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_sky
+	color				0.22 0.40 0.78
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					64
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+	radiance_scale			1.5
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/cloud_showcase
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera -- inside a cloud-filled sky box
+##################################################
+
+pinhole_camera
+{
+	location			278 80 -250
+	lookat				278 200 280
+	up					0 1 0
+	width				800
+	height				500
+	fov					65.0
+}
+
+##################################################
+# Lighting
+##################################################
+
+directional_light
+{
+	name				sun
+	power				12.0
+	color				1.0 0.95 0.85
+	direction			-0.3 -0.5 0.8
+}
+
+ambient_light
+{
+	name				sky_fill
+	color				0.55 0.65 0.95
+	power				1.2
+}
+
+##################################################
+# Cloud density using Perlin-Worley
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_dense
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_sparse
+	color				0.0 0.0 0.0
+}
+
+perlinworley3d_painter
+{
+	name				pnt_clouds
+	persistence			0.55
+	octaves				6
+	worley_jitter		1.0
+	blend				0.75
+	colora				pnt_dense
+	colorb				pnt_sparse
+	scale				0.015 0.025 0.015
+	shift				0 0 0
+}
+
+# Cloud medium -- starts at y=60 (above ground) to leave clear sky below
+painter_heterogeneous_medium
+{
+	name				cloud_fog
+	absorption			0.004 0.004 0.004
+	scattering			0.15 0.15 0.15
+	phase				hg 0.5
+	density_painter		pnt_clouds
+	resolution			96
+	color_to_scalar		luminance
+	bbox_min			0 50 0
+	bbox_max			556 450 556
+}
+
+> set global_medium cloud_fog
+
+##################################################
+# Painters and Materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.9
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.15 0.30 0.10
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				80.0
+	material			none
+}
+
+# Sky-colored luminaire for back wall -- blends with sky background
+lambertian_luminaire_material
+{
+	name				sky_mat
+	exitance			pnt_sky
+	scale				4.5
+	material			none
+}
+
+##################################################
+# Enclosing geometry (modified Cornell box - open front)
+##################################################
+
+# Floor (green ground)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 556
+	ptd					556 0 556
+}
+
+# Ceiling (sky-colored)
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0 548 0
+	ptb					556 548 0
+	ptc					556 548 556
+	ptd					0 548 556
+}
+
+# Back wall (sky-colored)
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 556
+	ptb					0 548 556
+	ptc					556 548 556
+	ptd					556 0 556
+}
+
+# Light
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					400 547.99 180
+	ptb					400 547.99 376
+	ptc					156 547.99 376
+	ptd					156 547.99 180
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			green
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			sky_mat
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			sky_mat
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			light_mat
+}

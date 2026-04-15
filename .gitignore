@@ -30,6 +30,7 @@ build/VS2022/UpgradeLog.htm
 !src/**/README.md
 !scenes/**/README.md
 !tests/README.md
+!build/cmake/**/*.md
 /build/VS2005/Library/Debug
 /build/VS2005
 /build/VS2022/RISE-GUI/x64
@@ -40,3 +41,30 @@ build/VS2022/UpgradeLog.htm
 /build/VS2022/Library
 /build/VS2022/x64
 /build/VS2022/RISE-CLI/x64
+# ---- Android / Gradle / Android Studio ----
+# Gradle daemon + per-project caches (both root-level and per-module)
+/android/.gradle
+/android/app/.gradle
+
+# Android Studio / IntelliJ workspace. Entirely user-specific (device
+# selector, deployment targets, window layout, caches). If a team ever wants
+# to share code style or run configurations, whitelist .idea/codeStyles/ and
+# .idea/runConfigurations/ explicitly.
+/android/.idea
+/android/app/.idea
+/android/.kotlin
+
+# local.properties contains sdk.dir which is a per-machine absolute path;
+# the file itself says "MUST NOT be checked into Version Control Systems".
+/android/local.properties
+/android/app/local.properties
+
+# Everything under the NDK CMake build staging. One subdir per ABI x variant;
+# contents are regenerated on every sync. Do not narrow to just /Debug/ —
+# Release/RelWithDebInfo builds write siblings.
+/android/app/.cxx
+
+# Full AGP build output. Covers generated sources, intermediates, kotlin,
+# APK outputs, tmp, reports, test-results and anything AGP adds in future.
+/android/app/build
+
