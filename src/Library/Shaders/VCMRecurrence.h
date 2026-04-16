@@ -113,6 +113,20 @@ namespace RISE
 			const bool enableVM
 			);
 
+		/// Overload with explicit light subpath count.  When the
+		/// specular-only store filter discards non-caustic photons,
+		/// the effective VM photon count is less than W*H.  Using
+		/// the actual stored count for etaVCM keeps the MIS weights
+		/// correctly calibrated.
+		VCMNormalization ComputeNormalization(
+			const unsigned int width,
+			const unsigned int height,
+			const Scalar mergeRadius,
+			const bool enableVC,
+			const bool enableVM,
+			const Scalar effectiveLightSubpathCount
+			);
+
 		/// Initialize (dVCM, dVC, dVM) at the first vertex of a light
 		/// subpath.  directPdfA is the light's area PDF of selecting
 		/// this position (pdfSelect * pdfPosition).  emissionPdfW is

@@ -77,6 +77,42 @@ VCMNormalization RISE::Implementation::ComputeNormalization(
 }
 
 //////////////////////////////////////////////////////////////////////
+// ComputeNormalization (explicit light subpath count)
+//////////////////////////////////////////////////////////////////////
+VCMNormalization RISE::Implementation::ComputeNormalization(
+	const unsigned int width,
+	const unsigned int height,
+	const Scalar mergeRadius,
+	const bool enableVC,
+	const bool enableVM,
+	const Scalar effectiveLightSubpathCount
+	)
+{
+	VCMNormalization n;
+	n.mEnableVC = enableVC;
+	n.mEnableVM = enableVM;
+	n.mLightSubPathCount = effectiveLightSubpathCount;
+	n.mMergeRadius = mergeRadius;
+	n.mMergeRadiusSq = mergeRadius * mergeRadius;
+
+	if( mergeRadius > 0 && n.mLightSubPathCount > 0 )
+	{
+		const Scalar etaVCM = PI * n.mMergeRadiusSq * n.mLightSubPathCount;
+		n.mMisVmWeightFactor = enableVM ? etaVCM : Scalar( 0 );
+		n.mMisVcWeightFactor = enableVC ? ( Scalar( 1 ) / etaVCM ) : Scalar( 0 );
+		n.mVmNormalization   = Scalar( 1 ) / etaVCM;
+	}
+	else
+	{
+		n.mMisVmWeightFactor = 0;
+		n.mMisVcWeightFactor = 0;
+		n.mVmNormalization   = 0;
+	}
+
+	return n;
+}
+
+//////////////////////////////////////////////////////////////////////
 // InitLight
 //
 // First vertex on a light subpath.  From SmallVCM GenerateLightSample:

@@ -126,6 +126,18 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	const LightSampler* pLS = pCaster ? pCaster->GetLightSampler() : 0;
 	pIntegrator->SetLightSampler( pLS );
 
+	// Force 1 SPP per progressive pass.  The original VCM paper
+	// (Georgiev 2012, Section 2.3) defines one iteration as:
+	// generate W×H light subpaths → build store → 1 eye sample
+	// per pixel.  Each progressive pass IS one VCM iteration.
+	// The store is rebuilt at the start of each pass via
+	// OnProgressivePassBegin.  This decouples store rebuilds from
+	// the UI progressive-preview concept.
+	if( pIntegrator->GetEnableVM() ) {
+		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.samplesPerPass = 1;
+		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.enabled = true;
+	}
+
 	// Reset the adaptive sample counter for this render.
 	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 
@@ -195,20 +207,6 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	// Determine the merge radius.  If the user supplied a positive
 	// radius, use it directly.  Otherwise run a pre-pass over the
 	// light subpaths to derive an auto-radius.
-	//
-	// Heuristic: we take the MEDIAN segment length between adjacent
-	// light-subpath vertices as the characteristic scene scale, then
-	// use 5% of that as the merge radius.  This is robust to:
-	//   - delta-specular chains (glass/mirror), which can generate
-	//     interior positions at arbitrary distances
-	//   - infinite planes, which can produce hits at arbitrary
-	//     distances from the scene origin
-	//   - scenes with wildly different scales (cornell box ~500
-	//     units vs triplecaustic ~1 unit)
-	// because the MEDIAN is unaffected by the small tail of stray
-	// long segments.  (A percentile-bbox of positions alone is not
-	// enough — a single glass sphere near an infinite plane produces
-	// a wide bbox even after trimming the top 1% of positions.)
 	Scalar effectiveMergeRadius = pIntegrator->GetRequestedMergeRadius();
 	if( pIntegrator->GetEnableVM() && effectiveMergeRadius <= 0 )
 	{
@@ -216,11 +214,6 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 		segLens.reserve( static_cast<std::size_t>( width ) *
 		                 static_cast<std::size_t>( height ) * 4 );
 
-		// Track whether any specular (delta) vertex appears in the
-		// light subpaths.  If the scene has only diffuse materials,
-		// VM merging adds variance without reducing it — VC already
-		// handles all diffuse paths efficiently.  In that case we
-		// set the merge radius to 0, effectively disabling VM.
 		bool foundSpecular = false;
 
 		for( unsigned int s = 0; s < lightSubpathsPerPixel; s++ )
@@ -237,25 +230,18 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, rc.random );
 					for( std::size_t k = 1; k < tmpLightVerts.size(); k++ ) {
 						const BDPTVertex& curr = tmpLightVerts[k];
-						const BDPTVertex& prev = tmpLightVerts[k - 1];
+						const BDPTVertex& prevV = tmpLightVerts[k - 1];
 
-						if( curr.isDelta || prev.isDelta ) {
+						if( curr.isDelta || prevV.isDelta ) {
 							foundSpecular = true;
 						}
 
-						// Only count segments where at least one endpoint
-						// would be stored in the light vertex store
-						// (connectible surface vertex).  This avoids
-						// skewing the median by long specular chains
-						// through glass or media.
 						const bool currStoreable = ( curr.isConnectible && curr.type == BDPTVertex::SURFACE );
-						const bool prevStoreable = ( prev.isConnectible && prev.type == BDPTVertex::SURFACE );
+						const bool prevStoreable = ( prevV.isConnectible && prevV.type == BDPTVertex::SURFACE );
 						if( !currStoreable && !prevStoreable ) {
 							continue;
 						}
-						const Vector3 d = Vector3Ops::mkVector3(
-							curr.position,
-							prev.position );
+						const Vector3 d = Vector3Ops::mkVector3( curr.position, prevV.position );
 						const Scalar len = Vector3Ops::Magnitude( d );
 						if( len > 0 ) {
 							segLens.push_back( len );
@@ -267,21 +253,28 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 
 		if( !foundSpecular ) {
 			GlobalLog()->PrintEx( eLog_Event,
-				"VCMRasterizerBase::PreRenderSetup:: auto-radius "
-				"found no specular vertices in light subpaths — "
-				"disabling VM (diffuse-only scene, VM adds variance "
-				"without benefit)" );
+				"VCMRasterizerBase::PreRenderSetup:: no specular "
+				"vertices — disabling VM" );
 			effectiveMergeRadius = 0;
+
+			mVCMNormalization = ComputeNormalization(
+				width, height, Scalar( 0 ),
+				pIntegrator->GetEnableVC(), false );
+
+			mSplatTotalSamples = 1.0;
+			if( pSampling ) {
+				mSplatTotalSamples = static_cast<Scalar>( pSampling->GetNumSamples() );
+			}
+			mSplatTotalSamples *= GetSplatSampleScale();
+
+			GlobalLog()->PrintEx( eLog_Event,
+				"VCMRasterizerBase::PreRenderSetup:: light pass done — "
+				"paths shot=0, light vertices stored=0, kd-tree built=0" );
+			return;
 		}
 		else if( segLens.size() >= 8 ) {
 			std::sort( segLens.begin(), segLens.end() );
 			const Scalar medianSeg = segLens[segLens.size() / 2];
-			// 1% of the median segment length gives a merge radius
-			// that scales with scene geometry.  The single-store
-			// architecture means merge variance doesn't reduce
-			// across progressive passes the way SmallVCM's
-			// per-iteration rebuild does; throughput clamping at
-			// store time (below) controls the worst-case outliers.
 			effectiveMergeRadius = Scalar( 0.01 ) * medianSeg;
 
 			GlobalLog()->PrintEx( eLog_Event,
@@ -291,8 +284,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning,
 				"VCMRasterizerBase::PreRenderSetup:: auto-radius "
-				"failed — not enough light-subpath segments.  "
-				"Disabling VM for this render." );
+				"failed — disabling VM" );
+			effectiveMergeRadius = 0;
 		}
 	}
 
@@ -326,8 +319,6 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 			VCMIntegrator::ConvertLightSubpath(
 				tmpLightVerts, mVCMNormalization, tmpConverted, &tmpLightMis );
 
-			// Light vertex store for VM merging.  t=1 splats are
-			// handled per-sample in IntegratePixel to mirror BDPT.
 			for( std::size_t k = 0; k < tmpConverted.size(); k++ ) {
 				pLightVertexStore->Append( tmpConverted[k] );
 				totalStored++;
@@ -336,11 +327,9 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	}
 	}  // for s
 
-	// Throughput clamping for the single-store architecture.
-	// The store is shared across all progressive passes, so
-	// high-throughput photons at caustic hotspots create persistent
-	// splotches that don't average out with more SPP (unlike
-	// SmallVCM's per-iteration rebuild).  Clamp outlier throughputs
+	// Throughput clamping (kept as secondary safeguard).
+	// With per-iteration store rebuild the density noise averages
+	// out, but extreme throughput outliers can still cause fireflies.
 	// to median × 20 to control the worst variance while preserving
 	// caustic structure.
 	{
@@ -443,6 +432,11 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	tmpConverted.reserve( pIntegrator->GetMaxLightDepth() + 1 );
 	tmpLightMis.reserve( pIntegrator->GetMaxLightDepth() + 1 );
 
+	// Each iteration uses passIdx as the Sobol sample index so light
+	// subpaths get different positions per iteration.  The eye pass
+	// in IntegratePixel uses the same passIdx via globalSampleIndex,
+	// but draws from non-overlapping Sobol dimension streams
+	// (StartStream partitioning).
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
 	PrepareRuntimeContext( rc );
 
@@ -452,11 +446,8 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	{
 		for( unsigned int x = 0; x < width; x++ )
 		{
-			// passIdx offsets the Sobol sample index so each pass
-			// generates a different set of light subpath positions.
 			const uint32_t pixelSeed = y * width + x;
-			const uint32_t sampleIndex = passIdx;
-			SobolSampler sampler( sampleIndex, pixelSeed );
+			SobolSampler sampler( passIdx, pixelSeed );
 
 			tmpLightVerts.clear();
 			pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, rc.random );
@@ -478,7 +469,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	pLightVertexStore->BuildKDTree();
 
 	GlobalLog()->PrintEx( eLog_Event,
-		"VCMRasterizerBase::OnProgressivePassBegin:: pass %u — "
+		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
 		"rebuilt store with %llu light vertices",
 		passIdx, totalStored );
 }
