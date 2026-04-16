@@ -85,6 +85,33 @@ namespace RISE
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
 		Scalar					pdfFwd;			///< Forward PDF in area measure
 		Scalar					pdfRev;			///< Reverse PDF in area measure (filled during MIS weight computation)
+
+		/// Solid-angle emission / importance PDF at path endpoints, consumed
+		/// by the VCM post-pass when it recovers per-vertex dVCM/dVC/dVM
+		/// running quantities from this vertex's area-measure pdfFwd.
+		/// - Light endpoint (vertex 0 on a light subpath): pdfSelect *
+		///   pdfPosition * pdfDirection — the full emission solid-angle
+		///   direction PDF on the light.
+		/// - Camera endpoint (vertex 0 on an eye subpath): pdfCamDir — the
+		///   camera's directional importance PDF in solid-angle measure.
+		/// - All other vertices: unused; leave at zero.
+		/// BDPT itself never reads this field; it only exists to feed the
+		/// VCM integrator.
+		Scalar					emissionPdfW;
+
+		/// Cached generator-side cosine used by the VCM post-pass when
+		/// inverting the area-measure PDF conversion back to solid angle.
+		///   pdf_solidAngle = pdf_area * distSq / |cosAtGen|
+		/// - Light endpoint (vertex 0): |n_light . direction_out|.
+		/// - Camera endpoint (vertex 0): 1.0 (sentinel; camera init uses
+		///   emissionPdfW directly).
+		/// - Surface vertices: absCosIn of the incoming ray at this vertex.
+		/// - Medium vertices: 0 (sentinel; VCM uses sigma_t_scalar instead).
+		/// - BSSRDF / random-walk SSS exit vertices: 0 (sentinel; the
+		///   post-pass terminates the recurrence on these).
+		/// BDPT itself never reads this field; it only exists to feed the
+		/// VCM integrator.
+		Scalar					cosAtGen;
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
@@ -130,6 +157,8 @@ namespace RISE
 		throughputNM( 0 ),
 		pdfFwd( 0 ),
 		pdfRev( 0 ),
+		emissionPdfW( 0 ),
+		cosAtGen( 0 ),
 		isDelta( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),

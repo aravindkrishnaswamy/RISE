@@ -4935,6 +4935,220 @@ bool Job::SetBDPTSpectralRasterizer(
 	return true;
 }
 
+bool Job::SetVCMPelRasterizer(
+	const unsigned int numPixelSamples,
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const char* shader,
+	const char* globalRadianceMap,
+	const bool bBackground,
+	const double scale,
+	const double orient[3],
+	const char* pixelSampler,
+	const double pixelSamplerParam,
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
+	const bool bShowLuminaires,
+	const bool bChooseOnlyOneLight,
+	const double mergeRadius,
+	const bool enableVC,
+	const bool enableVM,
+	const bool oidnDenoise,
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const bool useZSobol,
+	const ProgressiveConfig& progressiveConfig
+	)
+{
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetVCMPelRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+
+	if( globalRadianceMap ) {
+		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, scale );
+			pRm->SetOrientation( Vector3( orient ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetVCMPelRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreateVCMPelRasterizer(
+		&pRaster,
+		pCaster,
+		pPixelSampler,
+		pPixelFilter,
+		maxEyeDepth,
+		maxLightDepth,
+		mergeRadius,
+		enableVC,
+		enableVM,
+		oidnDenoise,
+		guidingConfig,
+		adaptiveConfig,
+		stabilityConfig,
+		useZSobol );
+
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
+bool Job::SetVCMSpectralRasterizer(
+	const unsigned int numPixelSamples,
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const char* shader,
+	const char* globalRadianceMap,
+	const bool bBackground,
+	const double scale,
+	const double orient[3],
+	const char* pixelSampler,
+	const double pixelSamplerParam,
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
+	const bool bShowLuminaires,
+	const bool bChooseOnlyOneLight,
+	const double nmbegin,
+	const double nmend,
+	const unsigned int num_wavelengths,
+	const unsigned int spectral_samples,
+	const double mergeRadius,
+	const bool enableVC,
+	const bool enableVM,
+	const bool oidnDenoise,
+	const PathGuidingConfig& guidingConfig,
+	const StabilityConfig& stabilityConfig,
+	const bool useZSobol,
+	const bool useHWSS,
+	const ProgressiveConfig& progressiveConfig
+	)
+{
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetVCMSpectralRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+
+	if( globalRadianceMap ) {
+		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, scale );
+			pRm->SetOrientation( Vector3( orient ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetVCMSpectralRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreateVCMSpectralRasterizer(
+		&pRaster,
+		pCaster,
+		pPixelSampler,
+		pPixelFilter,
+		maxEyeDepth,
+		maxLightDepth,
+		nmbegin,
+		nmend,
+		num_wavelengths,
+		spectral_samples,
+		mergeRadius,
+		enableVC,
+		enableVM,
+		oidnDenoise,
+		guidingConfig,
+		stabilityConfig,
+		useZSobol,
+		useHWSS );
+
+	if( pRaster && progressiveConfig.enabled ) {
+		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
+	}
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
 bool Job::SetPathTracingPelRasterizer(
 	const unsigned int numPixelSamples,
 	const char* shader,

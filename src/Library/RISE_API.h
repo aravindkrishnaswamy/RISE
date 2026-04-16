@@ -2228,6 +2228,48 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
 								);
 
+	//! Creates a Pel (RGB) Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMPelRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar mergeRadius,			///< [in] Merge radius (0 => scene-auto fallback)
+								const bool enableVC,				///< [in] Enable vertex connection strategies
+								const bool enableVM,				///< [in] Enable vertex merging strategy
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								);
+
+	//! Creates a spectral Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const Scalar mergeRadius,			///< [in] Merge radius (0 => scene-auto fallback)
+								const bool enableVC,				///< [in] Enable vertex connection strategies
+								const bool enableVM,				///< [in] Enable vertex merging strategy
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								);
+
 	//! Creates a pure path tracing Pel rasterizer (bypasses shader ops)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingPelRasterizer(

@@ -1330,6 +1330,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	const Scalar pdfDirArea = ls.pdfDirection;   // already in solid angle for now
 	const Scalar pdfEmit = ls.pdfSelect * ls.pdfPosition * pdfDirArea;
 
+	// VCM post-pass inputs on the light endpoint: combined
+	// emission pdf (= directPdfA * solidAnglePdfW) and the
+	// generator-side cosine at the light surface.  See
+	// BDPTVertex.h for the semantics expected by VCMIntegrator.
+	vertices[0].emissionPdfW = pdfEmit;
+	vertices[0].cosAtGen = cosAtLight;
+
 	if( pdfEmit > 0 ) {
 		beta = beta * (1.0 / pdfEmit);
 	} else {
@@ -1446,6 +1453,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
 						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 					mv.pdfRev = 0;
+
+					// VCM post-pass uses sigma_t_scalar (not cosAtGen) for
+					// the area-to-solid-angle inversion at medium vertices.
+					// cosAtGen is left at zero as it is unused.
+					mv.cosAtGen = 0;
 
 					vertices.push_back( mv );
 
@@ -1566,6 +1578,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		v.throughput = beta;
 		v.pdfRev = 0;
+
+		// VCM post-pass input: the receiving-side cosine used to
+		// invert the area-measure pdfFwd back to solid angle at
+		// merge/connection time.
+		v.cosAtGen = absCosIn;
 
 		// Check if the material has a delta BSDF (perfect specular)
 		v.isDelta = false;
@@ -2195,6 +2212,13 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );
 	}
 
+	// VCM post-pass inputs on the camera endpoint: the
+	// directional importance PDF in solid-angle measure (used by
+	// InitCamera), plus a cosine sentinel of 1.0.  BDPT itself
+	// does not read these.
+	vertices[0].emissionPdfW = pdfCamDir;
+	vertices[0].cosAtGen = 1.0;
+
 	Scalar pdfFwdPrev = pdfCamDir;
 	IORStack iorStack( 1.0 );
 
@@ -2337,6 +2361,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 					mv.pdfRev = 0;
 
+					// VCM post-pass uses sigma_t_scalar for the
+					// area-to-solid-angle inversion at medium vertices.
+					mv.cosAtGen = 0;
+
 #ifdef RISE_ENABLE_OPENPGL
 					mv.guidingHasSegment = true;
 					mv.guidingDirectionOut = -wo;
@@ -2475,6 +2503,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.throughput = beta;
 		v.pdfRev = 0;
 		v.isDelta = false;
+
+		// VCM post-pass input: the receiving-side cosine used to
+		// invert the area-measure pdfFwd back to solid angle at
+		// merge/connection time.
+		v.cosAtGen = absCosIn;
 #ifdef RISE_ENABLE_OPENPGL
 		v.guidingHasSegment = true;
 		v.guidingDirectionOut = -currentRay.Dir();
@@ -4525,6 +4558,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	Scalar betaNM = LeNM * cosAtLight;
 	const Scalar pdfEmit = ls.pdfSelect * ls.pdfPosition * ls.pdfDirection;
 
+	// VCM post-pass inputs on the light endpoint (spectral variant).
+	// See BDPTVertex.h for the semantics.
+	vertices[0].emissionPdfW = pdfEmit;
+	vertices[0].cosAtGen = cosAtLight;
+
 	if( pdfEmit > 0 ) {
 		betaNM = betaNM / pdfEmit;
 	} else {
@@ -4629,6 +4667,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
 						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 					mv.pdfRev = 0;
+
+					// VCM uses sigma_t_scalar for medium vertices.
+					mv.cosAtGen = 0;
 
 					vertices.push_back( mv );
 
@@ -4742,6 +4783,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.throughput = RISEPel( betaNM, betaNM, betaNM );	// for guiding training
 		v.pdfRev = 0;
 		v.isDelta = false;
+
+		// VCM post-pass input: the receiving-side cosine at this
+		// vertex (spectral variant).
+		v.cosAtGen = absCosIn;
 
 #ifdef RISE_ENABLE_OPENPGL
 		if( maxLightGuidingDepth > 0 )
@@ -5276,6 +5321,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );
 	}
 
+	// VCM post-pass inputs on the camera endpoint (spectral).
+	vertices[0].emissionPdfW = pdfCamDir;
+	vertices[0].cosAtGen = 1.0;
+
 	Scalar pdfFwdPrev = pdfCamDir;
 	IORStack iorStack( 1.0 );
 
@@ -5380,6 +5429,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
 						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
 					mv.pdfRev = 0;
+
+					// VCM uses sigma_t_scalar for medium vertices.
+					mv.cosAtGen = 0;
 
 					vertices.push_back( mv );
 
@@ -5490,6 +5542,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.throughputNM = betaNM;
 		v.pdfRev = 0;
 		v.isDelta = false;
+
+		// VCM post-pass input (spectral).
+		v.cosAtGen = absCosIn;
 
 		if( !ri.pMaterial ) {
 			vertices.push_back( v );

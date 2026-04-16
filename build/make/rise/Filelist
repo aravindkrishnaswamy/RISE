@@ -263,6 +263,9 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/PathTracingSpectralRasterizer.cpp				\
 	$(PATHLIBRARY)Rendering/BDPTPelRasterizer.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTSpectralRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/VCMRasterizerBase.cpp							\
+	$(PATHLIBRARY)Rendering/VCMPelRasterizer.cpp							\
+	$(PATHLIBRARY)Rendering/VCMSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
 	$(PATHLIBRARY)Rendering/MLTSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/AOVBuffers.cpp									\
@@ -291,7 +294,11 @@ SRCLIBSHADEROPS =\
 	$(PATHLIBRARY)Shaders/ShadowPhotonMapShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/TransparencyShaderOp.cpp						\
 	$(PATHLIBRARY)Shaders/TranslucentPelPhotonMapShaderOp.cpp			\
-	$(PATHLIBRARY)Shaders/BDPTIntegrator.cpp
+	$(PATHLIBRARY)Shaders/BDPTIntegrator.cpp							\
+	$(PATHLIBRARY)Shaders/VCMRecurrence.cpp								\
+	$(PATHLIBRARY)Shaders/VCMLightVertexStore.cpp						\
+	$(PATHLIBRARY)Shaders/VCMPathOps.cpp								\
+	$(PATHLIBRARY)Shaders/VCMIntegrator.cpp
 
 # Shaders
 SRCLIBSHADERS =\

@@ -6498,6 +6498,283 @@ namespace RISE
 				}
 			};
 
+			struct VCMPelRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String defaultshader = "global";
+					unsigned int numSamples = 1;
+					unsigned int maxEyeDepth = 8;
+					unsigned int maxLightDepth = 8;
+					String radiancemap = "none";
+					double radianceScale = 1.0;
+					double radorient[3] = {0};
+					bool radback = true;
+					String pixelFilter = "none";
+					String pixelSampler = "none";
+					double pixelSamplerParam = 1.0;
+					double pixelFilterWidth = 1.0;
+					double pixelFilterHeight = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
+					bool showLuminaires = true;
+					bool onlyonelight = false;
+					double mergeRadius = 0.0;	// 0 => scene-auto fallback
+					bool enableVC = true;
+					bool enableVM = true;
+					bool oidnDenoise = true;
+					bool blueNoiseSampler = true;
+					PathGuidingConfig guidingConfig;
+					AdaptiveSamplingConfig adaptiveConfig;
+					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "defaultshader" ) {
+							defaultshader = pvalue;
+						} else if( pname == "max_eye_depth" ) {
+							maxEyeDepth = pvalue.toUInt();
+						} else if( pname == "max_light_depth" ) {
+							maxLightDepth = pvalue.toUInt();
+						} else if( pname == "samples" ) {
+							numSamples = pvalue.toUInt();
+						} else if( pname == "radiance_map" ) {
+							radiancemap = pvalue;
+						} else if( pname == "radiance_scale" ) {
+							radianceScale = pvalue.toDouble();
+						} else if( pname == "radiance_background" ) {
+							radback = pvalue.toBoolean();
+						} else if( pname == "radiance_orient" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
+							radorient[0] *= DEG_TO_RAD;
+							radorient[1] *= DEG_TO_RAD;
+							radorient[2] *= DEG_TO_RAD;
+						} else if( pname == "pixel_sampler" ) {
+							pixelSampler = pvalue;
+						} else if( pname == "pixel_sampler_param" ) {
+							pixelSamplerParam = pvalue.toDouble();
+						} else if( pname == "pixel_filter" ) {
+							pixelFilter = pvalue;
+						} else if( pname == "pixel_filter_width" ) {
+							pixelFilterWidth = pvalue.toDouble();
+						} else if( pname == "pixel_filter_height" ) {
+							pixelFilterHeight = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramA" ) {
+							pixelFilterParamA = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramB" ) {
+							pixelFilterParamB = pvalue.toDouble();
+						} else if( pname == "show_luminaires" ) {
+							showLuminaires = pvalue.toBoolean();
+						} else if( pname == "choose_one_light" ) {
+							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "merge_radius" ) {
+							mergeRadius = pvalue.toDouble();
+						} else if( pname == "vc_enabled" ) {
+							enableVC = pvalue.toBoolean();
+						} else if( pname == "vm_enabled" ) {
+							enableVM = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "blue_noise_sampler" ) {
+							blueNoiseSampler = pvalue.toBoolean();
+						} else if( pname == "adaptive_max_samples" ) {
+							adaptiveConfig.maxSamples = pvalue.toUInt();
+						} else if( pname == "adaptive_threshold" ) {
+							adaptiveConfig.threshold = pvalue.toDouble();
+						} else if( pname == "show_adaptive_map" ) {
+							adaptiveConfig.showMap = pvalue.toBoolean();
+						} else if( pname == "direct_clamp" ) {
+							stabilityConfig.directClamp = pvalue.toDouble();
+						} else if( pname == "indirect_clamp" ) {
+							stabilityConfig.indirectClamp = pvalue.toDouble();
+						} else if( pname == "rr_min_depth" ) {
+							stabilityConfig.rrMinDepth = pvalue.toUInt();
+						} else if( pname == "rr_threshold" ) {
+							stabilityConfig.rrThreshold = pvalue.toDouble();
+						} else if( pname == "max_diffuse_bounce" ) {
+							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
+						} else if( pname == "max_glossy_bounce" ) {
+							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
+						} else if( pname == "max_transmission_bounce" ) {
+							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
+						} else if( pname == "max_translucent_bounce" ) {
+							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
+						} else if( pname == "max_volume_bounce" ) {
+							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.SetVCMPelRasterizer( numSamples,
+						maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
+						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
+						showLuminaires, onlyonelight,
+						mergeRadius, enableVC, enableVM, oidnDenoise,
+						guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+				}
+			};
+
+			struct VCMSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String defaultshader = "global";
+					unsigned int numSamples = 1;
+					unsigned int maxEyeDepth = 8;
+					unsigned int maxLightDepth = 8;
+					String radiancemap = "none";
+					double radianceScale = 1.0;
+					double radorient[3] = {0};
+					bool radback = true;
+					String pixelFilter = "none";
+					String pixelSampler = "none";
+					double pixelSamplerParam = 1.0;
+					double pixelFilterWidth = 1.0;
+					double pixelFilterHeight = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
+					bool showLuminaires = true;
+					bool onlyonelight = false;
+					double nmbegin = 380.0;
+					double nmend = 780.0;
+					unsigned int num_wavelengths = 80;
+					unsigned int spectral_samples = 16;
+					double mergeRadius = 0.0;	// 0 => scene-auto fallback
+					bool enableVC = true;
+					bool enableVM = true;
+					bool oidnDenoise = true;
+					bool blueNoiseSampler = true;
+					bool useHWSS = false;
+					PathGuidingConfig guidingConfig;
+					StabilityConfig stabilityConfig;
+					ProgressiveConfig progressiveConfig;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "defaultshader" ) {
+							defaultshader = pvalue;
+						} else if( pname == "max_eye_depth" ) {
+							maxEyeDepth = pvalue.toUInt();
+						} else if( pname == "max_light_depth" ) {
+							maxLightDepth = pvalue.toUInt();
+						} else if( pname == "samples" ) {
+							numSamples = pvalue.toUInt();
+						} else if( pname == "radiance_map" ) {
+							radiancemap = pvalue;
+						} else if( pname == "radiance_scale" ) {
+							radianceScale = pvalue.toDouble();
+						} else if( pname == "radiance_background" ) {
+							radback = pvalue.toBoolean();
+						} else if( pname == "radiance_orient" ) {
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
+							radorient[0] *= DEG_TO_RAD;
+							radorient[1] *= DEG_TO_RAD;
+							radorient[2] *= DEG_TO_RAD;
+						} else if( pname == "pixel_sampler" ) {
+							pixelSampler = pvalue;
+						} else if( pname == "pixel_sampler_param" ) {
+							pixelSamplerParam = pvalue.toDouble();
+						} else if( pname == "pixel_filter" ) {
+							pixelFilter = pvalue;
+						} else if( pname == "pixel_filter_width" ) {
+							pixelFilterWidth = pvalue.toDouble();
+						} else if( pname == "pixel_filter_height" ) {
+							pixelFilterHeight = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramA" ) {
+							pixelFilterParamA = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramB" ) {
+							pixelFilterParamB = pvalue.toDouble();
+						} else if( pname == "show_luminaires" ) {
+							showLuminaires = pvalue.toBoolean();
+						} else if( pname == "choose_one_light" ) {
+							onlyonelight = pvalue.toBoolean();
+						} else if( pname == "blue_noise_sampler" ) {
+							blueNoiseSampler = pvalue.toBoolean();
+						} else if( pname == "hwss" ) {
+							useHWSS = pvalue.toBoolean();
+						} else if( pname == "nmbegin" ) {
+							nmbegin = pvalue.toDouble();
+						} else if( pname == "nmend" ) {
+							nmend = pvalue.toDouble();
+						} else if( pname == "num_wavelengths" ) {
+							num_wavelengths = pvalue.toUInt();
+						} else if( pname == "spectral_samples" ) {
+							spectral_samples = pvalue.toUInt();
+						} else if( pname == "merge_radius" ) {
+							mergeRadius = pvalue.toDouble();
+						} else if( pname == "vc_enabled" ) {
+							enableVC = pvalue.toBoolean();
+						} else if( pname == "vm_enabled" ) {
+							enableVM = pvalue.toBoolean();
+						} else if( pname == "oidn_denoise" ) {
+							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "direct_clamp" ) {
+							stabilityConfig.directClamp = pvalue.toDouble();
+						} else if( pname == "indirect_clamp" ) {
+							stabilityConfig.indirectClamp = pvalue.toDouble();
+						} else if( pname == "rr_min_depth" ) {
+							stabilityConfig.rrMinDepth = pvalue.toUInt();
+						} else if( pname == "rr_threshold" ) {
+							stabilityConfig.rrThreshold = pvalue.toDouble();
+						} else if( pname == "max_diffuse_bounce" ) {
+							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
+						} else if( pname == "max_glossy_bounce" ) {
+							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
+						} else if( pname == "max_transmission_bounce" ) {
+							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
+						} else if( pname == "max_translucent_bounce" ) {
+							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
+						} else if( pname == "max_volume_bounce" ) {
+							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
+						} else if( pname == "light_bvh" ) {
+							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "progressive_rendering" ) {
+							progressiveConfig.enabled = pvalue.toBoolean();
+						} else if( pname == "progressive_samples_per_pass" ) {
+							const unsigned int spp = pvalue.toUInt();
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.SetVCMSpectralRasterizer( numSamples,
+						maxEyeDepth, maxLightDepth,
+						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
+						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
+						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
+						showLuminaires, onlyonelight,
+						nmbegin, nmend, num_wavelengths, spectral_samples,
+						mergeRadius, enableVC, enableVM, oidnDenoise,
+						guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
+				}
+			};
+
 			struct PathTracingPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -7947,6 +8224,8 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["pixelintegratingspectral_rasterizer"] = new PixelIntegratingSpectralRasterizerAsciiChunkParser();
 	chunks["bdpt_pel_rasterizer"] = new BDPTPelRasterizerAsciiChunkParser();
 	chunks["bdpt_spectral_rasterizer"] = new BDPTSpectralRasterizerAsciiChunkParser();
+	chunks["vcm_pel_rasterizer"] = new VCMPelRasterizerAsciiChunkParser();
+	chunks["vcm_spectral_rasterizer"] = new VCMSpectralRasterizerAsciiChunkParser();
 	chunks["pathtracing_pel_rasterizer"] = new PathTracingPelRasterizerAsciiChunkParser();
 	chunks["pathtracing_spectral_rasterizer"] = new PathTracingSpectralRasterizerAsciiChunkParser();
 	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();

@@ -1568,6 +1568,70 @@ namespace RISE
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
+		//! Sets the rasterizer type to be Pel (RGB) Vertex Connection and Merging
+		virtual bool SetVCMPelRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const char* shader,										///< [in] The default shader
+			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+			const bool bBackground,									///< [in] Is the radiance map a background object
+			const double scale,										///< [in] How much to scale the radiance values
+			const double orient[3],									///< [in] Euler angles for orienting the radiance map
+			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const double mergeRadius,								///< [in] Photon merge radius (0 => scene-auto fallback)
+			const bool enableVC,									///< [in] Enable vertex connection strategies
+			const bool enableVM,									///< [in] Enable vertex merging strategy
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			) = 0;
+
+		//! Sets the rasterizer type to be spectral Vertex Connection and Merging
+		virtual bool SetVCMSpectralRasterizer(
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const char* shader,										///< [in] The default shader
+			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
+			const bool bBackground,									///< [in] Is the radiance map a background object
+			const double scale,										///< [in] How much to scale the radiance values
+			const double orient[3],									///< [in] Euler angles for orienting the radiance map
+			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
+			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
+			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
+			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
+			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
+			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
+			const double nmbegin,									///< [in] Start wavelength (nm)
+			const double nmend,										///< [in] End wavelength (nm)
+			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
+			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
+			const double mergeRadius,								///< [in] Photon merge radius (0 => scene-auto fallback)
+			const bool enableVC,									///< [in] Enable vertex connection strategies
+			const bool enableVM,									///< [in] Enable vertex merging strategy
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const bool useZSobol,									///< [in] Use Z-Sobol sampler
+			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			) = 0;
+
 		//! Sets the rasterizer to pure path tracing (Pel, bypasses shader ops)
 		virtual bool SetPathTracingPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel

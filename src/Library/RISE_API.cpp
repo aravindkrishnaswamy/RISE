@@ -4585,6 +4585,8 @@ namespace RISE
 
 #include "Rendering/BDPTPelRasterizer.h"
 #include "Rendering/BDPTSpectralRasterizer.h"
+#include "Rendering/VCMPelRasterizer.h"
+#include "Rendering/VCMSpectralRasterizer.h"
 #include "Rendering/PathTracingPelRasterizer.h"
 #include "Rendering/PathTracingSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
@@ -4706,6 +4708,118 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
+		return true;
+	}
+
+	//! Creates a Pel (RGB) Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMPelRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar mergeRadius,
+								const bool enableVC,
+								const bool enableVM,
+								const bool oidnDenoise,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		VCMPelRasterizer* pRasterizer = new VCMPelRasterizer(
+			caster,
+			maxEyeDepth,
+			maxLightDepth,
+			mergeRadius,
+			enableVC,
+			enableVM,
+			guidingConfig,
+			adaptiveConfig,
+			stabilityConfig,
+			useZSobol );
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "VCM Pel rasterizer" );
+		return true;
+	}
+
+	//! Creates a spectral Vertex Connection and Merging rasterizer
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVCMSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const Scalar mergeRadius,
+								const bool enableVC,
+								const bool enableVM,
+								const bool oidnDenoise,
+								const PathGuidingConfig& guidingConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		VCMSpectralRasterizer* pRasterizer = new VCMSpectralRasterizer(
+			caster,
+			maxEyeDepth,
+			maxLightDepth,
+			lambda_begin,
+			lambda_end,
+			num_wavelengths,
+			spectral_samples,
+			mergeRadius,
+			enableVC,
+			enableVM,
+			guidingConfig,
+			stabilityConfig,
+			useZSobol,
+			useHWSS );
+
+		if( pSamples && pFilter ) {
+			pRasterizer->SubSampleRays( pSamples, pFilter );
+		}
+
+#ifdef RISE_ENABLE_OIDN
+		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+#else
+		if( oidnDenoise ) {
+			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
+		}
+#endif
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "VCM Spectral rasterizer" );
 		return true;
 	}
 

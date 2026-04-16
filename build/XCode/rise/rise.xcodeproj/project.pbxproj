@@ -1492,6 +1492,28 @@
 		F2D9B12F2F8E96770077A171 /* WaveletNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1102F8E96770077A171 /* WaveletNoise.h */; };
 		F2D9B1302F8E96770077A171 /* WorleyNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1122F8E96770077A171 /* WorleyNoise.h */; };
 		F2D9B1312F8E96770077A171 /* GaborNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1042F8E96770077A171 /* GaborNoise.h */; };
+		F2D9B1382F8FA5C40077A171 /* VCMSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1362F8FA5C40077A171 /* VCMSpectralRasterizer.h */; };
+		F2D9B1392F8FA5C40077A171 /* VCMPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1322F8FA5C40077A171 /* VCMPelRasterizer.h */; };
+		F2D9B13A2F8FA5C40077A171 /* VCMRasterizerBase.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1342F8FA5C40077A171 /* VCMRasterizerBase.h */; };
+		F2D9B13B2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */; };
+		F2D9B13C2F8FA5C40077A171 /* VCMRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */; };
+		F2D9B13D2F8FA5C40077A171 /* VCMSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */; };
+		F2D9B13E2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */; };
+		F2D9B13F2F8FA5C40077A171 /* VCMRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */; };
+		F2D9B1402F8FA5C40077A171 /* VCMSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */; };
+		F2D9B14A2F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1422F8FA60F0077A171 /* VCMIntegrator.cpp */; };
+		F2D9B14B2F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */; };
+		F2D9B14C2F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */; };
+		F2D9B14D2F8FA60F0077A171 /* VCMPathOps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */; };
+		F2D9B14E2F8FA60F0077A171 /* VCMRecurrence.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1482F8FA60F0077A171 /* VCMRecurrence.h */; };
+		F2D9B14F2F8FA60F0077A171 /* VCMIntegrator.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1412F8FA60F0077A171 /* VCMIntegrator.h */; };
+		F2D9B1502F8FA60F0077A171 /* VCMLightVertexStore.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1442F8FA60F0077A171 /* VCMLightVertexStore.h */; };
+		F2D9B1512F8FA60F0077A171 /* VCMLightVertex.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1432F8FA60F0077A171 /* VCMLightVertex.h */; };
+		F2D9B1522F8FA60F0077A171 /* VCMPathOps.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B1462F8FA60F0077A171 /* VCMPathOps.h */; };
+		F2D9B1532F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1422F8FA60F0077A171 /* VCMIntegrator.cpp */; };
+		F2D9B1542F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */; };
+		F2D9B1552F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */; };
+		F2D9B1562F8FA60F0077A171 /* VCMPathOps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2294,6 +2316,21 @@
 		F2D9B1112F8E96770077A171 /* WaveletNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WaveletNoise3D.cpp; sourceTree = "<group>"; };
 		F2D9B1122F8E96770077A171 /* WorleyNoise.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WorleyNoise.h; sourceTree = "<group>"; };
 		F2D9B1132F8E96770077A171 /* WorleyNoise3D.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WorleyNoise3D.cpp; sourceTree = "<group>"; };
+		F2D9B1322F8FA5C40077A171 /* VCMPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMPelRasterizer.h; sourceTree = "<group>"; };
+		F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMPelRasterizer.cpp; sourceTree = "<group>"; };
+		F2D9B1342F8FA5C40077A171 /* VCMRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMRasterizerBase.h; sourceTree = "<group>"; };
+		F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMRasterizerBase.cpp; sourceTree = "<group>"; };
+		F2D9B1362F8FA5C40077A171 /* VCMSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMSpectralRasterizer.h; sourceTree = "<group>"; };
+		F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMSpectralRasterizer.cpp; sourceTree = "<group>"; };
+		F2D9B1412F8FA60F0077A171 /* VCMIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMIntegrator.h; sourceTree = "<group>"; };
+		F2D9B1422F8FA60F0077A171 /* VCMIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMIntegrator.cpp; sourceTree = "<group>"; };
+		F2D9B1432F8FA60F0077A171 /* VCMLightVertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMLightVertex.h; sourceTree = "<group>"; };
+		F2D9B1442F8FA60F0077A171 /* VCMLightVertexStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMLightVertexStore.h; sourceTree = "<group>"; };
+		F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMLightVertexStore.cpp; sourceTree = "<group>"; };
+		F2D9B1462F8FA60F0077A171 /* VCMPathOps.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMPathOps.h; sourceTree = "<group>"; };
+		F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMPathOps.cpp; sourceTree = "<group>"; };
+		F2D9B1482F8FA60F0077A171 /* VCMRecurrence.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMRecurrence.h; sourceTree = "<group>"; };
+		F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMRecurrence.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -3040,6 +3077,12 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B1322F8FA5C40077A171 /* VCMPelRasterizer.h */,
+				F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */,
+				F2D9B1342F8FA5C40077A171 /* VCMRasterizerBase.h */,
+				F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */,
+				F2D9B1362F8FA5C40077A171 /* VCMSpectralRasterizer.h */,
+				F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */,
 				F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */,
 				F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */,
 				F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */,
@@ -3135,6 +3178,15 @@
 		F27F09D5069C42900069C9E5 /* Shaders */ = {
 			isa = PBXGroup;
 			children = (
+				F2D9B1412F8FA60F0077A171 /* VCMIntegrator.h */,
+				F2D9B1422F8FA60F0077A171 /* VCMIntegrator.cpp */,
+				F2D9B1432F8FA60F0077A171 /* VCMLightVertex.h */,
+				F2D9B1442F8FA60F0077A171 /* VCMLightVertexStore.h */,
+				F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */,
+				F2D9B1462F8FA60F0077A171 /* VCMPathOps.h */,
+				F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */,
+				F2D9B1482F8FA60F0077A171 /* VCMRecurrence.h */,
+				F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */,
 				F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */,
 				F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */,
 				F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */,
@@ -3521,6 +3573,9 @@
 				F27F0AEA069C42910069C9E5 /* IPainterManager.h in Headers */,
 				F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */,
 				F27F0AEB069C42910069C9E5 /* IParametricSurface.h in Headers */,
+				F2D9B1382F8FA5C40077A171 /* VCMSpectralRasterizer.h in Headers */,
+				F2D9B1392F8FA5C40077A171 /* VCMPelRasterizer.h in Headers */,
+				F2D9B13A2F8FA5C40077A171 /* VCMRasterizerBase.h in Headers */,
 				F2C7C8DA2F75DF1C0030CB78 /* SMSShaderOp.h in Headers */,
 				F27F0AEC069C42910069C9E5 /* IPhotonMap.h in Headers */,
 				F27F0AED069C42910069C9E5 /* IPhotonTracer.h in Headers */,
@@ -3693,6 +3748,11 @@
 				F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */,
 				F27F0BDE069C42910069C9E5 /* BilinRasterImageAccessor.h in Headers */,
 				F27F0BE0069C42910069C9E5 /* HDRReader.h in Headers */,
+				F2D9B14E2F8FA60F0077A171 /* VCMRecurrence.h in Headers */,
+				F2D9B14F2F8FA60F0077A171 /* VCMIntegrator.h in Headers */,
+				F2D9B1502F8FA60F0077A171 /* VCMLightVertexStore.h in Headers */,
+				F2D9B1512F8FA60F0077A171 /* VCMLightVertex.h in Headers */,
+				F2D9B1522F8FA60F0077A171 /* VCMPathOps.h in Headers */,
 				F27F0BE2069C42910069C9E5 /* HDRWriter.h in Headers */,
 				F27F0BE3069C42910069C9E5 /* NNBRasterImageAccessor.h in Headers */,
 				F27F0BE5069C42910069C9E5 /* PNGReader.h in Headers */,
@@ -4001,6 +4061,9 @@
 				F27F0A71069C42910069C9E5 /* ThinLensCamera.cpp in Sources */,
 				F27F0A77069C42910069C9E5 /* BezierRootFinder.cpp in Sources */,
 				F27F0A79069C42910069C9E5 /* CubicFunction.cpp in Sources */,
+				F2D9B13B2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */,
+				F2D9B13C2F8FA5C40077A171 /* VCMRasterizerBase.cpp in Sources */,
+				F2D9B13D2F8FA5C40077A171 /* VCMSpectralRasterizer.cpp in Sources */,
 				F27F0A7B069C42910069C9E5 /* KleinBottleParametricFunctions.cpp in Sources */,
 				F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */,
 				F27F0A7D069C42910069C9E5 /* LinearFunction.cpp in Sources */,
@@ -4060,6 +4123,10 @@
 				F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
 				F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */,
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
+				F2D9B1532F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */,
+				F2D9B1542F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */,
+				F2D9B1552F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */,
+				F2D9B1562F8FA60F0077A171 /* VCMPathOps.cpp in Sources */,
 				F27F0B33069C42910069C9E5 /* ObjectManager.cpp in Sources */,
 				F27F0B37069C42910069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp in Sources */,
 				F27F0B3A069C42910069C9E5 /* AshikminShirleyAnisotropicPhongSPF.cpp in Sources */,
@@ -4893,8 +4960,15 @@
 				F2C7C8DD2F760A6D0030CB78 /* IMaterial.cpp in Sources */,
 				F24B741F2F52A632008304C4 /* LoadLibrary.h in Sources */,
 				F24B74202F52A632008304C4 /* Log.cpp in Sources */,
+				F2D9B13E2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */,
+				F2D9B13F2F8FA5C40077A171 /* VCMRasterizerBase.cpp in Sources */,
+				F2D9B1402F8FA5C40077A171 /* VCMSpectralRasterizer.cpp in Sources */,
 				F24B74212F52A632008304C4 /* Log.h in Sources */,
 				F24B74222F52A632008304C4 /* LogEvent.h in Sources */,
+				F2D9B14A2F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */,
+				F2D9B14B2F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */,
+				F2D9B14C2F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */,
+				F2D9B14D2F8FA60F0077A171 /* VCMPathOps.cpp in Sources */,
 				F24B74232F52A632008304C4 /* MemoryTracker.cpp in Sources */,
 				F24B74242F52A632008304C4 /* MemoryTracker.h in Sources */,
 				F24B74252F52A632008304C4 /* StreamPrinter.cpp in Sources */,
