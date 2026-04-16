@@ -242,6 +242,12 @@ namespace RISE
 			const IScene& pScene,
 			const unsigned int passIdx ) const {}
 
+		/// When true, per-block intermediate output is skipped during
+		/// the block dispatch.  The end-of-pass flush still runs.
+		/// VCM overrides this to true because each pass is a single
+		/// SPP — flushing after every 32×32 block is wasted I/O.
+		virtual bool SkipPerBlockIntermediateOutput() const { return false; }
+
 		/// Called at the end of RasterizeScene, after the main render
 		/// pass and output flush.  Subclasses can override to perform
 		/// cleanup.  Default does nothing.

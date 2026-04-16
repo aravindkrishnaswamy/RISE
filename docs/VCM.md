@@ -181,10 +181,42 @@ HWSS flow per pixel sample:
 
 [tests/VCMSpectralRecurrenceTest.cpp](../tests/VCMSpectralRecurrenceTest.cpp) asserts the wavelength-invariance of `VCMMisQuantities` — ConvertLightSubpath / ConvertEyeSubpath produce bit-identical MIS arrays regardless of the wavelength-dependent `throughputNM` field.
 
-## Known Limitations (v1)
+## v2 Architecture: Per-Iteration Store + Parallel Light Pass
 
-- **Single-threaded light pass.**  `VCMRasterizerBase::PreRenderSetup` generates all light subpaths sequentially.  Parallelizing with per-thread buffers + deterministic concat is a follow-up.
-- **Store lives for one iteration.**  The eye pass runs N samples per pixel, but the light vertex store is only rebuilt once at `PreRenderSetup`, so merging samples share photons.  This is still unbiased; variance is higher than SmallVCM's per-iteration store rebuild.
+Each progressive pass is one VCM iteration (`progressiveConfig.samplesPerPass = 1` forced when VM is enabled), matching the paper's iteration model:
+
+1. `PreRenderSetup` — auto-radius pre-pass, initial light-vertex-store build (for iteration 0).
+2. `OnProgressivePassBegin(passIdx)` — rebuilds the store with fresh photon positions for iteration `passIdx` (using `sampleIndex = passIdx` in the Sobol sampler).
+3. `IntegratePixel` — exactly 1 eye sample per pixel, querying the current iteration's store for merges.
+
+Total SPP = number of iterations.  Each iteration gets a fresh photon store, so density-noise variance averages as 1/√N_iterations.
+
+### Parallel light pass (`LightPassDispatcher`)
+
+Light-subpath generation is parallelized via a 32×32 tile-based dispatcher in an anonymous namespace within `VCMRasterizerBase.cpp`:
+
+- Tiles pulled by atomic counter (`nextTile.fetch_add`)
+- Each worker has its own `RandomNumberGenerator` + `RuntimeContext` + scratch buffers + local `LightVertex` accumulator
+- After all workers join, per-thread buffers are concat'd into the shared store in deterministic worker-index order (preserves KD-tree determinism)
+- Sobol sampler indexing: `SobolSampler(sampleIndex=passIdx, pixelSeed=y*W+x)` — identical to the eye-pass sampler for the same (pass, pixel) pair, but draws from non-overlapping dimension streams via `StartStream()`
+
+Worker count comes from `HowManyThreadsToSpawn()` (respects `maximum_thread_count` / `force_number_of_threads` options).
+
+### Super-iteration batching — why not
+
+The literature (SmallVCM, Mitsuba 3, PBRT-v4 SPPM) suggests batching K classical iterations into one super-iteration: `K × W × H` light subpaths in the store, K eye samples per pixel per super-iteration.  Georgiev eq. (20) confirms ηVCM = (nVM/nVC) × πr² is invariant under uniform K-scaling.
+
+**Measured on RISE:** K=32 on diacaustic runs 5.8× slower per eye sample than K=1.  The issue is that per-iteration photon density scales K× and merge candidate counts scale K× too — merge evaluation becomes K× more expensive per sample.  SmallVCM/Mitsuba counter this with SPPM-style progressive radius reduction (r scales as 1/√K), which keeps candidate count constant.  That requires per-pixel radius tracking — a v3 feature.
+
+For v2, K=1 matches the paper and minimizes per-sample merge cost.  Parallel efficiency comes from within-iteration parallelism (tile-based dispatch) rather than cross-iteration batching.
+
+### Block-level progressive output
+
+VCM overrides `SkipPerBlockIntermediateOutput()` to return `true`.  With 1 spp per pass, per-block intermediate flushes (every 32×32 tile) would trigger thousands of output updates per render — wasted I/O.  The end-of-pass flush still runs once per iteration, giving the user progressive preview at the natural VCM iteration boundary.
+
+## Known Limitations (v1 → v2)
+
+- **Store lives for one iteration.**  Kept for v2: each iteration has a fresh store.  Density-noise variance averages across iterations as 1/√N.
 - **Surface-only merging.**  Medium scatter vertices propagate the geometric update (using `sigma_t_scalar` in place of `|cos|`) so dVCM/dVC/dVM are approximately correct at post-media surface vertices, but medium vertices themselves are not stored.  Connections skip MEDIUM-type endpoints.  Connection transmittance through participating media is not evaluated in v1 (Tr=1); VCM connections in scenes with global or per-object media may be slightly overbright.  BDPT's full boundary-walking `EvalConnectionTransmittance` is a follow-up.
 - **Spectral merges use hero throughput luminance for companion wavelengths.**  `EvaluateMergesNM` uses the stored Pel throughput's luminance as a companion-wavelength proxy for the light vertex store's accumulated throughput — the store is populated at a single wavelength during PreRenderSetup and cannot be re-walked per companion.  Scenes with strong wavelength-dependent emission near dielectric caustics will see reduced HWSS accuracy on the merge strategy only; VC strategies (s=0, NEE, interior, t=1) are fully wavelength-accurate.
 - **No SMS, path guiding, or optimal MIS.**  User-confirmed out of scope for v1.

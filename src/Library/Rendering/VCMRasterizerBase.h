@@ -82,7 +82,13 @@ namespace RISE
 			/// the same pattern — see BDPTRasterizerBase::GetIntermediateOutputImage.
 			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
 
-			/// Rebuild the light vertex store at each progressive pass
+			/// VCM runs 1 SPP per pass (paper-correct iteration model).
+		/// Per-block intermediate output is wasted I/O; the end-of-pass
+		/// flush in the progressive loop still runs and gives the user
+		/// one progress update per iteration.
+		bool SkipPerBlockIntermediateOutput() const { return true; }
+
+		/// Rebuild the light vertex store at each progressive pass
 		/// so merge-query noise averages across passes instead of
 		/// persisting from a single fixed store.  Uses passIdx as
 		/// a seed offset so each pass generates different photon

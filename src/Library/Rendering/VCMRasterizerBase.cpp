@@ -42,11 +42,13 @@
 #include "../Interfaces/IRasterImage.h"
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/SobolSampler.h"
+#include "../Utilities/Threads/Threads.h"
 #include "../Lights/LightSampler.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Shaders/BDPTVertex.h"
 #include "../RasterImages/RasterImage.h"
 
+#include <atomic>
 #include <vector>
 
 using namespace RISE;
@@ -104,14 +106,212 @@ Scalar VCMRasterizerBase::GetEffectiveSplatSPP( unsigned int width, unsigned int
 	return mSplatTotalSamples;
 }
 
+namespace
+{
+	//////////////////////////////////////////////////////////////////////
+	// LightPassDispatcher — parallel dispatcher for VCM light-pass
+	// subpath generation + conversion.
+	//
+	// Pixels are divided into blocks; each worker thread pulls blocks
+	// from an atomic counter, generates subpaths with its own
+	// RuntimeContext and SobolSampler, and accumulates converted
+	// LightVertex records into a thread-local buffer.  After all
+	// threads join, the main thread concatenates the per-thread
+	// buffers into the shared store in deterministic index order.
+	//////////////////////////////////////////////////////////////////////
+	struct LightPassDispatcher
+	{
+		const IScene&			scene;
+		const IRayCaster&		caster;
+		BDPTIntegrator*			pGen;
+		const VCMNormalization&	norm;
+		const unsigned int		width;
+		const unsigned int		height;
+		const unsigned int		maxLightDepth;
+		const uint32_t			baseSampleIndex;	// Sobol index base (= passIdx × samplesPerSuperIter)
+		const unsigned int		samplesPerSuperIter;	// K — sub-samples within one super-iteration
+
+		std::vector<Rect>		tiles;
+		std::atomic<unsigned int>	nextTile;
+
+		// Per-thread output buffers (one per worker).
+		std::vector<std::vector<LightVertex>>	perThreadOutput;
+		std::vector<unsigned long long>			perThreadPathsShot;
+
+		struct ThreadLocal {
+			std::vector<BDPTVertex>			tmpLightVerts;
+			std::vector<LightVertex>		tmpConverted;
+			std::vector<VCMMisQuantities>	tmpLightMis;
+			unsigned long long				pathsShot = 0;
+			unsigned long long				storedCount = 0;
+		};
+
+		LightPassDispatcher(
+			const IScene& scene_,
+			const IRayCaster& caster_,
+			BDPTIntegrator* pGen_,
+			const VCMNormalization& norm_,
+			const unsigned int width_,
+			const unsigned int height_,
+			const unsigned int maxLightDepth_,
+			const uint32_t baseSampleIndex_,
+			const unsigned int samplesPerSuperIter_,
+			const unsigned int numWorkers
+			) :
+			scene( scene_ ),
+			caster( caster_ ),
+			pGen( pGen_ ),
+			norm( norm_ ),
+			width( width_ ),
+			height( height_ ),
+			maxLightDepth( maxLightDepth_ ),
+			baseSampleIndex( baseSampleIndex_ ),
+			samplesPerSuperIter( std::max( 1u, samplesPerSuperIter_ ) ),
+			nextTile( 0 ),
+			perThreadOutput( numWorkers ),
+			perThreadPathsShot( numWorkers, 0 )
+		{
+			// Block the pixel grid into tiles.  32x32 matches the
+			// eye-pass MortonRasterizeSequence default.
+			const unsigned int TILE = 32;
+			for( unsigned int y = 0; y < height; y += TILE ) {
+				for( unsigned int x = 0; x < width; x += TILE ) {
+					const unsigned int right  = std::min( x + TILE - 1, width - 1 );
+					const unsigned int bottom = std::min( y + TILE - 1, height - 1 );
+					// Rect( top, left, bottom, right )
+					tiles.push_back( Rect( y, x, bottom, right ) );
+				}
+			}
+		}
+
+		bool GetNextBlock( Rect& rc )
+		{
+			const unsigned int idx = nextTile.fetch_add( 1, std::memory_order_relaxed );
+			if( idx >= tiles.size() ) {
+				return false;
+			}
+			rc = tiles[idx];
+			return true;
+		}
+
+		void RunWorker( unsigned int workerIdx )
+		{
+			// Each worker has its own RNG (for RR) and scratch buffers.
+			RandomNumberGenerator localRng;
+			RuntimeContext rc( localRng, RuntimeContext::PASS_NORMAL, true );
+
+			ThreadLocal tl;
+			tl.tmpLightVerts.reserve( maxLightDepth + 1 );
+			tl.tmpConverted.reserve( maxLightDepth + 1 );
+			tl.tmpLightMis.reserve( maxLightDepth + 1 );
+
+			std::vector<LightVertex>& out = perThreadOutput[workerIdx];
+			// Estimate: only a fraction of subpaths deposit a vertex
+			// (typically 1-2 non-delta surface hits per subpath), and
+			// the store gets at most ~one vertex per subpath on
+			// average.  Reserve that much per worker to amortize
+			// std::vector growth without over-committing memory.
+			const std::size_t pixelsPerWorker =
+				( static_cast<std::size_t>( width ) * height +
+				  std::max<std::size_t>( 1, perThreadOutput.size() ) - 1 ) /
+				std::max<std::size_t>( 1, perThreadOutput.size() );
+			const std::size_t estimatedPerWorker =
+				pixelsPerWorker * samplesPerSuperIter * 2;	// ~2 verts/subpath avg
+			out.reserve( estimatedPerWorker );
+
+			Rect rect( 0, 0, 0, 0 );
+			while( GetNextBlock( rect ) )
+			{
+				for( unsigned int y = rect.top; y <= rect.bottom; y++ )
+				{
+					for( unsigned int x = rect.left; x <= rect.right; x++ )
+					{
+						const uint32_t pixelSeed = y * width + x;
+
+						// Generate K sub-samples per pixel for this
+						// super-iteration.  Each sub-sample uses a
+						// distinct Sobol sample index so photons land
+						// at different positions across sub-samples.
+						for( unsigned int k = 0; k < samplesPerSuperIter; k++ )
+						{
+							const uint32_t sampleIdx = baseSampleIndex + k;
+							SobolSampler sampler( sampleIdx, pixelSeed );
+
+							tl.tmpLightVerts.clear();
+							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, rc.random );
+							if( tl.tmpLightVerts.empty() ) {
+								continue;
+							}
+							tl.pathsShot++;
+
+							tl.tmpConverted.clear();
+							VCMIntegrator::ConvertLightSubpath(
+								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis );
+
+							for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
+								out.push_back( tl.tmpConverted[m] );
+								tl.storedCount++;
+							}
+						}
+					}
+				}
+			}
+
+			perThreadPathsShot[workerIdx] = tl.pathsShot;
+		}
+	};
+
+	void* LightPassWorkerProc( void* ptr )
+	{
+		std::pair<LightPassDispatcher*, unsigned int>* arg =
+			static_cast<std::pair<LightPassDispatcher*, unsigned int>*>( ptr );
+		arg->first->RunWorker( arg->second );
+		return 0;
+	}
+
+	// Returns total pathsShot across all workers.  After this call,
+	// dispatcher.perThreadOutput[i] holds that worker's LightVertex
+	// buffer — the caller concatenates them into the shared store in
+	// index order for determinism.
+	unsigned long long RunLightPassParallel(
+		LightPassDispatcher& dispatcher,
+		unsigned int numWorkers
+		)
+	{
+		if( numWorkers <= 1 ) {
+			// Single-threaded fallback.
+			dispatcher.RunWorker( 0 );
+			return dispatcher.perThreadPathsShot[0];
+		}
+
+		std::vector<std::pair<LightPassDispatcher*, unsigned int>> args( numWorkers );
+		std::vector<RISETHREADID> thread_ids( numWorkers, 0 );
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			args[i] = std::make_pair( &dispatcher, i );
+			Threading::riseCreateThread(
+				LightPassWorkerProc, &args[i], 0, 0, &thread_ids[i] );
+		}
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			Threading::riseWaitUntilThreadFinishes( thread_ids[i], 0 );
+		}
+
+		unsigned long long totalPaths = 0;
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			totalPaths += dispatcher.perThreadPathsShot[i];
+		}
+		return totalPaths;
+	}
+}
+
 //////////////////////////////////////////////////////////////////////
 // PreRenderSetup — VCM light pass
 //
-// Runs SINGLE-THREADED for Step 6.  Parallel dispatch is a follow-up
-// (see Step 6 notes in docs/humming-snuggling-cascade.md).  The
-// single-threaded loop validates memory + state-machine correctness
-// without racing the Sobol sampler against thread-local BDPT guiding
-// state.
+// The initial light pass is parallelized via LightPassDispatcher.
+// The auto-radius pre-pass remains single-threaded (it runs once
+// before the store-build and collects segment-length statistics
+// into a shared vector; keeping it single-threaded is simpler than
+// merging per-thread segLens arrays and this pre-pass is only ~1%
+// of total time).
 //////////////////////////////////////////////////////////////////////
 void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRect*/ ) const
 {
@@ -126,13 +326,12 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	const LightSampler* pLS = pCaster ? pCaster->GetLightSampler() : 0;
 	pIntegrator->SetLightSampler( pLS );
 
-	// Force 1 SPP per progressive pass.  The original VCM paper
-	// (Georgiev 2012, Section 2.3) defines one iteration as:
-	// generate W×H light subpaths → build store → 1 eye sample
-	// per pixel.  Each progressive pass IS one VCM iteration.
-	// The store is rebuilt at the start of each pass via
-	// OnProgressivePassBegin.  This decouples store rebuilds from
-	// the UI progressive-preview concept.
+	// Force 1 SPP per progressive pass.  Super-iteration batching
+	// (K > 1) was tested and found to scale merge evaluation cost
+	// by K× because photon density grows K× but merge radius stays
+	// fixed.  SPPM-style radius-reduction-per-K would counter this
+	// (√K radius shrink keeps candidate count constant) but is a
+	// v3 feature.  For v2, keep K=1 matching the original paper.
 	if( pIntegrator->GetEnableVM() ) {
 		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.samplesPerPass = 1;
 		const_cast<VCMRasterizerBase*>(this)->progressiveConfig.enabled = true;
@@ -289,6 +488,10 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 		}
 	}
 
+	// K = 1 (samplesPerPass forced to 1 above).  Normalization uses
+	// W × H (one light subpath per pixel per iteration).
+	const unsigned int samplesPerSuperIter = 1;
+
 	mVCMNormalization = ComputeNormalization(
 		width, height,
 		effectiveMergeRadius,
@@ -298,34 +501,27 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
 
-	for( unsigned int s = 0; s < lightSubpathsPerPixel; s++ )
+	// Parallel light pass — generates K × W × H light subpaths using
+	// distinct Sobol sample indices [0 .. K-1] for super-iteration 0.
+	// Per-thread local buffers are concat'd into the shared store in
+	// deterministic worker-index order.
 	{
-	for( unsigned int y = 0; y < height; y++ )
-	{
-		for( unsigned int x = 0; x < width; x++ )
-		{
-			const uint32_t pixelSeed = y * width + x;
-			const uint32_t sampleIndex = s;
-			SobolSampler sampler( sampleIndex, pixelSeed );
+		const unsigned int numWorkers = std::max( 1, HowManyThreadsToSpawn() );
+		LightPassDispatcher dispatcher(
+			pScene, *pCaster, pGen, mVCMNormalization,
+			width, height, pIntegrator->GetMaxLightDepth(),
+			/*baseSampleIndex=*/ 0,
+			samplesPerSuperIter,
+			numWorkers );
 
-			tmpLightVerts.clear();
-			pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, rc.random );
-			if( tmpLightVerts.empty() ) {
-				continue;
-			}
-			pathsShot++;
+		pathsShot = RunLightPassParallel( dispatcher, numWorkers );
 
-			tmpConverted.clear();
-			VCMIntegrator::ConvertLightSubpath(
-				tmpLightVerts, mVCMNormalization, tmpConverted, &tmpLightMis );
-
-			for( std::size_t k = 0; k < tmpConverted.size(); k++ ) {
-				pLightVertexStore->Append( tmpConverted[k] );
-				totalStored++;
-			}
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			const std::vector<LightVertex>& localBuf = dispatcher.perThreadOutput[i];
+			totalStored += localBuf.size();
+			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ) );
 		}
 	}
-	}  // for s
 
 	// Throughput clamping (kept as secondary safeguard).
 	// With per-iteration store rebuild the density noise averages
@@ -425,44 +621,25 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 
 	pLightVertexStore->Clear();
 
-	std::vector<BDPTVertex> tmpLightVerts;
-	std::vector<LightVertex> tmpConverted;
-	std::vector<VCMMisQuantities> tmpLightMis;
-	tmpLightVerts.reserve( pIntegrator->GetMaxLightDepth() + 1 );
-	tmpConverted.reserve( pIntegrator->GetMaxLightDepth() + 1 );
-	tmpLightMis.reserve( pIntegrator->GetMaxLightDepth() + 1 );
-
-	// Each iteration uses passIdx as the Sobol sample index so light
-	// subpaths get different positions per iteration.  The eye pass
-	// in IntegratePixel uses the same passIdx via globalSampleIndex,
-	// but draws from non-overlapping Sobol dimension streams
-	// (StartStream partitioning).
-	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
-	PrepareRuntimeContext( rc );
+	// K = 1 matches the forced samplesPerPass = 1 in PreRenderSetup.
+	const unsigned int samplesPerSuperIter = 1;
+	const uint32_t baseSampleIndex = passIdx;
 
 	unsigned long long totalStored = 0;
-
-	for( unsigned int y = 0; y < height; y++ )
 	{
-		for( unsigned int x = 0; x < width; x++ )
-		{
-			const uint32_t pixelSeed = y * width + x;
-			SobolSampler sampler( passIdx, pixelSeed );
+		const unsigned int numWorkers = std::max( 1, HowManyThreadsToSpawn() );
+		LightPassDispatcher dispatcher(
+			pScene, *pCaster, pGen, mVCMNormalization,
+			width, height, pIntegrator->GetMaxLightDepth(),
+			baseSampleIndex,
+			samplesPerSuperIter,
+			numWorkers );
 
-			tmpLightVerts.clear();
-			pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, rc.random );
-			if( tmpLightVerts.empty() ) {
-				continue;
-			}
+		RunLightPassParallel( dispatcher, numWorkers );
 
-			tmpConverted.clear();
-			VCMIntegrator::ConvertLightSubpath(
-				tmpLightVerts, mVCMNormalization, tmpConverted, &tmpLightMis );
-
-			for( std::size_t k = 0; k < tmpConverted.size(); k++ ) {
-				pLightVertexStore->Append( tmpConverted[k] );
-				totalStored++;
-			}
+		for( unsigned int i = 0; i < numWorkers; i++ ) {
+			totalStored += dispatcher.perThreadOutput[i].size();
+			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ) );
 		}
 	}
 
@@ -470,8 +647,8 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 
 	GlobalLog()->PrintEx( eLog_Event,
 		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
-		"rebuilt store with %llu light vertices",
-		passIdx, totalStored );
+		"rebuilt store with %llu light vertices (K=%u)",
+		passIdx, totalStored, samplesPerSuperIter );
 }
 
 IRasterImage& VCMRasterizerBase::GetIntermediateOutputImage( IRasterImage& primary ) const

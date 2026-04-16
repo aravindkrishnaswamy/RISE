@@ -252,12 +252,16 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		return;
 	}
 
-	// Draw red toggles to show we are working on this tile
-	DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
+	const bool skipBlockOutput = SkipPerBlockIntermediateOutput();
 
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputIntermediateImage( image, &rect );
+	if( !skipBlockOutput ) {
+		// Draw red toggles to show we are working on this tile
+		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
+
+		RasterizerOutputListType::const_iterator	r, s;
+		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+			(*r)->OutputIntermediateImage( image, &rect );
+		}
 	}
 
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ )
@@ -273,13 +277,16 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		}
 	}
 
-	// Get the image for intermediate output.  BDPT returns a scratch
-	// copy with resolved splats; other rasterizers return the primary.
-	IRasterImage& outputImage = GetIntermediateOutputImage( image );
+	if( !skipBlockOutput ) {
+		// Get the image for intermediate output.  BDPT returns a scratch
+		// copy with resolved splats; other rasterizers return the primary.
+		IRasterImage& outputImage = GetIntermediateOutputImage( image );
 
-	// Also iterate through outputs and get them to intermediate rasterize
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputIntermediateImage( outputImage, &rect );
+		// Also iterate through outputs and get them to intermediate rasterize
+		RasterizerOutputListType::const_iterator	r, s;
+		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+			(*r)->OutputIntermediateImage( outputImage, &rect );
+		}
 	}
 }
 
