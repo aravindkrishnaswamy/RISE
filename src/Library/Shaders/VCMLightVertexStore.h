@@ -88,6 +88,15 @@ namespace RISE
 			/// Return the number of vertices currently stored.
 			std::size_t Size() const { return mVertices.size(); }
 
+			/// Read-only access to a stored vertex by index.
+			const LightVertex& Get( std::size_t idx ) const { return mVertices[idx]; }
+
+			/// Mutable access to a stored vertex by index.
+			/// Only valid BEFORE BuildKDTree (the tree reorders
+			/// the array; accessing by pre-balance index after
+			/// the tree is built will give the wrong vertex).
+			LightVertex& GetMutable( std::size_t idx ) { return mVertices[idx]; }
+
 			/// Has BuildKDTree() been called since the last
 			/// Clear/Append sequence?
 			bool IsBuilt() const { return mBuilt; }

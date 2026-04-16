@@ -516,6 +516,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			pPassSampling->SetNumSamples( passSPP );
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
 
+			OnProgressivePassBegin( pScene, passIdx );
+
 			if( pProgressFunc ) {
 				char title[128];
 				snprintf( title, sizeof(title), "Progressive Pass [%u/%u]: ", passIdx+1, numPasses );

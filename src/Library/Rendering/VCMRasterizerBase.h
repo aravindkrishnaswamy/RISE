@@ -82,7 +82,16 @@ namespace RISE
 			/// the same pattern — see BDPTRasterizerBase::GetIntermediateOutputImage.
 			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
 
-			/// Override the final flush to resolve the splat film
+			/// Rebuild the light vertex store at each progressive pass
+		/// so merge-query noise averages across passes instead of
+		/// persisting from a single fixed store.  Uses passIdx as
+		/// a seed offset so each pass generates different photon
+		/// positions.
+		virtual void OnProgressivePassBegin(
+			const IScene& pScene,
+			const unsigned int passIdx ) const;
+
+		/// Override the final flush to resolve the splat film
 			/// into a scratch copy of the primary image before
 			/// forwarding to the rasterizer outputs.  Mirrors BDPT's
 			/// final-flush splat resolve.

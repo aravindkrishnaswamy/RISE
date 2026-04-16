@@ -277,16 +277,11 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 			std::sort( segLens.begin(), segLens.end() );
 			const Scalar medianSeg = segLens[segLens.size() / 2];
 			// 1% of the median segment length gives a merge radius
-			// that scales with scene geometry but stays small enough
-			// to preserve caustic detail.  5% was too aggressive —
-			// on scenes with densely packed photons (e.g. tiny
-			// glass-sphere scenes) it smears caustics into visible
-			// blobs and introduces over-counting that breaks the
-			// energy conservation MIS relies on.  1% matches the
-			// hand-tuned radius on Cornell Box with glass sphere
-			// (median segment ~300 → radius ~3.0) and is well-behaved
-			// on the triplecaustic 1-unit scene (median ~0.71 →
-			// radius ~0.007).
+			// that scales with scene geometry.  The single-store
+			// architecture means merge variance doesn't reduce
+			// across progressive passes the way SmallVCM's
+			// per-iteration rebuild does; throughput clamping at
+			// store time (below) controls the worst-case outliers.
 			effectiveMergeRadius = Scalar( 0.01 ) * medianSeg;
 
 			GlobalLog()->PrintEx( eLog_Event,
@@ -341,6 +336,48 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	}
 	}  // for s
 
+	// Throughput clamping for the single-store architecture.
+	// The store is shared across all progressive passes, so
+	// high-throughput photons at caustic hotspots create persistent
+	// splotches that don't average out with more SPP (unlike
+	// SmallVCM's per-iteration rebuild).  Clamp outlier throughputs
+	// to median × 20 to control the worst variance while preserving
+	// caustic structure.
+	{
+		const std::size_t storeSize = pLightVertexStore->Size();
+		if( storeSize > 16 ) {
+			std::vector<Scalar> throughputLums;
+			throughputLums.reserve( storeSize );
+			for( std::size_t k = 0; k < storeSize; k++ ) {
+				const LightVertex& lv = pLightVertexStore->Get( k );
+				throughputLums.push_back( ColorMath::MaxValue( lv.throughput ) );
+			}
+			std::sort( throughputLums.begin(), throughputLums.end() );
+			const Scalar medianThroughput = throughputLums[storeSize / 2];
+			const Scalar clampThreshold = medianThroughput * Scalar( 20 );
+
+			unsigned long long clamped = 0;
+			if( clampThreshold > 0 ) {
+				for( std::size_t k = 0; k < storeSize; k++ ) {
+					LightVertex& lv = pLightVertexStore->GetMutable( k );
+					const Scalar maxC = ColorMath::MaxValue( lv.throughput );
+					if( maxC > clampThreshold ) {
+						lv.throughput = lv.throughput * ( clampThreshold / maxC );
+						clamped++;
+					}
+				}
+			}
+
+			if( clamped > 0 ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"VCMRasterizerBase::PreRenderSetup:: throughput clamp "
+					"median=%g threshold=%g clamped=%llu of %zu vertices",
+					(double)medianThroughput, (double)clampThreshold,
+					clamped, storeSize );
+			}
+		}
+	}
+
 	pLightVertexStore->BuildKDTree();
 
 	mSplatTotalSamples = 1.0;
@@ -355,6 +392,95 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 		pathsShot,
 		totalStored,
 		(int)pLightVertexStore->IsBuilt() );
+}
+
+//////////////////////////////////////////////////////////////////////
+// OnProgressivePassBegin — rebuild the light vertex store
+//
+// Each progressive pass gets a fresh set of light subpaths so the
+// photon density noise averages across passes instead of persisting
+// from a single fixed store.  Uses passIdx as a seed offset so each
+// pass generates different photon positions.
+//
+// Pass 0 is a no-op because PreRenderSetup already built the store.
+//////////////////////////////////////////////////////////////////////
+void VCMRasterizerBase::OnProgressivePassBegin(
+	const IScene& pScene,
+	const unsigned int passIdx
+	) const
+{
+	// Pass 0: PreRenderSetup already built the store.
+	if( passIdx == 0 ) {
+		return;
+	}
+
+	// Nothing to rebuild if VM is disabled or the integrator is absent.
+	if( !pIntegrator || !pLightVertexStore || !pIntegrator->GetEnableVM() ) {
+		return;
+	}
+	if( mVCMNormalization.mMergeRadiusSq <= 0 ) {
+		return;
+	}
+
+	BDPTIntegrator* pGen = pIntegrator->GetGenerator();
+	if( !pGen ) {
+		return;
+	}
+
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		return;
+	}
+	const unsigned int width = pCamera->GetWidth();
+	const unsigned int height = pCamera->GetHeight();
+
+	pLightVertexStore->Clear();
+
+	std::vector<BDPTVertex> tmpLightVerts;
+	std::vector<LightVertex> tmpConverted;
+	std::vector<VCMMisQuantities> tmpLightMis;
+	tmpLightVerts.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	tmpConverted.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	tmpLightMis.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+
+	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
+	PrepareRuntimeContext( rc );
+
+	unsigned long long totalStored = 0;
+
+	for( unsigned int y = 0; y < height; y++ )
+	{
+		for( unsigned int x = 0; x < width; x++ )
+		{
+			// passIdx offsets the Sobol sample index so each pass
+			// generates a different set of light subpath positions.
+			const uint32_t pixelSeed = y * width + x;
+			const uint32_t sampleIndex = passIdx;
+			SobolSampler sampler( sampleIndex, pixelSeed );
+
+			tmpLightVerts.clear();
+			pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, rc.random );
+			if( tmpLightVerts.empty() ) {
+				continue;
+			}
+
+			tmpConverted.clear();
+			VCMIntegrator::ConvertLightSubpath(
+				tmpLightVerts, mVCMNormalization, tmpConverted, &tmpLightMis );
+
+			for( std::size_t k = 0; k < tmpConverted.size(); k++ ) {
+				pLightVertexStore->Append( tmpConverted[k] );
+				totalStored++;
+			}
+		}
+	}
+
+	pLightVertexStore->BuildKDTree();
+
+	GlobalLog()->PrintEx( eLog_Event,
+		"VCMRasterizerBase::OnProgressivePassBegin:: pass %u — "
+		"rebuilt store with %llu light vertices",
+		passIdx, totalStored );
 }
 
 IRasterImage& VCMRasterizerBase::GetIntermediateOutputImage( IRasterImage& primary ) const

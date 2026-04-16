@@ -232,6 +232,16 @@ namespace RISE
 		/// as path guiding training.  Default does nothing.
 		virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const {}
 
+		/// Called at the beginning of each progressive pass, before
+		/// the per-pixel dispatch.  Subclasses can override to
+		/// refresh per-iteration state (e.g. VCM rebuilds its
+		/// light vertex store).  Default does nothing.
+		/// \param pScene  Scene being rendered
+		/// \param passIdx Zero-based progressive pass index
+		virtual void OnProgressivePassBegin(
+			const IScene& pScene,
+			const unsigned int passIdx ) const {}
+
 		/// Called at the end of RasterizeScene, after the main render
 		/// pass and output flush.  Subclasses can override to perform
 		/// cleanup.  Default does nothing.
