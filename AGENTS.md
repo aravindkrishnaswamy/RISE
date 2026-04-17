@@ -55,6 +55,13 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 ## Change Checklist
 
 - New render feature: implement the class, expose it through `RISE_API` if externally constructible, add a `Job` wrapper if needed, register a scene chunk if user-authored, add a sample scene, add a focused test, and update `build/make/rise/Filelist` for new `.cpp` files.
+- **New source file anywhere under `src/Library/`**: register it in every IDE/build project so the tree stays consistent across platforms. The Makefile `Filelist` is only one of five places to touch:
+  - `build/make/rise/Filelist` — SRCLIB sub-list for `.cpp` (the canonical Unix/Linux build).
+  - `build/cmake/rise-android/rise_sources.cmake` — `RISE_LIB_SOURCES` list for `.cpp` (Android NDK build, mirrors `Filelist` SRCLIB by hand).
+  - `build/VS2022/Library/Library.vcxproj` — `<ClCompile>` for `.cpp` and `<ClInclude>` for `.h`.
+  - `build/VS2022/Library/Library.vcxproj.filters` — same entries with `<Filter>` tags mirroring the existing folder taxonomy.
+  - `build/XCode/rise/rise.xcodeproj/project.pbxproj` — `PBXFileReference` + `PBXBuildFile` + group + build-phase entries (Xcode does not auto-discover).
+  - Exclusions: `ManagedJob.cpp` (C++/CLI only), Windows-only files (`ThreadsWin32.cpp`, `LoadLibraryWin32.cpp`, `Win32Console.cpp`, `Win32WindowRasterizerOutput.cpp`), and the `Utilities/Communications/*` DRISE socket stack stay out of the Android cmake — everything else should appear in all five projects.
 - Scene language change: inspect the parser registry, decide whether `CURRENT_SCENE_VERSION` should change, update representative scenes, and keep [src/Library/Parsers/README.md](src/Library/Parsers/README.md) aligned.
 - Sample coverage change: use `scenes/FeatureBased` for curated showcase or torture scenes, and `scenes/Tests` for isolated baselines, feature checks, and regression coverage.
 

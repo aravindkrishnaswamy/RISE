@@ -237,6 +237,9 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/PathTracingSpectralRasterizer.cpp"
     "${RISE_LIB}/Rendering/BDPTPelRasterizer.cpp"
     "${RISE_LIB}/Rendering/BDPTSpectralRasterizer.cpp"
+    "${RISE_LIB}/Rendering/VCMRasterizerBase.cpp"
+    "${RISE_LIB}/Rendering/VCMPelRasterizer.cpp"
+    "${RISE_LIB}/Rendering/VCMSpectralRasterizer.cpp"
     "${RISE_LIB}/Rendering/MLTRasterizer.cpp"
     "${RISE_LIB}/Rendering/MLTSpectralRasterizer.cpp"
     "${RISE_LIB}/Rendering/AOVBuffers.cpp"
@@ -265,6 +268,10 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Shaders/TransparencyShaderOp.cpp"
     "${RISE_LIB}/Shaders/TranslucentPelPhotonMapShaderOp.cpp"
     "${RISE_LIB}/Shaders/BDPTIntegrator.cpp"
+    "${RISE_LIB}/Shaders/VCMRecurrence.cpp"
+    "${RISE_LIB}/Shaders/VCMLightVertexStore.cpp"
+    "${RISE_LIB}/Shaders/VCMPathOps.cpp"
+    "${RISE_LIB}/Shaders/VCMIntegrator.cpp"
 
     # SRCLIBSHADERS
     "${RISE_LIB}/Shaders/AdvancedShader.cpp"

@@ -31,7 +31,7 @@
 #pragma warning( disable : 4344 )		// disables warning about explicit template argument passed to template function
 
 #define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
-#define _WIN32_WINNT 0x0400		// require NT4 or greater for TryEnterCriticalSection
+#define _WIN32_WINNT 0x0601		// Windows 7+: CPUTopology uses GetLogicalProcessorInformationEx
 #include <windows.h>
 
 #endif
