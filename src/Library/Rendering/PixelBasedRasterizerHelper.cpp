@@ -552,13 +552,16 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		// Compute total work units across all passes: tiles × totalSPP.
 		// Used by the block dispatcher to report a single 0..1 progress
 		// bar across the entire render instead of resetting each pass.
-		// 32×32 matches the MortonRasterizeSequence tile size used below.
+		// Tile divisor MUST match the adaptive `tileEdge` used below,
+		// otherwise the dispatcher's actual numTiles and our computed
+		// numTilesPerPass diverge and the progress bar overshoots /
+		// undershoots 100 %.
 		unsigned int renderStartX, renderStartY, renderEndX, renderEndY;
 		BoundsFromRect( renderStartX, renderStartY, renderEndX, renderEndY, pRect, width, height );
 		const unsigned int renderPixelsX = renderEndX - renderStartX + 1;
 		const unsigned int renderPixelsY = renderEndY - renderStartY + 1;
-		const unsigned int tilesX = ( renderPixelsX + 31 ) / 32;
-		const unsigned int tilesY = ( renderPixelsY + 31 ) / 32;
+		const unsigned int tilesX = ( renderPixelsX + tileEdge - 1 ) / tileEdge;
+		const unsigned int tilesY = ( renderPixelsY + tileEdge - 1 ) / tileEdge;
 		const unsigned int numTilesPerPass = tilesX * tilesY;
 		const double totalProgressUnits =
 			static_cast<double>( numTilesPerPass ) *

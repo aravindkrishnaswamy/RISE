@@ -252,14 +252,6 @@ Scalar BDPTRasterizerBase::GetEffectiveSplatSPP( unsigned int width, unsigned in
 	return mSplatTotalSamples;
 }
 
-// Thread procedure for BDPT block rendering - mirrors RasterizeBlock_ThreadProc
-static void* BDPTRasterizeBlock_ThreadProc( void* lpParameter )
-{
-	RasterizeBlockDispatcher* pDispatcher = (RasterizeBlockDispatcher*)lpParameter;
-	pDispatcher->DoWork();
-	return 0;
-}
-
 void BDPTRasterizerBase::RasterizeScene(
 	const IScene& pScene,
 	const Rect* pRect,
@@ -768,6 +760,23 @@ void BDPTRasterizerBase::RasterizeScene(
 		// for rationale.  Same 7.5 s default.
 		PreviewScheduler previewScheduler( 7.5 );
 
+		// Single 0..1 progress bar across ALL progressive passes.
+		// Mirrors the plumbing in PixelBasedRasterizerHelper::RasterizeScene.
+		// Tile divisor MUST match `bdptTileEdge` (the adaptive tile
+		// size used below) so the dispatcher's actual numTiles and our
+		// numTilesPerPass agree — otherwise the bar over/undershoots.
+		unsigned int renderStartX, renderStartY, renderEndX, renderEndY;
+		BoundsFromRect( renderStartX, renderStartY, renderEndX, renderEndY, pRect, width, height );
+		const unsigned int renderPixelsX = renderEndX - renderStartX + 1;
+		const unsigned int renderPixelsY = renderEndY - renderStartY + 1;
+		const unsigned int tilesX = ( renderPixelsX + bdptTileEdge - 1 ) / bdptTileEdge;
+		const unsigned int tilesY = ( renderPixelsY + bdptTileEdge - 1 ) / bdptTileEdge;
+		const unsigned int numTilesPerPass = tilesX * tilesY;
+		const double totalProgressUnits =
+			static_cast<double>( numTilesPerPass ) *
+			static_cast<double>( totalSPP );
+		double accumulatedProgress = 0;
+
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
@@ -780,9 +789,22 @@ void BDPTRasterizerBase::RasterizeScene(
 				pProgressFunc->SetTitle( "BDPT Rasterizing: " );
 			}
 
+			// Thread the weighted progress params into the block
+			// dispatcher (via RasterizeBlocksForPass →
+			// RasterizeScenePass).  Each tile in this pass contributes
+			// passSPP work units; this pass starts at the running
+			// accumulatedProgress total.  Inherited from
+			// PixelBasedRasterizerHelper via the mProgress* members.
+			mProgressBase   = accumulatedProgress;
+			mProgressWeight = static_cast<double>( passSPP );
+			mProgressTotal  = totalProgressUnits;
+
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( bdptTileEdge );
 			const bool passCompleted = RasterizeBlocksForPass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
+
+			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
+			                       static_cast<double>( passSPP );
 
 			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
 			safe_release( pPassSampling );
@@ -837,6 +859,7 @@ void BDPTRasterizerBase::RasterizeScene(
 
 		mProgressiveFilm = 0;
 		mTotalProgressiveSPP = 0;
+		mProgressBase = mProgressWeight = mProgressTotal = 0;
 	}
 	else
 	{
