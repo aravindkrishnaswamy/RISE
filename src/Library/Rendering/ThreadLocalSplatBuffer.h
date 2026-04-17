@@ -100,6 +100,20 @@ namespace RISE
 				}
 			}
 
+			/// Flush AND drop the binding.  Use when the worker is
+			/// done with its current render so the next render's
+			/// (possibly different) SplatFilm does not dereference
+			/// a stale pointer on first Splat().  Required at the
+			/// end of every worker task (see RasterizeDispatchers.h
+			/// and the custom MLT task bodies).
+			void FlushAndUnbind()
+			{
+				FlushBound();
+				pBoundFilm = 0;
+				width      = 0;
+				height     = 0;
+			}
+
 			SplatFilm* GetBoundFilm() const { return pBoundFilm; }
 
 			/// Drop all pending records without committing.  Used at

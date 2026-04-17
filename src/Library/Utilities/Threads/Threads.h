@@ -20,6 +20,8 @@
 #ifndef UTIL_THREADS_
 #define UTIL_THREADS_
 
+#include <vector>
+
 namespace RISE
 {
 	typedef unsigned long long RISETHREADID;
@@ -44,10 +46,44 @@ namespace RISE
 			RISETHREADID* threadid
 			);
 
-		//! Lowers the priority of the given thread so rendering
-		//! does not starve the rest of the system
+		//! Creates a thread that immediately lowers its own priority.
+		//! Kept as a primitive even though GlobalThreadPool no longer
+		//! uses it for any "courtesy" pattern — the legacy background
+		//! mode (force_all_threads_low_priority) is applied via the
+		//! regular thread-start wrapper reading a global option.
+		//! Most render threads DO NOT want this — see
+		//! riseSetThreadLowPriority for the severity warning.
+		/// \return 1 if successful, 0 otherwise
+		static unsigned int riseCreateLowPriorityThread(
+			THREAD_FUNC pFunc,
+			void* pParam,
+			unsigned int initial_stack_size,
+			void* thread_attributes,
+			RISETHREADID* threadid
+			);
+
+		//! Lowers the priority of the calling thread so cross-process
+		//! work is not starved.  WARNING: this is a hard throttle on
+		//! macOS (E-core pinning + P-core frequency cap, ~2–4× real
+		//! throughput loss under load) and should only be applied to
+		//! threads whose purpose is to soak leftover capacity.
 		static void riseSetThreadLowPriority(
 			RISETHREADID threadid
+			);
+
+		//! Mark the calling thread as a render worker.  On macOS this
+		//! applies QOS_CLASS_USER_INITIATED which tells the scheduler
+		//! to prefer P-cores and not throttle them.  Elsewhere this is
+		//! a no-op because affinity does the equivalent job.
+		static void riseSetThreadRenderPriority(
+			RISETHREADID threadid
+			);
+
+		//! Pin the calling thread to the given CPU set (sched_setaffinity
+		//! on Linux, SetThreadSelectedCpuSetMasks on Windows).  No-op on
+		//! macOS — Apple Silicon doesn't expose a thread-affinity API.
+		static void riseSetThreadAffinity(
+			const std::vector<unsigned int>& cpuIds
 			);
 
 		//! Waits for a thread to finish execution

@@ -44,6 +44,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - Tests are standalone executables, not a framework-based suite.
 - Two rendering pipelines exist: **shader-dispatch** (RayCaster → ShaderOp chain) and **pure integrator** (PathTracingIntegrator called directly by `pathtracing_pel_rasterizer` / `pathtracing_spectral_rasterizer`). Changes to path tracing logic should go in `PathTracingIntegrator`, which serves both pipelines.
 - **OIDN + FilteredFilm invariant**: When OIDN denoising is enabled, the filtered film resolve is skipped. OIDN needs raw MC noise, not filter-reconstructed images. See `docs/ARCHITECTURE.md` for details.
+- **Thread priority invariant (LOAD-BEARING)**: `GlobalThreadPool()` is topology-aware — every P-core gets a render worker, every E-core except `render_thread_reserve_count` (default 1) also gets one. Workers use `QOS_CLASS_USER_INITIATED` on macOS and `sched_setaffinity` on Linux/Windows to stay on fast cores. Benchmarks MUST set option `render_thread_reserve_count 0` to use every core — otherwise 1 E-core is reserved for the OS and wall-time looks ~10 % slower. Never put all workers at `QOS_CLASS_UTILITY` / `BELOW_NORMAL` thinking it's "nicer" — the old bug cost 2–4× real throughput on Apple Silicon. Full rationale in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) "Thread priority policy."
 
 ## Reference Counting
 

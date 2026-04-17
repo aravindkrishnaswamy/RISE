@@ -32,6 +32,7 @@
 #include "BlockRasterizeSequence.h"
 #include "MortonRasterizeSequence.h"
 #include "RasterizeDispatchers.h"
+#include "ThreadLocalSplatBuffer.h"
 #include "../Utilities/ThreadPool.h"
 #include "AdaptiveTileSizer.h"
 #include "PreviewScheduler.h"
@@ -862,6 +863,13 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 		else
 		{
+			// Legacy low-priority mode: lower this caller thread to
+			// match the rest of the render.  Mirrors the fix in
+			// PixelBasedRasterizerHelper::RasterizeScenePass.
+			if( GlobalOptions().ReadBool( "force_all_threads_low_priority", false ) ) {
+				Threading::riseSetThreadLowPriority( 0 );
+			}
+
 			RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
 			PrepareRuntimeContext( rc );
 
@@ -880,6 +888,12 @@ void BDPTRasterizerBase::RasterizeScene(
 
 				SPRasterizeSingleBlock( rc, *pImage, pScene, rect, height );
 			}
+
+			// Single-thread fallback — MP workers flush via DoWork's
+			// exit hook; SP path doesn't, so BDPT's t=1 splats would
+			// otherwise stay in the TLS buffer when SplatFilm::Resolve
+			// runs in the caller.
+			FlushCallingThreadSplatBuffer();
 		}
 	}
 

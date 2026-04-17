@@ -42,6 +42,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Log/StreamPrinter.cpp				\
 	$(PATHLIBRARY)Utilities/Threads/ThreadsPTHREADs.cpp			\
 	$(PATHLIBRARY)Utilities/ThreadPool.cpp					\
+	$(PATHLIBRARY)Utilities/CPUTopology.cpp					\
 	$(PATHLIBRARY)Utilities/CPU_Count.cpp					\
 	$(PATHLIBRARY)Utilities/DiskBuffer.cpp						\
 	$(PATHLIBRARY)Utilities/DiskFileReadBuffer.cpp				\

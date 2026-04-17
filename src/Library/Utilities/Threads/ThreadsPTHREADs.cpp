@@ -27,24 +27,92 @@
 #ifdef __APPLE__
 	#include <pthread/qos.h>
 #endif
+#ifdef __linux__
+	#include <sched.h>
+	#include <sys/resource.h>	// setpriority / PRIO_PROCESS
+#endif
 #include <unistd.h>
 
 using namespace RISE;
 
-void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
+void Threading::riseSetThreadRenderPriority( RISETHREADID threadid )
 {
-	// On POSIX this must be called from within the target thread itself,
-	// since nice() and QoS APIs affect the calling thread.
+	// Render workers need to stay on the fast cores at full clock.
+	// On macOS, QOS_CLASS_USER_INITIATED tells the scheduler:
+	//   - Prefer the P-cores for this thread.
+	//   - Run the P-core at its full clock, not the throttled UTILITY
+	//     frequency.
+	//   - Yield only to USER_INTERACTIVE work (UI animations).
+	// This is the right setting for long-running parallel work that
+	// should co-exist with the user's foreground app without
+	// paying the E-core / throttle tax of UTILITY.
 	(void)threadid;
 #ifndef NO_PTHREAD_SUPPORT
 #ifdef __APPLE__
-	// macOS: QoS classes are the preferred scheduling mechanism.
-	// QOS_CLASS_UTILITY is for long-running work that should not
-	// interfere with interactive responsiveness.
-	pthread_set_qos_class_self_np( QOS_CLASS_UTILITY, 0 );
+	pthread_set_qos_class_self_np( QOS_CLASS_USER_INITIATED, 0 );
 #else
-	// Linux / other POSIX: raise the nice value so the kernel
-	// schedules these threads with lower priority.
+	// Linux / other POSIX: inherit the parent's nice value.  No-op;
+	// affinity handles the placement.
+#endif
+#endif
+}
+
+void Threading::riseSetThreadAffinity( const std::vector<unsigned int>& cpuIds )
+{
+	// Pin the calling thread to the given CPU set.  No-op on macOS
+	// (no thread-affinity API on Apple Silicon).
+#ifdef __linux__
+	if( cpuIds.empty() ) return;
+	cpu_set_t set;
+	CPU_ZERO( &set );
+	for( unsigned int id : cpuIds ) {
+		if( id < CPU_SETSIZE ) {
+			CPU_SET( id, &set );
+		}
+	}
+	sched_setaffinity( 0, sizeof( set ), &set );
+#else
+	(void)cpuIds;
+#endif
+}
+
+void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
+{
+	// Lowered priority for "good citizen" background rendering.
+	// On macOS this is a HARD throttle: QOS_CLASS_UTILITY prefers E-cores
+	// and caps P-core frequency, reducing real per-thread throughput by
+	// roughly 2–4× under load.
+	//
+	// Most render threads MUST stay at normal priority — otherwise a 10-
+	// core machine delivers only 2–3× aggregate throughput.  The
+	// production policy (see ThreadPool / CPUTopology) is
+	// topology-aware: every P-core + (E-cores − 1) gets a worker at
+	// normal priority, and 1 E-core is left to the OS.  Benchmarks
+	// override via render_thread_reserve_count 0.  The ONLY code path
+	// that takes this low-priority branch is legacy
+	// force_all_threads_low_priority mode, which the user opts into
+	// explicitly when they want to render while using the machine.
+	(void)threadid;
+#ifndef NO_PTHREAD_SUPPORT
+#ifdef __APPLE__
+	// macOS: QoS classes are the scheduling mechanism.  UTILITY is the
+	// harshest "keep out of the user's way" class the scheduler offers
+	// without going strictly background.  Calling repeatedly with
+	// the same class is a no-op (QoS is sticky, lower-only).
+	pthread_set_qos_class_self_np( QOS_CLASS_UTILITY, 0 );
+#elif defined( __linux__ )
+	// Linux: set the calling thread's nice value to an ABSOLUTE 10.
+	// Previously used nice(10) which is additive — calling it once
+	// per progressive SP pass would drift the caller from nice 0 →
+	// 10 → 19 (clamped) over successive passes instead of staying
+	// at 10.  setpriority( PRIO_PROCESS, 0, … ) with tid 0 operates
+	// on the calling thread and sets an absolute value, which is
+	// idempotent across calls.
+	setpriority( PRIO_PROCESS, 0, 10 );
+#else
+	// Other POSIX: fall back to nice().  Not idempotent, but these
+	// platforms aren't a priority target and only hit this path
+	// under force_all_threads_low_priority anyway.
 	nice( 10 );
 #endif
 #endif
@@ -52,21 +120,34 @@ void Threading::riseSetThreadLowPriority( RISETHREADID threadid )
 
 #ifndef NO_PTHREAD_SUPPORT
 namespace RISE {
-	// Wrapper that lowers priority before calling the real thread function
+	// Two-argument thread-start wrapper.  The new `lowPriority` flag
+	// lets callers choose per-thread whether to drop priority.  Default
+	// behaviour (flag = false) keeps the thread at the inherited
+	// priority, so render workers run full speed unless the caller
+	// explicitly asks for the reduced class.
 	struct ThreadStartData
 	{
 		THREAD_FUNC realFunc;
 		void* realParam;
+		bool         lowPriority;
 	};
 
-	static void* LowPriorityThreadProc( void* arg )
+	static void* ThreadStartProc( void* arg )
 	{
 		ThreadStartData* data = static_cast<ThreadStartData*>( arg );
 		THREAD_FUNC func = data->realFunc;
 		void* param = data->realParam;
+		const bool lowPriority = data->lowPriority;
 		delete data;
 
-		if( GlobalOptions().ReadBool( "force_all_threads_low_priority", true ) ) {
+		// Legacy global override — deprecated, defaults to false.  Kept
+		// for users who opted into "render in the background" mode.
+		// New code should pass `lowPriority` through the Threading API
+		// (and use GlobalThreadPool which honours the production policy).
+		const bool forceLow = GlobalOptions().ReadBool(
+			"force_all_threads_low_priority", false );
+
+		if( lowPriority || forceLow ) {
 			Threading::riseSetThreadLowPriority( 0 );
 		}
 
@@ -89,15 +170,41 @@ unsigned int Threading::riseCreateThread( THREAD_FUNC pFunc, void* pParam, unsig
 	ThreadStartData* startData = new ThreadStartData;
 	startData->realFunc = pFunc;
 	startData->realParam = pParam;
+	startData->lowPriority = false;
 
 	pthread_attr_init( &attr );
-	pthread_create( &tid, &attr, LowPriorityThreadProc, startData );
+	pthread_create( &tid, &attr, ThreadStartProc, startData );
 
 	if( threadid ) {
 		*threadid = (RISETHREADID)tid;
 	}
 
 //	GlobalLog()->PrintEx( eLog_Info, "Starting Thread ID:%d", tid );
+	return 1;
+#endif
+}
+
+unsigned int Threading::riseCreateLowPriorityThread( THREAD_FUNC pFunc, void* pParam, unsigned int initial_stack_size, void* thread_attributes, RISETHREADID* threadid )
+{
+#ifdef NO_PTHREAD_SUPPORT
+	GlobalLog()->PrintEasyInfo( "riseCreateLowPriorityThread:: NO PTHREAD support was compiled, simply executing code" );
+	(*pFunc)( pParam );
+	return 1;
+#else
+	pthread_t			tid;
+	pthread_attr_t		attr;
+
+	ThreadStartData* startData = new ThreadStartData;
+	startData->realFunc = pFunc;
+	startData->realParam = pParam;
+	startData->lowPriority = true;
+
+	pthread_attr_init( &attr );
+	pthread_create( &tid, &attr, ThreadStartProc, startData );
+
+	if( threadid ) {
+		*threadid = (RISETHREADID)tid;
+	}
 	return 1;
 #endif
 }

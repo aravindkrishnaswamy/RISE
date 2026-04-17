@@ -18,6 +18,7 @@
 #include "../Utilities/Profiling.h"
 #include "../RasterImages/RasterImage.h"
 #include "RasterizeDispatchers.h"
+#include "ThreadLocalSplatBuffer.h"
 #include "../Utilities/ThreadPool.h"
 #include "AdaptiveTileSizer.h"
 #include "PreviewScheduler.h"
@@ -395,6 +396,18 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		return !dispatcher.WasCancelled();
 	} else {
 
+		// Legacy "render in the background" mode: the SP branch runs
+		// the entire render on THIS thread (typically the CLI main
+		// thread), bypassing the pool whose workers are already at
+		// reduced priority.  Lower this thread too so the "every
+		// render participant at reduced priority" contract holds.
+		// QoS on macOS can only be lowered, not raised — that's fine
+		// because legacy mode is explicit opt-in for the whole render
+		// lifetime; we don't restore.
+		if( GlobalOptions().ReadBool( "force_all_threads_low_priority", false ) ) {
+			Threading::riseSetThreadLowPriority( 0 );
+		}
+
 		// Otherwise call the SP code
 		// Create a runtime context
 		RuntimeContext rc( GlobalRNG(), pass, false );
@@ -419,6 +432,14 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 
 			SPRasterizeSingleBlock( rc, image, scene, rect, height );
 		}
+
+		// MP-path dispatcher workers flush via DoWork's exit hook.
+		// The SP path has no such hook — flush explicitly so any t=1
+		// splats this thread collected reach the SplatFilm before
+		// the caller (BDPT/VCM/MLT) resolves it.  Also unbinds the
+		// TLS buffer so a later render's new SplatFilm can't trip
+		// over a dangling pointer.
+		FlushCallingThreadSplatBuffer();
 
 		return completed;
 	}
@@ -739,6 +760,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 	} else {
 
+		// Legacy low-priority: lower this caller thread too so it
+		// joins the rest of the render at reduced priority.  See
+		// RasterizeScenePass for the full rationale.
+		if( GlobalOptions().ReadBool( "force_all_threads_low_priority", false ) ) {
+			Threading::riseSetThreadLowPriority( 0 );
+		}
+
 		// Call the SP code
 
 		// Create a runtime context
@@ -759,6 +787,10 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 			SPRasterizeSingleBlockOfAnimation( rc, image, pScene, rect, height, framedata );
 		}
+
+		// Mirrors the non-animation SP path: explicitly flush the
+		// TLS splat buffer now that the workers won't do it for us.
+		FlushCallingThreadSplatBuffer();
 	}
 }
 

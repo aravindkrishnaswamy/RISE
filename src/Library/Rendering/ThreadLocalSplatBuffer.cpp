@@ -43,6 +43,11 @@ ThreadLocalSplatBuffer& RISE::Implementation::GetThreadLocalSplatBuffer()
 
 void RISE::Implementation::FlushCallingThreadSplatBuffer()
 {
+	// Flush AND drop the binding — prevents a use-after-free when
+	// the next render destroys-and-recreates its SplatFilm while
+	// pool workers keep living (worker TLS would otherwise still
+	// hold the dead film pointer and try to flush into it on the
+	// next Bind()).
 	ThreadLocalSplatBuffer& buf = GetThreadLocalSplatBuffer();
-	buf.FlushBound();
+	buf.FlushAndUnbind();
 }

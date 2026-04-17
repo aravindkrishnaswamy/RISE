@@ -41,7 +41,12 @@ namespace RISE
 		class ThreadPool
 		{
 		public:
-			ThreadPool( unsigned int numWorkers );
+			//! Construct a pool.  `affinityMask` is the list of CPU IDs
+			//! the workers should be pinned to (Linux / Windows only;
+			//! macOS ignores this and relies on QoS class).  Pass an
+			//! empty mask to let the scheduler choose freely.
+			ThreadPool( unsigned int numWorkers,
+			            const std::vector<unsigned int>& affinityMask );
 			~ThreadPool();
 
 			//! Enqueue a single task.  Workers will pick it up as soon as
@@ -49,10 +54,27 @@ namespace RISE
 			void Submit( std::function<void()> task );
 
 			//! Run body(i) for i in [0, n) across the worker pool.
-			//! Blocks until every task completes.  Safe to call
-			//! recursively from within a pool task — the calling thread
-			//! participates in executing queued work while waiting to
-			//! avoid deadlock on bounded pools.
+			//! Blocks until every task completes.
+			//!
+			//! Recursion safety in the DEFAULT mode (no
+			//! force_all_threads_low_priority): safe.  The calling
+			//! thread drains queued tasks while it waits, so a pool
+			//! worker calling ParallelFor cannot deadlock even on a
+			//! one-worker pool.
+			//!
+			//! Recursion in LEGACY low-priority mode
+			//! (force_all_threads_low_priority true): NOT SAFE on
+			//! bounded pools.  To uphold the "every render thread at
+			//! reduced priority" contract, the caller does NOT steal
+			//! tasks and the n == 1 fast path goes through the queue.
+			//! If a pool worker calls ParallelFor while the pool is
+			//! already saturated (e.g. a single-worker pool, or n
+			//! bigger than the idle-worker count plus 1), it will
+			//! block waiting for tasks no worker is available to
+			//! execute.  Render call sites today do NOT recurse, so
+			//! this is a contract restriction rather than a live bug;
+			//! any future caller that wants to recurse must first
+			//! check the legacy-mode option and route around the pool.
 			void ParallelFor( unsigned int n, std::function<void( unsigned int )> body );
 
 			//! Number of worker threads in the pool.
@@ -64,6 +86,14 @@ namespace RISE
 			std::mutex				tasksMut;
 			std::condition_variable		tasksCv;
 			std::atomic<bool>			shuttingDown;
+			std::vector<unsigned int>		affinity;   ///< CPU IDs to pin workers to (Linux/Windows)
+
+		public:
+			//! Affinity mask workers are pinned to (may be empty).
+			//! Exposed so worker startup code can apply it.
+			const std::vector<unsigned int>& GetAffinityMask() const { return affinity; }
+
+		private:
 
 			static void* WorkerProc( void* arg );
 			void WorkerLoop();

@@ -11,8 +11,17 @@ support_hyperthreading						TRUE
 # Uncomment this setting if you want to force the renderer to use a specific number of threads (regardless of any other settings)
 #force_number_of_threads						8
 
-# Forces all threads that are created to be low priority so that it doesn't choke systems
-force_all_threads_low_priority				TRUE
+# GlobalThreadPool reserves this many efficiency cores for the system so UI /
+# daemons stay responsive during long renders.  Default 1; benchmarks set 0.
+# See docs/PERFORMANCE.md "Thread priority policy" for full details.
+#render_thread_reserve_count				1
+
+# LEGACY "render in the background" toggle — applies QOS_CLASS_UTILITY (macOS),
+# nice(10) (Linux), or THREAD_PRIORITY_BELOW_NORMAL (Windows) to EVERY render
+# thread.  On Apple Silicon this pins threads to E-cores and costs 2–4×
+# throughput, so the default is FALSE.  Flip to TRUE only when you want to
+# keep rendering while heavily using the machine for other work.
+force_all_threads_low_priority				FALSE
 
 
 ################################

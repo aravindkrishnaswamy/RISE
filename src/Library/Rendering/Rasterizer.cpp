@@ -15,6 +15,7 @@
 #include "Rasterizer.h"
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/CPU.h"
+#include "../Utilities/CPUTopology.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -34,31 +35,12 @@ Rasterizer::~Rasterizer( )
 
 int Rasterizer::HowManyThreadsToSpawn() const
 {
-	int logical, physical;
-	RISE::CPU_COUNT_ENUM eHTStatus = GetCPUCount( logical, physical );
-
-	// Lets have some fun with the options file
-	IOptions& options = GlobalOptions();
-
-	const bool bHyperthreading = options.ReadBool( "support_hyperthreading", true ) && (eHTStatus == HT_ENABLED);
-	const int maxThreads = options.ReadInt( "maximum_thread_count", 0xFFFFFFF );
-	const int force_number_of_threads = options.ReadInt( "force_number_of_threads", 0 );
-
-	int totalThreads = logical*physical;
-
-	if( !bHyperthreading ) {
-		totalThreads = physical;
-	}
-
-	if( totalThreads > maxThreads ) {
-		totalThreads = maxThreads;
-	}
-
-	if( force_number_of_threads ) {
-		return force_number_of_threads;
-	}
-
-	return totalThreads;
+	// Thread count derives from CPU topology AND user overrides.
+	// ComputeRenderPoolSize already honours force_number_of_threads
+	// and maximum_thread_count, so caller dispatch count aligns with
+	// the actual render-pool size regardless of which knob the user
+	// turned.
+	return static_cast<int>( RISE::Implementation::ComputeRenderPoolSize() );
 }
 
 void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )

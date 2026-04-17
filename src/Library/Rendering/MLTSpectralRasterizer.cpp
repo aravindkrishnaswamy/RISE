@@ -53,6 +53,11 @@
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
 #include "../Utilities/RTime.h"
+#include "../Utilities/ThreadPool.h"
+#include "ThreadLocalSplatBuffer.h"
+#include "../Interfaces/IOptions.h"
+#include "../Utilities/Threads/Threads.h"
+#include <atomic>
 
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
@@ -728,42 +733,45 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 		if( threads > 1 )
 		{
-			// Multi-threaded: distribute chains across threads
-			const unsigned int chainsPerThread = effectiveChains / threads;
+			// Work-stealing chain dispatch — see MLTRasterizer.cpp
+			// for the rationale (highly variable per-chain cost wrecks
+			// static partitioning).  Each worker MUST flush its splat
+			// buffer before returning so the round's Resolve() sees
+			// every splat below the auto-flush threshold.
+			std::atomic<unsigned int> nextChain( 0 );
+			ThreadPool& pool = GlobalThreadPool();
 
-			std::vector<SpectralRoundThreadData> threadData( threads );
-			RISETHREADID* thread_ids = new RISETHREADID[threads];
-
-			for( int t = 0; t < threads; t++ )
-			{
-				threadData[t].pRasterizer = this;
-				threadData[t].pScene = &pScene;
-				threadData[t].pSplatFilm = pSplatFilm;
-				threadData[t].pChainStates = &chainStates[0];
-				threadData[t].chainStart = t * chainsPerThread;
-				threadData[t].chainEnd = ( t == threads - 1 ) ? effectiveChains : ( t + 1 ) * chainsPerThread;
-				threadData[t].mutationsPerChain = mutThisRound;
-				threadData[t].normalization = b;
-				threadData[t].width = width;
-				threadData[t].height = height;
-
-				Threading::riseCreateThread( SpectralRoundThread_ThreadProc, (void*)&threadData[t], 0, 0, &thread_ids[t] );
-			}
-
-			for( int t = 0; t < threads; t++ ) {
-				Threading::riseWaitUntilThreadFinishes( thread_ids[t], 0 );
-			}
-
-			delete[] thread_ids;
+			pool.ParallelFor( static_cast<unsigned int>( threads ),
+				[&]( unsigned int /*workerIdx*/ ) {
+					for( ;; ) {
+						const unsigned int c = nextChain.fetch_add(
+							1, std::memory_order_relaxed );
+						if( c >= effectiveChains ) {
+							break;
+						}
+						RunChainSegmentSpectral(
+							chainStates[c], pScene, *pCamera, *pSplatFilm,
+							mutThisRound, b, width, height );
+					}
+					FlushCallingThreadSplatBuffer();
+				} );
 		}
 		else
 		{
+			// Legacy low-priority mode: see MLTRasterizer.cpp SP
+			// branch for the rationale.
+			if( round == 0 &&
+			    GlobalOptions().ReadBool( "force_all_threads_low_priority", false ) ) {
+				Threading::riseSetThreadLowPriority( 0 );
+			}
+
 			// Single-threaded: run all chains sequentially
 			for( unsigned int c = 0; c < effectiveChains; c++ )
 			{
 				RunChainSegmentSpectral( chainStates[c], pScene, *pCamera, *pSplatFilm,
 					mutThisRound, b, width, height );
 			}
+			FlushCallingThreadSplatBuffer();
 		}
 
 		// Snapshot: resolve film and output
