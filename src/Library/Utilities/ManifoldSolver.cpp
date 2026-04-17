@@ -2448,8 +2448,6 @@ ManifoldResult ManifoldSolver::Solve(
 		return result;
 	}
 
-	const unsigned int chainK = static_cast<unsigned int>( specularChain.size() );
-
 	// Quick early-out: build minimal tangent frames from normals
 	// and evaluate the initial constraint.  If the norm is too large,
 	// bail before computing expensive surface derivatives.
