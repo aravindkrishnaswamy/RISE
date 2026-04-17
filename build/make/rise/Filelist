@@ -41,6 +41,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Log/MemoryTracker.cpp				\
 	$(PATHLIBRARY)Utilities/Log/StreamPrinter.cpp				\
 	$(PATHLIBRARY)Utilities/Threads/ThreadsPTHREADs.cpp			\
+	$(PATHLIBRARY)Utilities/ThreadPool.cpp					\
 	$(PATHLIBRARY)Utilities/CPU_Count.cpp					\
 	$(PATHLIBRARY)Utilities/DiskBuffer.cpp						\
 	$(PATHLIBRARY)Utilities/DiskFileReadBuffer.cpp				\
@@ -257,7 +258,10 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
 	$(PATHLIBRARY)Rendering/EnvironmentSampler.cpp							\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
+	$(PATHLIBRARY)Rendering/ThreadLocalSplatBuffer.cpp						\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
+	$(PATHLIBRARY)Rendering/AdaptiveTileSizer.cpp							\
+	$(PATHLIBRARY)Rendering/PreviewScheduler.cpp							\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
 	$(PATHLIBRARY)Rendering/PathTracingPelRasterizer.cpp					\
 	$(PATHLIBRARY)Rendering/PathTracingSpectralRasterizer.cpp				\

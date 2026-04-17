@@ -18,6 +18,9 @@
 #include "../Utilities/Profiling.h"
 #include "../RasterImages/RasterImage.h"
 #include "RasterizeDispatchers.h"
+#include "../Utilities/ThreadPool.h"
+#include "AdaptiveTileSizer.h"
+#include "PreviewScheduler.h"
 
 #include "ScanlineRasterizeSequence.h"
 #include "BlockRasterizeSequence.h"
@@ -374,22 +377,20 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		// Start the raster sequence
 		seq.Begin( startx, endx, starty, endy );
 
-		// Our MP solution is to spawn a thread for each processor and it will come back to us and request tiles
-		// as it completes them
+		// Reuse the global thread pool instead of spawning fresh
+		// pthreads per pass.  The dispatcher's atomic tile counter
+		// does the work distribution; the pool just provides the
+		// persistent workers.
 
 		RasterizeBlockDispatcher dispatcher(
 			pass, image, scene, seq, *this, pProgressFunc,
 			mProgressBase, mProgressWeight, mProgressTotal );
 
-		RISETHREADID thread_ids[MAX_THREADS];
-		for( int i=0; i<threads; i++ ) {
-			Threading::riseCreateThread( RasterizeBlock_ThreadProc, (void*)&dispatcher, 0, 0, &thread_ids[i] );
-		}
-
-		// Then wait for all the threads to complete
-		for( int i=0; i<threads; i++ ) {
-			Threading::riseWaitUntilThreadFinishes( thread_ids[i], 0 );
-		}
+		ThreadPool& pool = GlobalThreadPool();
+		const unsigned int numWorkers = static_cast<unsigned int>( threads );
+		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {
+			dispatcher.DoWork();
+		} );
 
 		return !dispatcher.WasCancelled();
 	} else {
@@ -469,17 +470,24 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// Pre-render hook (e.g. path guiding training)
 	PreRenderSetup( pScene, pRect );
 
+	// Compute tile size once — keeps tilesPerThread ≥ 8 across all
+	// image dimensions and thread counts.
+	const unsigned int tileEdge = ComputeTileSize(
+		width, height,
+		static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+		8, 8, 64 );
+
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new MortonRasterizeSequence( 32 );
+		blocks = new MortonRasterizeSequence( tileEdge );
 		pRasterSequence = blocks;
 	}
 
 	// We should do the irradiance pass to populate the cache
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
-		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( 32 );
+		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdge );
 		if( pProgressFunc ) {
 			pProgressFunc->SetTitle( "Irradiance Pass: " );
 		}
@@ -537,6 +545,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 		double accumulatedProgress = 0;
 
+		// Preview cadence — decouple from iteration cadence so we
+		// don't resolve + write a PNG every pass on small-scene VCM
+		// (where iterations can fire 25×/sec).  Target 7.5 s by
+		// default; user can override via scene option in future.
+		PreviewScheduler previewScheduler( 7.5 );
+
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
@@ -558,7 +572,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			mProgressWeight = static_cast<double>( passSPP );
 			mProgressTotal  = totalProgressUnits;
 
-			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( 32 );
+			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdge );
 			const bool passCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
 
@@ -568,16 +582,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
 			safe_release( pPassSampling );
 
-			// Intermediate preview: rebuild the displayed image from the
-			// accumulated progressive state so every update is cumulative.
-			progFilm.Resolve( *pImage );
-
-			IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( outputImage, pRect );
-			}
-
 			if( !passCompleted ) {
 				GlobalLog()->PrintEx( eLog_Event,
 					"Progressive:: Cancelled after pass %u/%u",
@@ -585,13 +589,30 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				break;
 			}
 
-			// Check whether every pixel has converged or reached the sample cap.
-			const unsigned int doneCount = progFilm.CountDone( totalSPP );
-			if( doneCount >= width * height ) {
-				GlobalLog()->PrintEx( eLog_Event,
-					"Progressive:: All pixels complete after pass %u/%u",
-					passIdx+1, numPasses );
-				break;
+			const bool isFinalPass = ( passIdx == numPasses - 1 );
+			const bool runPreview  = isFinalPass || previewScheduler.ShouldRunPreview();
+
+			if( runPreview ) {
+				// Intermediate preview: rebuild the displayed image from the
+				// accumulated progressive state so every update is cumulative.
+				progFilm.Resolve( *pImage );
+
+				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+				RasterizerOutputListType::const_iterator r, s;
+				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+					(*r)->OutputIntermediateImage( outputImage, pRect );
+				}
+				previewScheduler.MarkPreviewRan();
+
+				// Convergence check runs alongside preview — user gets
+				// early exit no later than the next preview interval.
+				const unsigned int doneCount = progFilm.CountDone( totalSPP );
+				if( doneCount >= width * height ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"Progressive:: All pixels complete after pass %u/%u",
+						passIdx+1, numPasses );
+					break;
+				}
 			}
 		}
 
@@ -706,20 +727,15 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 		// Start the raster sequence
 		seq.Begin( startx, endx, starty, endy );
 
-		// Our MP solution is to spawn a thread for each processor and it will come back to us and request tiles
-		// as it completes them
+		// Reuse the global thread pool (see RasterizeScenePass above).
 
 		RasterizeBlockAnimationDispatcher dispatcher( pass, image, pScene, seq, *this, pProgressFunc, framedata );
 
-		RISETHREADID thread_ids[256];
-		for( int i=0; i<threads; i++ ) {
-			Threading::riseCreateThread( RasterizeBlockAnimation_ThreadProc, (void*)&dispatcher, 0, 0, &thread_ids[i] );
-		}
-
-		// Then wait for all the threads to complete
-		for( int i=0; i<threads; i++ ) {
-			Threading::riseWaitUntilThreadFinishes( thread_ids[i], 0 );
-		}
+		ThreadPool& pool = GlobalThreadPool();
+		const unsigned int numWorkers = static_cast<unsigned int>( threads );
+		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {
+			dispatcher.DoAnimWork();
+		} );
 
 	} else {
 
@@ -787,7 +803,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
-		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( 32 );
+		const unsigned int tileEdgeAnim = ComputeTileSize(
+			image.GetWidth(), image.GetHeight(),
+			static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+			8, 8, 64 );
+		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdgeAnim );
 		pProgressFunc->SetTitle( "Irradiance Pass: " );
 		RenderFrameOfAnimationPass( RuntimeContext::PASS_IRRADIANCE_CACHE, pScene, pRect, field, image, time, *irrad_seq, framedata );
 		pIrradianceCache->FinishedPrecomputation();
@@ -831,7 +851,11 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new MortonRasterizeSequence( 32 );
+		const unsigned int tileEdgeAnim = ComputeTileSize(
+			width, height,
+			static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+			8, 8, 64 );
+		blocks = new MortonRasterizeSequence( tileEdgeAnim );
 		pRasterSequence = blocks;
 	}
 

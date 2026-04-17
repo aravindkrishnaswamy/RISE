@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "SplatFilm.h"
+#include "ThreadLocalSplatBuffer.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -49,13 +50,59 @@ void SplatFilm::Splat(
 		return;
 	}
 
-	rowMutexes[y]->lock();
+	// Route through the per-thread sparse buffer.  This turns a
+	// per-splat mutex acquire+release into a per-row acquire that
+	// amortizes over all splats the thread produces for that row
+	// before FlushInto() is called (typically at end-of-tile).
+	//
+	// Lazy-bind on first call per thread per film.
+	ThreadLocalSplatBuffer& buf = GetThreadLocalSplatBuffer();
+	if( buf.GetBoundFilm() != this ) {
+		buf.Bind( this, width, height );
+	}
+	buf.Splat( x, y, contribution );
+}
 
-	SplatPixel& pixel = pixels[y * width + x];
-	pixel.color = pixel.color + contribution;
-	pixel.weight += 1.0;
+void SplatFilm::BatchCommit(
+	const BatchRecord* records,
+	std::size_t count
+	)
+{
+	if( !records || count == 0 ) {
+		return;
+	}
 
-	rowMutexes[y]->unlock();
+	// Records are sorted by pixelIndex → rows group together.
+	// Walk, acquiring each row's mutex exactly once.
+	std::size_t i = 0;
+	while( i < count ) {
+		const uint32_t firstIdx = records[i].pixelIndex;
+		const unsigned int row   = firstIdx / width;
+		if( row >= height ) {
+			i++;
+			continue;
+		}
+
+		// Find end of this row's group (records[j].y == row).
+		std::size_t j = i;
+		while( j < count && (records[j].pixelIndex / width) == row ) {
+			j++;
+		}
+
+		// Single lock acquisition for all splats in this row.
+		rowMutexes[row]->lock();
+		for( std::size_t k = i; k < j; k++ ) {
+			const uint32_t idx = records[k].pixelIndex;
+			if( idx < pixels.size() ) {
+				SplatPixel& pixel = pixels[idx];
+				pixel.color   = pixel.color + records[k].color;
+				pixel.weight += 1.0;
+			}
+		}
+		rowMutexes[row]->unlock();
+
+		i = j;
+	}
 }
 
 void SplatFilm::Resolve(
@@ -117,5 +164,13 @@ void SplatFilm::Clear()
 	for( unsigned int i=0; i<pixels.size(); i++ ) {
 		pixels[i].color = RISEPel( 0, 0, 0 );
 		pixels[i].weight = 0;
+	}
+}
+
+void SplatFilm::FlushCallingThreadBuffer()
+{
+	ThreadLocalSplatBuffer& buf = GetThreadLocalSplatBuffer();
+	if( buf.GetBoundFilm() == this ) {
+		buf.FlushBound();
 	}
 }

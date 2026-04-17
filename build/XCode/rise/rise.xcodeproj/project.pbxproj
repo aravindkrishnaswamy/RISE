@@ -1332,6 +1332,18 @@
 		F27F0CAE069C42910069C9E5 /* VolumeOp_LMIP.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A57069C42900069C9E5 /* VolumeOp_LMIP.h */; };
 		F27F0CAF069C42910069C9E5 /* VolumeOp_MIP.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A58069C42900069C9E5 /* VolumeOp_MIP.h */; };
 		F27F0CB0069C42910069C9E5 /* ZuckerHummelOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */; };
+		F28639542F9244920009D9AE /* ThreadPool.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639532F9244920009D9AE /* ThreadPool.cpp */; };
+		F28639552F9244920009D9AE /* ThreadPool.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639522F9244920009D9AE /* ThreadPool.h */; };
+		F28639562F9244920009D9AE /* ThreadPool.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639532F9244920009D9AE /* ThreadPool.cpp */; };
+		F286395B2F9244AC0009D9AE /* ThreadLocalSplatBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */; };
+		F286395C2F9244AC0009D9AE /* AdaptiveTileSizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */; };
+		F286395D2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */; };
+		F286395E2F9244AC0009D9AE /* AdaptiveTileSizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */; };
+		F286395F2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */; };
+		F28639602F9244AC0009D9AE /* AdaptiveTileSizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */; };
+		F28639632F9245040009D9AE /* PreviewScheduler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639622F9245040009D9AE /* PreviewScheduler.cpp */; };
+		F28639642F9245040009D9AE /* PreviewScheduler.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639612F9245040009D9AE /* PreviewScheduler.h */; };
+		F28639652F9245040009D9AE /* PreviewScheduler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639622F9245040009D9AE /* PreviewScheduler.cpp */; };
 		F298C65307B14247007CDF08 /* StandardShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F298C65107B14247007CDF08 /* StandardShader.cpp */; };
 		F298C65407B14247007CDF08 /* StandardShader.h in Headers */ = {isa = PBXBuildFile; fileRef = F298C65207B14247007CDF08 /* StandardShader.h */; };
 		F2C5D5272F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
@@ -2204,6 +2216,14 @@
 		F27F0A57069C42900069C9E5 /* VolumeOp_LMIP.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VolumeOp_LMIP.h; sourceTree = "<group>"; };
 		F27F0A58069C42900069C9E5 /* VolumeOp_MIP.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VolumeOp_MIP.h; sourceTree = "<group>"; };
 		F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ZuckerHummelOperator.h; sourceTree = "<group>"; };
+		F28639522F9244920009D9AE /* ThreadPool.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThreadPool.h; sourceTree = "<group>"; };
+		F28639532F9244920009D9AE /* ThreadPool.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ThreadPool.cpp; sourceTree = "<group>"; };
+		F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveTileSizer.h; sourceTree = "<group>"; };
+		F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AdaptiveTileSizer.cpp; sourceTree = "<group>"; };
+		F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThreadLocalSplatBuffer.h; sourceTree = "<group>"; };
+		F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ThreadLocalSplatBuffer.cpp; sourceTree = "<group>"; };
+		F28639612F9245040009D9AE /* PreviewScheduler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PreviewScheduler.h; sourceTree = "<group>"; };
+		F28639622F9245040009D9AE /* PreviewScheduler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PreviewScheduler.cpp; sourceTree = "<group>"; };
 		F298C65107B14247007CDF08 /* StandardShader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = StandardShader.cpp; sourceTree = "<group>"; };
 		F298C65207B14247007CDF08 /* StandardShader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StandardShader.h; sourceTree = "<group>"; };
 		F2C5D5252F6C725300546C97 /* CompositeEmitter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompositeEmitter.h; sourceTree = "<group>"; };
@@ -3077,6 +3097,12 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F28639612F9245040009D9AE /* PreviewScheduler.h */,
+				F28639622F9245040009D9AE /* PreviewScheduler.cpp */,
+				F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */,
+				F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */,
+				F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */,
+				F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */,
 				F2D9B1322F8FA5C40077A171 /* VCMPelRasterizer.h */,
 				F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */,
 				F2D9B1342F8FA5C40077A171 /* VCMRasterizerBase.h */,
@@ -3240,6 +3266,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F28639522F9244920009D9AE /* ThreadPool.h */,
+				F28639532F9244920009D9AE /* ThreadPool.cpp */,
 				F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */,
 				F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */,
 				F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */,
@@ -3503,6 +3531,7 @@
 				F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */,
 				F24C54642F84597B009AF16D /* GGXSPF.h in Headers */,
 				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
+				F28639642F9245040009D9AE /* PreviewScheduler.h in Headers */,
 				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
 				F27F0AAB069C42910069C9E5 /* TorusGeometry.h in Headers */,
 				F27F0AAD069C42910069C9E5 /* TriangleMeshGeometry.h in Headers */,
@@ -3513,6 +3542,8 @@
 				F27F0AB5069C42910069C9E5 /* TriangleMeshLoaderBezier.h in Headers */,
 				F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */,
 				F27F0AB7069C42910069C9E5 /* TriangleMeshLoaderPLY.h in Headers */,
+				F286395B2F9244AC0009D9AE /* ThreadLocalSplatBuffer.h in Headers */,
+				F286395C2F9244AC0009D9AE /* AdaptiveTileSizer.h in Headers */,
 				F27F0AB9069C42910069C9E5 /* TriangleMeshLoaderPSurf.h in Headers */,
 				F27F0ABB069C42910069C9E5 /* TriangleMeshLoaderRAW.h in Headers */,
 				F27F0ABD069C42910069C9E5 /* TriangleMeshLoaderRAW2.h in Headers */,
@@ -3679,6 +3710,7 @@
 				F27F0B67069C42910069C9E5 /* PerfectRefractorSPF.h in Headers */,
 				F27F0B69069C42910069C9E5 /* PhongEmitter.h in Headers */,
 				F27F0B6A069C42910069C9E5 /* PhongLuminaireMaterial.h in Headers */,
+				F28639552F9244920009D9AE /* ThreadPool.h in Headers */,
 				F27F0B6C069C42910069C9E5 /* PolishedBRDF.h in Headers */,
 				F27F0B6D069C42910069C9E5 /* PolishedMaterial.h in Headers */,
 				F27F0B6F069C42910069C9E5 /* PolishedSPF.h in Headers */,
@@ -4125,6 +4157,8 @@
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
 				F2D9B1532F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */,
 				F2D9B1542F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */,
+				F286395D2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp in Sources */,
+				F286395E2F9244AC0009D9AE /* AdaptiveTileSizer.cpp in Sources */,
 				F2D9B1552F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */,
 				F2D9B1562F8FA60F0077A171 /* VCMPathOps.cpp in Sources */,
 				F27F0B33069C42910069C9E5 /* ObjectManager.cpp in Sources */,
@@ -4158,6 +4192,7 @@
 				F27F0B7B069C42910069C9E5 /* WardAnisotropicEllipticalGaussianBRDF.cpp in Sources */,
 				F2C5D56A2F6E447400546C97 /* SplatFilm.cpp in Sources */,
 				F27F0B7E069C42910069C9E5 /* WardAnisotropicEllipticalGaussianSPF.cpp in Sources */,
+				F28639562F9244920009D9AE /* ThreadPool.cpp in Sources */,
 				F27F0B80069C42910069C9E5 /* WardIsotropicGaussianBRDF.cpp in Sources */,
 				F27F0B83069C42910069C9E5 /* WardIsotropicGaussianSPF.cpp in Sources */,
 				F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */,
@@ -4259,6 +4294,7 @@
 				F2D9B0EC2F8E96280077A171 /* CurlNoise3DPainter.cpp in Sources */,
 				F2D9B0ED2F8E96280077A171 /* Worley3DPainter.cpp in Sources */,
 				F2D9B0EE2F8E96280077A171 /* Wavelet3DPainter.cpp in Sources */,
+				F28639652F9245040009D9AE /* PreviewScheduler.cpp in Sources */,
 				F2D9B0EF2F8E96280077A171 /* PerlinWorley3DPainter.cpp in Sources */,
 				F2D9B0F02F8E96280077A171 /* DomainWarp3DPainter.cpp in Sources */,
 				F2D9B0F12F8E96280077A171 /* Simplex3DPainter.cpp in Sources */,
@@ -4402,6 +4438,8 @@
 				F24B721A2F52A632008304C4 /* BoxGeometry.cpp in Sources */,
 				F24C54932F87F453009AF16D /* LightBVH.cpp in Sources */,
 				F24B721B2F52A632008304C4 /* BoxGeometry.h in Sources */,
+				F286395F2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp in Sources */,
+				F28639602F9244AC0009D9AE /* AdaptiveTileSizer.cpp in Sources */,
 				F24B721C2F52A632008304C4 /* BoxUVGenerator.cpp in Sources */,
 				F24B721D2F52A632008304C4 /* BoxUVGenerator.h in Sources */,
 				F24B721E2F52A632008304C4 /* CircularDiskGeometry.cpp in Sources */,
@@ -4616,6 +4654,7 @@
 				F24B72DE2F52A632008304C4 /* IsotropicPhongSPF.h in Sources */,
 				F24B72DF2F52A632008304C4 /* LambertianBRDF.cpp in Sources */,
 				F24B72E02F52A632008304C4 /* LambertianBRDF.h in Sources */,
+				F28639542F9244920009D9AE /* ThreadPool.cpp in Sources */,
 				F2C5D5E82F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */,
 				F24B72E12F52A632008304C4 /* LambertianEmitter.cpp in Sources */,
 				F24B72E22F52A632008304C4 /* LambertianEmitter.h in Sources */,
@@ -4637,6 +4676,7 @@
 				F24B72F02F52A632008304C4 /* PerfectRefractorMaterial.h in Sources */,
 				F24B72F12F52A632008304C4 /* PerfectRefractorSPF.cpp in Sources */,
 				F24B72F22F52A632008304C4 /* PerfectRefractorSPF.h in Sources */,
+				F28639632F9245040009D9AE /* PreviewScheduler.cpp in Sources */,
 				F2C5D5DE2F716BAA00546C97 /* BDPTRasterizerBase.cpp in Sources */,
 				F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F2C5D5DF2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp in Sources */,

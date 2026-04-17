@@ -98,8 +98,12 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 
 	SobolSampler sampler( sampleIndex, pixelSeed );
 
-	std::vector<BDPTVertex> lightVerts;
-	std::vector<BDPTVertex> eyeVerts;
+	// Per-thread scratch — eliminates per-sample allocator traffic
+	// in the BDPT hot path.
+	static thread_local std::vector<BDPTVertex> lightVerts;
+	static thread_local std::vector<BDPTVertex> eyeVerts;
+	lightVerts.clear();
+	eyeVerts.clear();
 
 	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, rc.random );
 	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );

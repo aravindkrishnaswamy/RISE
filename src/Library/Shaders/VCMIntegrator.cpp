@@ -1321,8 +1321,12 @@ RISEPel VCMIntegrator::EvaluateMerges(
 		return total;
 	}
 
-	std::vector<LightVertex> candidates;
-	candidates.reserve( 256 );
+	// Per-thread scratch — reused across pixels to eliminate per-sample
+	// libmalloc arena contention in the hot merge-evaluation path.
+	static thread_local std::vector<LightVertex> candidates;
+	if( candidates.capacity() < 256 ) {
+		candidates.reserve( 256 );
+	}
 
 	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 	{
@@ -1959,8 +1963,12 @@ Scalar VCMIntegrator::EvaluateMergesNM(
 		return total;
 	}
 
-	std::vector<LightVertex> candidates;
-	candidates.reserve( 256 );
+	// Per-thread scratch — reused across pixels to eliminate per-sample
+	// libmalloc arena contention in the hot merge-evaluation path.
+	static thread_local std::vector<LightVertex> candidates;
+	if( candidates.capacity() < 256 ) {
+		candidates.reserve( 256 );
+	}
 
 	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 	{

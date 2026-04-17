@@ -43,6 +43,8 @@
 #include "../Utilities/RuntimeContext.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/Threads/Threads.h"
+#include "../Utilities/ThreadPool.h"
+#include "AdaptiveTileSizer.h"
 #include "../Lights/LightSampler.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Shaders/BDPTVertex.h"
@@ -171,9 +173,11 @@ namespace
 			perThreadOutput( numWorkers ),
 			perThreadPathsShot( numWorkers, 0 )
 		{
-			// Block the pixel grid into tiles.  32x32 matches the
-			// eye-pass MortonRasterizeSequence default.
-			const unsigned int TILE = 32;
+			// Block the pixel grid into tiles.  Tile size adapts to
+			// image × thread count so small scenes / high core counts
+			// still decompose into ≥8 tiles per thread.
+			const unsigned int TILE = ComputeTileSize(
+				width, height, numWorkers, 8, 8, 64 );
 			for( unsigned int y = 0; y < height; y += TILE ) {
 				for( unsigned int x = 0; x < width; x += TILE ) {
 					const unsigned int right  = std::min( x + TILE - 1, width - 1 );
@@ -261,14 +265,6 @@ namespace
 		}
 	};
 
-	void* LightPassWorkerProc( void* ptr )
-	{
-		std::pair<LightPassDispatcher*, unsigned int>* arg =
-			static_cast<std::pair<LightPassDispatcher*, unsigned int>*>( ptr );
-		arg->first->RunWorker( arg->second );
-		return 0;
-	}
-
 	// Returns total pathsShot across all workers.  After this call,
 	// dispatcher.perThreadOutput[i] holds that worker's LightVertex
 	// buffer — the caller concatenates them into the shared store in
@@ -284,16 +280,10 @@ namespace
 			return dispatcher.perThreadPathsShot[0];
 		}
 
-		std::vector<std::pair<LightPassDispatcher*, unsigned int>> args( numWorkers );
-		std::vector<RISETHREADID> thread_ids( numWorkers, 0 );
-		for( unsigned int i = 0; i < numWorkers; i++ ) {
-			args[i] = std::make_pair( &dispatcher, i );
-			Threading::riseCreateThread(
-				LightPassWorkerProc, &args[i], 0, 0, &thread_ids[i] );
-		}
-		for( unsigned int i = 0; i < numWorkers; i++ ) {
-			Threading::riseWaitUntilThreadFinishes( thread_ids[i], 0 );
-		}
+		ThreadPool& pool = GlobalThreadPool();
+		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int workerIdx ) {
+			dispatcher.RunWorker( workerIdx );
+		} );
 
 		unsigned long long totalPaths = 0;
 		for( unsigned int i = 0; i < numWorkers; i++ ) {
@@ -563,7 +553,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 		}
 	}
 
-	pLightVertexStore->BuildKDTree();
+	pLightVertexStore->BuildKDTreeParallel();
 
 	mSplatTotalSamples = 1.0;
 	if( pSampling ) {
@@ -643,9 +633,9 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		}
 	}
 
-	pLightVertexStore->BuildKDTree();
+	pLightVertexStore->BuildKDTreeParallel();
 
-	GlobalLog()->PrintEx( eLog_Event,
+	GlobalLog()->PrintEx( eLog_Info,
 		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
 		"rebuilt store with %llu light vertices (K=%u)",
 		passIdx, totalStored, samplesPerSuperIter );

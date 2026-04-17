@@ -35,6 +35,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/Color_Template.h"
 #include "../Utilities/Threads/Threads.h"
+#include <cstdint>
 #include <vector>
 
 namespace RISE
@@ -77,6 +78,20 @@ namespace RISE
 				const RISEPel& contribution				///< [in] Color contribution to accumulate
 				);
 
+			//! Batched commit.  Records must be sorted by pixelIndex
+			//! (y*width + x).  Acquires each row's mutex exactly once.
+			//! Used by ThreadLocalSplatBuffer to flush a whole tile
+			//! of collected splats without per-splat mutex overhead.
+			struct BatchRecord
+			{
+				uint32_t	pixelIndex;
+				RISEPel		color;
+			};
+			void BatchCommit(
+				const BatchRecord* records,
+				std::size_t count
+				);
+
 			//! After rendering: resolves accumulated splats into the final image.
 			//! Divides each pixel's accumulated color by the total number of samples.
 			void Resolve(
@@ -94,6 +109,12 @@ namespace RISE
 
 			//! Clears all accumulated splat data
 			void Clear();
+
+			//! Flush the calling thread's per-thread splat buffer (if
+			//! it's bound to this film) into the shared accumulator.
+			//! Called at tile boundaries and at end-of-pass to make
+			//! sure no splats are orphaned in thread_local storage.
+			void FlushCallingThreadBuffer();
 		};
 	}
 }

@@ -76,6 +76,13 @@ namespace RISE
 			/// in; Step 0 is a no-op so the stubs compile.
 			void BuildKDTree();
 
+			/// Parallel variant — splits the recursion across the
+			/// global thread pool.  Produces a byte-identical tree
+			/// to BuildKDTree (unit-tested).  Falls back to serial
+			/// below numWorkers*8 vertices so task overhead never
+			/// dominates.
+			void BuildKDTreeParallel();
+
 			/// Fixed-radius query.  Appends all vertices within
 			/// radiusSq of center to 'out'.  Step 3 fills this in;
 			/// Step 0 returns nothing.

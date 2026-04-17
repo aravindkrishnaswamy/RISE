@@ -32,6 +32,9 @@
 #include "BlockRasterizeSequence.h"
 #include "MortonRasterizeSequence.h"
 #include "RasterizeDispatchers.h"
+#include "../Utilities/ThreadPool.h"
+#include "AdaptiveTileSizer.h"
+#include "PreviewScheduler.h"
 #include "../Utilities/Profiling.h"
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
@@ -406,7 +409,11 @@ void BDPTRasterizerBase::RasterizeScene(
 			}
 
 			{
-				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
+				const unsigned int trainTileEdge = ComputeTileSize(
+					pTrainImage->GetWidth(), pTrainImage->GetHeight(),
+					static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+					8, 8, 64 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( trainTileEdge );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
@@ -718,10 +725,17 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 	}
 
+	// Compute tile size from image × threads so small-scene/high-core
+	// renders always get adequate tile-count for work-stealing.
+	const unsigned int bdptTileEdge = ComputeTileSize(
+		width, height,
+		static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+		8, 8, 64 );
+
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new MortonRasterizeSequence( 32 );
+		blocks = new MortonRasterizeSequence( bdptTileEdge );
 		pRasterSequence = blocks;
 	}
 
@@ -749,6 +763,10 @@ void BDPTRasterizerBase::RasterizeScene(
 
 		ISampling2D* pSavedSampling = pSampling;
 
+		// Time-based preview cadence — see PixelBasedRasterizerHelper
+		// for rationale.  Same 7.5 s default.
+		PreviewScheduler previewScheduler( 7.5 );
+
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
@@ -758,28 +776,15 @@ void BDPTRasterizerBase::RasterizeScene(
 			const_cast<BDPTRasterizerBase*>(this)->pSampling = pPassSampling;
 
 			if( pProgressFunc ) {
-				char title[128];
-				snprintf( title, sizeof(title), "BDPT Progressive Pass [%u/%u]: ", passIdx+1, numPasses );
-				pProgressFunc->SetTitle( title );
+				pProgressFunc->SetTitle( "BDPT Rasterizing: " );
 			}
 
-			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( 32 );
+			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( bdptTileEdge );
 			const bool passCompleted = RasterizeBlocksForPass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
 
 			const_cast<BDPTRasterizerBase*>(this)->pSampling = pSavedSampling;
 			safe_release( pPassSampling );
-
-			// Intermediate preview: rebuild the primary image from the
-			// accumulated progressive state, then composite splats into a
-			// scratch copy for display.
-			progFilm.Resolve( *pImage );
-
-			IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
-			RasterizerOutputListType::const_iterator r, s;
-			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-				(*r)->OutputIntermediateImage( outputImage, pRect );
-			}
 
 			if( !passCompleted ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -788,13 +793,31 @@ void BDPTRasterizerBase::RasterizeScene(
 				break;
 			}
 
-			// Check whether every pixel has converged or reached the sample cap.
-			const unsigned int doneCount = progFilm.CountDone( totalSPP );
-			if( doneCount >= width * height ) {
-				GlobalLog()->PrintEx( eLog_Event,
-					"BDPT Progressive:: All pixels complete after pass %u/%u",
-					passIdx+1, numPasses );
-				break;
+			const bool isFinalPass = ( passIdx == numPasses - 1 );
+			const bool runPreview  = isFinalPass || previewScheduler.ShouldRunPreview();
+
+			if( runPreview ) {
+				// Intermediate preview: rebuild the primary image from the
+				// accumulated progressive state, then composite splats into a
+				// scratch copy for display.
+				progFilm.Resolve( *pImage );
+
+				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
+				RasterizerOutputListType::const_iterator r, s;
+				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+					(*r)->OutputIntermediateImage( outputImage, pRect );
+				}
+				previewScheduler.MarkPreviewRan();
+
+				// Convergence check runs with preview — keeps the two
+				// serial O(W×H) loops on the same cadence.
+				const unsigned int doneCount = progFilm.CountDone( totalSPP );
+				if( doneCount >= width * height ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"BDPT Progressive:: All pixels complete after pass %u/%u",
+						passIdx+1, numPasses );
+					break;
+				}
 			}
 		}
 
@@ -832,14 +855,10 @@ void BDPTRasterizerBase::RasterizeScene(
 
 			RasterizeBlockDispatcher dispatcher( RuntimeContext::PASS_NORMAL, *pImage, pScene, *pRasterSequence, *this, pProgressFunc, 0, 0, 0 );
 
-			RISETHREADID thread_ids[MAX_THREADS];
-			for( int i=0; i<threads; i++ ) {
-				Threading::riseCreateThread( BDPTRasterizeBlock_ThreadProc, (void*)&dispatcher, 0, 0, &thread_ids[i] );
-			}
-
-			for( int i=0; i<threads; i++ ) {
-				Threading::riseWaitUntilThreadFinishes( thread_ids[i], 0 );
-			}
+			ThreadPool& pool = GlobalThreadPool();
+			pool.ParallelFor( static_cast<unsigned int>( threads ), [&dispatcher]( unsigned int /*workerIdx*/ ) {
+				dispatcher.DoWork();
+			} );
 		}
 		else
 		{

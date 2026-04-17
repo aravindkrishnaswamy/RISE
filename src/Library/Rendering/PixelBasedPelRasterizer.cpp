@@ -22,6 +22,7 @@
 #include "../Lights/LightSampler.h"
 #include "BlockRasterizeSequence.h"
 #include "MortonRasterizeSequence.h"
+#include "AdaptiveTileSizer.h"
 #include "ProgressiveFilm.h"
 #include "../RasterImages/RasterImage.h"
 #include "../RISE_API.h"
@@ -200,7 +201,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			{
-				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( ComputeTileSize( pTrainImage->GetWidth(), pTrainImage->GetHeight(), static_cast<unsigned int>( HowManyThreadsToSpawn() ), 8, 8, 64 ) );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_PATHGUIDING,
 					pScene,
@@ -442,7 +443,7 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			}
 
 			{
-				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( 32 );
+				MortonRasterizeSequence* pTrainBlocks = new MortonRasterizeSequence( ComputeTileSize( pTrainImage->GetWidth(), pTrainImage->GetHeight(), static_cast<unsigned int>( HowManyThreadsToSpawn() ), 8, 8, 64 ) );
 				RasterizeBlocksForPass(
 					RuntimeContext::PASS_NORMAL,
 					pScene,

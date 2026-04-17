@@ -14,6 +14,8 @@
 #ifndef RASTERIZE_DISPATCHERS_
 #define RASTERIZE_DISPATCHERS_
 
+#include "ThreadLocalSplatBuffer.h"
+
 #include <atomic>
 #include <vector>
 
@@ -138,6 +140,13 @@ namespace RISE
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlock( rc, image, scene, rect, height );
 				}
+
+				// Flush any splats this worker collected in its
+				// thread-local buffer into the shared SplatFilm
+				// before returning.  Without this, splats for the
+				// last tile (or beyond the last 64k auto-flush
+				// threshold) would be orphaned when the worker exits.
+				FlushCallingThreadSplatBuffer();
 			}
 
 			bool WasCancelled() const
@@ -182,6 +191,8 @@ namespace RISE
 					// Operate on this block
 					rasterizer.SPRasterizeSingleBlockOfAnimation( rc, image, scene, rect, height, animData );
 				}
+
+				FlushCallingThreadSplatBuffer();
 			}
 		};
 	}

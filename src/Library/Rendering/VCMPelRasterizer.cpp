@@ -231,15 +231,31 @@ void VCMPelRasterizer::IntegratePixel(
 			: targetSamples;
 	}
 
-	std::vector<BDPTVertex> eyeVerts;
-	std::vector<VCMMisQuantities> eyeMis;
-	std::vector<BDPTVertex> localLightVerts;
-	std::vector<LightVertex> localLightVertsStore;	// unused; satisfies the ConvertLightSubpath API
-	std::vector<VCMMisQuantities> localLightMis;
-	eyeVerts.reserve( pIntegrator->GetMaxEyeDepth() + 1 );
-	eyeMis.reserve( pIntegrator->GetMaxEyeDepth() + 1 );
-	localLightVerts.reserve( pIntegrator->GetMaxLightDepth() + 1 );
-	localLightMis.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	// Per-thread scratch.  thread_local keeps capacity across pixels,
+	// samples, and entire passes — libmalloc never sees these
+	// allocations again after the first sample per thread.
+	static thread_local std::vector<BDPTVertex>         eyeVerts;
+	static thread_local std::vector<VCMMisQuantities>   eyeMis;
+	static thread_local std::vector<BDPTVertex>         localLightVerts;
+	static thread_local std::vector<LightVertex>        localLightVertsStore;
+	static thread_local std::vector<VCMMisQuantities>   localLightMis;
+	eyeVerts.clear();
+	eyeMis.clear();
+	localLightVerts.clear();
+	localLightVertsStore.clear();
+	localLightMis.clear();
+	if( eyeVerts.capacity() < pIntegrator->GetMaxEyeDepth() + 1 ) {
+		eyeVerts.reserve( pIntegrator->GetMaxEyeDepth() + 1 );
+	}
+	if( eyeMis.capacity() < pIntegrator->GetMaxEyeDepth() + 1 ) {
+		eyeMis.reserve( pIntegrator->GetMaxEyeDepth() + 1 );
+	}
+	if( localLightVerts.capacity() < pIntegrator->GetMaxLightDepth() + 1 ) {
+		localLightVerts.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	}
+	if( localLightMis.capacity() < pIntegrator->GetMaxLightDepth() + 1 ) {
+		localLightMis.reserve( pIntegrator->GetMaxLightDepth() + 1 );
+	}
 
 	while( globalSampleIndex < passEndIndex && !converged )
 	{

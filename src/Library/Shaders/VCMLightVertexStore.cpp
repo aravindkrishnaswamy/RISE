@@ -33,8 +33,12 @@
 #include "pch.h"
 #include "VCMLightVertexStore.h"
 #include "../Utilities/BoundingBox.h"
+#include "../Utilities/ThreadPool.h"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -273,6 +277,160 @@ void LightVertexStore::Query(
 		out,
 		0,
 		static_cast<int>( mVertices.size() ) - 1 );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Parallel KD-tree build.
+//
+// Strategy:
+//   - Compute the root median serially; partition the array around it.
+//   - Recurse on the two disjoint halves in parallel via the thread pool.
+//   - Below a cutoff threshold, drop into the existing serial BalanceSegment.
+//
+// Correctness invariant:
+//   Every recursion operates on a disjoint index range of mVertices
+//   and its own copy of the bbox.  The shared vector is resized once
+//   up front; no thread appends or removes elements after that.  All
+//   writes are to cells owned by the recursing task.  Therefore no
+//   locking on mVertices is needed.
+//
+//   The tree layout (which vertex lives at which array slot) is
+//   determined entirely by:
+//     1) the sequence of median-index computations (deterministic),
+//     2) std::nth_element's output for a given comparator (deterministic
+//        though partition order of non-median elements is
+//        implementation-defined — but LocateAllInRadiusSq only reads
+//        each element via the tree traversal so partition order of
+//        non-medians within a subtree does NOT affect query results).
+//   So BuildKDTreeParallel produces a tree that is functionally
+//   equivalent to BuildKDTree (not byte-identical in non-median slots,
+//   but identical-for-queries).  The unit test asserts query-equivalence
+//   against a brute-force oracle rather than memcmp.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	// Copy of BalanceSegment but queues sub-ranges into the pool
+	// until they fall below the cutoff.  outstanding tracks the
+	// number of pending subtree tasks so the caller can wait.
+	void BalanceSegmentParallel(
+		std::vector<LightVertex>& verts,
+		BoundingBox bbox,               // by-value: each task has its own
+		const int from,
+		const int to,
+		const std::size_t cutoff,
+		ThreadPool& pool,
+		std::atomic<unsigned int>& outstanding,
+		std::mutex& doneMut,
+		std::condition_variable& doneCv
+		)
+	{
+		if( to - from <= 0 ) {
+			return;
+		}
+
+		if( static_cast<std::size_t>( to - from + 1 ) <= cutoff ) {
+			// Small enough — drop to the existing serial path.
+			BalanceSegment( verts, bbox, from, to );
+			return;
+		}
+
+		unsigned char axis = 2;
+		const Vector3& extents = bbox.GetExtents();
+		if( extents.x > extents.y && extents.x > extents.z ) {
+			axis = 0;
+		} else if( extents.y > extents.z ) {
+			axis = 1;
+		}
+
+		const int median = ComputeMedian( from, to );
+
+		switch( axis )
+		{
+		case 0: std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanX ); break;
+		case 1: std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanY ); break;
+		default: std::nth_element( verts.begin() + from, verts.begin() + median, verts.begin() + to + 1, LessThanZ ); break;
+		}
+
+		verts[median].plane = axis;
+
+		// Prepare child bboxes (by value — each task owns its own).
+		BoundingBox leftBox  = bbox;
+		BoundingBox rightBox = bbox;
+		leftBox.ur[axis]  = verts[median].ptPosition[axis];
+		rightBox.ll[axis] = verts[median].ptPosition[axis];
+
+		// Fire off the left subtree as a pool task, recurse on right
+		// in this thread so we always keep one active path of work.
+		outstanding.fetch_add( 1, std::memory_order_relaxed );
+		pool.Submit( [&verts, leftBox, from, median, cutoff, &pool, &outstanding, &doneMut, &doneCv] {
+			BalanceSegmentParallel( verts, leftBox, from, median - 1, cutoff,
+				pool, outstanding, doneMut, doneCv );
+			if( outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+				{
+					std::lock_guard<std::mutex> lk( doneMut );
+				}
+				doneCv.notify_all();
+			}
+		} );
+
+		// Right subtree on the current task.
+		BalanceSegmentParallel( verts, rightBox, median + 1, to, cutoff,
+			pool, outstanding, doneMut, doneCv );
+	}
+}
+
+void LightVertexStore::BuildKDTreeParallel()
+{
+	if( mVertices.empty() ) {
+		mBuilt = true;
+		return;
+	}
+
+	// Enclosing bbox — single-threaded (cheap).
+	BoundingBox bbox(
+		Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+		Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
+	for( std::vector<LightVertex>::const_iterator i = mVertices.begin(); i != mVertices.end(); ++i ) {
+		bbox.Include( i->ptPosition );
+	}
+
+	ThreadPool& pool = GlobalThreadPool();
+	const std::size_t N = mVertices.size();
+
+	// Cutoff: keep ~8 tasks per worker so there's slack for work
+	// stealing while not over-decomposing for tiny inputs.
+	const std::size_t cutoff = std::max<std::size_t>(
+		4096,
+		N / ( pool.NumWorkers() * 8 ) );
+
+	// Small input — skip the pool.
+	if( N <= cutoff ) {
+		BalanceSegment( mVertices, bbox, 0, static_cast<int>( N ) - 1 );
+		mBuilt = true;
+		return;
+	}
+
+	std::atomic<unsigned int> outstanding( 1 );
+	std::mutex doneMut;
+	std::condition_variable doneCv;
+
+	pool.Submit( [this, bbox, N, cutoff, &pool, &outstanding, &doneMut, &doneCv] {
+		BalanceSegmentParallel( mVertices, bbox, 0, static_cast<int>( N ) - 1, cutoff,
+			pool, outstanding, doneMut, doneCv );
+		if( outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+			{
+				std::lock_guard<std::mutex> lk( doneMut );
+			}
+			doneCv.notify_all();
+		}
+	} );
+
+	std::unique_lock<std::mutex> lk( doneMut );
+	doneCv.wait( lk, [&outstanding] {
+		return outstanding.load( std::memory_order_acquire ) == 0;
+	} );
+
+	mBuilt = true;
 }
 
 Scalar LightVertexStore::ComputeBBoxDiagonal() const

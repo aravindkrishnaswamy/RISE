@@ -25,6 +25,13 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		// Experiment with alignas(64) to kill false sharing was
+		// found to REGRESS performance significantly (VCM: 28s →
+		// 46s, PT: 9.3s → 13.9s) — likely because the extra 8
+		// bytes per pixel pushes working set beyond L2 for typical
+		// scenes, while the actual false-sharing was lower than
+		// predicted since Morton-ordered tiles already keep threads
+		// on separate regions.  Leave natural layout.
 		struct ProgressivePixel
 		{
 			RISEPel		colorSum;		///< Weighted color accumulator
