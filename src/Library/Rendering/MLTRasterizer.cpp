@@ -644,8 +644,19 @@ void MLTRasterizer::RasterizeScene(
 		const int effectiveThreads = threads > 0 ? threads : 1;
 		const double estTotalMs = msPerSample * static_cast<double>( totalMutations ) / static_cast<double>( effectiveThreads );
 
-		// Target ~5000ms per round
-		const double targetRoundMs = 5000.0;
+		// Target per-round wall time.  Every round ends with an
+		// OutputIntermediateImage + Progress callback, which is the
+		// only mechanism MLT uses to push previews to the UI.  So
+		// this value IS the user-visible update cadence.
+		//
+		// Set to 2500 ms (instead of 5000 ms) because the bootstrap
+		// estimate is systematically optimistic: MLT mutations in
+		// caustic scenes cost ~2× more than bootstrap samples on
+		// average.  Aiming for 2.5 s gives realistic 3–5 s rounds.
+		// Combined with the adaptive adjustment after round 0 (see
+		// the render loop below), the UI stays updated well inside
+		// the 5–10 s target range.
+		const double targetRoundMs = 2500.0;
 		const unsigned int computedRounds = static_cast<unsigned int>( estTotalMs / targetRoundMs + 0.5 );
 
 		// Clamp to reasonable range: at least 2 rounds (so we get at
@@ -664,14 +675,14 @@ void MLTRasterizer::RasterizeScene(
 	else
 	{
 		// Bootstrap was too fast to measure — use a reasonable default
-		numRounds = 10;
+		numRounds = 20;
 		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap too fast to time, using %u rounds", numRounds );
 	}
 
-	const unsigned int mutationsPerChainPerRound = mutationsPerChain / numRounds;
+	unsigned int mutationsPerChainPerRound = mutationsPerChain / numRounds;
 
 	// Ensure at least 1 mutation per chain per round
-	const unsigned int effectiveMutPerRound = mutationsPerChainPerRound > 0 ? mutationsPerChainPerRound : 1;
+	unsigned int effectiveMutPerRound = mutationsPerChainPerRound > 0 ? mutationsPerChainPerRound : 1;
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Total mutations: %u, Per chain: %u, Per chain per round: %u, Rounds: %u",
 		totalMutations, mutationsPerChain, effectiveMutPerRound, numRounds );
@@ -727,7 +738,7 @@ void MLTRasterizer::RasterizeScene(
 	}
 
 	bool cancelled = false;
-    
+
     // Before starting update the progress function because each round takes time
     // Report progress and check for cancellation
     if( pProgressFunc ) {
@@ -736,12 +747,26 @@ void MLTRasterizer::RasterizeScene(
         }
     }
 
+	// Adaptive round-sizing: the bootstrap-based numRounds estimate is
+	// systematically too low for caustic-heavy scenes (MLT mutations
+	// cost ~2× bootstrap samples), so the user sees updates every
+	// 5–10 s instead of the 2.5 s we target.  After round 0 we know
+	// the real wall-time per round and can rebalance the remaining
+	// rounds to hit the target.  The UI therefore converges to a
+	// stable ~2.5 s update cadence after a single corrective round
+	// regardless of how bad the initial estimate was.
+	const double targetRoundWallMs   = 2500.0;
+	unsigned int mutationsDonePerChain = 0;
+
 	for( unsigned int round = 0; round < numRounds && !cancelled; round++ )
 	{
 		// For the last round, use remaining mutations to avoid rounding loss
 		const unsigned int mutThisRound = ( round == numRounds - 1 )
-			? ( mutationsPerChain - effectiveMutPerRound * ( numRounds - 1 ) )
+			? ( mutationsPerChain - mutationsDonePerChain )
 			: effectiveMutPerRound;
+
+		Timer roundTimer;
+		roundTimer.start();
 
 		if( threads > 1 )
 		{
@@ -801,6 +826,59 @@ void MLTRasterizer::RasterizeScene(
 			FlushCallingThreadSplatBuffer();
 		}
 
+		// Round work complete — stop the timer BEFORE the resolve/I-O
+		// so we measure pure render cost, then track how much of each
+		// chain's mutation budget we've consumed.
+		roundTimer.stop();
+		mutationsDonePerChain += mutThisRound;
+		const unsigned int roundWallMs = roundTimer.getInterval();
+
+		//////////////////////////////////////////////////////////////
+		// Adaptive round-size correction (after round 0 only).
+		//
+		// If the bootstrap-based estimate was off, rebalance the
+		// remaining chain-mutation budget across enough additional
+		// rounds to hit the ~2.5 s target.  We compute ms/mutation
+		// from the first round's measured wall time (more accurate
+		// than the bootstrap estimate, which ran single-threaded and
+		// without the chain-context overhead).  The UI cadence
+		// converges after one corrective round regardless of how
+		// badly the initial estimate was off.
+		//////////////////////////////////////////////////////////////
+		if( round == 0 && roundWallMs > 50 && !cancelled ) {
+			const double actualMsPerChainMut =
+				static_cast<double>( roundWallMs ) /
+				static_cast<double>( mutThisRound );
+			const double desiredMutPerRound =
+				targetRoundWallMs / actualMsPerChainMut;
+			unsigned int newMutPerRound = desiredMutPerRound < 1.0
+				? 1u
+				: static_cast<unsigned int>( desiredMutPerRound );
+			if( newMutPerRound < 1 ) newMutPerRound = 1;
+
+			const unsigned int remainingMut = mutationsPerChain > mutationsDonePerChain
+				? mutationsPerChain - mutationsDonePerChain
+				: 0u;
+			if( remainingMut > 0 && newMutPerRound != effectiveMutPerRound ) {
+				const unsigned int newRemainingRounds =
+					( remainingMut + newMutPerRound - 1 ) / newMutPerRound;
+				// Total rounds = 1 (already done) + newRemainingRounds
+				const unsigned int newNumRounds = 1 + newRemainingRounds;
+
+				GlobalLog()->PrintEx( eLog_Event,
+					"MLTRasterizer:: Adaptive round resize — round 0 took %u ms "
+					"(%.4f ms/mut), adjusting effectiveMutPerRound %u → %u, "
+					"numRounds %u → %u for a ~%.1f s UI cadence",
+					roundWallMs, actualMsPerChainMut,
+					effectiveMutPerRound, newMutPerRound,
+					numRounds, newNumRounds,
+					targetRoundWallMs / 1000.0 );
+
+				effectiveMutPerRound = newMutPerRound;
+				numRounds            = newNumRounds;
+			}
+		}
+
 		//////////////////////////////////////////////////////////////
 		// Snapshot: resolve the film and send intermediate update
 		//
@@ -814,8 +892,13 @@ void MLTRasterizer::RasterizeScene(
 		// or when the user cancels (so the last valid image is saved).
 		//////////////////////////////////////////////////////////////
 
-		const Scalar fraction = static_cast<Scalar>( round + 1 ) / static_cast<Scalar>( numRounds );
-		const bool isFinalRound = ( round + 1 == numRounds );
+		// Fraction uses mutations-done rather than round count
+		// because adaptive resize can change numRounds mid-flight,
+		// which would make round/numRounds discontinuous.
+		const Scalar fraction =
+			static_cast<Scalar>( mutationsDonePerChain ) /
+			static_cast<Scalar>( mutationsPerChain > 0 ? mutationsPerChain : 1 );
+		const bool isFinalRound = ( mutationsDonePerChain >= mutationsPerChain );
 
 		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
 		pSplatFilm->Resolve( *pImage, fraction );
@@ -829,9 +912,12 @@ void MLTRasterizer::RasterizeScene(
 			}
 		}
 
-		// Report progress and check for cancellation
+		// Report progress using mutations-done (same reason as
+		// fraction above — stable across adaptive resize).
 		if( pProgressFunc ) {
-			if( !pProgressFunc->Progress( static_cast<double>(round + 1), static_cast<double>(numRounds) ) ) {
+			if( !pProgressFunc->Progress(
+					static_cast<double>( mutationsDonePerChain ),
+					static_cast<double>( mutationsPerChain ) ) ) {
 				cancelled = true;
 			}
 		}
