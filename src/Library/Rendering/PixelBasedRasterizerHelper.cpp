@@ -44,7 +44,10 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   pFilteredFilm( 0 ),
   pFilteredScratch( 0 ),
   mProgressiveFilm( 0 ),
-  mTotalProgressiveSPP( 0 )
+  mTotalProgressiveSPP( 0 ),
+  mProgressBase( 0 ),
+  mProgressWeight( 0 ),
+  mProgressTotal( 0 )
 #ifdef RISE_ENABLE_OIDN
   ,pAOVBuffers( 0 )
 #endif
@@ -374,7 +377,9 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		// Our MP solution is to spawn a thread for each processor and it will come back to us and request tiles
 		// as it completes them
 
-		RasterizeBlockDispatcher dispatcher( pass, image, scene, seq, *this, pProgressFunc );
+		RasterizeBlockDispatcher dispatcher(
+			pass, image, scene, seq, *this, pProgressFunc,
+			mProgressBase, mProgressWeight, mProgressTotal );
 
 		RISETHREADID thread_ids[MAX_THREADS];
 		for( int i=0; i<threads; i++ ) {
@@ -515,6 +520,23 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 		ISampling2D* pSavedSampling = pSampling;
 
+		// Compute total work units across all passes: tiles × totalSPP.
+		// Used by the block dispatcher to report a single 0..1 progress
+		// bar across the entire render instead of resetting each pass.
+		// 32×32 matches the MortonRasterizeSequence tile size used below.
+		unsigned int renderStartX, renderStartY, renderEndX, renderEndY;
+		BoundsFromRect( renderStartX, renderStartY, renderEndX, renderEndY, pRect, width, height );
+		const unsigned int renderPixelsX = renderEndX - renderStartX + 1;
+		const unsigned int renderPixelsY = renderEndY - renderStartY + 1;
+		const unsigned int tilesX = ( renderPixelsX + 31 ) / 32;
+		const unsigned int tilesY = ( renderPixelsY + 31 ) / 32;
+		const unsigned int numTilesPerPass = tilesX * tilesY;
+		const double totalProgressUnits =
+			static_cast<double>( numTilesPerPass ) *
+			static_cast<double>( totalSPP );
+
+		double accumulatedProgress = 0;
+
 		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
 		{
 			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
@@ -526,14 +548,22 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			OnProgressivePassBegin( pScene, passIdx );
 
 			if( pProgressFunc ) {
-				char title[128];
-				snprintf( title, sizeof(title), "Progressive Pass [%u/%u]: ", passIdx+1, numPasses );
-				pProgressFunc->SetTitle( title );
+				pProgressFunc->SetTitle( "Rasterizing Scene: " );
 			}
+
+			// Thread the weighted progress params through to the
+			// block dispatcher.  Each tile in this pass contributes
+			// passSPP work units; we start at accumulatedProgress.
+			mProgressBase   = accumulatedProgress;
+			mProgressWeight = static_cast<double>( passSPP );
+			mProgressTotal  = totalProgressUnits;
 
 			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( 32 );
 			const bool passCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pPassSeq );
 			safe_release( pPassSeq );
+
+			accumulatedProgress += static_cast<double>( numTilesPerPass ) *
+			                       static_cast<double>( passSPP );
 
 			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
 			safe_release( pPassSampling );
@@ -580,6 +610,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 		mProgressiveFilm = 0;
 		mTotalProgressiveSPP = 0;
+		mProgressBase = mProgressWeight = mProgressTotal = 0;
 	}
 	else
 	{

@@ -103,6 +103,16 @@ namespace RISE
 			mutable ProgressiveFilm*	mProgressiveFilm;	///< Per-pixel state for progressive multi-pass rendering
 			mutable unsigned int		mTotalProgressiveSPP;	///< Total SPP budget across all progressive passes
 
+			// Weighted progress state.  The progressive loop fills
+			// these before each RasterizeScenePass call so the
+			// dispatcher can report a single 0..1 progress bar
+			// across the whole render (weighted by SPP-per-tile for
+			// the current pass).  When mProgressTotal is 0,
+			// RasterizeScenePass falls back to per-pass 0..1 mode.
+			mutable double				mProgressBase;		///< Work units done before this pass
+			mutable double				mProgressWeight;	///< Work units per tile in this pass (= passSPP)
+			mutable double				mProgressTotal;		///< Total work units across all passes
+
 #ifdef RISE_ENABLE_OIDN
 			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
 #endif

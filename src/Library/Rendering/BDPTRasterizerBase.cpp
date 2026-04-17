@@ -830,7 +830,7 @@ void BDPTRasterizerBase::RasterizeScene(
 		{
 			pRasterSequence->Begin( startx, endx, starty, endy );
 
-			RasterizeBlockDispatcher dispatcher( RuntimeContext::PASS_NORMAL, *pImage, pScene, *pRasterSequence, *this, pProgressFunc );
+			RasterizeBlockDispatcher dispatcher( RuntimeContext::PASS_NORMAL, *pImage, pScene, *pRasterSequence, *this, pProgressFunc, 0, 0, 0 );
 
 			RISETHREADID thread_ids[MAX_THREADS];
 			for( int i=0; i<threads; i++ ) {

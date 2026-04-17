@@ -35,6 +35,20 @@ namespace RISE
 			std::atomic<bool> cancelled;
 			unsigned int numTiles;
 
+			// Progress-weighting parameters so the progress callback
+			// reports a single 0..1 fraction across the WHOLE render
+			// rather than resetting each progressive pass.
+			//   progressBase      — work units completed before this pass
+			//   progressWeight    — work units per tile within this pass
+			//                       (= passSPP, so a pass with 32 spp/tile
+			//                        contributes 32× per tile)
+			//   progressTotal     — total work units across all passes
+			// When progressTotal is 0, the legacy per-pass behavior
+			// is preserved (callers pass 0,0,0).
+			double progressBase;
+			double progressWeight;
+			double progressTotal;
+
 			RMutex progressMut;		// Only for progress callback serialization
 
 			bool GetNextBlock( Rect& rc )
@@ -57,7 +71,17 @@ namespace RISE
 						progressMut.unlock();
 						return false;
 					}
-					if( !pProgressFunc->Progress( static_cast<double>(idx), static_cast<double>(numTiles-1) ) ) {
+					double num, denom;
+					if( progressTotal > 0 ) {
+						// Weighted mode — single 0..1 bar across all passes.
+						num   = progressBase + static_cast<double>(idx) * progressWeight;
+						denom = progressTotal;
+					} else {
+						// Legacy per-pass mode.
+						num   = static_cast<double>(idx);
+						denom = static_cast<double>(numTiles - 1);
+					}
+					if( !pProgressFunc->Progress( num, denom ) ) {
 						cancelled.store( true, std::memory_order_relaxed );
 						progressMut.unlock();
 						return false;		// abort the render
@@ -76,7 +100,10 @@ namespace RISE
 				const IScene& scene_,
 				IRasterizeSequence& seq_,
 				const PixelBasedRasterizerHelper& rasterizer_,
-				IProgressCallback* pProgressFunc_
+				IProgressCallback* pProgressFunc_,
+				const double progressBase_,
+				const double progressWeight_,
+				const double progressTotal_
 				) :
 			  pass( pass_ ),
 			  image( image_ ),
@@ -84,7 +111,10 @@ namespace RISE
 			  rasterizer( rasterizer_ ),
 			  pProgressFunc( pProgressFunc_ ),
 			  nextTile( 0 ),
-			  cancelled( false )
+			  cancelled( false ),
+			  progressBase( progressBase_ ),
+			  progressWeight( progressWeight_ ),
+			  progressTotal( progressTotal_ )
 			{
 				numTiles = seq_.NumRegions();
 				tiles.reserve( numTiles );
@@ -132,7 +162,7 @@ namespace RISE
 				IProgressCallback* pProgressFunc_,
 				const PixelBasedRasterizerHelper::AnimFrameData& animData_
 				) :
-			  RasterizeBlockDispatcher( pass_, image_, scene_, seq_, rasterizer_, pProgressFunc_ ),
+			  RasterizeBlockDispatcher( pass_, image_, scene_, seq_, rasterizer_, pProgressFunc_, 0, 0, 0 ),
 			  animData( animData_ )
 			{
 			}
