@@ -779,8 +779,6 @@ namespace RISE
 #include "Materials/IsotropicPhongMaterial.h"
 #include "Materials/TranslucentMaterial.h"
 #include "Materials/BioSpecSkinMaterial.h"
-#include "Materials/BioSpecSkinBSSRDFMaterial.h"
-#include "Materials/BioSpecSkinRWMaterial.h"
 #include "Materials/DonnerJensenSkinBSSRDFMaterial.h"
 #include "Materials/GenericHumanTissueMaterial.h"
 #include "Materials/CompositeMaterial.h"
@@ -1048,120 +1046,6 @@ namespace RISE
 			bSubdermalLayer
 			);
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin material" );
-		return true;
-	}
-
-	//! Creates a BioSpec skin BSSRDF material (BDPT-compatible)
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBioSpecSkinBSSRDFMaterial(
-								IMaterial** ppi,
-								const IPainter& thickness_SC_,
-								const IPainter& thickness_epidermis_,
-								const IPainter& thickness_papillary_dermis_,
-								const IPainter& thickness_reticular_dermis_,
-								const IPainter& ior_SC_,
-								const IPainter& ior_epidermis_,
-								const IPainter& ior_papillary_dermis_,
-								const IPainter& ior_reticular_dermis_,
-								const IPainter& concentration_eumelanin_,
-								const IPainter& concentration_pheomelanin_,
-								const IPainter& melanosomes_in_epidermis_,
-								const IPainter& hb_ratio_,
-								const IPainter& whole_blood_in_papillary_dermis_,
-								const IPainter& whole_blood_in_reticular_dermis_,
-								const IPainter& bilirubin_concentration_,
-								const IPainter& betacarotene_concentration_SC_,
-								const IPainter& betacarotene_concentration_epidermis_,
-								const IPainter& betacarotene_concentration_dermis_,
-								const IPainter& folds_aspect_ratio_,
-								const bool bSubdermalLayer,
-								const Scalar roughness
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new BioSpecSkinBSSRDFMaterial(
-			thickness_SC_,
-			thickness_epidermis_,
-			thickness_papillary_dermis_,
-			thickness_reticular_dermis_,
-			ior_SC_,
-			ior_epidermis_,
-			ior_papillary_dermis_,
-			ior_reticular_dermis_,
-			concentration_eumelanin_,
-			concentration_pheomelanin_,
-			melanosomes_in_epidermis_,
-			hb_ratio_,
-			whole_blood_in_papillary_dermis_,
-			whole_blood_in_reticular_dermis_,
-			bilirubin_concentration_,
-			betacarotene_concentration_SC_,
-			betacarotene_concentration_epidermis_,
-			betacarotene_concentration_dermis_,
-			folds_aspect_ratio_,
-			bSubdermalLayer,
-			roughness
-			);
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin bssrdf material" );
-		return true;
-	}
-
-	//! Creates a BioSpec skin random-walk SSS material
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBioSpecSkinRWMaterial(
-								IMaterial** ppi,
-								const IPainter& thickness_SC_,
-								const IPainter& thickness_epidermis_,
-								const IPainter& thickness_papillary_dermis_,
-								const IPainter& thickness_reticular_dermis_,
-								const IPainter& ior_SC_,
-								const IPainter& ior_epidermis_,
-								const IPainter& ior_papillary_dermis_,
-								const IPainter& ior_reticular_dermis_,
-								const IPainter& concentration_eumelanin_,
-								const IPainter& concentration_pheomelanin_,
-								const IPainter& melanosomes_in_epidermis_,
-								const IPainter& hb_ratio_,
-								const IPainter& whole_blood_in_papillary_dermis_,
-								const IPainter& whole_blood_in_reticular_dermis_,
-								const IPainter& bilirubin_concentration_,
-								const IPainter& betacarotene_concentration_SC_,
-								const IPainter& betacarotene_concentration_epidermis_,
-								const IPainter& betacarotene_concentration_dermis_,
-								const Scalar roughness,
-								const unsigned int maxBounces
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new BioSpecSkinRWMaterial(
-			thickness_SC_,
-			thickness_epidermis_,
-			thickness_papillary_dermis_,
-			thickness_reticular_dermis_,
-			ior_SC_,
-			ior_epidermis_,
-			ior_papillary_dermis_,
-			ior_reticular_dermis_,
-			concentration_eumelanin_,
-			concentration_pheomelanin_,
-			melanosomes_in_epidermis_,
-			hb_ratio_,
-			whole_blood_in_papillary_dermis_,
-			whole_blood_in_reticular_dermis_,
-			bilirubin_concentration_,
-			betacarotene_concentration_SC_,
-			betacarotene_concentration_epidermis_,
-			betacarotene_concentration_dermis_,
-			roughness,
-			maxBounces
-			);
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "biospec skin rw material" );
 		return true;
 	}
 

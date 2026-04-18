@@ -54,14 +54,15 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 
 ## Change Checklist
 
-- New render feature: implement the class, expose it through `RISE_API` if externally constructible, add a `Job` wrapper if needed, register a scene chunk if user-authored, add a sample scene, add a focused test, and update `build/make/rise/Filelist` for new `.cpp` files.
-- **New source file anywhere under `src/Library/`**: register it in every IDE/build project so the tree stays consistent across platforms. The Makefile `Filelist` is only one of five places to touch:
+- New render feature: implement the class, expose it through `RISE_API` if externally constructible, add a `Job` wrapper if needed, register a scene chunk if user-authored, add a sample scene, add a focused test, and update **every** build project for new `.cpp` / `.h` files (see next item).
+- **Adding OR removing a source file anywhere under `src/Library/`**: the same five build projects must be updated in lock-step, whether you are adding new files or deleting existing ones. Missing any one leaves at least one platform broken. All five are authoritative — none auto-discovers files:
   - `build/make/rise/Filelist` — SRCLIB sub-list for `.cpp` (the canonical Unix/Linux build).
-  - `build/cmake/rise-android/rise_sources.cmake` — `RISE_LIB_SOURCES` list for `.cpp` (Android NDK build, mirrors `Filelist` SRCLIB by hand).
-  - `build/VS2022/Library/Library.vcxproj` — `<ClCompile>` for `.cpp` and `<ClInclude>` for `.h`.
-  - `build/VS2022/Library/Library.vcxproj.filters` — same entries with `<Filter>` tags mirroring the existing folder taxonomy.
-  - `build/XCode/rise/rise.xcodeproj/project.pbxproj` — `PBXFileReference` + `PBXBuildFile` + group + build-phase entries (Xcode does not auto-discover).
+  - `build/cmake/rise-android/rise_sources.cmake` — `RISE_LIB_SOURCES` list for `.cpp` (Android NDK build, mirrors `Filelist` SRCLIB by hand). The Android Gradle build reads this via `build/cmake/rise-android/CMakeLists.txt`; no other file in `android/` references the library source list.
+  - `build/VS2022/Library/Library.vcxproj` — `<ClCompile>` for `.cpp` and `<ClInclude>` for `.h` (Windows build, tracked in git).
+  - `build/VS2022/Library/Library.vcxproj.filters` — same entries with `<Filter>` tags mirroring the existing folder taxonomy. Keep `.cpp` in `ClCompile` and `.h` in `ClInclude` so Visual Studio's Solution Explorer tree matches what's actually built.
+  - `build/XCode/rise/rise.xcodeproj/project.pbxproj` — `PBXFileReference` + `PBXBuildFile` + group + build-phase entries. When removing a file, every matching ID must be deleted from the `PBXBuildFile` section, the `PBXFileReference` section, the containing `PBXGroup`, and the `Sources` / `Headers` build phases (there is one pair per target — library + GUI — so removals typically touch each ID in two places in each section).
   - Exclusions: `ManagedJob.cpp` (C++/CLI only), Windows-only files (`ThreadsWin32.cpp`, `LoadLibraryWin32.cpp`, `Win32Console.cpp`, `Win32WindowRasterizerOutput.cpp`), and the `Utilities/Communications/*` DRISE socket stack stay out of the Android cmake — everything else should appear in all five projects.
+- When a change is wider than just `src/Library/` (new parser chunk, new API, new test, etc.), also update the other surfaces the feature touches: `src/Library/RISE_API.{h,cpp}`, `src/Library/Interfaces/IJob.h`, `src/Library/Job.{h,cpp}`, `src/Library/Parsers/AsciiSceneParser.cpp` chunk registry, `tests/` and its build rules in `build/make/rise/Filelist`, and the relevant scene coverage under `scenes/`.
 - Scene language change: inspect the parser registry, decide whether `CURRENT_SCENE_VERSION` should change, update representative scenes, and keep [src/Library/Parsers/README.md](src/Library/Parsers/README.md) aligned.
 - Sample coverage change: use `scenes/FeatureBased` for curated showcase or torture scenes, and `scenes/Tests` for isolated baselines, feature checks, and regression coverage.
 

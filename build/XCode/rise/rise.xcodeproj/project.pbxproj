@@ -726,9 +726,6 @@
 		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
 		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
 		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
-		F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
-		F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */; };
-		F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */; };
 		F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
 		F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C548A2F87D990009AF16D /* MajorantGrid.h */; };
 		F24C548E2F87D990009AF16D /* MajorantGrid.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C548B2F87D990009AF16D /* MajorantGrid.cpp */; };
@@ -1387,10 +1384,6 @@
 		F2C5D5C72F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */; };
 		F2C5D5C82F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5C52F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h */; };
 		F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */; };
-		F2C5D5CD2F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */; };
-		F2C5D5CE2F70B94700546C97 /* BioSpecDiffusionProfile.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */; };
-		F2C5D5CF2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5CC2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h */; };
-		F2C5D5D02F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */; };
 		F2C5D5D32F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */; };
 		F2C5D5D42F70D4B300546C97 /* MultipoleDiffusion.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */; };
 		F2C5D5D52F70D4B300546C97 /* MultipoleDiffusion.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */; };
@@ -1621,8 +1614,6 @@
 		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
 		F24C54672F859F87009AF16D /* RandomWalkSSS.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RandomWalkSSS.h; sourceTree = "<group>"; };
 		F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RandomWalkSSS.cpp; sourceTree = "<group>"; };
-		F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinRWMaterial.h; sourceTree = "<group>"; };
-		F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecSkinRWMaterial.cpp; sourceTree = "<group>"; };
 		F24C548A2F87D990009AF16D /* MajorantGrid.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MajorantGrid.h; sourceTree = "<group>"; };
 		F24C548B2F87D990009AF16D /* MajorantGrid.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MajorantGrid.cpp; sourceTree = "<group>"; };
 		F24C548F2F87F453009AF16D /* LightBVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LightBVH.h; sourceTree = "<group>"; };
@@ -2261,9 +2252,6 @@
 		F2C5D58B2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SubSurfaceScatteringSPF.cpp; sourceTree = "<group>"; };
 		F2C5D5C52F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BurleyNormalizedDiffusionProfile.h; sourceTree = "<group>"; };
 		F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BurleyNormalizedDiffusionProfile.cpp; sourceTree = "<group>"; };
-		F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecDiffusionProfile.h; sourceTree = "<group>"; };
-		F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BioSpecDiffusionProfile.cpp; sourceTree = "<group>"; };
-		F2C5D5CC2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BioSpecSkinBSSRDFMaterial.h; sourceTree = "<group>"; };
 		F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MultipoleDiffusion.h; sourceTree = "<group>"; };
 		F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MultipoleDiffusion.cpp; sourceTree = "<group>"; };
 		F2C5D5D62F70D4D000546C97 /* HankelTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HankelTransform.h; sourceTree = "<group>"; };
@@ -2787,8 +2775,6 @@
 		F27F08CE069C42900069C9E5 /* Materials */ = {
 			isa = PBXGroup;
 			children = (
-				F24C54852F866DAE009AF16D /* BioSpecSkinRWMaterial.h */,
-				F24C54862F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp */,
 				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
 				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
 				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
@@ -2806,9 +2792,6 @@
 				F2C5D5EB2F722D4600546C97 /* DonnerJensenSkinDiffusionProfile.cpp */,
 				F2C5D5D12F70D4B300546C97 /* MultipoleDiffusion.h */,
 				F2C5D5D22F70D4B300546C97 /* MultipoleDiffusion.cpp */,
-				F2C5D5CA2F70B94700546C97 /* BioSpecDiffusionProfile.h */,
-				F2C5D5CB2F70B94700546C97 /* BioSpecDiffusionProfile.cpp */,
-				F2C5D5CC2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h */,
 				F2C5D5C52F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h */,
 				F2C5D5C62F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp */,
 				F2C5D5872F6ED30E00546C97 /* SubSurfaceScatteringBSDF.h */,
@@ -3485,7 +3468,6 @@
 				F27F0A5D069C42910069C9E5 /* Animator.h in Headers */,
 				F27F0A5F069C42910069C9E5 /* ElementTimeline.h in Headers */,
 				F27F0A61069C42910069C9E5 /* KeyframableHelper.h in Headers */,
-				F24C54882F866DAE009AF16D /* BioSpecSkinRWMaterial.h in Headers */,
 				F27F0A62069C42910069C9E5 /* Keyframe.h in Headers */,
 				F24C543E2F7C107E009AF16D /* BSSRDFSampling.h in Headers */,
 				F27F0A64069C42910069C9E5 /* Timeline.h in Headers */,
@@ -3608,8 +3590,6 @@
 				F27F0AE2069C42910069C9E5 /* IMemoryBuffer.h in Headers */,
 				F27F0AE3069C42910069C9E5 /* IModifierManager.h in Headers */,
 				F27F0AE4069C42910069C9E5 /* IObject.h in Headers */,
-				F2C5D5CE2F70B94700546C97 /* BioSpecDiffusionProfile.h in Headers */,
-				F2C5D5CF2F70B94700546C97 /* BioSpecSkinBSSRDFMaterial.h in Headers */,
 				F27F0AE5069C42910069C9E5 /* IObjectManager.h in Headers */,
 				F27F0AE6069C42910069C9E5 /* IObjectPriv.h in Headers */,
 				F27F0AE7069C42910069C9E5 /* IOneColorOperator.h in Headers */,
@@ -4147,7 +4127,6 @@
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
 				F27F0AB4069C42910069C9E5 /* TriangleMeshLoaderBezier.cpp in Sources */,
 				F27F0AB6069C42910069C9E5 /* TriangleMeshLoaderPLY.cpp in Sources */,
-				F2C5D5D02F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */,
 				F27F0AB8069C42910069C9E5 /* TriangleMeshLoaderPSurf.cpp in Sources */,
 				F27F0ABA069C42910069C9E5 /* TriangleMeshLoaderRAW.cpp in Sources */,
 				F27F0ABC069C42910069C9E5 /* TriangleMeshLoaderRAW2.cpp in Sources */,
@@ -4198,7 +4177,6 @@
 				F27F0B63069C42910069C9E5 /* PerfectReflectorSPF.cpp in Sources */,
 				F27F0B66069C42910069C9E5 /* PerfectRefractorSPF.cpp in Sources */,
 				F27F0B68069C42910069C9E5 /* PhongEmitter.cpp in Sources */,
-				F24C54892F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F27F0B6B069C42910069C9E5 /* PolishedBRDF.cpp in Sources */,
 				F27F0B6E069C42910069C9E5 /* PolishedSPF.cpp in Sources */,
 				F27F0B70069C42910069C9E5 /* ScatteredRayContainer.cpp in Sources */,
@@ -4698,7 +4676,6 @@
 				F24B72F22F52A632008304C4 /* PerfectRefractorSPF.h in Sources */,
 				F28639632F9245040009D9AE /* PreviewScheduler.cpp in Sources */,
 				F2C5D5DE2F716BAA00546C97 /* BDPTRasterizerBase.cpp in Sources */,
-				F24C54872F866DAE009AF16D /* BioSpecSkinRWMaterial.cpp in Sources */,
 				F2C5D5DF2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp in Sources */,
 				F24B72F32F52A632008304C4 /* PhongEmitter.cpp in Sources */,
 				F24B72F42F52A632008304C4 /* PhongEmitter.h in Sources */,
@@ -4733,7 +4710,6 @@
 				F2C5D57F2F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */,
 				F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */,
 				F24B73122F52A632008304C4 /* Noise.h in Sources */,
-				F2C5D5CD2F70B94700546C97 /* BioSpecDiffusionProfile.cpp in Sources */,
 				F24B73132F52A632008304C4 /* NoiseUtils.h in Sources */,
 				F24B73142F52A632008304C4 /* PerlinNoise.h in Sources */,
 				F24C548C2F87D990009AF16D /* MajorantGrid.cpp in Sources */,

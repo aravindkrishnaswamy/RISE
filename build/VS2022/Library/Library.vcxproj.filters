@@ -2297,15 +2297,6 @@
     <ClInclude Include="..\..\..\src\Library\Lights\LightSampler.h">
       <Filter>Non Mesh Lights</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecDiffusionProfile.h">
-      <Filter>Materials\BioSpec</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinBSSRDFMaterial.h">
-      <Filter>Materials\BioSpec</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinRWMaterial.h">
-      <Filter>Materials\BioSpec</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.h">
       <Filter>Materials\BioSpec</Filter>
     </ClInclude>
