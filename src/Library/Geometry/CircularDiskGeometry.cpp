@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "CircularDiskGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -41,8 +42,86 @@ CircularDiskGeometry::~CircularDiskGeometry( )
 {
 }
 
-void CircularDiskGeometry::GenerateMesh( )
+bool CircularDiskGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 3 ) {
+		return false;
+	}
+
+	const unsigned int nU = detail;  // angular sectors
+	const unsigned int nV = detail;  // radial rings
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	Vector3 axisNormal;
+	switch( chAxis ) {
+		case 'x':
+			axisNormal = Vector3( 1.0, 0.0, 0.0 );
+			break;
+		case 'y':
+			axisNormal = Vector3( 0.0, 1.0, 0.0 );
+			break;
+		case 'z':
+		default:
+			axisNormal = Vector3( 0.0, 0.0, 1.0 );
+			break;
+	}
+
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v = Scalar(j) / Scalar(nV);
+		const Scalar r = v * radius;
+
+		// At the center (v=0, r=0) every i-vertex collapses to the origin with the
+		// same axis normal.  If we let u vary across those vertices, a non-constant
+		// displacement function gives each one a different height along the normal
+		// and the center fan opens into a star-shaped crack.  Canonicalise u at the
+		// center so every collapsed vertex gets the same displacement.
+		const bool atCenter = (j == 0);
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u        = atCenter ? 0.0 : Scalar(i) / Scalar(nU);
+			const Scalar theta    = u * TWO_PI;
+			const Scalar cosTheta = cos(theta);
+			const Scalar sinTheta = sin(theta);
+
+			Point3 pos;
+			switch( chAxis ) {
+				case 'x':
+					pos = Point3( 0.0,          r * cosTheta, r * sinTheta );
+					break;
+				case 'y':
+					pos = Point3( r * sinTheta, 0.0,          r * cosTheta );
+					break;
+				case 'z':
+				default:
+					pos = Point3( r * cosTheta, r * sinTheta, 0.0 );
+					break;
+			}
+
+			vertices.push_back( pos );
+			normals.push_back( axisNormal );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a = baseIdx + j     * rowStride + i;
+			const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+			const unsigned int c = baseIdx + (j+1) * rowStride + i;
+			const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+
+			tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+		}
+	}
+
+	return true;
 }
 
 void CircularDiskGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

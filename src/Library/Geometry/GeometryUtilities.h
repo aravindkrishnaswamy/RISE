@@ -12,12 +12,37 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#ifndef GEOMETRY_UTILITIES_H_
+#define GEOMETRY_UTILITIES_H_
+
 #include "../Polygon.h"
 #include "../Interfaces/IFunction2D.h"
 
 namespace RISE
 {
 	extern bool CalculateVertexNormals( IndexTriangleListType& vFaces, NormalsListType& vNormals, VerticesListType& vVertices );
+
+	// Builds an IndexedTriangle where vertex/normal/coord indices are all the same.
+	// Handy for tessellators that generate one (position, normal, uv) triple per output vertex.
+	inline IndexedTriangle MakeIndexedTriangleSameIdx( unsigned int a, unsigned int b, unsigned int c )
+	{
+		IndexedTriangle t;
+		t.iVertices[0] = a; t.iVertices[1] = b; t.iVertices[2] = c;
+		t.iNormals[0]  = a; t.iNormals[1]  = b; t.iNormals[2]  = c;
+		t.iCoords[0]   = a; t.iCoords[1]   = b; t.iCoords[2]   = c;
+		return t;
+	}
+
+	// Destructively recomputes per-vertex normals from face topology.
+	// Unlike CalculateVertexNormals (which appends into an empty vNormals vector),
+	// this function resizes vNormals to match vVertices, clears any existing values,
+	// then fills it with freshly averaged face normals.  Use this after vertex positions
+	// have changed (e.g. post-displacement) to keep shading consistent with the new shape.
+	extern void RecomputeVertexNormalsFromTopology(
+		const IndexTriangleListType& vFaces,
+		const VerticesListType&      vVertices,
+		NormalsListType&             vNormals
+		);
 
 	// Generates a grid, with independentably settable width and height
 	extern bool GenerateGrid(
@@ -85,3 +110,5 @@ namespace RISE
 		);
 
 }
+
+#endif

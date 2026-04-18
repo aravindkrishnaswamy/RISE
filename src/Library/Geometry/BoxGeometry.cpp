@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "BoxGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -33,9 +34,84 @@ BoxGeometry::~BoxGeometry( )
 {
 }
 
-void BoxGeometry::GenerateMesh( )
+bool BoxGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 1 ) {
+		return false;
+	}
 
+	const Scalar hw = dWidthOV2;
+	const Scalar hh = dHeightOV2;
+	const Scalar hd = dDepthOV2;
+	const Scalar w  = dWidth;
+	const Scalar h  = dHeight;
+	const Scalar d  = dDepth;
+
+	// Per-face (origin, edgeU, edgeV, normal) matching the UV convention in IntersectRay.
+	struct FaceDef {
+		Point3  origin;
+		Vector3 edgeU;
+		Vector3 edgeV;
+		Vector3 normal;
+	};
+	const FaceDef faces[6] = {
+		// 0: -X face; u = (z+d/2)/d, v = 1-(y+h/2)/h
+		{ Point3( -hw,  hh, -hd ), Vector3(  0.0,  0.0,  d   ), Vector3(  0.0, -h,    0.0 ), Vector3( -1.0,  0.0,  0.0 ) },
+		// 1: +X face; u = 1-(z+d/2)/d, v = 1-(y+h/2)/h
+		{ Point3(  hw,  hh,  hd ), Vector3(  0.0,  0.0, -d   ), Vector3(  0.0, -h,    0.0 ), Vector3(  1.0,  0.0,  0.0 ) },
+		// 2: -Y face; u = (x+w/2)/w, v = 1-(z+d/2)/d
+		{ Point3( -hw, -hh,  hd ), Vector3(  w,    0.0,  0.0 ), Vector3(  0.0,  0.0, -d   ), Vector3(  0.0, -1.0,  0.0 ) },
+		// 3: +Y face; u = (x+w/2)/w, v = (z+d/2)/d
+		{ Point3( -hw,  hh, -hd ), Vector3(  w,    0.0,  0.0 ), Vector3(  0.0,  0.0,  d   ), Vector3(  0.0,  1.0,  0.0 ) },
+		// 4: -Z face; u = 1-(x+w/2)/w, v = 1-(y+h/2)/h
+		{ Point3(  hw,  hh, -hd ), Vector3( -w,    0.0,  0.0 ), Vector3(  0.0, -h,    0.0 ), Vector3(  0.0,  0.0, -1.0 ) },
+		// 5: +Z face; u = (x+w/2)/w, v = 1-(y+h/2)/h
+		{ Point3( -hw,  hh,  hd ), Vector3(  w,    0.0,  0.0 ), Vector3(  0.0, -h,    0.0 ), Vector3(  0.0,  0.0,  1.0 ) },
+	};
+
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int rowStride = nU + 1;
+
+	for( int f = 0; f < 6; f++ ) {
+		const FaceDef& face = faces[f];
+		const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+
+		for( unsigned int j = 0; j <= nV; j++ ) {
+			const Scalar v = Scalar(j) / Scalar(nV);
+			for( unsigned int i = 0; i <= nU; i++ ) {
+				const Scalar u = Scalar(i) / Scalar(nU);
+
+				const Point3 pos(
+					face.origin.x + u * face.edgeU.x + v * face.edgeV.x,
+					face.origin.y + u * face.edgeU.y + v * face.edgeV.y,
+					face.origin.z + u * face.edgeU.z + v * face.edgeV.z );
+
+				vertices.push_back( pos );
+				normals.push_back( face.normal );
+				coords.push_back( Point2( u, v ) );
+			}
+		}
+
+		for( unsigned int j = 0; j < nV; j++ ) {
+			for( unsigned int i = 0; i < nU; i++ ) {
+				const unsigned int a = baseIdx + j     * rowStride + i;
+				const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+				const unsigned int c = baseIdx + (j+1) * rowStride + i;
+				const unsigned int d_idx = baseIdx + (j+1) * rowStride + (i + 1);
+
+				tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+				tris.push_back( MakeIndexedTriangleSameIdx( b, c, d_idx ) );
+			}
+		}
+	}
+
+	return true;
 }
 
 void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

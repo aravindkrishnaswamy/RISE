@@ -38,7 +38,12 @@ namespace RISE
 			ClippedPlaneGeometry( const Point3 (&vP_)[4], const bool bDoubleSided_ );
 
 			// Geometry interface
-			void GenerateMesh( );
+			// Tessellates the quad as a bilinear (detail+1) x (detail+1) grid.  Corner mapping:
+			// vP[0]->UV(0,0), vP[1]->UV(1,0), vP[2]->UV(1,1), vP[3]->UV(0,1).  All verts receive
+			// the averaged quad normal (vNormal).  Works cleanly on planar quads; non-planar
+			// quads are approximated.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

@@ -18,6 +18,7 @@
 #include "IKeyframable.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/BoundingBox.h"
+#include "../Polygon.h"
 
 namespace RISE
 {
@@ -52,10 +53,35 @@ namespace RISE
 		virtual ~IGeometry(){};
 
 	public:
-		//! Generates a mesh and stores it in the local class 
-		//! variables, all sub classes better implement this function
-		virtual void GenerateMesh() = 0;
-		
+		//! Tessellates this geometry into an indexed triangle mesh.
+		//!
+		//! Consumers (e.g. DisplacedGeometry, future GPU mesh export) use this to obtain a
+		//! triangle-mesh representation of any geometry that supports it.  The four output
+		//! vectors are appended to; callers typically pass freshly-constructed empty vectors.
+		//!
+		//! Detail semantics are per-geometry and documented on each override:
+		//!  - Parametric primitives (sphere, torus, cylinder, box, disk, clipped plane):
+		//!    `detail` is the number of segments per natural parameter axis.
+		//!  - Mesh geometries (TriangleMesh, TriangleMeshGeometryIndexed): `detail` is ignored;
+		//!    existing triangles are emitted unchanged.
+		//!  - InfinitePlaneGeometry: returns false (cannot tessellate infinite extent).
+		//!
+		//! Default implementation returns false (unsupported).  Callers that need an error
+		//! message should log it themselves using whatever user-facing name they have for
+		//! the geometry — the base default deliberately stays silent to keep the interface
+		//! header free of logging dependencies.
+		/// \return TRUE if tessellation produced a mesh, FALSE if the geometry cannot be tessellated.
+		virtual bool TessellateToMesh(
+			IndexTriangleListType& tris,		///< [out] Indexed triangles (appended)
+			VerticesListType&      vertices,	///< [out] Vertex positions (appended)
+			NormalsListType&       normals,		///< [out] Per-vertex normals (appended)
+			TexCoordsListType&     coords,		///< [out] Per-vertex (u,v) texture coords (appended)
+			const unsigned int     detail		///< [in] Tessellation detail level (see per-geometry docs)
+			) const
+		{
+			return false;
+		}
+
 		//! This the most important function
 		//! It asks the geometric object to intersect itself
 		//! and return intersection details

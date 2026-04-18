@@ -1,0 +1,84 @@
+RISE ASCII SCENE 5
+# Invariant: disp_scale=0 must render identically to pure tessellation (displacement=none).
+# Visually eye-check vs. displaced_sphere.RISEscene with displacement=none.
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/displaced_zero_scale
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 4
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					30.0
+}
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_bump
+	file				textures/waterbump.png
+}
+
+lambertian_material
+{
+	name				lambert_orange
+	reflectance			color_orange
+}
+
+sphere_geometry
+{
+	name				base_sphere
+	radius				1.0
+}
+
+displaced_geometry
+{
+	name				zs_sphere
+	base_geometry		base_sphere
+	detail				32
+	displacement		pnt_bump
+	disp_scale			0.0
+	maxpolygons			10
+	maxdepth			8
+	bsp					TRUE
+}
+
+standard_object
+{
+	name				the_sphere
+	geometry			zs_sphere
+	material			lambert_orange
+	position			0 0 0
+}
+
+directional_light
+{
+	name				light
+	power				3.14
+	color				1.0 1.0 1.0
+	direction			0.3 0.5 1.0
+}

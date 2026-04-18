@@ -1,0 +1,84 @@
+RISE ASCII SCENE 5
+# Displaced torus test scene.  Exercises u- and v-seam handling.
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/displaced_torus
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 2.5 3.5
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					30.0
+}
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_bump
+	file				textures/waterbump.png
+}
+
+lambertian_material
+{
+	name				lambert_gold
+	reflectance			color_gold
+}
+
+torus_geometry
+{
+	name				base_torus
+	majorradius			1.0
+	minorratio			0.3
+}
+
+displaced_geometry
+{
+	name				disp_torus
+	base_geometry		base_torus
+	detail				128
+	displacement		pnt_bump
+	disp_scale			0.07
+	maxpolygons			10
+	maxdepth			8
+	bsp					TRUE
+}
+
+standard_object
+{
+	name				the_torus
+	geometry			disp_torus
+	material			lambert_gold
+	position			0 0 0
+}
+
+directional_light
+{
+	name				light
+	power				3.14
+	color				1.0 1.0 1.0
+	direction			0.3 0.5 1.0
+}

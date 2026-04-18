@@ -35,7 +35,11 @@ namespace RISE
 		public:
 			TorusGeometry( const Scalar dMajorRadius, const Scalar dMinorRadius );
 
-			void GenerateMesh( );
+			// Tessellates the torus to a triangle mesh with (detail+1) x (detail+1) vertices.
+			// Grid spans azimuth (u, around Y axis) x tube angle (v, around the tube cross-section).
+			// Both seams (u=0/u=1 and v=0/v=1) are duplicated for clean displacement.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

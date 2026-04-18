@@ -152,6 +152,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Geometry/ClippedPlaneGeometry.cpp"
     "${RISE_LIB}/Geometry/CylinderGeometry.cpp"
     "${RISE_LIB}/Geometry/CylindricalUVGenerator.cpp"
+    "${RISE_LIB}/Geometry/DisplacedGeometry.cpp"
     "${RISE_LIB}/Geometry/EllipsoidGeometry.cpp"
     "${RISE_LIB}/Geometry/Geometry.cpp"
     "${RISE_LIB}/Geometry/GeometryUtilities.cpp"

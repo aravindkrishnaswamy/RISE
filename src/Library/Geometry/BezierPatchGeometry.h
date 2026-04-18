@@ -79,7 +79,14 @@ namespace RISE
 			// we can prepare for rendering
 			void Prepare();
 
-			void GenerateMesh( );
+			// Tessellates every stored Bezier patch into triangles and concatenates them.
+			// Per-patch grid is (detail+1) x (detail+1), using the shared patch tessellator.
+			// This override does NOT apply the geometry's own stored `displacement` — callers
+			// (e.g. DisplacedGeometry) own the displacement pass.  Vertex normals are left at
+			// whatever the patch evaluator produces (which for the underlying utility is
+			// zero-initialized — callers should recompute normals as needed).
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

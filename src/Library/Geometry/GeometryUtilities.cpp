@@ -83,6 +83,68 @@ namespace RISE
 		return true;
 	}
 
+	void RecomputeVertexNormalsFromTopology(
+		const IndexTriangleListType& vFaces,
+		const VerticesListType&      vVertices,
+		NormalsListType&             vNormals
+		)
+	{
+		const int nNumVerts = static_cast<int>(vVertices.size());
+
+		// Preserve the caller's existing normals as a fallback.  Some tessellations
+		// (notably sphere/ellipsoid poles) contain vertices that appear only inside
+		// degenerate triangles — those vertices would otherwise end up with a zero
+		// normal after recompute and cause black pixels at the pole.  Keeping a
+		// fallback lets us restore the analytic normal the base geometry produced.
+		NormalsListType fallback;
+		if( static_cast<int>(vNormals.size()) == nNumVerts ) {
+			fallback = vNormals;
+		} else {
+			fallback.assign( nNumVerts, Vector3( 0.0, 0.0, 1.0 ) );
+		}
+
+		vNormals.assign( nNumVerts, Vector3( 0.0, 0.0, 0.0 ) );
+
+		std::vector<int> incident( nNumVerts, 0 );
+
+		IndexTriangleListType::const_iterator m, n;
+		for( m=vFaces.begin(), n=vFaces.end(); m!=n; m++ )
+		{
+			const IndexedTriangle& tri = *m;
+			const Vector3 vEdgeA = Vector3Ops::mkVector3( vVertices[tri.iVertices[1]], vVertices[tri.iVertices[0]] );
+			const Vector3 vEdgeB = Vector3Ops::mkVector3( vVertices[tri.iVertices[2]], vVertices[tri.iVertices[0]] );
+
+			const Vector3 vCrossRaw = Vector3Ops::Cross( vEdgeA, vEdgeB );
+			const Scalar crossMag = Vector3Ops::Magnitude( vCrossRaw );
+			if( crossMag < NEARZERO ) {
+				// Degenerate triangle — contributing zero here would dilute neighbour
+				// vertex normals, so skip it entirely.
+				continue;
+			}
+			const Vector3 vCross = vCrossRaw * (1.0 / crossMag);
+
+			vNormals[tri.iVertices[0]] = vNormals[tri.iVertices[0]] + vCross;
+			incident[tri.iVertices[0]]++;
+
+			vNormals[tri.iVertices[1]] = vNormals[tri.iVertices[1]] + vCross;
+			incident[tri.iVertices[1]]++;
+
+			vNormals[tri.iVertices[2]] = vNormals[tri.iVertices[2]] + vCross;
+			incident[tri.iVertices[2]]++;
+		}
+
+		for( int i = 0; i < nNumVerts; i++ )
+		{
+			if( incident[i] > 0 ) {
+				vNormals[i] = Vector3Ops::Normalize( vNormals[i] * (1.0 / Scalar( incident[i] )) );
+			} else {
+				// Vertex was only incident to degenerate triangles.  Fall back to the
+				// pre-recompute normal the base geometry produced.
+				vNormals[i] = fallback[i];
+			}
+		}
+	}
+
 	bool GenerateGrid(
 		const int nWidthDetail,
 		const int nHeightDetail, 

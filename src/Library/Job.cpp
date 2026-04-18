@@ -2969,6 +2969,54 @@ bool Job::AddBilinearPatchGeometry(
 	return true;
 }
 
+bool Job::AddDisplacedGeometry(
+	const char*         name,
+	const char*         base_geometry_name,
+	const unsigned int  detail,
+	const char*         displacement,
+	const Scalar        disp_scale,
+	const unsigned int  max_polys,
+	const unsigned char max_recur,
+	const bool          double_sided,
+	const bool          use_bsp,
+	const bool          face_normals
+	)
+{
+	if( !name || !base_geometry_name ) {
+		GlobalLog()->Print( eLog_Error, "Job::AddDisplacedGeometry:: name and base_geometry are required" );
+		return false;
+	}
+
+	IGeometry* pBase = pGeomManager->GetItem( base_geometry_name );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: base geometry `%s` not found", base_geometry_name );
+		return false;
+	}
+
+	IFunction2D* pFunc = 0;
+	if( displacement && strcmp( displacement, "none" ) != 0 ) {
+		pFunc = pFunc2DManager->GetItem( displacement );
+		if( !pFunc ) {
+			GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: displacement function `%s` not found", displacement );
+			return false;
+		}
+	}
+
+	IGeometry* pGeometry = 0;
+	const bool bOK = RISE_API_CreateDisplacedGeometry(
+		&pGeometry, pBase, detail, pFunc, disp_scale,
+		max_polys, max_recur, double_sided, use_bsp, face_normals );
+
+	if( !bOK || !pGeometry ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: failed to create displaced geometry `%s` (base `%s` may not support tessellation)", name, base_geometry_name );
+		return false;
+	}
+
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
 //
 //  Adds lights
 //

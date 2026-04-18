@@ -61,7 +61,11 @@ namespace RISE
 			// we can prepare for rendering
 			void Prepare();
 
-			void GenerateMesh( );
+			// Tessellates every stored bilinear patch as a (detail+1) x (detail+1) bilinear grid,
+			// concatenated.  Per-patch corner mapping: pts[0]->UV(0,0), pts[1]->UV(1,0),
+			// pts[2]->UV(1,1), pts[3]->UV(0,1).  Normals recomputed from triangle topology.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

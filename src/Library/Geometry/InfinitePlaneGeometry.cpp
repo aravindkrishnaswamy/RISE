@@ -31,10 +31,6 @@ InfinitePlaneGeometry::~InfinitePlaneGeometry( )
 {
 }
 
-void InfinitePlaneGeometry::GenerateMesh( )
-{
-}
-
 void InfinitePlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	HIT	h;

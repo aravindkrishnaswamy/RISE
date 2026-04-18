@@ -44,7 +44,11 @@ namespace RISE
 			BoxGeometry( Scalar dWidth_, Scalar dHeight_, Scalar dDepth_ );
 
 			// Geometry interface
-			void GenerateMesh( );
+			// Tessellates the 6 box faces, each as a (detail+1) x (detail+1) grid in face-local UV.
+			// Edges between faces are NOT shared — each face gets its own vertices with the face's
+			// own UV and normal.  Minimum detail = 1 (two triangles per face).
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

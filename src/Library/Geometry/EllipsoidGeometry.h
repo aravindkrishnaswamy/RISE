@@ -39,7 +39,11 @@ namespace RISE
 		public:
 			EllipsoidGeometry( const Vector3& vRadius );
 
-			void GenerateMesh( );
+			// Tessellates the ellipsoid to a triangle mesh with (detail+1) x (detail+1) vertices.
+			// Same parameterization as sphere, scaled by the ellipsoid's semi-axes.
+			// Note: m_vRadius stores diameters; semi-axes are m_vRadius / 2.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

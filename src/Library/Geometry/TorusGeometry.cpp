@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "TorusGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -35,9 +36,66 @@ TorusGeometry::~TorusGeometry( )
 {
 }
 
-void TorusGeometry::GenerateMesh( )
+bool TorusGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 3 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	const Scalar R = m_p0;  // ring-center radius
+	const Scalar r = m_p1;  // tube radius
+
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v     = Scalar(j) / Scalar(nV);
+		const Scalar thetaV = v * TWO_PI;
+		const Scalar cosV  = cos(thetaV);
+		const Scalar sinV  = sin(thetaV);
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u      = Scalar(i) / Scalar(nU);
+			const Scalar thetaU = u * TWO_PI;
+			const Scalar cosU   = cos(thetaU);
+			const Scalar sinU   = sin(thetaU);
+
+			const Point3 pos(
+				(R + r * cosV) * cosU,
+				r * sinV,
+				(R + r * cosV) * sinU );
+
+			const Vector3 nrm = Vector3Ops::Normalize( Vector3(
+				cosV * cosU,
+				sinV,
+				cosV * sinU ) );
+
+			vertices.push_back( pos );
+			normals.push_back( nrm );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a = baseIdx + j     * rowStride + i;
+			const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+			const unsigned int c = baseIdx + (j+1) * rowStride + i;
+			const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+
+			tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+		}
+	}
+
+	return true;
 }
 
 void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHitFrontFaces*/, const bool /*bHitBackFaces*/, const bool bComputeExitInfo ) const

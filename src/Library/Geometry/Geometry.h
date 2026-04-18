@@ -36,12 +36,6 @@ namespace RISE
 
 			Geometry();
 			virtual ~Geometry();
-
-		public:
-
-			// Generates a mesh and stores it in the local class 
-			// variables, all sub classes better implement this function
-			virtual void GenerateMesh( );
 		};
 	}
 }

@@ -35,7 +35,10 @@ namespace RISE
 		public:
 			CylinderGeometry( const int chAxis, const Scalar dRadius, const Scalar dHeight );
 
-			void GenerateMesh( );
+			// Tessellates the cylinder side (no caps — matches the analytic intersection which
+			// is open-ended) to (detail+1) x (detail+1) vertices.  Duplicates the u=0/u=1 seam.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

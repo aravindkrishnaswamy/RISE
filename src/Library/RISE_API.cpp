@@ -366,6 +366,7 @@ namespace RISE
 #include "Geometry/InfinitePlaneGeometry.h"
 #include "Geometry/BezierPatchGeometry.h"
 #include "Geometry/BilinearPatchGeometry.h"
+#include "Geometry/DisplacedGeometry.h"
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/TriangleMeshLoader3DS.h"
@@ -690,6 +691,48 @@ namespace RISE
 		(*ppi) = new BilinearPatchGeometry( max_patches, max_recur, use_bsp );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bilinear patch geometry" );
 
+		return true;
+	}
+
+	bool RISE_API_CreateDisplacedGeometry(
+						IGeometry**         ppi,
+						IGeometry*          pBase,
+						const unsigned int  detail,
+						IFunction2D*        displacement,
+						const Scalar        disp_scale,
+						const unsigned int  max_polys,
+						const unsigned char max_recur,
+						const bool          double_sided,
+						const bool          use_bsp,
+						const bool          face_normals
+						)
+	{
+		if( !ppi || !pBase ) {
+			return false;
+		}
+
+		if( detail > 256 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateDisplacedGeometry: detail=%u is high; expect many triangles (grid is (detail+1)^2 per base axis or per face)",
+				detail );
+		}
+
+		DisplacedGeometry* pGeom = new DisplacedGeometry(
+			pBase, detail, displacement, disp_scale,
+			max_polys, max_recur, double_sided, use_bsp, face_normals );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
+
+		if( !pGeom->IsValid() ) {
+			// Base could not be tessellated (e.g. InfinitePlaneGeometry).  Refuse construction
+			// loudly so the caller's scene-parse layer can surface the error.  The geometry
+			// starts with refcount=1 from its Reference base, so one release destroys it.
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: base geometry does not support TessellateToMesh \u2014 refusing." );
+			pGeom->release();
+			*ppi = 0;
+			return false;
+		}
+
+		*ppi = pGeom;
 		return true;
 	}
 

@@ -120,6 +120,8 @@
 		F24B72212F52A632008304C4 /* ClippedPlaneGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */; };
 		F24B72222F52A632008304C4 /* CylinderGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */; };
 		F24B72232F52A632008304C4 /* CylinderGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F082E069C428F0069C9E5 /* CylinderGeometry.h */; };
+		DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
+		DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		F24B72242F52A632008304C4 /* CylindricalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */; };
 		F24B72252F52A632008304C4 /* CylindricalUVGenerator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */; };
 		F24B72262F52A632008304C4 /* EllipsoidGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */; };
@@ -820,6 +822,8 @@
 		F27F0A99069C42910069C9E5 /* ClippedPlaneGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */; };
 		F27F0A9A069C42910069C9E5 /* CylinderGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */; };
 		F27F0A9B069C42910069C9E5 /* CylinderGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F082E069C428F0069C9E5 /* CylinderGeometry.h */; };
+		DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
+		DDDD00000000000000000004 /* DisplacedGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		F27F0A9C069C42910069C9E5 /* CylindricalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */; };
 		F27F0A9D069C42910069C9E5 /* CylindricalUVGenerator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */; };
 		F27F0A9E069C42910069C9E5 /* EllipsoidGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */; };
@@ -1704,6 +1708,8 @@
 		F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClippedPlaneGeometry.h; sourceTree = "<group>"; };
 		F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CylinderGeometry.cpp; sourceTree = "<group>"; };
 		F27F082E069C428F0069C9E5 /* CylinderGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CylinderGeometry.h; sourceTree = "<group>"; };
+		DDDD00000000000000000005 /* DisplacedGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplacedGeometry.cpp; sourceTree = "<group>"; };
+		DDDD00000000000000000006 /* DisplacedGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplacedGeometry.h; sourceTree = "<group>"; };
 		F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CylindricalUVGenerator.cpp; sourceTree = "<group>"; };
 		F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CylindricalUVGenerator.h; sourceTree = "<group>"; };
 		F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EllipsoidGeometry.cpp; sourceTree = "<group>"; };
@@ -2586,6 +2592,8 @@
 				F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */,
 				F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */,
 				F27F082E069C428F0069C9E5 /* CylinderGeometry.h */,
+				DDDD00000000000000000005 /* DisplacedGeometry.cpp */,
+				DDDD00000000000000000006 /* DisplacedGeometry.h */,
 				F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */,
 				F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */,
 				F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */,
@@ -3506,6 +3514,7 @@
 				F27F0A97069C42910069C9E5 /* CircularDiskGeometry.h in Headers */,
 				F27F0A99069C42910069C9E5 /* ClippedPlaneGeometry.h in Headers */,
 				F27F0A9B069C42910069C9E5 /* CylinderGeometry.h in Headers */,
+				DDDD00000000000000000004 /* DisplacedGeometry.h in Headers */,
 				F27F0A9D069C42910069C9E5 /* CylindricalUVGenerator.h in Headers */,
 				F27F0A9F069C42910069C9E5 /* EllipsoidGeometry.h in Headers */,
 				F27F0AA1069C42910069C9E5 /* Geometry.h in Headers */,
@@ -4112,6 +4121,7 @@
 				F27F0A96069C42910069C9E5 /* CircularDiskGeometry.cpp in Sources */,
 				F27F0A98069C42910069C9E5 /* ClippedPlaneGeometry.cpp in Sources */,
 				F27F0A9A069C42910069C9E5 /* CylinderGeometry.cpp in Sources */,
+				DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */,
 				F27F0A9C069C42910069C9E5 /* CylindricalUVGenerator.cpp in Sources */,
 				F27F0A9E069C42910069C9E5 /* EllipsoidGeometry.cpp in Sources */,
 				F27F0AA0069C42910069C9E5 /* Geometry.cpp in Sources */,
@@ -4444,6 +4454,8 @@
 				F24B72212F52A632008304C4 /* ClippedPlaneGeometry.h in Sources */,
 				F24B72222F52A632008304C4 /* CylinderGeometry.cpp in Sources */,
 				F24B72232F52A632008304C4 /* CylinderGeometry.h in Sources */,
+				DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */,
+				DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */,
 				F24B72242F52A632008304C4 /* CylindricalUVGenerator.cpp in Sources */,
 				F24B72252F52A632008304C4 /* CylindricalUVGenerator.h in Sources */,
 				F24B72262F52A632008304C4 /* EllipsoidGeometry.cpp in Sources */,

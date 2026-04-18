@@ -51,9 +51,31 @@ TriangleMeshGeometry::~TriangleMeshGeometry()
 	safe_release( pPolygonsBSPtree );
 }
 
-void TriangleMeshGeometry::GenerateMesh( )
+bool TriangleMeshGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     /*detail*/ ) const
 {
-	// Hmmm....  that can't be too hard now can it ? <snicker>
+	// Pass-through: emit stored triangles as indexed geometry.  Each Triangle contributes
+	// three fresh vertices (no merging) so per-triangle UV/normal discontinuities are preserved.
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+
+	for( MyTriangleList::const_iterator it = polygons.begin(); it != polygons.end(); ++it ) {
+		const Triangle& tri = *it;
+		const unsigned int a = static_cast<unsigned int>( vertices.size() );
+
+		for( int k = 0; k < 3; k++ ) {
+			vertices.push_back( tri.vertices[k] );
+			normals.push_back(  tri.normals[k] );
+			coords.push_back(   tri.coords[k] );
+		}
+
+		tris.push_back( MakeIndexedTriangleSameIdx( a, a + 1, a + 2 ) );
+	}
+
+	return static_cast<unsigned int>( vertices.size() ) > baseIdx;
 }
 
 void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool /*bComputeExitInfo*/ ) const

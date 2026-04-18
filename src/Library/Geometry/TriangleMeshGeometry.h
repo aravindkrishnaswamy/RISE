@@ -72,7 +72,10 @@ namespace RISE
 			void Serialize( IWriteBuffer& buffer ) const;
 			void Deserialize( IReadBuffer& buffer );
 
-			void GenerateMesh( );
+			// Pass-through tessellation: emits the existing triangles (de-indexed per-vertex).
+			// The `detail` parameter is ignored — a triangle-mesh source already IS a mesh.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

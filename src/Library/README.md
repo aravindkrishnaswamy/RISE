@@ -29,7 +29,7 @@ Important anchors:
 - `Cameras/`: camera models
 - `DetectorSpheres/`: detector sphere infrastructure
 - `Functions/`: polynomial and parametric math helpers
-- `Geometry/`: analytic and mesh geometry plus mesh loaders and UV generators
+- `Geometry/`: analytic and mesh geometry plus mesh loaders and UV generators.  Includes `DisplacedGeometry` — a composite that wraps any `IGeometry`, tessellates it via `IGeometry::TessellateToMesh`, and displaces vertices along their normals using an `IFunction2D`.  Parser chunk: `displaced_geometry`.
 - `Interfaces/`: public abstract interfaces and contracts
 - `Intersection/`: ray-primitive intersection routines
 - `Lights/`: classic light implementations

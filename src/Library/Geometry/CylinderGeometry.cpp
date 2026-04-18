@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "CylinderGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -33,9 +34,71 @@ CylinderGeometry::~CylinderGeometry( )
 {
 }
 
-void CylinderGeometry::GenerateMesh( )
+bool CylinderGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 3 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	const Scalar height = m_dAxisMax - m_dAxisMin;
+
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v     = Scalar(j) / Scalar(nV);
+		const Scalar axial = m_dAxisMin + v * height;
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u        = Scalar(i) / Scalar(nU);
+			const Scalar theta    = u * TWO_PI;
+			const Scalar cosTheta = cos(theta);
+			const Scalar sinTheta = sin(theta);
+
+			Point3  pos;
+			Vector3 nrm;
+			switch( m_chAxis ) {
+				case 'x':
+					pos = Point3( axial,             m_dRadius * cosTheta, m_dRadius * sinTheta );
+					nrm = Vector3( 0.0,              cosTheta,             sinTheta );
+					break;
+				case 'y':
+					pos = Point3( m_dRadius * cosTheta, axial,             m_dRadius * sinTheta );
+					nrm = Vector3( cosTheta,            0.0,               sinTheta );
+					break;
+				case 'z':
+				default:
+					pos = Point3( m_dRadius * cosTheta, m_dRadius * sinTheta, axial );
+					nrm = Vector3( cosTheta,            sinTheta,             0.0 );
+					break;
+			}
+
+			vertices.push_back( pos );
+			normals.push_back( nrm );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a = baseIdx + j     * rowStride + i;
+			const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+			const unsigned int c = baseIdx + (j+1) * rowStride + i;
+			const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+
+			tris.push_back( MakeIndexedTriangleSameIdx( a, c, b ) );
+			tris.push_back( MakeIndexedTriangleSameIdx( b, c, d ) );
+		}
+	}
+
+	return true;
 }
 
 void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , const bool , const bool bComputeExitInfo ) const

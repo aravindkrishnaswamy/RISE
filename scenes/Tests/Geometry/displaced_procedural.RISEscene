@@ -1,0 +1,213 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           displaced_procedural.RISEscene                                                          #
+#   Description:    Three shapes, each displaced by a different 2D function-based painter.                 #
+#                   Exercises the DisplacedGeometry pipeline with procedural IFunction2D sources          #
+#                   (not just image-based PNG bumps).                                                       #
+#                   Layout:                                                                                 #
+#                     - Left:   Torus + lines_painter (stripes)                                            #
+#                     - Centre: Sphere + perlin2d_painter (smooth noise)                                   #
+#                     - Right:  ClippedPlane quad + checker_painter (checker)                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-18                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/displaced_procedural
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 14
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				400
+	fov					20.0
+}
+
+> run scenes/colors.RISEscript
+
+##################################################
+# 2D function-based painters used as displacement
+##################################################
+
+# Stripes / lines painter: scalar Evaluate returns the lerp between black (0)
+# and white (1) with a hard banded pattern at the given size.
+lines_painter
+{
+	name				pnt_stripes
+	colora				color_black
+	colorb				color_white
+	size				0.08
+}
+
+# Perlin 2D noise: smooth organic noise in [0,1] when colora=black colorb=white.
+perlin2d_painter
+{
+	name				pnt_perlin
+	colora				color_black
+	colorb				color_white
+	persistence			0.5
+	octaves				4
+	scale				6.0 6.0
+	shift				0 0
+}
+
+# Checker: alternating 0 / 1 values based on the texture coordinate.
+checker_painter
+{
+	name				pnt_checker
+	colora				color_black
+	colorb				color_white
+	size				0.1
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				lambert_aqua
+	reflectance			color_aquamarine
+}
+
+lambertian_material
+{
+	name				lambert_orange
+	reflectance			color_orange
+}
+
+lambertian_material
+{
+	name				lambert_yellow
+	reflectance			color_yellow
+}
+
+##################################################
+# Base geometries
+##################################################
+
+torus_geometry
+{
+	name				base_torus
+	majorradius			1.0
+	minorratio			0.3
+}
+
+sphere_geometry
+{
+	name				base_sphere
+	radius				1.0
+}
+
+clippedplane_geometry
+{
+	name				base_quad
+	pta					-1 -1 0
+	ptb					 1 -1 0
+	ptc					 1  1 0
+	ptd					-1  1 0
+}
+
+##################################################
+# Displaced geometries — each uses a different painter
+##################################################
+
+displaced_geometry
+{
+	name				disp_torus_stripes
+	base_geometry		base_torus
+	detail				96
+	displacement		pnt_stripes
+	disp_scale			0.08
+	maxpolygons			10
+	maxdepth			10
+	bsp					TRUE
+}
+
+displaced_geometry
+{
+	name				disp_sphere_perlin
+	base_geometry		base_sphere
+	detail				96
+	displacement		pnt_perlin
+	disp_scale			0.12
+	maxpolygons			10
+	maxdepth			10
+	bsp					TRUE
+}
+
+displaced_geometry
+{
+	name				disp_quad_checker
+	base_geometry		base_quad
+	detail				64
+	displacement		pnt_checker
+	disp_scale			0.10
+	maxpolygons			10
+	maxdepth			10
+	bsp					TRUE
+}
+
+##################################################
+# Objects — three in a row across X
+##################################################
+
+standard_object
+{
+	name				the_torus
+	geometry			disp_torus_stripes
+	material			lambert_aqua
+	position			-3.2 0 0
+	orientation			60 0 0
+}
+
+standard_object
+{
+	name				the_sphere
+	geometry			disp_sphere_perlin
+	material			lambert_orange
+	position			0 0 0
+}
+
+standard_object
+{
+	name				the_quad
+	geometry			disp_quad_checker
+	material			lambert_yellow
+	position			3.2 0 0
+	orientation			0 -20 0
+}
+
+directional_light
+{
+	name				light
+	power				3.14
+	color				1.0 1.0 1.0
+	direction			0.4 0.5 1.0
+}

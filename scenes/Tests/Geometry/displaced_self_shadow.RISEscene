@@ -1,0 +1,101 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           displaced_self_shadow.RISEscene                                                         #
+#   Description:    Displaced sphere with very large disp_scale + grazing light                            #
+#                   so bumps cast shadows onto the surface itself.  Regression guard for                   #
+#                   shadow-ray behavior through a DisplacedGeometry's internal mesh.                       #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-18                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	samples				16
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/displaced_self_shadow
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 4
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					35.0
+}
+
+> run scenes/colors.RISEscript
+
+png_painter
+{
+	name				pnt_bump
+	file				textures/waterbump.png
+}
+
+lambertian_material
+{
+	name				lambert_white
+	reflectance			color_white
+}
+
+sphere_geometry
+{
+	name				base_sphere
+	radius				1.0
+}
+
+# Very significant displacement relative to the sphere's own radius.
+# Large disp_scale + high detail so the bumps are deep and numerous enough
+# to cast visible shadows on neighbouring surface regions.
+displaced_geometry
+{
+	name				disp_sphere
+	base_geometry		base_sphere
+	detail				256
+	displacement		pnt_bump
+	disp_scale			0.25
+	maxpolygons			10
+	maxdepth			10
+	bsp					TRUE
+}
+
+standard_object
+{
+	name				the_sphere
+	geometry			disp_sphere
+	material			lambert_white
+	position			0 0 0
+	casts_shadows		TRUE
+	receives_shadows	TRUE
+}
+
+# Grazing directional light from the +X side (slight upward tilt).
+# Because the light rakes across the surface almost horizontally, tall bumps
+# on the -X side will shadow the valleys behind them.
+directional_light
+{
+	name				light
+	power				3.14
+	color				1.0 1.0 1.0
+	direction			1.0 0.2 0.1
+}

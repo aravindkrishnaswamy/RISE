@@ -153,6 +153,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\ClippedPlaneGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\CylinderGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\CylindricalUVGenerator.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\DisplacedGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\EllipsoidGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\Geometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\GeometryUtilities.cpp" />
@@ -469,6 +470,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\ClippedPlaneGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\CylinderGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\CylindricalUVGenerator.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\DisplacedGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\EllipsoidGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\Geometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\GeometryUtilities.h" />

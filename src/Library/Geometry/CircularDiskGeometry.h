@@ -38,7 +38,11 @@ namespace RISE
 			CircularDiskGeometry( const Scalar radius_, const unsigned char chAxis_ );
 
 			// Geometry interface
-			void GenerateMesh( );
+			// Tessellates the disk to a (detail+1) x (detail+1) radial grid:
+			// angular (u, 0..2PI) x radial (v, 0..R).  u=0/u=1 seam duplicated.  UV is polar
+			// parameterization in [0,1]^2 (not cartesian [-1,1] like the native IntersectRay).
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

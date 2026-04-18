@@ -35,7 +35,6 @@ namespace RISE
 		public:
 			InfinitePlaneGeometry( const Scalar xTile_, const Scalar yTile_ );
 
-			void GenerateMesh( );
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

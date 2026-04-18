@@ -102,6 +102,14 @@ namespace RISE
 			if( displacement ) {
 				RemapTextureCoords( coords );
 				ApplyDisplacementMapToObject( indtris, vertices, normals, coords, *displacement, disp_scale );
+
+				// Re-average per-vertex normals from the displaced triangle topology so shading
+				// matches the new geometry.  Without this, the displaced surface still uses the
+				// pre-displacement vertex normals and shading looks "flat" despite the bumps.
+				// Gated on !bUseFaceNormals to preserve the explicit face-normal opt-in.
+				if( !bUseFaceNormals ) {
+					RecomputeVertexNormalsFromTopology( indtris, vertices, normals );
+				}
 			}
 
 			ret->AddVertices( vertices );

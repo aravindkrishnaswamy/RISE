@@ -1016,6 +1016,19 @@ namespace RISE
 							const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
 							);
 
+		//! Creates a displaced geometry wrapping a previously-registered base geometry.
+		bool AddDisplacedGeometry(
+							const char*         name,
+							const char*         base_geometry_name,
+							const unsigned int  detail,
+							const char*         displacement,
+							const Scalar        disp_scale,
+							const unsigned int  max_polys,
+							const unsigned char max_recur,
+							const bool          double_sided,
+							const bool          use_bsp,
+							const bool          face_normals );
+
 		//
 		// Adds lights
 		//

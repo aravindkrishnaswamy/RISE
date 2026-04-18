@@ -951,6 +951,24 @@ namespace RISE
 							const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
 							) = 0;
 
+		//! Creates a displaced geometry wrapping a previously-registered base geometry,
+		//! tessellating it via IGeometry::TessellateToMesh and displacing vertices along the
+		//! surface normal by displacement(u,v)*disp_scale.  Returns false if the base cannot be
+		//! tessellated (e.g. InfinitePlaneGeometry) — the whole scene should then fail to parse.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddDisplacedGeometry(
+							const char*         name,				///< [in] Name of the geometry to register
+							const char*         base_geometry_name,	///< [in] Name of a previously-registered IGeometry to wrap
+							const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
+							const char*         displacement,		///< [in] Name of registered IFunction2D, or NULL for pure tessellation
+							const Scalar        disp_scale,			///< [in] Displacement scale factor
+							const unsigned int  max_polys,			///< [in] Max polygons per acceleration-structure node
+							const unsigned char max_recur,			///< [in] Max acceleration-structure depth
+							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
+							const bool          use_bsp,			///< [in] Use BSP-SAH tree (recommended for dense displaced meshes)
+							const bool          face_normals		///< [in] Use face normals instead of topologically re-averaged vertex normals
+							) = 0;
+
 
 		//
 		// Adds lights

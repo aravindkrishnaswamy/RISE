@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "BilinearPatchGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
@@ -158,9 +159,63 @@ void BilinearPatchGeometry::Prepare()
 	}
 }
 
-void BilinearPatchGeometry::GenerateMesh( )
+bool BilinearPatchGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( patches.empty() || detail < 1 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int rowStride = nU + 1;
+
+	for( BilinearPatchList::const_iterator it = patches.begin(); it != patches.end(); ++it ) {
+		const BilinearPatch& patch = *it;
+
+		const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+
+		for( unsigned int j = 0; j <= nV; j++ ) {
+			const Scalar v = Scalar(j) / Scalar(nV);
+			for( unsigned int i = 0; i <= nU; i++ ) {
+				const Scalar u = Scalar(i) / Scalar(nU);
+
+				const Scalar w00 = (1.0 - u) * (1.0 - v);
+				const Scalar w10 = u         * (1.0 - v);
+				const Scalar w11 = u         * v;
+				const Scalar w01 = (1.0 - u) * v;
+
+				const Point3 pos(
+					w00 * patch.pts[0].x + w10 * patch.pts[1].x + w11 * patch.pts[2].x + w01 * patch.pts[3].x,
+					w00 * patch.pts[0].y + w10 * patch.pts[1].y + w11 * patch.pts[2].y + w01 * patch.pts[3].y,
+					w00 * patch.pts[0].z + w10 * patch.pts[1].z + w11 * patch.pts[2].z + w01 * patch.pts[3].z );
+
+				vertices.push_back( pos );
+				normals.push_back( Vector3(0.0, 0.0, 0.0) );  // re-averaged below
+				coords.push_back( Point2( u, v ) );
+			}
+		}
+
+		for( unsigned int j = 0; j < nV; j++ ) {
+			for( unsigned int i = 0; i < nU; i++ ) {
+				const unsigned int a = baseIdx + j     * rowStride + i;
+				const unsigned int b = baseIdx + j     * rowStride + (i + 1);
+				const unsigned int c = baseIdx + (j+1) * rowStride + i;
+				const unsigned int d = baseIdx + (j+1) * rowStride + (i + 1);
+
+				tris.push_back( MakeIndexedTriangleSameIdx( a, b, c ) );
+				tris.push_back( MakeIndexedTriangleSameIdx( b, d, c ) );
+			}
+		}
+	}
+
+	RecomputeVertexNormalsFromTopology( tris, vertices, normals );
+
+	return true;
 }
 
 void BilinearPatchGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

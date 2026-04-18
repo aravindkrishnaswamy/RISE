@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "EllipsoidGeometry.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Animation/KeyframableHelper.h"
@@ -31,9 +32,77 @@ EllipsoidGeometry::~EllipsoidGeometry( )
 {
 }
 
-void EllipsoidGeometry::GenerateMesh( )
+bool EllipsoidGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( detail < 3 ) {
+		return false;
+	}
 
+	const unsigned int nU = detail;
+	const unsigned int nV = detail;
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+	const unsigned int rowStride = nU + 1;
+
+	// Semi-axes (m_vRadius stores diameters per the convention used in Q and UniformRandomPoint)
+	const Scalar a = m_vRadius.x * 0.5;
+	const Scalar b = m_vRadius.y * 0.5;
+	const Scalar c = m_vRadius.z * 0.5;
+
+	const Scalar ooA2 = (a > NEARZERO) ? 1.0 / (a*a) : 0.0;
+	const Scalar ooB2 = (b > NEARZERO) ? 1.0 / (b*b) : 0.0;
+	const Scalar ooC2 = (c > NEARZERO) ? 1.0 / (c*c) : 0.0;
+
+	for( unsigned int j = 0; j <= nV; j++ ) {
+		const Scalar v      = Scalar(j) / Scalar(nV);
+		const Scalar phi    = v * PI;
+		const Scalar sinPhi = sin(phi);
+		const Scalar cosPhi = cos(phi);
+
+		// Collapse pole u so every pole vertex gets the same displacement height
+		// (see SphereGeometry::TessellateToMesh for the reasoning).
+		const bool atPole = (j == 0) || (j == nV);
+
+		for( unsigned int i = 0; i <= nU; i++ ) {
+			const Scalar u        = atPole ? 0.0 : Scalar(i) / Scalar(nU);
+			const Scalar theta    = u * TWO_PI;
+			const Scalar sinTheta = sin(theta);
+			const Scalar cosTheta = cos(theta);
+
+			const Point3 pos(
+				a * -sinPhi * cosTheta,
+				b * cosPhi,
+				c * sinPhi * sinTheta );
+
+			// Gradient-based normal: (x/a^2, y/b^2, z/c^2) normalized
+			const Vector3 nrm = Vector3Ops::Normalize( Vector3(
+				pos.x * ooA2,
+				pos.y * ooB2,
+				pos.z * ooC2 ) );
+
+			vertices.push_back( pos );
+			normals.push_back( nrm );
+			coords.push_back( Point2( u, v ) );
+		}
+	}
+
+	for( unsigned int j = 0; j < nV; j++ ) {
+		for( unsigned int i = 0; i < nU; i++ ) {
+			const unsigned int a_idx = baseIdx + j     * rowStride + i;
+			const unsigned int b_idx = baseIdx + j     * rowStride + (i + 1);
+			const unsigned int c_idx = baseIdx + (j+1) * rowStride + i;
+			const unsigned int d_idx = baseIdx + (j+1) * rowStride + (i + 1);
+
+			tris.push_back( MakeIndexedTriangleSameIdx( a_idx, c_idx, b_idx ) );
+			tris.push_back( MakeIndexedTriangleSameIdx( b_idx, c_idx, d_idx ) );
+		}
+	}
+
+	return true;
 }
 
 void EllipsoidGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

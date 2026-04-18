@@ -84,9 +84,67 @@ TriangleMeshGeometryIndexed::~TriangleMeshGeometryIndexed()
 	safe_release( pPtrBSPtree );
 }
 
-void TriangleMeshGeometryIndexed::GenerateMesh( )
+bool TriangleMeshGeometryIndexed::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     /*detail*/ ) const
 {
-	// Hmmm....  that can't be too hard now can it ? <snicker>
+	// Pass-through: emit triangles with same-index (iVertices == iNormals == iCoords)
+	// semantics.  The source mesh stores pPoints, pNormals, pCoords as INDEPENDENTLY
+	// indexed attribute arrays (a position can be shared across faces with distinct
+	// normals/UVs), but downstream displacement code (`ApplyDisplacementMapToObject`)
+	// indexes vNormals and vCoords by the VERTEX index — so we flatten each triangle
+	// corner to its own (pos, normal, uv) tuple here.  Also handles face-normal source
+	// meshes, which store no normals (pNormals empty, src.pNormals[k]==null): we emit a
+	// placeholder (0,0,1) that the caller's RecomputeVertexNormalsFromTopology will
+	// overwrite.
+	//
+	// DoneIndexedTriangles() clears indexedtris after converting to pointer-triangle
+	// form, so ptr_polygons is the authoritative source.
+	if( ptr_polygons.empty() ) {
+		return false;
+	}
+
+	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
+
+	for( MyPointerTriangleList::const_iterator it = ptr_polygons.begin(); it != ptr_polygons.end(); ++it ) {
+		const PointerTriangle& src = *it;
+
+		// For face-normals source meshes, pNormals is empty and every src.pNormals[k]
+		// is null.  We can't emit a constant placeholder like +Z — downstream code
+		// (DisplacedGeometry) displaces vertices ALONG the stored normal BEFORE any
+		// later normal recompute, so a constant placeholder would push every corner
+		// along +Z regardless of the triangle's actual orientation.  Compute the
+		// true face normal from the triangle's vertex positions and emit it for
+		// all three corners.  Guarded against degenerate triangles (zero-area).
+		Vector3 faceNormal( 0.0, 0.0, 1.0 );
+		if( !src.pNormals[0] ) {
+			const Vector3 e1 = Vector3Ops::mkVector3( *src.pVertices[1], *src.pVertices[0] );
+			const Vector3 e2 = Vector3Ops::mkVector3( *src.pVertices[2], *src.pVertices[0] );
+			const Vector3 cross = Vector3Ops::Cross( e1, e2 );
+			const Scalar mag = Vector3Ops::Magnitude( cross );
+			if( mag > NEARZERO ) {
+				faceNormal = cross * (1.0 / mag);
+			}
+		}
+
+		IndexedTriangle t;
+		for( int k = 0; k < 3; k++ ) {
+			const unsigned int localIdx = static_cast<unsigned int>( vertices.size() );
+			vertices.push_back( *src.pVertices[k] );
+			normals.push_back( src.pNormals[k] ? *src.pNormals[k] : faceNormal );
+			coords.push_back( *src.pCoords[k] );
+			t.iVertices[k] = localIdx;
+			t.iNormals[k]  = localIdx;
+			t.iCoords[k]   = localIdx;
+		}
+		tris.push_back( t );
+	}
+
+	(void)baseIdx;  // keep variable visible in logs / future debugging
+	return true;
 }
 
 void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool /*bComputeExitInfo*/ ) const

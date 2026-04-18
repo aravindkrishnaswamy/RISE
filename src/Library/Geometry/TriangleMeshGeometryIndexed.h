@@ -91,7 +91,11 @@ namespace RISE
 			void Serialize( IWriteBuffer& buffer ) const;
 			void Deserialize( IReadBuffer& buffer );
 
-			void GenerateMesh( );
+			// Pass-through tessellation: emits the stored indexed triangles unchanged.
+			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
+			// Index references are offset by the caller's existing vertex count.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

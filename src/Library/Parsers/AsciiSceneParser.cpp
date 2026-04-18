@@ -4066,6 +4066,74 @@ namespace RISE
 				}
 			};
 
+			struct DisplacedGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name            = "noname";
+					String base_geometry   = "";
+					unsigned int detail    = 32;
+					String displacement    = "none";
+					double disp_scale      = 1.0;
+					unsigned int maxPoly   = 10;
+					unsigned int maxRecur  = 8;
+					bool double_sided      = false;
+					bool bsp               = true;     // BSP-SAH is the better default for dense displaced meshes
+					bool face_normals      = false;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ; i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "base_geometry" ) {
+							base_geometry = pvalue;
+						} else if( pname == "detail" ) {
+							detail = pvalue.toUInt();
+						} else if( pname == "displacement" ) {
+							displacement = pvalue;
+						} else if( pname == "disp_scale" ) {
+							disp_scale = pvalue.toDouble();
+						} else if( pname == "maxpolygons" ) {
+							maxPoly = pvalue.toUInt();
+						} else if( pname == "maxdepth" ) {
+							maxRecur = pvalue.toUInt();
+						} else if( pname == "double_sided" ) {
+							double_sided = pvalue.toBoolean();
+						} else if( pname == "bsp" ) {
+							bsp = pvalue.toBoolean();
+						} else if( pname == "face_normals" ) {
+							face_normals = pvalue.toBoolean();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					if( base_geometry.empty() ) {
+						GlobalLog()->Print( eLog_Error, "DisplacedGeometry:: `base_geometry` is required" );
+						return false;
+					}
+
+					return pJob.AddDisplacedGeometry(
+						name.c_str(),
+						base_geometry.c_str(),
+						detail,
+						displacement == "none" ? 0 : displacement.c_str(),
+						disp_scale,
+						maxPoly,
+						maxRecur,
+						double_sided,
+						bsp,
+						face_normals );
+				}
+			};
+
 			//////////////////////////////////////////
 			// Modifiers
 			//////////////////////////////////////////
@@ -8070,6 +8138,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["circulardisk_geometry"] = new CircularDiskGeometryAsciiChunkParser();
 	chunks["bezierpatch_geometry"] = new BezierPatchGeometryAsciiChunkParser();
 	chunks["bilinearpatch_geometry"] = new BilinearPatchGeometryAsciiChunkParser();
+	chunks["displaced_geometry"] = new DisplacedGeometryAsciiChunkParser();
 
 	chunks["bumpmap_modifier"] = new BumpmapModifierAsciiChunkParser();
 

@@ -32,7 +32,11 @@ namespace RISE
 		public:
 			SphereGeometry( Scalar dRadius );
 
-			void GenerateMesh( );
+			// Tessellates the sphere to a triangle mesh with (detail+1) x (detail+1) vertices.
+			// `detail` is the number of segments along each natural parameter axis (theta, phi).
+			// Seam vertices at u=0 / u=1 are duplicated to keep UV continuous under displacement.
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 

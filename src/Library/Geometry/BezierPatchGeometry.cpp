@@ -13,6 +13,8 @@
 
 #include "pch.h"
 #include "BezierPatchGeometry.h"
+#include "BezierTesselation.h"
+#include "GeometryUtilities.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
@@ -171,9 +173,53 @@ void BezierPatchGeometry::Prepare()
 	}
 }
 
-void BezierPatchGeometry::GenerateMesh( )
+bool BezierPatchGeometry::TessellateToMesh(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords,
+	const unsigned int     detail ) const
 {
+	if( patches.empty() || detail < 1 ) {
+		return false;
+	}
 
+	// Concatenate per-patch tessellations, remapping triangle indices to the running base.
+	// Note: GeneratePolygonsFromBezierPatch doesn't populate `normals`, only reserves space
+	// implicitly via index references.  The caller is expected to recompute normals.
+	for( BezierPatchList::const_iterator it = patches.begin(); it != patches.end(); ++it ) {
+		IndexTriangleListType patchTris;
+		VerticesListType      patchVerts;
+		NormalsListType       patchNormals;
+		TexCoordsListType     patchCoords;
+
+		GeneratePolygonsFromBezierPatch( patchTris, patchVerts, patchNormals, patchCoords, *it, detail );
+
+		const unsigned int vBase = static_cast<unsigned int>( vertices.size() );
+		const unsigned int cBase = static_cast<unsigned int>( coords.size() );
+
+		vertices.insert( vertices.end(), patchVerts.begin(),  patchVerts.end()  );
+		coords.insert(   coords.end(),   patchCoords.begin(), patchCoords.end() );
+
+		// The underlying tessellator uses same-index convention (normal idx == vertex idx == coord idx
+		// in the local per-patch arrays).  Re-base accordingly.
+		normals.resize( vertices.size(), Vector3(0.0, 0.0, 0.0) );
+
+		for( IndexTriangleListType::const_iterator t = patchTris.begin(); t != patchTris.end(); ++t ) {
+			IndexedTriangle out;
+			for( int k = 0; k < 3; k++ ) {
+				out.iVertices[k] = t->iVertices[k] + vBase;
+				out.iNormals[k]  = t->iVertices[k] + vBase;  // same-idx convention
+				out.iCoords[k]   = t->iCoords[k]   + cBase;
+			}
+			tris.push_back( out );
+		}
+	}
+
+	// Produce topology-derived vertex normals for the entire concatenated mesh.
+	RecomputeVertexNormalsFromTopology( tris, vertices, normals );
+
+	return true;
 }
 
 void BezierPatchGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
