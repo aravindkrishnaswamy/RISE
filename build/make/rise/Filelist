@@ -102,6 +102,7 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/MandelbrotPainter.cpp				\
 	$(PATHLIBRARY)Painters/Painter.cpp							\
 	$(PATHLIBRARY)Painters/Perlin2DPainter.cpp					\
+	$(PATHLIBRARY)Painters/GerstnerWavePainter.cpp				\
 	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
 	$(PATHLIBRARY)Painters/Turbulence3DPainter.cpp				\
 	$(PATHLIBRARY)Painters/Worley3DPainter.cpp					\

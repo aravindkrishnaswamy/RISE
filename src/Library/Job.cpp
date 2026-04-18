@@ -422,6 +422,49 @@ bool Job::AddPerlin2DPainter(
 	return true;
 }
 
+//! Adds a sum-of-sines water-wave painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddGerstnerWavePainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const unsigned int numWaves,
+							const double medianWavelength,
+							const double wavelengthRange,
+							const double medianAmplitude,
+							const double amplitudePower,
+							const double windDir[2],
+							const double directionalSpread,
+							const double dispersionSpeed,
+							const unsigned int seed,
+							const double time
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateGerstnerWavePainter(
+		&pPainter,
+		*pA, *pB,
+		numWaves,
+		medianWavelength, wavelengthRange,
+		medianAmplitude, amplitudePower,
+		windDir[0], windDir[1],
+		directionalSpread,
+		dispersionSpeed,
+		seed,
+		time );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a 2D perlin noise painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPerlin3DPainter(

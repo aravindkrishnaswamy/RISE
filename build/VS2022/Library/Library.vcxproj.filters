@@ -384,6 +384,9 @@
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin2DPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\GerstnerWavePainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
@@ -1330,6 +1333,9 @@
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\Perlin2DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\GerstnerWavePainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\Perlin3DPainter.h">

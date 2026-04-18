@@ -390,6 +390,8 @@
 		F24B732E2F52A632008304C4 /* Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0941069C42900069C9E5 /* Painter.h */; };
 		F24B732F2F52A632008304C4 /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
 		F24B73302F52A632008304C4 /* Perlin2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0943069C42900069C9E5 /* Perlin2DPainter.h */; };
+		DDDD00000000000000000007 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
+		DDDD00000000000000000008 /* GerstnerWavePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000C /* GerstnerWavePainter.h */; };
 		F24B73312F52A632008304C4 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
 		F24B73322F52A632008304C4 /* Perlin3DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0945069C42900069C9E5 /* Perlin3DPainter.h */; };
 		F24B73332F52A632008304C4 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
@@ -1087,6 +1089,8 @@
 		F27F0BA5069C42910069C9E5 /* Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0941069C42900069C9E5 /* Painter.h */; };
 		F27F0BA6069C42910069C9E5 /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
 		F27F0BA7069C42910069C9E5 /* Perlin2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0943069C42900069C9E5 /* Perlin2DPainter.h */; };
+		DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
+		DDDD0000000000000000000A /* GerstnerWavePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000C /* GerstnerWavePainter.h */; };
 		F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
 		F27F0BA9069C42910069C9E5 /* Perlin3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0945069C42900069C9E5 /* Perlin3DPainter.h */; };
 		F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
@@ -1973,6 +1977,8 @@
 		F27F0941069C42900069C9E5 /* Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Painter.h; sourceTree = "<group>"; };
 		F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Perlin2DPainter.cpp; sourceTree = "<group>"; };
 		F27F0943069C42900069C9E5 /* Perlin2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Perlin2DPainter.h; sourceTree = "<group>"; };
+		DDDD0000000000000000000B /* GerstnerWavePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GerstnerWavePainter.cpp; sourceTree = "<group>"; };
+		DDDD0000000000000000000C /* GerstnerWavePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GerstnerWavePainter.h; sourceTree = "<group>"; };
 		F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Perlin3DPainter.cpp; sourceTree = "<group>"; };
 		F27F0945069C42900069C9E5 /* Perlin3DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Perlin3DPainter.h; sourceTree = "<group>"; };
 		F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SpectralColorPainter.cpp; sourceTree = "<group>"; };
@@ -2989,6 +2995,8 @@
 				F27F0941069C42900069C9E5 /* Painter.h */,
 				F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */,
 				F27F0943069C42900069C9E5 /* Perlin2DPainter.h */,
+				DDDD0000000000000000000B /* GerstnerWavePainter.cpp */,
+				DDDD0000000000000000000C /* GerstnerWavePainter.h */,
 				F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */,
 				F27F0945069C42900069C9E5 /* Perlin3DPainter.h */,
 				F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */,
@@ -3750,6 +3758,7 @@
 				F27F0BA3069C42910069C9E5 /* MandelbrotPainter.h in Headers */,
 				F27F0BA5069C42910069C9E5 /* Painter.h in Headers */,
 				F27F0BA7069C42910069C9E5 /* Perlin2DPainter.h in Headers */,
+				DDDD0000000000000000000A /* GerstnerWavePainter.h in Headers */,
 				F27F0BA9069C42910069C9E5 /* Perlin3DPainter.h in Headers */,
 				F27F0BAB069C42910069C9E5 /* SpectralColorPainter.h in Headers */,
 				F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */,
@@ -4217,6 +4226,7 @@
 				F27F0BA2069C42910069C9E5 /* MandelbrotPainter.cpp in Sources */,
 				F27F0BA4069C42910069C9E5 /* Painter.cpp in Sources */,
 				F27F0BA6069C42910069C9E5 /* Perlin2DPainter.cpp in Sources */,
+				DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */,
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
 				F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */,
@@ -4754,6 +4764,8 @@
 				F24B732E2F52A632008304C4 /* Painter.h in Sources */,
 				F24B732F2F52A632008304C4 /* Perlin2DPainter.cpp in Sources */,
 				F24B73302F52A632008304C4 /* Perlin2DPainter.h in Sources */,
+				DDDD00000000000000000007 /* GerstnerWavePainter.cpp in Sources */,
+				DDDD00000000000000000008 /* GerstnerWavePainter.h in Sources */,
 				F24B73312F52A632008304C4 /* Perlin3DPainter.cpp in Sources */,
 				F24B73322F52A632008304C4 /* Perlin3DPainter.h in Sources */,
 				F24B73332F52A632008304C4 /* SpectralColorPainter.cpp in Sources */,

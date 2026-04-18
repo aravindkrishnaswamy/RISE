@@ -1,0 +1,139 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           gerstner_plane.RISEscene                                                                 #
+#   Description:    A tessellated clipped plane displaced by a sum-of-sines Gerstner-wave painter.           #
+#                   Exercises the new GerstnerWavePainter -> DisplacedGeometry path.                         #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      2026-04-18                                                                               #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		6
+	samples				8
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gerstner_plane
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 3 6
+	lookat				0 0 0
+	up					0 1 0
+	width				800
+	height				600
+	fov					25.0
+}
+
+> run scenes/colors.RISEscript
+
+##################################################
+# Trough / crest color painters for the wave painter's GetColor path.
+# Not used for displacement — displacement only cares about Evaluate().
+##################################################
+
+uniformcolor_painter
+{
+	name				deep_water
+	color				0.05 0.15 0.30
+}
+
+uniformcolor_painter
+{
+	name				foam_white
+	color				0.85 0.90 0.95
+}
+
+##################################################
+# The sum-of-sines water wave painter.
+# 12 waves log-distributed around wavelength 0.15 (roughly 7 wavelengths
+# across the unit plane), mild amplitude, wind along +X with slight jitter.
+##################################################
+
+gerstnerwave_painter
+{
+	name				pnt_waves
+	colora				deep_water
+	colorb				foam_white
+	num_waves			12
+	median_wavelength	0.15
+	wavelength_range	3.0
+	median_amplitude	0.04
+	amplitude_power		1.0
+	wind_dir			1.0 0.2
+	directional_spread	0.45
+	dispersion_speed	1.0
+	seed				17
+	time				0.0
+}
+
+##################################################
+# Material for the water (diffuse blue — keeping the test visually simple;
+# a proper water would use a glass / Fresnel BSDF).
+##################################################
+
+lambertian_material
+{
+	name				lambert_water
+	reflectance			color_aquamarine
+}
+
+##################################################
+# Base plane and the Gerstner-displaced wrapper.
+##################################################
+
+clippedplane_geometry
+{
+	name				base_quad
+	pta					-2 0 -2
+	ptb					-2 0  2
+	ptc					 2 0  2
+	ptd					 2 0 -2
+}
+
+displaced_geometry
+{
+	name				water_surface
+	base_geometry		base_quad
+	detail				160
+	displacement		pnt_waves
+	disp_scale			1.0
+	maxpolygons			12
+	maxdepth			10
+	bsp					TRUE
+}
+
+standard_object
+{
+	name				ocean
+	geometry			water_surface
+	material			lambert_water
+	position			0 0 0
+}
+
+directional_light
+{
+	name				sun
+	power				3.14
+	color				1.0 0.95 0.85
+	direction			-0.3 0.5 0.4
+}

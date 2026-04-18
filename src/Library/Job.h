@@ -274,6 +274,24 @@ namespace RISE
 									const double vShift[2]			///< [in] How much to shift the function by
 									);
 
+		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddGerstnerWavePainter(
+									const char* name,
+									const char* pa,
+									const char* pb,
+									const unsigned int numWaves,
+									const double medianWavelength,
+									const double wavelengthRange,
+									const double medianAmplitude,
+									const double amplitudePower,
+									const double windDir[2],
+									const double directionalSpread,
+									const double dispersionSpeed,
+									const unsigned int seed,
+									const double time
+									);
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPerlin3DPainter(

@@ -256,6 +256,7 @@
     <ClCompile Include="..\..\..\src\Library\Painters\MandelbrotPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Painter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin2DPainter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Painters\GerstnerWavePainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Turbulence3DPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\Worley3DPainter.cpp" />
@@ -665,6 +666,7 @@
     <ClInclude Include="..\..\..\src\Library\Painters\MandelbrotPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Painter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Perlin2DPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\GerstnerWavePainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Perlin3DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Turbulence3DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Worley3DPainter.h" />

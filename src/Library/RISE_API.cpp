@@ -1360,6 +1360,7 @@ namespace RISE
 #include "Painters/LinesPainter.h"
 #include "Painters/MandelbrotPainter.h"
 #include "Painters/Perlin2DPainter.h"
+#include "Painters/GerstnerWavePainter.h"
 #include "Painters/Perlin3DPainter.h"
 #include "Painters/Turbulence3DPainter.h"
 #include "Painters/Worley3DPainter.h"
@@ -1458,6 +1459,43 @@ namespace RISE
 
 		(*ppi) = new Perlin2DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift  );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "perlin 2D painter" );
+		return true;
+	}
+
+	//! Creates a sum-of-sines water-wave painter
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGerstnerWavePainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const unsigned int numWaves,
+								const Scalar medianWavelength,
+								const Scalar wavelengthRange,
+								const Scalar medianAmplitude,
+								const Scalar amplitudePower,
+								const Scalar windDirX,
+								const Scalar windDirY,
+								const Scalar directionalSpread,
+								const Scalar dispersionSpeed,
+								const unsigned int seed,
+								const Scalar time
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GerstnerWavePainter(
+			cA, cB,
+			numWaves,
+			medianWavelength, wavelengthRange,
+			medianAmplitude, amplitudePower,
+			windDirX, windDirY,
+			directionalSpread,
+			dispersionSpeed,
+			seed,
+			time );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "gerstner wave painter" );
 		return true;
 	}
 

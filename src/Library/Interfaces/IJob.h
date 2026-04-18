@@ -203,6 +203,25 @@ namespace RISE
 									const double vShift[2]			///< [in] How much to shift the function by
 									) = 0;
 
+		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
+		//! Intended to drive a DisplacedGeometry via the IFunction2D hook.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGerstnerWavePainter(
+									const char* name,					///< [in] Name of the painter
+									const char* pa,						///< [in] Trough color painter
+									const char* pb,						///< [in] Crest color painter
+									const unsigned int numWaves,		///< [in] Number of sine waves to sum
+									const double medianWavelength,		///< [in] Central wavelength (UV units)
+									const double wavelengthRange,		///< [in] Multiplicative range; span is [median/range, median*range]
+									const double medianAmplitude,		///< [in] Amplitude at median wavelength
+									const double amplitudePower,		///< [in] A_i = medianAmplitude * (lambda_i/medianWavelength)^power
+									const double windDir[2],			///< [in] Wind direction (x, y); normalized internally
+									const double directionalSpread,		///< [in] Per-wave angle jitter (radians)
+									const double dispersionSpeed,		///< [in] Multiplies sqrt(g*k); tune motion speed
+									const unsigned int seed,			///< [in] RNG seed
+									const double time					///< [in] Simulation time
+									) = 0;
+
 		//! Adds a 2D perlin noise painter
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPerlin3DPainter(

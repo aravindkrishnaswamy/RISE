@@ -872,6 +872,78 @@ namespace RISE
 				}
 			};
 
+			struct GerstnerWavePainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				{
+					String name = "noname";
+					String colora = "none";
+					String colorb = "none";
+					unsigned int numWaves = 12;
+					double medianWavelength = 0.25;
+					double wavelengthRange = 3.0;
+					double medianAmplitude = 0.05;
+					double amplitudePower = 1.0;
+					double windDir[2] = {1.0, 0.0};
+					double directionalSpread = 0.5;
+					double dispersionSpeed = 1.0;
+					unsigned int seed = 42;
+					double time = 0.0;
+
+					ParamsList::const_iterator i=in.begin(), e=in.end();
+					for( ;i!=e; i++ ) {
+						String pname;
+						String pvalue;
+						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+							return false;
+						}
+
+						if( pname == "name" ) {
+							name = pvalue;
+						} else if( pname == "colora" ) {
+							colora = pvalue;
+						} else if( pname == "colorb" ) {
+							colorb = pvalue;
+						} else if( pname == "num_waves" ) {
+							numWaves = pvalue.toUInt();
+						} else if( pname == "median_wavelength" ) {
+							medianWavelength = pvalue.toDouble();
+						} else if( pname == "wavelength_range" ) {
+							wavelengthRange = pvalue.toDouble();
+						} else if( pname == "median_amplitude" ) {
+							medianAmplitude = pvalue.toDouble();
+						} else if( pname == "amplitude_power" ) {
+							amplitudePower = pvalue.toDouble();
+						} else if( pname == "wind_dir" ) {
+							sscanf( pvalue.c_str(), "%lf %lf", &windDir[0], &windDir[1] );
+						} else if( pname == "directional_spread" ) {
+							directionalSpread = pvalue.toDouble();
+						} else if( pname == "dispersion_speed" ) {
+							dispersionSpeed = pvalue.toDouble();
+						} else if( pname == "seed" ) {
+							seed = pvalue.toUInt();
+						} else if( pname == "time" ) {
+							time = pvalue.toDouble();
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddGerstnerWavePainter(
+						name.c_str(),
+						colora.c_str(), colorb.c_str(),
+						numWaves,
+						medianWavelength, wavelengthRange,
+						medianAmplitude, amplitudePower,
+						windDir,
+						directionalSpread,
+						dispersionSpeed,
+						seed,
+						time );
+				}
+			};
+
 			struct Perlin3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -8072,6 +8144,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["lines_painter"] = new LinesPainterAsciiChunkParser();
 	chunks["mandelbrot_painter"] = new MandelbrotPainterAsciiChunkParser();
 	chunks["perlin2d_painter"] = new Perlin2DPainterAsciiChunkParser();
+	chunks["gerstnerwave_painter"] = new GerstnerWavePainterAsciiChunkParser();
 	chunks["perlin3d_painter"] = new Perlin3DPainterAsciiChunkParser();
 	chunks["turbulence3d_painter"] = new Turbulence3DPainterAsciiChunkParser();
 	chunks["wavelet3d_painter"] = new Wavelet3DPainterAsciiChunkParser();

@@ -770,6 +770,29 @@ namespace RISE
 								const Vector2& vShift			///< [in] How much to shift the function by
 								);
 
+	//! Creates a sum-of-sines water-wave painter (Gerstner height variant).
+	/// Evaluate(u,v) returns the summed height of `numWaves` sine waves derived
+	/// from wind parameters + a deterministic seed.  Intended for
+	/// DisplacedGeometry displacement; color is interpolated between cA and cB
+	/// by the normalized height.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGerstnerWavePainter(
+								IPainter** ppi,						///< [out] Pointer to receive the painter
+								const IPainter& cA,					///< [in] Trough color painter
+								const IPainter& cB,					///< [in] Crest color painter
+								const unsigned int numWaves,		///< [in] Number of sine waves to sum
+								const Scalar medianWavelength,		///< [in] Central wavelength (UV units)
+								const Scalar wavelengthRange,		///< [in] Multiplicative range; span is [median/range, median*range]
+								const Scalar medianAmplitude,		///< [in] Amplitude at median wavelength
+								const Scalar amplitudePower,		///< [in] A_i = medianAmplitude * (lambda_i/medianWavelength)^power
+								const Scalar windDirX,				///< [in] Wind direction X (normalized internally)
+								const Scalar windDirY,				///< [in] Wind direction Y (normalized internally)
+								const Scalar directionalSpread,		///< [in] Per-wave angle jitter around wind direction (radians)
+								const Scalar dispersionSpeed,		///< [in] Multiplies sqrt(g*k) for the dispersion relation; tune motion speed
+								const unsigned int seed,			///< [in] RNG seed; identical seeds produce identical spectra
+								const Scalar time					///< [in] Simulation time (keyframeable at the scene level)
+								);
+
 	//! Creates a 2D perlin noise painter
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePerlin3DPainter(
