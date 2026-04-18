@@ -66,6 +66,22 @@ namespace RISE
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
 
+			// Non-virtual, class-specific.  Not part of ICamera and
+			// deliberately NOT on the vtable — adding a virtual would
+			// break ABI for out-of-tree camera objects compiled
+			// against the old interface.  MLT finds this method via
+			// dynamic_cast at the call site (see MLTRasterizer's
+			// GenerateCameraRayWithLensSample helper).
+			//
+			// Uses lensSample.x/y DIRECTLY for the aperture disk
+			// sample, so a PSSMLT mutation on lensSample produces a
+			// continuous aperture move — preserving the small-step
+			// locality that makes Metropolis sampling efficient for
+			// depth-of-field paths.  GenerateRay still exists for
+			// non-Metropolis integrators and reads from rc.random.
+			bool GenerateRayWithLensSample( const RuntimeContext& rc, Ray& r,
+				const Point2& ptOnScreen, const Point2& lensSample ) const;
+
 			// For keyframamble interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );

@@ -1698,7 +1698,9 @@ namespace RISE
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
-		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer
+		//! Sets up an MLT (Metropolis Light Transport / PSSMLT) rasterizer.
+		//! Filter-aware signature — this is what the parser and new
+		//! code calls.  Subclasses must implement this overload.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
@@ -1711,10 +1713,45 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const char* pixelFilter,								///< [in] Pixel filter name ("mitchell","lanczos","box",…)
+			const double pixelFilterWidth,							///< [in] Filter width (pixels)
+			const double pixelFilterHeight,							///< [in] Filter height (pixels)
+			const double pixelFilterParamA,							///< [in] Filter parameter A (e.g. Mitchell B)
+			const double pixelFilterParamB,							///< [in] Filter parameter B (e.g. Mitchell C)
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
-		//! Sets up a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer
+		//! Legacy pre-filter overload of SetMLTRasterizer.  Preserves
+		//! source compatibility for external code written against the
+		//! pre-filter IJob API — it forwards to the filter-aware
+		//! overload asking for `pixel_filter none`, which reproduces
+		//! the old unfiltered (round-to-nearest point splat) behaviour.
+		//! New code should call the full overload with an explicit
+		//! filter choice.  Non-virtual so it dispatches through the
+		//! derived class's pure-virtual implementation.
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetMLTRasterizer(
+			const unsigned int maxEyeDepth,
+			const unsigned int maxLightDepth,
+			const unsigned int nBootstrap,
+			const unsigned int nChains,
+			const unsigned int nMutationsPerPixel,
+			const double largeStepProb,
+			const char* shader,
+			const bool bShowLuminaires,
+			const bool bChooseOnlyOneLight,
+			const bool oidnDenoise,
+			const StabilityConfig& stabilityConfig
+			)
+		{
+			return SetMLTRasterizer(
+				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+				nMutationsPerPixel, largeStepProb, shader,
+				bShowLuminaires, bChooseOnlyOneLight, oidnDenoise,
+				"none", 1.0, 1.0, 1.0/3.0, 1.0/3.0, stabilityConfig );
+		}
+
+		//! Sets up a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTSpectralRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
@@ -1731,8 +1768,42 @@ namespace RISE
 			const unsigned int nSpectralSamples,					///< [in] Spectral samples per evaluation
 			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const char* pixelFilter,								///< [in] Pixel filter name ("mitchell","lanczos","box",…)
+			const double pixelFilterWidth,							///< [in] Filter width (pixels)
+			const double pixelFilterHeight,							///< [in] Filter height (pixels)
+			const double pixelFilterParamA,							///< [in] Filter parameter A (e.g. Mitchell B)
+			const double pixelFilterParamB,							///< [in] Filter parameter B (e.g. Mitchell C)
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
+
+		//! Legacy pre-filter overload.  See SetMLTRasterizer above for
+		//! the rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		bool SetMLTSpectralRasterizer(
+			const unsigned int maxEyeDepth,
+			const unsigned int maxLightDepth,
+			const unsigned int nBootstrap,
+			const unsigned int nChains,
+			const unsigned int nMutationsPerPixel,
+			const double largeStepProb,
+			const char* shader,
+			const bool bShowLuminaires,
+			const bool bChooseOnlyOneLight,
+			const double nmbegin,
+			const double nmend,
+			const unsigned int nSpectralSamples,
+			const bool useHWSS,
+			const bool oidnDenoise,
+			const StabilityConfig& stabilityConfig
+			)
+		{
+			return SetMLTSpectralRasterizer(
+				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+				nMutationsPerPixel, largeStepProb, shader,
+				bShowLuminaires, bChooseOnlyOneLight,
+				nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise,
+				"none", 1.0, 1.0, 1.0/3.0, 1.0/3.0, stabilityConfig );
+		}
 
 		//
 		// Adds rasterizer outputs

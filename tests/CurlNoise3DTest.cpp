@@ -38,13 +38,13 @@ bool TestOutputRange()
 {
 	std::cout << "  Test 1: Output range [0,1]..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noise( interp, 0.65, 4, 0.01 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noise = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
 
 	bool passed = true;
 	for( int i = -30; i < 30; i++ ) {
 		for( int j = -5; j < 5; j++ ) {
-			Scalar val = noise.Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
+			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
 			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
@@ -54,6 +54,8 @@ bool TestOutputRange()
 		if( !passed ) break;
 	}
 
+	noise->release();
+	interp->release();
 	if( passed ) std::cout << "    PASSED" << std::endl;
 	return passed;
 }
@@ -62,17 +64,19 @@ bool TestSpatialVariation()
 {
 	std::cout << "  Test 2: Spatial variation..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noise( interp, 0.65, 4, 0.01 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noise = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
 
 	Scalar minVal = 1e20, maxVal = -1e20;
 	for( int i = 0; i < 100; i++ ) {
-		Scalar val = noise.Evaluate( i * 0.7, i * 1.3, i * 0.5 );
+		Scalar val = noise->Evaluate( i * 0.7, i * 1.3, i * 0.5 );
 		if( val < minVal ) minVal = val;
 		if( val > maxVal ) maxVal = val;
 	}
 
 	bool passed = (maxVal - minVal) > 0.05;
+	noise->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: range=" << (maxVal-minVal) << std::endl;
 	else
@@ -84,19 +88,21 @@ bool TestDeterministic()
 {
 	std::cout << "  Test 3: Deterministic..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noise( interp, 0.65, 4, 0.01 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noise = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
 
 	bool passed = true;
 	for( int i = 0; i < 20; i++ ) {
 		Scalar x = i * 3.7, y = i * 2.1, z = i * 1.3;
-		if( !IsClose( noise.Evaluate(x,y,z), noise.Evaluate(x,y,z) ) ) {
+		if( !IsClose( noise->Evaluate(x,y,z), noise->Evaluate(x,y,z) ) ) {
 			std::cout << "    FAIL: non-deterministic" << std::endl;
 			passed = false;
 			break;
 		}
 	}
 
+	noise->release();
+	interp->release();
 	if( passed ) std::cout << "    PASSED" << std::endl;
 	return passed;
 }
@@ -105,12 +111,12 @@ bool TestNonNegative()
 {
 	std::cout << "  Test 4: Non-negative output..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noise( interp, 0.65, 4, 0.01 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noise = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
 
 	bool passed = true;
 	for( int i = -50; i < 50; i++ ) {
-		Scalar val = noise.Evaluate( i * 0.5, i * 0.7, i * 0.3 );
+		Scalar val = noise->Evaluate( i * 0.5, i * 0.7, i * 0.3 );
 		if( val < -1e-10 ) {
 			std::cout << "    FAIL: negative value " << val << std::endl;
 			passed = false;
@@ -118,6 +124,8 @@ bool TestNonNegative()
 		}
 	}
 
+	noise->release();
+	interp->release();
 	if( passed ) std::cout << "    PASSED" << std::endl;
 	return passed;
 }
@@ -126,18 +134,21 @@ bool TestDifferentPersistence()
 {
 	std::cout << "  Test 5: Different persistence..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noiseA( interp, 0.3, 4, 0.01 );
-	CurlNoise3D noiseB( interp, 0.9, 4, 0.01 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noiseA = new CurlNoise3D( *interp, 0.3, 4, 0.01 );
+	CurlNoise3D* noiseB = new CurlNoise3D( *interp, 0.9, 4, 0.01 );
 
 	int differCount = 0;
 	for( int i = 0; i < 30; i++ ) {
 		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA.Evaluate(x,y,z), noiseB.Evaluate(x,y,z), 1e-4 ) )
+		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
 			differCount++;
 	}
 
 	bool passed = differCount > 15;
+	noiseA->release();
+	noiseB->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: only " << differCount << "/30 differ" << std::endl;
 	else
@@ -149,18 +160,21 @@ bool TestDifferentEpsilon()
 {
 	std::cout << "  Test 6: Different epsilon..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noiseA( interp, 0.65, 4, 0.001 );
-	CurlNoise3D noiseB( interp, 0.65, 4, 0.1 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noiseA = new CurlNoise3D( *interp, 0.65, 4, 0.001 );
+	CurlNoise3D* noiseB = new CurlNoise3D( *interp, 0.65, 4, 0.1 );
 
 	int differCount = 0;
 	for( int i = 0; i < 30; i++ ) {
 		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA.Evaluate(x,y,z), noiseB.Evaluate(x,y,z), 1e-4 ) )
+		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
 			differCount++;
 	}
 
 	bool passed = differCount > 10;
+	noiseA->release();
+	noiseB->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: only " << differCount << "/30 differ" << std::endl;
 	else
@@ -172,11 +186,13 @@ bool TestNegativeCoordinates()
 {
 	std::cout << "  Test 7: Negative coordinates..." << std::endl;
 
-	RealLinearInterpolator interp;
-	CurlNoise3D noise( interp, 0.65, 4, 0.01 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noise = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
 
-	Scalar val = noise.Evaluate( -10.5, -20.3, -5.7 );
+	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
 	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+	noise->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: val=" << val << std::endl;
 	else

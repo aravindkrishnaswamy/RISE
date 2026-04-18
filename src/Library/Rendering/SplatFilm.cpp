@@ -63,6 +63,166 @@ void SplatFilm::Splat(
 	buf.Splat( x, y, contribution );
 }
 
+void SplatFilm::SplatFiltered(
+	const Scalar screenX,
+	const Scalar screenY,
+	const RISEPel& contribution,
+	const IPixelFilter& filter
+	)
+{
+	Scalar halfW, halfH;
+	filter.GetFilterSupport( halfW, halfH );
+
+	// Box-filter fast path — half-width ≤ 0.501 means the filter
+	// footprint is exactly one pixel with weight 1, so a point
+	// splat at the nearest integer pixel is equivalent.  Matches
+	// the threshold used by PixelBasedRasterizerHelper::UseFilteredFilm
+	// so behaviour is consistent across the codebase.
+	if( halfW <= 0.501 && halfH <= 0.501 )
+	{
+		// Round to nearest pixel center.  Pixel centers live at
+		// integer coordinates (matches BoxPixelFilter::warpOnScreen
+		// which returns canonical.x + x - 0.5 for canonical ∈ [0,1)).
+		// Casting floor(v + 0.5) is the portable way to do a
+		// round-half-up for positive values.
+		const Scalar rx = screenX + Scalar( 0.5 );
+		const Scalar ry = screenY + Scalar( 0.5 );
+		if( rx < 0 || ry < 0 ) return;
+		const unsigned int ix = static_cast<unsigned int>( rx );
+		const unsigned int iy = static_cast<unsigned int>( ry );
+		Splat( ix, iy, contribution );
+		return;
+	}
+
+	// Defensive fallback.  IPixelFilter::EvaluateFilter has a base
+	// implementation that returns 0, so a filter that advertises a
+	// support ≥ 0.5 via GetFilterSupport but forgot to override
+	// EvaluateFilter would silently drop every splat.  We detect
+	// this at the filter's own centre (where it should be strongly
+	// non-zero for any unit-integral kernel) and fall back to a
+	// single-pixel point splat if the filter looks broken.  Logs
+	// once per process so the scene author sees the problem.
+	if( filter.EvaluateFilter( 0, 0 ) <= 0 )
+	{
+		static std::atomic<bool> warned{ false };
+		bool expected = false;
+		if( warned.compare_exchange_strong( expected, true ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SplatFilm::SplatFiltered:: pixel filter advertises support "
+				"(%.3f x %.3f) but EvaluateFilter returned 0 at the centre. "
+				"Falling back to point splats — filter subclass probably needs "
+				"an EvaluateFilter override.",
+				halfW, halfH );
+		}
+		const Scalar rx = screenX + Scalar( 0.5 );
+		const Scalar ry = screenY + Scalar( 0.5 );
+		if( rx < 0 || ry < 0 ) return;
+		const unsigned int ix = static_cast<unsigned int>( rx );
+		const unsigned int iy = static_cast<unsigned int>( ry );
+		if( ix < width && iy < height ) {
+			Splat( ix, iy, contribution );
+		}
+		return;
+	}
+
+	// Filter footprint expansion.  Mirrors FilteredFilm::Splat so
+	// the two accumulators agree on which pixels receive weight
+	// from a given fractional sample position.
+	const int minPX = static_cast<int>( floor( screenX - halfW ) );
+	const int maxPX = static_cast<int>( floor( screenX + halfW ) );
+	const int minPY = static_cast<int>( floor( screenY - halfH ) );
+	const int maxPY = static_cast<int>( floor( screenY + halfH ) );
+
+	const int x0 = minPX < 0 ? 0 : minPX;
+	const int x1 = maxPX >= static_cast<int>( width ) ?
+		static_cast<int>( width ) - 1 : maxPX;
+	const int y0 = minPY < 0 ? 0 : minPY;
+	const int y1 = maxPY >= static_cast<int>( height ) ?
+		static_cast<int>( height ) - 1 : maxPY;
+
+	if( x0 > x1 || y0 > y1 ) {
+		return;
+	}
+
+	// Two-pass per-splat normalization.
+	//
+	// SplatFilm::Resolve divides every pixel by a SCALAR global
+	// sampleCount — it does not track a per-pixel weight sum like
+	// FilteredFilm does.  That means the DISCRETE sum
+	//     Σ_i EvaluateFilter(px_i - screenX, py_i - screenY)
+	// over the affected pixels must equal 1.0 for every fractional
+	// splat position, otherwise each splat deposits more or less
+	// than one sample's worth of energy and the resolved image is
+	// brightness-biased.  A continuous unit-integral kernel does
+	// NOT guarantee this — for example a tent with width 1.7 or a
+	// truncated Gaussian both have ∫K = 1 but their discrete
+	// footprint sums oscillate with sub-pixel position.
+	//
+	// The fix: compute Σ over the actual affected pixels first,
+	// then deposit contribution*w/Σ at each pixel.  Every splat
+	// then deposits exactly `contribution` total energy across its
+	// footprint regardless of filter shape or sub-pixel alignment.
+	//
+	// Cost: one extra pass of 4x4 EvaluateFilter calls for the
+	// default Mitchell-Netravali footprint (~16 multiply-adds on
+	// top of the 16 we were already doing) — negligible compared
+	// to the BDPT/MLT path-evaluation cost this helper gates.
+	Scalar weightSum = 0;
+	const int footprintArea = ( x1 - x0 + 1 ) * ( y1 - y0 + 1 );
+	// Stack buffer for typical 4×4 Mitchell footprint; heap for the
+	// rare case of a very wide filter (box width 10+ etc.).
+	Scalar weightsStack[64];
+	Scalar* weights = weightsStack;
+	std::vector<Scalar> weightsHeap;
+	if( footprintArea > static_cast<int>( sizeof(weightsStack) / sizeof(weightsStack[0]) ) ) {
+		weightsHeap.resize( static_cast<std::size_t>( footprintArea ) );
+		weights = weightsHeap.data();
+	}
+	{
+		int k = 0;
+		for( int py = y0; py <= y1; py++ )
+		{
+			const Scalar dy = screenY - static_cast<Scalar>( py );
+			for( int px = x0; px <= x1; px++, k++ )
+			{
+				const Scalar dx = screenX - static_cast<Scalar>( px );
+				const Scalar w = filter.EvaluateFilter( dx, dy );
+				weights[k] = w;
+				weightSum += w;
+			}
+		}
+	}
+
+	// Pathological: all weights zero within the (clamped) footprint.
+	// Can happen at an image corner for a sample just outside the
+	// visible rect; also the "broken filter" case already caught
+	// above.  Drop silently — there is no pixel this splat could
+	// contribute to.
+	if( weightSum <= 0 ) {
+		return;
+	}
+
+	const Scalar invWeightSum = static_cast<Scalar>( 1.0 ) / weightSum;
+
+	// Route through Splat() so TLS buffer + row-mutex batching
+	// work unchanged.  A 4×4 Mitchell footprint produces 16
+	// buffered records per filtered splat; they batch by row at
+	// flush time just like any other contributions.
+	int k = 0;
+	for( int py = y0; py <= y1; py++ )
+	{
+		for( int px = x0; px <= x1; px++, k++ )
+		{
+			const Scalar w = weights[k];
+			if( w != 0.0 ) {
+				Splat( static_cast<unsigned int>( px ),
+				       static_cast<unsigned int>( py ),
+				       contribution * ( w * invWeightSum ) );
+			}
+		}
+	}
+}
+
 void SplatFilm::BatchCommit(
 	const BatchRecord* records,
 	std::size_t count

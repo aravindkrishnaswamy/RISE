@@ -93,6 +93,18 @@ namespace RISE
 			IRayCaster*				pCaster;
 			BDPTIntegrator*			pIntegrator;
 
+			// Pixel reconstruction kernel (Mitchell-Netravali, Lanczos,
+			// box, …).  MLT does not use a conventional pixel sampler
+			// — the Markov chain generates film samples directly — so
+			// pSampling is stored for API symmetry but never consumed.
+			// pPixelFilter IS consumed: every splat is distributed
+			// across the filter's footprint at a fractional raster
+			// position so the output has proper sub-pixel
+			// reconstruction instead of the hard edges that came from
+			// truncating to an integer pixel.
+			ISampling2D*			pSampling;
+			IPixelFilter*			pPixelFilter;
+
 			// MLT-specific parameters
 			unsigned int			nBootstrap;			///< Number of bootstrap samples (default 100000)
 			unsigned int			nChains;			///< Number of independent Markov chains (default 512)
@@ -183,6 +195,28 @@ namespace RISE
 
 			virtual ~MLTRasterizer();
 
+			/// Generate a camera ray using the PSSMLT lens sample when
+			/// the camera supports it (currently only ThinLensCamera);
+			/// otherwise fall back to the standard ICamera::GenerateRay
+			/// path which pulls lens samples from rc.random.
+			///
+			/// Implemented as a plain static method that dynamic_casts
+			/// to the concrete ThinLensCamera rather than a virtual
+			/// method on ICamera — adding a virtual to the camera
+			/// interface (even appended) would break out-of-tree
+			/// camera implementations compiled against the old vtable
+			/// the moment this new caller dispatched past the end of
+			/// their table.  dynamic_cast is a single pointer check
+			/// per pixel sample and cost is negligible next to the
+			/// path evaluation that follows.
+			static bool GenerateCameraRayWithLensSample(
+				const ICamera& camera,
+				const RuntimeContext& rc,
+				Ray& ray,
+				const Point2& ptOnScreen,
+				const Point2& lensSample
+				);
+
 			/// Evaluate a single BDPT path using the given sampler.
 			/// This is the bridge between MLT and BDPT: it uses the
 			/// sampler to pick a film position, generates light and eye
@@ -241,6 +275,16 @@ namespace RISE
 				const unsigned int nMutationsPerPixel_,
 				const Scalar largeStepProb_
 				);
+
+			//////////////////////////////////////////////////////////////
+			// MLT does not inherit from PixelBasedRasterizerHelper so it
+			// defines its own SubSampleRays.  MLT ignores the sampler
+			// (the Markov chain generates film samples itself) but DOES
+			// consume the pixel filter — without this hook the filter
+			// would never reach the splat path and the output would
+			// have visible pixel-aligned hard edges.
+			//////////////////////////////////////////////////////////////
+			virtual void SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ );
 
 			//////////////////////////////////////////////////////////////
 			// IRasterizer interface

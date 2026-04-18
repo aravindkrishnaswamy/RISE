@@ -7111,7 +7111,37 @@ namespace RISE
 					double largeStepProb = 0.3;
 					bool showLuminaires = true;
 					bool onlyonelight = false;
-					bool oidnDenoise = true;
+					// MLT defaults oidn_denoise to FALSE because the
+					// entire MLT image lives in the splat film, so OIDN
+					// would denoise an already-accumulated / filter-
+					// reconstructed image.  That is precisely the case
+					// the BDPT comment ("their splatted accumulation
+					// pattern is incompatible with OIDN", see
+					// BDPTRasterizerBase.cpp) warns about: OIDN is
+					// trained on raw Monte Carlo noise, not on the
+					// smoother distribution you get from splat film
+					// resolve, and it can over-smooth caustics.
+					// BDPT avoids this by denoising the primary image
+					// first and ADDING splats afterward; MLT has no
+					// separate "primary" path to split out, so we opt
+					// out by default.  Users who specifically want
+					// OIDN applied to their MLT result (e.g. to denoise
+					// the residual Markov-chain noise in a long render)
+					// can still enable it with `oidn_denoise true`.
+					bool oidnDenoise = false;
+					// Pixel filter for sub-pixel reconstruction.  Default
+					// is Mitchell-Netravali (B=C=1/3, width/height=1.0)
+					// so existing MLT scenes automatically get proper
+					// sub-pixel reconstruction.  Before this fix MLT
+					// splatted straight to integer pixels with no
+					// filtering — the cause of the hard edges / aliasing
+					// the user reported.  Scenes that genuinely want an
+					// unfiltered image can specify pixel_filter none.
+					String pixelFilter = "mitchell-netravali";
+					double pixelFilterWidth = 1.0;
+					double pixelFilterHeight = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -7142,6 +7172,16 @@ namespace RISE
 							onlyonelight = pvalue.toBoolean();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
+						} else if( pname == "pixel_filter" ) {
+							pixelFilter = pvalue;
+						} else if( pname == "pixel_filter_width" ) {
+							pixelFilterWidth = pvalue.toDouble();
+						} else if( pname == "pixel_filter_height" ) {
+							pixelFilterHeight = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramA" ) {
+							pixelFilterParamA = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramB" ) {
+							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
@@ -7152,7 +7192,10 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, onlyonelight, oidnDenoise, stabilityConfig );
+						defaultshader.c_str(), showLuminaires, onlyonelight, oidnDenoise,
+						pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight,
+						pixelFilterParamA, pixelFilterParamB,
+						stabilityConfig );
 				}
 			};
 
@@ -7169,11 +7212,19 @@ namespace RISE
 					double largeStepProb = 0.3;
 					bool showLuminaires = true;
 					bool onlyonelight = false;
-					bool oidnDenoise = true;
+					// MLT spectral also defaults OIDN off — see the Pel
+					// MLT parser above for the detailed rationale.
+					bool oidnDenoise = false;
 					double nmbegin = 400;
 					double nmend = 700;
 					unsigned int spectralSamples = 1;
 					bool useHWSS = false;
+					// See MLTRasterizerAsciiChunkParser for rationale.
+					String pixelFilter = "mitchell-netravali";
+					double pixelFilterWidth = 1.0;
+					double pixelFilterHeight = 1.0;
+					double pixelFilterParamA = 1.0/3.0;
+					double pixelFilterParamB = 1.0/3.0;
 					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -7212,6 +7263,16 @@ namespace RISE
 							spectralSamples = pvalue.toUInt();
 						} else if( pname == "hwss" ) {
 							useHWSS = pvalue.toBoolean();
+						} else if( pname == "pixel_filter" ) {
+							pixelFilter = pvalue;
+						} else if( pname == "pixel_filter_width" ) {
+							pixelFilterWidth = pvalue.toDouble();
+						} else if( pname == "pixel_filter_height" ) {
+							pixelFilterHeight = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramA" ) {
+							pixelFilterParamA = pvalue.toDouble();
+						} else if( pname == "pixel_filter_paramB" ) {
+							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
@@ -7223,7 +7284,10 @@ namespace RISE
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires, onlyonelight,
-						nmbegin, nmend, spectralSamples, useHWSS, oidnDenoise, stabilityConfig );
+						nmbegin, nmend, spectralSamples, useHWSS, oidnDenoise,
+						pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight,
+						pixelFilterParamA, pixelFilterParamB,
+						stabilityConfig );
 				}
 			};
 

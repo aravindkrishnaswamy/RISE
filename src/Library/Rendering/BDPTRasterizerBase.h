@@ -73,6 +73,24 @@ namespace RISE
 			/// on top of the current primary, for progressive display.
 			IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
 
+			/// Splat a t==1 contribution at a FRACTIONAL raster position,
+			/// spread across the pixel filter's footprint so caustic /
+			/// light-to-camera splats reconstruct with the same
+			/// Mitchell-Netravali / Lanczos / box kernel the rest of
+			/// BDPT uses for t>=2 samples.  Falls back to a round-to-
+			/// nearest point splat when no filter is configured.
+			///
+			/// `fx`, `fy` are in image-buffer coordinates (y=0 at
+			/// top) — callers convert from `cr.rasterPos` by flipping
+			/// y with `camera.GetHeight() - cr.rasterPos.y`.
+			void SplatContributionToFilm(
+				const Scalar fx,
+				const Scalar fy,
+				const RISEPel& contribution,
+				const unsigned int imageWidth,
+				const unsigned int imageHeight
+				) const;
+
 		public:
 			BDPTRasterizerBase(
 				IRayCaster* pCaster_,

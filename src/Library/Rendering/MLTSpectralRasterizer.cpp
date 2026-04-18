@@ -144,11 +144,23 @@ void MLTSpectralRasterizer::RunChainSegmentSpectral(
 				const MLTStrategySplat& s = proposedSample.splats[k];
 				const RISEPel splatColor = s.color * proposedWeight;
 
-				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
-				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
-
-				if( sx < width && sy < height ) {
-					splatFilm.Splat( sx, sy, splatColor );
+				if( pPixelFilter ) {
+					// Distribute across the filter footprint at the
+					// fractional raster position — see MLTRasterizer
+					// for the detailed rationale.
+					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
+						splatColor, *pPixelFilter );
+				} else {
+					// No filter: round-to-nearest point splat.
+					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
+					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
+					if( rx >= 0 && ry >= 0 ) {
+						const unsigned int sx = static_cast<unsigned int>( rx );
+						const unsigned int sy = static_cast<unsigned int>( ry );
+						if( sx < width && sy < height ) {
+							splatFilm.Splat( sx, sy, splatColor );
+						}
+					}
 				}
 			}
 		}
@@ -163,11 +175,19 @@ void MLTSpectralRasterizer::RunChainSegmentSpectral(
 				const MLTStrategySplat& s = state.currentSample.splats[k];
 				const RISEPel splatColor = s.color * currentWeight;
 
-				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
-				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
-
-				if( sx < width && sy < height ) {
-					splatFilm.Splat( sx, sy, splatColor );
+				if( pPixelFilter ) {
+					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
+						splatColor, *pPixelFilter );
+				} else {
+					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
+					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
+					if( rx >= 0 && ry >= 0 ) {
+						const unsigned int sx = static_cast<unsigned int>( rx );
+						const unsigned int sy = static_cast<unsigned int>( ry );
+						if( sx < width && sy < height ) {
+							splatFilm.Splat( sx, sy, splatColor );
+						}
+					}
 				}
 			}
 		}
@@ -276,20 +296,50 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	// conflict with BDPTIntegrator's internal streams (0-47).
 	sampler.StartStream( 48 );
 
-	// Pick film position (first 2D sample, same as RGB MLT)
+	// Pick film position + lens position (two independent 2D
+	// primary samples).  See MLTRasterizer::EvaluateSample for
+	// the full rationale on the -0.5 pixel-center offset and on
+	// seeding localRNG from the lens sample so the PSSMLT stream
+	// drives the camera aperture as an independent dimension.
 	const Point2 filmSample = sampler.Get2D();
-	const unsigned int px = std::min( static_cast<unsigned int>( filmSample.x * width ), width - 1 );
-	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
-	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - py) );
-	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
+	const Point2 lensSample = sampler.Get2D();
+	const Scalar fx = filmSample.x * static_cast<Scalar>( width  ) - static_cast<Scalar>( 0.5 );
+	const Scalar fy = filmSample.y * static_cast<Scalar>( height ) - static_cast<Scalar>( 0.5 );
+	const Point2 screenPos( fx, static_cast<Scalar>( height ) - fy );
+	const Point2 cameraRasterPos( fx, fy );
 
-	// Generate camera ray
-	RandomNumberGenerator localRNG( px * 65537 + py );
+	// See MLTRasterizer::EvaluateSample — localRNG seeded from film
+	// bits so the camera has a reproducible stream for any random
+	// it might consume beyond the lens, and the actual lens sample
+	// reaches the aperture via GenerateRayWithLensSample to keep
+	// small PSSMLT mutations continuous.
+	const unsigned int fxBits = static_cast<unsigned int>(
+		filmSample.x * static_cast<Scalar>( 4294967296.0 ) );
+	const unsigned int fyBits = static_cast<unsigned int>(
+		filmSample.y * static_cast<Scalar>( 4294967296.0 ) );
+	RandomNumberGenerator localRNG( fxBits * 2654435761u + fyBits );
 	RuntimeContext rc( localRNG, RuntimeContext::PASS_NORMAL, false );
 
 	Ray cameraRay;
-	if( !camera.GenerateRay( rc, cameraRay, screenPos ) ) {
+	// See MLTRasterizer::GenerateCameraRayWithLensSample for why this
+	// is a non-virtual helper rather than an ICamera method.
+	if( !GenerateCameraRayWithLensSample( camera, rc, cameraRay, screenPos, lensSample ) ) {
 		return result;
+	}
+
+	// Pre-consume all wavelength samples from stream 48 BEFORE any
+	// subpath generation runs.  GenerateLight/EyeSubpathNM switch to
+	// streams 0..47 internally for their own sampling dimensions, so
+	// a `sampler.Get1D()` inside the per-spectral-sample loop would
+	// see whatever BDPT stream was left active from the previous
+	// iteration — making wavelength #N a leak of path-sampling
+	// randomness from wavelength #N-1 instead of an independent
+	// PSSMLT primary dimension.  Pre-consuming locks every
+	// wavelength to stream 48 at the correct offset.
+	std::vector<Scalar> wavelengthSamples;
+	wavelengthSamples.reserve( nSpectralSamples );
+	for( unsigned int ss = 0; ss < nSpectralSamples; ss++ ) {
+		wavelengthSamples.push_back( sampler.Get1D() );
 	}
 
 	// Spectral range
@@ -320,7 +370,10 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 		// geometry (same approach as BDPTSpectralRasterizer HWSS).
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
-			const Scalar u = sampler.Get1D();
+			// Wavelength sample was pre-consumed above so the BDPT
+			// stream switches inside the generator calls don't alias
+			// into the next iteration's wavelength.
+			const Scalar u = wavelengthSamples[ss];
 			SampledWavelengths swl = SampledWavelengths::SampleEquidistant( u, lambda_begin, lambda_end );
 
 			const Scalar heroNM = swl.HeroLambda();
@@ -409,10 +462,12 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 	}
 	else
 	{
-		// Standard spectral: nSpectralSamples independent wavelengths
+		// Standard spectral: nSpectralSamples independent wavelengths.
+		// Wavelength samples were pre-consumed above — see the top of
+		// this function for why.
 		for( unsigned int ss = 0; ss < nSpectralSamples; ss++ )
 		{
-			const Scalar u = sampler.Get1D();
+			const Scalar u = wavelengthSamples[ss];
 			const Scalar nm = lambda_begin + u * range;
 
 			// BDPTIntegrator manages its own streams internally (0-47).

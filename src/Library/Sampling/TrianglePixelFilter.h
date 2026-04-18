@@ -63,6 +63,27 @@ namespace RISE
 
 				return 1.0;
 			}
+
+			// Separable tent: (1 - |dx|/halfW) * (1 - |dy|/halfH)
+			// inside support, zero outside.  The unnormalised 2D
+			// integral is halfW * halfH, so we divide by that so the
+			// kernel has unit integral — required because the splat
+			// film's resolve scales by a global sample count, not per-
+			// pixel weight.  Before this override, EvaluateFilter fell
+			// through to IPixelFilter's default (returns 0) and every
+			// splat from a tent filter wider than 1 pixel was dropped
+			// silently.
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				const Scalar ax = fabs( dx );
+				const Scalar ay = fabs( dy );
+				if( ax >= dKernelWidthOV2 || ay >= dKernelHeightOV2 ) {
+					return 0;
+				}
+				const Scalar tx = 1.0 - ax / dKernelWidthOV2;
+				const Scalar ty = 1.0 - ay / dKernelHeightOV2;
+				return ( tx * ty ) / ( dKernelWidthOV2 * dKernelHeightOV2 );
+			}
 		};
 	}
 }

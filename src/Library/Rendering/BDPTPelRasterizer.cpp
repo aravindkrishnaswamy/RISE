@@ -178,15 +178,16 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 			// Rasterize returns screen coordinates where y=0 is the
 			// image bottom (matching ptOnScreen = Point2(x, height-y)).
 			// Convert to image buffer coordinates where y=0 is the top.
-			const int sx = static_cast<int>( cr.rasterPos.x );
-			const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
-
-			if( sx >= 0 && sy >= 0 &&
-				static_cast<unsigned int>(sx) < camera.GetWidth() &&
-				static_cast<unsigned int>(sy) < camera.GetHeight() )
-			{
-				pSplatFilm->Splat( sx, sy, weighted );
-			}
+			// Keep the FRACTIONAL raster position — SplatContributionToFilm
+			// uses it to spread the contribution across the filter
+			// footprint via Mitchell-Netravali (or whichever kernel is
+			// configured).  Previously we truncated to int here, which
+			// gave hard caustic edges on high-contrast light-to-camera
+			// paths and a half-pixel bias.
+			const Scalar fx = cr.rasterPos.x;
+			const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+			SplatContributionToFilm( fx, fy, weighted,
+				camera.GetWidth(), camera.GetHeight() );
 		}
 		else
 		{

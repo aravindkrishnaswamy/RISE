@@ -4953,7 +4953,7 @@ namespace RISE
 		return true;
 	}
 
-	bool RISE_API_CreateMLTRasterizer(
+	bool RISE_API_CreateMLTRasterizerWithFilter(
 								IRasterizer** ppi,
 								IRayCaster* caster,
 								const unsigned int maxEyeDepth,
@@ -4962,7 +4962,9 @@ namespace RISE
 								const unsigned int nChains,
 								const unsigned int nMutationsPerPixel,
 								const Scalar largeStepProb,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								ISampling2D* pSampler,
+								IPixelFilter* pFilter
 								)
 	{
 		if( !ppi ) {
@@ -4980,12 +4982,44 @@ namespace RISE
 		}
 #endif
 
+		// Install the pixel filter (and sampler, if any) on the base
+		// class.  The MLT render loop doesn't consume the sampler, but
+		// SubSampleRays() addref's both so the filter pointer stays
+		// valid for the rasterizer's entire lifetime.  This wiring is
+		// what lets MLT splats go through SplatFilm::SplatFiltered
+		// instead of the old integer point-splat path.
+		if( pSampler || pFilter ) {
+			pRasterizer->SubSampleRays( pSampler, pFilter );
+		}
+
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT rasterizer" );
 		return true;
 	}
 
-	bool RISE_API_CreateMLTSpectralRasterizer(
+	// Legacy wrapper preserving the pre-filter ABI.  Forwards to the
+	// *WithFilter variant with null sampler/filter, which reproduces
+	// the old unfiltered (round-to-nearest point splat) behaviour.
+	// External callers linked against the pre-filter RISE can keep
+	// using this symbol.  New code should call the *WithFilter variant.
+	bool RISE_API_CreateMLTRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const unsigned int nBootstrap,
+								const unsigned int nChains,
+								const unsigned int nMutationsPerPixel,
+								const Scalar largeStepProb,
+								const bool oidnDenoise
+								)
+	{
+		return RISE_API_CreateMLTRasterizerWithFilter( ppi, caster,
+			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+			nMutationsPerPixel, largeStepProb, oidnDenoise, 0, 0 );
+	}
+
+	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(
 								IRasterizer** ppi,
 								IRayCaster* caster,
 								const unsigned int maxEyeDepth,
@@ -4998,7 +5032,9 @@ namespace RISE
 								const Scalar lambda_end,
 								const unsigned int nSpectralSamples,
 								const bool useHWSS,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								ISampling2D* pSampler,
+								IPixelFilter* pFilter
 								)
 	{
 		if( !ppi ) {
@@ -5017,9 +5053,40 @@ namespace RISE
 		}
 #endif
 
+		// See RISE_API_CreateMLTRasterizerWithFilter above — install the
+		// filter on the base-class members so the spectral MLT splat
+		// path can spread each contribution through its reconstruction
+		// kernel instead of truncating to an integer pixel.
+		if( pSampler || pFilter ) {
+			pRasterizer->SubSampleRays( pSampler, pFilter );
+		}
+
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MLT Spectral rasterizer" );
 		return true;
+	}
+
+	// Legacy wrapper — see RISE_API_CreateMLTRasterizer above.
+	bool RISE_API_CreateMLTSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const unsigned int nBootstrap,
+								const unsigned int nChains,
+								const unsigned int nMutationsPerPixel,
+								const Scalar largeStepProb,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int nSpectralSamples,
+								const bool useHWSS,
+								const bool oidnDenoise
+								)
+	{
+		return RISE_API_CreateMLTSpectralRasterizerWithFilter( ppi, caster,
+			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+			nMutationsPerPixel, largeStepProb, lambda_begin, lambda_end,
+			nSpectralSamples, useHWSS, oidnDenoise, 0, 0 );
 	}
 }
 

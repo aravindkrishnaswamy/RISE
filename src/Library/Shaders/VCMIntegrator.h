@@ -47,6 +47,7 @@ namespace RISE
 	class IScene;
 	class IRayCaster;
 	class ICamera;
+	class IPixelFilter;
 
 	namespace Implementation
 	{
@@ -204,7 +205,8 @@ namespace RISE
 				const IRayCaster& caster,
 				const ICamera& camera,
 				SplatFilm& splatFilm,
-				const VCMNormalization& norm
+				const VCMNormalization& norm,
+				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
 				) const;
 
 			/// Strategy (s>=2, t>=2): interior vertex connection.
@@ -286,7 +288,8 @@ namespace RISE
 				const ICamera& camera,
 				SplatFilm& splatFilm,
 				const VCMNormalization& norm,
-				const Scalar nm
+				const Scalar nm,
+				const IPixelFilter* pixelFilter	///< [in] Reconstruction kernel; null = round-to-nearest point splat
 				) const;
 
 			Scalar EvaluateInteriorConnectionsNM(

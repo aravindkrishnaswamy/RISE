@@ -39,13 +39,13 @@ bool TestOutputRange()
 {
 	std::cout << "  Test 1: Output range [0,1]..." << std::endl;
 
-	RealLinearInterpolator interp;
-	SDFPrimitive3D sdf( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, interp );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
 
 	bool passed = true;
 	for( int i = -20; i < 20; i++ ) {
 		for( int j = -5; j < 5; j++ ) {
-			Scalar val = sdf.Evaluate( i * 0.1, j * 0.1, 0 );
+			Scalar val = sdf->Evaluate( i * 0.1, j * 0.1, 0 );
 			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
@@ -55,6 +55,8 @@ bool TestOutputRange()
 		if( !passed ) break;
 	}
 
+	sdf->release();
+	interp->release();
 	if( passed ) std::cout << "    PASSED" << std::endl;
 	return passed;
 }
@@ -63,11 +65,13 @@ bool TestSphereCenter()
 {
 	std::cout << "  Test 2: Sphere center density=1..." << std::endl;
 
-	RealLinearInterpolator interp;
-	SDFPrimitive3D sdf( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, interp );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
 
-	Scalar val = sdf.Evaluate( 0, 0, 0 );
+	Scalar val = sdf->Evaluate( 0, 0, 0 );
 	bool passed = val > 0.9;
+	sdf->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: center density=" << val << std::endl;
 	else
@@ -79,11 +83,13 @@ bool TestSphereFarAway()
 {
 	std::cout << "  Test 3: Sphere far away density=0..." << std::endl;
 
-	RealLinearInterpolator interp;
-	SDFPrimitive3D sdf( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, interp );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
 
-	Scalar val = sdf.Evaluate( 10, 10, 10 );
+	Scalar val = sdf->Evaluate( 10, 10, 10 );
 	bool passed = val < 0.01;
+	sdf->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: far density=" << val << std::endl;
 	else
@@ -95,12 +101,14 @@ bool TestBoxCenter()
 {
 	std::cout << "  Test 4: Box center dense, outside sparse..." << std::endl;
 
-	RealLinearInterpolator interp;
-	SDFPrimitive3D sdf( eSDF_Box, 0.5, 0.5, 0.5, 0, 0, 0, interp );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Box, 0.5, 0.5, 0.5, 0, 0, 0, *interp );
 
-	Scalar center = sdf.Evaluate( 0, 0, 0 );
-	Scalar outside = sdf.Evaluate( 5, 5, 5 );
+	Scalar center = sdf->Evaluate( 0, 0, 0 );
+	Scalar outside = sdf->Evaluate( 5, 5, 5 );
 	bool passed = center > 0.9 && outside < 0.01;
+	sdf->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: center=" << center << " outside=" << outside << std::endl;
 	else
@@ -112,15 +120,17 @@ bool TestTorusRing()
 {
 	std::cout << "  Test 5: Torus on ring density high..." << std::endl;
 
-	RealLinearInterpolator interp;
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// Major radius 1.0, minor radius 0.3, torus in XZ plane
-	SDFPrimitive3D sdf( eSDF_Torus, 1.0, 0.3, 0, 0, 0, 0, interp );
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Torus, 1.0, 0.3, 0, 0, 0, 0, *interp );
 
 	// On the ring at (1, 0, 0)
-	Scalar onRing = sdf.Evaluate( 1.0, 0, 0 );
+	Scalar onRing = sdf->Evaluate( 1.0, 0, 0 );
 	// Far from ring
-	Scalar farAway = sdf.Evaluate( 5, 5, 5 );
+	Scalar farAway = sdf->Evaluate( 5, 5, 5 );
 	bool passed = onRing > 0.5 && farAway < 0.01;
+	sdf->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: onRing=" << onRing << " far=" << farAway << std::endl;
 	else
@@ -132,14 +142,16 @@ bool TestShellMode()
 {
 	std::cout << "  Test 6: Shell mode - center is hollow..." << std::endl;
 
-	RealLinearInterpolator interp;
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// Sphere with shell thickness 0.1
-	SDFPrimitive3D sdf( eSDF_Sphere, 1.0, 0, 0, 0.1, 0, 0, interp );
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Sphere, 1.0, 0, 0, 0.1, 0, 0, *interp );
 
-	Scalar center = sdf.Evaluate( 0, 0, 0 );		// Far inside = hollow
-	Scalar surface = sdf.Evaluate( 1.0, 0, 0 );	// On surface = dense
+	Scalar center = sdf->Evaluate( 0, 0, 0 );		// Far inside = hollow
+	Scalar surface = sdf->Evaluate( 1.0, 0, 0 );	// On surface = dense
 
 	bool passed = surface > center;
+	sdf->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: surface=" << surface << " center=" << center << std::endl;
 	else
@@ -151,18 +163,21 @@ bool TestNoiseDisplacement()
 {
 	std::cout << "  Test 7: Noise displacement changes output..." << std::endl;
 
-	RealLinearInterpolator interp;
-	SDFPrimitive3D sdfNoNoise( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, interp );
-	SDFPrimitive3D sdfNoise( eSDF_Sphere, 0.5, 0, 0, 0, 0.2, 2.0, interp );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdfNoNoise = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
+	SDFPrimitive3D* sdfNoise = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0.2, 2.0, *interp );
 
 	int differCount = 0;
 	for( int i = 0; i < 30; i++ ) {
 		Scalar x = i * 0.1 - 1.5;
-		if( !IsClose( sdfNoNoise.Evaluate(x, 0, 0), sdfNoise.Evaluate(x, 0, 0), 1e-4 ) )
+		if( !IsClose( sdfNoNoise->Evaluate(x, 0, 0), sdfNoise->Evaluate(x, 0, 0), 1e-4 ) )
 			differCount++;
 	}
 
 	bool passed = differCount > 10;
+	sdfNoNoise->release();
+	sdfNoise->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: only " << differCount << "/30 differ" << std::endl;
 	else
@@ -174,22 +189,26 @@ bool TestDifferentTypes()
 {
 	std::cout << "  Test 8: Different types produce different outputs..." << std::endl;
 
-	RealLinearInterpolator interp;
-	SDFPrimitive3D sphere( eSDF_Sphere, 0.5, 0.5, 0.5, 0, 0, 0, interp );
-	SDFPrimitive3D box( eSDF_Box, 0.5, 0.5, 0.5, 0, 0, 0, interp );
-	SDFPrimitive3D torus( eSDF_Torus, 0.5, 0.2, 0, 0, 0, 0, interp );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sphere = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0.5, 0.5, 0, 0, 0, *interp );
+	SDFPrimitive3D* box = new SDFPrimitive3D( eSDF_Box, 0.5, 0.5, 0.5, 0, 0, 0, *interp );
+	SDFPrimitive3D* torus = new SDFPrimitive3D( eSDF_Torus, 0.5, 0.2, 0, 0, 0, 0, *interp );
 
 	int differCount = 0;
 	for( int i = 0; i < 20; i++ ) {
 		Scalar x = i * 0.15 - 1.5;
 		Scalar y = i * 0.1 - 1.0;
-		Scalar s = sphere.Evaluate( x, y, 0 );
-		Scalar b = box.Evaluate( x, y, 0 );
-		Scalar t = torus.Evaluate( x, y, 0 );
+		Scalar s = sphere->Evaluate( x, y, 0 );
+		Scalar b = box->Evaluate( x, y, 0 );
+		Scalar t = torus->Evaluate( x, y, 0 );
 		if( !IsClose(s, b, 1e-4) || !IsClose(s, t, 1e-4) ) differCount++;
 	}
 
 	bool passed = differCount > 10;
+	sphere->release();
+	box->release();
+	torus->release();
+	interp->release();
 	if( !passed )
 		std::cout << "    FAIL: only " << differCount << "/20 differ" << std::endl;
 	else

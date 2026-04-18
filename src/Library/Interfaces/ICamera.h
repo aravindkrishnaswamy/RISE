@@ -34,7 +34,7 @@ namespace RISE
 	public:
 		//! Given two Scalars x and y in [0..1], generate a ray to fire
 		/// \return TRUE if a ray exists, FALSE otherwise
-		virtual bool GenerateRay( 
+		virtual bool GenerateRay(
 			const RuntimeContext& rc,					///< [in] Runtime context
 			Ray& ray,									///< [in] The ray cast from point on screen
 			const Point2& ptOnScreen					///< [in] Point on the virtual screen to generate for
@@ -64,6 +64,19 @@ namespace RISE
 		///         This is in the same primary units of animations
 		///         If the pixel rate is infintely fast, returns 0
 		virtual Scalar GetPixelRate( ) const = 0;
+
+		// NOTE on lens sampling: the ICamera vtable intentionally has
+		// NO entry for "generate ray with an externally supplied lens
+		// sample".  Adding one — even appended at the end — would
+		// crash out-of-tree camera objects compiled against the old
+		// interface the moment a new caller dispatched through the
+		// missing slot.  Lens-sample injection for MLT is therefore
+		// done via a non-virtual helper
+		// (MLTRasterizer::GenerateCameraRayWithLensSample) that
+		// dynamic_casts to ThinLensCamera at the call site and
+		// falls back to GenerateRay for every other camera type.
+		// Concrete ThinLensCamera exposes a non-virtual
+		// GenerateRayWithLensSample method used only by that helper.
 	};
 }
 

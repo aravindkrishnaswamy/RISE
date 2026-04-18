@@ -4443,7 +4443,10 @@ bool GetSamplingAndFilterElements(
 
 		if( pixelFilter ) {
 			String sPixelFilter( pixelFilter );
-			if( sPixelFilter == "box" ) {
+			if( sPixelFilter == "none" ) {
+				// Explicit opt-out: leave pPixelFilter null, caller
+				// renders without sub-pixel reconstruction.
+			} else if( sPixelFilter == "box" ) {
 				RISE_API_CreateBoxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
 			} else if( sPixelFilter == "tent" ) {
 				RISE_API_CreateTrianglePixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
@@ -4482,7 +4485,14 @@ bool GetSamplingAndFilterElements(
 			} else if( sPixelFilter == "quadratic_bspline" ) {
 				RISE_API_CreateQuadraticBSplinePixelFilter( pPixelFilter );
 			} else {
+				// Mirrors the pixel-sampler branch above — a typo in a
+				// scene file must fail loudly rather than silently
+				// rendering without a filter.  Before this fix an
+				// unknown name produced an error log but left
+				// pPixelFilter null and returned true, so the render
+				// silently proceeded unfiltered.
 				GlobalLog()->PrintEx( eLog_Error, "Unknown filter type: `%s`", pixelFilter );
+				return false;
 			}
 		} else {
 			RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, 1.0/3.0, 1.0/3.0 );
@@ -5347,6 +5357,11 @@ bool Job::SetMLTRasterizer(
 	const bool bShowLuminaires,
 	const bool bChooseOnlyOneLight,
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
@@ -5363,11 +5378,32 @@ bool Job::SetMLTRasterizer(
 		pCaster->SetUseLightBVH( true );
 	}
 
+	// Build the pixel filter.  MLT does not use a conventional pixel
+	// sampler (it generates its own film samples via the Markov chain)
+	// but it still wants a reconstruction filter — without one, splats
+	// land at integer pixels and the image shows aliasing / hard edges.
+	// We pass a dummy pixel-sampler count of 2 so GetSamplingAndFilter-
+	// Elements actually builds the filter object; the sampler it also
+	// creates is stored but never read by the MLT render loop.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, 2, 1,
+		0, 0.0, 0, 0.0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		safe_release( pCaster );
+		return false;
+	}
+
 	IRasterizer* pRaster = 0;
-	RISE_API_CreateMLTRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
-		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise );
+	RISE_API_CreateMLTRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
+		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise,
+		pPixelSampler, pPixelFilter );
 
 	safe_release( pCaster );
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
 	safe_release( pRasterizer );
 
 	pRasterizer = pRaster;
@@ -5390,6 +5426,11 @@ bool Job::SetMLTSpectralRasterizer(
 	const unsigned int nSpectralSamples,
 	const bool useHWSS,
 	const bool oidnDenoise,
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
 	const StabilityConfig& stabilityConfig
 	)
 {
@@ -5406,12 +5447,27 @@ bool Job::SetMLTSpectralRasterizer(
 		pCaster->SetUseLightBVH( true );
 	}
 
+	// See SetMLTRasterizer above for why we request a filter here.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, 2, 1,
+		0, 0.0, 0, 0.0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+	{
+		safe_release( pCaster );
+		return false;
+	}
+
 	IRasterizer* pRaster = 0;
-	RISE_API_CreateMLTSpectralRasterizer( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
+	RISE_API_CreateMLTSpectralRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-		nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise );
+		nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise,
+		pPixelSampler, pPixelFilter );
 
 	safe_release( pCaster );
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
 	safe_release( pRasterizer );
 
 	pRasterizer = pRaster;

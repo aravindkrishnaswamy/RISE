@@ -363,7 +363,7 @@ void VCMPelRasterizer::IntegratePixel(
 					pIntegrator->SplatLightSubpathToCamera(
 						localLightVerts, localLightMis,
 						pScene, *pCaster, *pCamera, *pSplatFilm,
-						mVCMNormalization );
+						mVCMNormalization, pPixelFilter );
 				}
 
 				// Non-splat strategies accumulated into sampleColor.

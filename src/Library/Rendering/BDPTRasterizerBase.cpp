@@ -242,6 +242,40 @@ void BDPTRasterizerBase::AddAdaptiveSamples( uint64_t count ) const
 	mTotalAdaptiveSamples.fetch_add( count, std::memory_order_relaxed );
 }
 
+void BDPTRasterizerBase::SplatContributionToFilm(
+	const Scalar fx,
+	const Scalar fy,
+	const RISEPel& contribution,
+	const unsigned int imageWidth,
+	const unsigned int imageHeight
+	) const
+{
+	if( !pSplatFilm ) {
+		return;
+	}
+
+	if( pPixelFilter )
+	{
+		// Spread through the configured reconstruction kernel.
+		// SplatFilm::SplatFiltered short-circuits to a point splat
+		// if the filter's half-width is ≤ 0.501 (box).
+		pSplatFilm->SplatFiltered( fx, fy, contribution, *pPixelFilter );
+	}
+	else
+	{
+		// No filter — round to nearest pixel, still better than the
+		// old truncation which introduced a half-pixel bias.
+		const Scalar rx = fx + Scalar( 0.5 );
+		const Scalar ry = fy + Scalar( 0.5 );
+		if( rx < 0 || ry < 0 ) return;
+		const unsigned int sx = static_cast<unsigned int>( rx );
+		const unsigned int sy = static_cast<unsigned int>( ry );
+		if( sx < imageWidth && sy < imageHeight ) {
+			pSplatFilm->Splat( sx, sy, contribution );
+		}
+	}
+}
+
 Scalar BDPTRasterizerBase::GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const
 {
 	const uint64_t totalSamples = mTotalAdaptiveSamples.load( std::memory_order_relaxed );

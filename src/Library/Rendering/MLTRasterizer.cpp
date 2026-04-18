@@ -84,6 +84,9 @@
 #include "../Utilities/ThreadPool.h"
 #include "ThreadLocalSplatBuffer.h"
 #include "../Interfaces/IOptions.h"
+#include "../Interfaces/IPixelFilter.h"
+#include "../Interfaces/ISampling2D.h"
+#include "../Cameras/ThinLensCamera.h"
 #include "../Utilities/Threads/Threads.h"
 #include <atomic>
 
@@ -110,6 +113,8 @@ MLTRasterizer::MLTRasterizer(
 	) :
   pCaster( pCaster_ ),
   pIntegrator( 0 ),
+  pSampling( 0 ),
+  pPixelFilter( 0 ),
   nBootstrap( nBootstrap_ ),
   nChains( nChains_ ),
   nMutationsPerPixel( nMutationsPerPixel_ ),
@@ -124,8 +129,61 @@ MLTRasterizer::MLTRasterizer(
 
 MLTRasterizer::~MLTRasterizer()
 {
+	safe_release( pPixelFilter );
+	safe_release( pSampling );
 	safe_release( pIntegrator );
 	safe_release( pCaster );
+}
+
+bool MLTRasterizer::GenerateCameraRayWithLensSample(
+	const ICamera& camera,
+	const RuntimeContext& rc,
+	Ray& ray,
+	const Point2& ptOnScreen,
+	const Point2& lensSample )
+{
+	// dynamic_cast to the concrete thin-lens camera.  If the concrete
+	// type matches, use its non-virtual lens-sample entry point so
+	// the PSSMLT lensSample drives aperture sampling CONTINUOUSLY
+	// (small Markov mutation → small aperture move).  For every
+	// other camera (pinhole, fisheye, orthographic, any out-of-tree
+	// implementation), fall through to the standard GenerateRay
+	// path — those cameras either don't have an aperture to sample
+	// or do their own thing, and we MUST NOT touch their vtable.
+	if( const ThinLensCamera* thinLens =
+			dynamic_cast<const ThinLensCamera*>( &camera ) )
+	{
+		return thinLens->GenerateRayWithLensSample(
+			rc, ray, ptOnScreen, lensSample );
+	}
+	return camera.GenerateRay( rc, ray, ptOnScreen );
+}
+
+//////////////////////////////////////////////////////////////////////
+// SubSampleRays — install the sampler and pixel filter produced by
+// Job::GetSamplingAndFilterElements.  MLT never reads from pSampling
+// (the Markov chain picks its own film positions), but we store it
+// for API symmetry with the rest of the rasterizer family so future
+// code doesn't reach for a null pointer.  pPixelFilter IS consumed:
+// every splat is distributed across the filter footprint in
+// RunChainSegment, which is the entire point of this hook.
+//////////////////////////////////////////////////////////////////////
+
+void MLTRasterizer::SubSampleRays( ISampling2D* pSampling_, IPixelFilter* pPixelFilter_ )
+{
+	if( pSampling_ )
+	{
+		safe_release( pSampling );
+		pSampling = pSampling_;
+		pSampling->addref();
+	}
+
+	if( pPixelFilter_ )
+	{
+		safe_release( pPixelFilter );
+		pPixelFilter = pPixelFilter_;
+		pPixelFilter->addref();
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -163,19 +221,76 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// Use the first 2D sample to pick a film position.
 	// This means mutations to these two values move the path
 	// to a different pixel -- important for film coverage.
+	//
+	// Keep fractional coordinates end-to-end: the previous code
+	// truncated filmSample to integer px/py, which (a) made sub-
+	// pixel mutations visit the same pixel center over and over,
+	// (b) quantised the camera ray origin to pixel corners so the
+	// pixel filter could not reconstruct sub-pixel detail, and
+	// (c) produced the pixel-aligned hard edges the user reported.
+	//
+	// The -0.5 offset is the RISE convention for pixel centers:
+	// BoxPixelFilter::warpOnScreen returns `canonical.x + x - 0.5`
+	// for canonical ∈ [0,1), so pixel i's CENTER is at integer x=i.
+	// FilteredFilm::Splat (and our SplatFilm::SplatFiltered) read
+	// `dx = px - screenX`, which only evaluates the filter correctly
+	// when the caller's screenX uses the same pixel-center-at-integer
+	// convention.  Without this offset, MLT's camera rays and splats
+	// land half a pixel toward the +X/+Y corner of each pixel
+	// relative to the other rasterizers — visible as a consistent
+	// shift in side-by-side comparisons.
+	//
+	// Ranges after the offset:
+	//   fx ∈ [-0.5, W - 0.5)      fy ∈ [-0.5, H - 0.5)
+	// The round-to-nearest fallback in RunChainSegment guards fx<-0.5
+	// and fy<-0.5 (both impossible for filmSample ∈ [0,1), but the
+	// guard survives any future filmSample pathology from the PSSMLT
+	// sampler as well).
 	const Point2 filmSample = sampler.Get2D();
-	const unsigned int px = std::min( static_cast<unsigned int>( filmSample.x * width ), width - 1 );
-	const unsigned int py = std::min( static_cast<unsigned int>( filmSample.y * height ), height - 1 );
-	const Point2 screenPos( static_cast<Scalar>(px), static_cast<Scalar>(height - py) );
+	// The lens sample is consumed from the SAME stream so it
+	// advances the PSSMLT primary-sample vector by two more
+	// dimensions.  Because PSSMLT mutates each primary sample
+	// independently, the film position and the lens position
+	// now evolve as independent dimensions of the Markov chain
+	// — small film mutations leave the lens fixed, small lens
+	// mutations leave the film fixed, and large steps resample
+	// both.  This is what makes thin-lens MLT converge: without
+	// it, aperture samples were tied to the RNG seed rather than
+	// to the PSSMLT state, so lens rotations could only happen
+	// as a side effect of film jitter.
+	const Point2 lensSample = sampler.Get2D();
+	const Scalar fx = filmSample.x * static_cast<Scalar>( width  ) - static_cast<Scalar>( 0.5 );
+	const Scalar fy = filmSample.y * static_cast<Scalar>( height ) - static_cast<Scalar>( 0.5 );
+	// screenPos in RISE screen convention (y=0 at bottom, fractional).
+	const Point2 screenPos( fx, static_cast<Scalar>( height ) - fy );
+	// cameraRasterPos in image-buffer convention (y=0 at top, fractional).
+	const Point2 cameraRasterPos( fx, fy );
 
-	const Point2 cameraRasterPos( static_cast<Scalar>(px), static_cast<Scalar>(py) );
-
-	// Generate camera ray for this pixel
-	RandomNumberGenerator localRNG( px * 65537 + py );
+	// Seed the camera-ray RNG from the FILM sample bits (used only
+	// for degenerate fall-through paths through the camera; the
+	// PSSMLT-driven lens sample goes via GenerateRayWithLensSample
+	// so a small Markov mutation produces a small, CONTINUOUS
+	// aperture move).  Hashing the film sample bits ensures two
+	// film positions that happen to land in the same integer pixel
+	// still get different local RNG states — without that, any
+	// non-lens random the camera happened to consume would reuse
+	// the same stream across sub-pixel mutations.
+	const unsigned int fxBits = static_cast<unsigned int>(
+		filmSample.x * static_cast<Scalar>( 4294967296.0 ) );
+	const unsigned int fyBits = static_cast<unsigned int>(
+		filmSample.y * static_cast<Scalar>( 4294967296.0 ) );
+	RandomNumberGenerator localRNG( fxBits * 2654435761u + fyBits );
 	RuntimeContext rc( localRNG, RuntimeContext::PASS_NORMAL, false );
 
 	Ray cameraRay;
-	if( !camera.GenerateRay( rc, cameraRay, screenPos ) ) {
+	// Route through the anonymous-namespace helper instead of calling
+	// a virtual method on ICamera.  The helper dynamic_casts to
+	// ThinLensCamera and uses its non-virtual lens-sample method when
+	// applicable, falling back to GenerateRay for every other camera.
+	// Keeping this off the ICamera vtable is what protects ABI for
+	// out-of-tree camera implementations compiled against an older
+	// interface — their vtables are unchanged.
+	if( !GenerateCameraRayWithLensSample( camera, rc, cameraRay, screenPos, lensSample ) ) {
 		return result;
 	}
 
@@ -401,11 +516,27 @@ void MLTRasterizer::RunChainSegment(
 				const MLTStrategySplat& s = proposedSample.splats[k];
 				const RISEPel splatColor = s.color * proposedWeight;
 
-				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
-				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
-
-				if( sx < width && sy < height ) {
-					splatFilm.Splat( sx, sy, splatColor );
+				if( pPixelFilter ) {
+					// Fractional, filter-reconstructed splat.  Distributes
+					// the contribution across the filter footprint so
+					// neighbouring pixels blend smoothly and aliasing
+					// disappears.
+					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
+						splatColor, *pPixelFilter );
+				} else {
+					// No filter installed — fall back to round-to-nearest
+					// point splat.  floor() here (via unsigned cast on a
+					// truncation) would introduce a consistent half-pixel
+					// bias; adding 0.5 before truncation rounds instead.
+					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
+					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
+					if( rx >= 0 && ry >= 0 ) {
+						const unsigned int sx = static_cast<unsigned int>( rx );
+						const unsigned int sy = static_cast<unsigned int>( ry );
+						if( sx < width && sy < height ) {
+							splatFilm.Splat( sx, sy, splatColor );
+						}
+					}
 				}
 			}
 		}
@@ -419,11 +550,19 @@ void MLTRasterizer::RunChainSegment(
 				const MLTStrategySplat& s = state.currentSample.splats[k];
 				const RISEPel splatColor = s.color * currentWeight;
 
-				const unsigned int sx = static_cast<unsigned int>( s.rasterPos.x );
-				const unsigned int sy = static_cast<unsigned int>( s.rasterPos.y );
-
-				if( sx < width && sy < height ) {
-					splatFilm.Splat( sx, sy, splatColor );
+				if( pPixelFilter ) {
+					splatFilm.SplatFiltered( s.rasterPos.x, s.rasterPos.y,
+						splatColor, *pPixelFilter );
+				} else {
+					const Scalar rx = s.rasterPos.x + static_cast<Scalar>( 0.5 );
+					const Scalar ry = s.rasterPos.y + static_cast<Scalar>( 0.5 );
+					if( rx >= 0 && ry >= 0 ) {
+						const unsigned int sx = static_cast<unsigned int>( rx );
+						const unsigned int sy = static_cast<unsigned int>( ry );
+						if( sx < width && sy < height ) {
+							splatFilm.Splat( sx, sy, splatColor );
+						}
+					}
 				}
 			}
 		}

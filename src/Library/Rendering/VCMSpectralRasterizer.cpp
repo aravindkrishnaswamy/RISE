@@ -349,7 +349,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 						pIntegrator->SplatLightSubpathToCameraNM(
 							localLightVerts, localLightMis,
 							pScene, *pCaster, *pCamera, *pSplatFilm,
-							mVCMNormalization, heroNM );
+							mVCMNormalization, heroNM, pPixelFilter );
 					}
 					heroValue += pIntegrator->EvaluateS0NM(
 						pScene, *pCaster, eyeVerts, eyeMis, mVCMNormalization, heroNM );
@@ -430,7 +430,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 							pIntegrator->SplatLightSubpathToCameraNM(
 								compLight, localLightMis,
 								pScene, *pCaster, *pCamera, *pSplatFilm,
-								mVCMNormalization, companionNM );
+								mVCMNormalization, companionNM, pPixelFilter );
 						}
 						compValue += pIntegrator->EvaluateS0NM(
 							pScene, *pCaster, compEye, eyeMis, mVCMNormalization, companionNM );

@@ -39,7 +39,7 @@ namespace RISE
 			// We choose to perform the most basic form of the 
 			// Box-Muller transform.  I realize we could use the polar form of the transform...
 
-			GaussianPixelFilter( const Scalar size, const Scalar sigma ) : 
+			GaussianPixelFilter( const Scalar size, const Scalar sigma ) :
 			  dSigma( sigma )
 			{
 				dKernelWidth = size;
@@ -48,6 +48,28 @@ namespace RISE
 				Scalar	dKernelSizeSigmaRatio = size / dSigma;
 
 				dKernelSizeSigmaRatioExp = exp( dKernelSizeSigmaRatio*dKernelSizeSigmaRatio*(-0.5) );
+			}
+
+			// Truncated 2D Gaussian: exp(-r²/(2σ²)) / (2πσ²) inside the
+			// square support, zero outside.  Normalised as an UNtruncated
+			// Gaussian for simplicity — truncating a Gaussian at ≥ 2σ
+			// captures >95% of the mass, so the unit-integral assumption
+			// of SplatFilm::Resolve is satisfied to within a few percent.
+			// Without this override the filter returned 0 for every splat
+			// whenever the kernel size exceeded ~1 pixel (which is every
+			// reasonable Gaussian configuration), silently producing a
+			// black image.
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				const Scalar halfW = dKernelWidth  * 0.5;
+				const Scalar halfH = dKernelHeight * 0.5;
+				if( fabs( dx ) > halfW || fabs( dy ) > halfH ) {
+					return 0;
+				}
+				const Scalar r2       = dx * dx + dy * dy;
+				const Scalar twoSigma2 = 2.0 * dSigma * dSigma;
+				const Scalar norm      = 1.0 / ( PI * twoSigma2 );
+				return norm * exp( -r2 / twoSigma2 );
 			}
 
 			virtual Scalar warp( const RandomNumberGenerator& rng, const Point2& canonical, Point2& warped ) const

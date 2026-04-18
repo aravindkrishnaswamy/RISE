@@ -84,16 +84,51 @@ drise_submitter : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_submitter.o
 	@echo Linking $(PATHDEST)drise_submitter
 	@$(CXX) $(CPPFLAGS) -o $(PATHDEST)drise_submitter $(PATHSRCSDRISE)drise_submitter.o $(OBJLIB) $(OBJDRISE) $(LDLIBS) 
 
-# Build all tests
+# Build all tests. A broken test must not prevent the others from building, so
+# the loop continues past compile/link failures and reports a per-test tally at
+# the end. The target still exits non-zero if any test failed to build, so CI
+# preserves its "broken build" signal — but every test that *can* build does.
 tests : $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
-	@set -e; for test_src in $(SRCTESTS); do \
+	@fail_count=0; failed_list=""; \
+	for test_src in $(SRCTESTS); do \
 		test_name=`basename $$test_src .cpp`; \
 		echo Compiling: $$test_src; \
-		$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $$test_src -o $(PATHTESTS)$$test_name.o; \
+		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $$test_src -o $(PATHTESTS)$$test_name.o; then \
+			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$test_name(compile)"; \
+			continue; \
+		fi; \
 		echo Linking $(PATHTESTDEST)$$test_name; \
-		$(CXX) $(CPPFLAGS) -o $(PATHTESTDEST)$$test_name $(PATHTESTS)$$test_name.o $(OBJLIB) $(LDLIBS); \
-	done
+		if ! $(CXX) $(CPPFLAGS) -o $(PATHTESTDEST)$$test_name $(PATHTESTS)$$test_name.o $(OBJLIB) $(LDLIBS); then \
+			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$test_name(link)"; \
+		fi; \
+	done; \
+	echo "============================================================"; \
+	if [ $$fail_count -ne 0 ]; then \
+		echo "tests: $$fail_count test(s) failed to build:$$failed_list"; \
+		exit 1; \
+	fi; \
+	echo "tests: all built successfully"
+
+# Single-test build target. Used by run_all_tests.sh to drive per-test
+# build progress with quiet, formatted output. Real-file target so make
+# can skip up-to-date binaries; phony alias gives the caller a stable name.
+# .SECONDARY keeps the binary after make satisfies the build-test/% alias —
+# without it, make treats the binary as an intermediate and auto-deletes it.
+.SECONDARY:
+
+build-test/% : $(PATHTESTDEST)%
+	@:
+
+$(PATHTESTDEST)% : $(PATHTESTS)%.cpp $(OBJLIB)
+	@mkdir -p $(PATHTESTDEST)
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $< -o $(PATHTESTS)$*.o
+	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(OBJLIB) $(LDLIBS)
+
+# Build only the library .o files needed to link tests. Used by
+# run_all_tests.sh as a one-shot library-build phase before per-test builds.
+test-objs : $(OBJLIB)
+	@:
 
 # Build and run all tests
 test : tests

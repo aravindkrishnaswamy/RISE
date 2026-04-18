@@ -24,6 +24,7 @@
 #include "BDPTIntegrator.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
+#include "../Interfaces/IPixelFilter.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/ILight.h"
@@ -778,7 +779,8 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const IRayCaster& caster,
 	const ICamera& camera,
 	SplatFilm& splatFilm,
-	const VCMNormalization& norm
+	const VCMNormalization& norm,
+	const IPixelFilter* pixelFilter
 	) const
 {
 	if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
@@ -930,16 +932,26 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 		const RISEPel weighted = contribution * weight;
 
 		// Rasterize returns screen coordinates where y=0 is the
-		// bottom of the image; SplatFilm uses y=0 at top.
-		const int sx = static_cast<int>( rasterPos.x );
-		const int sy = static_cast<int>( camera.GetHeight() - rasterPos.y );
-		if( sx < 0 || sy < 0 ||
-			static_cast<unsigned int>( sx ) >= camera.GetWidth() ||
-			static_cast<unsigned int>( sy ) >= camera.GetHeight() ) {
-			continue;
-		}
+		// bottom of the image; SplatFilm uses y=0 at top.  Spread
+		// through the pixel filter (Mitchell-Netravali by default) so
+		// light-to-camera splats reconstruct without the hard edges
+		// that come from truncating to an integer pixel.
+		const Scalar fx = rasterPos.x;
+		const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - rasterPos.y;
 
-		splatFilm.Splat( sx, sy, weighted );
+		if( pixelFilter ) {
+			splatFilm.SplatFiltered( fx, fy, weighted, *pixelFilter );
+		} else {
+			// No filter — round to nearest pixel (better than the old
+			// truncation which was half a pixel off in expectation).
+			const Scalar rx = fx + Scalar( 0.5 );
+			const Scalar ry = fy + Scalar( 0.5 );
+			if( rx < 0 || ry < 0 ) continue;
+			const unsigned int sx = static_cast<unsigned int>( rx );
+			const unsigned int sy = static_cast<unsigned int>( ry );
+			if( sx >= camera.GetWidth() || sy >= camera.GetHeight() ) continue;
+			splatFilm.Splat( sx, sy, weighted );
+		}
 	}
 }
 
@@ -1669,7 +1681,8 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const ICamera& camera,
 	SplatFilm& splatFilm,
 	const VCMNormalization& norm,
-	const Scalar nm
+	const Scalar nm,
+	const IPixelFilter* pixelFilter
 	) const
 {
 	if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
@@ -1800,8 +1813,21 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 		}
 		xyz = xyz * weighted;
 
-		const int sx = static_cast<int>( rasterPos.x );
-		const int sy = static_cast<int>( camera.GetHeight() - rasterPos.y );
+		const Scalar fx = rasterPos.x;
+		const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - rasterPos.y;
+
+		if( pixelFilter ) {
+			splatFilm.SplatFiltered( fx, fy,
+				RISEPel( xyz.X, xyz.Y, xyz.Z ),
+				*pixelFilter );
+			continue;
+		}
+
+		const Scalar rxr = fx + Scalar( 0.5 );
+		const Scalar ryr = fy + Scalar( 0.5 );
+		if( rxr < 0 || ryr < 0 ) continue;
+		const int sx = static_cast<int>( rxr );
+		const int sy = static_cast<int>( ryr );
 		if( sx < 0 || sy < 0 ||
 			static_cast<unsigned int>( sx ) >= camera.GetWidth() ||
 			static_cast<unsigned int>( sy ) >= camera.GetHeight() ) {

@@ -2322,7 +2322,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int samplesPerPass	///< [in] SPP per progressive pass
 								);
 
-	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	//! Creates an MLT (Metropolis Light Transport / PSSMLT) rasterizer.
+	//! LEGACY signature preserved for ABI/source compatibility with
+	//! external code linked against pre-filter RISE.  Equivalent to
+	//! RISE_API_CreateMLTRasterizerWithFilter with null sampler/filter,
+	//! which makes the MLT render loop fall back to round-to-nearest
+	//! point splats (the pre-change behaviour).  New code should call
+	//! the *WithFilter variant directly.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateMLTRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
@@ -2336,7 +2342,27 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise						///< [in] Enable OIDN denoising post-process
 								);
 
-	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer
+	//! Extended MLT rasterizer factory with pixel sampler + filter.
+	//! This is the entry point Job::SetMLTRasterizer uses — it wires
+	//! up sub-pixel reconstruction via SplatFilm::SplatFiltered.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTRasterizerWithFilter(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,				///< [in] Number of bootstrap samples
+								const unsigned int nChains,					///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,					///< [in] Large step probability
+								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
+								ISampling2D* pSampler,						///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
+								IPixelFilter* pFilter						///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								);
+
+	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
+	//! LEGACY signature preserved for ABI compatibility — see the Pel
+	//! variant above.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateMLTSpectralRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
@@ -2352,6 +2378,26 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
 								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								);
+
+	//! Extended spectral MLT rasterizer factory with pixel sampler + filter.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,		///< [in] Number of bootstrap samples
+								const unsigned int nChains,			///< [in] Number of Markov chains
+								const unsigned int nMutationsPerPixel,	///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,			///< [in] Large step probability
+								const Scalar lambda_begin,			///< [in] Start of spectral range (nm)
+								const Scalar lambda_end,			///< [in] End of spectral range (nm)
+								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
+								IPixelFilter* pFilter				///< [in] Reconstruction kernel; may be null for unfiltered point splats
 								);
 
 	//////////////////////////////////////////////////////////

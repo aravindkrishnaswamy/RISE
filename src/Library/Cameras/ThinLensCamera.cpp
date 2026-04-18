@@ -122,7 +122,36 @@ bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2
 								-y *  f_over_d_minus_f_sy,
 								f_over_d_minus_f_d );
 
-	r.Set( 
+	r.Set(
+		Point3Ops::Transform(mxTrans,ptOnLens),
+		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans, Vector3Ops::mkVector3(focus, ptOnLens))) );
+	return true;
+}
+
+bool ThinLensCamera::GenerateRayWithLensSample(
+	const RuntimeContext& /*rc*/, Ray& r,
+	const Point2& ptOnScreen, const Point2& lensSample ) const
+{
+	// Identical to GenerateRay except we take the aperture sample
+	// directly from lensSample rather than pulling two canonical
+	// randoms from rc.random.  This is the entry point MLT calls so
+	// that PSSMLT mutations of lensSample translate into continuous
+	// aperture moves — without it, small Markov mutations jumped
+	// the aperture to completely unrelated points (because the lens
+	// was a PRNG-seeded function, not a direct function, of the
+	// primary sample) and thin-lens MLT could not converge for DOF.
+	const Point2 xy = GeometricUtilities::PointOnDisk( halfAperture, lensSample );
+
+	const Point3		ptOnLens( xy.x, xy.y, 0.0 );
+
+	const Scalar x = ptOnScreen.x + dx;
+	const Scalar y = ptOnScreen.y + dy;
+
+	const Point3		focus(  -x *  f_over_d_minus_f_sx,
+								-y *  f_over_d_minus_f_sy,
+								f_over_d_minus_f_d );
+
+	r.Set(
 		Point3Ops::Transform(mxTrans,ptOnLens),
 		Vector3Ops::Normalize(Vector3Ops::Transform(mxTrans, Vector3Ops::mkVector3(focus, ptOnLens))) );
 	return true;

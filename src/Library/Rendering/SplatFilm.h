@@ -31,6 +31,7 @@
 #define SPLAT_FILM_
 
 #include "../Interfaces/IRasterImage.h"
+#include "../Interfaces/IPixelFilter.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/Color_Template.h"
@@ -76,6 +77,30 @@ namespace RISE
 				const unsigned int x,					///< [in] X co-ordinate of pixel
 				const unsigned int y,					///< [in] Scanline of pixel
 				const RISEPel& contribution				///< [in] Color contribution to accumulate
+				);
+
+			//! Thread-safe: distributes a contribution across all
+			//! pixels in the filter's footprint using the filter kernel
+			//! as the weight.  Use this for BDPT t==1 splats and MLT
+			//! contributions — without it the raster position is
+			//! truncated to an integer pixel and the image shows
+			//! aliasing / hard edges.
+			//!
+			//! Correctness requires the filter kernel to integrate to
+			//! approximately 1 over its support; SplatFilm::Resolve
+			//! divides by total sample count (not per-pixel weight),
+			//! so an unnormalised kernel would bias the result.
+			//! Mitchell–Netravali, Catmull-Rom, windowed sincs, and
+			//! the built-in box filter all satisfy this.
+			//!
+			//! Degenerates to a point splat when the filter's
+			//! half-width is ≤ 0.501 (box case) to avoid unnecessary
+			//! work — matches PixelBasedRasterizerHelper::UseFilteredFilm.
+			void SplatFiltered(
+				const Scalar screenX,					///< [in] Fractional X (0 ≤ x < width)
+				const Scalar screenY,					///< [in] Fractional Y (0 ≤ y < height)
+				const RISEPel& contribution,			///< [in] Color contribution to spread
+				const IPixelFilter& filter				///< [in] Reconstruction kernel
 				);
 
 			//! Batched commit.  Records must be sorted by pixelIndex

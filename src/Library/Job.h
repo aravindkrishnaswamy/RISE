@@ -1756,6 +1756,17 @@ namespace RISE
 			const ProgressiveConfig& progressiveConfig
 			);
 
+		// Unhide the legacy (pre-filter) IJob overloads so external code
+		// that holds a concrete Job* or Job& can still call them.
+		// Without these using-declarations, declaring the filter-aware
+		// overrides below would HIDE the legacy overloads inherited
+		// from IJob — so `job->SetMLTRasterizer(legacy_args)` on a
+		// Job* would fail to compile even though the inline wrapper
+		// exists in IJob.  The `using` brings the base-class overloads
+		// into Job's scope, restoring overload resolution.
+		using IJob::SetMLTRasterizer;
+		using IJob::SetMLTSpectralRasterizer;
+
 		bool SetMLTRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
@@ -1767,6 +1778,11 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const char* pixelFilter,								///< [in] Pixel filter name
+			const double pixelFilterWidth,							///< [in] Filter width (pixels)
+			const double pixelFilterHeight,							///< [in] Filter height (pixels)
+			const double pixelFilterParamA,							///< [in] Filter parameter A
+			const double pixelFilterParamB,							///< [in] Filter parameter B
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
 
@@ -1785,6 +1801,11 @@ namespace RISE
 			const unsigned int nSpectralSamples,					///< [in] Spectral samples per evaluation
 			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const char* pixelFilter,								///< [in] Pixel filter name
+			const double pixelFilterWidth,							///< [in] Filter width (pixels)
+			const double pixelFilterHeight,							///< [in] Filter height (pixels)
+			const double pixelFilterParamA,							///< [in] Filter parameter A
+			const double pixelFilterParamB,							///< [in] Filter parameter B
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
 

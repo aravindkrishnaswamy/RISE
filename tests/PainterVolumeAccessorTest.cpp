@@ -21,12 +21,12 @@
 #include <cmath>
 #include <cstdlib>
 
-#include "../src/Library/Volume/VolumeAccessor_Painter.h"
-#include "../src/Library/Utilities/MajorantGrid.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Volume/VolumeAccessor_Painter.h"
+#include "../src/Library/Utilities/MajorantGrid.h"
 
 using namespace RISE;
 
@@ -128,7 +128,7 @@ bool TestUniformDensity()
 	const Point3 bboxMax( 10, 10, 10 );
 	const unsigned int res = 16;
 
-	VolumeAccessor_Painter accessor( painter, res, res, res, bboxMin, bboxMax, 'l' );
+	VolumeAccessor_Painter* accessor = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'l' );
 
 	bool passed = true;
 	const int half = (int)res / 2;
@@ -140,7 +140,7 @@ bool TestUniformDensity()
 		{
 			for( int x = -half; x < (int)res - half; x += 4 )
 			{
-				const Scalar d = accessor.GetValue( x, y, z );
+				const Scalar d = accessor->GetValue( x, y, z );
 				if( !IsClose( d, 0.5, 1e-4 ) )
 				{
 					std::cout << "    FAIL: at (" << x << "," << y << "," << z
@@ -151,6 +151,7 @@ bool TestUniformDensity()
 		}
 	}
 
+	accessor->release();
 	if( passed )
 		std::cout << "    PASSED" << std::endl;
 	return passed;
@@ -167,7 +168,7 @@ bool TestGradientDensity()
 	const unsigned int res = 32;
 
 	TestGradientPainter painter( bboxMin.x, bboxMax.x );
-	VolumeAccessor_Painter accessor( painter, res, res, res, bboxMin, bboxMax, 'l' );
+	VolumeAccessor_Painter* accessor = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'l' );
 
 	bool passed = true;
 
@@ -177,7 +178,7 @@ bool TestGradientDensity()
 
 	for( int x = -half; x < (int)res - half; x++ )
 	{
-		const Scalar d = accessor.GetValue( x, 0, 0 );
+		const Scalar d = accessor->GetValue( x, 0, 0 );
 		if( d < prevDensity - 1e-6 )
 		{
 			std::cout << "    FAIL: density not monotonic at x=" << x
@@ -188,8 +189,8 @@ bool TestGradientDensity()
 	}
 
 	// Check boundary values: leftmost should be near 0, rightmost near 1
-	const Scalar dLeft = accessor.GetValue( -half, 0, 0 );
-	const Scalar dRight = accessor.GetValue( (int)res - half - 1, 0, 0 );
+	const Scalar dLeft = accessor->GetValue( -half, 0, 0 );
+	const Scalar dRight = accessor->GetValue( (int)res - half - 1, 0, 0 );
 
 	if( dLeft > 0.1 )
 	{
@@ -203,6 +204,7 @@ bool TestGradientDensity()
 		passed = false;
 	}
 
+	accessor->release();
 	if( passed )
 		std::cout << "    PASSED (left=" << dLeft << " right=" << dRight << ")" << std::endl;
 	return passed;
@@ -220,13 +222,13 @@ bool TestClamping()
 	const unsigned int res = 8;
 
 	// Test all three modes
-	VolumeAccessor_Painter accL( painter, res, res, res, bboxMin, bboxMax, 'l' );
-	VolumeAccessor_Painter accM( painter, res, res, res, bboxMin, bboxMax, 'm' );
-	VolumeAccessor_Painter accR( painter, res, res, res, bboxMin, bboxMax, 'r' );
+	VolumeAccessor_Painter* accL = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'l' );
+	VolumeAccessor_Painter* accM = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'm' );
+	VolumeAccessor_Painter* accR = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'r' );
 
-	const Scalar dL = accL.GetValue( 0, 0, 0 );
-	const Scalar dM = accM.GetValue( 0, 0, 0 );
-	const Scalar dR = accR.GetValue( 0, 0, 0 );
+	const Scalar dL = accL->GetValue( 0, 0, 0 );
+	const Scalar dM = accM->GetValue( 0, 0, 0 );
+	const Scalar dR = accR->GetValue( 0, 0, 0 );
 
 	bool passed = true;
 
@@ -248,6 +250,9 @@ bool TestClamping()
 		passed = false;
 	}
 
+	accL->release();
+	accM->release();
+	accR->release();
 	if( passed )
 		std::cout << "    PASSED (l=" << dL << " m=" << dM << " r=" << dR << ")" << std::endl;
 	return passed;
@@ -265,12 +270,12 @@ bool TestMajorantGridIntegration()
 	const Scalar sigma_t_majorant = 0.01;
 
 	TestGradientPainter painter( bboxMin.x, bboxMax.x );
-	VolumeAccessor_Painter accessor( painter, res, res, res, bboxMin, bboxMax, 'l' );
+	VolumeAccessor_Painter* accessor = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'l' );
 
 	unsigned int gridX, gridY, gridZ;
 	MajorantGrid::DefaultGridResolution( res, res, res, gridX, gridY, gridZ );
 
-	MajorantGrid grid( accessor, res, res, res,
+	MajorantGrid grid( *accessor, res, res, res,
 		bboxMin, bboxMax, sigma_t_majorant,
 		gridX, gridY, gridZ );
 
@@ -284,7 +289,7 @@ bool TestMajorantGridIntegration()
 		{
 			for( int vx = -half; vx < (int)res - half; vx++ )
 			{
-				const Scalar density = accessor.GetValue( vx, vy, vz );
+				const Scalar density = accessor->GetValue( vx, vy, vz );
 				const Scalar actual_sigma_t = density * sigma_t_majorant;
 
 				const Scalar nx = (Scalar(vx) / Scalar(res)) + 0.5;
@@ -309,6 +314,7 @@ bool TestMajorantGridIntegration()
 		}
 	}
 
+	accessor->release();
 	if( passed )
 		std::cout << "    PASSED" << std::endl;
 	return passed;
@@ -329,13 +335,13 @@ bool TestColorToScalarModes()
 	const Point3 bboxMax( 10, 10, 10 );
 	const unsigned int res = 8;
 
-	VolumeAccessor_Painter accL( painter, res, res, res, bboxMin, bboxMax, 'l' );
-	VolumeAccessor_Painter accM( painter, res, res, res, bboxMin, bboxMax, 'm' );
-	VolumeAccessor_Painter accR( painter, res, res, res, bboxMin, bboxMax, 'r' );
+	VolumeAccessor_Painter* accL = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'l' );
+	VolumeAccessor_Painter* accM = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'm' );
+	VolumeAccessor_Painter* accR = new VolumeAccessor_Painter( painter, res, res, res, bboxMin, bboxMax, 'r' );
 
-	const Scalar dL = accL.GetValue( 0, 0, 0 );
-	const Scalar dM = accM.GetValue( 0, 0, 0 );
-	const Scalar dR = accR.GetValue( 0, 0, 0 );
+	const Scalar dL = accL->GetValue( 0, 0, 0 );
+	const Scalar dM = accM->GetValue( 0, 0, 0 );
+	const Scalar dR = accR->GetValue( 0, 0, 0 );
 
 	bool passed = true;
 
@@ -359,6 +365,9 @@ bool TestColorToScalarModes()
 		passed = false;
 	}
 
+	accL->release();
+	accM->release();
+	accR->release();
 	if( passed )
 		std::cout << "    PASSED (l=" << dL << " m=" << dM << " r=" << dR << ")" << std::endl;
 	return passed;

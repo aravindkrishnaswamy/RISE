@@ -42,13 +42,13 @@ bool TestNonNegative()
 {
 	std::cout << "  Test 1: Non-negative output..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D noise( interp, 0.5, 6 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* noise = new TurbulenceNoise3D( *interp, 0.5, 6 );
 
 	bool passed = true;
 	for( int i = -50; i < 50; i++ ) {
 		for( int j = -50; j < 50; j++ ) {
-			Scalar val = noise.Evaluate( i * 0.37, j * 0.41, i * 0.13 + j * 0.29 );
+			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, i * 0.13 + j * 0.29 );
 			if( val < -1e-10 ) {
 				std::cout << "    FAIL: negative value " << val
 					<< " at (" << i*0.37 << "," << j*0.41 << "," << i*0.13+j*0.29 << ")" << std::endl;
@@ -59,6 +59,8 @@ bool TestNonNegative()
 		if( !passed ) break;
 	}
 
+	noise->release();
+	interp->release();
 	if( passed )
 		std::cout << "    PASSED" << std::endl;
 	return passed;
@@ -69,19 +71,21 @@ bool TestSpatialVariation()
 {
 	std::cout << "  Test 2: Spatial variation..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D noise( interp, 0.5, 4 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* noise = new TurbulenceNoise3D( *interp, 0.5, 4 );
 
 	Scalar minVal = 1e20;
 	Scalar maxVal = -1e20;
 
 	for( int i = 0; i < 100; i++ ) {
-		Scalar val = noise.Evaluate( i * 1.7, i * 2.3, i * 0.9 );
+		Scalar val = noise->Evaluate( i * 1.7, i * 2.3, i * 0.9 );
 		if( val < minVal ) minVal = val;
 		if( val > maxVal ) maxVal = val;
 	}
 
 	bool passed = (maxVal - minVal) > 0.01;
+	noise->release();
+	interp->release();
 	if( !passed ) {
 		std::cout << "    FAIL: range too small: min=" << minVal << " max=" << maxVal << std::endl;
 	} else {
@@ -95,16 +99,16 @@ bool TestDeterministic()
 {
 	std::cout << "  Test 3: Deterministic output..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D noise( interp, 0.65, 4 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* noise = new TurbulenceNoise3D( *interp, 0.65, 4 );
 
 	bool passed = true;
 	for( int i = 0; i < 20; i++ ) {
 		Scalar x = i * 3.7;
 		Scalar y = i * 2.1;
 		Scalar z = i * 1.3;
-		Scalar v1 = noise.Evaluate( x, y, z );
-		Scalar v2 = noise.Evaluate( x, y, z );
+		Scalar v1 = noise->Evaluate( x, y, z );
+		Scalar v2 = noise->Evaluate( x, y, z );
 		if( !IsClose( v1, v2 ) ) {
 			std::cout << "    FAIL: non-deterministic at (" << x << "," << y << "," << z
 				<< ") v1=" << v1 << " v2=" << v2 << std::endl;
@@ -113,6 +117,8 @@ bool TestDeterministic()
 		}
 	}
 
+	noise->release();
+	interp->release();
 	if( passed )
 		std::cout << "    PASSED" << std::endl;
 	return passed;
@@ -126,18 +132,18 @@ bool TestSingleOctaveMatchesAbsNoise()
 {
 	std::cout << "  Test 4: Single octave turbulence matches |perlin|..." << std::endl;
 
-	RealLinearInterpolator interp;
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// numOctaves=2 means n=1 (one actual octave), matching the convention
-	TurbulenceNoise3D turbulence( interp, 0.5, 2 );
-	PerlinNoise3D perlin( interp, 0.5, 2 );
+	TurbulenceNoise3D* turbulence = new TurbulenceNoise3D( *interp, 0.5, 2 );
+	PerlinNoise3D* perlin = new PerlinNoise3D( *interp, 0.5, 2 );
 
 	bool passed = true;
 	for( int i = 0; i < 30; i++ ) {
 		Scalar x = i * 2.3 + 0.5;
 		Scalar y = i * 1.7 - 3.2;
 		Scalar z = i * 0.9 + 1.1;
-		Scalar tVal = turbulence.Evaluate( x, y, z );
-		Scalar pVal = fabs( perlin.Evaluate( x, y, z ) );
+		Scalar tVal = turbulence->Evaluate( x, y, z );
+		Scalar pVal = fabs( perlin->Evaluate( x, y, z ) );
 		if( !IsClose( tVal, pVal, 1e-4 ) ) {
 			std::cout << "    FAIL: at (" << x << "," << y << "," << z
 				<< ") turbulence=" << tVal << " |perlin|=" << pVal << std::endl;
@@ -146,6 +152,9 @@ bool TestSingleOctaveMatchesAbsNoise()
 		}
 	}
 
+	turbulence->release();
+	perlin->release();
+	interp->release();
 	if( passed )
 		std::cout << "    PASSED" << std::endl;
 	return passed;
@@ -156,9 +165,9 @@ bool TestPersistenceEffect()
 {
 	std::cout << "  Test 5: Persistence effect..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D noiseLow( interp, 0.3, 6 );
-	TurbulenceNoise3D noiseHigh( interp, 0.9, 6 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* noiseLow = new TurbulenceNoise3D( *interp, 0.3, 6 );
+	TurbulenceNoise3D* noiseHigh = new TurbulenceNoise3D( *interp, 0.9, 6 );
 
 	int differCount = 0;
 	int count = 0;
@@ -166,14 +175,17 @@ bool TestPersistenceEffect()
 		Scalar x = i * 1.3 + 0.7;
 		Scalar y = i * 0.9 - 2.1;
 		Scalar z = i * 2.1 + 0.3;
-		Scalar vLow = noiseLow.Evaluate( x, y, z );
-		Scalar vHigh = noiseHigh.Evaluate( x, y, z );
+		Scalar vLow = noiseLow->Evaluate( x, y, z );
+		Scalar vHigh = noiseHigh->Evaluate( x, y, z );
 		if( !IsClose( vLow, vHigh, 1e-6 ) ) differCount++;
 		count++;
 	}
 
 	// Different persistence values should produce different outputs
 	bool passed = differCount > 25;
+	noiseLow->release();
+	noiseHigh->release();
+	interp->release();
 	if( !passed ) {
 		std::cout << "    FAIL: only " << differCount << "/50 points differ between low and high persistence" << std::endl;
 	} else {
@@ -187,9 +199,9 @@ bool TestOctaveEffect()
 {
 	std::cout << "  Test 6: Octave count effect..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D noise1( interp, 0.5, 2 );   // n=1 (one octave)
-	TurbulenceNoise3D noise6( interp, 0.5, 7 );   // n=6 (six octaves)
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* noise1 = new TurbulenceNoise3D( *interp, 0.5, 2 );   // n=1 (one octave)
+	TurbulenceNoise3D* noise6 = new TurbulenceNoise3D( *interp, 0.5, 7 );   // n=6 (six octaves)
 
 	// With normalization, more octaves doesn't necessarily mean more total energy
 	// (since we divide by the sum of amplitudes). However, with more octaves the
@@ -200,14 +212,17 @@ bool TestOctaveEffect()
 		Scalar x = i * 1.1 + 0.3;
 		Scalar y = i * 0.7 - 1.5;
 		Scalar z = i * 1.9 + 0.8;
-		Scalar v1 = noise1.Evaluate( x, y, z );
-		Scalar v6 = noise6.Evaluate( x, y, z );
+		Scalar v1 = noise1->Evaluate( x, y, z );
+		Scalar v6 = noise6->Evaluate( x, y, z );
 		if( !IsClose( v1, v6, 1e-6 ) ) diffCount++;
 		count++;
 	}
 
 	// Most points should differ when octave counts differ
 	bool passed = diffCount > 25;
+	noise1->release();
+	noise6->release();
+	interp->release();
 	if( !passed ) {
 		std::cout << "    FAIL: only " << diffCount << "/50 points differ between 1 and 6 octaves" << std::endl;
 	} else {
@@ -221,23 +236,25 @@ bool TestNegativeCoordinates()
 {
 	std::cout << "  Test 7: Negative coordinates..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D noise( interp, 0.5, 4 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* noise = new TurbulenceNoise3D( *interp, 0.5, 4 );
 
 	bool passed = true;
-	Scalar val = noise.Evaluate( -10.5, -20.3, -5.7 );
+	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
 	if( val < -1e-10 ) {
 		std::cout << "    FAIL: negative value " << val << " at negative coords" << std::endl;
 		passed = false;
 	}
 
 	// Also test that it varies at negative coords
-	Scalar v1 = noise.Evaluate( -10.0, -20.0, -5.0 );
-	Scalar v2 = noise.Evaluate( -15.0, -25.0, -10.0 );
+	Scalar v1 = noise->Evaluate( -10.0, -20.0, -5.0 );
+	Scalar v2 = noise->Evaluate( -15.0, -25.0, -10.0 );
 	if( IsClose( v1, v2, 1e-10 ) ) {
 		std::cout << "    WARN: identical values at different negative coords (unlikely but possible)" << std::endl;
 	}
 
+	noise->release();
+	interp->release();
 	if( passed )
 		std::cout << "    PASSED (val=" << val << ")" << std::endl;
 	return passed;
@@ -248,17 +265,17 @@ bool TestDiffersFromPerlin()
 {
 	std::cout << "  Test 8: Differs from Perlin noise..." << std::endl;
 
-	RealLinearInterpolator interp;
-	TurbulenceNoise3D turbulence( interp, 0.5, 4 );
-	PerlinNoise3D perlin( interp, 0.5, 4 );
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* turbulence = new TurbulenceNoise3D( *interp, 0.5, 4 );
+	PerlinNoise3D* perlin = new PerlinNoise3D( *interp, 0.5, 4 );
 
 	int differCount = 0;
 	for( int i = 0; i < 50; i++ ) {
 		Scalar x = i * 1.7 + 0.5;
 		Scalar y = i * 2.3 - 1.0;
 		Scalar z = i * 0.9 + 2.0;
-		Scalar tVal = turbulence.Evaluate( x, y, z );
-		Scalar pVal = perlin.Evaluate( x, y, z );
+		Scalar tVal = turbulence->Evaluate( x, y, z );
+		Scalar pVal = perlin->Evaluate( x, y, z );
 		if( !IsClose( tVal, pVal, 1e-6 ) ) {
 			differCount++;
 		}
@@ -266,6 +283,9 @@ bool TestDiffersFromPerlin()
 
 	// Most points should differ (turbulence takes abs of each octave)
 	bool passed = differCount > 25;
+	turbulence->release();
+	perlin->release();
+	interp->release();
 	if( !passed ) {
 		std::cout << "    FAIL: only " << differCount << "/50 points differ from Perlin" << std::endl;
 	} else {
@@ -279,9 +299,9 @@ bool TestOutputRange()
 {
 	std::cout << "  Test 9: Output range [0,1]..." << std::endl;
 
-	RealLinearInterpolator interp;
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// Test with aggressive parameters that would exceed 1.0 without normalization
-	TurbulenceNoise3D noise( interp, 0.9, 8 );
+	TurbulenceNoise3D* noise = new TurbulenceNoise3D( *interp, 0.9, 8 );
 
 	bool passed = true;
 	Scalar maxVal = -1e20;
@@ -289,7 +309,7 @@ bool TestOutputRange()
 
 	for( int i = -100; i < 100; i++ ) {
 		for( int j = -10; j < 10; j++ ) {
-			Scalar val = noise.Evaluate( i * 0.5, j * 0.7, (i+j) * 0.3 );
+			Scalar val = noise->Evaluate( i * 0.5, j * 0.7, (i+j) * 0.3 );
 			if( val > maxVal ) maxVal = val;
 			if( val < minVal ) minVal = val;
 			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
@@ -301,6 +321,8 @@ bool TestOutputRange()
 		if( !passed ) break;
 	}
 
+	noise->release();
+	interp->release();
 	if( passed )
 		std::cout << "    PASSED (range=[" << minVal << ", " << maxVal << "])" << std::endl;
 	return passed;

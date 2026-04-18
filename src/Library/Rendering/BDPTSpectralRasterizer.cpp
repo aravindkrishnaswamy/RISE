@@ -158,21 +158,17 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 		if( cr.needsSplat && pSplatFilm )
 		{
 			// For spectral splatting, convert the scalar at this wavelength
-			// to XYZ before splatting
+			// to XYZ before splatting.  Spread through the pixel filter
+			// via SplatContributionToFilm — see BDPTPelRasterizer for
+			// the rationale.
 			XYZPel thisXYZ( 0, 0, 0 );
 			if( weighted > 0 && ColorUtils::XYZFromNM( thisXYZ, nm ) ) {
 				thisXYZ = thisXYZ * weighted;
-				// Rasterize returns screen coordinates where y=0 is the
-				// image bottom.  Convert to image buffer y=0 at top.
-				const int sx = static_cast<int>( cr.rasterPos.x );
-				const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
-
-				if( sx >= 0 && sy >= 0 &&
-					static_cast<unsigned int>(sx) < camera.GetWidth() &&
-					static_cast<unsigned int>(sy) < camera.GetHeight() )
-				{
-					pSplatFilm->Splat( sx, sy, RISEPel( thisXYZ.X, thisXYZ.Y, thisXYZ.Z ) );
-				}
+				const Scalar fx = cr.rasterPos.x;
+				const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+				SplatContributionToFilm( fx, fy,
+					RISEPel( thisXYZ.X, thisXYZ.Y, thisXYZ.Z ),
+					camera.GetWidth(), camera.GetHeight() );
 			}
 		}
 		else
@@ -312,12 +308,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 						XYZPel splatXYZ( 0, 0, 0 );
 						if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, heroNM ) ) {
 							splatXYZ = splatXYZ * weighted;
-							const int sx = static_cast<int>( cr.rasterPos.x );
-							const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
-							if( sx >= 0 && sy >= 0 &&
-								static_cast<unsigned int>(sx) < camera.GetWidth() &&
-								static_cast<unsigned int>(sy) < camera.GetHeight() )
-								pSplatFilm->Splat( sx, sy, RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ) );
+							const Scalar fx = cr.rasterPos.x;
+							const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+							SplatContributionToFilm( fx, fy,
+								RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
+								camera.GetWidth(), camera.GetHeight() );
 						}
 					} else {
 						heroValue += weighted;
@@ -387,12 +382,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 						XYZPel splatXYZ( 0, 0, 0 );
 						if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, companionNM ) ) {
 							splatXYZ = splatXYZ * weighted;
-							const int sx = static_cast<int>( cr.rasterPos.x );
-							const int sy = static_cast<int>( camera.GetHeight() - cr.rasterPos.y );
-							if( sx >= 0 && sy >= 0 &&
-								static_cast<unsigned int>(sx) < camera.GetWidth() &&
-								static_cast<unsigned int>(sy) < camera.GetHeight() )
-								pSplatFilm->Splat( sx, sy, RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ) );
+							const Scalar fx = cr.rasterPos.x;
+							const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+							SplatContributionToFilm( fx, fy,
+								RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
+								camera.GetWidth(), camera.GetHeight() );
 						}
 					} else {
 						compValue += weighted;

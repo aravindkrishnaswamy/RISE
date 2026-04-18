@@ -56,6 +56,30 @@ namespace RISE
 				warped = Point2( canonical.x*dKernelWidth+x-dKernelWidthOV2, canonical.y*dKernelHeight+y-dKernelHeightOV2 );
 				return 1.0;
 			}
+
+			// Report the real half-support (default in IPixelFilter is
+			// 0.5, which only coincidentally matches width=1; without
+			// the override a box filter with width>1 would appear to
+			// have sub-pixel support to SplatFilm::SplatFiltered and
+			// consequently short-circuit to a single-pixel point splat.
+			void GetFilterSupport( Scalar& halfWidth, Scalar& halfHeight ) const
+			{
+				halfWidth  = dKernelWidthOV2;
+				halfHeight = dKernelHeightOV2;
+			}
+
+			// Normalised box kernel: 1/(width*height) inside the support
+			// so the 2D integral over [-w/2,w/2]×[-h/2,h/2] equals 1.0.
+			// SplatFilm::Resolve divides by the global sample count (not
+			// per-pixel weight), so the kernel MUST have unit integral
+			// for splats to accumulate without a bias.
+			Scalar EvaluateFilter( const Scalar dx, const Scalar dy ) const
+			{
+				if( fabs( dx ) > dKernelWidthOV2 || fabs( dy ) > dKernelHeightOV2 ) {
+					return 0;
+				}
+				return 1.0 / ( dKernelWidth * dKernelHeight );
+			}
 		};
 	}
 }
