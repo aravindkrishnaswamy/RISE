@@ -281,6 +281,10 @@ bool RiseBridge::onProgressTick(double progress, double total) {
     if (m_cancel.load()) {
         return false;
     }
+    {
+        std::lock_guard<std::mutex> lock(m_etaMutex);
+        m_eta.Update(progress, total);
+    }
     if (m_kotlinCallback) {
         JNIEnv* env = getJniEnv();
         if (env) {
@@ -296,6 +300,24 @@ bool RiseBridge::onProgressTick(double progress, double total) {
         }
     }
     return true;
+}
+
+void RiseBridge::etaBegin() {
+    std::lock_guard<std::mutex> lock(m_etaMutex);
+    m_eta.Begin();
+}
+
+int64_t RiseBridge::etaElapsedMs() const {
+    std::lock_guard<std::mutex> lock(m_etaMutex);
+    return static_cast<int64_t>(m_eta.ElapsedSeconds() * 1000.0 + 0.5);
+}
+
+int64_t RiseBridge::etaRemainingMs() const {
+    std::lock_guard<std::mutex> lock(m_etaMutex);
+    double s = 0.0;
+    if (!m_eta.RemainingSeconds(s)) return -1;
+    if (s < 0.0) s = 0.0;
+    return static_cast<int64_t>(s * 1000.0 + 0.5);
 }
 
 void RiseBridge::onLogLine(int level, const char* message) {

@@ -90,6 +90,24 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
                       right:(uint32_t)right
                      bottom:(uint32_t)bottom;
 
+#pragma mark - Render-time ETA estimator
+/// Starts a new ETA session. Call at the beginning of every render.
+- (void)etaBegin;
+
+/// Feed the estimator with the same (progress, total) pair received from
+/// the progress block. Safe to call from any thread.
+- (void)etaUpdateProgress:(double)progress total:(double)total;
+
+/// Total seconds since etaBegin.
+- (double)etaElapsedSeconds;
+
+/// Returns the current remaining-time estimate in seconds, or nil while
+/// the estimator is still warming up.
+- (nullable NSNumber *)etaRemainingSeconds;
+
+/// Formats a duration as "M:SS" below one hour, "HH:MM:SS" at or above.
++ (NSString *)formatDuration:(double)seconds;
+
 @end
 
 NS_ASSUME_NONNULL_END

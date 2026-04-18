@@ -22,6 +22,8 @@
 #include <vector>
 #include <string>
 
+#include "Utilities/RenderETAEstimator.h"
+
 namespace RISE {
     class IJobPriv;
 }
@@ -58,6 +60,9 @@ signals:
     void sceneSizeDetected(int width, int height);
     void logMessage(int level, const QString& message);
     void elapsedTimeUpdated(double seconds);
+    // seconds is valid only when hasEstimate is true; during warmup the UI
+    // should render a placeholder (e.g. "estimating...") instead.
+    void remainingTimeUpdated(double seconds, bool hasEstimate);
     void errorOccurred(const QString& message);
     void hasAnimationChanged(bool hasAnimation);
 
@@ -97,6 +102,12 @@ private:
     // Elapsed time tracking
     QTimer* m_elapsedTimer = nullptr;
     QElapsedTimer m_renderClock;
+
+    // ETA estimator: fed from the worker thread via the progress callback,
+    // sampled on the UI thread by the elapsed-timer tick. Guarded by a
+    // mutex since those two threads touch it.
+    RISE::RenderETAEstimator m_eta;
+    std::mutex m_etaMutex;
 
     // Worker thread
     QThread* m_workerThread = nullptr;

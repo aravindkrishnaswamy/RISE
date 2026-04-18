@@ -127,11 +127,21 @@ RenderEngine::RenderEngine(QObject* parent)
     GlobalLogPriv()->AddPrinter(logPrinter);
     // LogPrinter is now owned by the global log; we don't track it separately
 
-    // Elapsed time timer
+    // Elapsed time timer. Drives both the elapsed counter and the ETA
+    // read-out; the ETA estimator is updated from the progress callback
+    // (worker thread) and sampled here (UI thread) behind m_etaMutex.
     m_elapsedTimer = new QTimer(this);
     m_elapsedTimer->setInterval(500);
     connect(m_elapsedTimer, &QTimer::timeout, this, [this]() {
         emit elapsedTimeUpdated(m_renderClock.elapsed() / 1000.0);
+
+        double remaining = 0.0;
+        bool hasEstimate = false;
+        {
+            std::lock_guard<std::mutex> lock(m_etaMutex);
+            hasEstimate = m_eta.RemainingSeconds(remaining);
+        }
+        emit remainingTimeUpdated(remaining, hasEstimate);
     });
 }
 
@@ -242,6 +252,10 @@ void RenderEngine::startRender()
 
     // Start elapsed timer
     m_renderClock.start();
+    {
+        std::lock_guard<std::mutex> lock(m_etaMutex);
+        m_eta.Begin();
+    }
     m_elapsedTimer->start();
 
     QThread* thread = QThread::create([this, progressCb, imageOutput]() {
@@ -297,6 +311,10 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
 
     // Start elapsed timer
     m_renderClock.start();
+    {
+        std::lock_guard<std::mutex> lock(m_etaMutex);
+        m_eta.Begin();
+    }
     m_elapsedTimer->start();
 
     QThread* thread = QThread::create([this, progressCb, imageOutput, rasterizer]() {
@@ -363,6 +381,13 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
 {
     double fraction = (total > 0) ? progress / total : 0.0;
     QString qtTitle = QString::fromUtf8(title.c_str());
+
+    // Feed the ETA estimator on the worker thread; the UI thread reads it
+    // on the next elapsed-timer tick.
+    {
+        std::lock_guard<std::mutex> lock(m_etaMutex);
+        m_eta.Update(progress, total);
+    }
 
     QMetaObject::invokeMethod(this, [this, fraction, qtTitle]() {
         emit progressUpdated(fraction, qtTitle);

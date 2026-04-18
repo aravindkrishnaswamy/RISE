@@ -64,6 +64,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
+	$(PATHLIBRARY)Utilities/RenderETAEstimator.cpp				\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
 	$(PATHLIBRARY)Utilities/Transformable.cpp					\
 	$(PATHLIBRARY)Utilities/MediumTransport.cpp				\

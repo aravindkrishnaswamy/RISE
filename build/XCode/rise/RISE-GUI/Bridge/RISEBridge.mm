@@ -19,6 +19,7 @@
 #include "Interfaces/ICamera.h"
 #include "Utilities/RTime.h"
 #include "Utilities/MediaPathLocator.h"
+#include "Utilities/RenderETAEstimator.h"
 
 #include "Utilities/Reference.h"
 
@@ -116,6 +117,8 @@ public:
     RISEImageOutputBlock _imageOutputBlock;
     RISELogBlock _logBlock;
     NSString* _videoOutputPath;
+    RenderETAEstimator _eta;  // fed from worker thread, sampled from UI thread
+    std::mutex _etaMutex;
 }
 
 - (instancetype)init {
@@ -342,6 +345,35 @@ public:
     }
 
     return _job->RasterizeRegion(left, top, right, bottom) ? YES : NO;
+}
+
+#pragma mark - Render-time ETA estimator
+
+- (void)etaBegin {
+    std::lock_guard<std::mutex> lock(_etaMutex);
+    _eta.Begin();
+}
+
+- (void)etaUpdateProgress:(double)progress total:(double)total {
+    std::lock_guard<std::mutex> lock(_etaMutex);
+    _eta.Update(progress, total);
+}
+
+- (double)etaElapsedSeconds {
+    std::lock_guard<std::mutex> lock(_etaMutex);
+    return _eta.ElapsedSeconds();
+}
+
+- (nullable NSNumber *)etaRemainingSeconds {
+    std::lock_guard<std::mutex> lock(_etaMutex);
+    double s = 0.0;
+    if (!_eta.RemainingSeconds(s)) return nil;
+    return [NSNumber numberWithDouble:s];
+}
+
++ (NSString *)formatDuration:(double)seconds {
+    const std::string s = RenderETAEstimator::FormatDuration(seconds);
+    return [NSString stringWithUTF8String:s.c_str()];
 }
 
 @end

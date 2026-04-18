@@ -235,10 +235,24 @@ struct ContentView: View {
 
                             Spacer()
 
-                            Text(viewModel.formattedElapsedTime)
+                            Text("Elapsed: \(viewModel.formattedElapsedTime)")
                                 .font(.caption)
                                 .monospacedDigit()
                                 .foregroundColor(.secondary)
+                        }
+
+                        HStack {
+                            Spacer()
+                            if let remaining = viewModel.formattedRemainingTime {
+                                Text("Remaining: ~\(remaining)")
+                                    .font(.caption)
+                                    .monospacedDigit()
+                                    .foregroundColor(.secondary)
+                            } else {
+                                Text("Remaining: estimating\u{2026}")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                 }

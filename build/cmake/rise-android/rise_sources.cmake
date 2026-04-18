@@ -48,6 +48,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/Reference.cpp"
     "${RISE_LIB}/Utilities/PSSMLTSampler.cpp"
     "${RISE_LIB}/Utilities/Profiling.cpp"
+    "${RISE_LIB}/Utilities/RenderETAEstimator.cpp"
     "${RISE_LIB}/Utilities/RTime.cpp"
     "${RISE_LIB}/Utilities/Transformable.cpp"
     "${RISE_LIB}/Utilities/MediumTransport.cpp"

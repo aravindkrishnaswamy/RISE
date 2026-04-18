@@ -12,6 +12,8 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 
+#include "Utilities/RenderETAEstimator.h"
+
 ControlsWidget::ControlsWidget(QWidget* parent)
     : QWidget(parent)
 {
@@ -76,6 +78,13 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     progressInfoLayout->addWidget(m_elapsedLabel);
     progressLayout->addLayout(progressInfoLayout);
 
+    // Separate "Remaining: ~M:SS" line below the progress info so the
+    // estimate is readable without squeezing the existing layout.
+    m_remainingLabel = new QLabel("");
+    m_remainingLabel->setStyleSheet("font-family: monospace; color: gray;");
+    m_remainingLabel->setAlignment(Qt::AlignRight);
+    progressLayout->addWidget(m_remainingLabel);
+
     m_progressGroup->hide();
     mainLayout->addWidget(m_progressGroup);
 
@@ -106,6 +115,10 @@ void ControlsWidget::setRenderState(RenderEngine::State state)
         m_progressPercent->setText("0%");
         m_progressTitle->clear();
         m_elapsedLabel->clear();
+        m_remainingLabel->clear();
+        m_lastElapsed = 0.0;
+        m_lastRemaining = 0.0;
+        m_haveRemainingEstimate = false;
     }
 }
 
@@ -130,12 +143,30 @@ void ControlsWidget::updateProgress(double fraction, const QString& title)
 
 void ControlsWidget::updateElapsedTime(double seconds)
 {
-    int mins = static_cast<int>(seconds) / 60;
-    double secs = seconds - mins * 60;
-    if (mins > 0) {
-        m_elapsedLabel->setText(QString("%1m %2s").arg(mins).arg(secs, 0, 'f', 1));
+    m_lastElapsed = seconds;
+    refreshTimeLabels();
+}
+
+void ControlsWidget::updateRemainingTime(double seconds, bool hasEstimate)
+{
+    m_lastRemaining = seconds;
+    m_haveRemainingEstimate = hasEstimate;
+    refreshTimeLabels();
+}
+
+void ControlsWidget::refreshTimeLabels()
+{
+    m_elapsedLabel->setText(
+        QString("Elapsed: %1")
+            .arg(QString::fromStdString(
+                RISE::RenderETAEstimator::FormatDuration(m_lastElapsed))));
+    if (m_haveRemainingEstimate) {
+        m_remainingLabel->setText(
+            QString("Remaining: ~%1")
+                .arg(QString::fromStdString(
+                    RISE::RenderETAEstimator::FormatDuration(m_lastRemaining))));
     } else {
-        m_elapsedLabel->setText(QString("%1s").arg(secs, 0, 'f', 1));
+        m_remainingLabel->setText("Remaining: estimating\u2026");
     }
 }
 

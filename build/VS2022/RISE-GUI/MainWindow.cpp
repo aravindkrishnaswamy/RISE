@@ -81,6 +81,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_engine, &RenderEngine::sceneSizeDetected, this, &MainWindow::onSceneSizeDetected);
     connect(m_engine, &RenderEngine::logMessage, m_logWidget, &LogWidget::appendLog);
     connect(m_engine, &RenderEngine::elapsedTimeUpdated, m_controlsWidget, &ControlsWidget::updateElapsedTime);
+    connect(m_engine, &RenderEngine::remainingTimeUpdated, m_controlsWidget, &ControlsWidget::updateRemainingTime);
     connect(m_engine, &RenderEngine::hasAnimationChanged, m_controlsWidget, &ControlsWidget::setHasAnimation);
     connect(m_engine, &RenderEngine::errorOccurred, this, [this](const QString& msg) {
         statusBar()->showMessage("Error: " + msg, 5000);

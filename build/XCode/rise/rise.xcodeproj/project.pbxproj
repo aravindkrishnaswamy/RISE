@@ -1338,6 +1338,9 @@
 		F2863A032F9244920009D9AE /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
 		F2863A022F9244920009D9AE /* CPUTopology.h in Headers */ = {isa = PBXBuildFile; fileRef = F2863A002F9244920009D9AE /* CPUTopology.h */; };
 		F2863A042F9244920009D9AE /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
+		F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
+		F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F26E7A002F9244920009D9AE /* RenderETAEstimator.h */; };
+		F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
 		F286395B2F9244AC0009D9AE /* ThreadLocalSplatBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */; };
 		F286395C2F9244AC0009D9AE /* AdaptiveTileSizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */; };
 		F286395D2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */; };
@@ -2223,6 +2226,8 @@
 		F28639532F9244920009D9AE /* ThreadPool.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ThreadPool.cpp; sourceTree = "<group>"; };
 		F2863A002F9244920009D9AE /* CPUTopology.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CPUTopology.h; sourceTree = "<group>"; };
 		F2863A012F9244920009D9AE /* CPUTopology.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CPUTopology.cpp; sourceTree = "<group>"; };
+		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
+		F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RenderETAEstimator.cpp; sourceTree = "<group>"; };
 		F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveTileSizer.h; sourceTree = "<group>"; };
 		F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AdaptiveTileSizer.cpp; sourceTree = "<group>"; };
 		F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThreadLocalSplatBuffer.h; sourceTree = "<group>"; };
@@ -3275,6 +3280,8 @@
 				F28639532F9244920009D9AE /* ThreadPool.cpp */,
 				F2863A002F9244920009D9AE /* CPUTopology.h */,
 				F2863A012F9244920009D9AE /* CPUTopology.cpp */,
+				F26E7A002F9244920009D9AE /* RenderETAEstimator.h */,
+				F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */,
 				F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */,
 				F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */,
 				F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */,
@@ -3719,6 +3726,7 @@
 				F27F0B6A069C42910069C9E5 /* PhongLuminaireMaterial.h in Headers */,
 				F28639552F9244920009D9AE /* ThreadPool.h in Headers */,
 				F2863A022F9244920009D9AE /* CPUTopology.h in Headers */,
+				F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */,
 				F27F0B6C069C42910069C9E5 /* PolishedBRDF.h in Headers */,
 				F27F0B6D069C42910069C9E5 /* PolishedMaterial.h in Headers */,
 				F27F0B6F069C42910069C9E5 /* PolishedSPF.h in Headers */,
@@ -4202,6 +4210,7 @@
 				F27F0B7E069C42910069C9E5 /* WardAnisotropicEllipticalGaussianSPF.cpp in Sources */,
 				F28639562F9244920009D9AE /* ThreadPool.cpp in Sources */,
 				F2863A042F9244920009D9AE /* CPUTopology.cpp in Sources */,
+				F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */,
 				F27F0B80069C42910069C9E5 /* WardIsotropicGaussianBRDF.cpp in Sources */,
 				F27F0B83069C42910069C9E5 /* WardIsotropicGaussianSPF.cpp in Sources */,
 				F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */,
@@ -4665,6 +4674,7 @@
 				F24B72E02F52A632008304C4 /* LambertianBRDF.h in Sources */,
 				F28639542F9244920009D9AE /* ThreadPool.cpp in Sources */,
 				F2863A032F9244920009D9AE /* CPUTopology.cpp in Sources */,
+				F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */,
 				F2C5D5E82F716C5000546C97 /* BDPTPelRasterizer.cpp in Sources */,
 				F24B72E12F52A632008304C4 /* LambertianEmitter.cpp in Sources */,
 				F24B72E22F52A632008304C4 /* LambertianEmitter.h in Sources */,

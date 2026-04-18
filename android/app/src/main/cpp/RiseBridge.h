@@ -23,6 +23,8 @@
 
 #include <jni.h>
 
+#include "Utilities/RenderETAEstimator.h"
+
 // Forward-declare RISE types to keep this header small and the JNI bridge
 // free of library internals.
 namespace RISE {
@@ -99,6 +101,15 @@ public:
     // to Kotlin (which relays it to Logcat and any UI log pane).
     void onLogLine(int level, const char* message);
 
+    // Render-time ETA. The estimator is fed from the progress callback on
+    // worker threads and read from the UI thread during polling, guarded
+    // by m_etaMutex.
+    void etaBegin();
+    int64_t etaElapsedMs() const;
+    // Returns >=0 ms when an estimate is available; returns -1 while the
+    // estimator is still warming up.
+    int64_t etaRemainingMs() const;
+
 private:
     void teardownJob();
     void writeGlobalOptionsFile(const std::string& path, int threadCount);
@@ -111,6 +122,11 @@ private:
     // Job & state
     RISE::IJobPriv*    m_job = nullptr;
     std::atomic<bool>  m_cancel{false};
+
+    // ETA estimator, read from the UI thread and written from progress
+    // callbacks on worker threads.
+    mutable std::mutex            m_etaMutex;
+    RISE::RenderETAEstimator      m_eta;
 
     // Framebuffer: RGBA8, allocated once per scene, reused across tiles and
     // across renders of the same scene dimensions.

@@ -57,12 +57,14 @@ fun RenderScreen(
     windowSizeClass: WindowSizeClass,
     viewModel: RenderViewModel,
 ) {
-    val state     by viewModel.state.collectAsState()
-    val progress  by viewModel.progress.collectAsState()
-    val frame     = viewModel.frame
-    val context   = LocalContext.current
-    val scope     = rememberCoroutineScope()
-    val riseRoot  = remember { (context.applicationContext as RiseApplication).riseRoot }
+    val state       by viewModel.state.collectAsState()
+    val progress    by viewModel.progress.collectAsState()
+    val elapsedMs   by viewModel.elapsedMs.collectAsState()
+    val remainingMs by viewModel.remainingMs.collectAsState()
+    val frame       = viewModel.frame
+    val context     = LocalContext.current
+    val scope       = rememberCoroutineScope()
+    val riseRoot    = remember { (context.applicationContext as RiseApplication).riseRoot }
 
     val isExpanded = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Expanded
     val isMedium   = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Medium
@@ -90,6 +92,8 @@ fun RenderScreen(
                     frame = frame,
                     state = state,
                     progress = progress,
+                    elapsedMs = elapsedMs,
+                    remainingMs = remainingMs,
                     onCancel = viewModel::cancel,
                 )
             }
@@ -107,6 +111,8 @@ fun RenderScreen(
                     frame = frame,
                     state = state,
                     progress = progress,
+                    elapsedMs = elapsedMs,
+                    remainingMs = remainingMs,
                     onCancel = viewModel::cancel,
                 )
             }
@@ -151,11 +157,15 @@ private fun RenderCanvas(
     frame: ImageBitmap?,
     state: RenderState,
     progress: Float,
+    elapsedMs: Long,
+    remainingMs: Long?,
     onCancel: () -> Unit,
 ) {
     Card(modifier, shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             StateStrip(state = state, progress = progress, onCancel = onCancel)
+            Spacer(Modifier.height(4.dp))
+            TimeReadout(state = state, elapsedMs = elapsedMs, remainingMs = remainingMs)
             Spacer(Modifier.height(12.dp))
             Box(
                 Modifier
@@ -210,3 +220,41 @@ private fun StateStrip(state: RenderState, progress: Float, onCancel: () -> Unit
     }
 }
 
+@Composable
+private fun TimeReadout(state: RenderState, elapsedMs: Long, remainingMs: Long?) {
+    val isActive = state is RenderState.Rendering || state is RenderState.Cancelling
+    val isDone = state is RenderState.Done
+    if (!isActive && !isDone) return
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "Elapsed: ${formatDurationMs(elapsedMs)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+        Spacer(Modifier.weight(1f))
+        if (isActive) {
+            val remainingText = remainingMs?.let { "~${formatDurationMs(it)}" } ?: "estimating\u2026"
+            Text(
+                "Remaining: $remainingText",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+        }
+    }
+}
+
+// Mirror of RISE::RenderETAEstimator::FormatDuration. Kept in Kotlin so the
+// UI avoids a JNI round-trip per display tick; the algorithm is trivial.
+internal fun formatDurationMs(ms: Long): String {
+    val clamped = if (ms < 0L) 0L else ms
+    val totalSeconds = (clamped + 500L) / 1000L
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        String.format("%02d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format("%d:%02d", minutes, seconds)
+    }
+}

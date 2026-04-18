@@ -75,4 +75,21 @@ object RiseNative {
      * Returns null before [RiseCallback.onSceneReady] has fired.
      */
     external fun nativeGetFramebuffer(): ByteBuffer?
+
+    /**
+     * Reset the render-time estimator and capture the current time as the
+     * start of a new render session. Call at the moment the UI transitions
+     * into [RenderState.Rendering] (or just before [nativeRasterize]).
+     */
+    external fun nativeEtaBegin()
+
+    /** Milliseconds since the last [nativeEtaBegin] call. */
+    external fun nativeEtaElapsedMs(): Long
+
+    /**
+     * Predicted remaining milliseconds for the current render, or -1 when
+     * the estimator is still warming up. The UI should show "estimating…"
+     * when this returns -1.
+     */
+    external fun nativeEtaRemainingMs(): Long
 }

@@ -30,6 +30,7 @@ public:
 public slots:
     void updateProgress(double fraction, const QString& title);
     void updateElapsedTime(double seconds);
+    void updateRemainingTime(double seconds, bool hasEstimate);
 
 signals:
     void openSceneClicked();
@@ -53,7 +54,12 @@ private:
     QLabel* m_progressTitle = nullptr;
     QLabel* m_progressPercent = nullptr;
     QLabel* m_elapsedLabel = nullptr;
+    QLabel* m_remainingLabel = nullptr;
     QLabel* m_cancellingLabel = nullptr;
+    double m_lastElapsed = 0.0;
+    double m_lastRemaining = 0.0;
+    bool m_haveRemainingEstimate = false;
+    void refreshTimeLabels();
 
     QWidget* m_progressGroup = nullptr;
 

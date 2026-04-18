@@ -4,6 +4,15 @@ import CoreGraphics
 import AppKit
 import UniformTypeIdentifiers
 
+// RISEBridge is an Obj-C class; Swift can't auto-verify thread-safety.
+// The methods captured across threads here — etaBegin, etaUpdateProgress,
+// etaRemainingSeconds — are all guarded by a std::mutex on the C++ side.
+// The one-way setup methods (setProgressBlock, setImageOutputBlock,
+// rasterize) are called serially from the view model. Vouching for
+// Sendable here silences the @Sendable-capture warnings without wrapping
+// every call site.
+extension RISEBridge: @unchecked Sendable {}
+
 /// A single log message captured from the RISE engine.
 struct LogMessage: Identifiable {
     let id = UUID()
@@ -123,6 +132,8 @@ final class RenderViewModel: ObservableObject {
     @Published var loadedFilePath: String? = nil
     @Published var versionString: String = ""
     @Published var elapsedTime: TimeInterval = 0
+    // nil while the ETA is still warming up or otherwise unavailable.
+    @Published var remainingTime: TimeInterval? = nil
     @Published var sceneSize: CGSize? = nil
     @Published var logMessages: [LogMessage] = []
     @Published var isEditorVisible: Bool = false
@@ -224,6 +235,7 @@ final class RenderViewModel: ObservableObject {
                 progress = 0.0
                 progressTitle = ""
                 elapsedTime = 0
+                remainingTime = nil
                 sceneSize = nil
                 imageBuffer.reset()
                 logMessages.removeAll()
@@ -326,17 +338,23 @@ final class RenderViewModel: ObservableObject {
         renderedImage = nil
         imageBuffer.reset()
         elapsedTime = 0
+        remainingTime = nil
         renderStartTime = Date()
+        bridge.etaBegin()
 
+        let bridgeForTimer = bridge
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
                 self.elapsedTime = Date().timeIntervalSince(start)
+                self.remainingTime = bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
         }
 
         let cancelRef = cancelFlag
+        let bridgeForProgress = bridge
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
+            bridgeForProgress.etaUpdateProgress(prog, total: total)
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.progress = total > 0 ? prog / total : 0
@@ -389,6 +407,7 @@ final class RenderViewModel: ObservableObject {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
                 self.renderStartTime = nil
+                self.remainingTime = nil
 
                 if cancelRef.value {
                     self.renderState = .cancelled
@@ -412,17 +431,23 @@ final class RenderViewModel: ObservableObject {
         renderedImage = nil
         imageBuffer.reset()
         elapsedTime = 0
+        remainingTime = nil
         renderStartTime = Date()
+        bridge.etaBegin()
 
+        let bridgeForTimer = bridge
         displayTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.renderStartTime else { return }
                 self.elapsedTime = Date().timeIntervalSince(start)
+                self.remainingTime = bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
         }
 
         let cancelRef = cancelFlag
+        let bridgeForProgress = bridge
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
+            bridgeForProgress.etaUpdateProgress(prog, total: total)
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 self.progress = total > 0 ? prog / total : 0
@@ -481,6 +506,7 @@ final class RenderViewModel: ObservableObject {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
                 self.renderStartTime = nil
+                self.remainingTime = nil
 
                 if cancelRef.value {
                     self.renderState = .cancelled
@@ -565,6 +591,7 @@ final class RenderViewModel: ObservableObject {
         progress = 0.0
         progressTitle = ""
         elapsedTime = 0
+        remainingTime = nil
         sceneSize = nil
         imageBuffer.reset()
         logMessages.removeAll()
@@ -602,6 +629,7 @@ final class RenderViewModel: ObservableObject {
         progress = 0.0
         progressTitle = ""
         elapsedTime = 0
+        remainingTime = nil
         sceneSize = nil
         imageBuffer.reset()
         logMessages.removeAll()
@@ -618,14 +646,11 @@ final class RenderViewModel: ObservableObject {
     // MARK: - Helpers
 
     var formattedElapsedTime: String {
-        let total = Int(elapsedTime)
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let seconds = total % 60
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%d:%02d", minutes, seconds)
-        }
+        RISEBridge.formatDuration(elapsedTime)
+    }
+
+    var formattedRemainingTime: String? {
+        guard let r = remainingTime else { return nil }
+        return RISEBridge.formatDuration(r)
     }
 }

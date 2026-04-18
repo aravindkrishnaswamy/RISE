@@ -20,11 +20,13 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -46,6 +48,20 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
 
     private val _progress = MutableStateFlow(0f)
     val progress: StateFlow<Float> = _progress.asStateFlow()
+
+    // Elapsed ms since the estimator was started for the current render.
+    // Zero while idle, frozen on final value once the render finishes.
+    private val _elapsedMs = MutableStateFlow(0L)
+    val elapsedMs: StateFlow<Long> = _elapsedMs.asStateFlow()
+
+    // Predicted remaining ms, or null while the estimator is still warming
+    // up. The UI should render a placeholder when this is null.
+    private val _remainingMs = MutableStateFlow<Long?>(null)
+    val remainingMs: StateFlow<Long?> = _remainingMs.asStateFlow()
+
+    // Polling job that samples elapsed/remaining from the native estimator
+    // while a render is in flight. Cancelled when the render ends.
+    private var etaPollJob: Job? = null
 
     var frame by mutableStateOf<ImageBitmap?>(null)
         private set
@@ -82,11 +98,14 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
      */
     fun loadAndRender(scenePath: String) {
         renderJob?.cancel()
+        etaPollJob?.cancel()
         renderJob = viewModelScope.launch {
             try {
                 (getApplication<RiseApplication>()).ensureInitialized()
 
                 _progress.value = 0f
+                _elapsedMs.value = 0L
+                _remainingMs.value = null
                 _state.value = RenderState.Loading(scenePath)
                 Log.i(TAG, "loadAndRender: $scenePath")
 
@@ -94,6 +113,18 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 if (!loaded) {
                     _state.value = RenderState.Error("Failed to load $scenePath")
                     return@launch
+                }
+
+                // Start the ETA session just before rasterize so elapsed
+                // time tracks the render phase, not the parse phase.
+                RiseNative.nativeEtaBegin()
+                etaPollJob = viewModelScope.launch {
+                    while (isActive) {
+                        _elapsedMs.value = RiseNative.nativeEtaElapsedMs()
+                        val r = RiseNative.nativeEtaRemainingMs()
+                        _remainingMs.value = if (r >= 0L) r else null
+                        delay(ETA_POLL_INTERVAL_MS)
+                    }
                 }
 
                 // Transition to Rendering as soon as the first callback fires
@@ -104,11 +135,20 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 // invalidate signal tick.
                 drainDirtyAndRepublish()
 
+                etaPollJob?.cancel()
+                etaPollJob = null
+                _elapsedMs.value = RiseNative.nativeEtaElapsedMs()
+                _remainingMs.value = null
+
                 _state.value = if (ok) RenderState.Done else RenderState.Cancelled
             } catch (c: CancellationException) {
+                etaPollJob?.cancel()
+                etaPollJob = null
                 _state.value = RenderState.Cancelled
                 throw c
             } catch (t: Throwable) {
+                etaPollJob?.cancel()
+                etaPollJob = null
                 Log.e(TAG, "loadAndRender failed", t)
                 _state.value = RenderState.Error(t.message ?: t::class.simpleName.orEmpty())
             }
@@ -205,5 +245,6 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     companion object {
         private const val TAG = "RISE-VM"
         private const val INVALIDATE_HZ = 30
+        private const val ETA_POLL_INTERVAL_MS = 500L
     }
 }

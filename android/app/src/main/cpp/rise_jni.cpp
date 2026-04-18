@@ -106,6 +106,20 @@ JNIF(jobject, nativeGetFramebuffer)(JNIEnv* env, jobject /*thiz*/) {
     return getBridge().getFramebufferByteBuffer(env);
 }
 
+JNIF(void, nativeEtaBegin)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    getBridge().etaBegin();
+}
+
+JNIF(jlong, nativeEtaElapsedMs)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jlong>(getBridge().etaElapsedMs());
+}
+
+// Returns -1 when the estimator is still warming up; the UI should display
+// "estimating..." in that case.
+JNIF(jlong, nativeEtaRemainingMs)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jlong>(getBridge().etaRemainingMs());
+}
+
 #undef JNIF
 
 } // extern "C"
