@@ -471,38 +471,32 @@ int MemoryBuffer::getLine( char* pDest, unsigned int max )
 // Setters
 //
 
+// Single-value setters grow the buffer to accommodate the write when needed, matching
+// the setBytes contract. Resize only fails (and thus the setter returns false) when the
+// buffer does not own its memory, in which case the caller must pre-size it.
 bool MemoryBuffer::setChar( const char ch )
 {
-#ifdef _DEBUG
-	if( nCursor==nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setChar:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(char) > nSize && !Resize( nCursor+sizeof(char) ) ) {
 		return false;
 	}
-#endif
 	pBuffer[nCursor++] = ch;
 	return true;
 }
 
 bool MemoryBuffer::setUChar( const unsigned char ch )
 {
-#ifdef _DEBUG
-	if( nCursor==nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setUChar:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(unsigned char) > nSize && !Resize( nCursor+sizeof(unsigned char) ) ) {
 		return false;
 	}
-#endif
 	pBuffer[nCursor++] = ch;
 	return true;
 }
 
 bool MemoryBuffer::setWord( const short sh )
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(short)>nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setWord:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(short) > nSize && !Resize( nCursor+sizeof(short) ) ) {
 		return false;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned char low = sh & 0xFF;
@@ -518,12 +512,9 @@ bool MemoryBuffer::setWord( const short sh )
 
 bool MemoryBuffer::setUWord( const unsigned short sh )
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(unsigned short)>nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setUWord:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(unsigned short) > nSize && !Resize( nCursor+sizeof(unsigned short) ) ) {
 		return false;
 	}
-#endif
 #ifdef RISE_BIG_ENDIAN
 	unsigned char low = sh & 0xFF;
 	unsigned char high = (sh >> 8) & 0xFF;
@@ -538,12 +529,9 @@ bool MemoryBuffer::setUWord( const unsigned short sh )
 
 bool MemoryBuffer::setInt( const int n )
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(int)>nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setInt:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(int) > nSize && !Resize( nCursor+sizeof(int) ) ) {
 		return false;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned short low = n & 0xFFFF;
@@ -559,12 +547,9 @@ bool MemoryBuffer::setInt( const int n )
 
 bool MemoryBuffer::setUInt( const unsigned int n )
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(unsigned int)>nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setUInt:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(unsigned int) > nSize && !Resize( nCursor+sizeof(unsigned int) ) ) {
 		return false;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned short low = n & 0xFFFF;
@@ -580,12 +565,9 @@ bool MemoryBuffer::setUInt( const unsigned int n )
 
 bool MemoryBuffer::setFloat( const float f )
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(float)>nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setFloat:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(float) > nSize && !Resize( nCursor+sizeof(float) ) ) {
 		return false;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned int n;
@@ -600,17 +582,14 @@ bool MemoryBuffer::setFloat( const float f )
 
 bool MemoryBuffer::setDouble( const double d )
 {
-#ifdef _DEBUG
-	if( nCursor+sizeof(double)>nSize ) {
-		GlobalLog()->PrintSourceError( "MemoryBuffer::setDouble:: Attempted write past end of buffer", __FILE__, __LINE__ );
+	if( nCursor+sizeof(double) > nSize && !Resize( nCursor+sizeof(double) ) ) {
 		return false;
 	}
-#endif
 
 #ifdef RISE_BIG_ENDIAN
 	unsigned int first;
 	unsigned int last;
-	
+
 	char* ptrd = (char*)&d;
 	memcpy( &first, ptrd, 4 );
 	memcpy( &last, &ptrd[4], 4 );
