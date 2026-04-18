@@ -14,6 +14,10 @@ This directory holds focused design notes and planning docs. Start at [../README
 
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): ranked backlog of rendering improvements, including transport, materials, samplers, and volumes, with acceptance criteria and starting files per item.
 
+## Engineering Skills
+
+- [skills/](skills/): process skills distilled from prior RISE sessions — multi-reviewer code review, perf work with baselines, ABI-preserving API evolution, const-correctness decision tree. Read the matching skill BEFORE starting a task of that shape. Model-agnostic markdown; Claude Code auto-invokes via `.claude/skills/` shims.
+
 ## Related Docs Outside `docs/`
 
 - [../README.md](../README.md): top-level repo map and canonical command quick reference

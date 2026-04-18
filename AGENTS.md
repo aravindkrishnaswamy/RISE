@@ -91,6 +91,25 @@ If you changed only header files, run `make -C build/make/rise clean` before reb
 - `/.vscode/`, `Xcuserdata/`, and `Config.specific` are local IDE or platform artifacts.
 - `*.mov` files are rendered video output.
 
+## Engineering Skills
+
+Process skills distilled from prior RISE sessions live in
+[docs/skills/](docs/skills/).  Read the relevant skill BEFORE starting
+a task of the matching kind — the lessons are captured there
+precisely because ad-hoc judgment reliably misses them.
+
+| Skill | Trigger |
+|---|---|
+| [adversarial-code-review](docs/skills/adversarial-code-review.md) | Validate a non-trivial change; user asks for multiple / adversarial reviewers. |
+| [performance-work-with-baselines](docs/skills/performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
+| [abi-preserving-api-evolution](docs/skills/abi-preserving-api-evolution.md) | Change a public API — exported function, virtual interface, or abstract base class. |
+| [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — apply this decision tree first. |
+
+Claude Code auto-discovers these via thin shims under
+`.claude/skills/<name>/SKILL.md`.  Other LLM tools should read the
+`docs/skills/` directory directly.  See [docs/skills/README.md](docs/skills/README.md)
+for the full format and authoring rules.
+
 ## Reading Order
 
 1. [README.md](README.md)
@@ -103,3 +122,4 @@ If you changed only header files, run `make -C build/make/rise clean` before reb
 8. [scenes/Tests/README.md](scenes/Tests/README.md)
 9. [tests/README.md](tests/README.md)
 10. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) when touching scene mutability, animation, rasterizers, or thread safety
+11. [docs/skills/](docs/skills/) when starting a task whose shape matches one of the skills above

@@ -36,6 +36,17 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - Controls live in `src/Library/Utilities/CPUTopology.{h,cpp}`, `src/Library/Utilities/ThreadPool.cpp`, `src/Library/Utilities/Threads/ThreadsPTHREADs.cpp`, `src/Library/Utilities/Threads/ThreadsWin32.cpp`.
 - See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) "Thread priority policy" for the full rationale, per-platform APIs, and measurement recipe.
 
+## Engineering Skills — read the matching skill before starting
+
+Process skills distilled from prior RISE sessions.  Auto-invoked via
+`.claude/skills/<name>/SKILL.md` shims; full content lives in
+[docs/skills/](docs/skills/).
+
+- [adversarial-code-review](docs/skills/adversarial-code-review.md) — validate a non-trivial change with 2–3 orthogonal reviewers in parallel.  Fire when the user asks for adversarial review / multiple reviewers, or after landing any correctness-sensitive change.
+- [performance-work-with-baselines](docs/skills/performance-work-with-baselines.md) — structured quantitative perf work: baseline before code, measure with stddev, profile first, one variable at a time, correctness invariant, numeric reporting.
+- [abi-preserving-api-evolution](docs/skills/abi-preserving-api-evolution.md) — when touching `RISE_API.h`, any `src/Library/Interfaces/` header, or a derived class that already has an overloaded method name.  Three layers (exported signatures, vtable slots, name hiding) each with their own failure mode.
+- [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) — decision tree to run BEFORE reaching for `mutable` / `const_cast` / dropping a `const`.
+
 ## Read Next
 
 - Core library map: [src/Library/README.md](src/Library/README.md)
