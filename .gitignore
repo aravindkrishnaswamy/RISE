@@ -30,7 +30,6 @@ build/VS2022/UpgradeLog.htm
 *.log
 /build/VS2022/vcpkg_installed
 /dbin
-/build/VS2022/Library
 /build/VS2022/x64
 /build/VS2022/RISE-CLI/x64
 # ---- Android / Gradle / Android Studio ----
@@ -61,3 +60,4 @@ build/VS2022/UpgradeLog.htm
 /android/app/build
 
 /build/XCode/rise/build
+/build/VS2022/Library/Release

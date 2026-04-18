@@ -1,0 +1,2634 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Utilities">
+      <UniqueIdentifier>{c10fb33e-5a30-477a-969f-ee7dd721baa5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utilities\Math3D">
+      <UniqueIdentifier>{d98b22ee-42f8-4154-bee1-74510e52929d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utilities\Log">
+      <UniqueIdentifier>{20b03c40-4a25-4d16-97d4-e8c05eb31149}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utilities\Color">
+      <UniqueIdentifier>{b06217b1-a124-41f3-8300-ee1bd2866cc6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utilities\Threads">
+      <UniqueIdentifier>{13c60dd6-276e-4101-9913-2d0b697a4673}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utilities\Communications">
+      <UniqueIdentifier>{8f1160af-1388-4979-957c-a93bd0817020}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Sampling">
+      <UniqueIdentifier>{fbd74e6f-2cc4-4fea-ace3-cb7d4dd1dbbd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images">
+      <UniqueIdentifier>{6fcb5016-2f8b-46e4-b24e-54d4e5691870}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\TIFF">
+      <UniqueIdentifier>{8d5ba7f9-58bd-4705-98b2-ef6624f2622b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\TGA">
+      <UniqueIdentifier>{a07285c7-d43f-471d-bc0a-7d46401b2ee8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\HDR">
+      <UniqueIdentifier>{6c044c07-90a9-457f-850b-c534983c41e0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\PNG">
+      <UniqueIdentifier>{1cd82a61-84bc-4d8d-8b40-f53ff915a7ad}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\RGBEA">
+      <UniqueIdentifier>{be605979-8afc-4a48-964b-b64e1aafba56}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\EXR">
+      <UniqueIdentifier>{8f7cb52f-acaa-4e27-aaa7-3608cffc1c76}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Raster Images\PPM">
+      <UniqueIdentifier>{628dbe86-2eff-49eb-886f-c7b4434a62e9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Painters">
+      <UniqueIdentifier>{8d1bc2c2-08df-45dc-ae9b-9b1193d4b12a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Camera">
+      <UniqueIdentifier>{25af0af4-21a6-4e0f-ab2a-1c48887de7cf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Geometry">
+      <UniqueIdentifier>{698cf3d4-e941-4352-8f98-5a0318bbf51c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Geometry\Mesh Loaders">
+      <UniqueIdentifier>{f981432c-2518-4d59-b4bd-d593c8e18ba3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Geometry\UV Generation">
+      <UniqueIdentifier>{015b317c-459c-4a60-8e66-236c9f4fb146}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Geometry\Triangle Mesh">
+      <UniqueIdentifier>{a9f24be1-e12c-44bf-bc1f-ea7fb54aa43f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Intersection">
+      <UniqueIdentifier>{3ab0c9a1-4619-42a2-b9cd-3c73f12fa258}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Object">
+      <UniqueIdentifier>{1a5bde78-2efa-4f6b-8a6e-69abb7778727}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials">
+      <UniqueIdentifier>{36648c2c-a9fe-48e9-b6c1-9f82c45b2f75}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Phong">
+      <UniqueIdentifier>{edd99556-d124-4736-85e7-070b8f129598}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Luminaries">
+      <UniqueIdentifier>{a92af2bb-431d-4951-ac54-d3e7193f3495}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Not Physically Based">
+      <UniqueIdentifier>{5e116104-c701-4fa9-8d8c-979bd824310a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Translucents">
+      <UniqueIdentifier>{7b7cdb66-b17a-4c01-a165-ad1a9e5fb60b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Dielectrics">
+      <UniqueIdentifier>{b090d48a-b748-4167-891a-b13e8323c1e7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\BioSpec">
+      <UniqueIdentifier>{7aabbaf2-c8ce-4a91-910e-0fa84a948b23}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Lambertian">
+      <UniqueIdentifier>{2f871df4-9120-42ce-b78d-80dcdbc6466b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Polished">
+      <UniqueIdentifier>{c069ffe4-a57e-40ed-b6f2-49fcd9ee443e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Tissue">
+      <UniqueIdentifier>{fd64e2c0-d3c1-4175-af47-865d9198804d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Ward">
+      <UniqueIdentifier>{1b79483b-4371-4ba4-93fa-1143418a5793}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Cook Torrance">
+      <UniqueIdentifier>{97cacb36-aa12-40d9-b528-eb7ed9b305ee}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Oren Nayar">
+      <UniqueIdentifier>{3a4974ba-0bd4-41a7-9bc8-4979b2ad48c5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Schlick">
+      <UniqueIdentifier>{53c2196a-3bea-46f5-a4e3-515c32a38462}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Ashikmin Shirley">
+      <UniqueIdentifier>{0dbed68e-3830-4581-b6b3-d0e6b12518a3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Materials\Data Driven">
+      <UniqueIdentifier>{374c2424-a7aa-49d1-a13f-afc29d8b6377}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Scene">
+      <UniqueIdentifier>{b097533c-b6f0-456a-8496-1bd80f2c1c0d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Non Mesh Lights">
+      <UniqueIdentifier>{bdccffae-d9fb-4f80-ba8d-7cb1acef8f50}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Octree">
+      <UniqueIdentifier>{ebe91d01-5afe-4e04-8292-fd1c938b86a8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering">
+      <UniqueIdentifier>{a928e6f1-20a1-4a08-9824-ca74e0d80934}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering\Rasterizers">
+      <UniqueIdentifier>{b32e0646-8b71-48dc-a03b-97f34bed8a56}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering\Rasterizers\Pixel Pel">
+      <UniqueIdentifier>{d6bf67b8-dbdf-4fdd-924d-345cafd344d7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering\Rasterizers\Pixel Spectral">
+      <UniqueIdentifier>{991fc15a-bd54-4fb4-a7b1-976b9954ba0d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering\Rasterizer Output">
+      <UniqueIdentifier>{b0b6feab-ced6-4b20-b47e-6922cb381cd2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Rendering\Rasterize Sequences">
+      <UniqueIdentifier>{651dae65-f0b3-4d59-a9a3-b3b9471758bf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="DetectorSphere">
+      <UniqueIdentifier>{395d6730-ec88-43b8-9755-0f46789069ad}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Photon Mapping">
+      <UniqueIdentifier>{b4f47e11-57cc-43ef-803a-d88dafdc33e6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Photon Mapping\Pel">
+      <UniqueIdentifier>{4b7dda56-fe88-49ba-9ee9-cc0751fb2e76}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Photon Mapping\Spectral">
+      <UniqueIdentifier>{5c852a96-6f6b-439f-982d-360b17e6f9ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Job">
+      <UniqueIdentifier>{cb604e3a-7fc6-4cda-ae57-a6b4d245b32e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Interfaces">
+      <UniqueIdentifier>{4a256b08-95ab-4a97-8fd8-d3d2054ffd65}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Modifiers">
+      <UniqueIdentifier>{6fcf4b07-d54c-44c3-a0da-6db7e036fea2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Managers">
+      <UniqueIdentifier>{cb61f954-8057-4e45-8228-ddfd46c48d21}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Noise">
+      <UniqueIdentifier>{8534b1bc-b425-4dfb-bcae-85efe62af189}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Functions">
+      <UniqueIdentifier>{fd51ef20-21b7-42a0-ac04-53dd041e211b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Parser">
+      <UniqueIdentifier>{f564682b-43c0-406d-a282-6172220be2ee}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{475ddab5-6e37-423b-a6c0-40308e931b0c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Shader Ops">
+      <UniqueIdentifier>{6ad24955-f3a0-43af-bbc3-e3f3739638fc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Shader Ops\SSS">
+      <UniqueIdentifier>{700a17bc-2491-4cfa-8e79-51ec6ef35120}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="API">
+      <UniqueIdentifier>{c0a73aa7-8f86-40be-8a54-630621a389dd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="BSPTree">
+      <UniqueIdentifier>{e11f39ea-a1f7-4455-a05b-1470f46c5257}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Animation">
+      <UniqueIdentifier>{538bed54-2c59-45de-b7e9-0d8d9c057800}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Irradiance Cache">
+      <UniqueIdentifier>{c309532c-ddd2-4c8e-9193-08fb5ada3024}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Options">
+      <UniqueIdentifier>{fbd1043c-6a0f-4a95-b8fe-cdd861b5b703}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Volume">
+      <UniqueIdentifier>{73d66bf8-a711-44fa-b290-ebf8e3968cb7}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\CPU_Count.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\DiskBuffer.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\LoadLibraryWin32.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MediaPathLocator.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MemoryBuffer.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MersenneTwister.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Optics.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Primes.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RTime.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Transformable.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Log\Log.cpp">
+      <Filter>Utilities\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Log\MemoryTracker.cpp">
+      <Filter>Utilities\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Log\StreamPrinter.cpp">
+      <Filter>Utilities\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Log\Win32Console.cpp">
+      <Filter>Utilities\Log</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\Color.cpp">
+      <Filter>Utilities\Color</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\ColorUtils.cpp">
+      <Filter>Utilities\Color</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Threads\ThreadsPTHREADs.cpp">
+      <Filter>Utilities\Threads</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Threads\ThreadsWin32.cpp">
+      <Filter>Utilities\Threads</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Communications\ClientSocketCommunicator.cpp">
+      <Filter>Utilities\Communications</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Communications\ServerSocketCommunicator.cpp">
+      <Filter>Utilities\Communications</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Communications\SocketCommunications.cpp">
+      <Filter>Utilities\Communications</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Communications\SocketCommunicator.cpp">
+      <Filter>Utilities\Communications</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\HaltonPointsSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\JitteredSampling1D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\MultiJitteredSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\NRooksSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\PoissonDiskSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\RandomSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\SincPixelFilter.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\StratifiedSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling1D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling2D.cpp">
+      <Filter>Sampling</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\TIFFReader.cpp">
+      <Filter>Raster Images\TIFF</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\TIFFWriter.cpp">
+      <Filter>Raster Images\TIFF</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\TGAReader.cpp">
+      <Filter>Raster Images\TGA</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\TGAWriter.cpp">
+      <Filter>Raster Images\TGA</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\HDRReader.cpp">
+      <Filter>Raster Images\HDR</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\HDRWriter.cpp">
+      <Filter>Raster Images\HDR</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\PNGReader.cpp">
+      <Filter>Raster Images\PNG</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\PNGWriter.cpp">
+      <Filter>Raster Images\PNG</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\RGBEAWriter.cpp">
+      <Filter>Raster Images\RGBEA</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\EXRReader.cpp">
+      <Filter>Raster Images\EXR</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\EXRWriter.cpp">
+      <Filter>Raster Images\EXR</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\PPMWriter.cpp">
+      <Filter>Raster Images\PPM</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\BlackBodyPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\CheckerPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\IridescentPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\LinesPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\MandelbrotPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Painter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Perlin2DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Perlin3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Turbulence3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Worley3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\PerlinWorley3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\DomainWarp3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\CurlNoise3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\SDF3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Simplex3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Gabor3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\SpectralColorPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\TexturePainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Voronoi2DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\Voronoi3DPainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\CameraCommon.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\FisheyeCamera.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\OrthographicCamera.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\PinholeCamera.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cameras\ThinLensCamera.cpp">
+      <Filter>Camera</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\BezierPatchGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\BezierTesselation.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\BilinearPatchGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\BoxGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\CircularDiskGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\ClippedPlaneGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\CylinderGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\EllipsoidGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\Geometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\GeometryUtilities.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TorusGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderBezier.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW2.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\BoxUVGenerator.cpp">
+      <Filter>Geometry\UV Generation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\CylindricalUVGenerator.cpp">
+      <Filter>Geometry\UV Generation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.cpp">
+      <Filter>Geometry\UV Generation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometry.cpp">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.cpp">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayBezierPatchIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayBilinearPatchIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayBoxIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayCylinderIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayPlaneIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayQuadricIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RaySphereIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayTorusIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersection.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersectionWithDisplacement.cpp">
+      <Filter>Intersection</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Objects\CSGObject.cpp">
+      <Filter>Object</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Objects\Object.cpp">
+      <Filter>Object</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\ScatteredRayContainer.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.cpp">
+      <Filter>Materials\Phong</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\IsotropicPhongSPF.cpp">
+      <Filter>Materials\Phong</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\LambertianEmitter.cpp">
+      <Filter>Materials\Luminaries</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PhongEmitter.cpp">
+      <Filter>Materials\Luminaries</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PerfectReflectorSPF.cpp">
+      <Filter>Materials\Not Physically Based</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PerfectRefractorSPF.cpp">
+      <Filter>Materials\Not Physically Based</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\TranslucentBSDF.cpp">
+      <Filter>Materials\Translucents</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\TranslucentSPF.cpp">
+      <Filter>Materials\Translucents</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DielectricSPF.cpp">
+      <Filter>Materials\Dielectrics</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPFHelpers.cpp">
+      <Filter>Materials\BioSpec</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\LambertianBRDF.cpp">
+      <Filter>Materials\Lambertian</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\LambertianSPF.cpp">
+      <Filter>Materials\Lambertian</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PolishedBRDF.cpp">
+      <Filter>Materials\Polished</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\PolishedSPF.cpp">
+      <Filter>Materials\Polished</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.cpp">
+      <Filter>Materials\Tissue</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\WardAnisotropicEllipticalGaussianBRDF.cpp">
+      <Filter>Materials\Ward</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\WardAnisotropicEllipticalGaussianSPF.cpp">
+      <Filter>Materials\Ward</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianBRDF.cpp">
+      <Filter>Materials\Ward</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.cpp">
+      <Filter>Materials\Ward</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceBRDF.cpp">
+      <Filter>Materials\Cook Torrance</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceSPF.cpp">
+      <Filter>Materials\Cook Torrance</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\OrenNayarBRDF.cpp">
+      <Filter>Materials\Oren Nayar</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\OrenNayarSPF.cpp">
+      <Filter>Materials\Oren Nayar</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SchlickBRDF.cpp">
+      <Filter>Materials\Schlick</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SchlickSPF.cpp">
+      <Filter>Materials\Schlick</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.cpp">
+      <Filter>Materials\Ashikmin Shirley</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.cpp">
+      <Filter>Materials\Ashikmin Shirley</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenBSDF.cpp">
+      <Filter>Materials\Data Driven</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Scene.cpp">
+      <Filter>Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\DirectionalLight.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\PointLight.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Lights\SpotLight.cpp">
+      <Filter>Non Mesh Lights</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\LuminaryManager.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\RayCaster.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\Rasterizer.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.cpp">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\Win32WindowRasterizerOutput.cpp">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\DetectorSpheres\AdaptiveDetectorSphere.cpp">
+      <Filter>DetectorSphere</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\DetectorSpheres\CircularDiskDetector.cpp">
+      <Filter>DetectorSphere</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\DetectorSpheres\DetectorSphere.cpp">
+      <Filter>DetectorSphere</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\DetectorSpheres\IsotropicRGBDetectorSphere.cpp">
+      <Filter>DetectorSphere</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\ShadowPhotonMap.cpp">
+      <Filter>Photon Mapping</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\ShadowPhotonTracer.cpp">
+      <Filter>Photon Mapping</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonMap.cpp">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonTracer.cpp">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\GlobalPelPhotonMap.cpp">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\GlobalPelPhotonTracer.cpp">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\TranslucentPelPhotonMap.cpp">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\TranslucentPelPhotonTracer.cpp">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\CausticSpectralPhotonMap.cpp">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\CausticSpectralPhotonTracer.cpp">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\GlobalSpectralPhotonMap.cpp">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\GlobalSpectralPhotonTracer.cpp">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Job.cpp">
+      <Filter>Job</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Managers\DAGObjectManager.cpp">
+      <Filter>Managers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Managers\LightManager.cpp">
+      <Filter>Managers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Managers\ObjectManager.cpp">
+      <Filter>Managers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\InterpolatedNoise.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise1D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise2D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\TurbulenceNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\WorleyNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\PerlinWorleyNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\DomainWarpNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\CurlNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\SDFPrimitives3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\SimplexNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Noise\GaborNoise3D.cpp">
+      <Filter>Noise</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\BezierRootFinder.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\CubicFunction.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\KleinBottleParametricFunctions.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\LinearFunction.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\ParametricSurface.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\Polynomial.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\PolynomialGCD.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\QuadraticFunction.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\QuarticFunction.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Functions\Resultant.cpp">
+      <Filter>Functions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Parsers\AsciiCommandParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Parsers\AsciiSceneParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp">
+      <Filter>Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\DirectVolumeRenderingShader.cpp">
+      <Filter>Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\StandardShader.cpp">
+      <Filter>Shaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\AreaLightShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\CausticPelPhotonMapShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\CausticSpectralPhotonMapShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\DirectLightingShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\DistributionTracingShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\EmissionShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\FinalGatherShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\GlobalPelPhotonMapShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\GlobalSpectralPhotonMapShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\PathTracingShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\ReflectionShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\RefractionShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\ShadowPhotonMapShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\Sss\PointSetOctree.cpp">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\Sss\SubSurfaceScatteringShaderOp.cpp">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RISE_API.cpp">
+      <Filter>API</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\Animator.cpp">
+      <Filter>Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\ElementTimeline.cpp">
+      <Filter>Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\Timeline.cpp">
+      <Filter>Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\PhotonMapping\IrradianceCache.cpp">
+      <Filter>Irradiance Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Options.cpp">
+      <Filter>Options</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\pch.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\AdaptiveTileSizer.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\PreviewScheduler.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\ThreadLocalSplatBuffer.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\VCMRasterizerBase.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\VCMPelRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\VCMSpectralRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\VCMIntegrator.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\VCMLightVertexStore.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\VCMPathOps.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Shaders\VCMRecurrence.cpp">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\ThreadPool.cpp">
+      <Filter>Utilities\Threads</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\CPUTopology.cpp">
+      <Filter>Utilities\Threads</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RenderETAEstimator.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\CPU.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\CubicInterpolator.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\math_utils.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MediaPathLocator.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MemoryBuffer.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MersenneTwister.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MRUCache.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Optics.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Optics.hpp">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\OrthonormalBasis3D.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PEL.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PiecewiseLinearFunction.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Plane.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Primes.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Reference.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RString.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RTime.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RuntimeContext.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SimpleInterpolators.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SimpleNotification.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\stl_utils.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Transformable.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Constants.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Direction.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Math3D.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Matrices.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\MatricesOps.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Points.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\PointsOps.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Quaternion.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\QuaternionOps.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\Vectors.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Math3D\VectorsOps.h">
+      <Filter>Utilities\Math3D</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Log\Log.h">
+      <Filter>Utilities\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Log\LogEvent.h">
+      <Filter>Utilities\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Log\MemoryTracker.h">
+      <Filter>Utilities\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Log\StreamPrinter.h">
+      <Filter>Utilities\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Log\Win32Console.h">
+      <Filter>Utilities\Log</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\CIE_xyY.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\CIE_XYZ.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\Color.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\Color_Template.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorConversion.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorDefs.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorMath.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorOperators.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorUtils.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\CompositeOperator.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ProPhotoRGB.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\Rec709RGB.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ROMMRGB.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ScaleColorOperator.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\ShiftColorOperator.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SmartColor.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralPacket_Template.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\sRGB.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\WardToneMappingOperator.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Threads\Threads.h">
+      <Filter>Utilities\Threads</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Communications\ClientSocketCommunicator.h">
+      <Filter>Utilities\Communications</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Communications\Message.h">
+      <Filter>Utilities\Communications</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Communications\ServerSocketCommunicator.h">
+      <Filter>Utilities\Communications</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Communications\SocketCommunications.h">
+      <Filter>Utilities\Communications</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Communications\SocketCommunicator.h">
+      <Filter>Utilities\Communications</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\BoxPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\CatmullRomPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\CookPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\CubicBSplinePixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\GaussianPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\HaltonPoints.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\HaltonPointsSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\JitteredSampling1D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\LanczosPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\MaxPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\MitchellNetravaliPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\MultiJitteredSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\NRooksSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\PixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\PoissonDiskSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\QuadraticBSplinePixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\RandomSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\Sampling1D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\Sampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\SincPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\StratifiedSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\TrianglePixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\UniformSampling1D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\UniformSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\WindowedSincPixelFilter.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\BicubicRasterImageAccessor.h">
+      <Filter>Raster Images</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\BilinRasterImageAccessor.h">
+      <Filter>Raster Images</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\NNBRasterImageAccessor.h">
+      <Filter>Raster Images</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\RasterImage.h">
+      <Filter>Raster Images</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\ReadOnlyRasterImage.h">
+      <Filter>Raster Images</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\WriteOnlyRasterImage.h">
+      <Filter>Raster Images</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\TIFFCommon.h">
+      <Filter>Raster Images\TIFF</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\TIFFReader.h">
+      <Filter>Raster Images\TIFF</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\TIFFWriter.h">
+      <Filter>Raster Images\TIFF</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\TGAReader.h">
+      <Filter>Raster Images\TGA</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\TGAWriter.h">
+      <Filter>Raster Images\TGA</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\HDRReader.h">
+      <Filter>Raster Images\HDR</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\HDRWriter.h">
+      <Filter>Raster Images\HDR</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\PNGReader.h">
+      <Filter>Raster Images\PNG</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\PNGWriter.h">
+      <Filter>Raster Images\PNG</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\RGBEAWriter.h">
+      <Filter>Raster Images\RGBEA</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\EXRReader.h">
+      <Filter>Raster Images\EXR</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\EXRWriter.h">
+      <Filter>Raster Images\EXR</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\PPMWriter.h">
+      <Filter>Raster Images\PPM</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\BlackBodyPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\BlendPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\CheckerPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Function1DSpectralPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\IridescentPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\LinesPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\MandelbrotPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Painter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Perlin2DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Perlin3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Turbulence3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Worley3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\SpectralColorPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\TexturePainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\UniformColorPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Voronoi2DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Voronoi3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\CameraCommon.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\CameraTransforms.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\FisheyeCamera.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\Frame.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\OrthographicCamera.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\PinholeCamera.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\ThinLensCamera.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\3DS_Defines.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\BezierPatchGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\BezierTesselation.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\BezierValueGenerator.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\BilinearPatchGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\BoxGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\CircularDiskGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\ClippedPlaneGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\CylinderGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\EllipsoidGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\Geometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\GeometryUtilities.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Polygon.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TorusGeometry.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderBezier.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW2.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\BoxUVGenerator.h">
+      <Filter>Geometry\UV Generation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\CylindricalUVGenerator.h">
+      <Filter>Geometry\UV Generation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.h">
+      <Filter>Geometry\UV Generation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometry.h">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.h">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexedSpecializations.h">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometrySpecializations.h">
+      <Filter>Geometry\Triangle Mesh</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersection.h">
+      <Filter>Intersection</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersectionGeometric.h">
+      <Filter>Intersection</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Intersection\RayPrimitiveIntersections.h">
+      <Filter>Intersection</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Objects\CSGObject.h">
+      <Filter>Object</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Objects\Object.h">
+      <Filter>Object</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\Material.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongBRDF.h">
+      <Filter>Materials\Phong</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongMaterial.h">
+      <Filter>Materials\Phong</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhongSPF.h">
+      <Filter>Materials\Phong</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\LambertianEmitter.h">
+      <Filter>Materials\Luminaries</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\LambertianLuminaireMaterial.h">
+      <Filter>Materials\Luminaries</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PhongEmitter.h">
+      <Filter>Materials\Luminaries</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PhongLuminaireMaterial.h">
+      <Filter>Materials\Luminaries</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PerfectReflectorMaterial.h">
+      <Filter>Materials\Not Physically Based</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PerfectReflectorSPF.h">
+      <Filter>Materials\Not Physically Based</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PerfectRefractorMaterial.h">
+      <Filter>Materials\Not Physically Based</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PerfectRefractorSPF.h">
+      <Filter>Materials\Not Physically Based</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\TranslucentBSDF.h">
+      <Filter>Materials\Translucents</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\TranslucentMaterial.h">
+      <Filter>Materials\Translucents</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\TranslucentSPF.h">
+      <Filter>Materials\Translucents</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DielectricMaterial.h">
+      <Filter>Materials\Dielectrics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DielectricSPF.h">
+      <Filter>Materials\Dielectrics</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinMaterial.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\LambertianBRDF.h">
+      <Filter>Materials\Lambertian</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\LambertianMaterial.h">
+      <Filter>Materials\Lambertian</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\LambertianSPF.h">
+      <Filter>Materials\Lambertian</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PolishedBRDF.h">
+      <Filter>Materials\Polished</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PolishedMaterial.h">
+      <Filter>Materials\Polished</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\PolishedSPF.h">
+      <Filter>Materials\Polished</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueMaterial.h">
+      <Filter>Materials\Tissue</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.h">
+      <Filter>Materials\Tissue</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardAnisotropicEllipticalGaussianBRDF.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardAnisotropicEllipticalGaussianMaterial.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardAnisotropicEllipticalGaussianSPF.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianBRDF.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianMaterial.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.h">
+      <Filter>Materials\Ward</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceBRDF.h">
+      <Filter>Materials\Cook Torrance</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceMaterial.h">
+      <Filter>Materials\Cook Torrance</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceSPF.h">
+      <Filter>Materials\Cook Torrance</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarBRDF.h">
+      <Filter>Materials\Oren Nayar</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarMaterial.h">
+      <Filter>Materials\Oren Nayar</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\OrenNayarSPF.h">
+      <Filter>Materials\Oren Nayar</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickBRDF.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickMaterial.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SchlickSPF.h">
+      <Filter>Materials\Schlick</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.h">
+      <Filter>Materials\Ashikmin Shirley</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongMaterial.h">
+      <Filter>Materials\Ashikmin Shirley</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.h">
+      <Filter>Materials\Ashikmin Shirley</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenBSDF.h">
+      <Filter>Materials\Data Driven</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DataDrivenMaterial.h">
+      <Filter>Materials\Data Driven</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Scene.h">
+      <Filter>Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\AmbientLight.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\DirectionalLight.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\PointLight.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\SpotLight.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Octree.h">
+      <Filter>Octree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\OctreeNode.h">
+      <Filter>Octree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\TreeElementProcessor.h">
+      <Filter>Octree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\LuminaryManager.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RadianceMap.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RasterizerStateCache.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RayCaster.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedRasterizerHelper.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\RasterizeDispatchers.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\Rasterizer.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.h">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\Win32WindowRasterizerOutput.h">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BlockRasterizeSequence.h">
+      <Filter>Rendering\Rasterize Sequences</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\HilbertRasterizeSequence.h">
+      <Filter>Rendering\Rasterize Sequences</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\ScanlineRasterizeSequence.h">
+      <Filter>Rendering\Rasterize Sequences</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\DetectorSpheres\AdaptiveDetectorSphere.h">
+      <Filter>DetectorSphere</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\DetectorSpheres\CircularDiskDetector.h">
+      <Filter>DetectorSphere</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\DetectorSpheres\DetectorSphere.h">
+      <Filter>DetectorSphere</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\DetectorSpheres\IsotropicRGBDetectorSphere.h">
+      <Filter>DetectorSphere</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\Photon.h">
+      <Filter>Photon Mapping</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\PhotonMap.h">
+      <Filter>Photon Mapping</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\ShadowPhotonMap.h">
+      <Filter>Photon Mapping</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\ShadowPhotonTracer.h">
+      <Filter>Photon Mapping</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonMap.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonTracer.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\GlobalPelPhotonMap.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\GlobalPelPhotonTracer.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\PhotonTracer.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\TranslucentPelPhotonMap.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\TranslucentPelPhotonTracer.h">
+      <Filter>Photon Mapping\Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticSpectralPhotonMap.h">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticSpectralPhotonTracer.h">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\GlobalSpectralPhotonMap.h">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\GlobalSpectralPhotonTracer.h">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\SpectralPhotonTracer.h">
+      <Filter>Photon Mapping\Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Job.h">
+      <Filter>Job</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IAnimator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IAtmosphere.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IBezierPatchGeometry.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IBilinearPatchGeometry.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IBSDF.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IBuffer.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ICamera.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ICommunicator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IDeletedCallback.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IDetectorSphere.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IEmitter.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IEnumCallback.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFullInterpolator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction1D.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction1DManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction2D.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction2DManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction3D.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IGeometry.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IGeometryManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IGradientEstimator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IIrradianceCache.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IJob.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IJobPriv.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IJobRasterizerOutput.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IKeyframable.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILight.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILightManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILightPriv.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILog.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILogPrinter.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILogPriv.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ILuminaryManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IMaterial.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IMaterialManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IMemoryBuffer.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IModifierManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IObject.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IObjectManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IObjectPriv.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IOneColorOperator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IOptions.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPainter.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPainterManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IParametricSurface.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPhotonMap.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPhotonTracer.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPiecewiseFunction.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPixelFilter.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IProbabilityDensityFunction.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IProgressCallback.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRadianceMap.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterImage.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterImageAccessor.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterImageReader.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterImageWriter.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizer.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizerOutput.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRasterizeSequence.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRayCaster.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IRayIntersectionModifier.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IReadBuffer.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IReference.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISampling1D.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISampling2D.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IScene.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISceneParser.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IScenePriv.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISerializable.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IShader.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IShaderManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IShaderOp.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IShaderOpManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISimpleInterpolator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISPF.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISubSurfaceExtinctionFunction.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ITransformable.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ITriangleMeshGeometry.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ITriangleMeshLoader.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ITwoColorOperator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IUVGenerator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IVolume.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IVolumeAccessor.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IVolumeOperation.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IWriteBuffer.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\DAGObjectManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\Function1DManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\Function2DManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\GenericManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\GeometryManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\LightManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\MaterialManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\ModifierManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\ObjectManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\PainterManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\ShaderManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\ShaderOpManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\InterpolatedNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\Noise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\NoiseUtils.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\PerlinNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\SmoothedNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\ConstantFunctions.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\CubicFunction.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\KleinBottleParametricFunctions.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\LinearFunction.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\ParametricSurface.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\Polynomial.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\QuadraticFunction.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\QuarticFunction.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Functions\Resultant.h">
+      <Filter>Functions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\AsciiCommandParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\AsciiSceneParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\AsciiScriptParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\DirectVolumeRenderingShader.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\StandardShader.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\AreaLightShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\CausticPelPhotonMapShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\CausticSpectralPhotonMapShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\DirectLightingShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\DistributionTracingShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\EmissionShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\FinalGatherShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\GlobalPelPhotonMapShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\GlobalSpectralPhotonMapShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\PathTracingShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\ReflectionShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\RefractionShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\ShadowPhotonMapShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\DiffusionApproximationExtinction.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\PointSetOctree.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\SimpleExtinction.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\SubSurfaceScatteringShaderOp.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RISE_API.h">
+      <Filter>API</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\BSPTree.h">
+      <Filter>BSPTree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\BSPTreeNode.h">
+      <Filter>BSPTree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\Animator.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\ElementTimeline.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\KeyframableHelper.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\Keyframe.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Animation\Timeline.h">
+      <Filter>Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\IrradianceCache.h">
+      <Filter>Irradiance Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Options.h">
+      <Filter>Options</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\CentralDifferenceOperator.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\ConvolutionKernel.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\IntermediateDifferenceOperator.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\SobelOperator.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\TransferFunctions.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\Volume.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_NNB.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_TRI.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_TriCubic.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessorHelper.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_AlphaScaledComposite.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_Average.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_Composite.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_GradISO.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_ISO.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_LMIP.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeOp_MIP.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\ZuckerHummelOperator.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\pch.h" />
+    <ClInclude Include="..\..\..\src\Library\Version.h" />
+    <ClInclude Include="..\..\..\src\Library\BSPTreeSAH.h">
+      <Filter>BSPTree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\BSPTreeSAHNode.h">
+      <Filter>BSPTree</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cameras\CameraUtilities.h">
+      <Filter>Camera</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ICubicInterpolator.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IMedium.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IPhaseFunction.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ISubSurfaceDiffusionProfile.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\SpecularInfo.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\LightBVH.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Lights\LightSampler.h">
+      <Filter>Non Mesh Lights</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecDiffusionProfile.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinBSSRDFMaterial.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinRWMaterial.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CompositeEmitter.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DonnerJensenSkinBSSRDFMaterial.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\GGXBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\GGXMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HeterogeneousMedium.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\HomogeneousMedium.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\IsotropicPhaseFunction.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\MultipoleDiffusion.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\RandomWalkSSSMaterial.h">
+      <Filter>Materials\BioSpec</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SubSurfaceScatteringBSDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SubSurfaceScatteringMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SubSurfaceScatteringSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\CurlNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\DomainWarpNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\GaborNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\PerlinWorleyNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\ReactionDiffusion.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\SDFPrimitives.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\SimplexNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\TurbulenceNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\WaveletNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Noise\WorleyNoise.h">
+      <Filter>Noise</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\CurlNoise3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\DomainWarp3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Gabor3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\PerlinWorley3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ReactionDiffusion3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\SDF3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Simplex3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Wavelet3DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\AOVBuffers.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\AdaptiveTileSizer.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BDPTPelRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BDPTRasterizerBase.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\MLTRasterizer.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\MortonRasterizeSequence.h">
+      <Filter>Rendering\Rasterize Sequences</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\OIDNDenoiser.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.h">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\PreviewScheduler.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\ProgressiveFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\SplatFilm.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\ThreadLocalSplatBuffer.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\VCMPelRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\VCMRasterizerBase.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\VCMSpectralRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\SobolSampling2D.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Sampling\SobolSequence.h">
+      <Filter>Sampling</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\BDPTIntegrator.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\BDPTVertex.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\BSSRDFEntryAdapters.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\FinalGatherInterpolation.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\PathTracingIntegrator.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\SMSShaderOp.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\DonnerJensenSkinSSSShaderOp.h">
+      <Filter>Shaders\Shader Ops\SSS</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\VCMIntegrator.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\VCMLightVertex.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\VCMLightVertexStore.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\VCMPathOps.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Shaders\VCMRecurrence.h">
+      <Filter>Shaders\Shader Ops</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\AdaptiveSamplingConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\AliasTable.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\BDPTUtilities.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\BSSRDFSampling.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGB.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SampledWavelengths.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\CompletePathGuide.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\CoreUtils.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\EquiangularSampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\HankelTransform.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ISampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\IndependentSampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MISWeights.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MajorantGrid.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ManifoldSolver.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MediumTracking.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MediumTransport.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetEnergyLUT.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PSSMLTSampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PathGuidingField.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PathTransportUtilities.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PathVertexEval.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Profiling.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ProgressiveConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RandomWalkSSS.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SSSCoefficients.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SobolSampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\StabilityConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SumOfExponentialsFit.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ThreadPool.h">
+      <Filter>Utilities\Threads</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\CPUTopology.h">
+      <Filter>Utilities\Threads</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RenderETAEstimator.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ZSobolSampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_Painter.h">
+      <Filter>Volume</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="VTune\Library.vpj" />
+  </ItemGroup>
+</Project>
