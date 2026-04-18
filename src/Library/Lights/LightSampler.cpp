@@ -1642,7 +1642,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		if( bCanDoMIS_NM && pMaterial && area > 0 && cosLight > 0 )
 		{
 			const Scalar p_light = pdfAlias * (dist * dist) / (area * cosLight);
-			const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
+			static const IORStack defaultIOR( 1.0 );
+			const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, defaultIOR );
 
 			// Optimal MIS training (spectral NEE): contrib includes
 			// the geometry factor, so use pdfAlias (area measure)
@@ -1735,7 +1736,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 				if( pMaterial )
 				{
-					const Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, 0 );
+					static const IORStack defaultIOR( 1.0 );
+					const Scalar pBsdf = pMaterial->PdfNM( envDir, ri, nm, defaultIOR );
 					if( pBsdf > 0 )
 					{
 						Scalar w;

@@ -16,6 +16,7 @@
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Color/ColorUtils.h"
+#include "../Utilities/IORStack.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
@@ -171,7 +172,8 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 
 		Scalar cHWSS[SampledWavelengths::N] = {0};
 		IRayCaster::RAY_STATE rs;
-		bool bThisHit = pCaster->CastRayHWSS( rc, rast, ray, cHWSS, rs, swl, 0, 0, 0 );
+		IORStack cameraIorStack( 1.0 );
+		bool bThisHit = pCaster->CastRayHWSS( rc, rast, ray, cHWSS, rs, swl, 0, 0, cameraIorStack );
 
 		if( bThisHit ) {
 			bHit = true;

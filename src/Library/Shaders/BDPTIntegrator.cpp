@@ -7247,8 +7247,10 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 		rig.vNormal = v.normal;
 		rig.onb = v.onb;
 
-		const SpecularInfo heroSI = v.pMaterial->GetSpecularInfoNM( rig, 0, heroNM );
-		const SpecularInfo compSI = v.pMaterial->GetSpecularInfoNM( rig, 0, companionNM );
+		IORStack vertexIor( 1.0 );
+		BuildVertexIORStack( v, vertexIor );
+		const SpecularInfo heroSI = v.pMaterial->GetSpecularInfoNM( rig, vertexIor, heroNM );
+		const SpecularInfo compSI = v.pMaterial->GetSpecularInfoNM( rig, vertexIor, companionNM );
 
 		if( heroSI.valid && compSI.valid &&
 			heroSI.isSpecular && compSI.isSpecular &&

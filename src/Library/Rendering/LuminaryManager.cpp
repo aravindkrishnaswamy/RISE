@@ -316,7 +316,8 @@ Scalar LuminaryManager::ComputeDirectLightingForLuminaryNM(
 	if( pMaterial && area > 0 && fDotLight > 0 )
 	{
 		const Scalar p_light = (fDistFromLight * fDistFromLight) / (area * fDotLight);
-		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, 0 );
+		static const IORStack defaultIOR( 1.0 );
+		const Scalar p_bsdf = pMaterial->PdfNM( vToLight, ri, nm, defaultIOR );
 
 		if( p_bsdf > 0 )
 		{

@@ -1947,6 +1947,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 
 	// Track IOR of current medium (start outside in air)
 	Scalar currentIOR = 1.0;
+	IORStack seedIor( 1.0 );
 
 
 	for( unsigned int depth = 0; depth < config.maxChainDepth; depth++ )
@@ -1993,7 +1994,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 			break;
 		}
 
-		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, 0 );
+		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, seedIor );
 
 		if( !specInfo.isSpecular )
 		{
@@ -2890,6 +2891,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	// Override each vertex's IOR with the wavelength-dependent value.
 	// This is what makes dispersion work — the Newton solver will find
 	// a different position for each wavelength due to the different IOR.
+	IORStack queryIor( 1.0 );
 	for( unsigned int i = 0; i < seedChain.size(); i++ )
 	{
 		if( seedChain[i].pMaterial )
@@ -2902,7 +2904,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 			rig.vNormal = seedChain[i].normal;
 
 			SpecularInfo specNM = seedChain[i].pMaterial->GetSpecularInfoNM(
-				rig, 0, nm );
+				rig, queryIor, nm );
 			seedChain[i].eta = specNM.ior;
 		}
 	}

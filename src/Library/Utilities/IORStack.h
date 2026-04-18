@@ -85,7 +85,11 @@ namespace RISE
 		mutable const IObject* pCurrentObject;
 
 	public:
-		IORStack( const Scalar ior ) :
+		// Explicit to prevent implicit conversion from Scalar / integer
+		// literal when a function expects `const IORStack&`.  A bare `0`
+		// at such a call site used to construct IORStack(0), giving an
+		// environment IOR of 0 and causing Ni=0 refraction errors.
+		explicit IORStack( const Scalar ior ) :
 		  pCurrentObject( 0 )
 		{
 			// An empty IOR stack always has the environment's IOR
