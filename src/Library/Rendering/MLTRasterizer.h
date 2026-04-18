@@ -234,11 +234,17 @@ namespace RISE
 			/// a bootstrap seed and evaluate the initial path.  If the
 			/// initial path has zero luminance, try additional large steps
 			/// to find a valid starting point.
+			///
+			/// chainIndex is mixed into the RNG seeds so that two chains
+			/// selecting the same bootstrap sample do not become identical
+			/// Markov trajectories (which would concentrate splats and
+			/// create fireflies).  See the implementation for details.
 			void InitChain(
 				ChainState& state,
 				const IScene& scene,
 				const ICamera& camera,
 				const BootstrapSample& seed,
+				const unsigned int chainIndex,
 				const unsigned int width,
 				const unsigned int height
 				) const;

@@ -729,9 +729,15 @@ void MLTSpectralRasterizer::RasterizeScene(
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
 
 		// Initialize chain — but we need spectral evaluation
-		// We manually do what InitChain does, but with EvaluateSampleSpectral
-		chainStates[c].pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-		chainStates[c].chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
+		// We manually do what InitChain does, but with EvaluateSampleSpectral.
+		// Mix chainIndex into the seeds so duplicate bootstrap selections
+		// (likely when the CDF is concentrated) do not produce identical
+		// Markov trajectories — see MLTRasterizer::InitChain for the full
+		// rationale.
+		const unsigned int samplerSeed = seed.seed * 2654435761u + c;
+		const unsigned int chainSeed   = samplerSeed ^ 0xA55A5AA5u;
+		chainStates[c].pSampler = new PSSMLTSampler( samplerSeed, largeStepProb );
+		chainStates[c].chainRNG = RandomNumberGenerator( chainSeed );
 
 		chainStates[c].pSampler->StartIteration();
 		chainStates[c].currentSample = EvaluateSampleSpectral( pScene, *pCamera, *chainStates[c].pSampler, width, height );

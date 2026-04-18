@@ -329,13 +329,24 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 
 		RISEPel weighted = cr.contribution * cr.misWeight;
 
-		// Clamp negative components from numerical precision issues
-		for( int ch = 0; ch < 3; ch++ ) {
-			if( weighted[ch] < 0 ) {
-				weighted[ch] = 0;
-			}
-		}
-
+		// Do NOT clamp negative channels to zero.  A previous version
+		// did so "to handle numerical precision", but that silently
+		// converts a near-zero contribution with a slightly-negative
+		// channel (say R = -0.003, G = +0.03, B = +0.02) into a
+		// positive-only contribution (R = 0, G = +0.03, B = +0.02).
+		// When the MLT chain explores paths where a particular
+		// strategy consistently produces this pattern, every visit
+		// deposits the inflated contribution at the same pixel.  The
+		// result is a SYSTEMATIC firefly that does not average out —
+		// it grows over rounds as chain clustering gives it more
+		// splats.  BDPT does not clamp (it lets negatives cancel in
+		// the pixel sum), and once MLT matches that behaviour the
+		// firefly goes away.
+		//
+		// We still skip strategies with non-positive total luminance
+		// so the splat weight (which divides by totalLuminance) stays
+		// well-defined.  A strategy with lum ≤ 0 cannot splat useful
+		// energy regardless.
 		const Scalar lum = 0.2126 * weighted[0] + 0.7152 * weighted[1] + 0.0722 * weighted[2];
 		if( lum <= 0 ) {
 			continue;
@@ -410,12 +421,28 @@ void MLTRasterizer::InitChain(
 	const IScene& scene,
 	const ICamera& camera,
 	const BootstrapSample& seed,
+	const unsigned int chainIndex,
 	const unsigned int width,
 	const unsigned int height
 	) const
 {
-	state.pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
-	state.chainRNG = RandomNumberGenerator( seed.seed + 1000000 );
+	// The sampler and chainRNG seeds must be unique per chain, NOT derived
+	// from seed.seed alone.  seed.seed is the bootstrap sample index, and
+	// when the bootstrap CDF is concentrated (a few high-luminance samples
+	// dominate) several chains pick the same idx — previously that made
+	// the PSSMLTSampler and the accept/reject RNG identical across those
+	// chains.  Two chains with identical RNG seeds produce the exact same
+	// Markov trajectory: same proposals, same accept/reject pattern, same
+	// splats.  They act as one chain counted multiple times, concentrating
+	// splats at the same pixels and amplifying fireflies by the duplication
+	// factor.  Mixing chainIndex into the seeds breaks the duplication
+	// while preserving the bootstrap's importance-sampling role (every
+	// chain still STARTS at a bootstrap-selected path via the initial
+	// iteration's large step, it just evolves independently from there).
+	const unsigned int samplerSeed = seed.seed * 2654435761u + chainIndex;
+	const unsigned int chainSeed   = samplerSeed ^ 0xA55A5AA5u;
+	state.pSampler = new PSSMLTSampler( samplerSeed, largeStepProb );
+	state.chainRNG = RandomNumberGenerator( chainSeed );
 
 	// Evaluate the initial state
 	state.pSampler->StartIteration();
@@ -840,7 +867,7 @@ void MLTRasterizer::RasterizeScene(
 		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
 
-		InitChain( chainStates[c], pScene, *pCamera, seed, width, height );
+		InitChain( chainStates[c], pScene, *pCamera, seed, c, width, height );
 
 		if( pProgressFunc && (c % 10 == 0) ) {
 			if( !pProgressFunc->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
