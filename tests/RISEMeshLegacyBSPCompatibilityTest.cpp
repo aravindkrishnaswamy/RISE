@@ -28,9 +28,8 @@ namespace
 	{
 		std::cout << "Testing legacy RISE mesh BSP compatibility..." << std::endl;
 
-		// MemoryBuffer's setChar/setUInt/setDouble do not auto-grow (only setBytes does),
-		// so each write block must be preceded by ResizeForMore, matching the idiom in
-		// TriangleMeshGeometryIndexed::Serialize.
+		// Each write block is preceded by ResizeForMore to avoid per-value reallocations,
+		// matching the idiom in TriangleMeshGeometryIndexed::Serialize.
 		MemoryBuffer* pBuffer = new MemoryBuffer();
 		pBuffer->setBytes( "RISETMGI", 8 );
 

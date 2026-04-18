@@ -111,38 +111,48 @@ namespace RISE
 
 		//////////////////////////////////////////////////////////////////////
 		// Contribution Clamping
+		//
+		// Single function template `ClampContribution<T>` handles both
+		// RGB (RISEPel) and spectral (Scalar) contributions.  Argument
+		// deduction picks the right type — callers write
+		// `ClampContribution(contrib, limit)` without a suffix.
+		//
+		// Type-specific magnitude computed via the `ClampMagnitude`
+		// overload set:
+		//    RISEPel -> ColorMath::MaxValue
+		//    Scalar  -> std::fabs
+		// preserving the exact semantics of the pre-templated
+		// `ClampContribution` / `ClampContributionNM` pair.
 		//////////////////////////////////////////////////////////////////////
 
-		/// Clamp an RGB contribution so that its maximum channel does not
-		/// exceed 'limit'.  Returns the original value when limit <= 0
-		/// (disabled) or when the contribution is already within bounds.
-		inline RISEPel ClampContribution(
-			const RISEPel& contrib,
-			const Scalar limit
-			)
+		/// Internal helper: unsigned magnitude for clamping.  Overloaded
+		/// per value type so `ClampContribution<T>` is a single body.
+		inline Scalar ClampMagnitude( const RISEPel& v )
 		{
-			if( limit <= 0 ) {
-				return contrib;
-			}
-			const Scalar maxVal = ColorMath::MaxValue( contrib );
-			if( maxVal > limit ) {
-				return contrib * (limit / maxVal);
-			}
-			return contrib;
+			return ColorMath::MaxValue( v );
 		}
 
-		/// Scalar variant for the spectral (NM) path.
-		inline Scalar ClampContributionNM(
-			const Scalar contrib,
+		inline Scalar ClampMagnitude( const Scalar v )
+		{
+			return fabs( v );
+		}
+
+		/// Clamp a contribution so that its magnitude does not exceed
+		/// 'limit'.  Returns the original value when limit <= 0
+		/// (disabled) or when the contribution is already within
+		/// bounds.  T is deduced as either RISEPel or Scalar.
+		template<class T>
+		inline T ClampContribution(
+			const T& contrib,
 			const Scalar limit
 			)
 		{
 			if( limit <= 0 ) {
 				return contrib;
 			}
-			const Scalar absVal = fabs( contrib );
-			if( absVal > limit ) {
-				return contrib * (limit / absVal);
+			const Scalar m = ClampMagnitude( contrib );
+			if( m > limit ) {
+				return contrib * (limit / m);
 			}
 			return contrib;
 		}
@@ -317,28 +327,18 @@ namespace RISE
 		// which is the properly normalized RIS estimator.
 		//////////////////////////////////////////////////////////////////////
 
-		/// RGB RIS candidate.  One candidate is drawn from the BSDF,
-		/// one from the guiding distribution.  Both are evaluated under
+		/// RIS candidate.  One candidate is drawn from the BSDF, one
+		/// from the guiding distribution.  Both are evaluated under
 		/// the target function for RIS selection.
+		///
+		/// T is the BSDF evaluation type: RISEPel for RGB rendering,
+		/// Scalar for spectral (NM) rendering.  Callers write either
+		/// `GuidingRISCandidate<RISEPel>` or `GuidingRISCandidate<Scalar>`.
+		template<class T>
 		struct GuidingRISCandidate
 		{
 			Vector3		direction;
-			RISEPel		bsdfEval;
-			Scalar		bsdfPdf;
-			Scalar		guidePdf;
-			Scalar		incomingRadPdf;
-			Scalar		cosTheta;
-			Scalar		risTarget;
-			Scalar		risPdf;
-			Scalar		risWeight;
-			bool		valid;
-		};
-
-		/// Spectral (NM) RIS candidate.
-		struct GuidingRISCandidateNM
-		{
-			Vector3		direction;
-			Scalar		bsdfEvalNM;
+			T			bsdfEval;
 			Scalar		bsdfPdf;
 			Scalar		guidePdf;
 			Scalar		incomingRadPdf;
@@ -397,47 +397,17 @@ namespace RISE
 		/// the first candidate index with effectivePdf = 0, which
 		/// produces zero throughput at the call site (safe).
 		///
+		/// Templated on T so the same body serves both RGB and NM
+		/// candidate arrays.  T is deduced from the pointer type.
+		///
 		/// \param candidates   Array of N candidates
 		/// \param count        Number of candidates
 		/// \param xi           Uniform random sample in [0, 1)
 		/// \param effectivePdf Output: effective PDF for selected candidate
 		/// \return Index of the selected candidate
+		template<class T>
 		inline unsigned int GuidingRISSelectCandidate(
-			const GuidingRISCandidate* candidates,
-			unsigned int count,
-			Scalar xi,
-			Scalar& effectivePdf
-			)
-		{
-			Scalar sumWeights = 0;
-			for( unsigned int i = 0; i < count; i++ ) {
-				sumWeights += candidates[i].risWeight;
-			}
-
-			if( sumWeights <= NEARZERO ) {
-				effectivePdf = 0;
-				return 0;
-			}
-
-			const Scalar threshold = xi * sumWeights;
-			Scalar cumulative = 0;
-			unsigned int selected = 0;
-			for( unsigned int i = 0; i < count; i++ ) {
-				cumulative += candidates[i].risWeight;
-				if( cumulative >= threshold ) {
-					selected = i;
-					break;
-				}
-			}
-
-			effectivePdf = candidates[selected].risTarget *
-				(static_cast<Scalar>( count ) / sumWeights);
-			return selected;
-		}
-
-		/// Spectral (NM) variant of RIS candidate selection.
-		inline unsigned int GuidingRISSelectCandidateNM(
-			const GuidingRISCandidateNM* candidates,
+			const GuidingRISCandidate<T>* candidates,
 			unsigned int count,
 			Scalar xi,
 			Scalar& effectivePdf

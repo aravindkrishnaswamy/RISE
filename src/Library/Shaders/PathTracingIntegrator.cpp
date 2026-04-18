@@ -41,8 +41,10 @@ using namespace RISE::Implementation;
 
 // Shared transport utilities
 using PathTransportUtilities::PowerHeuristic;
+// ClampContribution is a single function template that deduces the
+// value type (RISEPel for RGB, Scalar for NM/HWSS).  Callers drop the
+// historical `NM` suffix and let argument deduction pick the type.
 using PathTransportUtilities::ClampContribution;
-using PathTransportUtilities::ClampContributionNM;
 using PathTransportUtilities::PropagateBounceLimits;
 
 // RR defaults are now in StabilityConfig.  These are kept as
@@ -1427,11 +1429,11 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 					if( rc.guidingSamplingType == eGuidingRIS )
 					{
-						PathTransportUtilities::GuidingRISCandidate candidates[2];
+						PathTransportUtilities::GuidingRISCandidate<RISEPel> candidates[2];
 
 						// Candidate 0: BSDF sample (already drawn)
 						{
-							PathTransportUtilities::GuidingRISCandidate& c = candidates[0];
+							PathTransportUtilities::GuidingRISCandidate<RISEPel>& c = candidates[0];
 							c.direction = pS->ray.Dir();
 							c.bsdfEval = PathVertexEval::EvalBSDFAtSurface(
 								pBRDF, c.direction, ri.geometric );
@@ -1454,7 +1456,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 						// Candidate 1: guide sample
 						{
-							PathTransportUtilities::GuidingRISCandidate& c = candidates[1];
+							PathTransportUtilities::GuidingRISCandidate<RISEPel>& c = candidates[1];
 							Scalar guidePdf = 0;
 							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
 							c.direction = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
@@ -1979,7 +1981,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						if( Ld > 0 )
 						{
 							Scalar directContrib = throughput * Ld;
-							directContrib = ClampContributionNM( directContrib,
+							directContrib = ClampContribution( directContrib,
 								stabilityConfig.directClamp );
 							result += directContrib;
 						}
@@ -2190,7 +2192,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				}
 
 				if( depth > 0 ) {
-					emission = ClampContributionNM( emission, stabilityConfig.directClamp );
+					emission = ClampContribution( emission, stabilityConfig.directClamp );
 				}
 
 				result += throughput * emission;
@@ -2250,7 +2252,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 										entryRI, entryBSDF, &entryMaterial, nm, caster,
 										bssrdfSampler, ri.pObject, 0, false, 0 );
 									Scalar sssDirectContribNM = throughput * bssrdfWeightSpatialNM * directSSSNM;
-									sssDirectContribNM = ClampContributionNM( sssDirectContribNM,
+									sssDirectContribNM = ClampContribution( sssDirectContribNM,
 										stabilityConfig.directClamp );
 									result += sssDirectContribNM;
 								}
@@ -2298,7 +2300,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 										Scalar indirectNM = sssThroughputNM * cthis;
 										if( depth > 0 ) {
-											indirectNM = ClampContributionNM( indirectNM,
+											indirectNM = ClampContribution( indirectNM,
 												stabilityConfig.indirectClamp );
 										}
 										result += throughput * indirectNM;
@@ -2380,7 +2382,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 										entryRI, entryBSDF, &entryMaterial, nm, caster,
 										bssrdfSampler, ri.pObject, 0, false, 0 );
 									Scalar sssDirectContribNM = throughput * bssrdfWeightSpatialNM * directSSSNM;
-									sssDirectContribNM = ClampContributionNM( sssDirectContribNM,
+									sssDirectContribNM = ClampContribution( sssDirectContribNM,
 										stabilityConfig.directClamp );
 									result += sssDirectContribNM;
 								}
@@ -2428,7 +2430,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 										Scalar indirectNM = sssThroughputNM * cthis;
 										if( depth > 0 ) {
-											indirectNM = ClampContributionNM( indirectNM,
+											indirectNM = ClampContribution( indirectNM,
 												stabilityConfig.indirectClamp );
 										}
 										result += throughput * indirectNM;
@@ -2489,7 +2491,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 						Scalar indirectNM = cthis * scat.krayNM;
 						if( depth > 0 ) {
-							indirectNM = ClampContributionNM( indirectNM, stabilityConfig.indirectClamp );
+							indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
 						}
 						result += throughput * indirectNM;
 					}
@@ -2527,7 +2529,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 						Scalar indirectNM = cthis * scat.krayNM;
 						if( depth > 0 ) {
-							indirectNM = ClampContributionNM( indirectNM, stabilityConfig.indirectClamp );
+							indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
 						}
 						result += throughput * indirectNM;
 					}
@@ -2587,7 +2589,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			Scalar directAllNM = pLS->EvaluateDirectLightingNM(
 				ri.geometric, *pBRDF, ri.pMaterial, nm, caster, neeSampler,
 				ri.pObject, pCurrentMedium, false, pMediumObject );
-			directAllNM = ClampContributionNM( directAllNM, stabilityConfig.directClamp );
+			directAllNM = ClampContribution( directAllNM, stabilityConfig.directClamp );
 			result += throughput * directAllNM;
 		}
 
@@ -2616,7 +2618,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			if( sms.valid )
 			{
 				Scalar smsContribNM = sms.contribution * sms.misWeight;
-				smsContribNM = ClampContributionNM( smsContribNM, stabilityConfig.directClamp );
+				smsContribNM = ClampContribution( smsContribNM, stabilityConfig.directClamp );
 				result += throughput * smsContribNM;
 			}
 		}
@@ -2681,7 +2683,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 					Scalar indirectNM = cthis * scat.krayNM;
 					if( depth > 0 ) {
-						indirectNM = ClampContributionNM( indirectNM, stabilityConfig.indirectClamp );
+						indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
 					}
 					result += throughput * indirectNM;
 				}
@@ -2733,7 +2735,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 					Scalar indirectNM = cthis * scat.krayNM;
 					if( depth > 0 ) {
-						indirectNM = ClampContributionNM( indirectNM, stabilityConfig.indirectClamp );
+						indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
 					}
 					result += throughput * indirectNM;
 				}
@@ -2774,20 +2776,20 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					if( rc.guidingSamplingType == eGuidingRIS )
 					{
 						// RIS-based guiding (spectral)
-						PathTransportUtilities::GuidingRISCandidateNM candidates[2];
+						PathTransportUtilities::GuidingRISCandidate<Scalar> candidates[2];
 
 						// Candidate 0: BSDF sample
 						{
-							PathTransportUtilities::GuidingRISCandidateNM& c = candidates[0];
+							PathTransportUtilities::GuidingRISCandidate<Scalar>& c = candidates[0];
 							c.direction = pS->ray.Dir();
-							c.bsdfEvalNM = PathVertexEval::EvalBSDFAtSurfaceNM(
+							c.bsdfEval = PathVertexEval::EvalBSDFAtSurfaceNM(
 								pBRDF, c.direction, ri.geometric, nm );
 							c.bsdfPdf = pS->pdf;
 							c.guidePdf = rc.pGuidingField->Pdf( guideDistNM, c.direction );
 							c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
 							c.cosTheta = fabs(
 								Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-							const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+							const Scalar avgBsdf = fabs( c.bsdfEval );
 							c.risTarget = PathTransportUtilities::GuidingRISTarget(
 								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
 							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
@@ -2801,7 +2803,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 						// Candidate 1: guide sample
 						{
-							PathTransportUtilities::GuidingRISCandidateNM& c = candidates[1];
+							PathTransportUtilities::GuidingRISCandidate<Scalar>& c = candidates[1];
 							Scalar guidePdf = 0;
 							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
 							c.direction = rc.pGuidingField->Sample( guideDistNM, xi2d, guidePdf );
@@ -2809,14 +2811,14 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 							if( guidePdf > NEARZERO )
 							{
-								c.bsdfEvalNM = PathVertexEval::EvalBSDFAtSurfaceNM(
+								c.bsdfEval = PathVertexEval::EvalBSDFAtSurfaceNM(
 									pBRDF, c.direction, ri.geometric, nm );
 								c.bsdfPdf = PathVertexEval::EvalPdfAtSurfaceNM(
 									pSPF, ri.geometric, c.direction, nm, iorStack );
 								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
 								c.cosTheta = fabs(
 									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-								const Scalar avgBsdf = fabs( c.bsdfEvalNM );
+								const Scalar avgBsdf = fabs( c.bsdfEval );
 								c.risTarget = PathTransportUtilities::GuidingRISTarget(
 									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
 								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
@@ -2829,7 +2831,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 							}
 							else
 							{
-								c.bsdfEvalNM = 0;
+								c.bsdfEval = 0;
 								c.bsdfPdf = 0;
 								c.incomingRadPdf = 0;
 								c.cosTheta = 0;
@@ -2842,12 +2844,12 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 						Scalar risEffectivePdf = 0;
 						const Scalar xiRIS = sampler.Get1D();
-						const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidateNM(
+						const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
 							candidates, 2, xiRIS, risEffectivePdf );
 
 						if( risEffectivePdf > NEARZERO && candidates[sel].valid )
 						{
-							scatterThroughputNM = candidates[sel].bsdfEvalNM *
+							scatterThroughputNM = candidates[sel].bsdfEval *
 								candidates[sel].cosTheta / risEffectivePdf;
 							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
 							effectiveBsdfPdf = risEffectivePdf;
@@ -3177,7 +3179,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							if( Ld > 0 )
 							{
 								Scalar directContrib = throughputComp[w] * medWeight * Ld;
-								directContrib = ClampContributionNM( directContrib,
+								directContrib = ClampContribution( directContrib,
 									stabilityConfig.directClamp );
 								hwssResult[w] += directContrib;
 							}
@@ -3392,7 +3394,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					}
 
 					if( depth > 0 ) {
-						emission = ClampContributionNM( emission, stabilityConfig.directClamp );
+						emission = ClampContribution( emission, stabilityConfig.directClamp );
 					}
 					hwssResult[w] += throughputComp[w] * emission;
 				}
@@ -3414,7 +3416,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				Scalar directNM = pLS->EvaluateDirectLightingNM(
 					ri.geometric, *pBRDFCur, ri.pMaterial, swl.lambda[w],
 					caster, neeSampler, ri.pObject, pCurrentMedium, false, pMediumObject );
-				directNM = ClampContributionNM( directNM, stabilityConfig.directClamp );
+				directNM = ClampContribution( directNM, stabilityConfig.directClamp );
 				hwssResult[w] += throughputComp[w] * directNM;
 			}
 		}
@@ -3448,7 +3450,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				if( sms.valid )
 				{
 					Scalar smsContribNM = sms.contribution * sms.misWeight;
-					smsContribNM = ClampContributionNM( smsContribNM, stabilityConfig.directClamp );
+					smsContribNM = ClampContribution( smsContribNM, stabilityConfig.directClamp );
 					hwssResult[w] += throughputComp[w] * smsContribNM;
 				}
 			}
@@ -3670,7 +3672,7 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 				if( Ld > 0 )
 				{
 					Scalar directContrib = medWeight * Ld;
-					directContrib = ClampContributionNM( directContrib,
+					directContrib = ClampContribution( directContrib,
 						stabilityConfig.directClamp );
 					resultNM += directContrib;
 				}
@@ -3821,7 +3823,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 					if( Ld > 0 )
 					{
 						Scalar directContrib = medWeight * Ld;
-						directContrib = ClampContributionNM( directContrib,
+						directContrib = ClampContribution( directContrib,
 							stabilityConfig.directClamp );
 						result[w] += directContrib;
 					}

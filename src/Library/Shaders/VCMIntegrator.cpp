@@ -32,6 +32,8 @@
 #include "../Lights/LightSampler.h"
 #include "../Rendering/LuminaryManager.h"
 #include "../Utilities/PathVertexEval.h"
+#include "../Utilities/PathValueOps.h"
+#include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/BDPTUtilities.h"
 #include "../Interfaces/ICamera.h"
 #include "../Cameras/CameraUtilities.h"
@@ -39,6 +41,9 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+using RISE::SpectralDispatch::PelTag;
+using RISE::SpectralDispatch::NMTag;
+using RISE::SpectralDispatch::SpectralValueTraits;
 
 namespace
 {
@@ -59,6 +64,163 @@ namespace
 		Ray shadowRay( p1, d );
 		shadowRay.Advance( VCM_RAY_EPSILON );
 		return !caster.CastShadowRay( shadowRay, dist - 2.0 * VCM_RAY_EPSILON );
+	}
+
+	// Luminance approximation for ILight sources that only expose a
+	// Pel API.  For wavelength-accurate rendering the scene should
+	// use mesh luminaries with spectral emitters.  This proxy is
+	// applied in the NM path whenever we need a scalar radiance
+	// from an ILight (point / spot / directional).
+	inline Scalar RISEPelToNMProxy( const RISEPel& p )
+	{
+		return Scalar( 0.2126 ) * p.r + Scalar( 0.7152 ) * p.g + Scalar( 0.0722 ) * p.b;
+	}
+
+	//////////////////////////////////////////////////////////////////
+	// Tag-dispatched helpers used by the templated VCM evaluators.
+	// Each pair forwards to the existing Pel or NM implementation
+	// based on the compile-time tag, producing zero-overhead dispatch
+	// that lets the 5 evaluator methods share a single template body.
+	//////////////////////////////////////////////////////////////////
+
+	/// BDPTVertex throughput field picker.  Pel reads v.throughput,
+	/// NM reads v.throughputNM.  Both fields coexist on every vertex.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	VertexThroughput( const BDPTVertex& v, const Tag& tag );
+
+	template<>
+	inline RISEPel VertexThroughput<PelTag>( const BDPTVertex& v, const PelTag& )
+	{
+		return v.throughput;
+	}
+
+	template<>
+	inline Scalar VertexThroughput<NMTag>( const BDPTVertex& v, const NMTag& )
+	{
+		return v.throughputNM;
+	}
+
+	/// IEmitter::emittedRadiance dispatcher.  IEmitter provides both
+	/// Pel and NM virtuals, so the dispatch is direct.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	EvalEmitterRadiance(
+		const IEmitter& emitter,
+		const RayIntersectionGeometric& ri,
+		const Vector3& outDir,
+		const Vector3& normal,
+		const Tag& tag );
+
+	template<>
+	inline RISEPel EvalEmitterRadiance<PelTag>(
+		const IEmitter& emitter,
+		const RayIntersectionGeometric& ri,
+		const Vector3& outDir,
+		const Vector3& normal,
+		const PelTag& )
+	{
+		return emitter.emittedRadiance( ri, outDir, normal );
+	}
+
+	template<>
+	inline Scalar EvalEmitterRadiance<NMTag>(
+		const IEmitter& emitter,
+		const RayIntersectionGeometric& ri,
+		const Vector3& outDir,
+		const Vector3& normal,
+		const NMTag& tag )
+	{
+		return emitter.emittedRadianceNM( ri, outDir, normal, tag.nm );
+	}
+
+	/// ILight::emittedRadiance dispatcher.  ILight has ONLY a Pel
+	/// API; the NM path applies the RISEPelToNMProxy luminance
+	/// projection to preserve v1 behavior.  See comment at the
+	/// "SPECTRAL (NM) VARIANTS" block below for rationale.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	EvalLightRadiance( const ILight& light, const Vector3& dir, const Tag& tag );
+
+	template<>
+	inline RISEPel EvalLightRadiance<PelTag>(
+		const ILight& light, const Vector3& dir, const PelTag& )
+	{
+		return light.emittedRadiance( dir );
+	}
+
+	template<>
+	inline Scalar EvalLightRadiance<NMTag>(
+		const ILight& light, const Vector3& dir, const NMTag& )
+	{
+		return RISEPelToNMProxy( light.emittedRadiance( dir ) );
+	}
+
+	/// Signed magnitude summary used by the "skip if contribution is
+	/// non-positive" gates inside the templated evaluator bodies.
+	/// Matches the pre-refactor gate semantics exactly:
+	///   Pel: `ColorMath::MaxValue(v) <= 0` skips when the largest
+	///        channel is <= 0 (RGB is treated as a signed triple).
+	///   NM:  `v <= 0` skips negative or zero scalar contributions.
+	///
+	/// DO NOT change the NM specialization to fabs — negative
+	/// spectral values are meaningful as "drop this sample" signals
+	/// (a bug elsewhere would otherwise accumulate into the film);
+	/// the pre-refactor code relied on the signed comparison as an
+	/// implicit assertion.
+	///
+	/// For absolute-magnitude needs (Russian roulette, clamping) use
+	/// a different helper — the two concerns must stay separate.
+	inline Scalar PositiveMagnitude( const RISEPel& v ) { return ColorMath::MaxValue( v ); }
+	inline Scalar PositiveMagnitude( const Scalar  v ) { return v; }
+
+	/// LightVertex throughput field picker with v1 NM proxy.  The
+	/// LightVertexStore holds Pel throughputs only (populated from
+	/// the hero pass); the NM merge path uses RISEPelToNMProxy
+	/// to project to scalar.  This preserves the v1 behavior
+	/// documented at the EvaluateMergesNM comment block.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	LightVertexThroughput( const LightVertex& lv, const Tag& tag );
+
+	template<>
+	inline RISEPel LightVertexThroughput<PelTag>( const LightVertex& lv, const PelTag& )
+	{
+		return lv.throughput;
+	}
+
+	template<>
+	inline Scalar LightVertexThroughput<NMTag>( const LightVertex& lv, const NMTag& )
+	{
+		return RISEPelToNMProxy( lv.throughput );
+	}
+
+	/// Convert a contribution to an RGB splat value for writing to
+	/// SplatFilm.  Pel passes through; NM applies the CIE XYZ
+	/// wavelength → tri-stimulus conversion.  Returns (valid, RISEPel).
+	/// When conversion fails (e.g. NM is out of the visible range),
+	/// returns (false, zero).
+	template<class Tag>
+	inline std::pair<bool, RISEPel> ToSplatRGB(
+		const typename SpectralValueTraits<Tag>::value_type& v, const Tag& tag );
+
+	template<>
+	inline std::pair<bool, RISEPel> ToSplatRGB<PelTag>(
+		const RISEPel& v, const PelTag& )
+	{
+		return std::make_pair( true, v );
+	}
+
+	template<>
+	inline std::pair<bool, RISEPel> ToSplatRGB<NMTag>(
+		const Scalar& v, const NMTag& tag )
+	{
+		XYZPel xyz( 0, 0, 0 );
+		if( !ColorUtils::XYZFromNM( xyz, tag.nm ) ) {
+			return std::make_pair( false, RISEPel( 0, 0, 0 ) );
+		}
+		xyz = xyz * v;
+		return std::make_pair( true, RISEPel( xyz.X, xyz.Y, xyz.Z ) );
 	}
 }
 
@@ -462,6 +624,97 @@ void VCMIntegrator::ConvertLightSubpath(
 // We still apply the formula uniformly — the specular vertex
 // contribution is unchanged by the wCamera=0 collapse.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateS0Impl — templated body shared by EvaluateS0 and
+// EvaluateS0NM.  Tag is PelTag for RGB, NMTag(nm) for spectral.
+// See EvaluateS0 docstring above for the algorithm.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	template<class Tag>
+	typename SpectralValueTraits<Tag>::value_type EvaluateS0Impl(
+		const IScene& scene,
+		const IRayCaster& caster,
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<VCMMisQuantities>& eyeMis,
+		const Tag& tag
+		)
+	{
+		using Traits = SpectralValueTraits<Tag>;
+		typename Traits::value_type total = Traits::zero();
+
+		if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
+			return total;
+		}
+
+		const LightSampler* pLS = caster.GetLightSampler();
+		if( !pLS ) {
+			return total;
+		}
+
+		const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+		const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+		LuminaryManager::LuminariesList emptyList;
+		const LuminaryManager::LuminariesList& luminaries = pLumManager
+			? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
+			: emptyList;
+
+		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
+		{
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type != BDPTVertex::SURFACE || !v.pMaterial || !v.pObject ) {
+				continue;
+			}
+
+			const IEmitter* pEmitter = v.pMaterial->GetEmitter();
+			if( !pEmitter ) {
+				continue;
+			}
+
+			const BDPTVertex& prev = eyeVerts[i - 1];
+			Vector3 woFromEmitter = Vector3Ops::mkVector3( prev.position, v.position );
+			const Scalar d = Vector3Ops::Magnitude( woFromEmitter );
+			if( d <= 0 ) {
+				continue;
+			}
+			woFromEmitter = woFromEmitter * ( Scalar( 1 ) / d );
+
+			RayIntersectionGeometric rig( Ray( v.position, woFromEmitter ), nullRasterizerState );
+			rig.bHit = true;
+			rig.ptIntersection = v.position;
+			rig.vNormal = v.normal;
+			rig.onb = v.onb;
+			const typename Traits::value_type Le =
+				EvalEmitterRadiance<Tag>( *pEmitter, rig, woFromEmitter, v.normal, tag );
+			if( PositiveMagnitude( Le ) <= 0 ) {
+				continue;
+			}
+
+			const Scalar pdfSelect = pLS->PdfSelectLuminary(
+				scene, luminaries, *v.pObject, prev.position, prev.normal );
+			const Scalar area = v.pObject->GetArea();
+			if( area <= 0 ) {
+				continue;
+			}
+			const Scalar pdfPosition = Scalar( 1 ) / area;
+			const Scalar directPdfA = pdfSelect * pdfPosition;
+
+			const Scalar cosAtEmitter = Vector3Ops::Dot( v.normal, woFromEmitter );
+			const Scalar emissionDirPdfSA = ( cosAtEmitter > 0 )
+				? ( cosAtEmitter * INV_PI )
+				: Scalar( 0 );
+			const Scalar emissionPdfW = directPdfA * emissionDirPdfSA;
+
+			const Scalar wCamera = directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
+			const Scalar weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+
+			total = total + ( VertexThroughput<Tag>( v, tag ) * Le * weight );
+		}
+
+		return total;
+	}
+}
+
 RISEPel VCMIntegrator::EvaluateS0(
 	const IScene& scene,
 	const IRayCaster& caster,
@@ -470,85 +723,7 @@ RISEPel VCMIntegrator::EvaluateS0(
 	const VCMNormalization& /*norm*/
 	) const
 {
-	RISEPel total( 0, 0, 0 );
-
-	if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
-		return total;
-	}
-
-	const LightSampler* pLS = caster.GetLightSampler();
-	if( !pLS ) {
-		return total;
-	}
-
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager::LuminariesList& luminaries = pLumManager
-		? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
-		: emptyList;
-
-	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
-	{
-		const BDPTVertex& v = eyeVerts[i];
-		if( v.type != BDPTVertex::SURFACE || !v.pMaterial || !v.pObject ) {
-			continue;
-		}
-
-		const IEmitter* pEmitter = v.pMaterial->GetEmitter();
-		if( !pEmitter ) {
-			continue;
-		}
-
-		// Direction from the emitter toward the previous eye
-		// vertex — this is the direction in which we evaluate Le.
-		const BDPTVertex& prev = eyeVerts[i - 1];
-		Vector3 woFromEmitter = Vector3Ops::mkVector3( prev.position, v.position );
-		const Scalar d = Vector3Ops::Magnitude( woFromEmitter );
-		if( d <= 0 ) {
-			continue;
-		}
-		woFromEmitter = woFromEmitter * ( Scalar( 1 ) / d );
-
-		// Le at the emitter in that direction.
-		RayIntersectionGeometric rig( Ray( v.position, woFromEmitter ), nullRasterizerState );
-		rig.bHit = true;
-		rig.ptIntersection = v.position;
-		rig.vNormal = v.normal;
-		rig.onb = v.onb;
-		const RISEPel Le = pEmitter->emittedRadiance( rig, woFromEmitter, v.normal );
-		if( ColorMath::MaxValue( Le ) <= 0 ) {
-			continue;
-		}
-
-		// Area-measure NEE pdf: pdfSelect * pdfPosition.
-		const Scalar pdfSelect = pLS->PdfSelectLuminary(
-			scene, luminaries, *v.pObject, prev.position, prev.normal );
-		const Scalar area = v.pObject->GetArea();
-		if( area <= 0 ) {
-			continue;
-		}
-		const Scalar pdfPosition = Scalar( 1 ) / area;
-		const Scalar directPdfA = pdfSelect * pdfPosition;
-
-		// Emission solid-angle pdf at the emitter toward prev.
-		// Mesh luminaries use cosine-weighted hemisphere emission.
-		const Scalar cosAtEmitter = Vector3Ops::Dot( v.normal, woFromEmitter );
-		const Scalar emissionDirPdfSA = ( cosAtEmitter > 0 )
-			? ( cosAtEmitter * INV_PI )
-			: Scalar( 0 );
-
-		// SmallVCM "emissionPdfW" is the combined area * solid-angle product.
-		const Scalar emissionPdfW = directPdfA * emissionDirPdfSA;
-
-		// SmallVCM MIS weight (balance heuristic via VCMMis).
-		const Scalar wCamera = directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
-		const Scalar weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-		total = total + ( v.throughput * Le * weight );
-	}
-
-	return total;
+	return EvaluateS0Impl<PelTag>( scene, caster, eyeVerts, eyeMis, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -572,6 +747,173 @@ RISEPel VCMIntegrator::EvaluateS0(
 // medium is assumed not to occlude the NEE segment); Step 5's
 // integration of null-scattering volumes is deferred per the plan.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateNEEImpl — templated body shared by EvaluateNEE and
+// EvaluateNEENM.  See EvaluateNEE documentation above for the
+// algorithm.  The only Pel/NM differences resolved by Tag dispatch
+// are (a) Le from ILight (Pel direct, NM via RISEPelToNMProxy),
+// (b) Le from IEmitter (Pel/NM via virtuals), (c) BSDF evaluation at
+// the eye vertex, and (d) throughput field selection.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	template<class Tag>
+	typename SpectralValueTraits<Tag>::value_type EvaluateNEEImpl(
+		const IScene& scene,
+		const IRayCaster& caster,
+		ISampler& sampler,
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<VCMMisQuantities>& eyeMis,
+		const VCMNormalization& norm,
+		const Tag& tag
+		)
+	{
+		using Traits = SpectralValueTraits<Tag>;
+		typename Traits::value_type total = Traits::zero();
+
+		if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
+			return total;
+		}
+
+		const LightSampler* pLS = caster.GetLightSampler();
+		if( !pLS ) {
+			return total;
+		}
+
+		const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+		const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+		LuminaryManager::LuminariesList emptyList;
+		const LuminaryManager::LuminariesList& luminaries = pLumManager
+			? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
+			: emptyList;
+
+		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
+		{
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+				continue;
+			}
+			if( !v.isConnectible ) {
+				continue;
+			}
+
+			sampler.StartStream( 48 + static_cast<unsigned int>( i ) );
+
+			LightSample ls;
+			if( !pLS->SampleLight( scene, luminaries, sampler, ls ) ) {
+				continue;
+			}
+			if( ls.pdfSelect <= 0 || ls.pdfPosition <= 0 ) {
+				continue;
+			}
+
+			Vector3 dirToLight = Vector3Ops::mkVector3( ls.position, v.position );
+			const Scalar dist = Vector3Ops::Magnitude( dirToLight );
+			if( dist < VCM_RAY_EPSILON ) {
+				continue;
+			}
+			dirToLight = dirToLight * ( Scalar( 1 ) / dist );
+			const Scalar distSq = dist * dist;
+
+			if( !VCMIsVisible( caster, v.position, ls.position ) ) {
+				continue;
+			}
+
+			const BDPTVertex& prev = eyeVerts[i - 1];
+			Vector3 woAtEye = Vector3Ops::mkVector3( prev.position, v.position );
+			const Scalar woDist = Vector3Ops::Magnitude( woAtEye );
+			if( woDist < VCM_RAY_EPSILON ) {
+				continue;
+			}
+			woAtEye = woAtEye * ( Scalar( 1 ) / woDist );
+
+			// Evaluate Le at the light toward the eye vertex.  ILight
+			// (delta lights) use the Pel-only API with luminance
+			// projection for the NM path; mesh luminaries route
+			// through IEmitter which has a proper NM virtual.
+			typename Traits::value_type Le = Traits::zero();
+			if( ls.pLight ) {
+				Le = EvalLightRadiance<Tag>( *ls.pLight, -dirToLight, tag );
+			} else if( ls.pLuminary && ls.pLuminary->GetMaterial() ) {
+				const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
+				if( pEmitter ) {
+					RayIntersectionGeometric rig( Ray( ls.position, -dirToLight ), nullRasterizerState );
+					rig.bHit = true;
+					rig.ptIntersection = ls.position;
+					rig.vNormal = ls.normal;
+					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
+				}
+			}
+			if( PositiveMagnitude( Le ) <= 0 ) {
+				continue;
+			}
+
+			const typename Traits::value_type fEye =
+				RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, dirToLight, woAtEye, tag );
+			if( PositiveMagnitude( fEye ) <= 0 ) {
+				continue;
+			}
+
+			const Scalar bsdfDirPdfW =
+				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woAtEye, dirToLight, tag );
+			const Scalar bsdfRevPdfW =
+				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, dirToLight, woAtEye, tag );
+
+			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.normal, dirToLight ) );
+			Scalar cosAtLight = 0;
+			Scalar G = 0;
+			if( ls.isDelta ) {
+				cosAtLight = 1;
+				G = cosAtEye / distSq;
+			} else {
+				cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirToLight ) );
+				G = ( cosAtEye * cosAtLight ) / distSq;
+			}
+			if( cosAtEye <= 0 || G <= 0 ) {
+				continue;
+			}
+
+			const Scalar directPdfW = ls.isDelta
+				? Scalar( 1 )
+				: ( ls.pdfPosition * distSq / cosAtLight );
+
+			Scalar emissionDirPdfSA = 0;
+			if( ls.pLuminary ) {
+				const Scalar c = Vector3Ops::Dot( ls.normal, -dirToLight );
+				emissionDirPdfSA = ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
+			} else if( ls.pLight ) {
+				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
+			}
+			const Scalar emissionPdfW = ls.pdfSelect * ls.pdfPosition * emissionDirPdfSA;
+
+			const Scalar lightPickProb = ls.pdfSelect;
+
+			const Scalar wLight = bsdfDirPdfW / ( lightPickProb * directPdfW );
+			Scalar wCamera = 0;
+			if( directPdfW > 0 && cosAtLight > 0 ) {
+				const Scalar camFactor =
+					( emissionPdfW * cosAtEye ) / ( directPdfW * cosAtLight );
+				wCamera = camFactor * (
+					norm.mMisVmWeightFactor
+					+ eyeMis[i].dVCM
+					+ eyeMis[i].dVC * bsdfRevPdfW );
+			}
+			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+
+			const Scalar invLightPdfArea = ls.pdfSelect * ls.pdfPosition;
+			if( invLightPdfArea <= 0 ) {
+				continue;
+			}
+
+			const typename Traits::value_type contribution =
+				VertexThroughput<Tag>( v, tag ) * fEye * Le * ( G / invLightPdfArea ) * weight;
+			total = total + contribution;
+		}
+
+		return total;
+	}
+}
+
 RISEPel VCMIntegrator::EvaluateNEE(
 	const IScene& scene,
 	const IRayCaster& caster,
@@ -581,168 +923,8 @@ RISEPel VCMIntegrator::EvaluateNEE(
 	const VCMNormalization& norm
 	) const
 {
-	RISEPel total( 0, 0, 0 );
-
-	if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
-		return total;
-	}
-
-	const LightSampler* pLS = caster.GetLightSampler();
-	if( !pLS ) {
-		return total;
-	}
-
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager::LuminariesList& luminaries = pLumManager
-		? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
-		: emptyList;
-
-	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
-	{
-		const BDPTVertex& v = eyeVerts[i];
-		if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
-			continue;
-		}
-		if( !v.isConnectible ) {
-			continue;
-		}
-
-		// Start a dedicated sampler stream per eye vertex so the
-		// light-selection dimensions don't collide with the subpath
-		// generator's.  Stream indices beyond 31 roll over; VCM
-		// NEE uses streams 48 + depth for clear separation.
-		sampler.StartStream( 48 + static_cast<unsigned int>( i ) );
-
-		LightSample ls;
-		if( !pLS->SampleLight( scene, luminaries, sampler, ls ) ) {
-			continue;
-		}
-		if( ls.pdfSelect <= 0 || ls.pdfPosition <= 0 ) {
-			continue;
-		}
-
-		// Direction from the eye vertex to the light position.
-		// Note mkVector3 returns a-b, so mkVector3(light, eye) = light-eye.
-		Vector3 dirToLight = Vector3Ops::mkVector3( ls.position, v.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToLight );
-		if( dist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		dirToLight = dirToLight * ( Scalar( 1 ) / dist );
-		const Scalar distSq = dist * dist;
-
-		// Visibility.
-		if( !VCMIsVisible( caster, v.position, ls.position ) ) {
-			continue;
-		}
-
-		// Direction at the eye vertex back toward the previous
-		// eye vertex (the woAtEye the BSDF uses).
-		const BDPTVertex& prev = eyeVerts[i - 1];
-		Vector3 woAtEye = Vector3Ops::mkVector3( prev.position, v.position );
-		const Scalar woDist = Vector3Ops::Magnitude( woAtEye );
-		if( woDist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		woAtEye = woAtEye * ( Scalar( 1 ) / woDist );
-
-		// Evaluate Le at the light toward the eye vertex (direction -dirToLight).
-		RISEPel Le( 0, 0, 0 );
-		if( ls.pLight ) {
-			Le = ls.pLight->emittedRadiance( -dirToLight );
-		} else if( ls.pLuminary && ls.pLuminary->GetMaterial() ) {
-			const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
-			if( pEmitter ) {
-				RayIntersectionGeometric rig( Ray( ls.position, -dirToLight ), nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = ls.position;
-				rig.vNormal = ls.normal;
-				Le = pEmitter->emittedRadiance( rig, -dirToLight, ls.normal );
-			}
-		}
-		if( ColorMath::MaxValue( Le ) <= 0 ) {
-			continue;
-		}
-
-		// BSDF at the eye vertex for (wi=dirToLight, wo=woAtEye).
-		const RISEPel fEye = PathVertexEval::EvalBSDFAtVertex( v, dirToLight, woAtEye );
-		if( ColorMath::MaxValue( fEye ) <= 0 ) {
-			continue;
-		}
-
-		// Forward/reverse solid-angle BSDF pdfs at eye vertex.
-		const Scalar bsdfDirPdfW = PathVertexEval::EvalPdfAtVertex( v, woAtEye, dirToLight );
-		const Scalar bsdfRevPdfW = PathVertexEval::EvalPdfAtVertex( v, dirToLight, woAtEye );
-
-		// Geometric term.  Delta lights have no surface area, so
-		// their light-side cosine drops out.
-		const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.normal, dirToLight ) );
-		Scalar cosAtLight = 0;
-		Scalar G = 0;
-		if( ls.isDelta ) {
-			cosAtLight = 1;
-			G = cosAtEye / distSq;
-		} else {
-			cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirToLight ) );
-			G = ( cosAtEye * cosAtLight ) / distSq;
-		}
-		if( cosAtEye <= 0 || G <= 0 ) {
-			continue;
-		}
-
-		// SmallVCM directPdfW: solid-angle pdf at the eye vertex of
-		// sampling this light position.  For delta lights the
-		// "direct" pdf is degenerate; we treat it as 1 for the
-		// weight math since delta lights have no competing NEE.
-		const Scalar directPdfW = ls.isDelta
-			? Scalar( 1 )
-			: ( ls.pdfPosition * distSq / cosAtLight );
-
-		// SmallVCM emissionPdfW: combined area+solid-angle product
-		// pdf matching what would be computed at the light endpoint
-		// if this path had been sampled from the light side.
-		Scalar emissionDirPdfSA = 0;
-		if( ls.pLuminary ) {
-			// Cosine-weighted hemisphere emission on mesh lights.
-			const Scalar c = Vector3Ops::Dot( ls.normal, -dirToLight );
-			emissionDirPdfSA = ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
-		} else if( ls.pLight ) {
-			emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
-		}
-		const Scalar emissionPdfW = ls.pdfSelect * ls.pdfPosition * emissionDirPdfSA;
-
-		const Scalar lightPickProb = ls.pdfSelect;
-
-		// SmallVCM MIS weight (balance heuristic via VCMMis).
-		const Scalar wLight = bsdfDirPdfW / ( lightPickProb * directPdfW );
-		Scalar wCamera = 0;
-		if( directPdfW > 0 && cosAtLight > 0 ) {
-			const Scalar camFactor =
-				( emissionPdfW * cosAtEye ) / ( directPdfW * cosAtLight );
-			wCamera = camFactor * (
-				norm.mMisVmWeightFactor
-				+ eyeMis[i].dVCM
-				+ eyeMis[i].dVC * bsdfRevPdfW );
-		}
-		const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-		// Contribution.  BDPT's formulation:
-		//   contrib = fEye * Le * G / (pdfSelect * pdfPosition)
-		// which is mathematically equivalent to
-		// fEye * Le * cosAtEye / (lightPickProb * directPdfW)
-		// when directPdfW is in solid angle.
-		const Scalar invLightPdfArea = ls.pdfSelect * ls.pdfPosition;
-		if( invLightPdfArea <= 0 ) {
-			continue;
-		}
-
-		const RISEPel contribution = v.throughput * fEye * Le * ( G / invLightPdfArea ) * weight;
-		total = total + contribution;
-	}
-
-	return total;
+	return EvaluateNEEImpl<PelTag>(
+		scene, caster, sampler, eyeVerts, eyeMis, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -772,6 +954,184 @@ RISEPel VCMIntegrator::EvaluateNEE(
 // contribution then divides by pdfLight = v[0].pdfFwd in area
 // measure.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// SplatLightSubpathToCameraImpl — templated body shared by Pel and NM
+// variants.  ToSplatRGB<Tag> converts the per-wavelength scalar
+// contribution to XYZ tri-stimulus in the NM path; Pel is a no-op.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	template<class Tag>
+	void SplatLightSubpathToCameraImpl(
+		const std::vector<BDPTVertex>& lightVerts,
+		const std::vector<VCMMisQuantities>& lightMis,
+		const IRayCaster& caster,
+		const ICamera& camera,
+		SplatFilm& splatFilm,
+		const VCMNormalization& norm,
+		const IPixelFilter* pixelFilter,
+		const Tag& tag
+		)
+	{
+		using Traits = SpectralValueTraits<Tag>;
+
+		if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
+			return;
+		}
+		if( norm.mLightSubPathCount <= 0 ) {
+			return;
+		}
+
+		const Point3 camPos = camera.GetLocation();
+
+		for( std::size_t i = 0; i < lightVerts.size(); i++ )
+		{
+			const BDPTVertex& v = lightVerts[i];
+
+			if( !v.isConnectible ) {
+				continue;
+			}
+			if( v.type != BDPTVertex::LIGHT && v.type != BDPTVertex::SURFACE ) {
+				continue;
+			}
+
+			Point2 rasterPos;
+			if( !BDPTCameraUtilities::Rasterize( camera, v.position, rasterPos ) ) {
+				continue;
+			}
+
+			if( !VCMIsVisible( caster, v.position, camPos ) ) {
+				continue;
+			}
+
+			Vector3 dirToCam = Vector3Ops::mkVector3( camPos, v.position );
+			const Scalar dist = Vector3Ops::Magnitude( dirToCam );
+			if( dist < VCM_RAY_EPSILON ) {
+				continue;
+			}
+			dirToCam = dirToCam * ( Scalar( 1 ) / dist );
+			const Scalar distSq = dist * dist;
+
+			Ray camRay( camPos, -dirToCam );
+			const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
+			if( We <= 0 ) {
+				continue;
+			}
+
+			const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.normal, dirToCam ) );
+			if( cosAtLight <= 0 ) {
+				continue;
+			}
+			const Scalar G = cosAtLight / distSq;
+
+			const Scalar camPdfDirSA = BDPTCameraUtilities::PdfDirection( camera, camRay );
+			if( camPdfDirSA <= 0 ) {
+				continue;
+			}
+			const Scalar cameraPdfA = camPdfDirSA * cosAtLight / distSq;
+
+			typename Traits::value_type contribution = Traits::zero();
+			Scalar bsdfRevPdfW = 0;
+
+			if( v.type == BDPTVertex::LIGHT )
+			{
+				typename Traits::value_type Le = Traits::zero();
+				if( v.pLight ) {
+					Le = EvalLightRadiance<Tag>( *v.pLight, dirToCam, tag );
+				} else if( v.pLuminary && v.pLuminary->GetMaterial() ) {
+					const IEmitter* pEmitter = v.pLuminary->GetMaterial()->GetEmitter();
+					if( pEmitter ) {
+						RayIntersectionGeometric rig(
+							Ray( v.position, dirToCam ), nullRasterizerState );
+						rig.bHit = true;
+						rig.ptIntersection = v.position;
+						rig.vNormal = v.normal;
+						rig.onb = v.onb;
+						Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, dirToCam, v.normal, tag );
+					}
+				}
+				if( PositiveMagnitude( Le ) <= 0 ) {
+					continue;
+				}
+
+				const Scalar pdfLightArea = v.pdfFwd;
+				if( pdfLightArea <= 0 ) {
+					continue;
+				}
+				contribution = Le * ( G * We / pdfLightArea );
+				bsdfRevPdfW = 0;
+			}
+			else
+			{
+				if( !v.pMaterial ) {
+					continue;
+				}
+				if( i < 1 ) {
+					continue;
+				}
+				const BDPTVertex& prev = lightVerts[i - 1];
+				Vector3 wiAtLight = Vector3Ops::mkVector3( prev.position, v.position );
+				const Scalar wiDist = Vector3Ops::Magnitude( wiAtLight );
+				if( wiDist < VCM_RAY_EPSILON ) {
+					continue;
+				}
+				wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
+
+				const typename Traits::value_type fLight =
+					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtLight, dirToCam, tag );
+				if( PositiveMagnitude( fLight ) <= 0 ) {
+					continue;
+				}
+
+				bsdfRevPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, dirToCam, wiAtLight, tag );
+
+				contribution = VertexThroughput<Tag>( v, tag ) * fLight * ( G * We );
+			}
+
+			const Scalar wLight =
+				( cameraPdfA / norm.mLightSubPathCount ) *
+				( norm.mMisVmWeightFactor + lightMis[i].dVCM + lightMis[i].dVC * bsdfRevPdfW );
+			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
+
+			const typename Traits::value_type weighted = contribution * weight;
+
+			// Defensive zero-skip: pre-refactor NM path dropped
+			// non-positive contributions before the XYZ conversion.
+			// Contributions are non-negative in practice (product of
+			// throughput, BSDF, G, We, all >= 0), but preserving the
+			// skip avoids splatting zeros to the film.
+			if( PositiveMagnitude( weighted ) <= 0 ) {
+				continue;
+			}
+
+			// Convert weighted contribution to RGB for splat write.
+			// Pel passes through; NM applies ColorUtils::XYZFromNM.
+			const std::pair<bool, RISEPel> rgb = ToSplatRGB<Tag>( weighted, tag );
+			if( !rgb.first ) {
+				continue;
+			}
+
+			const Scalar fx = rasterPos.x;
+			const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - rasterPos.y;
+
+			if( pixelFilter ) {
+				splatFilm.SplatFiltered( fx, fy, rgb.second, *pixelFilter );
+			} else {
+				const Scalar rx = fx + Scalar( 0.5 );
+				const Scalar ry = fy + Scalar( 0.5 );
+				if( rx < 0 || ry < 0 ) continue;
+				const int sx = static_cast<int>( rx );
+				const int sy = static_cast<int>( ry );
+				if( sx < 0 || sy < 0 ||
+				    static_cast<unsigned int>( sx ) >= camera.GetWidth() ||
+				    static_cast<unsigned int>( sy ) >= camera.GetHeight() ) continue;
+				splatFilm.Splat( sx, sy, rgb.second );
+			}
+		}
+	}
+}
+
 void VCMIntegrator::SplatLightSubpathToCamera(
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<VCMMisQuantities>& lightMis,
@@ -783,176 +1143,8 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const IPixelFilter* pixelFilter
 	) const
 {
-	if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
-		return;
-	}
-	if( norm.mLightSubPathCount <= 0 ) {
-		return;
-	}
-
-	const Point3 camPos = camera.GetLocation();
-
-	for( std::size_t i = 0; i < lightVerts.size(); i++ )
-	{
-		const BDPTVertex& v = lightVerts[i];
-
-		// Skip non-connectible vertices: they have only delta BxDF
-		// components, so the BSDF evaluated toward the camera
-		// direction will be zero.  Vertices that are isConnectible
-		// but happened to sample a delta lobe (isDelta=true) still
-		// have a non-delta component that can scatter toward the
-		// camera, so we let them through.
-		if( !v.isConnectible ) {
-			continue;
-		}
-
-		// Skip unsupported types (MEDIUM merging is out of scope
-		// for v1).  LIGHT and SURFACE are handled below.
-		if( v.type != BDPTVertex::LIGHT && v.type != BDPTVertex::SURFACE ) {
-			continue;
-		}
-
-		// Project onto the camera sensor.
-		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, v.position, rasterPos ) ) {
-			continue;
-		}
-
-		// Visibility test between light vertex and the camera position.
-		if( !VCMIsVisible( caster, v.position, camPos ) ) {
-			continue;
-		}
-
-		// Direction from light vertex to camera.
-		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, v.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
-		if( dist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		dirToCam = dirToCam * ( Scalar( 1 ) / dist );
-		const Scalar distSq = dist * dist;
-
-		// Camera importance We for this direction.
-		Ray camRay( camPos, -dirToCam );
-		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
-		if( We <= 0 ) {
-			continue;
-		}
-
-		// Geometric term: surface cos / dist^2.  For the LIGHT
-		// endpoint we still have a normal (mesh luminaries emit
-		// cosine-weighted from their surface) and for delta-position
-		// lights we'd skip here via isDelta above.
-		const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.normal, dirToCam ) );
-		if( cosAtLight <= 0 ) {
-			continue;
-		}
-		const Scalar G = cosAtLight / distSq;
-
-		// Camera directional pdf at this light vertex.
-		const Scalar camPdfDirSA = BDPTCameraUtilities::PdfDirection( camera, camRay );
-		if( camPdfDirSA <= 0 ) {
-			continue;
-		}
-		const Scalar cameraPdfA = camPdfDirSA * cosAtLight / distSq;
-
-		// Two cases: LIGHT endpoint (s=1) or SURFACE (s>=2).
-		RISEPel contribution( 0, 0, 0 );
-		Scalar bsdfRevPdfW = 0;
-
-		if( v.type == BDPTVertex::LIGHT )
-		{
-			// s=1: emitter directly visible.  Re-evaluate Le in
-			// the direction toward the camera.
-			RISEPel Le( 0, 0, 0 );
-			if( v.pLight ) {
-				Le = v.pLight->emittedRadiance( dirToCam );
-			} else if( v.pLuminary && v.pLuminary->GetMaterial() ) {
-				const IEmitter* pEmitter = v.pLuminary->GetMaterial()->GetEmitter();
-				if( pEmitter ) {
-					RayIntersectionGeometric rig(
-						Ray( v.position, dirToCam ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = v.position;
-					rig.vNormal = v.normal;
-					rig.onb = v.onb;
-					Le = pEmitter->emittedRadiance( rig, dirToCam, v.normal );
-				}
-			}
-			if( ColorMath::MaxValue( Le ) <= 0 ) {
-				continue;
-			}
-
-			// Contribution = Le * G * We / pdfLightPosition
-			const Scalar pdfLightArea = v.pdfFwd;	// pdfSelect * pdfPosition
-			if( pdfLightArea <= 0 ) {
-				continue;
-			}
-			contribution = Le * ( G * We / pdfLightArea );
-			bsdfRevPdfW = 0;	// no previous direction at the light
-		}
-		else	// SURFACE, s>=2
-		{
-			if( !v.pMaterial ) {
-				continue;
-			}
-			if( i < 1 ) {
-				continue;
-			}
-			const BDPTVertex& prev = lightVerts[i - 1];
-			// wi convention: "away from surface TOWARD light source".
-			// For a light subpath vertex, the source-side direction
-			// points back to the previous light vertex, i.e. prev-v.
-			Vector3 wiAtLight = Vector3Ops::mkVector3( prev.position, v.position );
-			const Scalar wiDist = Vector3Ops::Magnitude( wiAtLight );
-			if( wiDist < VCM_RAY_EPSILON ) {
-				continue;
-			}
-			wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
-
-			// BSDF at the light vertex for (wi=wiAtLight, wo=dirToCam).
-			const RISEPel fLight = PathVertexEval::EvalBSDFAtVertex( v, wiAtLight, dirToCam );
-			if( ColorMath::MaxValue( fLight ) <= 0 ) {
-				continue;
-			}
-
-			// Reverse bsdf pdf at this vertex (from camera
-			// direction back to the previous light direction).
-			bsdfRevPdfW = PathVertexEval::EvalPdfAtVertex( v, dirToCam, wiAtLight );
-
-			contribution = v.throughput * fLight * ( G * We );
-		}
-
-		// SmallVCM MIS weight (balance heuristic via VCMMis) for t=1.
-		const Scalar wLight =
-			( cameraPdfA / norm.mLightSubPathCount ) *
-			( norm.mMisVmWeightFactor + lightMis[i].dVCM + lightMis[i].dVC * bsdfRevPdfW );
-		const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
-
-		const RISEPel weighted = contribution * weight;
-
-		// Rasterize returns screen coordinates where y=0 is the
-		// bottom of the image; SplatFilm uses y=0 at top.  Spread
-		// through the pixel filter (Mitchell-Netravali by default) so
-		// light-to-camera splats reconstruct without the hard edges
-		// that come from truncating to an integer pixel.
-		const Scalar fx = rasterPos.x;
-		const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - rasterPos.y;
-
-		if( pixelFilter ) {
-			splatFilm.SplatFiltered( fx, fy, weighted, *pixelFilter );
-		} else {
-			// No filter — round to nearest pixel (better than the old
-			// truncation which was half a pixel off in expectation).
-			const Scalar rx = fx + Scalar( 0.5 );
-			const Scalar ry = fy + Scalar( 0.5 );
-			if( rx < 0 || ry < 0 ) continue;
-			const unsigned int sx = static_cast<unsigned int>( rx );
-			const unsigned int sy = static_cast<unsigned int>( ry );
-			if( sx >= camera.GetWidth() || sy >= camera.GetHeight() ) continue;
-			splatFilm.Splat( sx, sy, weighted );
-		}
-	}
+	SplatLightSubpathToCameraImpl<PelTag>(
+		lightVerts, lightMis, caster, camera, splatFilm, norm, pixelFilter, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -987,6 +1179,134 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 // Interior connections never produce splats; they always land in
 // the current pixel's sampleColor.
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateInteriorConnectionsImpl — templated body shared by the Pel
+// and NM variants.  See EvaluateInteriorConnections above for the
+// algorithm.  Pel/NM dispatch resolves BSDF evaluations at the light
+// and eye endpoints plus throughput-field selection.
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	template<class Tag>
+	typename SpectralValueTraits<Tag>::value_type EvaluateInteriorConnectionsImpl(
+		const IRayCaster& caster,
+		const std::vector<BDPTVertex>& lightVerts,
+		const std::vector<VCMMisQuantities>& lightMis,
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<VCMMisQuantities>& eyeMis,
+		const VCMNormalization& norm,
+		const Tag& tag
+		)
+	{
+		using Traits = SpectralValueTraits<Tag>;
+		typename Traits::value_type total = Traits::zero();
+
+		if( lightVerts.size() != lightMis.size() || eyeVerts.size() != eyeMis.size() ) {
+			return total;
+		}
+
+		for( std::size_t i = 1; i < lightVerts.size(); i++ )
+		{
+			const BDPTVertex& lv = lightVerts[i];
+			if( lv.type != BDPTVertex::SURFACE || !lv.pMaterial ) {
+				continue;
+			}
+			if( !lv.isConnectible ) {
+				continue;
+			}
+
+			const BDPTVertex& lvPrev = lightVerts[i - 1];
+			Vector3 wiAtLight = Vector3Ops::mkVector3( lvPrev.position, lv.position );
+			const Scalar wiLightDist = Vector3Ops::Magnitude( wiAtLight );
+			if( wiLightDist < VCM_RAY_EPSILON ) {
+				continue;
+			}
+			wiAtLight = wiAtLight * ( Scalar( 1 ) / wiLightDist );
+
+			for( std::size_t j = 1; j < eyeVerts.size(); j++ )
+			{
+				const BDPTVertex& ev = eyeVerts[j];
+				if( ev.type != BDPTVertex::SURFACE || !ev.pMaterial ) {
+					continue;
+				}
+				if( !ev.isConnectible ) {
+					continue;
+				}
+
+				const BDPTVertex& evPrev = eyeVerts[j - 1];
+				Vector3 woAtEye = Vector3Ops::mkVector3( evPrev.position, ev.position );
+				const Scalar woEyeDist = Vector3Ops::Magnitude( woAtEye );
+				if( woEyeDist < VCM_RAY_EPSILON ) {
+					continue;
+				}
+				woAtEye = woAtEye * ( Scalar( 1 ) / woEyeDist );
+
+				Vector3 lightToEye = Vector3Ops::mkVector3( ev.position, lv.position );
+				const Scalar dist = Vector3Ops::Magnitude( lightToEye );
+				if( dist < VCM_RAY_EPSILON ) {
+					continue;
+				}
+				lightToEye = lightToEye * ( Scalar( 1 ) / dist );
+				const Scalar distSq = dist * dist;
+
+				if( !VCMIsVisible( caster, lv.position, ev.position ) ) {
+					continue;
+				}
+
+				const typename Traits::value_type fLight =
+					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+				if( PositiveMagnitude( fLight ) <= 0 ) {
+					continue;
+				}
+				const typename Traits::value_type fEye =
+					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
+				if( PositiveMagnitude( fEye ) <= 0 ) {
+					continue;
+				}
+
+				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.normal, lightToEye ) );
+				const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.normal, -lightToEye ) );
+				if( cosAtLight <= 0 || cosAtEye <= 0 ) {
+					continue;
+				}
+				const Scalar G = ( cosAtLight * cosAtEye ) / distSq;
+
+				const Scalar lightBsdfDirPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( lv, wiAtLight, lightToEye, tag );
+				const Scalar cameraBsdfDirPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( ev, woAtEye, -lightToEye, tag );
+
+				const Scalar lightBsdfRevPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( lv, lightToEye, wiAtLight, tag );
+				const Scalar cameraBsdfRevPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( ev, -lightToEye, woAtEye, tag );
+
+				const Scalar cameraBsdfDirPdfA =
+					BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
+				const Scalar lightBsdfDirPdfA =
+					BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
+
+				const Scalar wLight = cameraBsdfDirPdfA
+					* ( norm.mMisVmWeightFactor
+					    + lightMis[i].dVCM
+					    + lightMis[i].dVC * lightBsdfRevPdfW );
+				const Scalar wCamera = lightBsdfDirPdfA
+					* ( norm.mMisVmWeightFactor
+					    + eyeMis[j].dVCM
+					    + eyeMis[j].dVC * cameraBsdfRevPdfW );
+				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+
+				const typename Traits::value_type contrib =
+					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * weight ) * fEye
+					* VertexThroughput<Tag>( ev, tag );
+				total = total + contrib;
+			}
+		}
+
+		return total;
+	}
+}
+
 RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	const IScene& /*scene*/,
 	const IRayCaster& caster,
@@ -997,138 +1317,8 @@ RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	const VCMNormalization& norm
 	) const
 {
-	RISEPel total( 0, 0, 0 );
-
-	if( lightVerts.size() != lightMis.size() || eyeVerts.size() != eyeMis.size() ) {
-		return total;
-	}
-
-	// Iterate s >= 2 and t >= 2.  s is the number of light subpath
-	// vertices including the light itself; the light endpoint is
-	// at index s-1.  SmallVCM's interior formula requires the
-	// light endpoint to have a valid BSDF, which excludes the
-	// LIGHT-type vertex 0.  So our loop starts at i=1 (s>=2).
-	for( std::size_t i = 1; i < lightVerts.size(); i++ )
-	{
-		const BDPTVertex& lv = lightVerts[i];
-		if( lv.type != BDPTVertex::SURFACE || !lv.pMaterial ) {
-			continue;
-		}
-		if( !lv.isConnectible ) {
-			continue;
-		}
-
-		// Direction from lv to its own previous vertex (for
-		// evaluating the BSDF at lv).  lightVerts[i-1] exists by
-		// the i>=1 constraint.
-		const BDPTVertex& lvPrev = lightVerts[i - 1];
-		Vector3 wiAtLight = Vector3Ops::mkVector3( lvPrev.position, lv.position );
-		const Scalar wiLightDist = Vector3Ops::Magnitude( wiAtLight );
-		if( wiLightDist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		wiAtLight = wiAtLight * ( Scalar( 1 ) / wiLightDist );
-
-		for( std::size_t j = 1; j < eyeVerts.size(); j++ )
-		{
-			const BDPTVertex& ev = eyeVerts[j];
-			if( ev.type != BDPTVertex::SURFACE || !ev.pMaterial ) {
-				continue;
-			}
-			if( !ev.isConnectible ) {
-				continue;
-			}
-
-			// Direction from ev back to its own previous vertex.
-			const BDPTVertex& evPrev = eyeVerts[j - 1];
-			Vector3 woAtEye = Vector3Ops::mkVector3( evPrev.position, ev.position );
-			const Scalar woEyeDist = Vector3Ops::Magnitude( woAtEye );
-			if( woEyeDist < VCM_RAY_EPSILON ) {
-				continue;
-			}
-			woAtEye = woAtEye * ( Scalar( 1 ) / woEyeDist );
-
-			// Connection vector between the two endpoints.
-			Vector3 lightToEye = Vector3Ops::mkVector3( ev.position, lv.position );
-			const Scalar dist = Vector3Ops::Magnitude( lightToEye );
-			if( dist < VCM_RAY_EPSILON ) {
-				continue;
-			}
-			lightToEye = lightToEye * ( Scalar( 1 ) / dist );
-			const Scalar distSq = dist * dist;
-
-			// Visibility test.
-			if( !VCMIsVisible( caster, lv.position, ev.position ) ) {
-				continue;
-			}
-
-			// BSDF evaluations.
-			// At the LIGHT endpoint: incoming = wiAtLight (from
-			// its own previous vertex), outgoing = lightToEye.
-			// At the EYE endpoint: incoming = -lightToEye (from
-			// the light direction), outgoing = woAtEye (toward
-			// previous eye vertex).
-			const RISEPel fLight = PathVertexEval::EvalBSDFAtVertex( lv, wiAtLight, lightToEye );
-			if( ColorMath::MaxValue( fLight ) <= 0 ) {
-				continue;
-			}
-			const RISEPel fEye = PathVertexEval::EvalBSDFAtVertex( ev, -lightToEye, woAtEye );
-			if( ColorMath::MaxValue( fEye ) <= 0 ) {
-				continue;
-			}
-
-			// Geometric term (both sides are surface vertices
-			// in v1; medium coupling is deferred).
-			const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.normal, lightToEye ) );
-			const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.normal, -lightToEye ) );
-			if( cosAtLight <= 0 || cosAtEye <= 0 ) {
-				continue;
-			}
-			const Scalar G = ( cosAtLight * cosAtEye ) / distSq;
-
-			// Forward direction bsdf pdfs in solid angle.
-			// lightBsdfDirPdfW: at the light endpoint, for direction
-			// toward the eye endpoint.
-			// cameraBsdfDirPdfW: at the eye endpoint, for direction
-			// toward the light endpoint.
-			const Scalar lightBsdfDirPdfW =
-				PathVertexEval::EvalPdfAtVertex( lv, wiAtLight, lightToEye );
-			const Scalar cameraBsdfDirPdfW =
-				PathVertexEval::EvalPdfAtVertex( ev, woAtEye, -lightToEye );
-
-			// Reverse-direction pdfs: evaluating each BSDF for
-			// the "opposite" direction pair.
-			const Scalar lightBsdfRevPdfW =
-				PathVertexEval::EvalPdfAtVertex( lv, lightToEye, wiAtLight );
-			const Scalar cameraBsdfRevPdfW =
-				PathVertexEval::EvalPdfAtVertex( ev, -lightToEye, woAtEye );
-
-			// Convert both forward bsdf pdfs to AREA measure:
-			// lightBsdfDirPdfA at the eye endpoint.
-			const Scalar cameraBsdfDirPdfA =
-				BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
-			const Scalar lightBsdfDirPdfA =
-				BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
-
-			// SmallVCM interior MIS weight.
-			const Scalar wLight = cameraBsdfDirPdfA
-				* ( norm.mMisVmWeightFactor
-				    + lightMis[i].dVCM
-				    + lightMis[i].dVC * lightBsdfRevPdfW );
-			const Scalar wCamera = lightBsdfDirPdfA
-				* ( norm.mMisVmWeightFactor
-				    + eyeMis[j].dVCM
-				    + eyeMis[j].dVC * cameraBsdfRevPdfW );
-			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-			// Contribution.  BDPT pattern:
-			//   lightEnd.throughput * fLight * G * fEye * eyeEnd.throughput
-			const RISEPel contrib = lv.throughput * fLight * ( G * weight ) * fEye * ev.throughput;
-			total = total + contrib;
-		}
-	}
-
-	return total;
+	return EvaluateInteriorConnectionsImpl<PelTag>(
+		caster, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1314,6 +1504,104 @@ void VCMIntegrator::ConvertEyeSubpath(
 // This strategy is a no-op when VM is disabled or when the merge radius
 // is zero (both reduce mVmNormalization to zero).
 //////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+// EvaluateMergesImpl — templated body shared by Pel and NM variants.
+// For NM, LightVertexThroughput<NMTag> applies the RISEPelToNMProxy
+// luminance projection since the store holds Pel only (v1 behavior).
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	template<class Tag>
+	typename SpectralValueTraits<Tag>::value_type EvaluateMergesImpl(
+		const std::vector<BDPTVertex>& eyeVerts,
+		const std::vector<VCMMisQuantities>& eyeMis,
+		const LightVertexStore& store,
+		const VCMNormalization& norm,
+		const Tag& tag
+		)
+	{
+		using Traits = SpectralValueTraits<Tag>;
+		typename Traits::value_type total = Traits::zero();
+
+		if( !norm.mEnableVM || norm.mMergeRadiusSq <= 0 || norm.mVmNormalization <= 0 ) {
+			return total;
+		}
+		if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
+			return total;
+		}
+		if( store.Size() == 0 || !store.IsBuilt() ) {
+			return total;
+		}
+
+		static thread_local std::vector<LightVertex> candidates;
+		if( candidates.capacity() < 256 ) {
+			candidates.reserve( 256 );
+		}
+
+		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
+		{
+			const BDPTVertex& v = eyeVerts[i];
+			if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
+				continue;
+			}
+			if( !v.isConnectible ) {
+				continue;
+			}
+
+			const BDPTVertex& prev = eyeVerts[i - 1];
+			Vector3 woAtEye = Vector3Ops::mkVector3( prev.position, v.position );
+			const Scalar woDist = Vector3Ops::Magnitude( woAtEye );
+			if( woDist < VCM_RAY_EPSILON ) {
+				continue;
+			}
+			woAtEye = woAtEye * ( Scalar( 1 ) / woDist );
+
+			candidates.clear();
+			store.Query( v.position, norm.mMergeRadiusSq, candidates );
+			if( candidates.empty() ) {
+				continue;
+			}
+
+			typename Traits::value_type pixelMerge = Traits::zero();
+
+			for( std::size_t k = 0; k < candidates.size(); k++ )
+			{
+				const LightVertex& lv = candidates[k];
+
+				if( ( lv.flags & kLVF_IsConnectible ) == 0 ) {
+					continue;
+				}
+
+				const Vector3 wiAtEye = -lv.wi;
+
+				const typename Traits::value_type cameraBsdf =
+					RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
+				if( PositiveMagnitude( cameraBsdf ) <= 0 ) {
+					continue;
+				}
+				const Scalar cameraBsdfDirPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woAtEye, wiAtEye, tag );
+				const Scalar cameraBsdfRevPdfW =
+					RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, wiAtEye, woAtEye, tag );
+
+				const Scalar wLight =
+					lv.mis.dVCM * norm.mMisVcWeightFactor
+					+ lv.mis.dVM * cameraBsdfDirPdfW;
+				const Scalar wCamera =
+					eyeMis[i].dVCM * norm.mMisVcWeightFactor
+					+ eyeMis[i].dVM * cameraBsdfRevPdfW;
+				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+
+				pixelMerge = pixelMerge + cameraBsdf * LightVertexThroughput<Tag>( lv, tag ) * weight;
+			}
+
+			total = total + VertexThroughput<Tag>( v, tag ) * pixelMerge * norm.mVmNormalization;
+		}
+
+		return total;
+	}
+}
+
 RISEPel VCMIntegrator::EvaluateMerges(
 	const std::vector<BDPTVertex>& eyeVerts,
 	const std::vector<VCMMisQuantities>& eyeMis,
@@ -1321,94 +1609,7 @@ RISEPel VCMIntegrator::EvaluateMerges(
 	const VCMNormalization& norm
 	) const
 {
-	RISEPel total( 0, 0, 0 );
-
-	if( !norm.mEnableVM || norm.mMergeRadiusSq <= 0 || norm.mVmNormalization <= 0 ) {
-		return total;
-	}
-	if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
-		return total;
-	}
-	if( store.Size() == 0 || !store.IsBuilt() ) {
-		return total;
-	}
-
-	// Per-thread scratch — reused across pixels to eliminate per-sample
-	// libmalloc arena contention in the hot merge-evaluation path.
-	static thread_local std::vector<LightVertex> candidates;
-	if( candidates.capacity() < 256 ) {
-		candidates.reserve( 256 );
-	}
-
-	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
-	{
-		const BDPTVertex& v = eyeVerts[i];
-		if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
-			continue;
-		}
-		if( !v.isConnectible ) {
-			continue;
-		}
-
-		const BDPTVertex& prev = eyeVerts[i - 1];
-		Vector3 woAtEye = Vector3Ops::mkVector3( prev.position, v.position );
-		const Scalar woDist = Vector3Ops::Magnitude( woAtEye );
-		if( woDist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		woAtEye = woAtEye * ( Scalar( 1 ) / woDist );
-
-		candidates.clear();
-		store.Query( v.position, norm.mMergeRadiusSq, candidates );
-		if( candidates.empty() ) {
-			continue;
-		}
-
-		RISEPel pixelMerge( 0, 0, 0 );
-
-		for( std::size_t k = 0; k < candidates.size(); k++ )
-		{
-			const LightVertex& lv = candidates[k];
-
-			// Gate on isConnectible only — a vertex that sampled
-			// a delta lobe (kLVF_IsDelta) but has a non-delta BSDF
-			// component (kLVF_IsConnectible) is a valid merge
-			// target because the merge evaluates the full non-delta
-			// BSDF, independent of the sampled continuation lobe.
-			if( ( lv.flags & kLVF_IsConnectible ) == 0 ) {
-				continue;
-			}
-
-			// lv.wi stores the direction FROM the previous light
-			// vertex TO this one (arrival).  The eye BSDF expects
-			// "away from surface toward source", so negate it.
-			const Vector3 wiAtEye = -lv.wi;
-
-			const RISEPel cameraBsdf =
-				PathVertexEval::EvalBSDFAtVertex( v, wiAtEye, woAtEye );
-			if( ColorMath::MaxValue( cameraBsdf ) <= 0 ) {
-				continue;
-			}
-			const Scalar cameraBsdfDirPdfW =
-				PathVertexEval::EvalPdfAtVertex( v, woAtEye, wiAtEye );
-			const Scalar cameraBsdfRevPdfW =
-				PathVertexEval::EvalPdfAtVertex( v, wiAtEye, woAtEye );
-
-			const Scalar wLight =
-				lv.mis.dVCM * norm.mMisVcWeightFactor
-				+ lv.mis.dVM * cameraBsdfDirPdfW;
-			const Scalar wCamera =
-				eyeMis[i].dVCM * norm.mMisVcWeightFactor
-				+ eyeMis[i].dVM * cameraBsdfRevPdfW;
-			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-			pixelMerge = pixelMerge + cameraBsdf * lv.throughput * weight;
-		}
-
-		total = total + v.throughput * pixelMerge * norm.mVmNormalization;
-	}
-
-	return total;
+	return EvaluateMergesImpl<PelTag>( eyeVerts, eyeMis, store, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1426,16 +1627,11 @@ RISEPel VCMIntegrator::EvaluateMerges(
 // IEmitter::emittedRadianceNM directly, which IS wavelength-aware.
 //////////////////////////////////////////////////////////////////////
 
-static inline Scalar RISEPelToNMProxy( const RISEPel& p )
-{
-	// Luminance approximation for light sources that only expose a
-	// Pel API.  For wavelength-accurate rendering the scene should
-	// use mesh luminaries with spectral emitters.
-	return Scalar( 0.2126 ) * p.r + Scalar( 0.7152 ) * p.g + Scalar( 0.0722 ) * p.b;
-}
-
 //////////////////////////////////////////////////////////////////////
-// EvaluateS0NM
+// EvaluateS0NM — thin forwarder to the templated EvaluateS0Impl with
+// an NMTag(nm) context.  See the Pel-side EvaluateS0 comment block
+// above for the algorithm and the SPECTRAL VARIANTS block for
+// wavelength handling.
 //////////////////////////////////////////////////////////////////////
 Scalar VCMIntegrator::EvaluateS0NM(
 	const IScene& scene,
@@ -1446,81 +1642,11 @@ Scalar VCMIntegrator::EvaluateS0NM(
 	const Scalar nm
 	) const
 {
-	Scalar total = 0;
-
-	if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
-		return total;
-	}
-
-	const LightSampler* pLS = caster.GetLightSampler();
-	if( !pLS ) {
-		return total;
-	}
-
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager::LuminariesList& luminaries = pLumManager
-		? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
-		: emptyList;
-
-	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
-	{
-		const BDPTVertex& v = eyeVerts[i];
-		if( v.type != BDPTVertex::SURFACE || !v.pMaterial || !v.pObject ) {
-			continue;
-		}
-
-		const IEmitter* pEmitter = v.pMaterial->GetEmitter();
-		if( !pEmitter ) {
-			continue;
-		}
-
-		const BDPTVertex& prev = eyeVerts[i - 1];
-		Vector3 woFromEmitter = Vector3Ops::mkVector3( prev.position, v.position );
-		const Scalar d = Vector3Ops::Magnitude( woFromEmitter );
-		if( d <= 0 ) {
-			continue;
-		}
-		woFromEmitter = woFromEmitter * ( Scalar( 1 ) / d );
-
-		RayIntersectionGeometric rig( Ray( v.position, woFromEmitter ), nullRasterizerState );
-		rig.bHit = true;
-		rig.ptIntersection = v.position;
-		rig.vNormal = v.normal;
-		rig.onb = v.onb;
-		const Scalar Le = pEmitter->emittedRadianceNM( rig, woFromEmitter, v.normal, nm );
-		if( Le <= 0 ) {
-			continue;
-		}
-
-		const Scalar pdfSelect = pLS->PdfSelectLuminary(
-			scene, luminaries, *v.pObject, prev.position, prev.normal );
-		const Scalar area = v.pObject->GetArea();
-		if( area <= 0 ) {
-			continue;
-		}
-		const Scalar pdfPosition = Scalar( 1 ) / area;
-		const Scalar directPdfA = pdfSelect * pdfPosition;
-
-		const Scalar cosAtEmitter = Vector3Ops::Dot( v.normal, woFromEmitter );
-		const Scalar emissionDirPdfSA = ( cosAtEmitter > 0 )
-			? ( cosAtEmitter * INV_PI )
-			: Scalar( 0 );
-
-		const Scalar emissionPdfW = directPdfA * emissionDirPdfSA;
-
-		const Scalar wCamera = directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
-		const Scalar weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-		total = total + ( v.throughputNM * Le * weight );
-	}
-
-	return total;
+	return EvaluateS0Impl<NMTag>( scene, caster, eyeVerts, eyeMis, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
-// EvaluateNEENM
+// EvaluateNEENM — thin forwarder to the templated EvaluateNEEImpl.
 //////////////////////////////////////////////////////////////////////
 Scalar VCMIntegrator::EvaluateNEENM(
 	const IScene& scene,
@@ -1532,146 +1658,14 @@ Scalar VCMIntegrator::EvaluateNEENM(
 	const Scalar nm
 	) const
 {
-	Scalar total = 0;
-
-	if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
-		return total;
-	}
-
-	const LightSampler* pLS = caster.GetLightSampler();
-	if( !pLS ) {
-		return total;
-	}
-
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager::LuminariesList& luminaries = pLumManager
-		? const_cast<LuminaryManager*>( pLumManager )->getLuminaries()
-		: emptyList;
-
-	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
-	{
-		const BDPTVertex& v = eyeVerts[i];
-		if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
-			continue;
-		}
-		if( !v.isConnectible ) {
-			continue;
-		}
-
-		sampler.StartStream( 48 + static_cast<unsigned int>( i ) );
-
-		LightSample ls;
-		if( !pLS->SampleLight( scene, luminaries, sampler, ls ) ) {
-			continue;
-		}
-		if( ls.pdfSelect <= 0 || ls.pdfPosition <= 0 ) {
-			continue;
-		}
-
-		Vector3 dirToLight = Vector3Ops::mkVector3( ls.position, v.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToLight );
-		if( dist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		dirToLight = dirToLight * ( Scalar( 1 ) / dist );
-		const Scalar distSq = dist * dist;
-
-		if( !VCMIsVisible( caster, v.position, ls.position ) ) {
-			continue;
-		}
-
-		const BDPTVertex& prev = eyeVerts[i - 1];
-		Vector3 woAtEye = Vector3Ops::mkVector3( prev.position, v.position );
-		const Scalar woDist = Vector3Ops::Magnitude( woAtEye );
-		if( woDist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		woAtEye = woAtEye * ( Scalar( 1 ) / woDist );
-
-		Scalar Le = 0;
-		if( ls.pLight ) {
-			Le = RISEPelToNMProxy( ls.pLight->emittedRadiance( -dirToLight ) );
-		} else if( ls.pLuminary && ls.pLuminary->GetMaterial() ) {
-			const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
-			if( pEmitter ) {
-				RayIntersectionGeometric rig( Ray( ls.position, -dirToLight ), nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = ls.position;
-				rig.vNormal = ls.normal;
-				Le = pEmitter->emittedRadianceNM( rig, -dirToLight, ls.normal, nm );
-			}
-		}
-		if( Le <= 0 ) {
-			continue;
-		}
-
-		const Scalar fEye = PathVertexEval::EvalBSDFAtVertexNM( v, dirToLight, woAtEye, nm );
-		if( fEye <= 0 ) {
-			continue;
-		}
-
-		const Scalar bsdfDirPdfW = PathVertexEval::EvalPdfAtVertexNM( v, woAtEye, dirToLight, nm );
-		const Scalar bsdfRevPdfW = PathVertexEval::EvalPdfAtVertexNM( v, dirToLight, woAtEye, nm );
-
-		const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.normal, dirToLight ) );
-		Scalar cosAtLight = 0;
-		Scalar G = 0;
-		if( ls.isDelta ) {
-			cosAtLight = 1;
-			G = cosAtEye / distSq;
-		} else {
-			cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirToLight ) );
-			G = ( cosAtEye * cosAtLight ) / distSq;
-		}
-		if( cosAtEye <= 0 || G <= 0 ) {
-			continue;
-		}
-
-		const Scalar directPdfW = ls.isDelta
-			? Scalar( 1 )
-			: ( ls.pdfPosition * distSq / cosAtLight );
-
-		Scalar emissionDirPdfSA = 0;
-		if( ls.pLuminary ) {
-			const Scalar c = Vector3Ops::Dot( ls.normal, -dirToLight );
-			emissionDirPdfSA = ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
-		} else if( ls.pLight ) {
-			emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
-		}
-		const Scalar emissionPdfW = ls.pdfSelect * ls.pdfPosition * emissionDirPdfSA;
-
-		const Scalar lightPickProb = ls.pdfSelect;
-
-		const Scalar wLight = bsdfDirPdfW / ( lightPickProb * directPdfW );
-		Scalar wCamera = 0;
-		if( directPdfW > 0 && cosAtLight > 0 ) {
-			const Scalar camFactor =
-				( emissionPdfW * cosAtEye ) / ( directPdfW * cosAtLight );
-			wCamera = camFactor * (
-				norm.mMisVmWeightFactor
-				+ eyeMis[i].dVCM
-				+ eyeMis[i].dVC * bsdfRevPdfW );
-		}
-		const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-		const Scalar invLightPdfArea = ls.pdfSelect * ls.pdfPosition;
-		if( invLightPdfArea <= 0 ) {
-			continue;
-		}
-
-		const Scalar contribution = v.throughputNM * fEye * Le * ( G / invLightPdfArea ) * weight;
-		total = total + contribution;
-	}
-
-	return total;
+	return EvaluateNEEImpl<NMTag>(
+		scene, caster, sampler, eyeVerts, eyeMis, norm, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
-// SplatLightSubpathToCameraNM — mirrors Pel version, writes XYZ
-// splats derived from the single-wavelength contribution via
-// ColorUtils::XYZFromNM.
+// SplatLightSubpathToCameraNM — thin forwarder to the templated
+// SplatLightSubpathToCameraImpl.  ToSplatRGB<NMTag> applies
+// ColorUtils::XYZFromNM inside the template body.
 //////////////////////////////////////////////////////////////////////
 void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const std::vector<BDPTVertex>& lightVerts,
@@ -1685,161 +1679,13 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const IPixelFilter* pixelFilter
 	) const
 {
-	if( lightVerts.size() != lightMis.size() || lightVerts.empty() ) {
-		return;
-	}
-	if( norm.mLightSubPathCount <= 0 ) {
-		return;
-	}
-
-	const Point3 camPos = camera.GetLocation();
-
-	for( std::size_t i = 0; i < lightVerts.size(); i++ )
-	{
-		const BDPTVertex& v = lightVerts[i];
-
-		if( !v.isConnectible ) {
-			continue;
-		}
-		if( v.type != BDPTVertex::LIGHT && v.type != BDPTVertex::SURFACE ) {
-			continue;
-		}
-
-		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, v.position, rasterPos ) ) {
-			continue;
-		}
-
-		if( !VCMIsVisible( caster, v.position, camPos ) ) {
-			continue;
-		}
-
-		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, v.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
-		if( dist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		dirToCam = dirToCam * ( Scalar( 1 ) / dist );
-		const Scalar distSq = dist * dist;
-
-		Ray camRay( camPos, -dirToCam );
-		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
-		if( We <= 0 ) {
-			continue;
-		}
-
-		const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.normal, dirToCam ) );
-		if( cosAtLight <= 0 ) {
-			continue;
-		}
-		const Scalar G = cosAtLight / distSq;
-
-		const Scalar camPdfDirSA = BDPTCameraUtilities::PdfDirection( camera, camRay );
-		if( camPdfDirSA <= 0 ) {
-			continue;
-		}
-		const Scalar cameraPdfA = camPdfDirSA * cosAtLight / distSq;
-
-		Scalar contribution = 0;
-		Scalar bsdfRevPdfW = 0;
-
-		if( v.type == BDPTVertex::LIGHT )
-		{
-			Scalar Le = 0;
-			if( v.pLight ) {
-				Le = RISEPelToNMProxy( v.pLight->emittedRadiance( dirToCam ) );
-			} else if( v.pLuminary && v.pLuminary->GetMaterial() ) {
-				const IEmitter* pEmitter = v.pLuminary->GetMaterial()->GetEmitter();
-				if( pEmitter ) {
-					RayIntersectionGeometric rig( Ray( v.position, dirToCam ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = v.position;
-					rig.vNormal = v.normal;
-					rig.onb = v.onb;
-					Le = pEmitter->emittedRadianceNM( rig, dirToCam, v.normal, nm );
-				}
-			}
-			if( Le <= 0 ) {
-				continue;
-			}
-
-			const Scalar pdfLightArea = v.pdfFwd;
-			if( pdfLightArea <= 0 ) {
-				continue;
-			}
-			contribution = Le * ( G * We / pdfLightArea );
-			bsdfRevPdfW = 0;
-		}
-		else
-		{
-			if( !v.pMaterial ) {
-				continue;
-			}
-			if( i < 1 ) {
-				continue;
-			}
-			const BDPTVertex& prev = lightVerts[i - 1];
-			Vector3 wiAtLight = Vector3Ops::mkVector3( prev.position, v.position );
-			const Scalar wiDist = Vector3Ops::Magnitude( wiAtLight );
-			if( wiDist < VCM_RAY_EPSILON ) {
-				continue;
-			}
-			wiAtLight = wiAtLight * ( Scalar( 1 ) / wiDist );
-
-			const Scalar fLight = PathVertexEval::EvalBSDFAtVertexNM( v, wiAtLight, dirToCam, nm );
-			if( fLight <= 0 ) {
-				continue;
-			}
-
-			bsdfRevPdfW = PathVertexEval::EvalPdfAtVertexNM( v, dirToCam, wiAtLight, nm );
-
-			contribution = v.throughputNM * fLight * ( G * We );
-		}
-
-		const Scalar wLight =
-			( cameraPdfA / norm.mLightSubPathCount ) *
-			( norm.mMisVmWeightFactor + lightMis[i].dVCM + lightMis[i].dVC * bsdfRevPdfW );
-		const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
-
-		const Scalar weighted = contribution * weight;
-		if( weighted <= 0 ) {
-			continue;
-		}
-
-		// Convert scalar NM contribution to XYZ for the splat film.
-		XYZPel xyz( 0, 0, 0 );
-		if( !ColorUtils::XYZFromNM( xyz, nm ) ) {
-			continue;
-		}
-		xyz = xyz * weighted;
-
-		const Scalar fx = rasterPos.x;
-		const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - rasterPos.y;
-
-		if( pixelFilter ) {
-			splatFilm.SplatFiltered( fx, fy,
-				RISEPel( xyz.X, xyz.Y, xyz.Z ),
-				*pixelFilter );
-			continue;
-		}
-
-		const Scalar rxr = fx + Scalar( 0.5 );
-		const Scalar ryr = fy + Scalar( 0.5 );
-		if( rxr < 0 || ryr < 0 ) continue;
-		const int sx = static_cast<int>( rxr );
-		const int sy = static_cast<int>( ryr );
-		if( sx < 0 || sy < 0 ||
-			static_cast<unsigned int>( sx ) >= camera.GetWidth() ||
-			static_cast<unsigned int>( sy ) >= camera.GetHeight() ) {
-			continue;
-		}
-
-		splatFilm.Splat( sx, sy, RISEPel( xyz.X, xyz.Y, xyz.Z ) );
-	}
+	SplatLightSubpathToCameraImpl<NMTag>(
+		lightVerts, lightMis, caster, camera, splatFilm, norm, pixelFilter, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
-// EvaluateInteriorConnectionsNM
+// EvaluateInteriorConnectionsNM — thin forwarder to
+// EvaluateInteriorConnectionsImpl with an NMTag context.
 //////////////////////////////////////////////////////////////////////
 Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	const IScene& /*scene*/,
@@ -1852,107 +1698,8 @@ Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	const Scalar nm
 	) const
 {
-	Scalar total = 0;
-
-	if( lightVerts.size() != lightMis.size() || eyeVerts.size() != eyeMis.size() ) {
-		return total;
-	}
-
-	for( std::size_t i = 1; i < lightVerts.size(); i++ )
-	{
-		const BDPTVertex& lv = lightVerts[i];
-		if( lv.type != BDPTVertex::SURFACE || !lv.pMaterial ) {
-			continue;
-		}
-		if( !lv.isConnectible ) {
-			continue;
-		}
-
-		const BDPTVertex& lvPrev = lightVerts[i - 1];
-		Vector3 wiAtLight = Vector3Ops::mkVector3( lvPrev.position, lv.position );
-		const Scalar wiLightDist = Vector3Ops::Magnitude( wiAtLight );
-		if( wiLightDist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		wiAtLight = wiAtLight * ( Scalar( 1 ) / wiLightDist );
-
-		for( std::size_t j = 1; j < eyeVerts.size(); j++ )
-		{
-			const BDPTVertex& ev = eyeVerts[j];
-			if( ev.type != BDPTVertex::SURFACE || !ev.pMaterial ) {
-				continue;
-			}
-			if( !ev.isConnectible ) {
-				continue;
-			}
-
-			const BDPTVertex& evPrev = eyeVerts[j - 1];
-			Vector3 woAtEye = Vector3Ops::mkVector3( evPrev.position, ev.position );
-			const Scalar woEyeDist = Vector3Ops::Magnitude( woAtEye );
-			if( woEyeDist < VCM_RAY_EPSILON ) {
-				continue;
-			}
-			woAtEye = woAtEye * ( Scalar( 1 ) / woEyeDist );
-
-			Vector3 lightToEye = Vector3Ops::mkVector3( ev.position, lv.position );
-			const Scalar dist = Vector3Ops::Magnitude( lightToEye );
-			if( dist < VCM_RAY_EPSILON ) {
-				continue;
-			}
-			lightToEye = lightToEye * ( Scalar( 1 ) / dist );
-			const Scalar distSq = dist * dist;
-
-			if( !VCMIsVisible( caster, lv.position, ev.position ) ) {
-				continue;
-			}
-
-			const Scalar fLight = PathVertexEval::EvalBSDFAtVertexNM( lv, wiAtLight, lightToEye, nm );
-			if( fLight <= 0 ) {
-				continue;
-			}
-			const Scalar fEye = PathVertexEval::EvalBSDFAtVertexNM( ev, -lightToEye, woAtEye, nm );
-			if( fEye <= 0 ) {
-				continue;
-			}
-
-			const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.normal, lightToEye ) );
-			const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.normal, -lightToEye ) );
-			if( cosAtLight <= 0 || cosAtEye <= 0 ) {
-				continue;
-			}
-			const Scalar G = ( cosAtLight * cosAtEye ) / distSq;
-
-			const Scalar lightBsdfDirPdfW =
-				PathVertexEval::EvalPdfAtVertexNM( lv, wiAtLight, lightToEye, nm );
-			const Scalar cameraBsdfDirPdfW =
-				PathVertexEval::EvalPdfAtVertexNM( ev, woAtEye, -lightToEye, nm );
-
-			const Scalar lightBsdfRevPdfW =
-				PathVertexEval::EvalPdfAtVertexNM( lv, lightToEye, wiAtLight, nm );
-			const Scalar cameraBsdfRevPdfW =
-				PathVertexEval::EvalPdfAtVertexNM( ev, -lightToEye, woAtEye, nm );
-
-			const Scalar cameraBsdfDirPdfA =
-				BDPTUtilities::SolidAngleToArea( cameraBsdfDirPdfW, cosAtLight, distSq );
-			const Scalar lightBsdfDirPdfA =
-				BDPTUtilities::SolidAngleToArea( lightBsdfDirPdfW, cosAtEye, distSq );
-
-			const Scalar wLight = cameraBsdfDirPdfA
-				* ( norm.mMisVmWeightFactor
-				    + lightMis[i].dVCM
-				    + lightMis[i].dVC * lightBsdfRevPdfW );
-			const Scalar wCamera = lightBsdfDirPdfA
-				* ( norm.mMisVmWeightFactor
-				    + eyeMis[j].dVCM
-				    + eyeMis[j].dVC * cameraBsdfRevPdfW );
-			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-			const Scalar contrib = lv.throughputNM * fLight * ( G * weight ) * fEye * ev.throughputNM;
-			total = total + contrib;
-		}
-	}
-
-	return total;
+	return EvaluateInteriorConnectionsImpl<NMTag>(
+		caster, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1977,87 +1724,5 @@ Scalar VCMIntegrator::EvaluateMergesNM(
 	const Scalar nm
 	) const
 {
-	Scalar total = 0;
-
-	if( !norm.mEnableVM || norm.mMergeRadiusSq <= 0 || norm.mVmNormalization <= 0 ) {
-		return total;
-	}
-	if( eyeVerts.size() != eyeMis.size() || eyeVerts.size() < 2 ) {
-		return total;
-	}
-	if( store.Size() == 0 || !store.IsBuilt() ) {
-		return total;
-	}
-
-	// Per-thread scratch — reused across pixels to eliminate per-sample
-	// libmalloc arena contention in the hot merge-evaluation path.
-	static thread_local std::vector<LightVertex> candidates;
-	if( candidates.capacity() < 256 ) {
-		candidates.reserve( 256 );
-	}
-
-	for( std::size_t i = 1; i < eyeVerts.size(); i++ )
-	{
-		const BDPTVertex& v = eyeVerts[i];
-		if( v.type != BDPTVertex::SURFACE || !v.pMaterial ) {
-			continue;
-		}
-		if( !v.isConnectible ) {
-			continue;
-		}
-
-		const BDPTVertex& prev = eyeVerts[i - 1];
-		Vector3 woAtEye = Vector3Ops::mkVector3( prev.position, v.position );
-		const Scalar woDist = Vector3Ops::Magnitude( woAtEye );
-		if( woDist < VCM_RAY_EPSILON ) {
-			continue;
-		}
-		woAtEye = woAtEye * ( Scalar( 1 ) / woDist );
-
-		candidates.clear();
-		store.Query( v.position, norm.mMergeRadiusSq, candidates );
-		if( candidates.empty() ) {
-			continue;
-		}
-
-		Scalar pixelMerge = 0;
-
-		for( std::size_t k = 0; k < candidates.size(); k++ )
-		{
-			const LightVertex& lv = candidates[k];
-
-			if( ( lv.flags & kLVF_IsConnectible ) == 0 ) {
-				continue;
-			}
-
-			const Vector3 wiAtEye = -lv.wi;
-
-			const Scalar cameraBsdf =
-				PathVertexEval::EvalBSDFAtVertexNM( v, wiAtEye, woAtEye, nm );
-			if( cameraBsdf <= 0 ) {
-				continue;
-			}
-			const Scalar cameraBsdfDirPdfW =
-				PathVertexEval::EvalPdfAtVertexNM( v, woAtEye, wiAtEye, nm );
-			const Scalar cameraBsdfRevPdfW =
-				PathVertexEval::EvalPdfAtVertexNM( v, wiAtEye, woAtEye, nm );
-
-			const Scalar wLight =
-				lv.mis.dVCM * norm.mMisVcWeightFactor
-				+ lv.mis.dVM * cameraBsdfDirPdfW;
-			const Scalar wCamera =
-				eyeMis[i].dVCM * norm.mMisVcWeightFactor
-				+ eyeMis[i].dVM * cameraBsdfRevPdfW;
-			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
-
-			// Use the stored Pel throughput's luminance as the
-			// companion-wavelength proxy.  See comment above.
-			const Scalar lvThroughputNM = RISEPelToNMProxy( lv.throughput );
-			pixelMerge = pixelMerge + cameraBsdf * lvThroughputNM * weight;
-		}
-
-		total = total + v.throughputNM * pixelMerge * norm.mVmNormalization;
-	}
-
-	return total;
+	return EvaluateMergesImpl<NMTag>( eyeVerts, eyeMis, store, norm, NMTag( nm ) );
 }
