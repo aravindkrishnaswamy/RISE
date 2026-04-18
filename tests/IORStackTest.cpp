@@ -58,19 +58,18 @@ static void TestEnvironmentIOR()
 	std::cout << "TestEnvironmentIOR passed!" << std::endl;
 }
 
-static void TestPushPop()
+static void TestPushPop( const IObject* stub )
 {
 	std::cout << "Running TestPushPop..." << std::endl;
 
-	StubObject stub;
 	IORStack stack( 1.0 );
-	stack.SetCurrentObject( &stub );
+	stack.SetCurrentObject( stub );
 
 	assert( !stack.containsCurrent() );
 	stack.push( 1.5 );
 	assert( stack.top() == 1.5 );
 	assert( stack.containsCurrent() );
-	assert( stack.topObject() == &stub );
+	assert( stack.topObject() == stub );
 
 	stack.pop();
 	assert( stack.top() == 1.0 );
@@ -79,13 +78,12 @@ static void TestPushPop()
 	std::cout << "TestPushPop passed!" << std::endl;
 }
 
-static void TestCopyPreservesTop()
+static void TestCopyPreservesTop( const IObject* stub )
 {
 	std::cout << "Running TestCopyPreservesTop..." << std::endl;
 
-	StubObject stub;
 	IORStack original( 1.0 );
-	original.SetCurrentObject( &stub );
+	original.SetCurrentObject( stub );
 	original.push( 1.5 );
 
 	IORStack copy( original );
@@ -99,13 +97,12 @@ static void TestCopyPreservesTop()
 	std::cout << "TestCopyPreservesTop passed!" << std::endl;
 }
 
-static void TestCannotPopEnvironment()
+static void TestCannotPopEnvironment( const IObject* stub )
 {
 	std::cout << "Running TestCannotPopEnvironment..." << std::endl;
 
-	StubObject stub;
 	IORStack stack( 1.0 );
-	stack.SetCurrentObject( &stub );
+	stack.SetCurrentObject( stub );
 
 	// pop() on a stack with only the environment entry must be a
 	// no-op: top() remains the environment IOR.
@@ -117,10 +114,16 @@ static void TestCannotPopEnvironment()
 
 int main()
 {
+	StubObject* stub = new StubObject();
+	stub->addref();
+
 	TestEnvironmentIOR();
-	TestPushPop();
-	TestCopyPreservesTop();
-	TestCannotPopEnvironment();
+	TestPushPop( stub );
+	TestCopyPreservesTop( stub );
+	TestCannotPopEnvironment( stub );
+
+	stub->release();
+
 	std::cout << "\nAll IORStackTest tests passed!" << std::endl;
 	return 0;
 }

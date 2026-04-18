@@ -24,7 +24,7 @@ bdpt_pel_rasterizer
 {
 	max_eye_depth		16
 	max_light_depth		16
-	samples				64
+	samples				256
 }
 
 file_rasterizeroutput

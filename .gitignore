@@ -22,12 +22,6 @@ build/VS2022/UpgradeLog.htm
 *.exe
 /scenes/Internal
 /models/risemesh/internal
-!AGENTS.md
-!CLAUDE.md
-!README.md
-!src/**/README.md
-!scenes/**/README.md
-!tests/README.md
 !build/cmake/**/*.md
 /build/VS2005/Library/Debug
 /build/VS2005
@@ -66,3 +60,4 @@ build/VS2022/UpgradeLog.htm
 # APK outputs, tmp, reports, test-results and anything AGP adds in future.
 /android/app/build
 
+/build/XCode/rise/build
