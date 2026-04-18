@@ -104,8 +104,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/AshikminShirleyAnisotropicPhongSPF.cpp"
     "${RISE_LIB}/Materials/BioSpecSkinSPF.cpp"
     "${RISE_LIB}/Materials/BioSpecSkinSPFHelpers.cpp"
-    "${RISE_LIB}/Materials/BioSpecDiffusionProfile.cpp"
-    "${RISE_LIB}/Materials/BioSpecSkinRWMaterial.cpp"
     "${RISE_LIB}/Materials/DonnerJensenSkinDiffusionProfile.cpp"
     "${RISE_LIB}/Materials/MultipoleDiffusion.cpp"
     "${RISE_LIB}/Materials/CompositeEmitter.cpp"

@@ -14,6 +14,18 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+## Source-file add/remove — touch ALL five build projects
+
+When you add **or remove** any `.cpp` / `.h` under `src/Library/`, update every one of these; none auto-discovers files:
+
+1. `build/make/rise/Filelist` (Unix/Linux, canonical)
+2. `build/cmake/rise-android/rise_sources.cmake` (Android NDK, consumed by `build/cmake/rise-android/CMakeLists.txt` which the Gradle build invokes)
+3. `build/VS2022/Library/Library.vcxproj` (Windows, tracked in git) — `<ClCompile>` for `.cpp`, `<ClInclude>` for `.h`.
+4. `build/VS2022/Library/Library.vcxproj.filters` — same entries with `<Filter>` tags so the Solution Explorer tree matches the build.
+5. `build/XCode/rise/rise.xcodeproj/project.pbxproj` — Xcode references appear in four sections (`PBXBuildFile`, `PBXFileReference`, the containing `PBXGroup`, and per-target `Sources` / `Headers` build phases) and usually in two targets (library + GUI); delete every match when removing a file.
+
+Full rules, exclusions, and related update surfaces (API, parser chunks, tests, scenes) are in [AGENTS.md](AGENTS.md) → "Change Checklist".
+
 ## High-Value Facts
 
 - Public construction API: [src/Library/RISE_API.h](src/Library/RISE_API.h)

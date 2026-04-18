@@ -124,8 +124,6 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/AshikminShirleyAnisotropicPhongSPF.cpp			\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPF.cpp								\
 	$(PATHLIBRARY)Materials/BioSpecSkinSPFHelpers.cpp						\
-	$(PATHLIBRARY)Materials/BioSpecDiffusionProfile.cpp					\
-	$(PATHLIBRARY)Materials/BioSpecSkinRWMaterial.cpp					\
 	$(PATHLIBRARY)Materials/DonnerJensenSkinDiffusionProfile.cpp			\
 	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\

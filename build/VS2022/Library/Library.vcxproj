@@ -189,8 +189,6 @@
     <ClCompile Include="..\..\..\src\Library\Managers\ObjectManager.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongSPF.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Materials\BioSpecDiffusionProfile.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinRWMaterial.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPFHelpers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.cpp" />
@@ -887,9 +885,6 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\SpecularInfo.h" />
     <ClInclude Include="..\..\..\src\Library\Lights\LightBVH.h" />
     <ClInclude Include="..\..\..\src\Library\Lights\LightSampler.h" />
-    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecDiffusionProfile.h" />
-    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinBSSRDFMaterial.h" />
-    <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinRWMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeEmitter.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\DonnerJensenSkinBSSRDFMaterial.h" />

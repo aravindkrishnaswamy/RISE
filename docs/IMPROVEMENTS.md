@@ -12,7 +12,7 @@ RISE already has significant infrastructure in place:
 - Spectral rendering (sampled spectrum, per-wavelength PT/BDPT)
 - SMS / manifold solving (Zeltner et al. 2020)
 - OpenPGL path guiding with RIS and variance-aware adaptive alpha (PT and BDPT eye subpaths)
-- BSSRDF-aware transport (Donner-Jensen, BioSpec, Burley diffusion profiles) in both PT and BDPT
+- BSSRDF-aware transport (Donner-Jensen, Burley diffusion profiles) in both PT and BDPT
 - Owen-scrambled Sobol samplers
 - PSSMLT via BDPT
 - Caustic, global, and spectral photon mapping
