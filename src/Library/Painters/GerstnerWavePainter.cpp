@@ -183,6 +183,11 @@ void GerstnerWavePainter::SetIntermediateValue( const IKeyframeParameter& val )
 		m_time = *(Scalar*)val.getValue();
 		break;
 	}
+
+	// Tell any subscribed consumers (typically a DisplacedGeometry that baked
+	// a mesh from this painter's Evaluate values) that our state changed.
+	// They are responsible for rebuilding their derived state synchronously.
+	NotifyObservers();
 }
 
 void GerstnerWavePainter::RegenerateData()

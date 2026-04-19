@@ -44,6 +44,19 @@ file_rasterizeroutput
 	type				EXR
 	bpp					16
 	color_space			ROMMRGB_Linear
+	multiple			TRUE
+}
+
+DEFINE FRAMES 120
+
+# Animation: 120 frames spanning normalized time [0, 1].  The Gerstner painter's
+# `time` parameter is keyframed in the timeline block at the bottom — that's
+# the only thing animating; geometry, camera, and lights stay still.
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			@FRAMES
 }
 
 ##################################################
@@ -53,7 +66,7 @@ file_rasterizeroutput
 pinhole_camera
 {
 	location			0 4.0 6.5
-	lookat				0 -1.5 -0.5
+	lookat				0 0 0.5
 	up					0 1 0
 	width				800
 	height				600
@@ -173,14 +186,14 @@ gerstnerwave_painter
 lambertian_material
 {
 	name				tile_floor
-	reflectance			color_darkturquoise
+	reflectance			color_white
 }
 
 # Pool walls - plain white to match the floor
 lambertian_material
 {
 	name				pool_wall
-	reflectance			color_white
+	reflectance			color_darkturquoise
 }
 
 # Fresnel dielectric: reflects + refracts with energy-conserving Fresnel split.
@@ -635,7 +648,7 @@ standard_object
 spot_light
 {
 	name				sun
-	position			-3 9 1
+	position			0 9 -2
 	target				0 -2 -0.5
 	color				1.0 0.96 0.86
 	power				100.0
@@ -646,12 +659,13 @@ spot_light
 spot_light
 {
 	name				fill
-	position			4 7 4
-	target				1 0 0
-	color				0.65 0.78 0.95
+	position			0 7 -8
+	target				0 0 0
+	color				1.0 0.96 0.92
 	power				150.0
-	inner				50
-	outer				90
+	inner				70
+	outer				120
+	shootphotons	    FALSE
 }
 
 ##################################################
@@ -663,7 +677,7 @@ caustic_pel_photonmap
 	num					1000000
 	max_recursion		10
 	min_importance		0.001
-	power_scale			8.0
+	power_scale			5.0
 	branch				TRUE
 	reflect				TRUE
 	refract				TRUE
@@ -672,4 +686,28 @@ caustic_pel_photonmap
 caustic_pel_gather
 {
 	max_photons			200
+}
+
+##################################################
+# Animation timeline — keyframe the Gerstner painter's `time` parameter so the
+# water surface evolves frame-to-frame.  The displaced mesh is rebuilt at every
+# frame because GerstnerWavePainter::SetIntermediateValue updates m_time and
+# DisplacedGeometry samples it via Evaluate().
+#
+# Going 0 → 1.5 over the animation gives the median wave (~0.07 UV wavelength,
+# omega ~30 rad/s) about 7 cycles total → ~17 frames per cycle at 120 frames.
+# Adjust the end value if motion looks too fast/slow.
+##################################################
+
+timeline
+{
+	element_type	painter
+	element			pnt_waves
+	param			time
+
+	time			0.0
+	value			0.0
+
+	time			1.0
+	value			1.5
 }

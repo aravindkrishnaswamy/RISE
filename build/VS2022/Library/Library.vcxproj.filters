@@ -1026,6 +1026,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Observable.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Reference.h">
       <Filter>Utilities</Filter>
     </ClInclude>

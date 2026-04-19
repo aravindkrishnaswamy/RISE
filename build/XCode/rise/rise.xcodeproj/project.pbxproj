@@ -665,6 +665,7 @@
 		F24B74432F52A632008304C4 /* Ray.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F24B74442F52A632008304C4 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
 		F24B74452F52A632008304C4 /* Reference.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3A069C42900069C9E5 /* Reference.h */; };
+		DDDD0000000000000000000E /* Observable.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000D /* Observable.h */; };
 		F24B74462F52A632008304C4 /* RString.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3B069C42900069C9E5 /* RString.h */; };
 		F24B74472F52A632008304C4 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
 		F24B74482F52A632008304C4 /* RTime.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3D069C42900069C9E5 /* RTime.h */; };
@@ -1309,6 +1310,7 @@
 		F27F0C91069C42910069C9E5 /* Ray.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
 		F27F0C93069C42910069C9E5 /* Reference.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3A069C42900069C9E5 /* Reference.h */; };
+		DDDD0000000000000000000F /* Observable.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000D /* Observable.h */; };
 		F27F0C94069C42910069C9E5 /* RString.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3B069C42900069C9E5 /* RString.h */; };
 		F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
 		F27F0C96069C42910069C9E5 /* RTime.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3D069C42900069C9E5 /* RTime.h */; };
@@ -2197,6 +2199,7 @@
 		F27F0A38069C42900069C9E5 /* Ray.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Ray.h; sourceTree = "<group>"; };
 		F27F0A39069C42900069C9E5 /* Reference.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Reference.cpp; sourceTree = "<group>"; };
 		F27F0A3A069C42900069C9E5 /* Reference.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Reference.h; sourceTree = "<group>"; };
+		DDDD0000000000000000000D /* Observable.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Observable.h; sourceTree = "<group>"; };
 		F27F0A3B069C42900069C9E5 /* RString.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RString.h; sourceTree = "<group>"; };
 		F27F0A3C069C42900069C9E5 /* RTime.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RTime.cpp; sourceTree = "<group>"; };
 		F27F0A3D069C42900069C9E5 /* RTime.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RTime.h; sourceTree = "<group>"; };
@@ -3357,6 +3360,7 @@
 				F27F0A38069C42900069C9E5 /* Ray.h */,
 				F27F0A39069C42900069C9E5 /* Reference.cpp */,
 				F27F0A3A069C42900069C9E5 /* Reference.h */,
+				DDDD0000000000000000000D /* Observable.h */,
 				F27F0A3B069C42900069C9E5 /* RString.h */,
 				F27F0A3C069C42900069C9E5 /* RTime.cpp */,
 				F27F0A3D069C42900069C9E5 /* RTime.h */,
@@ -3932,6 +3936,7 @@
 				F27F0C90069C42910069C9E5 /* RandomNumbers.h in Headers */,
 				F27F0C91069C42910069C9E5 /* Ray.h in Headers */,
 				F27F0C93069C42910069C9E5 /* Reference.h in Headers */,
+				DDDD0000000000000000000F /* Observable.h in Headers */,
 				F27F0C94069C42910069C9E5 /* RString.h in Headers */,
 				F27F0C96069C42910069C9E5 /* RTime.h in Headers */,
 				F27F0C97069C42910069C9E5 /* SimpleInterpolators.h in Headers */,
@@ -5078,6 +5083,7 @@
 				F24B74432F52A632008304C4 /* Ray.h in Sources */,
 				F24B74442F52A632008304C4 /* Reference.cpp in Sources */,
 				F24B74452F52A632008304C4 /* Reference.h in Sources */,
+				DDDD0000000000000000000E /* Observable.h in Sources */,
 				F24B74462F52A632008304C4 /* RString.h in Sources */,
 				F24B74472F52A632008304C4 /* RTime.cpp in Sources */,
 				F24B74482F52A632008304C4 /* RTime.h in Sources */,

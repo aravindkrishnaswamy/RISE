@@ -851,6 +851,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\Observable.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Reference.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RString.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RTime.h" />

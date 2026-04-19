@@ -16,12 +16,20 @@
 
 #include "../Interfaces/IPainter.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Observable.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class Painter : public virtual IPainter, public virtual Reference
+		// Painter is the concrete base for in-tree painters.  It also acts as
+		// an Observable subject — painters whose state changes per keyframe
+		// (e.g. GerstnerWavePainter's `time`) call NotifyObservers() so that
+		// downstream consumers (e.g. DisplacedGeometry, which baked a mesh
+		// from displacement.Evaluate at construction) can refresh.
+		// Consumers reach the mixin via dynamic_cast<Observable*>; painters
+		// that don't change per frame simply never fire.
+		class Painter : public virtual IPainter, public virtual Reference, public Observable
 		{
 		protected:
 			SpectralPacket dummy_spectrum;

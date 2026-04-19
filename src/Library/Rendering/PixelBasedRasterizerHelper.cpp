@@ -911,7 +911,18 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
 
-	for( unsigned int i=0; i<(specificFrame?1:num_frames); i++ )
+	// Cancellation note: the inner tile dispatcher breaks out of a
+	// single frame when Progress() returns false, but it leaves a
+	// partial image behind.  We poll Progress() here between frames
+	// (and between fields) so we can (a) skip flushing that partial
+	// image to outputs — important for the MOV writer, which would
+	// otherwise get a corrupt tail frame — and (b) break out of the
+	// animation loop entirely instead of churning through the
+	// remaining frames.  The caller (e.g. RISEBridge::rasterizeAnimation)
+	// still runs finalize() on the MOV writer after we return.
+	const unsigned int total_frames = specificFrame?1:num_frames;
+	bool cancelled = false;
+	for( unsigned int i=0; i<total_frames && !cancelled; i++ )
 	{
 		if( do_fields ) {
 			// Render to fields
@@ -929,6 +940,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
 			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence );
+
+			// If the user cancelled during the upper field, don't
+			// render the lower field — the partial image here never
+			// gets flushed.
+			if( pProgressFunc && !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(total_frames) ) ) {
+				GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
+				cancelled = true;
+				break;
+			}
 
 			// Lower field
 			pScene.GetAnimator()->EvaluateAtTime( curtime_lower );
@@ -954,6 +974,16 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence );
 		}
+
+		// If the user cancelled during this frame, skip the flush so
+		// the MOV writer doesn't receive a partial tail frame, and
+		// break out of the loop.
+		if( pProgressFunc && !pProgressFunc->Progress( static_cast<double>(i+1), static_cast<double>(total_frames) ) ) {
+			GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
+			cancelled = true;
+			break;
+		}
+
 		// After every frame, flush to outputs
 		FlushToOutputs( *pImage, pRect, specificFrame?*specificFrame:i );
 		pImage->Clear( RISEColor(0,0,0,0), pRect );

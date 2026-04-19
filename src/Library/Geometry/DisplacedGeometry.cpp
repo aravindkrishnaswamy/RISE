@@ -16,6 +16,7 @@
 #include "TriangleMeshGeometryIndexed.h"
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
+#include "../Utilities/Observable.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -35,7 +36,13 @@ DisplacedGeometry::DisplacedGeometry(
   m_pDisplacement( displacement ),
   m_dispScale( disp_scale ),
   m_detail( detail ),
-  m_pMesh( 0 )
+  m_maxPolysPerNode( max_polys_per_node ),
+  m_maxRecursionLevel( max_recursion_level ),
+  m_bDoubleSided( bDoubleSided ),
+  m_bUseBSP( bUseBSP ),
+  m_bUseFaceNormals( bUseFaceNormals ),
+  m_pMesh( 0 ),
+  m_displacementSubscription()
 {
 	if( m_pBase ) {
 		m_pBase->addref();
@@ -49,12 +56,57 @@ DisplacedGeometry::DisplacedGeometry(
 		return;
 	}
 
+	BuildMesh();
+
+	// If the displacement painter exposes the Observable mixin (i.e. it derives
+	// from Painter — true for every in-tree painter), subscribe so we rebuild
+	// the mesh whenever the painter's keyframable state changes.  Out-of-tree
+	// IFunction2D implementations that don't derive from Observable simply
+	// don't subscribe; we keep today's bake-once behaviour for them.
+	if( m_pDisplacement ) {
+		const Observable* obs = dynamic_cast<const Observable*>( m_pDisplacement );
+		if( obs ) {
+			m_displacementSubscription = Subscription( obs, [this]{
+				DestroyMesh();
+				BuildMesh();
+			} );
+		}
+	}
+}
+
+DisplacedGeometry::~DisplacedGeometry()
+{
+	// The destructor BODY runs before any member destructor.  Detach from the
+	// painter's observer list first, while m_pDisplacement is still alive.
+	// Otherwise, m_pDisplacement->release() below could delete the painter,
+	// and the subscription's own destructor (which runs after this body) would
+	// then call Detach() on freed memory.  Move-assigning an empty Subscription
+	// triggers the current subscription's Detach via the assignment operator.
+	m_displacementSubscription = Subscription();
+
+	DestroyMesh();
+	if( m_pDisplacement ) {
+		m_pDisplacement->release();
+		m_pDisplacement = 0;
+	}
+	if( m_pBase ) {
+		m_pBase->release();
+		m_pBase = 0;
+	}
+}
+
+void DisplacedGeometry::BuildMesh()
+{
+	if( !m_pBase ) {
+		return;
+	}
+
 	IndexTriangleListType tris;
 	VerticesListType      vertices;
 	NormalsListType       normals;
 	TexCoordsListType     coords;
 
-	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, detail ) ) {
+	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry: base geometry does not support tessellation (e.g. InfinitePlaneGeometry)" );
 		return;
 	}
@@ -64,11 +116,11 @@ DisplacedGeometry::DisplacedGeometry(
 		ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
 	}
 
-	if( !bUseFaceNormals ) {
+	if( !m_bUseFaceNormals ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
 	}
 
-	m_pMesh = new TriangleMeshGeometryIndexed( max_polys_per_node, max_recursion_level, bDoubleSided, bUseBSP, bUseFaceNormals );
+	m_pMesh = new TriangleMeshGeometryIndexed( m_maxPolysPerNode, m_maxRecursionLevel, m_bDoubleSided, m_bUseBSP, m_bUseFaceNormals );
 	GlobalLog()->PrintNew( m_pMesh, __FILE__, __LINE__, "displaced geometry internal mesh" );
 
 	m_pMesh->BeginIndexedTriangles();
@@ -79,17 +131,10 @@ DisplacedGeometry::DisplacedGeometry(
 	m_pMesh->DoneIndexedTriangles();
 }
 
-DisplacedGeometry::~DisplacedGeometry()
+void DisplacedGeometry::DestroyMesh()
 {
 	safe_release( m_pMesh );
-	if( m_pDisplacement ) {
-		m_pDisplacement->release();
-		m_pDisplacement = 0;
-	}
-	if( m_pBase ) {
-		m_pBase->release();
-		m_pBase = 0;
-	}
+	m_pMesh = 0;
 }
 
 bool DisplacedGeometry::TessellateToMesh(

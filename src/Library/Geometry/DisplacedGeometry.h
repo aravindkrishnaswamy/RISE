@@ -19,6 +19,7 @@
 #include "Geometry.h"
 #include "../Interfaces/IFunction2D.h"
 #include "../Interfaces/ITriangleMeshGeometry.h"
+#include "../Utilities/Observable.h"
 
 namespace RISE
 {
@@ -40,9 +41,32 @@ namespace RISE
 			const IFunction2D*               m_pDisplacement;
 			Scalar                           m_dispScale;
 			unsigned int                     m_detail;
+			unsigned int                     m_maxPolysPerNode;
+			unsigned char                    m_maxRecursionLevel;
+			bool                             m_bDoubleSided;
+			bool                             m_bUseBSP;
+			bool                             m_bUseFaceNormals;
 			ITriangleMeshGeometryIndexed*    m_pMesh;
 
+			// Subscription to the displacement painter's Observable.  When the
+			// painter notifies (e.g. a keyframed `time` parameter changed),
+			// the callback rebuilds m_pMesh.
+			//
+			// Destruction ordering note: the destructor BODY runs before any
+			// member destructors, so the subscription's own destructor would
+			// otherwise fire AFTER m_pDisplacement->release() has potentially
+			// deleted the painter.  ~DisplacedGeometry resets this member
+			// explicitly at the top of the dtor body, before any release, so
+			// Detach executes while the subject is still alive.
+			Subscription                     m_displacementSubscription;
+
 			virtual ~DisplacedGeometry();
+
+			// Tessellate base + apply displacement + build internal indexed
+			// mesh.  Idempotent: safe to call repeatedly via DestroyMesh()/
+			// BuildMesh() to refresh after the displacement painter changes.
+			void BuildMesh();
+			void DestroyMesh();
 
 		public:
 			DisplacedGeometry(
