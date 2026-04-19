@@ -1,0 +1,134 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Double-Refractive Slab (Close, SMS): SMS should produce visible caustic structure that matches the       #
+#   photon map reference.                                                                                    #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+
+vcm_pel_rasterizer
+{
+	max_eye_depth		10
+	max_light_depth		10
+	samples				64
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_slab_close_vcm
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 2.0 3
+	lookat				0 0.2 0
+	up					0 1 0
+	width				400
+	height				300
+	fov					45.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.8 0.75 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				1.0 1.0 1.0
+}
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				2000.0
+	material			none
+}
+
+perfectrefractor_material
+{
+	name				glass_mat
+	refractance			pnt_glass
+	ior					2.2
+}
+
+rawmesh2_geometry
+{
+	name				slab_geom
+	file				models/raw/displaced_slab.raw
+	maxpolygons			10
+	maxdepth			24
+	double_sided		TRUE
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-0.1 0.0 -0.1
+	ptb					0.1 0.0 -0.1
+	ptc					0.1 0.0 0.1
+	ptd					-0.1 0.0 0.1
+}
+
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				glass_slab
+	geometry			slab_geom
+	orientation			-45 0 0
+	position			0 0.5 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			0 1.2 -0.1
+	orientation 		-45 0 0
+	scale				0.4 0.4 0.4
+	material			light_mat
+}
