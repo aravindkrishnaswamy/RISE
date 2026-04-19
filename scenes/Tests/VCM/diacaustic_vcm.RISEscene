@@ -22,6 +22,25 @@ vcm_pel_rasterizer
 	vm_enabled			true
 }
 
+/*
+pathtracing_pel_rasterizer
+{
+	samples				512
+	pathguiding				TRUE
+	pathguiding_iterations	6
+	pathguiding_spp			4
+	pathguiding_alpha		0.5
+	pathguiding_max_depth	3
+    pathguiding_light_max_depth 0
+	pathguiding_sampling_type	ris
+	sms_enabled			FALSE
+	sms_max_iterations	20
+	sms_threshold		1e-3
+	sms_max_chain_depth	20
+	sms_biased			TRUE
+}
+*/
+
 file_rasterizeroutput
 {
 	pattern				rendered/diacaustic_vcm

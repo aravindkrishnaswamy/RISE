@@ -2,12 +2,15 @@ RISE ASCII SCENE 5
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           pool_caustics.RISEscene                                                                 #
-#   Description:    Simulates underwater caustics at the bottom of a swimming pool.                         #
-#                   A wavy water surface (Perlin bump-mapped) refracts a bright spot light from above,      #
-#                   casting rippling caustic patterns onto vibrant turquoise pool tiles.                     #
-#                   Tests: spot light, perfectrefractor (water IOR 1.33), caustic photon map,               #
-#                          bumpmap_modifier, perlin2d_painter, checker painter, clipped planes, spheres     #
+#   File:           pool_caustics.RISEscene                                                                  #
+#   Description:    Swimming pool with sharp refraction caustics on the tiled floor.                        #
+#                   The water surface is a Gerstner-wave DisplacedGeometry — true vertex displacement,      #
+#                   not a bump map — so refracting photons follow the real wavy geometry and produce        #
+#                   the dense cellular caustic mesh typical of real pool water.                             #
+#                   Veach Ch.11 Fig.11.9 inspired: stone pillars frame the pool under a low sun,            #
+#                   empty water (no submerged spheres) to foreground the caustic pattern itself.            #
+#                   Tests: perfectrefractor + displaced_geometry + gerstnerwave_painter,                    #
+#                          caustic photon map, directional_light.                                           #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #                                                                                                           #
 #############################################################################################################
@@ -27,8 +30,8 @@ advanced_shader
 
 pixelpel_rasterizer
 {
-	max_recursion		10
-	samples				16
+	max_recursion		6
+	samples				4
 	lum_samples			4
 	pixel_filter		tent
 	pixel_filter_width	1.5
@@ -38,23 +41,23 @@ pixelpel_rasterizer
 file_rasterizeroutput
 {
 	pattern				rendered/pool_caustics
-	type				PNG
+	type				EXR
 	bpp					16
-	color_space			sRGB
+	color_space			ROMMRGB_Linear
 }
 
 ##################################################
-# Camera - looking down into the pool at an angle
+# Camera - high oblique view across the courtyard into the pool
 ##################################################
 
 pinhole_camera
 {
-	location			0 3.5 4.5
-	lookat				0 -0.5 0
+	location			0 4.0 6.5
+	lookat				0 -1.5 -0.5
 	up					0 1 0
 	width				800
 	height				600
-	fov					50.0
+	fov					70.0
 }
 
 ##################################################
@@ -63,150 +66,188 @@ pinhole_camera
 
 > run scenes/colors.RISEscript
 
-# Pool tile colors - vibrant turquoise and white checker
-uniformcolor_painter
-{
-	name				pnt_tile_a
-	color				0.15 0.75 0.80
-}
-
-uniformcolor_painter
-{
-	name				pnt_tile_b
-	color				0.85 0.95 0.98
-}
-
-checker_painter
-{
-	name				pnt_pool_floor
-	colora				pnt_tile_a
-	colorb				pnt_tile_b
-	size				8
-}
-
-# Pool wall color - deeper aqua
-uniformcolor_painter
-{
-	name				pnt_pool_wall
-	color				0.10 0.45 0.60
-}
-
-# Water tint - very slightly blue-green for realism
+# Water tint - near-white, very faint blue-green for realism
 uniformcolor_painter
 {
 	name				pnt_water
 	color				0.92 0.97 0.99
 }
 
-# Decorative sphere color - coral / warm accent
+# Surrounding courtyard - two-tone sandstone checker
 uniformcolor_painter
 {
-	name				pnt_coral
-	color				1.0 0.42 0.35
+	name				pnt_courtyard_a
+	color				0.70 0.66 0.58
 }
 
-# Second decorative sphere - golden yellow
 uniformcolor_painter
 {
-	name				pnt_gold
-	color				1.0 0.82 0.25
+	name				pnt_courtyard_b
+	color				0.52 0.48 0.42
 }
 
-# Third decorative sphere - vivid blue glass
+checker_painter
+{
+	name				pnt_courtyard_floor
+	colora				pnt_courtyard_a
+	colorb				pnt_courtyard_b
+	size				0.08
+}
+
+# Stone pillar color - warm sandstone
 uniformcolor_painter
 {
-	name				pnt_blue_glass
-	color				0.3 0.5 1.0
+	name				pnt_stone
+	color				0.72 0.68 0.60
+}
+
+# Submerged-object colors — saturated enough to read clearly through 4 units of water.
+uniformcolor_painter
+{
+	name				pnt_obj_crimson
+	color				0.88 0.12 0.18
+}
+
+uniformcolor_painter
+{
+	name				pnt_obj_cerulean
+	color				0.18 0.50 0.95
+}
+
+uniformcolor_painter
+{
+	name				pnt_obj_gold
+	color				0.96 0.75 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_obj_emerald
+	color				0.14 0.68 0.32
+}
+
+uniformcolor_painter
+{
+	name				pnt_obj_violet
+	color				0.55 0.18 0.75
 }
 
 ##################################################
-# Water surface wave function (Perlin noise for ripples)
+# Water surface wave function - SUM-OF-SINES GERSTNER DISPLACEMENT
+##################################################
+# 24 waves, log-uniform wavelengths around 0.07 UV (~0.56 world on the 8x8 pool),
+# directionally spread so the pool looks still rather than wind-driven.
+# The median amplitude (0.003 UV) is deliberately small — realistic water has tiny
+# slopes, and sharp refractive caustics form from tiny slope variations in the
+# surface.  Big amplitudes would focus light into wide blurry blobs.
+#
+# This drives a DisplacedGeometry wrapping the water plane, replacing the prior
+# Perlin bump-map modifier.  Bump maps perturb shading normals but leave the
+# actual geometry flat, so refracting photons travel in the wrong direction and
+# caustics come out incorrect.  True displacement moves the vertices, so the
+# refraction is physically correct and the caustic mesh shows.
 ##################################################
 
-# Perlin2D noise to simulate water surface ripples
-# Low persistence + few octaves = broad gentle waves
-# Higher scale = more waves across the surface
-perlin2d_painter
+gerstnerwave_painter
 {
-	name				pnt_water_waves
+	name				pnt_waves
 	colora				color_black
 	colorb				color_white
-	persistence			0.5
-	octaves				3
-	scale				10.0 10.0
-}
-
-##################################################
-# Bump Map Modifier for water surface
-##################################################
-
-# The bump map perturbs the normals of the water surface
-# creating wave-like undulations that scatter refracted light
-# into caustic patterns on the pool floor.
-# Moderate Perlin scale (10) = gentle wave frequency.
-# Bump scale 15 = visible but natural-looking normal tilt.
-bumpmap_modifier
-{
-	name				water_ripple
-	function			pnt_water_waves
-	scale				12.0
-	windowsize			0.003
+	num_waves			24
+	median_wavelength	0.07
+	wavelength_range	3.0
+	median_amplitude	0.003
+	amplitude_power		0.8
+	wind_dir			1.0 0.3
+	directional_spread	1.8
+	dispersion_speed	1.0
+	seed				17
+	time				0.0
 }
 
 ##################################################
 # Materials
 ##################################################
 
-# Pool floor - checker tile pattern
+# Pool floor - plain white so caustics read cleanly against a neutral backdrop
 lambertian_material
 {
 	name				tile_floor
-	reflectance			pnt_pool_floor
+	reflectance			color_darkturquoise
 }
 
-# Pool walls
+# Pool walls - plain white to match the floor
 lambertian_material
 {
 	name				pool_wall
-	reflectance			pnt_pool_wall
+	reflectance			color_white
 }
 
-# Water surface - perfect refractor at water IOR
-perfectrefractor_material
+# Fresnel dielectric: reflects + refracts with energy-conserving Fresnel split.
+# More physically accurate than perfectrefractor — adds the surface reflection
+# of the sky / courtyard / pillars that real pool water shows, and handles TIR
+# for below-surface rays.  VCM's merge step handles both the LS+DE caustic and
+# the S reflection paths naturally, so this is the right choice here.
+dielectric_material
 {
 	name				water
-	refractance			pnt_water
+	tau					pnt_water
 	ior					1.33
+	scattering			10000
+	henyey-greenstein	FALSE
 }
 
-# Coral decorative ball - solid matte
+
+# Courtyard floor material
 lambertian_material
 {
-	name				coral_ball
-	reflectance			pnt_coral
+	name				courtyard_tile
+	reflectance			pnt_courtyard_floor
 }
 
-# Golden glass ball - refractive with warm color
-perfectrefractor_material
+# Stone columns
+lambertian_material
 {
-	name				gold_glass
-	refractance			pnt_gold
-	ior					1.5
+	name				stone_column
+	reflectance			pnt_stone
 }
 
-# Blue glass ball - refractive
-perfectrefractor_material
+# Submerged-object materials (pure diffuse, so caustics show cleanly on top).
+lambertian_material
 {
-	name				blue_glass
-	refractance			pnt_blue_glass
-	ior					1.5
+	name				obj_red
+	reflectance			pnt_obj_crimson
+}
+
+lambertian_material
+{
+	name				obj_blue
+	reflectance			pnt_obj_cerulean
+}
+
+lambertian_material
+{
+	name				obj_gold
+	reflectance			pnt_obj_gold
+}
+
+lambertian_material
+{
+	name				obj_green
+	reflectance			pnt_obj_emerald
+}
+
+lambertian_material
+{
+	name				obj_purple
+	reflectance			pnt_obj_violet
 }
 
 ##################################################
-# Geometry & Objects
+# Geometry - pool
 ##################################################
 
-# Pool floor - 8x8 area
+# Pool floor (tile), 8x8 at y=-2
 clippedplane_geometry
 {
 	name				floor_geom
@@ -224,7 +265,7 @@ standard_object
 	material			tile_floor
 }
 
-# Back wall
+# Pool back wall
 clippedplane_geometry
 {
 	name				bwall_geom
@@ -242,7 +283,7 @@ standard_object
 	material			pool_wall
 }
 
-# Left wall
+# Pool left wall
 clippedplane_geometry
 {
 	name				lwall_geom
@@ -260,7 +301,7 @@ standard_object
 	material			pool_wall
 }
 
-# Right wall
+# Pool right wall
 clippedplane_geometry
 {
 	name				rwall_geom
@@ -278,7 +319,7 @@ standard_object
 	material			pool_wall
 }
 
-# Front wall (partial, below camera view)
+# Pool front wall
 clippedplane_geometry
 {
 	name				fwall_geom
@@ -296,98 +337,321 @@ standard_object
 	material			pool_wall
 }
 
-# Water surface - bump-mapped plane with wave ripples to create caustics
+##################################################
+# Geometry - water surface (Gerstner displacement)
+##################################################
+
+# Base plane for the water, 8x8 covering the pool mouth at y=0.
+# DisplacedGeometry tessellates this to a (detail+1) x (detail+1) grid and
+# perturbs each vertex along its normal by pnt_waves.Evaluate(u,v).
 clippedplane_geometry
 {
-	name				water_geom
+	name				water_base
 	pta					-4.0 0.0 -4.0
 	ptb					-4.0 0.0 4.0
 	ptc					4.0 0.0 4.0
 	ptd					4.0 0.0 -4.0
 }
 
+# detail=192 resolves wavelengths down to ~0.01 UV (0.08 world).  With the
+# configured wavelength_range=3 around median 0.07, the smallest waves are
+# ~0.023 UV — well-resolved at detail 192.  maxdepth 14 gives the internal
+# BSP enough room to split 192^2 ≈ 37K triangles into fast-intersect leaves.
+displaced_geometry
+{
+	name				water_disp
+	base_geometry		water_base
+	detail				192
+	displacement		pnt_waves
+	disp_scale			1.0
+	maxpolygons			10
+	maxdepth			14
+	bsp					TRUE
+}
+
 standard_object
 {
 	name				water_surface
-	geometry			water_geom
-	position			0 0 0
+	geometry			water_disp
+	position			0 -0.1 0
 	material			water
-	modifier			water_ripple
 }
 
-# Submerged decorative spheres resting on pool floor
+##################################################
+# Submerged decorative objects — five distinct primitives at staggered depths.
+##################################################
+# With the pool now 4 units deep and the Gerstner waves' focal depth around
+# 1–2 units below the surface, objects placed between y=-1.3 and y=-2 should
+# catch the sharpest caustics; the lower ones get the spread-out pattern and
+# the floor sees the fully developed cellular mesh.
+#
+# Geometry variety: sphere, torus, cylinder, ellipsoid, box.
+##################################################
 
 sphere_geometry
 {
-	name				sphere_sm
+	name				obj_sphere
+	radius				0.55
+}
+
+torus_geometry
+{
+	name				obj_torus
+	majorradius			0.70
+	minorratio			0.22
+}
+
+cylinder_geometry
+{
+	name				obj_cylinder
+	axis				y
+	radius				0.30
+	height				1.2
+}
+
+ellipsoid_geometry
+{
+	name				obj_ellipsoid
+	radii				0.80 0.28 0.55
+}
+
+box_geometry
+{
+	name				obj_box
+	width				0.70
+	height				0.70
+	depth				0.70
+}
+
+# Red sphere — high in the water column, near the caustic focal depth.
+# Radius 0.55, center y=-1.0 → bottom at y=-1.55 (clear of the y=-2 floor).
+standard_object
+{
+	name				red_sphere
+	geometry			obj_sphere
+	position			-1.7 -1.0 1.0
+	material			obj_red
+}
+
+# Gold torus — floats mid-depth, tilted off-axis.  Minor radius 0.154; with
+# tilt the y-extent is roughly ±0.45, so center y=-1.3 keeps it well inside
+# the [y=-2, y=0] pool.
+standard_object
+{
+	name				gold_torus
+	geometry			obj_torus
+	position			0.0 -1.3 -1.5
+	orientation			25 15 0
+	material			obj_gold
+}
+
+# Cerulean cylinder — shorter now (height 1.2) so it fits the shallower pool.
+# Stands on the floor: center y = -2 + 1.2/2 = -1.4, top at y=-0.8.  Moved
+# back in z from 2.3 → 1.2 so it's less in the camera's face.
+standard_object
+{
+	name				blue_cylinder
+	geometry			obj_cylinder
+	position			2.5 -1.4 1.2
+	material			obj_blue
+}
+
+# Emerald ellipsoid — flattened (y-radius 0.28), resting on the floor at
+# center y = -2 + 0.28 = -1.72.  Also moved back in z from 2.3 → 0.5.
+standard_object
+{
+	name				green_ellipsoid
+	geometry			obj_ellipsoid
+	position			-2.3 -1.72 0.5
+	orientation			0 20 0
+	material			obj_green
+}
+
+# Purple cube — sitting on the floor (center y = -2 + 0.35 = -1.65),
+# tucked into the far corner.
+standard_object
+{
+	name				purple_box
+	geometry			obj_box
+	position			2.2 -1.65 -2.5
+	orientation			0 30 0
+	material			obj_purple
+}
+
+##################################################
+# Geometry - courtyard (outer tiled floor around the pool)
+##################################################
+
+# North strip (far side, behind the pool from camera)
+clippedplane_geometry
+{
+	name				outer_n_geom
+	pta					-10.0 0.0 -10.0
+	ptb					-10.0 0.0 -4.0
+	ptc					10.0 0.0 -4.0
+	ptd					10.0 0.0 -10.0
+}
+
+standard_object
+{
+	name				courtyard_n
+	geometry			outer_n_geom
+	position			0 0 0
+	material			courtyard_tile
+}
+
+# South strip (near side, closest to camera)
+clippedplane_geometry
+{
+	name				outer_s_geom
+	pta					-10.0 0.0 4.0
+	ptb					-10.0 0.0 10.0
+	ptc					10.0 0.0 10.0
+	ptd					10.0 0.0 4.0
+}
+
+standard_object
+{
+	name				courtyard_s
+	geometry			outer_s_geom
+	position			0 0 0
+	material			courtyard_tile
+}
+
+# East strip (camera right)
+clippedplane_geometry
+{
+	name				outer_e_geom
+	pta					4.0 0.0 -4.0
+	ptb					4.0 0.0 4.0
+	ptc					10.0 0.0 4.0
+	ptd					10.0 0.0 -4.0
+}
+
+standard_object
+{
+	name				courtyard_e
+	geometry			outer_e_geom
+	position			0 0 0
+	material			courtyard_tile
+}
+
+# West strip (camera left)
+clippedplane_geometry
+{
+	name				outer_w_geom
+	pta					-10.0 0.0 -4.0
+	ptb					-10.0 0.0 4.0
+	ptc					-4.0 0.0 4.0
+	ptd					-4.0 0.0 -4.0
+}
+
+standard_object
+{
+	name				courtyard_w
+	geometry			outer_w_geom
+	position			0 0 0
+	material			courtyard_tile
+}
+
+##################################################
+# Stone pillars (Veach-style pillars framing the pool)
+##################################################
+# Cylinder origin is its geometric center; position y = height/2 stands it on
+# the courtyard.
+
+cylinder_geometry
+{
+	name				pillar_a_geom
+	axis				y
 	radius				0.35
+	height				3.6
 }
 
-sphere_geometry
+standard_object
 {
-	name				sphere_md
-	radius				0.5
+	name				pillar_ne
+	geometry			pillar_a_geom
+	position			6.5 1.8 -5.5
+	material			stone_column
 }
 
-sphere_geometry
+cylinder_geometry
 {
-	name				sphere_lg
+	name				pillar_b_geom
+	axis				y
 	radius				0.45
+	height				2.8
 }
 
-# Coral ball - front left
 standard_object
 {
-	name				ball_coral
-	geometry			sphere_sm
-	position			-1.5 -1.65 1.0
-	material			coral_ball
+	name				pillar_nw
+	geometry			pillar_b_geom
+	position			-6.2 1.4 -5.2
+	material			stone_column
 }
 
-# Gold glass ball - center back, creates warm caustics on floor
-standard_object
+cylinder_geometry
 {
-	name				ball_gold
-	geometry			sphere_md
-	position			0.5 -1.5 -1.0
-	material			gold_glass
+	name				pillar_c_geom
+	axis				y
+	radius				0.40
+	height				2.4
 }
 
-# Blue glass ball - right side, creates blue caustics on floor
 standard_object
 {
-	name				ball_blue
-	geometry			sphere_lg
-	position			2.0 -1.55 0.5
-	material			blue_glass
+	name				pillar_nnw
+	geometry			pillar_c_geom
+	position			-3.0 1.2 -7.5
+	material			stone_column
+}
+
+cylinder_geometry
+{
+	name				pillar_d_geom
+	axis				y
+	radius				0.38
+	height				3.2
+}
+
+standard_object
+{
+	name				pillar_nne
+	geometry			pillar_d_geom
+	position			2.5 1.6 -8.0
+	material			stone_column
 }
 
 ##################################################
-# Lights - bright spot light from above
+# Lights - a strong "sun" spot punches through the water surface to drive
+# the caustic photon count; a second soft spot fills the courtyard.  Spot
+# lights are used (not directional) because the photon map benefits from a
+# compact emitter aimed at the pool — it concentrates photon density on the
+# floor where the caustics form.
 ##################################################
 
-# Primary spot light - strong white sun-like illumination punching through water
 spot_light
 {
-	name				sun_spot
-	position			0 8 2
+	name				sun
+	position			-3 9 1
 	target				0 -2 -0.5
-	color				1.0 0.98 0.92
-	power				2000.0
-	inner				25
-	outer				60
+	color				1.0 0.96 0.86
+	power				100.0
+	inner				22
+	outer				55
 }
 
-# Secondary fill spot - slightly blue to add underwater ambiance
 spot_light
 {
-	name				fill_spot
-	position			-3 6 -2
-	target				0 -2 0
-	color				0.7 0.85 1.0
-	power				200.0
-	inner				30
-	outer				70
+	name				fill
+	position			4 7 4
+	target				1 0 0
+	color				0.65 0.78 0.95
+	power				150.0
+	inner				50
+	outer				90
 }
 
 ##################################################
@@ -396,15 +660,16 @@ spot_light
 
 caustic_pel_photonmap
 {
-	num					2000000
+	num					1000000
 	max_recursion		10
 	min_importance		0.001
+	power_scale			8.0
 	branch				TRUE
-	reflect				FALSE
+	reflect				TRUE
 	refract				TRUE
 }
 
 caustic_pel_gather
 {
-	max_photons			150
+	max_photons			200
 }
