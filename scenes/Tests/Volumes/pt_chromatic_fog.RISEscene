@@ -34,6 +34,16 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples                       256
+	# Clamp single-path NEE contributions.  Equiangular MIS tames the
+	# 1/r^2 singularity at the omni_light so the estimator is finite-
+	# variance, but rare camera -> red wall -> scatter-near-light paths
+	# can still deposit a single-sample luminance of ~300 via the
+	# red-dominant reflectance after chromatic channel amplification.
+	# At 256 spp a handful of such events per image produce visible
+	# fireflies; clamping each direct contribution at 5 caps those
+	# outliers in exchange for ~0.1% bias.  Raise samples (or disable
+	# this) if you need ground-truth-quality convergence.
+	direct_clamp                  5
 }
 
 file_rasterizeroutput

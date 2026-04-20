@@ -24,6 +24,7 @@
 #include "../Utilities/RandomWalkSSS.h"
 #include "../Utilities/MediumTracking.h"
 #include "../Utilities/PathTransportUtilities.h"
+#include "../Utilities/EquiangularSampler.h"
 #include "../Utilities/PathVertexEval.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
@@ -63,6 +64,369 @@ using RISE::BSSRDFAdapters::BSSRDFEntryMaterial;
 
 namespace
 {
+	//
+	// Volume distance sampling with optional equiangular MIS for
+	// positional lights.  When one or more omni/spot lights are present,
+	// one-sample MIS between delta tracking and equiangular sampling
+	// (Kulla & Fajardo, EGSR 2012) is used to tame the 1/r^2 singularity
+	// that makes plain NEE have unbounded variance near point lights.
+	// When no positional lights are present, falls back to plain delta
+	// tracking (identical to the previous behavior).
+	//
+	// Ports the RayCaster.cpp RGB-path logic (lines 269–440) into the
+	// pel path tracer so the pel rasterizer gets the same variance
+	// reduction that BDPT/VCM already enjoy.
+	//
+	struct MediumSampleOutcome
+	{
+		Scalar	t;
+		bool	scattered;
+		Scalar	combinedPdf;			///< MIS-combined PDF (0 unless useExplicitThroughput)
+		bool	useExplicitThroughput;	///< true => medWeight = Tr * sigma_s / combinedPdf
+		bool	zeroContrib;			///< true => equiangular landed at zero-density; no surface fallthrough
+	};
+
+	//
+	// Medium distance sampling runs on an IndependentSampler (pure i.i.d.)
+	// rather than the main QMC path sampler.  Rationale: the equiangular
+	// branch consumes 3 random dimensions while the fallback consumes 1,
+	// so threading medium decisions through the QMC sequence would shift
+	// downstream stream positions per-bounce and leak structured correlation
+	// into pixel estimates.  RayCaster.cpp follows the same pattern
+	// (IndependentSampler mediumSampler( rc.random )).
+	//
+	static MediumSampleOutcome SampleDistanceWithEquiangularMIS(
+		const IMedium* pMedium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Implementation::LightSampler* pLS,
+		ISampler& sampler					///< Independent medium sampler (not the path QMC sampler)
+		)
+	{
+		MediumSampleOutcome out;
+		out.t = 0;
+		out.scattered = false;
+		out.combinedPdf = 0;
+		out.useExplicitThroughput = false;
+		out.zeroContrib = false;
+
+		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
+		if( !useEquiangularMIS )
+		{
+			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
+			return out;
+		}
+
+		// Clip equiangular range to medium AABB (unbounded global media
+		// return false from GetBoundingBox and are integrated over
+		// [0, maxDist]).
+		Scalar eqTNear = 0;
+		Scalar eqTFar = maxDist;
+		{
+			Point3 bbMin, bbMax;
+			if( pMedium->GetBoundingBox( bbMin, bbMax ) )
+			{
+				Scalar tEntry = 0, tExit = maxDist;
+				const Scalar invX = (fabs(ray.Dir().x) > 1e-20) ? 1.0 / ray.Dir().x : 0;
+				const Scalar invY = (fabs(ray.Dir().y) > 1e-20) ? 1.0 / ray.Dir().y : 0;
+				const Scalar invZ = (fabs(ray.Dir().z) > 1e-20) ? 1.0 / ray.Dir().z : 0;
+
+				bool aabbHit = true;
+				if( invX != 0 ) {
+					Scalar t0 = (bbMin.x - ray.origin.x) * invX;
+					Scalar t1 = (bbMax.x - ray.origin.x) * invX;
+					if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+					tEntry = fmax( tEntry, t0 );
+					tExit = fmin( tExit, t1 );
+				} else if( ray.origin.x < bbMin.x || ray.origin.x > bbMax.x ) {
+					aabbHit = false;
+				}
+				if( aabbHit && invY != 0 ) {
+					Scalar t0 = (bbMin.y - ray.origin.y) * invY;
+					Scalar t1 = (bbMax.y - ray.origin.y) * invY;
+					if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+					tEntry = fmax( tEntry, t0 );
+					tExit = fmin( tExit, t1 );
+				} else if( ray.origin.y < bbMin.y || ray.origin.y > bbMax.y ) {
+					aabbHit = false;
+				}
+				if( aabbHit && invZ != 0 ) {
+					Scalar t0 = (bbMin.z - ray.origin.z) * invZ;
+					Scalar t1 = (bbMax.z - ray.origin.z) * invZ;
+					if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+					tEntry = fmax( tEntry, t0 );
+					tExit = fmin( tExit, t1 );
+				} else if( ray.origin.z < bbMin.z || ray.origin.z > bbMax.z ) {
+					aabbHit = false;
+				}
+
+				if( aabbHit && tEntry < tExit )
+				{
+					eqTNear = fmax( 0.0, tEntry );
+					eqTFar = fmin( maxDist, tExit );
+				}
+			}
+		}
+
+		if( eqTFar <= eqTNear )
+		{
+			// Medium AABB does not intersect the ray segment — plain delta tracking.
+			out.t = pMedium->SampleDistance( ray, maxDist, sampler, out.scattered );
+			return out;
+		}
+
+		// Select one positional light proportional to exitance.
+		const unsigned int nPosLights = pLS->GetPositionalLightCount();
+		const Scalar totalPosExitance = pLS->GetPositionalLightTotalExitance();
+		unsigned int selectedLight = 0;
+		{
+			const Scalar xiLight = sampler.Get1D();
+			Scalar cumulative = 0;
+			for( unsigned int i = 0; i < nPosLights; i++ )
+			{
+				cumulative += pLS->GetPositionalLightExitance( i ) / totalPosExitance;
+				if( xiLight <= cumulative ) { selectedLight = i; break; }
+			}
+		}
+		const Point3& lightPos = pLS->GetPositionalLightPosition( selectedLight );
+
+		const Scalar xiStrategy = sampler.Get1D();
+
+		if( xiStrategy < 0.5 )
+		{
+			// Delta tracking strategy with PDF.
+			IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdf(
+				ray, maxDist, sampler );
+			out.t = ds.t;
+			out.scattered = ds.scattered;
+
+			if( out.scattered )
+			{
+				const Scalar pdf_dt = pMedium->EvalDistancePdf( ray, out.t, true, maxDist );
+				Scalar pdf_eq = 0;
+				for( unsigned int i = 0; i < nPosLights; i++ )
+				{
+					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
+					pdf_eq += pSel * EquiangularSampling::Pdf(
+						ray, pLS->GetPositionalLightPosition( i ),
+						eqTNear, eqTFar, out.t );
+				}
+				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+				out.useExplicitThroughput = true;
+			}
+			// If not scattered: transmission has no equiangular counterpart; weight = 1.
+		}
+		else
+		{
+			// Equiangular strategy: sample distance toward the selected light.
+			// Unlike delta tracking, equiangular ONLY proposes scatter events.
+			EquiangularSampling::Sample eqSample =
+				EquiangularSampling::SampleDistance(
+					ray, lightPos, eqTNear, eqTFar, sampler.Get1D() );
+			out.t = eqSample.t;
+
+			if( out.t > eqTNear && out.t < maxDist )
+			{
+				const Point3 eqPt = ray.PointAtLength( out.t );
+				const MediumCoefficients eqCoeff = pMedium->GetCoefficients( eqPt );
+
+				if( ColorMath::MaxValue( eqCoeff.sigma_t ) > 0 )
+				{
+					out.scattered = true;
+					const Scalar pdf_dt = pMedium->EvalDistancePdf( ray, out.t, true, maxDist );
+					Scalar pdf_eq = 0;
+					for( unsigned int i = 0; i < nPosLights; i++ )
+					{
+						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
+						pdf_eq += pSel * EquiangularSampling::Pdf(
+							ray, pLS->GetPositionalLightPosition( i ),
+							eqTNear, eqTFar, out.t );
+					}
+					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+					out.useExplicitThroughput = true;
+				}
+				else
+				{
+					// Zero-density scatter proposal — zero weight, not a transmission.
+					out.zeroContrib = true;
+				}
+			}
+			else
+			{
+				// Sample outside medium range — zero contribution.
+				out.zeroContrib = true;
+			}
+		}
+
+		return out;
+	}
+
+	//
+	// Spectral (single-wavelength) variant of SampleDistanceWithEquiangularMIS.
+	// Structure identical to the RGB version; uses NM medium calls.
+	// The combinedPdf is in distance measure — the caller multiplies
+	// Tr_w * sigma_s_w (per-wavelength) by 1/combinedPdf to form the
+	// scatter-event throughput.  HWSS callers reuse the same hero-driven
+	// combinedPdf across all tracked wavelengths (one-sample MIS).
+	//
+	static MediumSampleOutcome SampleDistanceWithEquiangularMIS_NM(
+		const IMedium* pMedium,
+		const Ray& ray,
+		const Scalar maxDist,
+		const Scalar nm,
+		const Implementation::LightSampler* pLS,
+		ISampler& sampler
+		)
+	{
+		MediumSampleOutcome out;
+		out.t = 0;
+		out.scattered = false;
+		out.combinedPdf = 0;
+		out.useExplicitThroughput = false;
+		out.zeroContrib = false;
+
+		const bool useEquiangularMIS = (pLS && pLS->GetPositionalLightCount() > 0);
+		if( !useEquiangularMIS )
+		{
+			out.t = pMedium->SampleDistanceNM( ray, maxDist, nm, sampler, out.scattered );
+			return out;
+		}
+
+		Scalar eqTNear = 0;
+		Scalar eqTFar = maxDist;
+		{
+			Point3 bbMin, bbMax;
+			if( pMedium->GetBoundingBox( bbMin, bbMax ) )
+			{
+				Scalar tEntry = 0, tExit = maxDist;
+				const Scalar invX = (fabs(ray.Dir().x) > 1e-20) ? 1.0 / ray.Dir().x : 0;
+				const Scalar invY = (fabs(ray.Dir().y) > 1e-20) ? 1.0 / ray.Dir().y : 0;
+				const Scalar invZ = (fabs(ray.Dir().z) > 1e-20) ? 1.0 / ray.Dir().z : 0;
+
+				bool aabbHit = true;
+				if( invX != 0 ) {
+					Scalar t0 = (bbMin.x - ray.origin.x) * invX;
+					Scalar t1 = (bbMax.x - ray.origin.x) * invX;
+					if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+					tEntry = fmax( tEntry, t0 );
+					tExit = fmin( tExit, t1 );
+				} else if( ray.origin.x < bbMin.x || ray.origin.x > bbMax.x ) {
+					aabbHit = false;
+				}
+				if( aabbHit && invY != 0 ) {
+					Scalar t0 = (bbMin.y - ray.origin.y) * invY;
+					Scalar t1 = (bbMax.y - ray.origin.y) * invY;
+					if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+					tEntry = fmax( tEntry, t0 );
+					tExit = fmin( tExit, t1 );
+				} else if( ray.origin.y < bbMin.y || ray.origin.y > bbMax.y ) {
+					aabbHit = false;
+				}
+				if( aabbHit && invZ != 0 ) {
+					Scalar t0 = (bbMin.z - ray.origin.z) * invZ;
+					Scalar t1 = (bbMax.z - ray.origin.z) * invZ;
+					if( t0 > t1 ) { const Scalar tmp = t0; t0 = t1; t1 = tmp; }
+					tEntry = fmax( tEntry, t0 );
+					tExit = fmin( tExit, t1 );
+				} else if( ray.origin.z < bbMin.z || ray.origin.z > bbMax.z ) {
+					aabbHit = false;
+				}
+
+				if( aabbHit && tEntry < tExit )
+				{
+					eqTNear = fmax( 0.0, tEntry );
+					eqTFar = fmin( maxDist, tExit );
+				}
+			}
+		}
+
+		if( eqTFar <= eqTNear )
+		{
+			out.t = pMedium->SampleDistanceNM( ray, maxDist, nm, sampler, out.scattered );
+			return out;
+		}
+
+		const unsigned int nPosLights = pLS->GetPositionalLightCount();
+		const Scalar totalPosExitance = pLS->GetPositionalLightTotalExitance();
+		unsigned int selectedLight = 0;
+		{
+			const Scalar xiLight = sampler.Get1D();
+			Scalar cumulative = 0;
+			for( unsigned int i = 0; i < nPosLights; i++ )
+			{
+				cumulative += pLS->GetPositionalLightExitance( i ) / totalPosExitance;
+				if( xiLight <= cumulative ) { selectedLight = i; break; }
+			}
+		}
+		const Point3& lightPos = pLS->GetPositionalLightPosition( selectedLight );
+
+		const Scalar xiStrategy = sampler.Get1D();
+
+		if( xiStrategy < 0.5 )
+		{
+			IMedium::DistanceSample ds = pMedium->SampleDistanceWithPdfNM(
+				ray, maxDist, nm, sampler );
+			out.t = ds.t;
+			out.scattered = ds.scattered;
+
+			if( out.scattered )
+			{
+				const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
+					ray, out.t, true, maxDist, nm );
+				Scalar pdf_eq = 0;
+				for( unsigned int i = 0; i < nPosLights; i++ )
+				{
+					const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
+					pdf_eq += pSel * EquiangularSampling::Pdf(
+						ray, pLS->GetPositionalLightPosition( i ),
+						eqTNear, eqTFar, out.t );
+				}
+				out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+				out.useExplicitThroughput = true;
+			}
+		}
+		else
+		{
+			EquiangularSampling::Sample eqSample =
+				EquiangularSampling::SampleDistance(
+					ray, lightPos, eqTNear, eqTFar, sampler.Get1D() );
+			out.t = eqSample.t;
+
+			if( out.t > eqTNear && out.t < maxDist )
+			{
+				const Point3 eqPt = ray.PointAtLength( out.t );
+				const MediumCoefficientsNM eqCoeff = pMedium->GetCoefficientsNM( eqPt, nm );
+
+				if( eqCoeff.sigma_t > 0 )
+				{
+					out.scattered = true;
+					const Scalar pdf_dt = pMedium->EvalDistancePdfNM(
+						ray, out.t, true, maxDist, nm );
+					Scalar pdf_eq = 0;
+					for( unsigned int i = 0; i < nPosLights; i++ )
+					{
+						const Scalar pSel = pLS->GetPositionalLightExitance( i ) / totalPosExitance;
+						pdf_eq += pSel * EquiangularSampling::Pdf(
+							ray, pLS->GetPositionalLightPosition( i ),
+							eqTNear, eqTFar, out.t );
+					}
+					out.combinedPdf = 0.5 * pdf_dt + 0.5 * pdf_eq;
+					out.useExplicitThroughput = true;
+				}
+				else
+				{
+					out.zeroContrib = true;
+				}
+			}
+			else
+			{
+				out.zeroContrib = true;
+			}
+		}
+
+		return out;
+	}
+
 	static inline IRayCaster::RAY_STATE::RayType PathTracingRayType(
 		const ScatteredRay& scat
 		)
@@ -533,9 +897,20 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
-				bool scattered = false;
-				const Scalar t_m = pCurrentMedium->SampleDistance(
-					currentRay, maxDist, sampler, scattered );
+				IndependentSampler mediumSampler( rc.random );
+				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS(
+					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler );
+				const Scalar t_m = mso.t;
+				const bool scattered = mso.scattered;
+
+				if( mso.zeroContrib )
+				{
+					// Equiangular strategy landed at a zero-density point or
+					// outside the medium.  This is a scatter-measure sample
+					// with zero weight — do not fall through to surface
+					// shading.
+					break;
+				}
 
 				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
 				{
@@ -547,7 +922,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
 
 					RISEPel medWeight( 0, 0, 0 );
-					if( sigma_t_max > 0 ) {
+					if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
+					{
+						// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
+						medWeight = Tr * coeff.sigma_s * (1.0 / mso.combinedPdf);
+					}
+					else if( sigma_t_max > 0 )
+					{
+						// Legacy max-channel throughput (no positional lights /
+						// outside medium bounds).  Per-channel equivalent:
+						//   sigma_s[c] / sigma_t_max * exp((sigma_t_max - sigma_t[c]) * t)
 						const Scalar Tr_scalar = ColorMath::MinValue( Tr );
 						if( Tr_scalar > 0 ) {
 							medWeight = Tr * coeff.sigma_s *
@@ -1702,9 +2086,20 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
-		bool scattered = false;
-		const Scalar t_m = pCurrentMedium->SampleDistance(
-			cameraRay, maxDist, sampler, scattered );
+		const LightSampler* pLS = caster.GetLightSampler();
+		IndependentSampler mediumSampler( rc.random );
+		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS(
+			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler );
+		const Scalar t_m = mso.t;
+		const bool scattered = mso.scattered;
+
+		if( mso.zeroContrib )
+		{
+			// Equiangular strategy sampled a zero-density / out-of-bounds
+			// point.  Scatter-measure sample with zero weight — do not
+			// fall through to surface shading.
+			return RISEPel( 0, 0, 0 );
+		}
 
 		if( scattered )
 		{
@@ -1717,7 +2112,13 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
 
 			RISEPel medWeight( 0, 0, 0 );
-			if( sigma_t_max > 0 ) {
+			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
+			{
+				// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
+				medWeight = Tr * coeff.sigma_s * (1.0 / mso.combinedPdf);
+			}
+			else if( sigma_t_max > 0 )
+			{
 				const Scalar Tr_scalar = ColorMath::MinValue( Tr );
 				if( Tr_scalar > 0 ) {
 					medWeight = Tr * coeff.sigma_s *
@@ -1732,7 +2133,6 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			RISEPel result( 0, 0, 0 );
 
 			// NEE at scatter point
-			const LightSampler* pLS = caster.GetLightSampler();
 			if( pLS )
 			{
 				RISEPel Ld = MediumTransport::EvaluateInScattering(
@@ -1929,9 +2329,16 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
-				bool scattered = false;
-				const Scalar t_m = pCurrentMedium->SampleDistanceNM(
-					currentRay, maxDist, nm, sampler, scattered );
+				IndependentSampler mediumSampler( rc.random );
+				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
+					pCurrentMedium, currentRay, maxDist, nm, pLS, mediumSampler );
+				const Scalar t_m = mso.t;
+				const bool scattered = mso.scattered;
+
+				if( mso.zeroContrib )
+				{
+					break;
+				}
 
 				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
 				{
@@ -1941,7 +2348,13 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( currentRay, t_m, nm );
 
 					Scalar medWeight = 0;
-					if( coeff.sigma_t > 0 && Tr > 0 ) {
+					if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
+					{
+						medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
+					}
+					else if( coeff.sigma_t > 0 && Tr > 0 )
+					{
+						// Legacy single-channel albedo (sigma_s / sigma_t).
 						medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
 					}
 
@@ -3032,9 +3445,19 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			if( pCurrentMedium )
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
-				bool scattered = false;
-				const Scalar t_m = pCurrentMedium->SampleDistanceNM(
-					currentRay, maxDist, heroNM, sampler, scattered );
+				IndependentSampler mediumSampler( rc.random );
+				// Hero wavelength drives free-flight sampling; the MIS
+				// combinedPdf is in distance measure (wavelength-independent
+				// for equiangular; hero-driven for delta tracking).
+				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
+					pCurrentMedium, currentRay, maxDist, heroNM, pLS, mediumSampler );
+				const Scalar t_m = mso.t;
+				const bool scattered = mso.scattered;
+
+				if( mso.zeroContrib )
+				{
+					break;
+				}
 
 				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
 				{
@@ -3052,7 +3475,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( currentRay, t_m, swl.lambda[w] );
 
 						Scalar medWeight = 0;
-						if( coeff.sigma_t > 0 && Tr > 0 ) {
+						if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
+						{
+							// MIS throughput in hero-driven HWSS: per-wavelength
+							// Tr_w * sigma_s_w divided by the combined hero-driven PDF.
+							medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
+						}
+						else if( coeff.sigma_t > 0 && Tr > 0 )
+						{
 							medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
 						}
 
@@ -3558,9 +3988,17 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
-		bool scattered = false;
-		const Scalar t_m = pCurrentMedium->SampleDistanceNM(
-			cameraRay, maxDist, nm, sampler, scattered );
+		const LightSampler* pLS = caster.GetLightSampler();
+		IndependentSampler mediumSampler( rc.random );
+		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
+			pCurrentMedium, cameraRay, maxDist, nm, pLS, mediumSampler );
+		const Scalar t_m = mso.t;
+		const bool scattered = mso.scattered;
+
+		if( mso.zeroContrib )
+		{
+			return 0;
+		}
 
 		if( scattered )
 		{
@@ -3570,7 +4008,12 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 			const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( cameraRay, t_m, nm );
 
 			Scalar medWeight = 0;
-			if( coeff.sigma_t > 0 && Tr > 0 ) {
+			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
+			{
+				medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
+			}
+			else if( coeff.sigma_t > 0 && Tr > 0 )
+			{
 				medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
 			}
 
@@ -3581,11 +4024,11 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 			Scalar resultNM = 0;
 
 			// NEE at scatter point
-			if( caster.GetLightSampler() )
+			if( pLS )
 			{
 				Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 					scatterPt, wo, pCurrentMedium, nm, caster,
-					caster.GetLightSampler(), sampler, rast, pMediumObject );
+					pLS, sampler, rast, pMediumObject );
 				if( Ld > 0 )
 				{
 					Scalar directContrib = medWeight * Ld;
@@ -3707,9 +4150,20 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
-		bool scattered = false;
-		const Scalar t_m = pCurrentMedium->SampleDistanceNM(
-			cameraRay, maxDist, heroNM, sampler, scattered );
+		const LightSampler* pLS = caster.GetLightSampler();
+		IndependentSampler mediumSampler( rc.random );
+		// Hero wavelength drives free-flight sampling; MIS combinedPdf
+		// in distance measure (hero-driven delta tracking + wavelength-
+		// independent equiangular).
+		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
+			pCurrentMedium, cameraRay, maxDist, heroNM, pLS, mediumSampler );
+		const Scalar t_m = mso.t;
+		const bool scattered = mso.scattered;
+
+		if( mso.zeroContrib )
+		{
+			return;
+		}
 
 		if( scattered )
 		{
@@ -3725,18 +4179,23 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 				const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( cameraRay, t_m, swl.lambda[w] );
 
 				Scalar medWeight = 0;
-				if( coeff.sigma_t > 0 && Tr > 0 ) {
+				if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
+				{
+					medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
+				}
+				else if( coeff.sigma_t > 0 && Tr > 0 )
+				{
 					medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
 				}
 
 				if( medWeight <= 0 ) continue;
 
 				// NEE at scatter point
-				if( caster.GetLightSampler() )
+				if( pLS )
 				{
 					Scalar Ld = MediumTransport::EvaluateInScatteringNM(
 						scatterPt, wo, pCurrentMedium, swl.lambda[w], caster,
-						caster.GetLightSampler(), sampler, rast, pMediumObject );
+						pLS, sampler, rast, pMediumObject );
 					if( Ld > 0 )
 					{
 						Scalar directContrib = medWeight * Ld;
