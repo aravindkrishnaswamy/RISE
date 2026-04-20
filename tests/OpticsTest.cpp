@@ -181,6 +181,61 @@ void TestCalculateRefractedRayBoundariesAndInvariants() {
     std::cout << "CalculateRefractedRay boundaries/invariants Passed!" << std::endl;
 }
 
+// Normal-orientation robustness.
+//
+// The caller might pass a surface normal that happens to point in the same
+// direction as the incoming ray (a plane whose geometric normal faces away
+// from the photon's approach, or a multi-object glass volume where the
+// wrong interface is tagged as "entering" by the IOR stack).  The function
+// must handle both orientations identically — Snell's law is symmetric
+// under n -> -n.
+//
+// This test asserts that: for every oblique incidence, the refracted ray
+// is the SAME whether the caller passes n or -n.  A regression in this
+// property was responsible for ~192× dim VCM caustics on single-plane
+// glass slabs whose normal happened to face downward.
+void TestCalculateRefractedRayNormalOrientationRobust() {
+    std::cout << "Testing CalculateRefractedRay normal-orientation robustness..." << std::endl;
+
+    Scalar sqrt3 = std::sqrt(3.0);
+    Vector3 incidents[] = {
+        Vector3(0, -1, 0),                         // normal incidence
+        Vector3(sqrt3/2.0, -0.5, 0),               // 60° from +Y
+        Vector3(0.5, -sqrt3/2.0, 0),               // 30° from +Y
+        Vector3(0.3, -0.9539392014, 0.0),          // arbitrary oblique
+    };
+    Scalar ior_pairs[][2] = { {1.0, 1.5}, {1.5, 1.0}, {1.0, 2.2}, {2.2, 1.0} };
+
+    for( const auto& vIn0 : incidents ) {
+        for( const auto& p : ior_pairs ) {
+            const Scalar Ni = p[0], Nt = p[1];
+
+            // Canonical orientation: n = (0, 1, 0), opposite to the -Y
+            // incident direction (dot(n, vIn) <= 0).
+            Vector3 nCanonical(0, 1, 0);
+            Vector3 vInCanonical = vIn0;
+            bool okCanonical = Optics::CalculateRefractedRay(
+                nCanonical, Ni, Nt, vInCanonical );
+
+            // Reversed orientation: n = (0, -1, 0), same direction as
+            // the incident ray (dot > 0).  The fix makes Optics flip
+            // the normal internally so the result matches the canonical
+            // call.
+            Vector3 nReversed(0, -1, 0);
+            Vector3 vInReversed = vIn0;
+            bool okReversed = Optics::CalculateRefractedRay(
+                nReversed, Ni, Nt, vInReversed );
+
+            assert(okCanonical == okReversed);
+            if( okCanonical ) {
+                assert(IsVectorClose(vInCanonical, vInReversed));
+            }
+        }
+    }
+
+    std::cout << "CalculateRefractedRay normal-orientation robustness Passed!" << std::endl;
+}
+
 void TestCalculateDielectricReflectance() {
     std::cout << "Testing CalculateDielectricReflectance..." << std::endl;
 
@@ -391,6 +446,7 @@ int main() {
     TestCalculateReflectedRay();
     TestCalculateRefractedRay();
     TestCalculateRefractedRayBoundariesAndInvariants();
+    TestCalculateRefractedRayNormalOrientationRobust();
     TestCalculateDielectricReflectance();
     TestCalculateDielectricReflectanceBoundariesAndRange();
     TestCalculateConductorReflectanceAndSchlick();

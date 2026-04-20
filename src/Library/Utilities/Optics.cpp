@@ -62,6 +62,29 @@ bool Optics::CalculateRefractedRay( const Vector3& vNormal, const Scalar Ni, con
 		useIn = Vector3Ops::Normalize( useIn );
 	}
 
+	// Snell's law formula below assumes the standard convention that the
+	// surface normal points AGAINST the incoming ray (dot(n, vIn) <= 0):
+	//
+	//     vIn = s - sqrt(k) * useNormal
+	//
+	// The final `-sqrt(k) * useNormal` term drives the transmitted ray
+	// toward -n, which is where the far-side medium lies when the
+	// convention holds.  If the caller passes a normal in the same
+	// direction as the incoming ray (a plane whose geometric normal
+	// happens to face away from the photon's approach, or a multi-
+	// object glass volume where the wrong interface is tagged), that
+	// sign assumption fails and the formula produces a ray going
+	// *back toward the source*.
+	//
+	// Flip the normal internally to restore the standard convention.
+	// This does not change the physical result: Snell's law is
+	// symmetric under n -> -n (both sides of the interface see the
+	// same refracted ray).  Callers that already obey the convention
+	// are unaffected because the check does nothing.
+	if( Vector3Ops::Dot( useNormal, useIn ) > 0 ) {
+		useNormal = -useNormal;
+	}
+
 	// Use Snell's law
 	Scalar		k = Vector3Ops::Dot( useNormal, useIn );
 	Vector3	s = (Ni/Nt) * (useIn-k*useNormal);
