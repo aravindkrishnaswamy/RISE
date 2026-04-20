@@ -252,6 +252,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\MMLTSampler.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -921,6 +924,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\VCMSpectralRasterizer.cpp">
       <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\MMLTRasterizer.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Shaders\VCMIntegrator.cpp">
       <Filter>Shaders\Shader Ops</Filter>
@@ -2436,10 +2442,13 @@
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTRasterizer.h">
-      <Filter>Rendering</Filter>
+      <Filter>Rendering\Rasterizers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.h">
-      <Filter>Rendering</Filter>
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\MMLTRasterizer.h">
+      <Filter>Rendering\Rasterizers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\MortonRasterizeSequence.h">
       <Filter>Rendering\Rasterize Sequences</Filter>
@@ -2586,6 +2595,9 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\PSSMLTSampler.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\MMLTSampler.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\PathGuidingField.h">
