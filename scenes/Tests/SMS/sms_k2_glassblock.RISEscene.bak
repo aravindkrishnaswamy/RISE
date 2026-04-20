@@ -1,8 +1,10 @@
 RISE ASCII SCENE 5
-# k=1 SMS debug: single refractive plane with smooth displacement.
-# Light above plane, floor below plane.  Light refracts through plane
-# and produces a caustic on the floor.  If SMS can't render this, the
-# pipeline is fundamentally broken at the simplest possible case.
+# k=2 SMS debug: glass block simulated as TWO parallel displaced planes.
+# Top plane is the entry surface, bottom plane is the exit surface.
+# Between them is "glass" (IOR 2.2).  If SMS works on smoothly-displaced
+# geometry (analytical derivatives per displaced plane) but not on the
+# pre-tessellated displaced_slab.raw mesh, the bottleneck is the
+# triangle-mesh derivatives (triangle-edge discontinuities).
 
 > set accelerator B 10 8
 
@@ -21,14 +23,13 @@ pathtracing_pel_rasterizer
 	sms_enabled                   TRUE
 	sms_max_iterations            30
 	sms_threshold                 1e-4
-	sms_max_chain_depth           5
+	sms_max_chain_depth           10
 	sms_biased                    TRUE
-	pixel_filter                  box
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_k1_sms
+	pattern				rendered/sms_k2_glassblock
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -36,7 +37,7 @@ file_rasterizeroutput
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_k1_sms
+	pattern				rendered/sms_k2_glassblock
 	type				EXR
 	bpp					32
 	color_space			Rec709RGB_Linear
@@ -102,9 +103,6 @@ perfectrefractor_material
 	ior					2.2
 }
 
-# Base flat plane, 1x1 in XY, facing +Z (normal toward viewer initially).
-# Positioned via the standard_object's orientation/position so it lies
-# horizontally at y=0.5 between light and floor.
 clippedplane_geometry
 {
 	name				plane_base
@@ -116,11 +114,23 @@ clippedplane_geometry
 
 displaced_geometry
 {
-	name				plane_disp
+	name				top_plane_disp
 	base_geometry		plane_base
 	detail				64
 	displacement		pnt_bumps
-	disp_scale			0.05
+	disp_scale			0.08
+	maxpolygons			10
+	maxdepth			10
+	bsp					TRUE
+}
+
+displaced_geometry
+{
+	name				bot_plane_disp
+	base_geometry		plane_base
+	detail				64
+	displacement		pnt_bumps
+	disp_scale			0.08
 	maxpolygons			10
 	maxdepth			10
 	bsp					TRUE
@@ -151,15 +161,25 @@ standard_object
 	material			floor_mat
 }
 
-# Horizontal refractive plane at y=0.5.  Orient -90° around X rotates
-# the plane from (XY facing +Z) to (XZ facing -Y... actually let's
-# verify) — we want it horizontal facing the light.
+# Top plane at y=0.55 — enters glass
 standard_object
 {
-	name				plane
-	geometry			plane_disp
+	name				top_plane
+	geometry			top_plane_disp
 	orientation			-90 0 0
-	position			0 0.5 0
+	position			0 0.55 0
+	material			glass_mat
+}
+
+# Bottom plane at y=0.45 — exits glass (normal faces DOWN toward floor).
+# +90° rotation flips normal to -Y so this plane is oriented as the
+# "outer" bottom surface of the glass block.
+standard_object
+{
+	name				bot_plane
+	geometry			bot_plane_disp
+	orientation			90 0 0
+	position			0 0.45 0
 	material			glass_mat
 }
 

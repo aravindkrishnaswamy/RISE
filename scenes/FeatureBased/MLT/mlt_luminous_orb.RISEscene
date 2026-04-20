@@ -1,0 +1,267 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_luminous_orb.RISEscene                                                               #
+#   Description:    MLT torture test: Glass Sphere With Interior Light (canonical SDS caustic)              #
+#                                                                                                           #
+#   A hollow glass sphere rests on a matte floor.  A small bright emissive sphere at the center of          #
+#   its air cavity is the scene's only light source.  Every photon that ever reaches a diffuse              #
+#   surface has to refract through the inner air/glass boundary and then the outer glass/air                #
+#   boundary (LSSD...), producing a dramatic refractive caustic halo on the floor around the sphere        #
+#   and softer indirect illumination on the Cornell walls.                                                  #
+#                                                                                                           #
+#   This is the Jensen "cognac glass on a tablecloth" pattern, purified: no external lighting contributes,  #
+#   so every pixel is an SDS-ish path.  BDPT must extend its light subpath all the way out through both     #
+#   glass interfaces before it can connect to the camera - random light directions rarely line up with any  #
+#   given pixel, so the caustic takes forever to resolve.  MLT finds one bright SDS path and then mutates   #
+#   along the caustic manifold, converging dramatically faster.                                             #
+#                                                                                                           #
+#   Scene layout:                                                                                            #
+#     - Cornell box (standard dimensions), no ceiling light                                                  #
+#     - Hollow glass sphere resting on the floor: outer r=100, inner r=80, centered at (278, 100, 278)      #
+#     - Tiny bright emissive sphere (r=10) at the center of the air cavity                                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      April 18, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - MLT
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+mlt_rasterizer
+{
+	max_eye_depth		12
+	max_light_depth		12
+	bootstrap_samples	100000
+	chains				64
+	mutations_per_pixel	200
+	large_step_prob		0.25
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_luminous_orb
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - slightly elevated, looking down at the
+# floor so the caustic halo around the sphere base
+# is the dominant visual feature.
+##################################################
+
+pinhole_camera
+{
+	location			278 450 -650
+	lookat				278 50 278
+	up					0 1 0
+	width				400
+	height				400
+	fov					42.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Bright interior light - must overcome double-specular attenuation
+# and spread out into the whole room through the glass
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				600.0
+	material			none
+}
+
+# Outer glass sphere (sphere-air boundary)
+dielectric_material
+{
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+# Inner air-cavity boundary (glass-air boundary on the other side)
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# Hollow glass sphere on the floor.
+#
+# Outer r=100, inner r=80, so the shell is 20 units thick.
+# Centered at y=100, the sphere kisses the floor at y=0.
+##################################################
+
+sphere_geometry
+{
+	name				orb_outer_geom
+	radius				100
+}
+
+sphere_geometry
+{
+	name				orb_inner_geom
+	radius				80
+}
+
+standard_object
+{
+	name				orb_outer
+	geometry			orb_outer_geom
+	material			glass
+	position			278 100 278
+}
+
+standard_object
+{
+	name				orb_inner
+	geometry			orb_inner_geom
+	material			air_cavity
+	position			278 100 278
+}
+
+##################################################
+# Interior light - tiny emissive sphere at the
+# center of the air cavity.  Small light = sharp
+# caustics that are hard for BDPT to resolve.
+##################################################
+
+sphere_geometry
+{
+	name				light_geom
+	radius				10
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 100 278
+}

@@ -1,10 +1,12 @@
 RISE ASCII SCENE 5
-#############################################################################################################
-#   Double-Refractive Slab (Close, SMS): SMS should produce visible caustic structure that matches the       #
-#   photon map reference.                                                                                    #
-#############################################################################################################
+# k=2 SMS test: single closed GLASS SPHERE with BOX reconstruction filter.
+# Box filter has no negative lobes, so bright/dim pixel ringing from
+# Mitchell-Netravali cannot appear.  Used to isolate whether far-from-caustic
+# "fireflies" in the Mitchell default are filter artifacts or real SMS bugs.
 
 > set accelerator B 10 8
+
+> run scenes/colors.RISEscript
 
 standard_shader
 {
@@ -26,10 +28,18 @@ pathtracing_pel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_sms
+	pattern				rendered/sms_k2_glasssphere_box
 	type				PNG
 	bpp					8
 	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_k2_glasssphere_box
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
 }
 
 pinhole_camera
@@ -37,8 +47,8 @@ pinhole_camera
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				400
-	height				300
+	width				200
+	height				150
 	fov					45.0
 }
 
@@ -81,13 +91,10 @@ perfectrefractor_material
 	ior					2.2
 }
 
-rawmesh2_geometry
+sphere_geometry
 {
-	name				slab_geom
-	file				models/raw/displaced_slab.raw
-	maxpolygons			10
-	maxdepth			24
-	double_sided		TRUE
+	name				sphere_geom
+	radius				0.3
 }
 
 clippedplane_geometry
@@ -117,10 +124,9 @@ standard_object
 
 standard_object
 {
-	name				glass_slab
-	geometry			slab_geom
-	orientation			-45 0 0
-	position			0 0.5 0
+	name				glass_ball
+	geometry			sphere_geom
+	position			0 0.6 0
 	material			glass_mat
 }
 
@@ -128,8 +134,7 @@ standard_object
 {
 	name				area_light
 	geometry			light_geom
-	position			0 1.2 -0.1
-	orientation 		-45 0 0
+	position			0 1.5 0
 	scale				0.4 0.4 0.4
 	material			light_mat
 }

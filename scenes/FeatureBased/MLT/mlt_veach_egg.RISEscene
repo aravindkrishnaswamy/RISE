@@ -1,0 +1,277 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_veach_egg.RISEscene                                                                  #
+#   Description:    MLT torture test: Veach's Sealed Glass Egg (canonical SDS)                               #
+#                                                                                                           #
+#   A hollow glass eggshell (outer + inner concentric spheres with an air cavity between them)               #
+#   completely encloses a small bright light.  The room around the egg is otherwise dark, so every           #
+#   photon that illuminates the diffuse Cornell walls, floor, or ceiling must escape through TWO             #
+#   specular interfaces (glass->air inner, air->glass outer, then glass->air outer air).                     #
+#                                                                                                           #
+#   Path notation (reading light -> eye):                                                                    #
+#     L -> S(inner air/glass) -> S(glass/outer air) -> D(wall) -> E         classic caustic  LSSDE          #
+#     L -> S -> S -> D -> D -> ... -> E                                      multi-bounce GI inside room    #
+#                                                                                                           #
+#   Why this is hard:                                                                                        #
+#     - Every useful light path starts with two specular bounces, so PT's next-event-estimation from a       #
+#       diffuse wall back to the interior light is blocked by the glass shell (connection ray does not       #
+#       refract).                                                                                            #
+#     - BDPT can in principle extend the light subpath through both glass surfaces and connect the           #
+#       resulting diffuse vertex to the eye, but the probability that a randomly-sampled light direction     #
+#       refracts and lands on a specific pixel is tiny.  Sharp caustics take a very long time to resolve.    #
+#     - MLT bootstraps a single valid SDS path, then local mutations explore all nearby pixels along the     #
+#       caustic and interior illumination, giving much lower variance for the same sample budget.            #
+#                                                                                                           #
+#   Scene layout:                                                                                            #
+#     - Cornell box (standard dimensions)                                                                    #
+#     - Hollow glass egg at (278, 200, 278): outer ellipsoid (140,190,140), inner (112,158,112)             #
+#     - Small bright emissive sphere (r=15) at the center of the air cavity                                  #
+#     - No ceiling light: the room is lit purely through the glass shell                                     #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      April 18, 2026                                                                           #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - MLT
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+mlt_rasterizer
+{
+	max_eye_depth		4
+	max_light_depth		4
+	bootstrap_samples	100000
+	chains				1024
+	mutations_per_pixel	200
+	large_step_prob		0.3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_veach_egg
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - slightly elevated, looking at the egg
+##################################################
+
+pinhole_camera
+{
+	location			278 350 -650
+	lookat				278 200 278
+	up					0 1 0
+	width				400
+	height				400
+	fov					40.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+# Very bright interior light - must overcome double-specular attenuation
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				800.0
+	material			none
+}
+
+# Outer glass (the "eggshell" material at the glass-air interface)
+dielectric_material
+{
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+# Inner air pocket boundary - IOR 1.0 so the stack transitions glass->air
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# The sealed glass egg
+#
+# Modeled as two concentric ellipsoids (prolate along Y)
+# so the silhouette matches a real egg rather than a ball.
+# IOR stack sees: air(env) -> glass(outer) -> air(inner) -> interior.
+# Rays emitted inside the air cavity must refract through
+# the inner glass/air boundary and then again through the
+# outer glass/air boundary before reaching anything diffuse.
+##################################################
+
+ellipsoid_geometry
+{
+	name				egg_outer_geom
+	radii				140 190 140
+}
+
+ellipsoid_geometry
+{
+	name				egg_inner_geom
+	radii				112 158 112
+}
+
+standard_object
+{
+	name				egg_outer
+	geometry			egg_outer_geom
+	material			glass
+	position			278 200 278
+}
+
+standard_object
+{
+	name				egg_inner
+	geometry			egg_inner_geom
+	material			air_cavity
+	position			278 200 278
+}
+
+##################################################
+# The interior light - a small emissive sphere at the
+# center of the air cavity.  Small solid angle from
+# the camera's point of view forces the renderer to
+# find rare refracted paths to deliver illumination.
+##################################################
+
+sphere_geometry
+{
+	name				light_geom
+	radius				15
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 200 278
+}

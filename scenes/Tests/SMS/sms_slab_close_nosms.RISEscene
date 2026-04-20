@@ -16,6 +16,7 @@ pathtracing_pel_rasterizer
 {
 	samples                       4096
 	oidn_denoise                  FALSE
+	pixel_filter                  box
 }
 
 file_rasterizeroutput

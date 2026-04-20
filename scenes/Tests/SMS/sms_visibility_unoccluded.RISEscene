@@ -21,6 +21,7 @@ pathtracing_pel_rasterizer
 	sms_threshold                 1e-5
 	sms_max_chain_depth           10
 	sms_biased                    TRUE
+	pixel_filter                  box
 }
 
 file_rasterizeroutput

@@ -1,8 +1,6 @@
 RISE ASCII SCENE 5
-#############################################################################################################
-#   Double-Refractive Slab (Close, SMS): SMS should produce visible caustic structure that matches the       #
-#   photon map reference.                                                                                    #
-#############################################################################################################
+# Tiny-resolution debug scene for fast SMS iteration.
+# Same geometry as sms_slab_close_sms but 80x60 = 40x fewer pixels → fast.
 
 > set accelerator B 10 8
 
@@ -26,7 +24,7 @@ pathtracing_pel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_sms
+	pattern				rendered/sms_glass_only_debug
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -34,12 +32,12 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 2.0 3
-	lookat				0 0.2 0
+	location			0 0.9 1.0
+	lookat				0 0.5 0
 	up					0 1 0
-	width				400
-	height				300
-	fov					45.0
+	width				80
+	height				60
+	fov					25.0
 }
 
 uniformcolor_painter

@@ -1,0 +1,201 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mmlt_cornell_simple.RISEscene                                                           #
+#   Description:    Plain Cornell-box single-depth MMLT bring-up scene.                                     #
+#                                                                                                           #
+#   PHASE 3 SCOPE:                                                                                          #
+#     This scene exists ONLY to validate the MMLT machinery (bootstrap, chain init, MH loop, splat math)    #
+#     on an "easy" scene where the chosen depth is reachable by many proposals — unlike Veach Egg, where    #
+#     SDS rarity makes any single depth's bootstrap mostly zero.  Use force_depth=2 (path length 4) which   #
+#     covers L→D→D→E paths (one-bounce indirect off a wall) with a high reachable rate from a Cornell-box   #
+#     area light on the ceiling.                                                                            #
+#                                                                                                           #
+#     The rendered image WILL be incomplete (only depth-2 paths contribute) — DO NOT compare against the    #
+#     full Cornell box reference.  What we DO check: bootstrap mean luminance > 0, chain init succeeds,     #
+#     mutations produce non-trivial splats, output PNG isn't all black.                                     #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 18, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - MMLT (Phase 3 single-depth)
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+mmlt_rasterizer
+{
+	max_eye_depth		8
+	max_light_depth		8
+	bootstrap_samples	50000
+	chains				512
+	mutations_per_pixel	100
+	large_step_prob		0.3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mmlt_cornell_simple
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+pinhole_camera
+{
+	location			278 273 -800
+	lookat				278 273 200
+	up					0 1 0
+	width				256
+	height				256
+	fov					37.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.9 0.7
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				100.0
+	material			none
+}
+
+##################################################
+# Geometry: Cornell walls + ceiling area light
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					343.0 548.7999 227.0
+	ptb					343.0 548.7999 332.0
+	ptc					213.0 548.7999 332.0
+	ptd					213.0 548.7999 227.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}

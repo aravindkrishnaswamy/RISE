@@ -21,6 +21,7 @@ pixelpel_rasterizer
 	samples                       4
 	lum_samples                   1
 	oidn_denoise                  FALSE
+	pixel_filter                  box
 }
 
 file_rasterizeroutput

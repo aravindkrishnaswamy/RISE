@@ -2027,15 +2027,15 @@ bool ManifoldSolver::NewtonSolve(
 			return true;  // Converged
 		}
 
-		// Build Jacobian for Newton step.  We skip the curvature terms
-		// (ds_du from Weingarten map) here because on a tri-mesh the
-		// per-triangle derivatives jump across edges, which destabilizes
-		// Newton when the curvature terms dominate.  The MEASURE Jacobian
-		// (computed in Solve after convergence) uses the full formula for
-		// correct caustic focusing.
+		// Build Jacobian for Newton step.  Include curvature terms
+		// (dndu / dndv via Weingarten) — on analytical smooth surfaces
+		// like spheres, they dominate the Jacobian and Newton diverges
+		// without them.  Original rationale for excluding curvature
+		// (tri-mesh per-triangle discontinuity) is handled by the
+		// mesh Jacobian returning zero dndu/dndv in those cases.
 		std::vector<Scalar> diag, upper_blocks, lower_blocks;
 		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks,
-			/*includeCurvature=*/false );
+			/*includeCurvature=*/true );
 
 		// Solve for Newton step: J * delta = C  (we solve J * delta = C, then subtract)
 		std::vector<Scalar> delta;
@@ -3100,7 +3100,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	}
 
 	if( chainLen == 0 || seedChain.empty() ) {
-		// No specular geometry found — skip.
 		return result;
 	}
 
@@ -3228,7 +3227,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
-
 
 	return result;
 }

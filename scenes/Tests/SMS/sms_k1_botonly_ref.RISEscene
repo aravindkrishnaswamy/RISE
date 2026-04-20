@@ -1,10 +1,10 @@
 RISE ASCII SCENE 5
-#############################################################################################################
-#   Double-Refractive Slab (Close, SMS): SMS should produce visible caustic structure that matches the       #
-#   photon map reference.                                                                                    #
-#############################################################################################################
+# VCM reference for sms_k2_flatslab.RISEscene.  Identical geometry,
+# VCM rasterizer instead of pathtracing+SMS.
 
 > set accelerator B 10 8
+
+> run scenes/colors.RISEscript
 
 standard_shader
 {
@@ -12,24 +12,31 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-pathtracing_pel_rasterizer
+vcm_pel_rasterizer
 {
-	samples                       32
-	oidn_denoise                  FALSE
-	sms_enabled                   TRUE
-	sms_max_iterations            30
-	sms_threshold                 1e-4
-	sms_max_chain_depth           10
-	sms_biased                    TRUE
+	max_eye_depth		8
+	max_light_depth		8
+	samples				128
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
 	pixel_filter                  box
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_sms
+	pattern				rendered/sms_k1_botonly_ref
 	type				PNG
 	bpp					8
 	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_k1_botonly_ref
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
 }
 
 pinhole_camera
@@ -37,8 +44,8 @@ pinhole_camera
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				400
-	height				300
+	width				200
+	height				150
 	fov					45.0
 }
 
@@ -58,6 +65,17 @@ uniformcolor_painter
 {
 	name				pnt_glass
 	color				1.0 1.0 1.0
+}
+
+perlin2d_painter
+{
+	name				pnt_bumps
+	colora				color_black
+	colorb				color_white
+	persistence			0.5
+	octaves				2
+	scale				3.0 3.0
+	shift				0 0
 }
 
 lambertian_material
@@ -81,13 +99,37 @@ perfectrefractor_material
 	ior					2.2
 }
 
-rawmesh2_geometry
+clippedplane_geometry
 {
-	name				slab_geom
-	file				models/raw/displaced_slab.raw
+	name				plane_base
+	pta					-0.5 -0.5 0
+	ptb					 0.5 -0.5 0
+	ptc					 0.5  0.5 0
+	ptd					-0.5  0.5 0
+}
+
+displaced_geometry
+{
+	name				top_plane_disp
+	base_geometry		plane_base
+	detail				64
+	displacement		pnt_bumps
+	disp_scale			0.0
 	maxpolygons			10
-	maxdepth			24
-	double_sided		TRUE
+	maxdepth			10
+	bsp					TRUE
+}
+
+displaced_geometry
+{
+	name				bot_plane_disp
+	base_geometry		plane_base
+	detail				64
+	displacement		pnt_bumps
+	disp_scale			0.0
+	maxpolygons			10
+	maxdepth			10
+	bsp					TRUE
 }
 
 clippedplane_geometry
@@ -117,10 +159,10 @@ standard_object
 
 standard_object
 {
-	name				glass_slab
-	geometry			slab_geom
-	orientation			-45 0 0
-	position			0 0.5 0
+	name				bot_plane
+	geometry			bot_plane_disp
+	orientation			90 0 0
+	position			0 0.45 0
 	material			glass_mat
 }
 
@@ -128,8 +170,7 @@ standard_object
 {
 	name				area_light
 	geometry			light_geom
-	position			0 1.2 -0.1
-	orientation 		-45 0 0
+	position			0 1.5 0
 	scale				0.4 0.4 0.4
 	material			light_mat
 }
