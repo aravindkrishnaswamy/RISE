@@ -1545,9 +1545,32 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					break;
 				}
 
+				// RandomlySelect picks lobe i with prob
+				// max(kray_i)/sum_j max(kray_j).  The unbiased throughput
+				// update is kray_I / selectProb — without the division, PT
+				// systematically dims at every multi-lobe delta vertex and
+				// feeds a shrunken throughput into downstream RR, inflating
+				// the 1/survivalProb amplification factor on rare survivals.
+				// BDPT does this (see BDPTIntegrator.cpp:1782-1794, 2199).
+				Scalar selectProb = 1.0;
+				{
+					Scalar totalKrayMax = 0;
+					for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+						totalKrayMax += ColorMath::MaxValue( scattered[li].kray );
+					}
+					const Scalar pSMax = ColorMath::MaxValue( pS->kray );
+					if( totalKrayMax > NEARZERO && pSMax > NEARZERO ) {
+						selectProb = pSMax / totalKrayMax;
+					}
+				}
+				if( selectProb < NEARZERO ) {
+					break;
+				}
+
 				IRayCaster::RAY_STATE rs2 = rs;
 				rs2.depth = depth + 1;
-				rs2.importance = importance * ColorMath::MaxValue( pS->kray );
+				rs2.importance = importance *
+					ColorMath::MaxValue( pS->kray ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
 				rs2.considerEmission = true;
@@ -1555,7 +1578,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					break;
 				}
 
-				throughput = throughput * pS->kray;
+				throughput = throughput * pS->kray * (1.0 / selectProb);
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
 				bsdfTimesCos = RISEPel( 0, 0, 0 );
@@ -3797,6 +3820,28 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			break;
 		}
 
+		// RandomlySelect uses hero-wavelength krayNM for selection: picks
+		// lobe i with prob krayNM_i / sum_j krayNM_j.  The unbiased throughput
+		// update divides by that selectProb — same pattern as RGB PT at
+		// line 1543 and BDPT at BDPTIntegrator.cpp:1782-1794.  Companion
+		// wavelengths inherit the hero's selection, so they divide by the
+		// same hero-based selectProb.
+		Scalar selectProb = 1.0;
+		if( scattered.Count() > 1 )
+		{
+			Scalar totalKrayNM = 0;
+			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+				totalKrayNM += fabs( scattered[li].krayNM );
+			}
+			const Scalar pSKrayNM = fabs( pS->krayNM );
+			if( totalKrayNM > NEARZERO && pSKrayNM > NEARZERO ) {
+				selectProb = pSKrayNM / totalKrayNM;
+			}
+		}
+		if( selectProb < NEARZERO ) {
+			break;
+		}
+
 		// Dispersive specular termination
 		if( pS->isDelta && !swl.SecondaryTerminated() )
 		{
@@ -3818,8 +3863,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			}
 		}
 
-		// Hero throughput
-		Scalar heroScatterNM = pS->krayNM;
+		// Hero throughput (divided by selectProb for unbiased estimator)
+		const Scalar invSelectProb = 1.0 / selectProb;
+		Scalar heroScatterNM = pS->krayNM * invSelectProb;
 		Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 		Ray traceRay = pS->ray;
 		const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
@@ -3854,7 +3900,9 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 				}
 			}
 
-			compScatterNM[w] = compWeight > 0 ? compWeight : 0;
+			// Companions inherit hero's selection probability — divide by
+			// the same selectProb for an unbiased per-wavelength estimator.
+			compScatterNM[w] = compWeight > 0 ? compWeight * invSelectProb : 0;
 		}
 
 		// Russian roulette — use MAX over wavelengths for the survival
