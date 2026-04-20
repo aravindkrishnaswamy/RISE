@@ -546,7 +546,6 @@ static SurfaceDerivatives TMComputeTriangleDerivatives(
 		tri.normals[0].z + barU * dNraw_du.z + barV * dNraw_dv.z );
 	const Scalar len = Vector3Ops::Magnitude( Nraw );
 	const Scalar invLen = (len > NEARZERO) ? 1.0 / len : 0.0;
-	const Vector3 N = Nraw * invLen;
 
 	// Use objSpaceNormal (shading normal from caller) as the reference
 	// for perpendicularity — matches TriangleMeshGeometryIndexed.

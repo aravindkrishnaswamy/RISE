@@ -308,15 +308,22 @@ void VCMSpectralRasterizer::IntegratePixel(
 				localLightMis.clear();
 				localLightVertsStore.clear();
 				static thread_local std::vector<uint32_t> localLightSubpathStartsNM;
+				// Pass the SampledWavelengths bundle in HWSS mode so
+				// the NM generator uses max-over-wavelengths for its
+				// Russian Roulette survival — prevents hero-driven
+				// RR from amplifying companion wavelengths (firefly
+				// failure mode mirroring the PT HWSS fix).  Non-HWSS
+				// single-wavelength NM passes nullptr.
+				const SampledWavelengths* pSwlHWSSPass = bUseHWSS ? &swl : nullptr;
 				if( mVCMNormalization.mEnableVC ) {
 					pGen->GenerateLightSubpathNM(
-						pScene, *pCaster, sampler, localLightVerts, localLightSubpathStartsNM, heroNM, rc.random, Scalar( -1 ) );
+						pScene, *pCaster, sampler, localLightVerts, localLightSubpathStartsNM, heroNM, rc.random, Scalar( -1 ), pSwlHWSSPass );
 				}
 
 				eyeVerts.clear();
 				static thread_local std::vector<uint32_t> eyeSubpathStartsNM;
 				pGen->GenerateEyeSubpathNM(
-					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStartsNM, heroNM, Scalar( -1 ) );
+					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStartsNM, heroNM, Scalar( -1 ), pSwlHWSSPass );
 				if( eyeVerts.empty() ) {
 					continue;
 				}

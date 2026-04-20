@@ -82,6 +82,7 @@
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/BSSRDFSampling.h"
+#include "../Utilities/Color/SampledWavelengths.h"
 #include "BDPTVertex.h"
 #include "../Utilities/RandomNumbers.h"
 #include <atomic>
@@ -377,6 +378,12 @@ namespace RISE
 			/// any value in [0,1] overrides the config.  Callers that
 			/// cannot handle multi-branch output (BDPT-spectral, MLT-
 			/// spectral) must pass 1.0 to force a single chain.
+			/// `pSwlHWSS`: when non-null, Russian Roulette survival
+			/// probability is computed from the MAX throughput across
+			/// all non-terminated wavelengths in the bundle — prevents
+			/// hero-driven RR from amplifying companion wavelengths on
+			/// rare survivors (the firefly failure mode).  Pass nullptr
+			/// for non-HWSS callers (single-wavelength NM).
 			unsigned int GenerateLightSubpathNM(
 				const IScene& scene,
 				const IRayCaster& caster,
@@ -385,11 +392,12 @@ namespace RISE
 				std::vector<uint32_t>& subpathStarts,
 				const Scalar nm,
 				const RandomNumberGenerator& random,
-				const Scalar branchingThresholdOverride
+				const Scalar branchingThresholdOverride,
+				const SampledWavelengths* pSwlHWSS
 				) const;
 
 			/// NM eye subpath.  See GenerateLightSubpathNM for the
-			/// branchingThresholdOverride semantics.
+			/// branchingThresholdOverride and pSwlHWSS semantics.
 			unsigned int GenerateEyeSubpathNM(
 				const RuntimeContext& rc,
 				const Ray& cameraRay,
@@ -400,7 +408,8 @@ namespace RISE
 				std::vector<BDPTVertex>& vertices,
 				std::vector<uint32_t>& subpathStarts,
 				const Scalar nm,
-				const Scalar branchingThresholdOverride
+				const Scalar branchingThresholdOverride,
+				const SampledWavelengths* pSwlHWSS
 				) const;
 
 			ConnectionResultNM ConnectAndEvaluateNM(

@@ -116,8 +116,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	// EvaluateAllStrategiesNM independently per pair; single-branch
 	// common case iterates exactly once and matches the pre-branching
 	// BDPT-Spectral behaviour bit-exactly.
-	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( -1 ) );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( -1 ) );
+	// Non-HWSS single-wavelength NM — pSwlHWSS=nullptr disables the
+	// max-over-wavelengths RR gate (only hero wavelength exists here).
+	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( -1 ), nullptr );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( -1 ), nullptr );
 
 	const size_t numEyeBranches = eyeSubpathStarts.size() >= 2 ?
 		( eyeSubpathStarts.size() - 1 ) : 0;
@@ -330,8 +332,10 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			static thread_local std::vector<uint32_t> eyeSubpathStarts;
 			lightVerts.clear();
 			eyeVerts.clear();
-			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( -1 ) );
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( -1 ) );
+			// HWSS: pass &swl so the NM generator uses max-over-
+			// wavelengths RR to avoid hero-driven firefly amplification.
+			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( -1 ), &swl );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( -1 ), &swl );
 
 			const size_t numEyeBranchesHWSS = eyeSubpathStarts.size() >= 2 ?
 				( eyeSubpathStarts.size() - 1 ) : 0;

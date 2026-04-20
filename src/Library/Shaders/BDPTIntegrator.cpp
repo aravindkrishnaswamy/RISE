@@ -4923,7 +4923,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	std::vector<uint32_t>& subpathStarts,
 	const Scalar nm,
 	const RandomNumberGenerator& random,
-	const Scalar branchingThresholdOverride
+	const Scalar branchingThresholdOverride,
+	const SampledWavelengths* pSwlHWSS
 	) const
 {
 	vertices.clear();
@@ -5030,6 +5031,43 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 
 	Scalar pdfFwdPrev = ls.pdfDirection;
 
+	// HWSS per-wavelength throughput tracking.  Initial value for each
+	// active wavelength is (Le_w * cosAtLight / pdfEmit) — the same
+	// formula used for hero but with Le evaluated at companion nm.
+	// See PathTracingIntegrator HWSS RR comment for full rationale.
+	Scalar hwssBetaNM[SampledWavelengths::N];
+	if( pSwlHWSS ) {
+		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+			hwssBetaNM[w] = 0;
+			if( pSwlHWSS->terminated[w] ) continue;
+			if( w == 0 ) {
+				hwssBetaNM[w] = betaNM;	// hero
+				continue;
+			}
+			Scalar LeW = 0;
+			if( ls.pLuminary && ls.pLuminary->GetMaterial() ) {
+				const IEmitter* pEm = ls.pLuminary->GetMaterial()->GetEmitter();
+				if( pEm ) {
+					RayIntersectionGeometric rigW(
+						Ray( ls.position, ls.direction ), nullRasterizerState );
+					rigW.bHit = true;
+					rigW.ptIntersection = ls.position;
+					rigW.vNormal = ls.normal;
+					OrthonormalBasis3D onbW;
+					onbW.CreateFromW( ls.normal );
+					rigW.onb = onbW;
+					LeW = pEm->emittedRadianceNM(
+						rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
+				}
+			} else if( ls.pLight ) {
+				LeW = 0.2126 * ls.Le[0] + 0.7152 * ls.Le[1] + 0.0722 * ls.Le[2];
+			}
+			if( pdfEmit > 0 ) {
+				hwssBetaNM[w] = LeW * cosAtLight / pdfEmit;
+			}
+		}
+	}
+
 	// Per-type bounce counters for StabilityConfig limits
 	unsigned int nmLightDiffuseBounces = 0;
 	unsigned int nmLightGlossyBounces = 0;
@@ -5048,8 +5086,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	// RGB GenerateLightSubpath branching block.  See that function for
 	// the full rationale of each gate; the only NM-specific difference
 	// is the use of scalar krayNM / betaNM in place of RGB kray / beta.
+	// hwssBetaNMSaved stores per-wavelength throughputs at the split.
 	struct PendingLightBranchNM {
 		Scalar betaNM;
+		Scalar hwssBetaNMSaved[SampledWavelengths::N];
 		Scalar pdfFwdPrev;
 		Ray currentRay;
 		IORStack iorStack;
@@ -5074,6 +5114,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			volumeBounces( 0 ),
 			surfaceBounces( 0 )
 		{
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				hwssBetaNMSaved[w] = Scalar( 0 );
+			}
 		}
 	};
 	std::vector<PendingLightBranchNM> pendingBranches;
@@ -5101,6 +5144,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			vertices.push_back( savedPrefix[vi] );
 		}
 		betaNM = pb.betaNM;
+		if( pSwlHWSS ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				hwssBetaNM[w] = pb.hwssBetaNMSaved[w];
+			}
+		}
 		pdfFwdPrev = pb.pdfFwdPrev;
 		currentRay = pb.currentRay;
 		iorStack = pb.iorStack;
@@ -5443,6 +5491,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 				if( scatmaxv <= 0 ) continue;
 				PendingLightBranchNM pb;
 				pb.betaNM = betaNM * scattered[i].krayNM;
+				if( pSwlHWSS ) {
+					// Branching is delta-only and gated off dispersive
+					// vertices; every wavelength sees the same krayNM.
+					for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+						pb.hwssBetaNMSaved[w] = hwssBetaNM[w] * scattered[i].krayNM;
+					}
+				}
 				pb.pdfFwdPrev = 0;
 				pb.currentRay = scattered[i].ray;
 				pb.currentRay.Advance( BDPT_RAY_EPSILON );
@@ -5764,11 +5819,28 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			break;
 		}
 
+		// Snapshot pre-scatter HWSS throughput so the RR below can
+		// compare max(pre) vs max(post) over active wavelengths.
+		Scalar hwssBetaNMPre[SampledWavelengths::N];
+		if( pSwlHWSS ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				hwssBetaNMPre[w] = hwssBetaNM[w];
+			}
+		}
+
 		// Throughput update using valueNM
 		// localScatteringWeight captures f * |cos| / pdf for guiding training.
 		RISEPel localScatteringWeight( 0, 0, 0 );
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
+			if( pSwlHWSS ) {
+				const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
+				hwssBetaNM[0] = betaNM;
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( pSwlHWSS->terminated[w] ) continue;
+					hwssBetaNM[w] = hwssBetaNM[w] * deltaScale;
+				}
+			}
 		} else {
 			Scalar fNM;
 #ifdef RISE_ENABLE_OPENPGL
@@ -5789,19 +5861,48 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 				fNM * bssrdfReflectCompensation * cosTheta / scatterPdf,
 				fNM * bssrdfReflectCompensation * cosTheta / scatterPdf );
 			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / scatterPdf;
+			if( pSwlHWSS ) {
+				const Scalar invScale = bssrdfReflectCompensation * cosTheta / scatterPdf;
+				hwssBetaNM[0] = betaNM;
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( pSwlHWSS->terminated[w] ) continue;
+					const Scalar fw = EvalBSDFAtVertexNM(
+						vertices.back(), -currentRay.Dir(), scatDir, pSwlHWSS->lambda[w] );
+					hwssBetaNM[w] = hwssBetaNM[w] * fw * invScale;
+				}
+			}
 		}
 
-		// Russian Roulette — configurable depth and threshold
+		// Russian Roulette — configurable depth and threshold.  HWSS
+		// uses max over active wavelengths to avoid hero-driven firefly
+		// amplification; see PathTracingIntegrator HWSS RR comment.
+		Scalar rrPrevMax = fabs( vertices.back().throughputNM );
+		Scalar rrCurrMax = fabs( betaNM );
+		if( pSwlHWSS ) {
+			for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+				if( pSwlHWSS->terminated[w] ) continue;
+				const Scalar p = fabs( hwssBetaNMPre[w] );
+				if( p > rrPrevMax ) rrPrevMax = p;
+				const Scalar c = fabs( hwssBetaNM[w] );
+				if( c > rrCurrMax ) rrCurrMax = c;
+			}
+		}
 		const PathTransportUtilities::RussianRouletteResult rr =
 			PathTransportUtilities::EvaluateRussianRoulette(
 				depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
-				fabs( betaNM ), fabs( vertices.back().throughputNM ),
+				rrCurrMax, rrPrevMax,
 				sampler.Get1D() );
 		if( rr.terminate ) {
 			break;
 		}
 		if( rr.survivalProb < 1.0 ) {
-			betaNM /= rr.survivalProb;
+			const Scalar rrScale = Scalar( 1 ) / rr.survivalProb;
+			betaNM *= rrScale;
+			if( pSwlHWSS ) {
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					hwssBetaNM[w] *= rrScale;
+				}
+			}
 		}
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -5906,7 +6007,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	std::vector<BDPTVertex>& vertices,
 	std::vector<uint32_t>& subpathStarts,
 	const Scalar nm,
-	const Scalar branchingThresholdOverride
+	const Scalar branchingThresholdOverride,
+	const SampledWavelengths* pSwlHWSS
 	) const
 {
 	vertices.clear();
@@ -5968,6 +6070,19 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	unsigned int nmEyeVolumeBounces = 0;
 	unsigned int nmEyeSurfaceBounces = 0;
 
+	// HWSS per-wavelength throughput tracking.  When pSwlHWSS is non-null
+	// the RR site below uses max over active wavelengths of the post-
+	// scatter throughput, preventing hero-driven RR from amplifying
+	// companion wavelengths on rare survivors (see PathTracingIntegrator
+	// HWSS RR comment for full rationale).  Kept in sync with betaNM
+	// (index 0 is hero; initialized 1.0 for camera start).
+	Scalar hwssBetaNM[SampledWavelengths::N];
+	if( pSwlHWSS ) {
+		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+			hwssBetaNM[w] = Scalar( 1 );
+		}
+	}
+
 	// Resolve effective branching threshold (same pattern as RGB side).
 	const Scalar effectiveBranchingThreshold =
 		( branchingThresholdOverride >= 0 ) ?
@@ -5979,8 +6094,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	// rationale of each gate; the only NM-specific difference is the use
 	// of scalar krayNM / betaNM in place of RGB kray / beta, and the
 	// camera-side beta_initial is always 1.0 (betaNM is initialized to 1).
+	// hwssBetaNMSaved stores per-wavelength throughputs at the split so
+	// each branch continues with correct companion state when HWSS is on.
 	struct PendingEyeBranchNM {
 		Scalar betaNM;
+		Scalar hwssBetaNMSaved[SampledWavelengths::N];
 		Scalar pdfFwdPrev;
 		Ray currentRay;
 		IORStack iorStack;
@@ -6005,6 +6123,9 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			volumeBounces( 0 ),
 			surfaceBounces( 0 )
 		{
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				hwssBetaNMSaved[w] = Scalar( 1 );
+			}
 		}
 	};
 	std::vector<PendingEyeBranchNM> pendingBranches;
@@ -6033,6 +6154,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			vertices.push_back( savedPrefix[vi] );
 		}
 		betaNM = pb.betaNM;
+		if( pSwlHWSS ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				hwssBetaNM[w] = pb.hwssBetaNMSaved[w];
+			}
+		}
 		pdfFwdPrev = pb.pdfFwdPrev;
 		currentRay = pb.currentRay;
 		iorStack = pb.iorStack;
@@ -6362,6 +6488,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				if( scatmaxv <= 0 ) continue;
 				PendingEyeBranchNM pb;
 				pb.betaNM = betaNM * scattered[i].krayNM;
+				if( pSwlHWSS ) {
+					// Branching is delta-only and gated off
+					// dispersive vertices; the krayNM at each lobe
+					// is wavelength-independent here, so every
+					// companion scales by the same factor.
+					for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+						pb.hwssBetaNMSaved[w] = hwssBetaNM[w] * scattered[i].krayNM;
+					}
+				}
 				pb.pdfFwdPrev = 0;
 				pb.currentRay = scattered[i].ray;
 				pb.currentRay.Advance( BDPT_RAY_EPSILON );
@@ -6706,9 +6841,31 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			break;
 		}
 
-		// Throughput update using valueNM
+		// Snapshot pre-scatter HWSS throughput so the RR below can
+		// compare max(pre) vs max(post) over active wavelengths without
+		// floating-point gymnastics.
+		Scalar hwssBetaNMPre[SampledWavelengths::N];
+		if( pSwlHWSS ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				hwssBetaNMPre[w] = hwssBetaNM[w];
+			}
+		}
+
+		// Throughput update using valueNM.  When HWSS is active, update
+		// hwssBetaNM[w] in parallel — delta scatter scales all
+		// wavelengths by the same krayNM (non-dispersive; dispersive
+		// already terminated); non-delta scatter evaluates BSDF at
+		// each companion wavelength along the hero-sampled direction.
 		if( pScat->isDelta ) {
 			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
+			if( pSwlHWSS ) {
+				const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
+				hwssBetaNM[0] = betaNM;
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( pSwlHWSS->terminated[w] ) continue;
+					hwssBetaNM[w] = hwssBetaNM[w] * deltaScale;
+				}
+			}
 		} else {
 			Scalar fNM;
 #ifdef RISE_ENABLE_OPENPGL
@@ -6724,20 +6881,51 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				break;
 			}
 			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
+			if( pSwlHWSS ) {
+				const Scalar invScale = bssrdfReflectCompensation * cosTheta / ( selectProb * effectivePdf );
+				hwssBetaNM[0] = betaNM;
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( pSwlHWSS->terminated[w] ) continue;
+					const Scalar fw = EvalBSDFAtVertexNM(
+						vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
+					hwssBetaNM[w] = hwssBetaNM[w] * fw * invScale;
+				}
+			}
 		}
 
-		// Russian Roulette — configurable depth and throughput floor
+		// Russian Roulette — configurable depth and throughput floor.
+		// In HWSS mode the survival probability uses the MAX throughput
+		// across all active wavelengths so hero-low / companion-high
+		// configurations don't get nearly terminated + amplified on
+		// rare survival.  Mirrors the PT HWSS RR fix.
 		{
+			Scalar rrPrevMax = fabs( vertices.back().throughputNM );
+			Scalar rrCurrMax = fabs( betaNM );
+			if( pSwlHWSS ) {
+				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+					if( pSwlHWSS->terminated[w] ) continue;
+					const Scalar p = fabs( hwssBetaNMPre[w] );
+					if( p > rrPrevMax ) rrPrevMax = p;
+					const Scalar c = fabs( hwssBetaNM[w] );
+					if( c > rrCurrMax ) rrCurrMax = c;
+				}
+			}
 			const PathTransportUtilities::RussianRouletteResult rr =
 				PathTransportUtilities::EvaluateRussianRoulette(
 					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
-					fabs( betaNM ), fabs( vertices.back().throughputNM ),
+					rrCurrMax, rrPrevMax,
 					sampler.Get1D() );
 			if( rr.terminate ) {
 				break;
 			}
 			if( rr.survivalProb < 1.0 ) {
-				betaNM /= rr.survivalProb;
+				const Scalar rrScale = Scalar( 1 ) / rr.survivalProb;
+				betaNM *= rrScale;
+				if( pSwlHWSS ) {
+					for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+						hwssBetaNM[w] *= rrScale;
+					}
+				}
 			}
 		}
 

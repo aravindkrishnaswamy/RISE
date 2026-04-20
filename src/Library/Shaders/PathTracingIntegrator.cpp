@@ -3427,25 +3427,53 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			compScatterNM[w] = compWeight > 0 ? compWeight : 0;
 		}
 
-		// Russian roulette (hero drives)
-		bool skipContinuation = fabs( heroScatterNM ) <= NEARZERO;
-		if( !skipContinuation )
+		// Russian roulette — use MAX over wavelengths for the survival
+		// probability.  Hero-driven RR creates wavelength-dependent
+		// fireflies: when the hero wavelength's surface albedo is
+		// small (e.g. green hero on a red wall at 0.05), RR
+		// terminates ~95 % of paths, and the rare survivors scale
+		// ALL wavelengths by 1/survivalProb.  Companion wavelengths
+		// with legitimately high throughput (red at 0.9) get
+		// amplified ~20× on those survivors, producing persistent
+		// fireflies.  Taking the max over active wavelengths of the
+		// post-scatter throughput (as the current-throughput metric)
+		// and of the pre-scatter throughput (as the prev metric)
+		// keeps the RR decision aligned with the PATH's total
+		// remaining energy; unbiasedness is preserved because every
+		// wavelength is scaled by the same 1/survivalProb and the
+		// estimator identity E[survived×scale] = unscaled holds
+		// regardless of how survivalProb is chosen.  Mirrors the
+		// MaxValue(throughput) pattern used by RGB PT.
+		bool skipContinuation = false;
 		{
-			const PathTransportUtilities::RussianRouletteResult rr =
-				PathTransportUtilities::EvaluateRussianRoulette(
-					depth, rrMinDepth, rrThreshold,
-					importance * fabs( heroScatterNM ),
-					importance,
-					sampler.Get1D() );
-			if( rr.terminate ) {
+			Scalar maxPrevThroughput = fabs( throughputComp[0] );
+			Scalar maxCurrThroughput = fabs( throughputComp[0] * heroScatterNM );
+			for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+				if( swl.terminated[w] ) continue;
+				const Scalar p = fabs( throughputComp[w] );
+				if( p > maxPrevThroughput ) maxPrevThroughput = p;
+				const Scalar c = fabs( throughputComp[w] * compScatterNM[w] );
+				if( c > maxCurrThroughput ) maxCurrThroughput = c;
+			}
+			if( maxCurrThroughput <= NEARZERO ) {
 				skipContinuation = true;
-			} else if( rr.survivalProb < 1.0 ) {
-				const Scalar rrScale = 1.0 / rr.survivalProb;
-				heroScatterNM *= rrScale;
-				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
-					compScatterNM[w] *= rrScale;
+			} else {
+				const PathTransportUtilities::RussianRouletteResult rr =
+					PathTransportUtilities::EvaluateRussianRoulette(
+						depth, rrMinDepth, rrThreshold,
+						maxCurrThroughput,
+						maxPrevThroughput,
+						sampler.Get1D() );
+				if( rr.terminate ) {
+					skipContinuation = true;
+				} else if( rr.survivalProb < 1.0 ) {
+					const Scalar rrScale = 1.0 / rr.survivalProb;
+					heroScatterNM *= rrScale;
+					for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+						compScatterNM[w] *= rrScale;
+					}
+					compScatterNM[0] = heroScatterNM;
 				}
-				compScatterNM[0] = heroScatterNM;
 			}
 		}
 

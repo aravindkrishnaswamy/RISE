@@ -262,8 +262,9 @@ void MLTSpectralRasterizer::EvaluateSingleWavelength(
 	// MLT's Markov-chain proposal measure assumes a single subpath —
 	// force threshold=1.0 on both sides to keep the NM generators
 	// emitting single-branch output (matches RGB MLTRasterizer).
-	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ) );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ) );
+	// Single-wavelength MLT path: pSwlHWSS = nullptr.
+	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ), nullptr );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ), nullptr );
 
 	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 }
@@ -390,9 +391,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			std::vector<BDPTVertex> eyeVerts;
 			std::vector<uint32_t> lightSubpathStarts;
 			std::vector<uint32_t> eyeSubpathStarts;
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( 1.0 ) );
+			// HWSS path in MLT: pass &swl so the NM generator uses
+			// max-over-wavelengths RR (PT HWSS firefly fix applies here
+			// too — hero-driven RR still amplifies companions on rare
+			// survivors regardless of MLT's chain acceptance).
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( 1.0 ), &swl );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( 1.0 ) );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( 1.0 ), &swl );
 
 			// Helper: accumulate strategy results into allStrategyXYZ
 			auto accumulateResults = [&]( const std::vector<BDPTIntegrator::ConnectionResultNM>& results,
@@ -486,9 +491,10 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			std::vector<uint32_t> eyeSubpathStarts;
 
 			// MLT forces threshold=1.0 (single-branch) — see top-level note.
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ) );
+			// Non-HWSS single-wavelength path: pSwlHWSS = nullptr.
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ), nullptr );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ) );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ), nullptr );
 
 			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 

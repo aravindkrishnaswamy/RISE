@@ -856,7 +856,6 @@ static SurfaceDerivatives ComputeTriangleDerivatives(
 			tri.pNormals[0]->z + barU * dNraw_du.z + barV * dNraw_dv.z );
 		const Scalar len = Vector3Ops::Magnitude( Nraw );
 		const Scalar invLen = (len > NEARZERO) ? 1.0 / len : 0.0;
-		const Vector3 N = Nraw * invLen;
 
 		// dN/d* = projection perpendicular to N, divided by |N_raw|.
 		// Use the caller-supplied objSpaceNormal (which is the shading
