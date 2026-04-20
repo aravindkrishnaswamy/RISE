@@ -2615,6 +2615,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\StabilityConfig.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RasterSanityScan.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\SumOfExponentialsFit.h">
       <Filter>Utilities</Filter>
     </ClInclude>

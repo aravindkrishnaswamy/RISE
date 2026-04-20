@@ -242,19 +242,43 @@ namespace
 							SobolSampler sampler( sampleIdx, pixelSeed );
 
 							tl.tmpLightVerts.clear();
-							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, rc.random );
+							static thread_local std::vector<uint32_t> tmpLightSubpathStarts;
+							// Allow branching on the light store build
+							// (pass -1 to use the configured threshold).
+							// Per-branch Convert below walks each branch
+							// slice independently so dVCM/dVC/dVM
+							// recurrences are correct (a single-chain
+							// Convert on the concatenated multi-branch
+							// array would corrupt seams).  Each non-empty
+							// branch counts as its own subpath in
+							// pathsShot; the caller renormalizes
+							// mLightSubPathCount after the light pass so
+							// the VM density estimator matches the
+							// actual stored photon / effective-subpath
+							// ratio.
+							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random, Scalar( -1 ) );
 							if( tl.tmpLightVerts.empty() ) {
 								continue;
 							}
-							tl.pathsShot++;
 
-							tl.tmpConverted.clear();
-							VCMIntegrator::ConvertLightSubpath(
-								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis );
-
-							for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
-								out.push_back( tl.tmpConverted[m] );
-								tl.storedCount++;
+							const std::size_t numLbPhotonStore = tmpLightSubpathStarts.size() >= 2 ?
+								( tmpLightSubpathStarts.size() - 1 ) : 0;
+							static thread_local std::vector<BDPTVertex> branchVertsPhotonStore;
+							for( std::size_t lb = 0; lb < numLbPhotonStore; lb++ ) {
+								const uint32_t lbeg = tmpLightSubpathStarts[lb];
+								const uint32_t lend = tmpLightSubpathStarts[lb + 1];
+								if( lbeg >= lend ) continue;
+								branchVertsPhotonStore.assign(
+									tl.tmpLightVerts.begin() + lbeg,
+									tl.tmpLightVerts.begin() + lend );
+								tl.tmpConverted.clear();
+								VCMIntegrator::ConvertLightSubpath(
+									branchVertsPhotonStore, norm, tl.tmpConverted, &tl.tmpLightMis );
+								for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
+									out.push_back( tl.tmpConverted[m] );
+									tl.storedCount++;
+								}
+								tl.pathsShot++;
 							}
 						}
 					}
@@ -416,7 +440,11 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 					SobolSampler sampler( sampleIndex, pixelSeed );
 
 					tmpLightVerts.clear();
-					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, rc.random );
+					static thread_local std::vector<uint32_t> tmpLightSubpathStarts2;
+					// Auto-radius pre-pass: use single-branch subpaths so
+					// segment-length median isn't skewed by branch-crossing
+					// prefix-copy boundaries (which are not real segments).
+					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpLightSubpathStarts2, rc.random, Scalar( 1.0 ) );
 					for( std::size_t k = 1; k < tmpLightVerts.size(); k++ ) {
 						const BDPTVertex& curr = tmpLightVerts[k];
 						const BDPTVertex& prevV = tmpLightVerts[k - 1];
@@ -511,6 +539,24 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 			totalStored += localBuf.size();
 			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ) );
 		}
+	}
+
+	// Renormalize mVCMNormalization with the actual count of subpaths
+	// deposited.  Light-subpath branching can produce more than W×H
+	// subpaths (each non-empty branch counts once); using the real
+	// count keeps the VM density estimator and per-pixel VC MIS
+	// weights consistent with the store.  When no branching fires,
+	// pathsShot equals the pre-branching W×H total and this re-
+	// normalization is a no-op.  The photons' own dVCM/dVC values
+	// were Convert'd with the pre-pass normalization; the stored
+	// values retain that calibration — same approximation used by
+	// the specular-only store filter path.
+	if( pathsShot > 0 ) {
+		mVCMNormalization = ComputeNormalization(
+			width, height, effectiveMergeRadius,
+			pIntegrator->GetEnableVC(),
+			pIntegrator->GetEnableVM(),
+			static_cast<Scalar>( pathsShot ) );
 	}
 
 	// Throughput clamping (kept as secondary safeguard).
@@ -616,6 +662,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	const uint32_t baseSampleIndex = passIdx;
 
 	unsigned long long totalStored = 0;
+	unsigned long long pathsShot = 0;
 	{
 		const unsigned int numWorkers = std::max( 1, HowManyThreadsToSpawn() );
 		LightPassDispatcher dispatcher(
@@ -625,12 +672,23 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 			samplesPerSuperIter,
 			numWorkers );
 
-		RunLightPassParallel( dispatcher, numWorkers );
+		pathsShot = RunLightPassParallel( dispatcher, numWorkers );
 
 		for( unsigned int i = 0; i < numWorkers; i++ ) {
 			totalStored += dispatcher.perThreadOutput[i].size();
 			pLightVertexStore->Concat( std::move( dispatcher.perThreadOutput[i] ) );
 		}
+	}
+
+	// Renormalize with actual pathsShot — see comment at the matching
+	// PreRenderSetup site for rationale.  Branching can produce more
+	// than W×H subpaths; the per-pixel VC/VM weights must match.
+	if( pathsShot > 0 ) {
+		mVCMNormalization = ComputeNormalization(
+			width, height, mVCMNormalization.mMergeRadius,
+			pIntegrator->GetEnableVC(),
+			pIntegrator->GetEnableVM(),
+			static_cast<Scalar>( pathsShot ) );
 	}
 
 	pLightVertexStore->BuildKDTreeParallel();

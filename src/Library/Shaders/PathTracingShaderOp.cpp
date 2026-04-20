@@ -35,14 +35,13 @@ using namespace RISE::Implementation;
 //////////////////////////////////////////////////////////////////////
 
 PathTracingShaderOp::PathTracingShaderOp(
-	const bool branch,
 	const ManifoldSolverConfig& smsConfig,
 	const StabilityConfig& stabilityCfg
 	) :
   pIntegrator( 0 ),
   bSMSEnabled( smsConfig.enabled )
 {
-	pIntegrator = new PathTracingIntegrator( branch, smsConfig, stabilityCfg );
+	pIntegrator = new PathTracingIntegrator( smsConfig, stabilityCfg );
 	pIntegrator->addref();
 }
 

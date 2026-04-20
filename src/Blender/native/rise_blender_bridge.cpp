@@ -1262,7 +1262,6 @@ namespace
 		if( settings.use_path_tracing ) {
 			if( !job.AddPathTracingShaderOp(
 				kPathTracingShaderOpName,
-				settings.path_branch != 0,
 				settings.sms_enabled != 0,
 				std::max<uint32_t>( settings.sms_max_iterations, 1u ),
 				settings.sms_threshold > 0.0f ? settings.sms_threshold : 1e-5f,

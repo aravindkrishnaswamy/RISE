@@ -28,6 +28,7 @@ Full rules, exclusions, and related update surfaces (API, parser chunks, tests, 
 
 ## High-Value Facts
 
+- `branching_threshold` (StabilityConfig, default 0.5): normalized throughput gate for subpath splitting at multi-lobe delta vertices (Fresnel dielectric etc.). Parameter on all rasterizer chunks (PT/BDPT/VCM pel & spectral, MLT). `0` = always branch at first encounter, `1` = never branch. Live on RGB + spectral NM for both eye and light subpaths across PT/BDPT/VCM — the photon-store build also branches and renormalizes `mLightSubPathCount` with actual `pathsShot`. MLT forces `1.0` (Markov-chain proposal assumes single-subpath). The retired `branch` param on PathTracing/DistributionTracing shader-ops is silently ignored by the parser; photon tracers keep their own `bBranch` (out of scope).
 - Public construction API: [src/Library/RISE_API.h](src/Library/RISE_API.h)
 - High-level construction interface: [src/Library/Interfaces/IJob.h](src/Library/Interfaces/IJob.h)
 - Main assembly implementation: [src/Library/Job.cpp](src/Library/Job.cpp)

@@ -500,6 +500,22 @@ namespace
 			return;
 		}
 
+		// Defensive: detect multi-branch concatenated light subpath.
+		// When the light subpath branches (threshold-gated split at a
+		// multi-lobe delta vertex), lightVerts contains N branches with
+		// their shared prefix duplicated — which this function would
+		// stitch into one corrupted chain.  Currently no consumer on
+		// the RGB side passes multi-branch lightVerts to this training
+		// call (BDPT-Pel forces single-branch via the override param),
+		// but guard defensively so a future override flip doesn't
+		// silently corrupt training data.  Signal: a second LIGHT-type
+		// vertex appears mid-array.
+		for( size_t i = 1; i < lightVerts.size(); i++ ) {
+			if( lightVerts[i].type == BDPTVertex::LIGHT ) {
+				return;
+			}
+		}
+
 		// Find usable surface vertices (skip vertex 0 which is the light itself)
 		bool hasSegments = false;
 		for( unsigned int i = 1; i < lightVerts.size(); i++ ) {
@@ -1249,10 +1265,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<BDPTVertex>& vertices,
-	const RandomNumberGenerator& random
+	std::vector<uint32_t>& subpathStarts,
+	const RandomNumberGenerator& random,
+	Scalar branchingThresholdOverride
 	) const
 {
 	vertices.clear();
+	subpathStarts.clear();
+	subpathStarts.push_back( 0 );
 
 	if( !pLightSampler ) {
 		return 0;
@@ -1314,6 +1334,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 	// Check if Le is zero -- no point tracing further
 	if( ColorMath::MaxValue( ls.Le ) <= 0 || ls.pdfDirection <= 0 ) {
+		subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
 		return static_cast<unsigned int>( vertices.size() );
 	}
 
@@ -1340,6 +1361,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	if( pdfEmit > 0 ) {
 		beta = beta * (1.0 / pdfEmit);
 	} else {
+		subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
 		return static_cast<unsigned int>( vertices.size() );
 	}
 
@@ -1353,16 +1375,110 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	unsigned int volumeBounces = 0;
 	unsigned int surfaceBounces = 0;
 
+	// Resolve effective branching threshold (same pattern as GenerateEyeSubpath).
+	const Scalar effectiveBranchingThreshold =
+		( branchingThresholdOverride >= 0 ) ?
+		branchingThresholdOverride :
+		stabilityConfig.branchingThreshold;
+
+	// Threshold-gated branching on the light subpath.  Mirrors the
+	// logic in GenerateEyeSubpath but normalizes against the post-
+	// emission throughput since a light subpath doesn't start at 1.0.
+	// See GenerateEyeSubpath for the full rationale of each gate.
+	struct PendingLightBranch {
+		RISEPel beta;
+		Scalar pdfFwdPrev;
+		Ray currentRay;
+		IORStack iorStack;
+		unsigned int startDepth;
+		unsigned int diffuseBounces;
+		unsigned int glossyBounces;
+		unsigned int transmissionBounces;
+		unsigned int translucentBounces;
+		unsigned int volumeBounces;
+		unsigned int surfaceBounces;
+
+		PendingLightBranch() :
+			beta( 0, 0, 0 ),
+			pdfFwdPrev( 0 ),
+			currentRay( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+			iorStack( 1.0 ),
+			startDepth( 0 ),
+			diffuseBounces( 0 ),
+			glossyBounces( 0 ),
+			transmissionBounces( 0 ),
+			translucentBounces( 0 ),
+			volumeBounces( 0 ),
+			surfaceBounces( 0 )
+		{
+		}
+	};
+	std::vector<PendingLightBranch> pendingBranches;
+	std::vector<BDPTVertex> savedPrefix;
+	bool splitFired = false;
+	// beta_initial = throughput just after light emission — captures the
+	// Le*cos/pdfEmit factor so the threshold stays "fraction of initial
+	// light-subpath energy surviving," symmetric with the eye side.
+	const Scalar lightBetaInitial = ColorMath::MaxValue( beta );
+	bool firstBranchIter = true;
+	unsigned int startDepth = 0;
+	unsigned int branchIdx = 0;
+	bool sawNonDeltaScatter = false;
+
 	// Loop limit accounts for both surface and volume bounces.
 	// Surface bounces are capped by maxLightDepth, volume bounces by maxVolumeBounce.
-	const unsigned int maxLightTotalDepth = maxLightDepth + stabilityConfig.maxVolumeBounce;
-	for( unsigned int depth = 0; depth < maxLightTotalDepth; depth++ )
+	// Saturating add; see matching comment in GenerateEyeSubpath for rationale.
+	// Also guard `maxLightDepth >= 1024` directly so the subtraction in the
+	// first half of the ternary doesn't underflow (unsigned wrap) when a
+	// scene sets maxLightDepth pathologically high.
+	const unsigned int maxLightTotalDepth =
+		( maxLightDepth >= 1024u ||
+		  stabilityConfig.maxVolumeBounce > 1024u - maxLightDepth ) ?
+			1024u :
+			maxLightDepth + stabilityConfig.maxVolumeBounce;
+
+	do {
+	if( !firstBranchIter ) {
+		PendingLightBranch pb = pendingBranches.back();
+		pendingBranches.pop_back();
+		for( size_t vi = 0; vi < savedPrefix.size(); vi++ ) {
+			vertices.push_back( savedPrefix[vi] );
+		}
+		beta = pb.beta;
+		pdfFwdPrev = pb.pdfFwdPrev;
+		currentRay = pb.currentRay;
+		iorStack = pb.iorStack;
+		startDepth = pb.startDepth;
+		// Reset per-branch walk flags.  Currently redundant because
+		// splitFired=true blocks further splits, but future-proofs
+		// against a refactor that ever allows multiple splits per
+		// subpath.
+		sawNonDeltaScatter = false;
+		diffuseBounces = pb.diffuseBounces;
+		glossyBounces = pb.glossyBounces;
+		transmissionBounces = pb.transmissionBounces;
+		translucentBounces = pb.translucentBounces;
+		volumeBounces = pb.volumeBounces;
+		surfaceBounces = pb.surfaceBounces;
+		branchIdx++;
+	}
+	firstBranchIter = false;
+
+	for( unsigned int depth = startDepth; depth < maxLightTotalDepth; depth++ )
 	{
-		// Align to fixed dimension range for this bounce so that
-		// cross-pixel Sobol stratification is preserved regardless
-		// of how many dimensions previous bounces consumed.
-		// Phases 1..15 = light bounces 0..14
-		sampler.StartStream( 1 + depth );
+		// Align to a unique stream per (branch, bounce) pair.  Branch 0
+		// uses the historical light stream range [1, 1+maxLightTotalDepth)
+		// to preserve non-branched behavior bit-exactly.  Branches 1+
+		// use a high base (10000+) that is guaranteed past eye streams
+		// (16..16+4*maxEyeTotalDepth worst-case) and SMS streams
+		// (31..46), so light-branch and eye-branch streams never
+		// numerically collide.  Padded Sobol makes high dimension
+		// indices safe (no hard table ceiling).
+		const unsigned int kBranchedLightStreamBase = 10000u;
+		const unsigned int streamNum = ( branchIdx == 0 )
+			? ( 1u + depth )
+			: ( kBranchedLightStreamBase + ( branchIdx - 1u ) * maxLightTotalDepth + depth );
+		sampler.StartStream( streamNum );
 
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
@@ -1624,25 +1740,52 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 			break;
 		}
 
-		// Randomly select a scattered ray
-		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), false );
-		if( !pScat ) {
-			break;
-		}
-
-		// Compute the discrete lobe selection probability.
-		// RandomlySelect picks ray i with probability proportional to MaxValue(kray_i).
-		// For single-lobe materials this is 1.0; for multi-lobe (e.g., polished,
-		// dielectric) we must account for this in both throughput and stored PDFs.
+		// Threshold-gated branching vs random selection.  Consume one
+		// sampler dimension unconditionally for Sobol alignment whether
+		// we split or pick one.  Mirrors GenerateEyeSubpath's logic.
+		const Scalar lobeSelectXi = sampler.Get1D();
+		const ScatteredRay* pScat;
 		Scalar selectProb = 1.0;
-		if( scattered.Count() > 1 ) {
-			Scalar totalKray = 0;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				totalKray += ColorMath::MaxValue( scattered[i].kray );
+		bool thisIsSplit = false;
+
+		{
+			bool allLobesDelta = true;
+			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+				if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
 			}
-			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
-			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
-				selectProb = selectedKray / totalKray;
+			const Scalar normalizedThroughput =
+				( lightBetaInitial > 0 ) ?
+				ColorMath::MaxValue( beta ) / lightBetaInitial :
+				Scalar( 0 );
+			const bool shouldSplit =
+				!splitFired &&
+				!sawNonDeltaScatter &&
+				scattered.Count() > 1 &&
+				scattered.Count() <= 4 &&
+				allLobesDelta &&
+				!( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() ) &&
+				!( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() ) &&
+				normalizedThroughput > effectiveBranchingThreshold;
+
+			if( shouldSplit ) {
+				pScat = &scattered[0];
+				thisIsSplit = true;
+				// selectProb stays 1.0 for deterministic split.
+			} else {
+				pScat = scattered.RandomlySelect( lobeSelectXi, false );
+				if( !pScat ) {
+					break;
+				}
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						totalKray += ColorMath::MaxValue( scattered[i].kray );
+					}
+					const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+					if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+						selectProb = selectedKray / totalKray;
+					}
+				}
 			}
 		}
 
@@ -1660,6 +1803,52 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 		// Mark the current vertex as delta if the scattered ray is delta
 		vertices.back().isDelta = pScat->isDelta;
+
+		// Track whether the walk has passed through any non-delta
+		// scatter — used to block future splits so the shared prefix
+		// never contains a connectible vertex.
+		if( !pScat->isDelta ) {
+			sawNonDeltaScatter = true;
+		}
+
+		// Split save: snapshot the shared prefix and record each
+		// non-zero-kray extra branch's entry state.  The split vertex
+		// is vertices.back() and was already populated above.
+		if( thisIsSplit ) {
+			splitFired = true;
+			savedPrefix.assign( vertices.begin(), vertices.end() );
+			for( unsigned int i = 1; i < scattered.Count(); i++ ) {
+				const Scalar scatmaxv = ColorMath::MaxValue( scattered[i].kray );
+				if( scatmaxv <= 0 ) continue;
+				PendingLightBranch pb;
+				pb.beta = beta * scattered[i].kray;
+				pb.pdfFwdPrev = 0;
+				pb.currentRay = scattered[i].ray;
+				pb.currentRay.Advance( BDPT_RAY_EPSILON );
+				pb.iorStack = scattered[i].ior_stack ?
+					*scattered[i].ior_stack : iorStack;
+				pb.startDepth = depth + 1;
+				pb.diffuseBounces = diffuseBounces;
+				pb.glossyBounces = glossyBounces;
+				pb.transmissionBounces = transmissionBounces;
+				pb.translucentBounces = translucentBounces;
+				pb.volumeBounces = volumeBounces;
+				pb.surfaceBounces = surfaceBounces;
+				switch( scattered[i].type ) {
+					case ScatteredRay::eRayDiffuse:
+						pb.diffuseBounces++; break;
+					case ScatteredRay::eRayReflection:
+						pb.glossyBounces++; break;
+					case ScatteredRay::eRayRefraction:
+						pb.transmissionBounces++; break;
+					case ScatteredRay::eRayTranslucent:
+						pb.translucentBounces++; break;
+					default:
+						break;
+				}
+				pendingBranches.push_back( pb );
+			}
+		}
 
 		// --- BSSRDF sampling for materials with diffusion profiles ---
 		// At front-face hits on SSS surfaces, use a Fresnel coin flip to
@@ -2141,6 +2330,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		}
 	}
 
+	// End of this branch's walk — record boundary in subpathStarts.
+	subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
+	} while ( !pendingBranches.empty() );
+
 	return static_cast<unsigned int>( vertices.size() );
 }
 
@@ -2163,13 +2356,23 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	std::vector<BDPTVertex>& vertices
+	std::vector<BDPTVertex>& vertices,
+	std::vector<uint32_t>& subpathStarts,
+	Scalar branchingThresholdOverride
 	) const
 {
+	// Resolve effective branching threshold: override if caller passed
+	// a non-negative value, otherwise fall back to stability config.
+	const Scalar effectiveBranchingThreshold =
+		( branchingThresholdOverride >= 0 ) ?
+		branchingThresholdOverride :
+		stabilityConfig.branchingThreshold;
 	(void)rc;
 
 	vertices.clear();
 	vertices.reserve( maxEyeDepth + 1 );
+	subpathStarts.clear();
+	subpathStarts.push_back( 0 );
 
 	//
 	// Vertex 0: the camera
@@ -2233,15 +2436,124 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	unsigned int eyeTranslucentBounces = 0;
 	unsigned int eyeVolumeBounces = 0;
 
+	// ------------------------------------------------------------------
+	// Branching: at the first multi-lobe delta vertex whose normalized
+	// throughput still exceeds stabilityConfig.branchingThreshold, spawn
+	// one eye subpath per scattered ray (deterministic split, weighted
+	// by kray — no /selectProb division).  Each branch is a full linear
+	// subpath including the shared prefix.  See StabilityConfig.h.
+	// Restricted to delta-only scatters (e.g. dielectric Fresnel) so
+	// that MIS pdfFwdPrev stays consistent (delta → 0); the non-delta
+	// case would require removing selectProb from stored pdfFwdPrev
+	// and is out of scope for this pass.  BSSRDF materials are also
+	// excluded — the BSSRDF coin flip happens post-split and its
+	// compensation factor would need per-branch plumbing.
+	// ------------------------------------------------------------------
+	struct PendingEyeBranch {
+		RISEPel beta;
+		Scalar pdfFwdPrev;
+		Ray currentRay;
+		IORStack iorStack;
+		unsigned int startDepth;
+		unsigned int eyeDiffuseBounces;
+		unsigned int eyeGlossyBounces;
+		unsigned int eyeTransmissionBounces;
+		unsigned int eyeTranslucentBounces;
+		unsigned int eyeVolumeBounces;
+
+		PendingEyeBranch() :
+			beta( 0, 0, 0 ),
+			pdfFwdPrev( 0 ),
+			currentRay( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+			iorStack( 1.0 ),
+			startDepth( 0 ),
+			eyeDiffuseBounces( 0 ),
+			eyeGlossyBounces( 0 ),
+			eyeTransmissionBounces( 0 ),
+			eyeTranslucentBounces( 0 ),
+			eyeVolumeBounces( 0 )
+		{
+		}
+	};
+	std::vector<PendingEyeBranch> pendingBranches;
+	std::vector<BDPTVertex> savedPrefix;
+	bool splitFired = false;
+	const Scalar eyeBetaInitial = 1.0;  // camera throughput always starts at 1
+	bool firstBranchIter = true;
+	unsigned int startDepth = 0;
+	// branchIdx advances per do-while iteration so that each branch
+	// consumes a DISJOINT Sobol stream range.  Without this offset,
+	// two branches calling StartStream(16+d) at the same depth draw
+	// bit-identical Sobol values, collapsing the stratification the
+	// sampler is supposed to provide across independent branches.
+	unsigned int branchIdx = 0;
+	// Block split when the walk has already passed through a
+	// non-delta (connectible) vertex.  Otherwise the per-branch VCM
+	// consumer loop would re-evaluate NEE / VM / interior connections
+	// at identical connectible prefix indices N times, silently
+	// multiplying their contribution by the branch count.  Keeping
+	// the gate to "pre-diffuse only" guarantees the shared prefix
+	// contains only the camera plus delta vertices, which S0 / NEE /
+	// Merges skip by construction.
+	bool sawNonDeltaScatter = false;
+
 	// Loop limit accounts for both surface and volume bounces.
 	// Surface bounces are capped by maxEyeDepth, volume bounces by maxVolumeBounce.
 	// depth increments every iteration to keep sampler streams unique.
-	const unsigned int maxEyeTotalDepth = maxEyeDepth + stabilityConfig.maxVolumeBounce;
-	for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
+	// Saturating addition: if a scene sets max_volume_bounce to UINT_MAX
+	// (documented as "unlimited" for other bounce types), the raw sum
+	// wraps to a small number, silently aborting the walk AND collapsing
+	// the branch-stream offset `branchIdx * maxEyeTotalDepth` to 0 which
+	// re-introduces the correlated-Sobol collision the offset was added
+	// to fix.  Cap at 1024 which is well above any realistic depth.  Also
+	// guard `maxEyeDepth >= 1024` directly so the subtraction in the first
+	// half of the ternary doesn't underflow (unsigned wrap) when a scene
+	// sets maxEyeDepth pathologically high.
+	const unsigned int maxEyeTotalDepth =
+		( maxEyeDepth >= 1024u ||
+		  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
+			1024u :
+			maxEyeDepth + stabilityConfig.maxVolumeBounce;
+
+	do {
+	if( !firstBranchIter ) {
+		PendingEyeBranch pb = pendingBranches.back();
+		pendingBranches.pop_back();
+		for( size_t vi = 0; vi < savedPrefix.size(); vi++ ) {
+			vertices.push_back( savedPrefix[vi] );
+		}
+		beta = pb.beta;
+		pdfFwdPrev = pb.pdfFwdPrev;
+		currentRay = pb.currentRay;
+		iorStack = pb.iorStack;
+		startDepth = pb.startDepth;
+		// Reset per-branch walk flags.  Redundant today because
+		// splitFired=true blocks further splits, but future-proofs
+		// against a refactor that allows multiple splits per subpath.
+		sawNonDeltaScatter = false;
+		eyeDiffuseBounces = pb.eyeDiffuseBounces;
+		eyeGlossyBounces = pb.eyeGlossyBounces;
+		eyeTransmissionBounces = pb.eyeTransmissionBounces;
+		eyeTranslucentBounces = pb.eyeTranslucentBounces;
+		eyeVolumeBounces = pb.eyeVolumeBounces;
+		branchIdx++;
+	}
+	firstBranchIter = false;
+
+	for( unsigned int depth = startDepth; depth < maxEyeTotalDepth; depth++ )
 	{
-		// Align to fixed dimension range for this bounce.
-		// Each iteration gets a unique stream via depth.
-		sampler.StartStream( 16 + depth );
+		// Align to a unique stream per (branch, bounce) pair.  Branch 0
+		// preserves the historical eye stream range [16, 16+maxEyeTotalDepth)
+		// for bit-exact non-branched behavior.  Branches 1+ use a high
+		// base (20000+) that is guaranteed past the branched-light
+		// stream range (10000..~13000 worst-case) so eye-branch and
+		// light-branch streams never numerically collide.  Padded Sobol
+		// has no hard dimension ceiling.
+		const unsigned int kBranchedEyeStreamBase = 20000u;
+		const unsigned int streamNum = ( branchIdx == 0 )
+			? ( 16u + depth )
+			: ( kBranchedEyeStreamBase + ( branchIdx - 1u ) * maxEyeTotalDepth + depth );
+		sampler.StartStream( streamNum );
 
 		// Intersect the scene
 		RayIntersection ri( currentRay, nullRasterizerState );
@@ -2538,22 +2850,58 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			break;
 		}
 
-		// Randomly select a scattered ray
-		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), false );
-		if( !pScat ) {
-			break;
-		}
-
-		// Compute the discrete lobe selection probability
+		// Threshold-gated branching vs random selection.  Consume one
+		// sampler dimension unconditionally for Sobol alignment.
+		const Scalar lobeSelectXi = sampler.Get1D();
+		const ScatteredRay* pScat;
 		Scalar selectProb = 1.0;
-		if( scattered.Count() > 1 ) {
-			Scalar totalKray = 0;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				totalKray += ColorMath::MaxValue( scattered[i].kray );
+		bool thisIsSplit = false;
+
+		{
+			const Scalar normalizedThroughput =
+				( eyeBetaInitial > 0 ) ?
+				ColorMath::MaxValue( beta ) / eyeBetaInitial :
+				Scalar( 0 );
+			// All scattered lobes must be delta.  If any lobe is
+			// non-delta, saving pb.pdfFwdPrev=0 for its branch would
+			// corrupt MIS — the real pdfFwdPrev is scat.pdf, not 0.
+			// Polished (mirror + diffuse) is the canonical offender.
+			bool allLobesDelta = true;
+			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+				if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
 			}
-			const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
-			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
-				selectProb = selectedKray / totalKray;
+			const bool shouldSplit =
+				!splitFired &&
+				!sawNonDeltaScatter &&
+				scattered.Count() > 1 &&
+				scattered.Count() <= 4 &&
+				allLobesDelta &&
+				!( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() ) &&
+				!( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() ) &&
+				normalizedThroughput > effectiveBranchingThreshold;
+
+			if( shouldSplit ) {
+				pScat = &scattered[0];
+				thisIsSplit = true;
+				// selectProb stays 1.0 — deterministic split, no
+				// selectProb division; throughput and pdfFwdPrev
+				// handling downstream produces branch-0's correct
+				// state (beta *= kray[0], pdfFwdPrev = 0 for delta).
+			} else {
+				pScat = scattered.RandomlySelect( lobeSelectXi, false );
+				if( !pScat ) {
+					break;
+				}
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						totalKray += ColorMath::MaxValue( scattered[i].kray );
+					}
+					const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
+					if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+						selectProb = selectedKray / totalKray;
+					}
+				}
 			}
 		}
 
@@ -2571,6 +2919,56 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 		// Mark the current vertex as delta
 		vertices.back().isDelta = pScat->isDelta;
+
+		// Track whether the walk has passed through any non-delta
+		// scatter — used to block future split decisions so that the
+		// shared prefix never contains a connectible vertex.
+		if( !pScat->isDelta ) {
+			sawNonDeltaScatter = true;
+		}
+
+		// Split save: snapshot the shared prefix and record each
+		// non-zero-kray branch's entry state.  The split vertex is
+		// vertices.back() and has already been populated (isDelta,
+		// isConnectible) above; those fields are identical across
+		// branches since all scattered rays are delta here.
+		if( thisIsSplit ) {
+			splitFired = true;
+			savedPrefix.assign( vertices.begin(), vertices.end() );
+			for( unsigned int i = 1; i < scattered.Count(); i++ ) {
+				const Scalar scatmaxv = ColorMath::MaxValue( scattered[i].kray );
+				if( scatmaxv <= 0 ) continue;
+				PendingEyeBranch pb;
+				// Pre-apply split-vertex scatter (beta *= kray[i];
+				// pdfFwdPrev = 0 for delta).  BSSRDF is excluded so
+				// bssrdfReflectCompensation is 1 at this point.
+				pb.beta = beta * scattered[i].kray;
+				pb.pdfFwdPrev = 0;
+				pb.currentRay = scattered[i].ray;
+				pb.currentRay.Advance( BDPT_RAY_EPSILON );
+				pb.iorStack = scattered[i].ior_stack ?
+					*scattered[i].ior_stack : iorStack;
+				pb.startDepth = depth + 1;
+				pb.eyeDiffuseBounces = eyeDiffuseBounces;
+				pb.eyeGlossyBounces = eyeGlossyBounces;
+				pb.eyeTransmissionBounces = eyeTransmissionBounces;
+				pb.eyeTranslucentBounces = eyeTranslucentBounces;
+				pb.eyeVolumeBounces = eyeVolumeBounces;
+				switch( scattered[i].type ) {
+					case ScatteredRay::eRayDiffuse:
+						pb.eyeDiffuseBounces++; break;
+					case ScatteredRay::eRayReflection:
+						pb.eyeGlossyBounces++; break;
+					case ScatteredRay::eRayRefraction:
+						pb.eyeTransmissionBounces++; break;
+					case ScatteredRay::eRayTranslucent:
+						pb.eyeTranslucentBounces++; break;
+					default:
+						break;
+				}
+				pendingBranches.push_back( pb );
+			}
+		}
 
 		// --- BSSRDF sampling for materials with diffusion profiles ---
 		Scalar bssrdfReflectCompensation = 1.0;
@@ -2983,6 +3381,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 			iorStack = *pScat->ior_stack;
 		}
 	}
+
+	// End of this branch's walk — record boundary in subpathStarts.
+	subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
+	} while ( !pendingBranches.empty() );
 
 	return static_cast<unsigned int>( vertices.size() );
 }
@@ -4467,11 +4869,15 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<BDPTVertex>& vertices,
+	std::vector<uint32_t>& subpathStarts,
 	const Scalar nm,
-	const RandomNumberGenerator& random
+	const RandomNumberGenerator& random,
+	const Scalar branchingThresholdOverride
 	) const
 {
 	vertices.clear();
+	subpathStarts.clear();
+	subpathStarts.push_back( 0 );
 
 	if( !pLightSampler ) {
 		return 0;
@@ -4547,6 +4953,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	}
 
 	if( LeNM <= 0 || ls.pdfDirection <= 0 ) {
+		subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
 		return static_cast<unsigned int>( vertices.size() );
 	}
 
@@ -4566,6 +4973,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	if( pdfEmit > 0 ) {
 		betaNM = betaNM / pdfEmit;
 	} else {
+		subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
 		return static_cast<unsigned int>( vertices.size() );
 	}
 
@@ -4579,11 +4987,95 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	unsigned int nmLightVolumeBounces = 0;
 	unsigned int nmLightSurfaceBounces = 0;
 
-	const unsigned int nmMaxLightTotalDepth = maxLightDepth + stabilityConfig.maxVolumeBounce;
-	for( unsigned int depth = 0; depth < nmMaxLightTotalDepth; depth++ )
+	// Resolve effective branching threshold (same pattern as RGB side).
+	const Scalar effectiveBranchingThreshold =
+		( branchingThresholdOverride >= 0 ) ?
+		branchingThresholdOverride :
+		stabilityConfig.branchingThreshold;
+
+	// Threshold-gated branching on the NM light subpath.  Mirrors the
+	// RGB GenerateLightSubpath branching block.  See that function for
+	// the full rationale of each gate; the only NM-specific difference
+	// is the use of scalar krayNM / betaNM in place of RGB kray / beta.
+	struct PendingLightBranchNM {
+		Scalar betaNM;
+		Scalar pdfFwdPrev;
+		Ray currentRay;
+		IORStack iorStack;
+		unsigned int startDepth;
+		unsigned int diffuseBounces;
+		unsigned int glossyBounces;
+		unsigned int transmissionBounces;
+		unsigned int translucentBounces;
+		unsigned int volumeBounces;
+		unsigned int surfaceBounces;
+
+		PendingLightBranchNM() :
+			betaNM( 0 ),
+			pdfFwdPrev( 0 ),
+			currentRay( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+			iorStack( 1.0 ),
+			startDepth( 0 ),
+			diffuseBounces( 0 ),
+			glossyBounces( 0 ),
+			transmissionBounces( 0 ),
+			translucentBounces( 0 ),
+			volumeBounces( 0 ),
+			surfaceBounces( 0 )
+		{
+		}
+	};
+	std::vector<PendingLightBranchNM> pendingBranches;
+	std::vector<BDPTVertex> savedPrefix;
+	bool splitFired = false;
+	const Scalar lightBetaInitialNM = fabs( betaNM );
+	bool firstBranchIter = true;
+	unsigned int startDepth = 0;
+	unsigned int branchIdx = 0;
+	bool sawNonDeltaScatter = false;
+
+	// Saturating add; see matching comment in GenerateEyeSubpath.
+	// Guard maxLightDepth >= 1024 so the subtraction doesn't underflow.
+	const unsigned int nmMaxLightTotalDepth =
+		( maxLightDepth >= 1024u ||
+		  stabilityConfig.maxVolumeBounce > 1024u - maxLightDepth ) ?
+			1024u :
+			maxLightDepth + stabilityConfig.maxVolumeBounce;
+
+	do {
+	if( !firstBranchIter ) {
+		PendingLightBranchNM pb = pendingBranches.back();
+		pendingBranches.pop_back();
+		for( size_t vi = 0; vi < savedPrefix.size(); vi++ ) {
+			vertices.push_back( savedPrefix[vi] );
+		}
+		betaNM = pb.betaNM;
+		pdfFwdPrev = pb.pdfFwdPrev;
+		currentRay = pb.currentRay;
+		iorStack = pb.iorStack;
+		startDepth = pb.startDepth;
+		sawNonDeltaScatter = false;
+		nmLightDiffuseBounces = pb.diffuseBounces;
+		nmLightGlossyBounces = pb.glossyBounces;
+		nmLightTransmissionBounces = pb.transmissionBounces;
+		nmLightTranslucentBounces = pb.translucentBounces;
+		nmLightVolumeBounces = pb.volumeBounces;
+		nmLightSurfaceBounces = pb.surfaceBounces;
+		branchIdx++;
+	}
+	firstBranchIter = false;
+
+	for( unsigned int depth = startDepth; depth < nmMaxLightTotalDepth; depth++ )
 	{
-		// Phases 1..15 = light bounces 0..14
-		sampler.StartStream( 1 + depth );
+		// Phases 1..N = light bounces 0..N-1 for branch 0.  Branches 1+
+		// use a reserved high-stream base to guarantee non-collision
+		// with eye-branch streams and SMS streams (same scheme as the
+		// RGB light subpath; see that block for details).
+		const unsigned int kBranchedLightStreamBase = 10000u;
+		const unsigned int streamNum = ( branchIdx == 0 )
+			? ( 1u + depth )
+			: ( kBranchedLightStreamBase + ( branchIdx - 1u ) * nmMaxLightTotalDepth + depth );
+		sampler.StartStream( streamNum );
 
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
@@ -4819,21 +5311,54 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			break;
 		}
 
-		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), true );
-		if( !pScat ) {
-			break;
-		}
-
-		// Compute lobe selection probability using spectral krayNM weights
+		// Threshold-gated branching vs random selection.  Consume one
+		// sampler dimension unconditionally for Sobol alignment whether
+		// we split or pick one.  Mirrors GenerateLightSubpath's logic
+		// but uses scalar krayNM / betaNM in place of RGB vectors.
+		const Scalar lobeSelectXi = sampler.Get1D();
+		const ScatteredRay* pScat;
 		Scalar selectProb = 1.0;
-		if( scattered.Count() > 1 ) {
-			Scalar totalKray = 0;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				totalKray += fabs( scattered[i].krayNM );
+		bool thisIsSplit = false;
+
+		{
+			bool allLobesDelta = true;
+			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+				if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
 			}
-			const Scalar selectedKray = fabs( pScat->krayNM );
-			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
-				selectProb = selectedKray / totalKray;
+			const Scalar normalizedThroughput =
+				( lightBetaInitialNM > 0 ) ?
+				fabs( betaNM ) / lightBetaInitialNM :
+				Scalar( 0 );
+			const bool shouldSplit =
+				!splitFired &&
+				!sawNonDeltaScatter &&
+				scattered.Count() > 1 &&
+				scattered.Count() <= 4 &&
+				allLobesDelta &&
+				!( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() ) &&
+				!( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() ) &&
+				normalizedThroughput > effectiveBranchingThreshold;
+
+			if( shouldSplit ) {
+				pScat = &scattered[0];
+				thisIsSplit = true;
+				// selectProb stays 1.0 for deterministic split.
+			} else {
+				pScat = scattered.RandomlySelect( lobeSelectXi, true );
+				if( !pScat ) {
+					break;
+				}
+				// Compute lobe selection probability using spectral krayNM weights
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						totalKray += fabs( scattered[i].krayNM );
+					}
+					const Scalar selectedKray = fabs( pScat->krayNM );
+					if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+						selectProb = selectedKray / totalKray;
+					}
+				}
 			}
 		}
 
@@ -4850,6 +5375,50 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		vertices.back().isDelta = pScat->isDelta;
+
+		// Track non-delta scatter to block future splits.
+		if( !pScat->isDelta ) {
+			sawNonDeltaScatter = true;
+		}
+
+		// Split save: snapshot the shared prefix and enqueue each
+		// non-zero-krayNM extra branch's entry state.  The split
+		// vertex is vertices.back() and has already been populated.
+		if( thisIsSplit ) {
+			splitFired = true;
+			savedPrefix.assign( vertices.begin(), vertices.end() );
+			for( unsigned int i = 1; i < scattered.Count(); i++ ) {
+				const Scalar scatmaxv = fabs( scattered[i].krayNM );
+				if( scatmaxv <= 0 ) continue;
+				PendingLightBranchNM pb;
+				pb.betaNM = betaNM * scattered[i].krayNM;
+				pb.pdfFwdPrev = 0;
+				pb.currentRay = scattered[i].ray;
+				pb.currentRay.Advance( BDPT_RAY_EPSILON );
+				pb.iorStack = scattered[i].ior_stack ?
+					*scattered[i].ior_stack : iorStack;
+				pb.startDepth = depth + 1;
+				pb.diffuseBounces = nmLightDiffuseBounces;
+				pb.glossyBounces = nmLightGlossyBounces;
+				pb.transmissionBounces = nmLightTransmissionBounces;
+				pb.translucentBounces = nmLightTranslucentBounces;
+				pb.volumeBounces = nmLightVolumeBounces;
+				pb.surfaceBounces = nmLightSurfaceBounces;
+				switch( scattered[i].type ) {
+					case ScatteredRay::eRayDiffuse:
+						pb.diffuseBounces++; break;
+					case ScatteredRay::eRayReflection:
+						pb.glossyBounces++; break;
+					case ScatteredRay::eRayRefraction:
+						pb.transmissionBounces++; break;
+					case ScatteredRay::eRayTranslucent:
+						pb.translucentBounces++; break;
+					default:
+						break;
+				}
+				pendingBranches.push_back( pb );
+			}
+		}
 
 		// --- BSSRDF sampling (NM light subpath) ---
 		Scalar bssrdfReflectCompensation = 1.0;
@@ -5265,6 +5834,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 	}
 
+	// End of this branch's walk — record boundary in subpathStarts.
+	subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
+	} while ( !pendingBranches.empty() );
+
 	return static_cast<unsigned int>( vertices.size() );
 }
 
@@ -5280,11 +5853,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	std::vector<BDPTVertex>& vertices,
-	const Scalar nm
+	std::vector<uint32_t>& subpathStarts,
+	const Scalar nm,
+	const Scalar branchingThresholdOverride
 	) const
 {
 	vertices.clear();
 	vertices.reserve( maxEyeDepth + 1 );
+	subpathStarts.clear();
+	subpathStarts.push_back( 0 );
 
 	// Vertex 0: the camera
 	{
@@ -5340,11 +5917,97 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	unsigned int nmEyeVolumeBounces = 0;
 	unsigned int nmEyeSurfaceBounces = 0;
 
-	const unsigned int nmMaxEyeTotalDepth = maxEyeDepth + stabilityConfig.maxVolumeBounce;
-	for( unsigned int depth = 0; depth < nmMaxEyeTotalDepth; depth++ )
+	// Resolve effective branching threshold (same pattern as RGB side).
+	const Scalar effectiveBranchingThreshold =
+		( branchingThresholdOverride >= 0 ) ?
+		branchingThresholdOverride :
+		stabilityConfig.branchingThreshold;
+
+	// Threshold-gated branching on the NM eye subpath.  Mirrors the RGB
+	// GenerateEyeSubpath branching block.  See that function for the full
+	// rationale of each gate; the only NM-specific difference is the use
+	// of scalar krayNM / betaNM in place of RGB kray / beta, and the
+	// camera-side beta_initial is always 1.0 (betaNM is initialized to 1).
+	struct PendingEyeBranchNM {
+		Scalar betaNM;
+		Scalar pdfFwdPrev;
+		Ray currentRay;
+		IORStack iorStack;
+		unsigned int startDepth;
+		unsigned int diffuseBounces;
+		unsigned int glossyBounces;
+		unsigned int transmissionBounces;
+		unsigned int translucentBounces;
+		unsigned int volumeBounces;
+		unsigned int surfaceBounces;
+
+		PendingEyeBranchNM() :
+			betaNM( 0 ),
+			pdfFwdPrev( 0 ),
+			currentRay( Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) ),
+			iorStack( 1.0 ),
+			startDepth( 0 ),
+			diffuseBounces( 0 ),
+			glossyBounces( 0 ),
+			transmissionBounces( 0 ),
+			translucentBounces( 0 ),
+			volumeBounces( 0 ),
+			surfaceBounces( 0 )
+		{
+		}
+	};
+	std::vector<PendingEyeBranchNM> pendingBranches;
+	std::vector<BDPTVertex> savedPrefix;
+	bool splitFired = false;
+	// Eye-side beta_initial is always 1.0 (camera vertex starts at unit throughput).
+	const Scalar eyeBetaInitialNM = Scalar( 1 );
+	bool firstBranchIter = true;
+	unsigned int startDepth = 0;
+	unsigned int branchIdx = 0;
+	bool sawNonDeltaScatter = false;
+
+	// Saturating add; see matching comment in GenerateEyeSubpath.
+	// Guard maxEyeDepth >= 1024 so the subtraction doesn't underflow.
+	const unsigned int nmMaxEyeTotalDepth =
+		( maxEyeDepth >= 1024u ||
+		  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
+			1024u :
+			maxEyeDepth + stabilityConfig.maxVolumeBounce;
+
+	do {
+	if( !firstBranchIter ) {
+		PendingEyeBranchNM pb = pendingBranches.back();
+		pendingBranches.pop_back();
+		for( size_t vi = 0; vi < savedPrefix.size(); vi++ ) {
+			vertices.push_back( savedPrefix[vi] );
+		}
+		betaNM = pb.betaNM;
+		pdfFwdPrev = pb.pdfFwdPrev;
+		currentRay = pb.currentRay;
+		iorStack = pb.iorStack;
+		startDepth = pb.startDepth;
+		sawNonDeltaScatter = false;
+		nmEyeDiffuseBounces = pb.diffuseBounces;
+		nmEyeGlossyBounces = pb.glossyBounces;
+		nmEyeTransmissionBounces = pb.transmissionBounces;
+		nmEyeTranslucentBounces = pb.translucentBounces;
+		nmEyeVolumeBounces = pb.volumeBounces;
+		nmEyeSurfaceBounces = pb.surfaceBounces;
+		branchIdx++;
+	}
+	firstBranchIter = false;
+
+	for( unsigned int depth = startDepth; depth < nmMaxEyeTotalDepth; depth++ )
 	{
-		// Phases 16..30 = eye bounces 0..14
-		sampler.StartStream( 16 + depth );
+		// Phases 16..N = eye bounces 0..N-16 for branch 0.  Branches 1+
+		// use a reserved high-stream base at 20000+ to guarantee non-
+		// collision with light-branch streams (10000..20000) and SMS
+		// streams (31..46).  See GenerateEyeSubpath for details.
+		const unsigned int kBranchedEyeStreamBase = 20000u;
+		const unsigned int streamNum = ( branchIdx == 0 )
+			? ( 16u + depth )
+			: ( kBranchedEyeStreamBase + ( branchIdx - 1u ) * nmMaxEyeTotalDepth + depth );
+		sampler.StartStream( streamNum );
 
 		RayIntersection ri( currentRay, nullRasterizerState );
 		scene.GetObjects()->IntersectRay( ri, true, true, false );
@@ -5567,21 +6230,54 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			break;
 		}
 
-		const ScatteredRay* pScat = scattered.RandomlySelect( sampler.Get1D(), true );
-		if( !pScat ) {
-			break;
-		}
-
-		// Compute lobe selection probability using spectral krayNM weights
+		// Threshold-gated branching vs random selection.  Consume one
+		// sampler dimension unconditionally for Sobol alignment whether
+		// we split or pick one.  Mirrors GenerateEyeSubpath's logic
+		// but uses scalar krayNM / betaNM in place of RGB vectors.
+		const Scalar lobeSelectXi = sampler.Get1D();
+		const ScatteredRay* pScat;
 		Scalar selectProb = 1.0;
-		if( scattered.Count() > 1 ) {
-			Scalar totalKray = 0;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				totalKray += fabs( scattered[i].krayNM );
+		bool thisIsSplit = false;
+
+		{
+			bool allLobesDelta = true;
+			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+				if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
 			}
-			const Scalar selectedKray = fabs( pScat->krayNM );
-			if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
-				selectProb = selectedKray / totalKray;
+			const Scalar normalizedThroughput =
+				( eyeBetaInitialNM > 0 ) ?
+				fabs( betaNM ) / eyeBetaInitialNM :
+				Scalar( 0 );
+			const bool shouldSplit =
+				!splitFired &&
+				!sawNonDeltaScatter &&
+				scattered.Count() > 1 &&
+				scattered.Count() <= 4 &&
+				allLobesDelta &&
+				!( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() ) &&
+				!( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() ) &&
+				normalizedThroughput > effectiveBranchingThreshold;
+
+			if( shouldSplit ) {
+				pScat = &scattered[0];
+				thisIsSplit = true;
+				// selectProb stays 1.0 for deterministic split.
+			} else {
+				pScat = scattered.RandomlySelect( lobeSelectXi, true );
+				if( !pScat ) {
+					break;
+				}
+				// Compute lobe selection probability using spectral krayNM weights
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						totalKray += fabs( scattered[i].krayNM );
+					}
+					const Scalar selectedKray = fabs( pScat->krayNM );
+					if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+						selectProb = selectedKray / totalKray;
+					}
+				}
 			}
 		}
 
@@ -5598,6 +6294,50 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		vertices.back().isDelta = pScat->isDelta;
+
+		// Track non-delta scatter to block future splits.
+		if( !pScat->isDelta ) {
+			sawNonDeltaScatter = true;
+		}
+
+		// Split save: snapshot the shared prefix and enqueue each
+		// non-zero-krayNM extra branch's entry state.  The split
+		// vertex is vertices.back() and has already been populated.
+		if( thisIsSplit ) {
+			splitFired = true;
+			savedPrefix.assign( vertices.begin(), vertices.end() );
+			for( unsigned int i = 1; i < scattered.Count(); i++ ) {
+				const Scalar scatmaxv = fabs( scattered[i].krayNM );
+				if( scatmaxv <= 0 ) continue;
+				PendingEyeBranchNM pb;
+				pb.betaNM = betaNM * scattered[i].krayNM;
+				pb.pdfFwdPrev = 0;
+				pb.currentRay = scattered[i].ray;
+				pb.currentRay.Advance( BDPT_RAY_EPSILON );
+				pb.iorStack = scattered[i].ior_stack ?
+					*scattered[i].ior_stack : iorStack;
+				pb.startDepth = depth + 1;
+				pb.diffuseBounces = nmEyeDiffuseBounces;
+				pb.glossyBounces = nmEyeGlossyBounces;
+				pb.transmissionBounces = nmEyeTransmissionBounces;
+				pb.translucentBounces = nmEyeTranslucentBounces;
+				pb.volumeBounces = nmEyeVolumeBounces;
+				pb.surfaceBounces = nmEyeSurfaceBounces;
+				switch( scattered[i].type ) {
+					case ScatteredRay::eRayDiffuse:
+						pb.diffuseBounces++; break;
+					case ScatteredRay::eRayReflection:
+						pb.glossyBounces++; break;
+					case ScatteredRay::eRayRefraction:
+						pb.transmissionBounces++; break;
+					case ScatteredRay::eRayTranslucent:
+						pb.translucentBounces++; break;
+					default:
+						break;
+				}
+				pendingBranches.push_back( pb );
+			}
+		}
 
 		// --- BSSRDF sampling (NM eye subpath) ---
 		Scalar bssrdfReflectCompensation = 1.0;
@@ -5995,6 +6735,10 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			iorStack = *pScat->ior_stack;
 		}
 	}
+
+	// End of this branch's walk — record boundary in subpathStarts.
+	subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
+	} while ( !pendingBranches.empty() );
 
 	return static_cast<unsigned int>( vertices.size() );
 }

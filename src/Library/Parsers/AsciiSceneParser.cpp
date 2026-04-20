@@ -4821,7 +4821,6 @@ namespace RISE
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
 					String name = "noname";
-					bool branch = true;
 					bool smsEnabled = false;
 					unsigned int smsMaxIterations = 20;
 					double smsThreshold = 1e-5;
@@ -4838,8 +4837,6 @@ namespace RISE
 
 						if( pname == "name" ) {
 							name = pvalue;
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
 						} else if( pname == "sms_enabled" ) {
 							smsEnabled = pvalue.toBoolean();
 						} else if( pname == "sms_max_iterations" ) {
@@ -4850,20 +4847,23 @@ namespace RISE
 							smsMaxChainDepth = pvalue.toUInt();
 						} else if( pname == "sms_biased" ) {
 							smsBiased = pvalue.toBoolean();
-						} else if( pname == "force_check_emitters" ||
+						} else if( pname == "branch" ||
+								   pname == "force_check_emitters" ||
 								   pname == "finalgather" ||
 								   pname == "reflections" ||
 								   pname == "refractions" ||
 								   pname == "diffuse" ||
 								   pname == "translucents" ) {
-							// Legacy parameters — silently ignored
+							// Legacy parameters — silently ignored.
+							// `branch` was retired in favor of `branching_threshold`
+							// on the rasterizer chunk.
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddPathTracingShaderOp( name.c_str(), branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+					return pJob.AddPathTracingShaderOp( name.c_str(), smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 				}
 			};
 
@@ -4915,7 +4915,6 @@ namespace RISE
 					unsigned int samples = 16;
 					bool irradiancecaching = false;
 					bool forcecheckemitters = false;
-					bool branch = true;
 					bool reflections = true;
 					bool refractions = true;
 					bool diffuse = true;
@@ -4939,8 +4938,6 @@ namespace RISE
 							irradiancecaching = pvalue.toBoolean();
 						} else if( pname == "force_check_emitters" ) {
 							forcecheckemitters = pvalue.toBoolean();
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
 						} else if( pname == "reflections" ) {
 							reflections = pvalue.toBoolean();
 						} else if( pname == "refractions" ) {
@@ -4949,13 +4946,16 @@ namespace RISE
 							diffuse = pvalue.toBoolean();
 						} else if( pname == "translucents" ) {
 							translucents = pvalue.toBoolean();
+						} else if( pname == "branch" ) {
+							// Legacy: retired in favor of branching_threshold
+							// on the rasterizer chunk.  Silently ignored.
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddDistributionTracingShaderOp( name.c_str(), samples, irradiancecaching, forcecheckemitters, branch, reflections, refractions, diffuse, translucents );
+					return pJob.AddDistributionTracingShaderOp( name.c_str(), samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 				}
 			};
 
@@ -5850,6 +5850,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "optimal_mis" ) {
 							stabilityConfig.optimalMIS = pvalue.toBoolean();
 						} else if( pname == "optimal_mis_training_iterations" ) {
@@ -6086,6 +6088,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -6250,6 +6254,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "optimal_mis" ) {
 							stabilityConfig.optimalMIS = pvalue.toBoolean();
 						} else if( pname == "optimal_mis_training_iterations" ) {
@@ -6426,6 +6432,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "optimal_mis" ) {
 							stabilityConfig.optimalMIS = pvalue.toBoolean();
 						} else if( pname == "optimal_mis_training_iterations" ) {
@@ -6566,6 +6574,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "progressive_rendering" ) {
 							progressiveConfig.enabled = pvalue.toBoolean();
 						} else if( pname == "progressive_samples_per_pass" ) {
@@ -6708,6 +6718,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "progressive_rendering" ) {
 							progressiveConfig.enabled = pvalue.toBoolean();
 						} else if( pname == "progressive_samples_per_pass" ) {
@@ -6872,6 +6884,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "optimal_mis" ) {
 							stabilityConfig.optimalMIS = pvalue.toBoolean();
 						} else if( pname == "optimal_mis_training_iterations" ) {
@@ -7027,6 +7041,8 @@ namespace RISE
 							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else if( pname == "optimal_mis" ) {
 							stabilityConfig.optimalMIS = pvalue.toBoolean();
 						} else if( pname == "optimal_mis_training_iterations" ) {
@@ -7140,6 +7156,8 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
@@ -7231,6 +7249,8 @@ namespace RISE
 							pixelFilterParamB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
+						} else if( pname == "branching_threshold" ) {
+							stabilityConfig.branchingThreshold = pvalue.toDouble();
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;

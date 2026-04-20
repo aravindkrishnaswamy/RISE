@@ -59,13 +59,11 @@ namespace RISE
 			virtual ~PathTracingIntegrator();
 
 			ManifoldSolver*		pSolver;
-			const bool			bBranch;
 			const bool			bSMSEnabled;
 			StabilityConfig		stabilityConfig;
 
 		public:
 			PathTracingIntegrator(
-				const bool branch,
 				const ManifoldSolverConfig& smsConfig,
 				const StabilityConfig& stabilityCfg
 				);
@@ -189,7 +187,6 @@ namespace RISE
 				) const;
 
 			/// Accessors for NM/HWSS code in PathTracingShaderOp
-			bool GetBranch() const { return bBranch; }
 			bool GetSMSEnabled() const { return bSMSEnabled; }
 			ManifoldSolver* GetSolver() const { return pSolver; }
 		};

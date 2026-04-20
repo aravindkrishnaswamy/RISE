@@ -25,7 +25,6 @@ RISE ASCII SCENE 5
 pathtracing_shaderop
 {
 	name		pt
-	branch		true
 	reflections	true
 	refractions	true
 	diffuse		true

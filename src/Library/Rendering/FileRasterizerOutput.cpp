@@ -19,6 +19,7 @@
 #include "../Painters/CheckerPainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/DiskFileWriteBuffer.h"
+#include "../Utilities/RasterSanityScan.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -163,6 +164,27 @@ void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const u
 	safe_release( mb );
 
 	GlobalLog()->PrintEx( eLog_Event, "FileRasterizerOutput:: Written to \'%s\'", buf );
+
+	// Pre-write would have been ideal but the writer consumes the
+	// image via DumpImage so we scan afterwards — same cost, purely
+	// diagnostic.  Negative radiance is physically impossible; small
+	// counts typically indicate a pixel reconstruction filter with
+	// negative side lobes (Mitchell / Lanczos) interacting with
+	// bright neighbors.  Larger counts or large magnitudes point at
+	// an actual integrator bug worth investigating.
+	{
+		const RasterSanityReport r = ScanRasterImageForPathologicalPixels( pImage );
+		if( r.negativeCount > 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"FileRasterizerOutput:: '%s' contains %u pixels with negative "
+				"radiance (max magnitude %.4e).  Common cause: pixel reconstruction "
+				"filter with negative side lobes (Mitchell / Lanczos) interacting "
+				"with bright neighbors.  Switch to a non-negative filter "
+				"(gaussian, triangle, box) if this is visually distracting, or "
+				"accept minor clamping to 0 in LDR output formats.",
+				buf, r.negativeCount, (double)r.maxNegativeMagnitude );
+		}
+	}
 
 	GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
 	safe_release( pWriter );

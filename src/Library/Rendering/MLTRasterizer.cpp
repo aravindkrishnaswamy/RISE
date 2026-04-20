@@ -298,10 +298,15 @@ MLTRasterizer::MLTSample MLTRasterizer::EvaluateSample(
 	// BDPTIntegrator manages its own streams internally (0-47).
 	std::vector<BDPTVertex> lightVerts;
 	std::vector<BDPTVertex> eyeVerts;
+	std::vector<uint32_t> lightSubpathStarts;
+	std::vector<uint32_t> eyeSubpathStarts;
 
-	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, rc.random );
-
-	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts );
+	// MLT's Markov-chain proposal measure requires a single subpath
+	// per proposal — PSSMLT's primary-sample vector can't mutate
+	// branch choices at delta vertices.  Force threshold=1.0 on both
+	// sides permanently.
+	pIntegrator->GenerateLightSubpath( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random, Scalar( 1.0 ) );
+	pIntegrator->GenerateEyeSubpath( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, Scalar( 1.0 ) );
 
 	// Evaluate all (s,t) connection strategies via MIS
 	std::vector<BDPTIntegrator::ConnectionResult> results =

@@ -990,6 +990,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomWalkSSS.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SSSCoefficients.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SobolSampler.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RasterSanityScan.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\StabilityConfig.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SumOfExponentialsFit.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ThreadPool.h" />

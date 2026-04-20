@@ -118,7 +118,7 @@ void Job::InitializeContainers()
 		this->AddGlobalSpectralPhotonMapShaderOp( "DefaultGlobalSpectralPhotonMap" );
 		this->AddTranslucentPelPhotonMapShaderOp( "DefaultTranslucentPelPhotonMap" );
 		this->AddShadowPhotonMapShaderOp( "DefaultShadowPhotonMap" );
-		this->AddPathTracingShaderOp( "DefaultPathTracing", true, false, 20, 1e-5, 10,  true );
+		this->AddPathTracingShaderOp( "DefaultPathTracing", false, 20, 1e-5, 10,  true );
 	}
 }
 
@@ -3745,7 +3745,6 @@ bool Job::AddDistributionTracingShaderOp(
 	const unsigned int samples,								///< [in] Number of sample to use in distribution
 	const bool irradiancecaching,							///< [in] Should irradiance caching be used if available?
 	const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-	const bool branch,										///< [in] Should we branch when doing scattering?
 	const bool reflections,									///< [in] Should reflections be traced?
 	const bool refractions,									///< [in] Should refractions be traced?
 	const bool diffuse,										///< [in] Should diffuse rays be traced?
@@ -3753,7 +3752,7 @@ bool Job::AddDistributionTracingShaderOp(
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateDistributionTracingShaderOp( &pShaderOp, samples, irradiancecaching, forcecheckemitters, branch, reflections, refractions, diffuse, translucents );
+	RISE_API_CreateDistributionTracingShaderOp( &pShaderOp, samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
@@ -3780,7 +3779,6 @@ bool Job::AddFinalGatherShaderOp(
 
 bool Job::AddPathTracingShaderOp(
 	const char* name,
-	const bool branch,
 	const bool smsEnabled,
 	const unsigned int smsMaxIterations,
 	const double smsThreshold,
@@ -3789,7 +3787,7 @@ bool Job::AddPathTracingShaderOp(
 	)
 {
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreatePathTracingShaderOp( &pShaderOp, branch, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
+	RISE_API_CreatePathTracingShaderOp( &pShaderOp, smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
 	return true;

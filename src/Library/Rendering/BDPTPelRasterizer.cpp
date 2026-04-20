@@ -102,11 +102,25 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// in the BDPT hot path.
 	static thread_local std::vector<BDPTVertex> lightVerts;
 	static thread_local std::vector<BDPTVertex> eyeVerts;
+	static thread_local std::vector<uint32_t> lightSubpathStarts;
+	static thread_local std::vector<uint32_t> eyeSubpathStarts;
 	lightVerts.clear();
 	eyeVerts.clear();
 
-	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, rc.random );
-	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts );
+	// Allow branching on both sides (pass -1 to use the configured
+	// threshold).  The per-(eye-branch × light-branch) loop below
+	// picks each sub-range out of the flat vertex vectors and runs
+	// EvaluateAllStrategies independently per pair.  In the common
+	// case of no split firing (single branch each), the outer loop
+	// runs exactly once and behaviour matches the pre-refactor path
+	// bit-exactly.
+	pIntegrator->GenerateLightSubpath( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, rc.random, Scalar( -1 ) );
+	pIntegrator->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, Scalar( -1 ) );
+
+	const size_t numEyeBranches = eyeSubpathStarts.size() >= 2 ?
+		( eyeSubpathStarts.size() - 1 ) : 0;
+	const size_t numLightBranches = lightSubpathStarts.size() >= 2 ?
+		( lightSubpathStarts.size() - 1 ) : 0;
 
 	// Extract first-hit AOV data for the denoiser.
 	// Use the actual first eye-subpath surface vertex (even if delta)
@@ -137,61 +151,115 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 		}
 	}
 
-	std::vector<BDPTIntegrator::ConnectionResult> results =
-		pIntegrator->EvaluateAllStrategies(
-			lightVerts,
-			eyeVerts,
-			pScene,
-			*pCaster,
-			camera,
-			&sampler );
-
 	RISEPel sampleColor( 0, 0, 0 );
 
-	for( unsigned int r=0; r<results.size(); r++ )
-	{
-		const BDPTIntegrator::ConnectionResult& cr = results[r];
-		if( !cr.valid ) {
-			continue;
-		}
+	// Per-(eye-branch × light-branch) EvaluateAllStrategies loop.
+	// Each branch pair is an independent realization of the path;
+	// its internal MIS weights sum to 1 over the (s,t) strategies
+	// for that pair.  Deterministic kray weighting at the split
+	// vertex (applied at subpath generation time) ensures the total
+	// energy across branches is identical in expectation to the
+	// pre-refactor random-select estimator.
+	static thread_local std::vector<BDPTVertex> branchLightVerts;
+	static thread_local std::vector<BDPTVertex> branchEyeVerts;
 
-		RISEPel weighted = cr.contribution * cr.misWeight;
+	for( size_t eb = 0; eb < numEyeBranches; eb++ ) {
+		const uint32_t ebeg = eyeSubpathStarts[eb];
+		const uint32_t eend = eyeSubpathStarts[eb + 1];
+		if( ebeg >= eend ) continue;
+		branchEyeVerts.assign(
+			eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
 
-		// Clamp per-strategy contribution.  Use directClamp for s==1
-		// (direct lighting connections) and indirectClamp for all
-		// other strategies.  A value of 0 means disabled (no clamping).
-		{
-			const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
-			const Scalar clampVal = (cr.s == 1)
-				? sc.directClamp
-				: sc.indirectClamp;
-			if( clampVal > 0 ) {
-				const Scalar maxVal = ColorMath::MaxValue( weighted );
-				if( maxVal > clampVal ) {
-					weighted = weighted * (clampVal / maxVal);
+		// Light side may be empty (Le==0, no emission): still evaluate
+		// the eye-only strategies (s==0 hits emitter directly) by
+		// passing an empty light-subpath through EvaluateAllStrategies.
+		const size_t lbIters = numLightBranches > 0 ? numLightBranches : 1;
+		for( size_t lb = 0; lb < lbIters; lb++ ) {
+			if( numLightBranches > 0 ) {
+				const uint32_t lbeg = lightSubpathStarts[lb];
+				const uint32_t lend = lightSubpathStarts[lb + 1];
+				if( lbeg >= lend ) continue;
+				branchLightVerts.assign(
+					lightVerts.begin() + lbeg, lightVerts.begin() + lend );
+			} else {
+				branchLightVerts.clear();
+			}
+
+			std::vector<BDPTIntegrator::ConnectionResult> results =
+				pIntegrator->EvaluateAllStrategies(
+					branchLightVerts,
+					branchEyeVerts,
+					pScene,
+					*pCaster,
+					camera,
+					&sampler );
+
+			for( unsigned int r=0; r<results.size(); r++ )
+			{
+				const BDPTIntegrator::ConnectionResult& cr = results[r];
+				if( !cr.valid ) {
+					continue;
+				}
+
+				// Dedupe strategies that are light-branch-independent.
+				// Two cases read nothing beyond lightVerts[0] in either
+				// contribution or MIS weight:
+				//   s==0: eye path hits emitter directly — no light
+				//         subpath vertices read at all.
+				//   s==1: NEE/direct-lighting — reads only the LIGHT
+				//         vertex at lightVerts[0], which is shared
+				//         across all light branches (the split can
+				//         only fire at lightVerts[1+] where the first
+				//         scatter happens).
+				// Gate both to lb==0 so each accumulates exactly once
+				// per (eye-branch, spectral sample), matching pre-
+				// branching behaviour.  Symmetric to the t==1 splat
+				// gate below (eye-branch-independent light→camera).
+				if( (cr.s == 0 || cr.s == 1) && lb != 0 ) continue;
+
+				RISEPel weighted = cr.contribution * cr.misWeight;
+
+				// Clamp per-strategy contribution.  Use directClamp for s==1
+				// (direct lighting connections) and indirectClamp for all
+				// other strategies.  A value of 0 means disabled.
+				{
+					const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
+					const Scalar clampVal = (cr.s == 1)
+						? sc.directClamp
+						: sc.indirectClamp;
+					if( clampVal > 0 ) {
+						const Scalar maxVal = ColorMath::MaxValue( weighted );
+						if( maxVal > clampVal ) {
+							weighted = weighted * (clampVal / maxVal);
+						}
+					}
+				}
+
+				if( cr.needsSplat && pSplatFilm )
+				{
+					// Splat-to-camera (t=1) contributions are eye-
+					// subpath-independent — the path goes light → camera
+					// without traversing the eye walk beyond the camera
+					// vertex.  When eye branching fires, the identical
+					// splat would otherwise fire N_E times (once per
+					// eye branch).  Gate on eb==0 so each pixel sample
+					// produces one splat per light branch, matching
+					// the pre-branching behaviour.  MIS weights across
+					// eye branches differ at deep s values but the
+					// PATH is identical — deduplicating at eb==0
+					// avoids the N_E× energy blow-up.
+					if( eb == 0 ) {
+						const Scalar fx = cr.rasterPos.x;
+						const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+						SplatContributionToFilm( fx, fy, weighted,
+							camera.GetWidth(), camera.GetHeight() );
+					}
+				}
+				else
+				{
+					sampleColor = sampleColor + weighted;
 				}
 			}
-		}
-
-		if( cr.needsSplat && pSplatFilm )
-		{
-			// Rasterize returns screen coordinates where y=0 is the
-			// image bottom (matching ptOnScreen = Point2(x, height-y)).
-			// Convert to image buffer coordinates where y=0 is the top.
-			// Keep the FRACTIONAL raster position — SplatContributionToFilm
-			// uses it to spread the contribution across the filter
-			// footprint via Mitchell-Netravali (or whichever kernel is
-			// configured).  Previously we truncated to int here, which
-			// gave hard caustic edges on high-contrast light-to-camera
-			// paths and a half-pixel bias.
-			const Scalar fx = cr.rasterPos.x;
-			const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
-			SplatContributionToFilm( fx, fy, weighted,
-				camera.GetWidth(), camera.GetHeight() );
-		}
-		else
-		{
-			sampleColor = sampleColor + weighted;
 		}
 	}
 
@@ -204,31 +272,41 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	// BDPT cannot generate caustic paths through perfect specular
 	// geometry, so no double-counting occurs.
 	//
-	// If SMS is extended to glossy (non-delta) specular materials,
-	// cross-MIS with BDPT would be required.  See docs/SMS.md for
-	// the full analysis.
+	// Per eye-branch: each branch has its own first non-specular
+	// eye vertex, which is where SMS anchors the manifold chain.
+	// StartStream(31) is issued once before the loop; subsequent
+	// calls advance through the stream naturally so branches don't
+	// consume correlated Sobol dimensions.
 	if( pIntegrator ) {
 		sampler.StartStream( 31 );
-		std::vector<BDPTIntegrator::ConnectionResult> smsResults =
-			pIntegrator->EvaluateSMSStrategies(
-				eyeVerts, pScene, *pCaster, camera, sampler );
+		for( size_t eb = 0; eb < numEyeBranches; eb++ ) {
+			const uint32_t ebeg = eyeSubpathStarts[eb];
+			const uint32_t eend = eyeSubpathStarts[eb + 1];
+			if( ebeg >= eend ) continue;
+			branchEyeVerts.assign(
+				eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
 
-		for( unsigned int r=0; r<smsResults.size(); r++ ) {
-			const BDPTIntegrator::ConnectionResult& cr = smsResults[r];
-			if( !cr.valid ) continue;
+			std::vector<BDPTIntegrator::ConnectionResult> smsResults =
+				pIntegrator->EvaluateSMSStrategies(
+					branchEyeVerts, pScene, *pCaster, camera, sampler );
 
-			RISEPel weighted = cr.contribution * cr.misWeight;
-			{
-				const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
-				const Scalar clampVal = sc.directClamp;
-				if( clampVal > 0 ) {
-					const Scalar maxVal = ColorMath::MaxValue( weighted );
-					if( maxVal > clampVal ) {
-						weighted = weighted * (clampVal / maxVal);
+			for( unsigned int r=0; r<smsResults.size(); r++ ) {
+				const BDPTIntegrator::ConnectionResult& cr = smsResults[r];
+				if( !cr.valid ) continue;
+
+				RISEPel weighted = cr.contribution * cr.misWeight;
+				{
+					const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
+					const Scalar clampVal = sc.directClamp;
+					if( clampVal > 0 ) {
+						const Scalar maxVal = ColorMath::MaxValue( weighted );
+						if( maxVal > clampVal ) {
+							weighted = weighted * (clampVal / maxVal);
+						}
 					}
 				}
+				sampleColor = sampleColor + weighted;
 			}
-			sampleColor = sampleColor + weighted;
 		}
 	}
 

@@ -34,7 +34,6 @@ namespace RISE
 			Scalar dOVNumSamples;
 			const bool bUseIrradianceCache;
 			const bool bForceCheckEmitters;
-			const bool bBranch;
 			const bool bTraceReflection;
 			const bool bTraceRefraction;
 			const bool bTraceDiffuse;
@@ -43,11 +42,10 @@ namespace RISE
 			bool ShouldTraceRay( const ScatteredRay::ScatRayType type ) const;
 
 		public:
-			DistributionTracingShaderOp( 
-				const unsigned int numSamples_, 
+			DistributionTracingShaderOp(
+				const unsigned int numSamples_,
 				const bool irradiancecaching,
 				const bool forcecheckemitters,
-				const bool branch,
 				const bool reflections,
 				const bool refractions,
 				const bool diffuse,

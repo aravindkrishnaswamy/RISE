@@ -16,7 +16,6 @@ RISE ASCII SCENE 5
 pathtracing_shaderop
 {
 	name				mis_pt
-	branch				false
 	sms_enabled			TRUE
 	sms_max_iterations	20
 	sms_threshold		1e-5

@@ -41,7 +41,6 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
   pIntegrator( 0 )
 {
 	pIntegrator = new PathTracingIntegrator(
-		false,
 		smsConfig,
 		stabilityConfig
 		);

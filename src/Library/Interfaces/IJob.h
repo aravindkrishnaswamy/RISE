@@ -1232,7 +1232,6 @@ namespace RISE
 			const unsigned int samples,								///< [in] Number of sample to use in distribution
 			const bool irradiancecaching,							///< [in] Should irradiance caching be used if available?
 			const bool forcecheckemitters,							///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-			const bool branch,										///< [in] Should we branch when doing scattering?
 			const bool reflections,									///< [in] Should reflections be traced?
 			const bool refractions,									///< [in] Should refractions be traced?
 			const bool diffuse,										///< [in] Should diffuse rays be traced?
@@ -1251,7 +1250,6 @@ namespace RISE
 
 		virtual bool AddPathTracingShaderOp(
 			const char* name,
-			const bool branch,
 			const bool smsEnabled,
 			const unsigned int smsMaxIterations,
 			const double smsThreshold,

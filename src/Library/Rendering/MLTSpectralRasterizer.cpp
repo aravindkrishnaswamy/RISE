@@ -257,9 +257,14 @@ void MLTSpectralRasterizer::EvaluateSingleWavelength(
 {
 	lightVerts.clear();
 	eyeVerts.clear();
+	std::vector<uint32_t> lightSubpathStarts;
+	std::vector<uint32_t> eyeSubpathStarts;
 
-	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, nm, rc.random );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, nm );
+	// MLT's Markov-chain proposal measure assumes a single subpath —
+	// force threshold=1.0 on both sides to keep the NM generators
+	// emitting single-branch output (matches RGB MLTRasterizer).
+	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ) );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ) );
 
 	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 }
@@ -380,11 +385,15 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 			// Generate subpaths once at hero wavelength.
 			// BDPTIntegrator manages its own streams internally (0-47).
+			// MLT forces threshold=1.0 (single-branch) — see note at the
+			// top-level helper above.
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, heroNM, rc.random );
+			std::vector<uint32_t> lightSubpathStarts;
+			std::vector<uint32_t> eyeSubpathStarts;
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( 1.0 ) );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, heroNM );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( 1.0 ) );
 
 			// Helper: accumulate strategy results into allStrategyXYZ
 			auto accumulateResults = [&]( const std::vector<BDPTIntegrator::ConnectionResultNM>& results,
@@ -474,10 +483,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			std::vector<BDPTIntegrator::ConnectionResultNM> results;
 			std::vector<BDPTVertex> lightVerts;
 			std::vector<BDPTVertex> eyeVerts;
+			std::vector<uint32_t> lightSubpathStarts;
+			std::vector<uint32_t> eyeSubpathStarts;
 
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, nm, rc.random );
+			// MLT forces threshold=1.0 (single-branch) — see top-level note.
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ) );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, nm );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ) );
 
 			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 

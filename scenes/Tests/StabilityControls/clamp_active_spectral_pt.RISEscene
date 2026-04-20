@@ -16,7 +16,6 @@ RISE ASCII SCENE 5
 pathtracing_shaderop
 {
 	name		pt
-	branch		false
 }
 
 standard_shader

@@ -30,6 +30,7 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
+
 bdpt_pel_rasterizer
 {
 	max_eye_depth		14
@@ -56,6 +57,18 @@ bdpt_pel_rasterizer
 	progressive_samples_per_pass   32
 }
 
+
+/*
+vcm_pel_rasterizer
+{
+	max_eye_depth		10
+	max_light_depth		10
+	samples				128
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+}
+*/
 
 /*
 mlt_rasterizer

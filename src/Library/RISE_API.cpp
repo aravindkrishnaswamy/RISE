@@ -4028,7 +4028,6 @@ namespace RISE
 								const unsigned int samples,		///< [in] Number of sample to use in distribution
 								const bool irradiancecaching,	///< [in] Should irradiance caching be used if available?
 								const bool forcecheckemitters,	///< [in] Force rays allowing to hit emitters even though the material may have a BRDF
-								const bool branch,				///< [in] Should we branch when doing scattering?
 								const bool reflections,			///< [in] Should reflections be traced?
 								const bool refractions,			///< [in] Should refractions be traced?
 								const bool diffuse,				///< [in] Should diffuse rays be traced?
@@ -4039,7 +4038,7 @@ namespace RISE
 			return false;
 		}
 
-		DistributionTracingShaderOp* pShaderOp = new DistributionTracingShaderOp( samples, irradiancecaching, forcecheckemitters, branch, reflections, refractions, diffuse, translucents );
+		DistributionTracingShaderOp* pShaderOp = new DistributionTracingShaderOp( samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "distribution tracing shaderop" );
@@ -4094,7 +4093,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePathTracingShaderOp(
 								IShaderOp** pShaderOp,
-								const bool branch,
 								const bool smsEnabled,
 								const unsigned int smsMaxIterations,
 								const double smsThreshold,
@@ -4115,7 +4113,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 			smsConfig.biased = smsBiased;
 		}
 
-		*pShaderOp = new PathTracingShaderOp( branch, smsConfig, StabilityConfig() );
+		*pShaderOp = new PathTracingShaderOp( smsConfig, StabilityConfig() );
 		GlobalLog()->PrintNew( *pShaderOp, __FILE__, __LINE__, "path tracing shaderop" );
 		return true;
 	}

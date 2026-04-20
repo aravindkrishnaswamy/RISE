@@ -31,6 +31,19 @@ bdpt_pel_rasterizer
 	sms_enabled			FALSE
 }
 
+/*
+vcm_pel_rasterizer
+{
+	max_eye_depth		10
+	max_light_depth		10
+	samples				64
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+	pixel_filter	gaussian
+}
+*/
+
 file_rasterizeroutput
 {
 	pattern				rendered/bdpt_crystal_garden

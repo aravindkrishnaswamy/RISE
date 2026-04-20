@@ -396,12 +396,10 @@ namespace
 //////////////////////////////////////////////////////////////////////
 
 PathTracingIntegrator::PathTracingIntegrator(
-	const bool branch,
 	const ManifoldSolverConfig& smsConfig,
 	const StabilityConfig& stabilityCfg
 	) :
   pSolver( 0 ),
-  bBranch( branch ),
   bSMSEnabled( smsConfig.enabled ),
   stabilityConfig( stabilityCfg )
 {
@@ -472,6 +470,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
+	// Branching threshold: split at most once per subpath, at the first
+	// multi-lobe delta vertex whose normalized surviving throughput
+	// exceeds stabilityConfig.branchingThreshold.  See StabilityConfig.h.
+	// beta_initial = MaxValue(throughput) at entry = 1.0 for top-level
+	// camera paths; for recursive CastRay entries we treat the re-entered
+	// subpath as its own origin (so the threshold is always anchored to
+	// "fraction of this subpath's starting energy surviving").
+	const Scalar betaInitial = ColorMath::MaxValue( throughput );
+	bool splitFired = false;
+
 	// When SMS is active, track whether the BSDF-sampled path went
 	// through a specular surface.  If it did AND there was a prior
 	// non-specular shading point where SMS was evaluated, the emission
@@ -488,7 +496,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	const LightSampler* pLS = caster.GetLightSampler();
 
 #ifdef RISE_ENABLE_OPENPGL
-	const bool useGuidingPathSegments = !bBranch && rc.pGuidingField &&
+	const bool useGuidingPathSegments = rc.pGuidingField &&
 		rc.pGuidingField->IsCollectingTrainingSamples();
 	PTIGuidingPathRecorder* guidingRecorder = useGuidingPathSegments ?
 		&GetPTIGuidingPathRecorder() : 0;
@@ -1068,63 +1076,86 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				break;
 			}
 
-			if( bBranch && !(pSolver && bHadNonSpecularShading && scattered.Count() > 1 && scattered[0].isDelta) )
+			if( scattered.Count() > 1 )
 			{
-				// Standard branching: spawn recursive CastRay for each
-				// scattered ray.  Disabled for delta multi-ray scattering
-				// (e.g., dielectric refraction + reflection) when SMS is
-				// active and a prior non-specular shading point exists,
-				// because the recursive CastRay goes through the shader
-				// system which has no SMS emission suppression — causing
-				// double-counting between SMS and PT delta-chain paths.
-				for( unsigned int i = 0; i < scattered.Count(); i++ )
-				{
-					ScatteredRay& scat = scattered[i];
-					const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
-					if( scatmaxv > 0 )
-					{
-						IRayCaster::RAY_STATE rs2;
-						rs2.depth = depth + 1;
-						rs2.importance = importance * scatmaxv;
-						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-						rs2.type = PathTracingRayType( scat );
-						rs2.considerEmission = true;
-						rs2.diffuseBounces = diffuseBounces;
-						rs2.glossyBounces = glossyBounces;
-						rs2.transmissionBounces = transmissionBounces;
-						rs2.translucentBounces = translucentBounces;
-						rs2.glossyFilterWidth = glossyFilterWidth;
-						rs2.smsPassedThroughSpecular = scat.isDelta ? true : false;
-						rs2.smsHadNonSpecularShading = bHadNonSpecularShading;
-						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-							continue;
-						}
-
-						RISEPel cthis( 0, 0, 0 );
-						Ray ray = scat.ray;
-						ray.Advance( 1e-8 );
-						caster.CastRay( rc, rast, ray, cthis, rs2, 0,
-							pRadianceMap,
-							scat.ior_stack ? *scat.ior_stack : iorStack );
-
-						RISEPel indirect = scat.kray * cthis;
-						if( depth > 0 ) {
-							indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
-						}
-						result = result + throughput * indirect;
-					}
-				}
-				break;
-			}
-			else if( scattered.Count() > 1 )
-			{
-				// Multiple scattered rays (e.g., dielectric producing both
-				// refracted and reflected).  Randomly select one and continue
-				// iteratively rather than branching via CastRay.  This keeps
-				// the path inside IntegrateFromHit so SMS emission suppression
-				// flags are properly tracked.  CastRay would dispatch to the
-				// scene's shader-op chain which has no SMS suppression logic.
+				// Consume one sampler dimension unconditionally for
+				// Sobol alignment — whether we split or RandomlySelect.
 				const Scalar xi = sampler.Get1D();
+
+				// Threshold-gated split: at the first multi-lobe delta
+				// vertex whose normalized throughput still exceeds the
+				// threshold, spawn one continuation per scattered ray
+				// (weighted by kray — deterministic, not /selectProb).
+				// SMS-safe: skipped when a prior non-specular shading
+				// point has been recorded, since recursive CastRay
+				// cannot propagate the suppression state out-of-band.
+				const Scalar normalizedThroughput =
+					( betaInitial > 0 ) ?
+					ColorMath::MaxValue( throughput ) / betaInitial :
+					Scalar( 0 );
+
+				// All scattered lobes must be delta.  Mixed (e.g. polished
+				// with mirror coat + diffuse underlayer) would feed a
+				// non-delta ray into a CastRay expecting delta-transparency
+				// semantics (smsPassedThroughSpecular gets a stale value
+				// from the parent scope rather than being cleared to false).
+				bool allLobesDelta = true;
+				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+					if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
+				}
+				const bool shouldSplit =
+					!splitFired &&
+					allLobesDelta &&
+					scattered.Count() <= 4 &&
+					!bHadNonSpecularShading &&
+					normalizedThroughput > stabilityConfig.branchingThreshold;
+
+				if( shouldSplit )
+				{
+					splitFired = true;
+					for( unsigned int i = 0; i < scattered.Count(); i++ )
+					{
+						ScatteredRay& scat = scattered[i];
+						const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
+						if( scatmaxv > 0 )
+						{
+							IRayCaster::RAY_STATE rs2;
+							rs2.depth = depth + 1;
+							rs2.importance = importance * scatmaxv;
+							rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+							rs2.type = PathTracingRayType( scat );
+							rs2.considerEmission = true;
+							rs2.diffuseBounces = diffuseBounces;
+							rs2.glossyBounces = glossyBounces;
+							rs2.transmissionBounces = transmissionBounces;
+							rs2.translucentBounces = translucentBounces;
+							rs2.glossyFilterWidth = glossyFilterWidth;
+							rs2.smsPassedThroughSpecular = scat.isDelta ? true : bPassedThroughSpecular;
+							rs2.smsHadNonSpecularShading = bHadNonSpecularShading;
+							if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
+								continue;
+							}
+
+							RISEPel cthis( 0, 0, 0 );
+							Ray ray = scat.ray;
+							ray.Advance( 1e-8 );
+							caster.CastRay( rc, rast, ray, cthis, rs2, 0,
+								pRadianceMap,
+								scat.ior_stack ? *scat.ior_stack : iorStack );
+
+							RISEPel indirect = scat.kray * cthis;
+							if( depth > 0 ) {
+								indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
+							}
+							result = result + throughput * indirect;
+						}
+					}
+					break;
+				}
+
+				// Not splitting: randomly select one scattered ray and
+				// continue iteratively.  Staying inside IntegrateFromHit
+				// preserves SMS emission-suppression flags.
 				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
 				if( !pS ) {
 					break;
@@ -1290,60 +1321,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			break;
 		}
 
-		if( bBranch )
-		{
-			for( unsigned int i = 0; i < scattered.Count(); i++ )
-			{
-				ScatteredRay& scat = scattered[i];
-				const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
-				if( scatmaxv > 0 )
-				{
-					IRayCaster::RAY_STATE rs2;
-					rs2.depth = depth + 2;
-					rs2.importance = importance * scatmaxv;
-					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
-						scat.kray * scat.pdf;
-					rs2.type = PathTracingRayType( scat );
-					rs2.diffuseBounces = diffuseBounces;
-					rs2.glossyBounces = glossyBounces;
-					rs2.transmissionBounces = transmissionBounces;
-					rs2.translucentBounces = translucentBounces;
-					rs2.glossyFilterWidth = glossyFilterWidth;
-
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
-					{
-						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-							rast.x, rast.y, kTechniqueBSDF );
-					}
-
-					if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-						continue;
-					}
-
-					if( scat.isDelta && bSMSEnabled ) {
-						rs2.considerEmission = false;
-					} else {
-						rs2.considerEmission = true;
-					}
-
-					RISEPel cthis( 0, 0, 0 );
-					Ray ray = scat.ray;
-					ray.Advance( 1e-8 );
-					caster.CastRay( rc, rast, ray, cthis, rs2, 0,
-						pRadianceMap,
-						scat.ior_stack ? *scat.ior_stack : iorStack );
-
-					RISEPel indirect = scat.kray * cthis;
-					if( depth > 0 ) {
-						indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
-					}
-					result = result + throughput * indirect;
-				}
-			}
-			break;
-		}
-		else if( scattered.Count() > 1 )
+		if( scattered.Count() > 1 )
 		{
 			for( unsigned int i = 0; i < scattered.Count(); i++ )
 			{
@@ -1914,7 +1892,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 #ifdef RISE_ENABLE_OPENPGL
 	// Path guiding uses RGB internally; for NM we still collect
 	// training samples via the scalar→luminance conversion.
-	const bool useGuidingPathSegments = !bBranch && rc.pGuidingField &&
+	const bool useGuidingPathSegments = rc.pGuidingField &&
 		rc.pGuidingField->IsCollectingTrainingSamples();
 	PTIGuidingPathRecorder* guidingRecorder = useGuidingPathSegments ?
 		&GetPTIGuidingPathRecorder() : 0;
@@ -2460,45 +2438,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				break;
 			}
 
-			if( bBranch )
-			{
-				for( unsigned int i = 0; i < scattered.Count(); i++ )
-				{
-					ScatteredRay& scat = scattered[i];
-					if( scat.krayNM > 0 )
-					{
-						IRayCaster::RAY_STATE rs2;
-						rs2.depth = depth + 1;
-						rs2.importance = importance * scat.krayNM;
-						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-						rs2.type = PathTracingRayType( scat );
-						rs2.considerEmission = true;
-						rs2.diffuseBounces = diffuseBounces;
-						rs2.glossyBounces = glossyBounces;
-						rs2.transmissionBounces = transmissionBounces;
-						rs2.translucentBounces = translucentBounces;
-						rs2.glossyFilterWidth = glossyFilterWidth;
-						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-							continue;
-						}
-
-						Scalar cthis = 0;
-						Ray ray = scat.ray;
-						ray.Advance( 1e-8 );
-						caster.CastRayNM( rc, rast, ray, cthis,
-							rs2, nm, 0, pRadianceMap,
-							scat.ior_stack ? *scat.ior_stack : iorStack );
-
-						Scalar indirectNM = cthis * scat.krayNM;
-						if( depth > 0 ) {
-							indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
-						}
-						result += throughput * indirectNM;
-					}
-				}
-				break;
-			}
-			else if( scattered.Count() > 1 )
+			if( scattered.Count() > 1 )
 			{
 				for( unsigned int i = 0; i < scattered.Count(); i++ )
 				{
@@ -2638,59 +2578,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			break;
 		}
 
-		if( bBranch )
-		{
-			for( unsigned int i = 0; i < scattered.Count(); i++ )
-			{
-				ScatteredRay& scat = scattered[i];
-				if( scat.krayNM > 0 )
-				{
-					IRayCaster::RAY_STATE rs2;
-					rs2.depth = depth + 2;
-					rs2.importance = importance * scat.krayNM;
-					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
-						RISEPel( fabs( scat.krayNM ) * scat.pdf );
-					rs2.type = PathTracingRayType( scat );
-					rs2.diffuseBounces = diffuseBounces;
-					rs2.glossyBounces = glossyBounces;
-					rs2.transmissionBounces = transmissionBounces;
-					rs2.translucentBounces = translucentBounces;
-					rs2.glossyFilterWidth = glossyFilterWidth;
-
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
-					{
-						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-							rast.x, rast.y, kTechniqueBSDF );
-					}
-
-					if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-						continue;
-					}
-
-					if( scat.isDelta && bSMSEnabled ) {
-						rs2.considerEmission = false;
-					} else {
-						rs2.considerEmission = true;
-					}
-
-					Scalar cthis = 0;
-					Ray ray = scat.ray;
-					ray.Advance( 1e-8 );
-					caster.CastRayNM( rc, rast, ray, cthis,
-						rs2, nm, 0, pRadianceMap,
-						scat.ior_stack ? *scat.ior_stack : iorStack );
-
-					Scalar indirectNM = cthis * scat.krayNM;
-					if( depth > 0 ) {
-						indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
-					}
-					result += throughput * indirectNM;
-				}
-			}
-			break;
-		}
-		else if( scattered.Count() > 1 )
+		if( scattered.Count() > 1 )
 		{
 			for( unsigned int i = 0; i < scattered.Count(); i++ )
 			{

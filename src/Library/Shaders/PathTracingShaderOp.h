@@ -48,7 +48,6 @@ namespace RISE
 
 		public:
 			PathTracingShaderOp(
-				const bool branch,
 				const ManifoldSolverConfig& smsConfig,
 				const StabilityConfig& stabilityCfg
 				);

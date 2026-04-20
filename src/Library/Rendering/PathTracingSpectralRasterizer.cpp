@@ -49,7 +49,6 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
   adaptiveConfig( adaptiveConfig )
 {
 	pIntegrator = new PathTracingIntegrator(
-		false,
 		smsConfig,
 		stabilityCfg
 		);
