@@ -261,6 +261,25 @@ namespace
 								continue;
 							}
 
+							// NORMALIZATION INVARIANT: pathsShot counts
+							// INDEPENDENT EMISSIONS (one per
+							// GenerateLightSubpath call), NOT branch
+							// copies.  Splitting at a delta vertex is a
+							// variance-reduction technique with zero
+							// effect on expectation: every branch i
+							// carries throughput beta * kray_i with
+							// sum(kray_i) == original kray, so total
+							// deposited energy across all branches
+							// equals the single-branch total.
+							// Counting each branch as its own subpath
+							// would inflate mLightSubPathCount and
+							// shrink the VM density by 1/N — producing
+							// a 1/N-times-too-dim render (this was the
+							// bug before the fix; set branching_
+							// threshold=1.0 to force single-branch
+							// behavior pre-fix).
+							tl.pathsShot++;
+
 							const std::size_t numLbPhotonStore = tmpLightSubpathStarts.size() >= 2 ?
 								( tmpLightSubpathStarts.size() - 1 ) : 0;
 							static thread_local std::vector<BDPTVertex> branchVertsPhotonStore;
@@ -278,7 +297,6 @@ namespace
 									out.push_back( tl.tmpConverted[m] );
 									tl.storedCount++;
 								}
-								tl.pathsShot++;
 							}
 						}
 					}
