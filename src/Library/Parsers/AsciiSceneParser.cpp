@@ -7499,7 +7499,7 @@ namespace RISE
 						}
 					}
 
-					std::cout << "Shooting Caustic Pel Photons: " << std::endl;
+					std::cout << "Queued Caustic Pel Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
@@ -7564,7 +7564,7 @@ namespace RISE
 						}
 					}
 
-					std::cout << "Shooting Caustic Spectral Photons: " << std::endl;
+					std::cout << "Queued Caustic Spectral Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootCausticSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, reflect, refract, temporal_samples, regenerate );
 				}
@@ -7623,7 +7623,7 @@ namespace RISE
 						}
 					}
 
-					std::cout << "Shooting Global Spectral Photons: " << std::endl;
+					std::cout << "Queued Global Spectral Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootGlobalSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, temporal_samples, regenerate );
 				}
@@ -7685,7 +7685,7 @@ namespace RISE
 						}
 					}
 
-					std::cout << "Shooting Translucent Pel Photons: " << std::endl;
+					std::cout << "Queued Translucent Pel Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
@@ -7723,7 +7723,7 @@ namespace RISE
 						}
 					}
 
-					std::cout << "Shooting Shadow Photons: " << std::endl;
+					std::cout << "Queued Shadow Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootShadowPhotons( photons, temporal_samples, regenerate );
 				}
@@ -7779,7 +7779,7 @@ namespace RISE
 						}
 					}
 
-					std::cout << "Shooting Global Pel Photons: " << std::endl;
+					std::cout << "Queued Global Pel Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}

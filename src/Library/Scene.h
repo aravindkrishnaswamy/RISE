@@ -18,6 +18,7 @@
 #include "Interfaces/IRadianceMap.h"
 #include "Interfaces/IScenePriv.h"
 #include "Interfaces/IAnimator.h"
+#include "PhotonMapping/PendingPhotonShoots.h"
 #include "Utilities/Reference.h"
 
 namespace RISE
@@ -47,6 +48,22 @@ namespace RISE
 			IAnimator*					pAnimator;
 
 			const IMedium*				pGlobalMedium;
+
+			// Deferred photon-map shoots: parser enqueues, first RasterizeScene flushes.
+			PendingCausticPelShoot			mCausticPelPending;
+			PendingGlobalPelShoot			mGlobalPelPending;
+			PendingTranslucentPelShoot		mTranslucentPelPending;
+			PendingCausticSpectralShoot		mCausticSpectralPending;
+			PendingGlobalSpectralShoot		mGlobalSpectralPending;
+			PendingShadowShoot				mShadowPending;
+
+			// Gather parameters applied after the corresponding shoot completes.
+			PendingPelGatherParams			mCausticPelGather;
+			PendingPelGatherParams			mGlobalPelGather;
+			PendingPelGatherParams			mTranslucentPelGather;
+			PendingSpectralGatherParams		mCausticSpectralGather;
+			PendingSpectralGatherParams		mGlobalSpectralGather;
+			PendingPelGatherParams			mShadowGather;
 
 			virtual ~Scene( );
 
@@ -95,6 +112,23 @@ namespace RISE
 			void		SetGlobalMedium( const IMedium* pMedium );
 
 			void		SetSceneTime( const Scalar time ) const ;
+
+			// Deferred photon-shoot queueing (called by Job during scene parse).
+			void		QueueCausticPelPhotonShoot(		const PendingCausticPelShoot& req );
+			void		QueueGlobalPelPhotonShoot(		const PendingGlobalPelShoot& req );
+			void		QueueTranslucentPelPhotonShoot(	const PendingTranslucentPelShoot& req );
+			void		QueueCausticSpectralPhotonShoot(const PendingCausticSpectralShoot& req );
+			void		QueueGlobalSpectralPhotonShoot(	const PendingGlobalSpectralShoot& req );
+			void		QueueShadowPhotonShoot(			const PendingShadowShoot& req );
+
+			void		QueueCausticPelGatherParams(	Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons );
+			void		QueueGlobalPelGatherParams(		Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons );
+			void		QueueTranslucentPelGatherParams(Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons );
+			void		QueueCausticSpectralGatherParams(Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons, Scalar nmRange );
+			void		QueueGlobalSpectralGatherParams(Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons, Scalar nmRange );
+			void		QueueShadowGatherParams(		Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons );
+
+			bool		BuildPendingPhotonMaps( IProgressCallback* pProgress );
 
 			void		Shutdown();
 		};

@@ -29,6 +29,7 @@
 #include "MortonRasterizeSequence.h"
 #include "ProgressiveFilm.h"
 #include "../RISE_API.h"
+#include "../Interfaces/IScenePriv.h"
 
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
@@ -487,6 +488,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// Eagerly build spatial acceleration structures (BSP/octree) from current
 	// world-space bounding boxes before any multi-threaded rendering begins.
 	pScene.GetObjects()->PrepareForRendering();
+
+	// Build any pending photon maps (deferred from scene parse).  Safe window:
+	// after PrepareForRendering but before any worker thread spawns — matches
+	// the irradiance-cache pre-pass precedent below.  Idempotent: consumed
+	// requests leave pending=false so repeated RasterizeScene calls are no-ops.
+	if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
+		pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+	}
 
 	// Pre-render hook (e.g. path guiding training)
 	PreRenderSetup( pScene, pRect );

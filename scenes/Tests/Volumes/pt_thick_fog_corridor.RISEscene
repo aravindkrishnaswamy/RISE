@@ -3,16 +3,22 @@ RISE ASCII SCENE 5
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           pt_thick_fog_corridor.RISEscene                                                         #
-#   Description:    Long corridor with thick fog and a point light at one end.                              #
+#   Description:    Long corridor with dense fog and a point light near the middle.                        #
 #                                                                                                           #
-#                   High optical depth stresses ratio tracking transmittance and                             #
-#                   equiangular sampling.  The corridor is 2000 units long, 200 wide,                       #
-#                   200 tall, with the camera at one end and a point light at the far end.                  #
-#                   The fog is dense enough that most of the corridor is dark, with light                   #
-#                   only visible near the far end.                                                           #
+#                   Stresses equiangular MIS and NEE through deep fog.  The corridor is                    #
+#                   2000 units long, 200 wide, 200 tall; the camera sits just outside one                  #
+#                   end (z = -50) and the omni_light is at z = 1200 (about 60% down the                    #
+#                   corridor), not at the far end.  The camera ray through the image centre                #
+#                   passes directly through the light position, so equiangular sampling is                 #
+#                   essential for bounded variance.                                                        #
 #                                                                                                           #
-#                   sigma_a = 0.0005  sigma_s = 0.002                                                      #
-#                   optical depth ~ 0.0025 * 2000 = 5 (moderately dense)                                   #
+#                   sigma_a = (0.0003, 0.0003, 0.0002)  sigma_s = (0.001, 0.001, 0.0008)                  #
+#                   sigma_t ~= (0.0013, 0.0013, 0.0010)                                                   #
+#                   optical depth camera -> far wall ~= 0.0013 * 2050 ~= 2.7                              #
+#                   optical depth camera -> light    ~= 0.0013 * 1250 ~= 1.6                              #
+#                   Blue has lower sigma_t, so distant surfaces are slightly blue-biased                   #
+#                   but the central bloom is warm because in-scattering is sigma_s*L_e-                    #
+#                   dominated and the light is warm (1.0, 0.9, 0.7).                                       #
 #                                                                                                           #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      April 8, 2026                                                                           #
@@ -34,6 +40,22 @@ standard_shader
 pathtracing_pel_rasterizer
 {
 	samples                       256
+	# Clamp single-path NEE contributions.  Same rationale as
+	# pt_chromatic_fog: equiangular MIS tames the 1/r^2 singularity at
+	# the omni_light so the estimator is finite-variance, but rare
+	# camera-ray -> scatter-through-light paths can still deposit a
+	# very bright single-sample NEE.  This light is 400x brighter than
+	# the one in pt_chromatic_fog (power 20M vs 50K), so the clamp is
+	# scaled accordingly (5 * 400 = 2000) to preserve the same effective
+	# outlier-truncation ratio without dimming the legitimate bright
+	# bloom at the image centre.
+	#
+	# Note: clamp=2000 catches the worst firefly spikes (off-center max
+	# 5.6 -> 2.8) but much of the visible speckle at 256 spp is inherent
+	# MC noise from the central ray passing directly through the light
+	# position at D=0.  Bump samples to 1024+ for a cleaner image, or
+	# disable the clamp for ground-truth convergence work.
+	direct_clamp                  2000
 }
 
 file_rasterizeroutput
@@ -81,13 +103,13 @@ homogeneous_medium
 > set global_medium fog
 
 ##################################################
-# Point Light at far end of corridor
+# Point Light ~60% down the corridor (z = 1200)
 ##################################################
 
 omni_light
 {
 	name				farlight
-	power				200000.0
+	power				20000000.0
 	color				1.0 0.9 0.7
 	position			100 100 1200
 }

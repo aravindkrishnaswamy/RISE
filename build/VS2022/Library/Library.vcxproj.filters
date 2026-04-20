@@ -1752,6 +1752,9 @@
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\PhotonTracer.h">
       <Filter>Photon Mapping\Pel</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\PendingPhotonShoots.h">
+      <Filter>Photon Mapping</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\TranslucentPelPhotonMap.h">
       <Filter>Photon Mapping\Pel</Filter>
     </ClInclude>

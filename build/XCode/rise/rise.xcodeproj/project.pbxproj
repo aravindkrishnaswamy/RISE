@@ -435,6 +435,7 @@
 		F24B73592F52A632008304C4 /* Photon.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F096E069C42900069C9E5 /* Photon.h */; };
 		F24B735A2F52A632008304C4 /* PhotonMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F096F069C42900069C9E5 /* PhotonMap.h */; };
 		F24B735B2F52A632008304C4 /* PhotonTracer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0970069C42900069C9E5 /* PhotonTracer.h */; };
+		F24B80032F52A632008304C4 /* PendingPhotonShoots.h in Sources */ = {isa = PBXBuildFile; fileRef = F24B80012F52A632008304C4 /* PendingPhotonShoots.h */; };
 		F24B735C2F52A632008304C4 /* ShadowPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */; };
 		F24B735D2F52A632008304C4 /* ShadowPhotonMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */; };
 		F24B735E2F52A632008304C4 /* ShadowPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */; };
@@ -1135,6 +1136,7 @@
 		F27F0BD0069C42910069C9E5 /* Photon.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F096E069C42900069C9E5 /* Photon.h */; };
 		F27F0BD1069C42910069C9E5 /* PhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F096F069C42900069C9E5 /* PhotonMap.h */; };
 		F27F0BD2069C42910069C9E5 /* PhotonTracer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0970069C42900069C9E5 /* PhotonTracer.h */; };
+		F24B80022F52A632008304C4 /* PendingPhotonShoots.h in Headers */ = {isa = PBXBuildFile; fileRef = F24B80012F52A632008304C4 /* PendingPhotonShoots.h */; };
 		F27F0BD3069C42910069C9E5 /* ShadowPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */; };
 		F27F0BD4069C42910069C9E5 /* ShadowPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */; };
 		F27F0BD5069C42910069C9E5 /* ShadowPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */; };
@@ -2030,6 +2032,7 @@
 		F27F096E069C42900069C9E5 /* Photon.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Photon.h; sourceTree = "<group>"; };
 		F27F096F069C42900069C9E5 /* PhotonMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhotonMap.h; sourceTree = "<group>"; };
 		F27F0970069C42900069C9E5 /* PhotonTracer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhotonTracer.h; sourceTree = "<group>"; };
+		F24B80012F52A632008304C4 /* PendingPhotonShoots.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PendingPhotonShoots.h; sourceTree = "<group>"; };
 		F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ShadowPhotonMap.cpp; sourceTree = "<group>"; };
 		F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ShadowPhotonMap.h; sourceTree = "<group>"; };
 		F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ShadowPhotonTracer.cpp; sourceTree = "<group>"; };
@@ -3065,6 +3068,7 @@
 				F27F096E069C42900069C9E5 /* Photon.h */,
 				F27F096F069C42900069C9E5 /* PhotonMap.h */,
 				F27F0970069C42900069C9E5 /* PhotonTracer.h */,
+				F24B80012F52A632008304C4 /* PendingPhotonShoots.h */,
 				F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */,
 				F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */,
 				F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */,
@@ -3803,6 +3807,7 @@
 				F27F0BD0069C42910069C9E5 /* Photon.h in Headers */,
 				F27F0BD1069C42910069C9E5 /* PhotonMap.h in Headers */,
 				F27F0BD2069C42910069C9E5 /* PhotonTracer.h in Headers */,
+				F24B80022F52A632008304C4 /* PendingPhotonShoots.h in Headers */,
 				F27F0BD4069C42910069C9E5 /* ShadowPhotonMap.h in Headers */,
 				F27F0BD6069C42910069C9E5 /* ShadowPhotonTracer.h in Headers */,
 				F27F0BD7069C42910069C9E5 /* SpectralPhotonTracer.h in Headers */,
@@ -4836,6 +4841,7 @@
 				F24B73592F52A632008304C4 /* Photon.h in Sources */,
 				F24B735A2F52A632008304C4 /* PhotonMap.h in Sources */,
 				F24B735B2F52A632008304C4 /* PhotonTracer.h in Sources */,
+				F24B80032F52A632008304C4 /* PendingPhotonShoots.h in Sources */,
 				F24B735C2F52A632008304C4 /* ShadowPhotonMap.cpp in Sources */,
 				F24B735D2F52A632008304C4 /* ShadowPhotonMap.h in Sources */,
 				F24B735E2F52A632008304C4 /* ShadowPhotonTracer.cpp in Sources */,

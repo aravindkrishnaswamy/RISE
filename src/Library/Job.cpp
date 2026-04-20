@@ -5615,13 +5615,13 @@ bool Job::SetCausticPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	// Always record on scene: applied to the map after BuildPendingPhotonMaps
+	// shoots.  If the map already exists (e.g. loaded from disk), apply now too.
+	pScene->QueueCausticPelGatherParams( radius, ellipse_ratio, min, max );
 	IPhotonMap* pMap = pScene->GetCausticPelMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5634,13 +5634,11 @@ bool Job::SetGlobalPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	pScene->QueueGlobalPelGatherParams( radius, ellipse_ratio, min, max );
 	IPhotonMap* pMap = pScene->GetGlobalPelMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5653,13 +5651,11 @@ bool Job::SetTranslucentPelGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	pScene->QueueTranslucentPelGatherParams( radius, ellipse_ratio, min, max );
 	IPhotonMap* pMap = pScene->GetTranslucentPelMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -5673,13 +5669,11 @@ bool Job::SetCausticSpectralGatherParameters(
 	const double nm_range							///< [in] Range of wavelengths to search for a NM irradiance estimate
 	)
 {
+	pScene->QueueCausticSpectralGatherParams( radius, ellipse_ratio, min, max, nm_range );
 	ISpectralPhotonMap* pMap = pScene->GetCausticSpectralMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	}
-
-	pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	return true;
 }
 
@@ -5693,13 +5687,11 @@ bool Job::SetGlobalSpectralGatherParameters(
 	const double nm_range							///< [in] Range of wavelengths to search for a NM irradiance estimate
 	)
 {
+	pScene->QueueGlobalSpectralGatherParams( radius, ellipse_ratio, min, max, nm_range );
 	ISpectralPhotonMap* pMap = pScene->GetGlobalSpectralMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	}
-
-	pMap->SetGatherParamsNM( radius, ellipse_ratio, min, max, nm_range, pGlobalProgress );
 	return true;
 }
 
@@ -5712,13 +5704,11 @@ bool Job::SetShadowGatherParameters(
 	const unsigned int max							///< [in] Total number of photons to shoot
 	)
 {
+	pScene->QueueShadowGatherParams( radius, ellipse_ratio, min, max );
 	IShadowPhotonMap* pMap = pScene->GetShadowMapMutable();
-
-	if( !pMap ) {
-		return false;
+	if( pMap ) {
+		pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	}
-
-	pMap->SetGatherParams( radius, ellipse_ratio, min, max, pGlobalProgress );
 	return true;
 }
 
@@ -6038,7 +6028,8 @@ bool Job::LoadShadowPhotonmap(
 // Commands
 //
 
-//! Shoots caustic photons and populates the caustic pel photon map
+//! Queues a caustic pel photon-map shoot.  Actual tracing is deferred to the
+//! start of RasterizeScene, where Scene::BuildPendingPhotonMaps executes it.
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootCausticPelPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -6054,17 +6045,23 @@ bool Job::ShootCausticPelPhotons(
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateCausticPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
+	PendingCausticPelShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.branch = branch;
+	req.reflect = reflect;
+	req.refract = refract;
+	req.shootFromNonMeshLights = shootFromNonMeshLights;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	req.shootFromMeshLights = shootFromMeshLights;
+	pScene->QueueCausticPelPhotonShoot( req );
 	return true;
 }
 
-//! Shoots global photons and populates the global pel photon map
+//! Queues a global pel photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootGlobalPelPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -6078,18 +6075,21 @@ bool Job::ShootGlobalPelPhotons(
 	const bool shootFromMeshLights					///< [in] Should we shoot from mesh based lights (luminaries)?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateGlobalPelPhotonTracer( &pTracer, maxRecur, minImportance, branch, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingGlobalPelShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.branch = branch;
+	req.shootFromNonMeshLights = shootFromNonMeshLights;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	req.shootFromMeshLights = shootFromMeshLights;
+	pScene->QueueGlobalPelPhotonShoot( req );
 	return true;
 }
 
-//! Shoots translucent photons and populates the translucent pel photon map
+//! Queues a translucent pel photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootTranslucentPelPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -6107,17 +6107,23 @@ bool Job::ShootTranslucentPelPhotons(
 {
 	GlobalLog()->PrintEasyWarning( "The Translucent PhotonMap is deprecated.  You should consider using one of the subsurface scattering shaders instead." );
 
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateTranslucentPelPhotonTracer( &pTracer, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, power_scale, temporal_samples, regenerate, shootFromMeshLights );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
+	PendingTranslucentPelShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.reflect = reflect;
+	req.refract = refract;
+	req.directTranslucent = direct_translucent;
+	req.shootFromNonMeshLights = shootFromNonMeshLights;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	req.shootFromMeshLights = shootFromMeshLights;
+	pScene->QueueTranslucentPelPhotonShoot( req );
 	return true;
 }
 
-//! Shoots caustic photons and populates the caustic spectral photon map
+//! Queues a caustic spectral photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootCausticSpectralPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -6134,18 +6140,24 @@ bool Job::ShootCausticSpectralPhotons(
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateCausticSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, branch, reflect, refract, power_scale, temporal_samples, regenerate );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingCausticSpectralShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.nmBegin = nm_begin;
+	req.nmEnd = nm_end;
+	req.numWavelengths = num_wavelengths;
+	req.branch = branch;
+	req.reflect = reflect;
+	req.refract = refract;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	pScene->QueueCausticSpectralPhotonShoot( req );
 	return true;
 }
 
-//! Shoots global photons and populates the global spectral photon map
+//! Queues a global spectral photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootGlobalSpectralPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -6160,18 +6172,22 @@ bool Job::ShootGlobalSpectralPhotons(
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateGlobalSpectralPhotonTracer( &pTracer, maxRecur, minImportance, nm_begin, nm_end, num_wavelengths, branch, power_scale, temporal_samples, regenerate );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingGlobalSpectralShoot req = {};
+	req.num = num;
+	req.powerScale = power_scale;
+	req.maxRecur = maxRecur;
+	req.minImportance = minImportance;
+	req.nmBegin = nm_begin;
+	req.nmEnd = nm_end;
+	req.numWavelengths = num_wavelengths;
+	req.branch = branch;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	pScene->QueueGlobalSpectralPhotonShoot( req );
 	return true;
 }
 
-//! Shoots shadow photons and populates the shadow photon map
+//! Queues a shadow photon-map shoot (see ShootCausticPelPhotons for timing).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ShootShadowPhotons(
 	const unsigned int num,							///< [in] Number of photons to acquire
@@ -6179,14 +6195,11 @@ bool Job::ShootShadowPhotons(
 	const bool regenerate							///< [in] Should the tracer regenerate a new photon each time the scene time changes?
 	)
 {
-	IPhotonTracer* pTracer = 0;
-	RISE_API_CreateShadowPhotonTracer( &pTracer, temporal_samples, regenerate );
-
-	pTracer->AttachScene( pScene );
-	pTracer->TracePhotons( num, 1.0, false, pGlobalProgress );
-
-	safe_release( pTracer );
-
+	PendingShadowShoot req = {};
+	req.num = num;
+	req.temporalSamples = temporal_samples;
+	req.regenerate = regenerate;
+	pScene->QueueShadowPhotonShoot( req );
 	return true;
 }
 

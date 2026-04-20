@@ -693,6 +693,7 @@
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\GlobalSpectralPhotonTracer.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\IrradianceCache.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\Photon.h" />
+    <ClInclude Include="..\..\..\src\Library\PhotonMapping\PendingPhotonShoots.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\PhotonMap.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\PhotonTracer.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\ShadowPhotonMap.h" />

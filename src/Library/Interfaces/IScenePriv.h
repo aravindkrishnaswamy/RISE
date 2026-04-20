@@ -16,9 +16,12 @@
 #define ISCENEPRIV_
 
 #include "IScene.h"
+#include "../PhotonMapping/PendingPhotonShoots.h"
 
 namespace RISE
 {
+	class IProgressCallback;
+
 	class IScenePriv : public virtual IScene
 	{
 	protected:
@@ -117,6 +120,31 @@ namespace RISE
 		virtual void SetGlobalMedium(
 			const IMedium* pMedium								///< [in] Global medium to set
 			) = 0;
+
+		//
+		// Deferred photon-map shoots.  The parser / Job API queues requests here
+		// during scene setup; the rasterizer invokes BuildPendingPhotonMaps once
+		// at the start of RasterizeScene (after PrepareForRendering, before any
+		// worker thread is spawned) to actually trace the photons.
+		//
+
+		virtual void QueueCausticPelPhotonShoot(	const PendingCausticPelShoot& req )		= 0;
+		virtual void QueueGlobalPelPhotonShoot(		const PendingGlobalPelShoot& req )		= 0;
+		virtual void QueueTranslucentPelPhotonShoot(const PendingTranslucentPelShoot& req )	= 0;
+		virtual void QueueCausticSpectralPhotonShoot(	const PendingCausticSpectralShoot& req )	= 0;
+		virtual void QueueGlobalSpectralPhotonShoot(	const PendingGlobalSpectralShoot& req )		= 0;
+		virtual void QueueShadowPhotonShoot(		const PendingShadowShoot& req )			= 0;
+
+		virtual void QueueCausticPelGatherParams(	Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons ) = 0;
+		virtual void QueueGlobalPelGatherParams(	Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons ) = 0;
+		virtual void QueueTranslucentPelGatherParams(Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons ) = 0;
+		virtual void QueueCausticSpectralGatherParams(	Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons, Scalar nmRange ) = 0;
+		virtual void QueueGlobalSpectralGatherParams(	Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons, Scalar nmRange ) = 0;
+		virtual void QueueShadowGatherParams(		Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons ) = 0;
+
+		//! Builds any queued photon maps.  Safe to call when nothing is queued
+		//! (returns true, no-op).  Single-threaded; called once per RasterizeScene.
+		virtual bool BuildPendingPhotonMaps( IProgressCallback* pProgress ) = 0;
 
 		//! Shutsdown the scene, forces the deletion and clearing of everything
 		virtual void Shutdown() = 0;
