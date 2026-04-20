@@ -318,6 +318,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\LuminaryManager.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\MLTRasterizer.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\MMLTRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\OIDNDenoiser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.cpp" />
@@ -410,6 +411,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Profiling.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\PSSMLTSampler.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\MMLTSampler.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RandomWalkSSS.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Reference.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RTime.cpp" />
@@ -932,6 +934,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTRasterizer.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\MMLTRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\MortonRasterizeSequence.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\OIDNDenoiser.h" />
@@ -982,6 +985,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PSSMLTSampler.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\MMLTSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PathGuidingField.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PathTransportUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PathVertexEval.h" />

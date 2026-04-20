@@ -275,16 +275,24 @@ SurfaceDerivatives TorusGeometry::ComputeSurfaceDerivatives( const Point3& objSp
 	const Scalar sinV = sin(v);
 	const Scalar Rr = R + r * cosV;
 
-	// Position partial derivatives
-	sd.dpdu = Vector3( -Rr * sinU, 0.0, Rr * cosU );
-	sd.dpdv = Vector3( -r * sinV * cosU, r * cosV, -r * sinV * sinU );
+	// Position partial derivatives.
+	//
+	// Convention: (dpdu, dpdv, n) must be right-handed per
+	// docs/GEOMETRY_DERIVATIVES.md.  At the outer equator (u=0, v=0) the
+	// "natural" ordering (dpdu = tangent-to-ring, dpdv = tangent-to-tube)
+	// produces (dpdu × dpdv) antiparallel to the outward normal — that's
+	// left-handed.  Swap the parametrization (use tube angle as u and
+	// ring angle as v) so the frame is right-handed at every point on
+	// the torus.
+	sd.dpdu = Vector3( -r * sinV * cosU, r * cosV, -r * sinV * sinU );  // tube tangent
+	sd.dpdv = Vector3( -Rr * sinU, 0.0, Rr * cosU );                     // ring tangent
 
-	// Normal partial derivatives
+	// Normal partial derivatives (swap to match position-derivative swap).
 	// Unit normal on torus: N = (cosV*cosU, sinV, cosV*sinU)
-	sd.dndu = Vector3( -cosV * sinU, 0.0, cosV * cosU );
-	sd.dndv = Vector3( -sinV * cosU, cosV, -sinV * sinU );
+	sd.dndu = Vector3( -sinV * cosU, cosV, -sinV * sinU );
+	sd.dndv = Vector3( -cosV * sinU, 0.0, cosV * cosU );
 
-	sd.uv = Point2( u, v );
+	sd.uv = Point2( v, u );  // u,v semantics swapped to match derivative swap
 	sd.valid = true;
 
 	return sd;

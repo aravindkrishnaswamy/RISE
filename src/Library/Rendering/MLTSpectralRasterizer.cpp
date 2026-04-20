@@ -48,7 +48,6 @@
 
 #include "pch.h"
 #include "MLTSpectralRasterizer.h"
-#include "../Utilities/IndependentSampler.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
@@ -626,16 +625,22 @@ void MLTSpectralRasterizer::RasterizeScene(
 	Timer bootstrapTimer;
 	bootstrapTimer.start();
 
+	// Bootstrap uses a PSSMLTSampler so the path generated for seed i
+	// can be EXACTLY reproduced later by the chain init creating a
+	// PSSMLTSampler with the same seed.  See MLTRasterizer::RasterizeScene
+	// bootstrap loop for the full rationale.
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
-		RandomNumberGenerator bootRNG( i );
-		IndependentSampler bootSampler( bootRNG );
+		PSSMLTSampler* pBootSampler = new PSSMLTSampler( i, largeStepProb );
+		pBootSampler->StartIteration();
 
-		MLTSample sample = EvaluateSampleSpectral( pScene, *pCamera, bootSampler, width, height );
+		MLTSample sample = EvaluateSampleSpectral( pScene, *pCamera, *pBootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;
 		luminanceSum += sample.luminance;
+
+		safe_release( pBootSampler );
 
 		if( pProgressFunc && (i % 1000 == 0) ) {
 			if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
@@ -740,20 +745,26 @@ void MLTSpectralRasterizer::RasterizeScene(
 		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
 
-		// Initialize chain — but we need spectral evaluation
-		// We manually do what InitChain does, but with EvaluateSampleSpectral.
-		// Mix chainIndex into the seeds so duplicate bootstrap selections
-		// (likely when the CDF is concentrated) do not produce identical
-		// Markov trajectories — see MLTRasterizer::InitChain for the full
-		// rationale.
-		const unsigned int samplerSeed = seed.seed * 2654435761u + c;
-		const unsigned int chainSeed   = samplerSeed ^ 0xA55A5AA5u;
-		chainStates[c].pSampler = new PSSMLTSampler( samplerSeed, largeStepProb );
+		// Two-phase chain initialization (mirrors MLTRasterizer::InitChain):
+		// Phase 1 — seed PSSMLTSampler with the bootstrap index so its
+		//   first iteration EXACTLY reproduces the bootstrap path the
+		//   CDF selected (preserving importance sampling).
+		// Phase 2 — after the first Accept(), re-seed the proposal RNG
+		//   to a chain-specific value so two chains that picked the
+		//   same bootstrap index immediately diverge via different
+		//   mutations.  The X vector is preserved across the re-seed.
+		const unsigned int chainSeed    = seed.seed * 2654435761u + c;
+		const unsigned int proposalSeed = chainSeed ^ 0xA55A5AA5u;
+		chainStates[c].pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
 		chainStates[c].chainRNG = RandomNumberGenerator( chainSeed );
 
+		// Phase 1: reproduce the bootstrap path
 		chainStates[c].pSampler->StartIteration();
 		chainStates[c].currentSample = EvaluateSampleSpectral( pScene, *pCamera, *chainStates[c].pSampler, width, height );
 		chainStates[c].pSampler->Accept();
+
+		// Phase 2: re-seed proposal RNG for divergence
+		chainStates[c].pSampler->ReSeedRNG( proposalSeed );
 
 		if( !chainStates[c].currentSample.valid )
 		{

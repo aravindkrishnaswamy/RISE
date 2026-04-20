@@ -9,6 +9,8 @@ This directory holds focused design notes and planning docs. Start at [../README
 ## Subsystem Docs
 
 - [SMS.md](SMS.md): Specular Manifold Sampling solver design, constraint formulations, MIS analysis (SMS vs BDPT path-space disjointness), and tuning guidance.
+- [VCM.md](VCM.md): Vertex Connection and Merging integrator (BDPT + photon mapping under one MIS umbrella), recurrence design, post-pass conversion, and Veach-transparency handling for specular chains.
+- [MMLT.md](MMLT.md): Multiplexed Metropolis Light Transport — per-depth chain pools, multi-strategy bootstrap (PBRT v4 pattern), splat math, configuration, and known limitations vs PSSMLT.
 
 ## Planning Docs
 

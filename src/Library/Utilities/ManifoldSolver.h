@@ -454,13 +454,25 @@ namespace RISE
 			/// Builds the block-tridiagonal Jacobian dC/dx.
 			/// Stored as arrays of 2x2 blocks: diag[k], upper[k-1], lower[k-1].
 			/// Each block is stored as 4 scalars in row-major order.
+			///
+			/// `includeCurvature`: if true (default), include the ds_du
+			/// tangent-frame-rotation terms — required for the measure-
+			/// conversion |det| to reflect surface curvature, hence for
+			/// correct caustic focusing in the contribution formula.  If
+			/// false, skip them — useful for Newton iteration stability
+			/// on meshes where the derivatives jump discontinuously
+			/// across triangle boundaries.  The resulting Jacobian is
+			/// APPROXIMATE w.r.t. the true dC/du (treats the surface as
+			/// locally flat) but converges more reliably under line
+			/// search.
 			void BuildJacobian(
 				const std::vector<ManifoldVertex>& chain,
 				const Point3& fixedStart,
 				const Point3& fixedEnd,
 				std::vector<Scalar>& diag,
 				std::vector<Scalar>& upper,
-				std::vector<Scalar>& lower
+				std::vector<Scalar>& lower,
+				bool includeCurvature = true
 				) const;
 
 			/// Solves block-tridiagonal system J * delta = rhs.
@@ -482,6 +494,30 @@ namespace RISE
 				const Point3& fixedEnd
 				) const;
 
+			/// Computes the 2x2 block ∂C_at_vk / ∂y_tangent  — i.e., how the
+			/// constraint at the LAST specular vertex v_k changes when the
+			/// light endpoint y moves in its own tangent plane (y_s, y_t).
+			/// Output `Jy` is row-major: [∂Cs/∂ys, ∂Cs/∂yt; ∂Ct/∂ys, ∂Ct/∂yt].
+			void ComputeLastBlockLightJacobian(
+				const ManifoldVertex& vk,
+				const Point3& prevPos,
+				const Point3& lightPos,
+				const Vector3& lightNormal,
+				Scalar Jy[4]
+				) const;
+
+			/// Solves the block-tridiagonal implicit-function-theorem problem
+			/// to compute |det(δv_1_⊥ / δy_⊥)| — how the FIRST specular
+			/// vertex's tangent-plane position responds to infinitesimal
+			/// motion of the light endpoint y in its tangent plane.
+			/// Returns 0 on singular Jacobian.  Sign is discarded (abs value).
+			Scalar ComputeLightToFirstVertexJacobianDet(
+				const std::vector<ManifoldVertex>& chain,
+				const Point3& shadingPoint,
+				const Point3& lightPos,
+				const Vector3& lightNormal
+				) const;
+
 			/// Updates a vertex position on its surface by stepping along
 			/// the surface parameterization by (du, dv), then recomputes
 			/// all derivative data via ray intersection.
@@ -495,6 +531,19 @@ namespace RISE
 			/// for a vertex by querying its object's geometry with proper
 			/// world/object space transforms.
 			bool ComputeVertexDerivatives(
+				ManifoldVertex& vertex
+				) const;
+
+			/// Make dpdu, dpdv an orthonormal basis of the tangent plane
+			/// at vertex.normal (Gram-Schmidt + unit-length normalization).
+			/// Scales dndu, dndv consistently so dn/du remains the rate of
+			/// change per unit displacement in the (new, unit) dpdu direction.
+			/// Required because geometry-supplied dpdu/dpdv (e.g. triangle
+			/// edges) need not be orthogonal or unit — if we fed those into
+			/// BuildJacobian unchanged, |det| would vary with the arbitrary
+			/// choice of parameterization instead of tracking the physical
+			/// caustic geometry.
+			void OrthonormalizeTangentFrame(
 				ManifoldVertex& vertex
 				) const;
 

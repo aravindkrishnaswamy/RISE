@@ -478,16 +478,148 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 	GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometry::Deserialize:: Finished deserialization", bDoubleSided );
 }
 
-SurfaceDerivatives TriangleMeshGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+// Barycentric coords for the non-indexed mesh case (shares logic with
+// the indexed variant but works off Triangle rather than PointerTriangle).
+static void TMBarycentric(
+	const Point3& v0, const Point3& v1, const Point3& v2,
+	const Point3& p,
+	Scalar& u, Scalar& v, bool& inside,
+	const Scalar epsTol = 1e-4 )
+{
+	const Vector3 e1 = Vector3Ops::mkVector3( v1, v0 );
+	const Vector3 e2 = Vector3Ops::mkVector3( v2, v0 );
+	const Vector3 pv = Vector3Ops::mkVector3( p, v0 );
+	const Scalar a = Vector3Ops::Dot( e1, e1 );
+	const Scalar b = Vector3Ops::Dot( e1, e2 );
+	const Scalar c = Vector3Ops::Dot( e2, e2 );
+	const Scalar d = Vector3Ops::Dot( e1, pv );
+	const Scalar e = Vector3Ops::Dot( e2, pv );
+	const Scalar det = a*c - b*b;
+	if( std::fabs( det ) < NEARZERO ) {
+		u = 0; v = 0; inside = false;
+		return;
+	}
+	u = (c*d - b*e) / det;
+	v = (a*e - b*d) / det;
+	inside = (u >= -epsTol) && (v >= -epsTol) && (u + v <= 1.0 + epsTol);
+}
+
+// Compute SMS-style per-triangle derivatives for a non-indexed Triangle.
+// See TriangleMeshGeometryIndexed::ComputeTriangleDerivatives for the
+// mathematical derivation; this version works directly off the inline
+// vertices/normals stored per-triangle (no pointer indirection).
+static SurfaceDerivatives TMComputeTriangleDerivatives(
+	const Triangle& tri,
+	const Vector3& objSpaceNormal,
+	const Scalar barU,
+	const Scalar barV )
 {
 	SurfaceDerivatives sd;
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( objSpaceNormal );
-	sd.dpdu = onb.u();
-	sd.dpdv = onb.v();
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-	sd.uv = Point2( 0, 0 );
 	sd.valid = true;
+
+	// Project triangle edges into the shading-normal tangent plane, per
+	// docs/GEOMETRY_DERIVATIVES.md tangency convention.
+	const Vector3 e1 = Vector3Ops::mkVector3( tri.vertices[1], tri.vertices[0] );
+	const Vector3 e2 = Vector3Ops::mkVector3( tri.vertices[2], tri.vertices[0] );
+	const Scalar e1_dot_n = Vector3Ops::Dot( e1, objSpaceNormal );
+	const Scalar e2_dot_n = Vector3Ops::Dot( e2, objSpaceNormal );
+	sd.dpdu = Vector3(
+		e1.x - objSpaceNormal.x * e1_dot_n,
+		e1.y - objSpaceNormal.y * e1_dot_n,
+		e1.z - objSpaceNormal.z * e1_dot_n );
+	sd.dpdv = Vector3(
+		e2.x - objSpaceNormal.x * e2_dot_n,
+		e2.y - objSpaceNormal.y * e2_dot_n,
+		e2.z - objSpaceNormal.z * e2_dot_n );
+
+	const Vector3 dNraw_du = Vector3(
+		tri.normals[1].x - tri.normals[0].x,
+		tri.normals[1].y - tri.normals[0].y,
+		tri.normals[1].z - tri.normals[0].z );
+	const Vector3 dNraw_dv = Vector3(
+		tri.normals[2].x - tri.normals[0].x,
+		tri.normals[2].y - tri.normals[0].y,
+		tri.normals[2].z - tri.normals[0].z );
+	const Vector3 Nraw = Vector3(
+		tri.normals[0].x + barU * dNraw_du.x + barV * dNraw_dv.x,
+		tri.normals[0].y + barU * dNraw_du.y + barV * dNraw_dv.y,
+		tri.normals[0].z + barU * dNraw_du.z + barV * dNraw_dv.z );
+	const Scalar len = Vector3Ops::Magnitude( Nraw );
+	const Scalar invLen = (len > NEARZERO) ? 1.0 / len : 0.0;
+	const Vector3 N = Nraw * invLen;
+
+	// Use objSpaceNormal (shading normal from caller) as the reference
+	// for perpendicularity — matches TriangleMeshGeometryIndexed.
+	const Scalar dot_u = Vector3Ops::Dot( objSpaceNormal, dNraw_du );
+	const Scalar dot_v = Vector3Ops::Dot( objSpaceNormal, dNraw_dv );
+	sd.dndu = Vector3(
+		(dNraw_du.x - objSpaceNormal.x * dot_u) * invLen,
+		(dNraw_du.y - objSpaceNormal.y * dot_u) * invLen,
+		(dNraw_du.z - objSpaceNormal.z * dot_u) * invLen );
+	sd.dndv = Vector3(
+		(dNraw_dv.x - objSpaceNormal.x * dot_v) * invLen,
+		(dNraw_dv.y - objSpaceNormal.y * dot_v) * invLen,
+		(dNraw_dv.z - objSpaceNormal.z * dot_v) * invLen );
+
+	// Enforce right-handed frame
+	const Vector3 cross = Vector3Ops::Cross( sd.dpdu, sd.dpdv );
+	if( Vector3Ops::Dot( cross, objSpaceNormal ) < 0.0 ) {
+		sd.dpdv = Vector3( -sd.dpdv.x, -sd.dpdv.y, -sd.dpdv.z );
+		sd.dndv = Vector3( -sd.dndv.x, -sd.dndv.y, -sd.dndv.z );
+	}
+
+	sd.uv = Point2( barU, barV );
 	return sd;
+}
+
+SurfaceDerivatives TriangleMeshGeometry::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	// See TriangleMeshGeometryIndexed::ComputeSurfaceDerivatives for the
+	// rationale.  O(n) walk, sufficient for tests and one-off queries.
+	const Scalar epsTol = 1e-3;
+
+	const Triangle* bestTri = 0;
+	Scalar bestU = 0, bestV = 0;
+	Scalar bestOutOfPlane = RISE_INFINITY;
+
+	for( MyTriangleList::const_iterator it = polygons.begin();
+		it != polygons.end(); ++it )
+	{
+		const Triangle& tri = *it;
+		Scalar u = 0, v = 0;
+		bool inside = false;
+		TMBarycentric( tri.vertices[0], tri.vertices[1], tri.vertices[2],
+			objSpacePoint, u, v, inside, epsTol );
+		if( !inside ) continue;
+
+		const Vector3 e1 = Vector3Ops::mkVector3( tri.vertices[1], tri.vertices[0] );
+		const Vector3 e2 = Vector3Ops::mkVector3( tri.vertices[2], tri.vertices[0] );
+		Vector3 faceN = Vector3Ops::Cross( e1, e2 );
+		const Scalar faceNLen = Vector3Ops::Magnitude( faceN );
+		if( faceNLen < NEARZERO ) continue;
+		faceN = faceN * (1.0 / faceNLen);
+		const Vector3 delta = Vector3Ops::mkVector3( objSpacePoint, tri.vertices[0] );
+		const Scalar oop = std::fabs( Vector3Ops::Dot( faceN, delta ) );
+		if( oop < bestOutOfPlane ) {
+			bestTri = &tri;
+			bestU = u;
+			bestV = v;
+			bestOutOfPlane = oop;
+		}
+	}
+
+	if( !bestTri ) {
+		SurfaceDerivatives sd;
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( objSpaceNormal );
+		sd.dpdu = onb.u();
+		sd.dpdv = onb.v();
+		sd.dndu = Vector3( 0, 0, 0 );
+		sd.dndv = Vector3( 0, 0, 0 );
+		sd.uv = Point2( 0, 0 );
+		sd.valid = false;
+		return sd;
+	}
+
+	return TMComputeTriangleDerivatives( *bestTri, objSpaceNormal, bestU, bestV );
 }

@@ -2345,6 +2345,31 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IPixelFilter* pFilter						///< [in] Reconstruction kernel; may be null for unfiltered point splats
 								);
 
+	//! Creates an MMLT (Multiplexed Metropolis Light Transport) rasterizer.
+	//! MMLT runs one Markov chain pool per path-length depth d = s+t-2,
+	//! so per-strategy luminance — not the summed luminance — drives
+	//! chain density.  Fixes the dim-strategy starvation that limits
+	//! PSSMLT (MLTRasterizer) convergence on SDS scenes.
+	//!
+	//! Phase 3 single-depth mode: forceDepth >= 0 restricts every chain
+	//! to that one depth.  Set forceDepth = -1 once Phase 4 lands the
+	//! per-depth chain pools.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateMMLTRasterizerWithFilter(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const unsigned int nBootstrap,		///< [in] Number of bootstrap samples
+								const unsigned int nChains,			///< [in] Number of Markov chains (across all active depths)
+								const unsigned int nMutationsPerPixel,	///< [in] Mutations per pixel budget
+								const Scalar largeStepProb,			///< [in] Large step probability
+								const int forceDepth,				///< [in] Phase 3: force every chain to this path-length depth
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MMLT loop); may be null
+								IPixelFilter* pFilter				///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								);
+
 	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
 	//! LEGACY signature preserved for ABI compatibility — see the Pel
 	//! variant above.

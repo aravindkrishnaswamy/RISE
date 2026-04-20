@@ -77,7 +77,6 @@
 
 #include "pch.h"
 #include "MLTRasterizer.h"
-#include "../Utilities/IndependentSampler.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
 #include "../Utilities/RTime.h"
@@ -431,30 +430,49 @@ void MLTRasterizer::InitChain(
 	const unsigned int height
 	) const
 {
-	// The sampler and chainRNG seeds must be unique per chain, NOT derived
-	// from seed.seed alone.  seed.seed is the bootstrap sample index, and
-	// when the bootstrap CDF is concentrated (a few high-luminance samples
-	// dominate) several chains pick the same idx — previously that made
-	// the PSSMLTSampler and the accept/reject RNG identical across those
-	// chains.  Two chains with identical RNG seeds produce the exact same
-	// Markov trajectory: same proposals, same accept/reject pattern, same
-	// splats.  They act as one chain counted multiple times, concentrating
-	// splats at the same pixels and amplifying fireflies by the duplication
-	// factor.  Mixing chainIndex into the seeds breaks the duplication
-	// while preserving the bootstrap's importance-sampling role (every
-	// chain still STARTS at a bootstrap-selected path via the initial
-	// iteration's large step, it just evolves independently from there).
-	const unsigned int samplerSeed = seed.seed * 2654435761u + chainIndex;
-	const unsigned int chainSeed   = samplerSeed ^ 0xA55A5AA5u;
-	state.pSampler = new PSSMLTSampler( samplerSeed, largeStepProb );
+	// Two-phase initialization that BOTH preserves the bootstrap CDF's
+	// importance sampling AND keeps chains independent.
+	//
+	// Phase 1: seed PSSMLTSampler with seed.seed (the bootstrap index)
+	// so its first iteration EXACTLY reproduces the bootstrap path the
+	// CDF selected — which we know has high luminance.  This is what
+	// makes "start at a bootstrap-selected high-luminance path" actually
+	// true in code (the previous version hashed chainIndex into the
+	// sampler seed up front, so the chain's first iteration generated
+	// an arbitrary uniform-random path with no relationship to the
+	// bootstrap path; the CDF's importance sampling was silently
+	// thrown away even though the comment claimed otherwise).
+	//
+	// Phase 2: after the first Accept(), re-seed the PSSMLTSampler's
+	// internal RNG to a chain-specific value.  The X vector (which
+	// holds the bootstrap path's primary samples) is preserved, so the
+	// chain's CURRENT state at iteration 1 is the bootstrap path.
+	// Subsequent mutations use the new RNG, so two chains that picked
+	// the same bootstrap index immediately diverge via different
+	// proposals — no more identical Markov trajectories.
+	//
+	// chainRNG (used only by the host's accept/reject draw) is
+	// chain-specific from the start, providing additional divergence.
+	const unsigned int chainSeed     = seed.seed * 2654435761u + chainIndex;
+	const unsigned int proposalSeed  = chainSeed ^ 0xA55A5AA5u;
+	state.pSampler = new PSSMLTSampler( seed.seed, largeStepProb );
 	state.chainRNG = RandomNumberGenerator( chainSeed );
 
-	// Evaluate the initial state
+	// Phase 1: reproduce the bootstrap path as the chain's iteration 1.
 	state.pSampler->StartIteration();
 	state.currentSample = EvaluateSample( scene, camera, *state.pSampler, width, height );
 	state.pSampler->Accept();
 
-	// If zero luminance, try additional large steps to find a valid state
+	// Phase 2: re-seed the proposal RNG so subsequent mutations diverge
+	// per chain.  Done AFTER Accept() so iteration 1 keeps the bootstrap
+	// path; the X vector (already populated with the bootstrap path's
+	// canonical randoms) is untouched.
+	state.pSampler->ReSeedRNG( proposalSeed );
+
+	// If the bootstrap path turns out invalid (rare, but possible when
+	// the CDF tail is tiny), try additional large steps to find a valid
+	// state.  These now use the chain-specific RNG so they don't
+	// duplicate other chains' recovery sequences.
 	if( !state.currentSample.valid )
 	{
 		for( unsigned int attempt = 0; attempt < 64; attempt++ )
@@ -704,8 +722,9 @@ void MLTRasterizer::RasterizeScene(
 	// Phase 1: Bootstrap
 	//
 	// Generate nBootstrap independent BDPT samples.  Each uses a
-	// fresh RNG seed and an IndependentSampler.  We record the
-	// luminance and seed for each sample.
+	// fresh PSSMLTSampler seed.  We record the luminance and seed
+	// for each sample.  The same seed re-creates the same path in
+	// InitChain so the CDF's importance sampling is preserved.
 	//
 	// The normalization constant b = mean(luminances) * numPixels.
 	//////////////////////////////////////////////////////////////////
@@ -720,16 +739,33 @@ void MLTRasterizer::RasterizeScene(
 	Timer bootstrapTimer;
 	bootstrapTimer.start();
 
+	// Bootstrap uses a PSSMLTSampler (not IndependentSampler) so the
+	// path generated for seed i can be EXACTLY reproduced later by
+	// InitChain creating a PSSMLTSampler with the same seed.  This
+	// preserves the bootstrap CDF's importance sampling: high-luminance
+	// bootstrap indices selected by the CDF turn into chains that
+	// actually start at those high-luminance paths, instead of at
+	// arbitrary uniform-random paths (the old IndependentSampler vs
+	// PSSMLTSampler mismatch silently discarded the importance sampling).
+	//
+	// PSSMLTSampler's first-iteration draws are uniformly distributed
+	// in [0,1) (large step overwrites the lazy-grown value with a fresh
+	// random; small step mutates it once), so the b_mean estimator is
+	// unbiased — it just samples a different concrete uniform sequence
+	// than IndependentSampler would for the same seed.  What matters is
+	// that bootstrap and chain-init agree on which sequence to use.
 	for( unsigned int i = 0; i < nBootstrap; i++ )
 	{
-		RandomNumberGenerator bootRNG( i );
-		IndependentSampler bootSampler( bootRNG );
+		PSSMLTSampler* pBootSampler = new PSSMLTSampler( i, largeStepProb );
+		pBootSampler->StartIteration();
 
-		MLTSample sample = EvaluateSample( pScene, *pCamera, bootSampler, width, height );
+		MLTSample sample = EvaluateSample( pScene, *pCamera, *pBootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;
 		luminanceSum += sample.luminance;
+
+		safe_release( pBootSampler );
 
 		if( pProgressFunc && (i % 1000 == 0) ) {
 			if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {

@@ -1381,9 +1381,15 @@
 		F2C5D57F2F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D57E2F6EA5B300546C97 /* PSSMLTSampler.cpp */; };
 		F2C5D5802F6EA5B300546C97 /* PSSMLTSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D57D2F6EA5B300546C97 /* PSSMLTSampler.h */; };
 		F2C5D5812F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D57E2F6EA5B300546C97 /* PSSMLTSampler.cpp */; };
+		F2C5D58F2F6EA5B300546C97 /* MMLTSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D58E2F6EA5B300546C97 /* MMLTSampler.cpp */; };
+		F2C5D5902F6EA5B300546C97 /* MMLTSampler.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D58D2F6EA5B300546C97 /* MMLTSampler.h */; };
+		F2C5D5912F6EA5B300546C97 /* MMLTSampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D58E2F6EA5B300546C97 /* MMLTSampler.cpp */; };
 		F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5832F6EA5CF00546C97 /* MLTRasterizer.cpp */; };
 		F2C5D5852F6EA5CF00546C97 /* MLTRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5822F6EA5CF00546C97 /* MLTRasterizer.h */; };
 		F2C5D5862F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5832F6EA5CF00546C97 /* MLTRasterizer.cpp */; };
+		F2C5D5982F6EA5CF00546C97 /* MMLTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5972F6EA5CF00546C97 /* MMLTRasterizer.cpp */; };
+		F2C5D5992F6EA5CF00546C97 /* MMLTRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5962F6EA5CF00546C97 /* MMLTRasterizer.h */; };
+		F2C5D59A2F6EA5CF00546C97 /* MMLTRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5972F6EA5CF00546C97 /* MMLTRasterizer.cpp */; };
 		F2C5D58C2F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5882F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp */; };
 		F2C5D58D2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D58B2F6ED30E00546C97 /* SubSurfaceScatteringSPF.cpp */; };
 		F2C5D58E2F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5882F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp */; };
@@ -2258,8 +2264,12 @@
 		F2C5D5792F6E450F00546C97 /* CameraUtilities.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CameraUtilities.cpp; sourceTree = "<group>"; };
 		F2C5D57D2F6EA5B300546C97 /* PSSMLTSampler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PSSMLTSampler.h; sourceTree = "<group>"; };
 		F2C5D57E2F6EA5B300546C97 /* PSSMLTSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PSSMLTSampler.cpp; sourceTree = "<group>"; };
+		F2C5D58D2F6EA5B300546C97 /* MMLTSampler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MMLTSampler.h; sourceTree = "<group>"; };
+		F2C5D58E2F6EA5B300546C97 /* MMLTSampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MMLTSampler.cpp; sourceTree = "<group>"; };
 		F2C5D5822F6EA5CF00546C97 /* MLTRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTRasterizer.h; sourceTree = "<group>"; };
 		F2C5D5832F6EA5CF00546C97 /* MLTRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTRasterizer.cpp; sourceTree = "<group>"; };
+		F2C5D5962F6EA5CF00546C97 /* MMLTRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MMLTRasterizer.h; sourceTree = "<group>"; };
+		F2C5D5972F6EA5CF00546C97 /* MMLTRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MMLTRasterizer.cpp; sourceTree = "<group>"; };
 		F2C5D5872F6ED30E00546C97 /* SubSurfaceScatteringBSDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SubSurfaceScatteringBSDF.h; sourceTree = "<group>"; };
 		F2C5D5882F6ED30E00546C97 /* SubSurfaceScatteringBSDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SubSurfaceScatteringBSDF.cpp; sourceTree = "<group>"; };
 		F2C5D5892F6ED30E00546C97 /* SubSurfaceScatteringMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SubSurfaceScatteringMaterial.h; sourceTree = "<group>"; };
@@ -3143,6 +3153,8 @@
 				F2C5D5DD2F716BAA00546C97 /* BDPTSpectralRasterizer.cpp */,
 				F2C5D5822F6EA5CF00546C97 /* MLTRasterizer.h */,
 				F2C5D5832F6EA5CF00546C97 /* MLTRasterizer.cpp */,
+				F2C5D5962F6EA5CF00546C97 /* MMLTRasterizer.h */,
+				F2C5D5972F6EA5CF00546C97 /* MMLTRasterizer.cpp */,
 				F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */,
 				F2C5D5632F6E447400546C97 /* SplatFilm.h */,
 				F2C5D5642F6E447400546C97 /* SplatFilm.cpp */,
@@ -3313,6 +3325,8 @@
 				F2C5D5D72F70D4D000546C97 /* SumOfExponentialsFit.h */,
 				F2C5D57D2F6EA5B300546C97 /* PSSMLTSampler.h */,
 				F2C5D57E2F6EA5B300546C97 /* PSSMLTSampler.cpp */,
+				F2C5D58D2F6EA5B300546C97 /* MMLTSampler.h */,
+				F2C5D58E2F6EA5B300546C97 /* MMLTSampler.cpp */,
 				6DFD32ED0A0FBB1D00E99FBE /* CPU_Count.cpp */,
 				6DFD32EE0A0FBB1D00E99FBE /* CPU.h */,
 				F277349D07ECD64300C0B600 /* MediaPathLocator.cpp */,
@@ -3660,6 +3674,7 @@
 				F27F0B09069C42910069C9E5 /* ITriangleMeshGeometry.h in Headers */,
 				F27F0B0A069C42910069C9E5 /* ITriangleMeshLoader.h in Headers */,
 				F2C5D5852F6EA5CF00546C97 /* MLTRasterizer.h in Headers */,
+				F2C5D5992F6EA5CF00546C97 /* MMLTRasterizer.h in Headers */,
 				F27F0B0B069C42910069C9E5 /* ITwoColorOperator.h in Headers */,
 				F27F0B0C069C42910069C9E5 /* IUVGenerator.h in Headers */,
 				F27F0B0D069C42910069C9E5 /* IVolume.h in Headers */,
@@ -3857,6 +3872,7 @@
 				F24C54912F87F453009AF16D /* LightBVH.h in Headers */,
 				F27F0C1D069C42910069C9E5 /* MultiJitteredSampling2D.h in Headers */,
 				F2C5D5802F6EA5B300546C97 /* PSSMLTSampler.h in Headers */,
+				F2C5D5902F6EA5B300546C97 /* MMLTSampler.h in Headers */,
 				F27F0C1F069C42910069C9E5 /* NRooksSampling2D.h in Headers */,
 				F27F0C20069C42910069C9E5 /* PixelFilter.h in Headers */,
 				F27F0C22069C42910069C9E5 /* PoissonDiskSampling2D.h in Headers */,
@@ -4311,6 +4327,7 @@
 				F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */,
 				F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
+				F2C5D5982F6EA5CF00546C97 /* MMLTRasterizer.cpp in Sources */,
 				F27F0C66069C42910069C9E5 /* GeometricUtilities.cpp in Sources */,
 				F2D9B0EC2F8E96280077A171 /* CurlNoise3DPainter.cpp in Sources */,
 				F2D9B0ED2F8E96280077A171 /* Worley3DPainter.cpp in Sources */,
@@ -4389,6 +4406,7 @@
 				6DFD32F60A0FBBAA00E99FBE /* EXRReader.cpp in Sources */,
 				6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */,
 				F2C5D5812F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */,
+				F2C5D5912F6EA5B300546C97 /* MMLTSampler.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -4735,6 +4753,7 @@
 				F24B730F2F52A632008304C4 /* BumpMap.h in Sources */,
 				F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */,
 				F2C5D57F2F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */,
+				F2C5D58F2F6EA5B300546C97 /* MMLTSampler.cpp in Sources */,
 				F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */,
 				F24B73122F52A632008304C4 /* Noise.h in Sources */,
 				F24B73132F52A632008304C4 /* NoiseUtils.h in Sources */,
@@ -4863,6 +4882,7 @@
 				F24B73832F52A632008304C4 /* TIFFWriter.h in Sources */,
 				F24B73842F52A632008304C4 /* WriteOnlyRasterImage.h in Sources */,
 				F2C5D5862F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
+				F2C5D59A2F6EA5CF00546C97 /* MMLTRasterizer.cpp in Sources */,
 				F24B73872F52A632008304C4 /* BlockRasterizeSequence.h in Sources */,
 				F2C5D56F2F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */,
 				F24B73882F52A632008304C4 /* FileRasterizerOutput.cpp in Sources */,

@@ -47,6 +47,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/ProbabilityDensityFunction.cpp"
     "${RISE_LIB}/Utilities/Reference.cpp"
     "${RISE_LIB}/Utilities/PSSMLTSampler.cpp"
+    "${RISE_LIB}/Utilities/MMLTSampler.cpp"
     "${RISE_LIB}/Utilities/Profiling.cpp"
     "${RISE_LIB}/Utilities/RenderETAEstimator.cpp"
     "${RISE_LIB}/Utilities/RTime.cpp"
@@ -243,6 +244,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/VCMSpectralRasterizer.cpp"
     "${RISE_LIB}/Rendering/MLTRasterizer.cpp"
     "${RISE_LIB}/Rendering/MLTSpectralRasterizer.cpp"
+    "${RISE_LIB}/Rendering/MMLTRasterizer.cpp"
     "${RISE_LIB}/Rendering/AOVBuffers.cpp"
     "${RISE_LIB}/Rendering/OIDNDenoiser.cpp"
 

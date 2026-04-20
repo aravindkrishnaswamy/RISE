@@ -1304,6 +1304,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				}
 #endif
 			}
+
 		}
 
 		// ============================================================

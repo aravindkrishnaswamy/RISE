@@ -63,6 +63,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/ProbabilityDensityFunction.cpp		\
 	$(PATHLIBRARY)Utilities/Reference.cpp						\
 	$(PATHLIBRARY)Utilities/PSSMLTSampler.cpp					\
+	$(PATHLIBRARY)Utilities/MMLTSampler.cpp						\
 	$(PATHLIBRARY)Utilities/Profiling.cpp						\
 	$(PATHLIBRARY)Utilities/RenderETAEstimator.cpp				\
 	$(PATHLIBRARY)Utilities/RTime.cpp							\
@@ -274,6 +275,7 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/VCMSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
 	$(PATHLIBRARY)Rendering/MLTSpectralRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/MMLTRasterizer.cpp								\
 	$(PATHLIBRARY)Rendering/AOVBuffers.cpp									\
 	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp
 

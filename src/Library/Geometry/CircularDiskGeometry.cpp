@@ -326,17 +326,20 @@ SurfaceDerivatives CircularDiskGeometry::ComputeSurfaceDerivatives( const Point3
 	sd.dndv = Vector3( 0, 0, 0 );
 	sd.valid = true;
 
+	// Convention: (dpdu, dpdv, n) right-handed per
+	// docs/GEOMETRY_DERIVATIVES.md.  X- and Y-axis disks originally
+	// returned left-handed frames; swap the two tangents to fix.
 	switch( chAxis )
 	{
 	case 'x':
-		sd.dpdu = Vector3( 0, 0, 1 );
-		sd.dpdv = Vector3( 0, 1, 0 );
-		sd.uv = Point2( objSpacePoint.z * OVRadius, objSpacePoint.y * OVRadius );
+		sd.dpdu = Vector3( 0, 1, 0 );
+		sd.dpdv = Vector3( 0, 0, 1 );
+		sd.uv = Point2( objSpacePoint.y * OVRadius, objSpacePoint.z * OVRadius );
 		break;
 	case 'y':
-		sd.dpdu = Vector3( 1, 0, 0 );
-		sd.dpdv = Vector3( 0, 0, 1 );
-		sd.uv = Point2( objSpacePoint.x * OVRadius, objSpacePoint.z * OVRadius );
+		sd.dpdu = Vector3( 0, 0, 1 );
+		sd.dpdv = Vector3( 1, 0, 0 );
+		sd.uv = Point2( objSpacePoint.z * OVRadius, objSpacePoint.x * OVRadius );
 		break;
 	default:
 	case 'z':

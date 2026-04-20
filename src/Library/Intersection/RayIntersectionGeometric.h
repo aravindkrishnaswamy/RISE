@@ -20,6 +20,28 @@
 
 namespace RISE
 {
+	//! Surface derivative data produced at intersection time.
+	//! Populated by geometries that know the hit-local parameters
+	//! (e.g., triangle mesh: the hit triangle + barycentric coords).
+	//! Consumers like SMS ManifoldSolver read this directly to avoid
+	//! a second lookup via IGeometry::ComputeSurfaceDerivatives.
+	//! See docs/GEOMETRY_DERIVATIVES.md for the contract.
+	struct SurfaceDerivativesInfo
+	{
+		Vector3 dpdu;
+		Vector3 dpdv;
+		Vector3 dndu;
+		Vector3 dndv;
+		bool    valid;  // true if geometry populated these fields
+
+		SurfaceDerivativesInfo() :
+		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
+		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
+		valid( false )
+		{
+		}
+	};
+
 	//! Describes the current state of the rasterizer
 	struct RasterizerState
 	{
@@ -67,6 +89,12 @@ namespace RISE
 
 		Scalar						glossyFilterWidth;	///< Accumulated glossy filter blur from StabilityConfig (0 = off)
 
+		//! Surface derivatives at the hit point.  Populated by geometries
+		//! that know them at intersection time (currently: triangle meshes).
+		//! Other geometries leave this with valid=false; consumers should
+		//! fall back to IGeometry::ComputeSurfaceDerivatives.
+		SurfaceDerivativesInfo		derivatives;
+
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),
@@ -97,7 +125,8 @@ namespace RISE
 		  ptObjExit( r.ptObjExit ),
 		  onb( r.onb ),
 		  pCustom( r.pCustom ),
-		  glossyFilterWidth( r.glossyFilterWidth )
+		  glossyFilterWidth( r.glossyFilterWidth ),
+		  derivatives( r.derivatives )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -114,6 +143,7 @@ namespace RISE
 			vNormal = r.vNormal;
 			vNormal2 = r.vNormal2;
 			ptCoord = r.ptCoord;
+			derivatives = r.derivatives;
 			ptIntersection = r.ptIntersection;
 			ptExit = r.ptExit;
 			ptObjIntersec = r.ptObjIntersec;

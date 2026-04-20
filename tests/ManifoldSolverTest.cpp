@@ -651,6 +651,65 @@ void TestJacobian_TwoVertex_Agreement()
 	}
 }
 
+// Regression test for SMS curvature bug (documents expected behavior).
+//
+// On curved surfaces (dndu, dndv != 0), the analytical BuildJacobian
+// includes tangent-frame rotation terms (ds_du, dt_du) that the
+// current BuildJacobianNumerical does not capture, because
+// EvaluateConstraint freezes v.dpdu/v.dpdv during FD perturbation.
+//
+// So analytical and numerical DISAGREE on curved surfaces — but the
+// analytical is right (matches Cycles MNEE / Zeltner 2020).  This test
+// verifies that the Jacobian diagonal *changes* when curvature is
+// introduced, which is essential for caustic focusing on displaced
+// meshes.
+//
+// Prior coverage only exercised dndu=dndv=0 (flat surfaces), where both
+// formulations agree, masking a bug where an incorrect ds_du formula
+// gave zero at convergence regardless of actual curvature.  See
+// docs/SMS.md (April 2026) for the full analysis.
+void TestJacobian_SingleVertex_WithCurvature()
+{
+	std::cout << "Testing Jacobian changes with surface curvature..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Non-convergent geometry so the dot(ds_du, h) term is meaningful
+	Point3 prevPos( -0.5, 2, 0 );
+	Point3 vertPos( 0, 0, 0 );
+	Point3 nextPos( 0.3, -2, 0.2 );
+
+	// Flat vertex (reference)
+	ManifoldVertex vFlat = MakeVertex(
+		vertPos, Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, false );  // dndu, dndv default to zero
+
+	// Same vertex but with curvature (convex sphere-like, radius 1)
+	ManifoldVertex vCurv = MakeVertex(
+		vertPos, Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, false,
+		Vector3(1,0,0), Vector3(0,0,1) );  // nonzero dndu, dndv
+
+	std::vector<ManifoldVertex> chainFlat;  chainFlat.push_back( vFlat );
+	std::vector<ManifoldVertex> chainCurv;  chainCurv.push_back( vCurv );
+
+	std::vector<Scalar> diagFlat, upFlat, lowFlat;
+	std::vector<Scalar> diagCurv, upCurv, lowCurv;
+	solver.BuildJacobian( chainFlat, prevPos, nextPos, diagFlat, upFlat, lowFlat );
+	solver.BuildJacobian( chainCurv, prevPos, nextPos, diagCurv, upCurv, lowCurv );
+
+	// At least one diagonal entry must differ noticeably.  If the ds_du
+	// formula degenerates to zero (old RISE bug), the curved Jacobian
+	// equals the flat one and this assertion fails.
+	Scalar maxDelta = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		const Scalar d = std::fabs( diagCurv[i] - diagFlat[i] );
+		if( d > maxDelta ) maxDelta = d;
+	}
+	assert( maxDelta > 0.1 );  // curvature must change the Jacobian
+}
+
 // ============================================================
 // Group 7: Block-Tridiagonal Solver
 // ============================================================
@@ -1281,6 +1340,7 @@ int main()
 	TestJacobian_SingleVertex_Reflection();
 	TestJacobian_SingleVertex_Refraction();
 	TestJacobian_TwoVertex_Agreement();
+	TestJacobian_SingleVertex_WithCurvature();
 
 	// Group 7: Block-Tridiagonal Solver
 	TestTridiag_SingleBlock();

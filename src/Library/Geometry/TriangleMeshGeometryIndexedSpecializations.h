@@ -140,7 +140,7 @@ namespace RISE
 			}
 		}
 
-		{	
+		{
 			RayTriangleIntersection( ri.ray, h, *thisTri.pVertices[0], vEdgeA, vEdgeB );
 
 			if( h.bHit /* && h.dRange > 0.01*/ ) {
@@ -160,6 +160,63 @@ namespace RISE
 				ri.ptCoord = Point2Ops::mkPoint2(*thisTri.pCoords[0],
 					Vector2Ops::mkVector2(*thisTri.pCoords[1],*thisTri.pCoords[0])*a+
 					Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );
+
+				// Populate surface derivatives for SMS consumers.
+				// Free to do here because we already have the hit
+				// triangle and barycentric (a, b).  See
+				// docs/GEOMETRY_DERIVATIVES.md for the tangency convention
+				// and TriangleMeshGeometryIndexed.cpp's helper for the
+				// standalone (walk-the-mesh) variant.
+				const Vector3 shadingNormal = Vector3Ops::Normalize( ri.vNormal );
+				const Vector3 e1 = Vector3Ops::mkVector3( *thisTri.pVertices[1], *thisTri.pVertices[0] );
+				const Vector3 e2 = Vector3Ops::mkVector3( *thisTri.pVertices[2], *thisTri.pVertices[0] );
+				// Project edges onto the shading-normal tangent plane.
+				const Scalar e1_dot_n = Vector3Ops::Dot( e1, shadingNormal );
+				const Scalar e2_dot_n = Vector3Ops::Dot( e2, shadingNormal );
+				Vector3 dpdu(
+					e1.x - shadingNormal.x * e1_dot_n,
+					e1.y - shadingNormal.y * e1_dot_n,
+					e1.z - shadingNormal.z * e1_dot_n );
+				Vector3 dpdv(
+					e2.x - shadingNormal.x * e2_dot_n,
+					e2.y - shadingNormal.y * e2_dot_n,
+					e2.z - shadingNormal.z * e2_dot_n );
+
+				Vector3 dndu( 0, 0, 0 );
+				Vector3 dndv( 0, 0, 0 );
+				if( thisTri.pNormals[0] && thisTri.pNormals[1] && thisTri.pNormals[2] ) {
+					const Vector3 dNraw_du(
+						thisTri.pNormals[1]->x - thisTri.pNormals[0]->x,
+						thisTri.pNormals[1]->y - thisTri.pNormals[0]->y,
+						thisTri.pNormals[1]->z - thisTri.pNormals[0]->z );
+					const Vector3 dNraw_dv(
+						thisTri.pNormals[2]->x - thisTri.pNormals[0]->x,
+						thisTri.pNormals[2]->y - thisTri.pNormals[0]->y,
+						thisTri.pNormals[2]->z - thisTri.pNormals[0]->z );
+					const Scalar nrawLen = Vector3Ops::Magnitude( ri.vNormal );
+					const Scalar invLen = (nrawLen > NEARZERO) ? 1.0 / nrawLen : 0.0;
+					const Scalar du_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_du );
+					const Scalar dv_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_dv );
+					dndu = Vector3(
+						(dNraw_du.x - shadingNormal.x * du_dot_n) * invLen,
+						(dNraw_du.y - shadingNormal.y * du_dot_n) * invLen,
+						(dNraw_du.z - shadingNormal.z * du_dot_n) * invLen );
+					dndv = Vector3(
+						(dNraw_dv.x - shadingNormal.x * dv_dot_n) * invLen,
+						(dNraw_dv.y - shadingNormal.y * dv_dot_n) * invLen,
+						(dNraw_dv.z - shadingNormal.z * dv_dot_n) * invLen );
+				}
+				// Enforce right-handedness against shading normal.
+				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
+				if( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 ) {
+					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
+					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
+				}
+				ri.derivatives.dpdu = dpdu;
+				ri.derivatives.dpdv = dpdv;
+				ri.derivatives.dndu = dndu;
+				ri.derivatives.dndv = dndv;
+				ri.derivatives.valid = true;
 			}
 		}
 	}

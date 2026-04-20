@@ -790,16 +790,194 @@ void TriangleMeshGeometryIndexed::ComputeVertexNormals()
 	CalculateVertexNormals( indexedtris, pNormals, pPoints );
 }
 
-SurfaceDerivatives TriangleMeshGeometryIndexed::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+// Derivatives for a triangle in barycentric parameterization.
+//
+// Parameterize the triangle by p(u,v) = v0 + u*(v1-v0) + v*(v2-v0) with
+// (u, v) in the standard barycentric domain {(u,v) : u,v >= 0, u+v <= 1}.
+// Then dp/du and dp/dv are the triangle edge vectors e1 = v1-v0 and
+// e2 = v2-v0 respectively — constant across the triangle, so the triangle
+// is actually a flat patch in parameter space.
+//
+// For smooth-shaded triangles the normal is barycentric-interpolated:
+//   N_raw(u,v) = n0 + u*(n1-n0) + v*(n2-n0)
+//   N(u,v)     = N_raw / |N_raw|
+// Differentiating the normalized expression gives:
+//   dN/du = (dN_raw/du - N*dot(N, dN_raw/du)) / |N_raw|
+//
+// The returned (dpdu, dpdv, n) may be LEFT-HANDED depending on the
+// triangle winding vs its per-vertex normals.  We flip dpdv's sign (and
+// dndv accordingly) if needed so the frame is always right-handed, per
+// docs/GEOMETRY_DERIVATIVES.md.
+static SurfaceDerivatives ComputeTriangleDerivatives(
+	const PointerTriangle& tri,
+	const Vector3& objSpaceNormal,
+	const Point3& objSpacePoint,
+	const Scalar barU,
+	const Scalar barV,
+	bool hasVertexNormals )
 {
 	SurfaceDerivatives sd;
-	OrthonormalBasis3D onb;
-	onb.CreateFromW( objSpaceNormal );
-	sd.dpdu = onb.u();
-	sd.dpdv = onb.v();
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-	sd.uv = Point2( 0, 0 );
 	sd.valid = true;
+
+	// dpdu, dpdv = triangle edges, projected into the shading-normal
+	// tangent plane so the contract `dpdu·n ≈ 0` holds even for
+	// smooth-shaded triangles whose shading normal differs from the face
+	// normal.  (See docs/GEOMETRY_DERIVATIVES.md on the tangency invariant.)
+	const Vector3 e1 = Vector3Ops::mkVector3( *tri.pVertices[1], *tri.pVertices[0] );
+	const Vector3 e2 = Vector3Ops::mkVector3( *tri.pVertices[2], *tri.pVertices[0] );
+	const Scalar e1_dot_n = Vector3Ops::Dot( e1, objSpaceNormal );
+	const Scalar e2_dot_n = Vector3Ops::Dot( e2, objSpaceNormal );
+	sd.dpdu = Vector3(
+		e1.x - objSpaceNormal.x * e1_dot_n,
+		e1.y - objSpaceNormal.y * e1_dot_n,
+		e1.z - objSpaceNormal.z * e1_dot_n );
+	sd.dpdv = Vector3(
+		e2.x - objSpaceNormal.x * e2_dot_n,
+		e2.y - objSpaceNormal.y * e2_dot_n,
+		e2.z - objSpaceNormal.z * e2_dot_n );
+
+	if( hasVertexNormals && tri.pNormals[0] && tri.pNormals[1] && tri.pNormals[2] ) {
+		// Raw normal-diff derivatives (before |N_raw| normalization)
+		const Vector3 dNraw_du = Vector3(
+			tri.pNormals[1]->x - tri.pNormals[0]->x,
+			tri.pNormals[1]->y - tri.pNormals[0]->y,
+			tri.pNormals[1]->z - tri.pNormals[0]->z );
+		const Vector3 dNraw_dv = Vector3(
+			tri.pNormals[2]->x - tri.pNormals[0]->x,
+			tri.pNormals[2]->y - tri.pNormals[0]->y,
+			tri.pNormals[2]->z - tri.pNormals[0]->z );
+
+		// Reconstruct |N_raw| at this (u,v) using the interpolated
+		// unnormalized normal. The caller-supplied objSpaceNormal is
+		// already normalized, so we can use the raw interpolation.
+		const Vector3 Nraw = Vector3(
+			tri.pNormals[0]->x + barU * dNraw_du.x + barV * dNraw_dv.x,
+			tri.pNormals[0]->y + barU * dNraw_du.y + barV * dNraw_dv.y,
+			tri.pNormals[0]->z + barU * dNraw_du.z + barV * dNraw_dv.z );
+		const Scalar len = Vector3Ops::Magnitude( Nraw );
+		const Scalar invLen = (len > NEARZERO) ? 1.0 / len : 0.0;
+		const Vector3 N = Nraw * invLen;
+
+		// dN/d* = projection perpendicular to N, divided by |N_raw|.
+		// Use the caller-supplied objSpaceNormal (which is the shading
+		// normal the RISE runtime attached to this hit), not the
+		// reconstructed N, so that our dn/d* is rigorously perpendicular
+		// to the same normal a downstream consumer will use.
+		const Scalar dot_u = Vector3Ops::Dot( objSpaceNormal, dNraw_du );
+		const Scalar dot_v = Vector3Ops::Dot( objSpaceNormal, dNraw_dv );
+		sd.dndu = Vector3(
+			(dNraw_du.x - objSpaceNormal.x * dot_u) * invLen,
+			(dNraw_du.y - objSpaceNormal.y * dot_u) * invLen,
+			(dNraw_du.z - objSpaceNormal.z * dot_u) * invLen );
+		sd.dndv = Vector3(
+			(dNraw_dv.x - objSpaceNormal.x * dot_v) * invLen,
+			(dNraw_dv.y - objSpaceNormal.y * dot_v) * invLen,
+			(dNraw_dv.z - objSpaceNormal.z * dot_v) * invLen );
+	} else {
+		// Face-normal mesh: flat face, no per-vertex normal variation
+		sd.dndu = Vector3( 0, 0, 0 );
+		sd.dndv = Vector3( 0, 0, 0 );
+	}
+
+	// Handedness: (dpdu × dpdv) · n must be > 0.  If the triangle
+	// winding gave the wrong sign w.r.t. the shading normal, flip dpdv
+	// and dndv.
+	const Vector3 cross = Vector3Ops::Cross( sd.dpdu, sd.dpdv );
+	if( Vector3Ops::Dot( cross, objSpaceNormal ) < 0.0 ) {
+		sd.dpdv = Vector3( -sd.dpdv.x, -sd.dpdv.y, -sd.dpdv.z );
+		sd.dndv = Vector3( -sd.dndv.x, -sd.dndv.y, -sd.dndv.z );
+	}
+
+	sd.uv = Point2( barU, barV );
 	return sd;
+}
+
+// Compute barycentric coords of a point in a triangle (ignoring
+// out-of-plane component).  Returns (u, v) such that
+//   p ≈ v0 + u*(v1-v0) + v*(v2-v0).
+// `inside` is set to true iff (u,v) is inside the triangle (with
+// tolerance epsTol).  The "containment" test is the only way to
+// disambiguate which triangle a point belongs to.
+static void BarycentricCoords(
+	const Point3& v0, const Point3& v1, const Point3& v2,
+	const Point3& p,
+	Scalar& u, Scalar& v, bool& inside,
+	const Scalar epsTol = 1e-4 )
+{
+	const Vector3 e1 = Vector3Ops::mkVector3( v1, v0 );
+	const Vector3 e2 = Vector3Ops::mkVector3( v2, v0 );
+	const Vector3 pv = Vector3Ops::mkVector3( p, v0 );
+	const Scalar a = Vector3Ops::Dot( e1, e1 );
+	const Scalar b = Vector3Ops::Dot( e1, e2 );
+	const Scalar c = Vector3Ops::Dot( e2, e2 );
+	const Scalar d = Vector3Ops::Dot( e1, pv );
+	const Scalar e = Vector3Ops::Dot( e2, pv );
+	const Scalar det = a*c - b*b;
+	if( std::fabs( det ) < NEARZERO ) {
+		u = 0; v = 0; inside = false;
+		return;
+	}
+	u = (c*d - b*e) / det;
+	v = (a*e - b*d) / det;
+	inside = (u >= -epsTol) && (v >= -epsTol) && (u + v <= 1.0 + epsTol);
+}
+
+SurfaceDerivatives TriangleMeshGeometryIndexed::ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const
+{
+	// Walk the triangle list to find which triangle contains the point.
+	// This is O(n_triangles) — fine for tests and rare one-off queries.
+	// SMS and other frequent callers should read derivatives directly
+	// from the RayIntersectionGeometric record populated during
+	// IntersectRay (stage 1.1 of the SMS work), avoiding this walk.
+	const Scalar epsTol = 1e-3;
+
+	const PointerTriangle* bestTri = 0;
+	Scalar bestU = 0, bestV = 0;
+	Scalar bestOutOfPlane = RISE_INFINITY;
+
+	for( MyPointerTriangleList::const_iterator it = ptr_polygons.begin();
+		it != ptr_polygons.end(); ++it )
+	{
+		const PointerTriangle& tri = *it;
+		Scalar u = 0, v = 0;
+		bool inside = false;
+		BarycentricCoords( *tri.pVertices[0], *tri.pVertices[1], *tri.pVertices[2],
+			objSpacePoint, u, v, inside, epsTol );
+		if( !inside ) continue;
+
+		// Verify the point is actually on the triangle's plane (not just
+		// inside its prism).
+		const Vector3 e1 = Vector3Ops::mkVector3( *tri.pVertices[1], *tri.pVertices[0] );
+		const Vector3 e2 = Vector3Ops::mkVector3( *tri.pVertices[2], *tri.pVertices[0] );
+		Vector3 faceN = Vector3Ops::Cross( e1, e2 );
+		const Scalar faceNLen = Vector3Ops::Magnitude( faceN );
+		if( faceNLen < NEARZERO ) continue;
+		faceN = faceN * (1.0 / faceNLen);
+		const Vector3 delta = Vector3Ops::mkVector3( objSpacePoint, *tri.pVertices[0] );
+		const Scalar oop = std::fabs( Vector3Ops::Dot( faceN, delta ) );
+		if( oop < bestOutOfPlane ) {
+			bestTri = &tri;
+			bestU = u;
+			bestV = v;
+			bestOutOfPlane = oop;
+		}
+	}
+
+	if( !bestTri ) {
+		// Fallback: no triangle found containing the point.  Return a
+		// reasonable tangent frame from the normal so callers don't NaN.
+		SurfaceDerivatives sd;
+		OrthonormalBasis3D onb;
+		onb.CreateFromW( objSpaceNormal );
+		sd.dpdu = onb.u();
+		sd.dpdv = onb.v();
+		sd.dndu = Vector3( 0, 0, 0 );
+		sd.dndv = Vector3( 0, 0, 0 );
+		sd.uv = Point2( 0, 0 );
+		sd.valid = false;
+		return sd;
+	}
+
+	return ComputeTriangleDerivatives( *bestTri, objSpaceNormal, objSpacePoint,
+		bestU, bestV, !bUseFaceNormals );
 }

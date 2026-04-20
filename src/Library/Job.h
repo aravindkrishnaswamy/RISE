@@ -1743,6 +1743,7 @@ namespace RISE
 		// into Job's scope, restoring overload resolution.
 		using IJob::SetMLTRasterizer;
 		using IJob::SetMLTSpectralRasterizer;
+		using IJob::SetMMLTRasterizer;
 
 		bool SetMLTRasterizer(
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
@@ -1784,6 +1785,26 @@ namespace RISE
 			const double pixelFilterParamA,							///< [in] Filter parameter A
 			const double pixelFilterParamB,							///< [in] Filter parameter B
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			);
+
+		bool SetMMLTRasterizer(
+			const unsigned int maxEyeDepth,
+			const unsigned int maxLightDepth,
+			const unsigned int nBootstrap,
+			const unsigned int nChains,
+			const unsigned int nMutationsPerPixel,
+			const double largeStepProb,
+			const int forceDepth,
+			const char* shader,
+			const bool bShowLuminaires,
+			const bool bChooseOnlyOneLight,
+			const bool oidnDenoise,
+			const char* pixelFilter,
+			const double pixelFilterWidth,
+			const double pixelFilterHeight,
+			const double pixelFilterParamA,
+			const double pixelFilterParamB,
+			const StabilityConfig& stabilityConfig
 			);
 
 		//

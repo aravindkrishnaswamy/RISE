@@ -222,10 +222,18 @@ namespace RISE
 			/// pass a value in [0, 1] to override StabilityConfig.branching-
 			/// Threshold on this call, or a negative value to use the config
 			/// default.  Callers that do NOT loop over `subpathStarts` on
-			/// the light side (currently BDPT-Pel, MLT, spectral rasterizers;
-			/// VCM-Pel is the only consumer that handles multi-branch light
-			/// subpaths) should pass 1.0 to keep the light subpath
-			/// single-branch.
+			/// the light side (currently BDPT-Pel, MLT, MMLT, spectral
+			/// rasterizers; VCM-Pel is the only consumer that handles
+			/// multi-branch light subpaths) should pass 1.0 to keep the
+			/// light subpath single-branch.
+			///
+			/// `maxBouncesOverride` lets MMLT cap the surface-bounce loop
+			/// below the integrator's `maxLightDepth` member when the
+			/// chain only needs a short subpath.  The default UINT_MAX
+			/// preserves the historical PSSMLT/BDPT behaviour bit-for-bit
+			/// (min(maxLightDepth, UINT_MAX) == maxLightDepth).  Volume
+			/// bounces are still allowed up to `stabilityConfig.maxVolumeBounce`
+			/// on top of the surface cap.
 			unsigned int GenerateLightSubpath(
 				const IScene& scene,
 				const IRayCaster& caster,
@@ -233,11 +241,13 @@ namespace RISE
 				std::vector<BDPTVertex>& vertices,
 				std::vector<uint32_t>& subpathStarts,
 				const RandomNumberGenerator& random,
-				Scalar branchingThresholdOverride
+				Scalar branchingThresholdOverride,
+				unsigned int maxBouncesOverride = UINT_MAX
 				) const;
 
 			/// Generates an eye subpath from a camera ray.
 			/// \return Number of vertices stored
+			///
 			/// `branchingThresholdOverride` controls whether threshold-
 			/// gated splitting fires on this call.  Pass a value in
 			/// [0, 1] to override StabilityConfig.branchingThreshold
@@ -245,10 +255,13 @@ namespace RISE
 			/// any negative value to use the config default.  Callers
 			/// that do NOT loop over `subpathStarts` must pass 1.0 to
 			/// avoid silently-wrong MIS evaluation across branch
-			/// boundaries; MLT / MLT-spectral always pass 1.0 because
-			/// PSSMLT's primary-sample vector can't mutate split
-			/// choices.  BDPT-Pel, BDPT-Spectral, VCM-Pel, VCM-Spectral,
-			/// and the VCM photon-store build all loop over branches.
+			/// boundaries; MLT / MLT-spectral / MMLT always pass 1.0
+			/// because PSSMLT's primary-sample vector can't mutate
+			/// split choices.  BDPT-Pel, BDPT-Spectral, VCM-Pel,
+			/// VCM-Spectral, and the VCM photon-store build all loop
+			/// over branches.
+			///
+			/// See GenerateLightSubpath for `maxBouncesOverride` semantics.
 			unsigned int GenerateEyeSubpath(
 				const RuntimeContext& rc,
 				const Ray& cameraRay,
@@ -258,10 +271,25 @@ namespace RISE
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
 				std::vector<uint32_t>& subpathStarts,
-				Scalar branchingThresholdOverride
+				Scalar branchingThresholdOverride,
+				unsigned int maxBouncesOverride = UINT_MAX
 				) const;
 
 			/// Connects and evaluates a single (s,t) strategy.
+			///
+			/// THREAD-SAFETY CONTRACT: although this method is `const`,
+			/// it transiently mutates `pdfRev` on up to four endpoint
+			/// vertices in `lightVerts`/`eyeVerts` via `const_cast` (and
+			/// restores them before returning) so MISWeight can read the
+			/// connection-aware reverse PDFs.  CALLERS MUST OWN their
+			/// own subpath vectors per thread — sharing the same
+			/// `lightVerts`/`eyeVerts` across concurrent threads is a
+			/// data race.  All in-tree callers (BDPTRasterizerBase,
+			/// MLTRasterizer, MLTSpectralRasterizer, the upcoming MMLT)
+			/// build the vectors per worker thread on the stack, so the
+			/// contract holds; the `const` qualifier is preserved
+			/// because the BDPTIntegrator instance itself has no
+			/// observable state mutation.
 			ConnectionResult ConnectAndEvaluate(
 				const std::vector<BDPTVertex>& lightVerts,
 				const std::vector<BDPTVertex>& eyeVerts,
@@ -280,6 +308,35 @@ namespace RISE
 				const IRayCaster& caster,
 				const ICamera& camera,
 				ISampler* pSampler
+				) const;
+
+			/// Single-strategy entry point for MMLT.  Each MMLT chain
+			/// evaluates ONE (s,t) per mutation (not all strategies like
+			/// PSSMLT), so the chain density adapts to per-strategy
+			/// luminance rather than the summed luminance — this is what
+			/// fixes the dim-strategy starvation that limits PSSMLT
+			/// convergence on SDS scenes.
+			///
+			/// Semantically a thin wrapper around ConnectAndEvaluate that
+			/// also fills in cr.s and cr.t (mirrors the inner loop body
+			/// of EvaluateAllStrategies).  It deliberately does NOT
+			/// invoke the directional/ambient-light deterministic branch
+			/// or the OpenPGL strategy-selection branch that
+			/// EvaluateAllStrategies adds AROUND its (s,t) loop — those
+			/// have no per-strategy analog and MMLT treats their inputs
+			/// (zero-exitance lights, path guiding) as out of scope, the
+			/// same restriction PBRT v3 MMLT documents.
+			///
+			/// Inherits the same per-thread subpath ownership contract
+			/// as ConnectAndEvaluate (see above).
+			ConnectionResult ConnectAndEvaluateForMMLT(
+				const std::vector<BDPTVertex>& lightVerts,
+				const std::vector<BDPTVertex>& eyeVerts,
+				unsigned int s,
+				unsigned int t,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const ICamera& camera
 				) const;
 
 			/// Computes MIS weight using the balance heuristic (power=1).

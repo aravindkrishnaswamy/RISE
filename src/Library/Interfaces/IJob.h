@@ -1733,6 +1733,36 @@ namespace RISE
 				"none", 1.0, 1.0, 1.0/3.0, 1.0/3.0, stabilityConfig );
 		}
 
+		//! Sets up an MMLT (Multiplexed Metropolis Light Transport)
+		//! rasterizer.  MMLT pools chains per path-length depth so
+		//! per-strategy luminance — not the summed luminance — drives
+		//! chain density.  Targets SDS-scene convergence at much
+		//! lower mutation budgets than PSSMLT (the existing MLT).
+		//!
+		//! Phase 3 single-depth mode: forceDepth >= 0 restricts every
+		//! chain to that one depth (d = s+t-2).  Phase 4 will accept
+		//! forceDepth = -1 for the full per-depth pools.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool SetMMLTRasterizer(
+			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
+			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
+			const unsigned int nBootstrap,							///< [in] Number of bootstrap samples
+			const unsigned int nChains,								///< [in] Number of Markov chains
+			const unsigned int nMutationsPerPixel,					///< [in] Mutations per pixel budget
+			const double largeStepProb,								///< [in] Large step probability
+			const int forceDepth,									///< [in] Phase 3: force every chain to this depth
+			const char* shader,										///< [in] The default shader
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const char* pixelFilter,								///< [in] Pixel filter name
+			const double pixelFilterWidth,							///< [in] Filter width (pixels)
+			const double pixelFilterHeight,							///< [in] Filter height (pixels)
+			const double pixelFilterParamA,							///< [in] Filter parameter A
+			const double pixelFilterParamB,							///< [in] Filter parameter B
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
+			) = 0;
+
 		//! Sets up a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool SetMLTSpectralRasterizer(

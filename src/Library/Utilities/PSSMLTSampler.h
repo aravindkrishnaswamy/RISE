@@ -110,7 +110,17 @@ namespace RISE
 			// eye bounces=16-31, SMS=47).  Stream 48 is reserved for
 			// the MLT film position.  kNumStreams must exceed the
 			// maximum stream index used by any consumer.
-			static const int				kNumStreams = 49;	///< Number of sample streams
+			//
+			// PSSMLT itself only needs 49 streams (kDefaultNumStreams).
+			// Subclasses (MMLTSampler) reserve more — see the protected
+			// constructor below.  kNumStreams was historically a static
+			// const; it became a regular member so MMLTSampler can
+			// allocate two extra lanes (49 = (s,t) selection, 50 = lens)
+			// without disturbing PSSMLT's bit-identical layout.  When
+			// constructed via the public ctor, kNumStreams = 49 exactly
+			// as before.
+			static const int				kDefaultNumStreams = 49;
+			int								kNumStreams;		///< Number of sample streams (per-instance)
 			int								streamIndex;		///< Current active stream
 
 			// Mutation parameters
@@ -137,6 +147,18 @@ namespace RISE
 			/// while still allowing occasional larger jumps within the
 			/// perturbation range [s1, s2].
 			Scalar Mutate( const Scalar value );
+
+		protected:
+			/// Subclass-only constructor that allows reserving additional
+			/// sample streams beyond the 49 PSSMLT needs.  MMLTSampler
+			/// uses this to allocate streams 49 ((s,t) selection) and
+			/// 50 (lens position).  Pass numStreams_ = 49 to behave
+			/// identically to the public PSSMLTSampler constructor.
+			PSSMLTSampler(
+				const unsigned int seed,
+				const Scalar largeStepProb_,
+				const int numStreams_
+				);
 
 		public:
 			/// Construct a PSSMLTSampler.
@@ -190,6 +212,19 @@ namespace RISE
 
 			/// \return The current iteration number.
 			unsigned int GetCurrentIteration() const { return currentIteration; }
+
+			/// Re-seed the internal mutation RNG without disturbing the
+			/// primary sample vector or iteration counters.  Used by
+			/// MLTRasterizer::InitChain to make every chain start at
+			/// the bootstrap-selected path (so the bootstrap CDF's
+			/// importance sampling is preserved) but then diverge per
+			/// chain via different mutation deltas.  Called between
+			/// the chain's first Accept() and any subsequent
+			/// StartIteration().
+			void ReSeedRNG( const unsigned int newSeed )
+			{
+				rng = RandomNumberGenerator( newSeed );
+			}
 		};
 	}
 }

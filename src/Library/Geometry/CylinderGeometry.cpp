@@ -282,33 +282,42 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 	//   dndv = (0, 0, 0)
 	// For other axes, permute accordingly.
 
+	// Convention: (dpdu, dpdv, n) must be right-handed per
+	// docs/GEOMETRY_DERIVATIVES.md.  Swap (theta, axial) ordering so that
+	// u = axial (along the cylinder axis) and v = theta (around the axis);
+	// then (dpdu × dpdv) · n > 0 at every side point.
+	// Convention: (dpdu, dpdv, n) must be right-handed per
+	// docs/GEOMETRY_DERIVATIVES.md.  With u = axial and v = theta, the
+	// rotation direction of dpdv around the axis depends on axis choice
+	// due to the axis permutation (each case's sign worked out below).
 	switch( m_chAxis )
 	{
 	case 'x':
-		// P = (h, r*cos(theta), r*sin(theta)), radA=y, radB=z
-		sd.dpdu = Vector3( 0.0, -r * sinT, r * cosT );
-		sd.dpdv = Vector3( 1.0, 0.0, 0.0 );
-		sd.dndu = Vector3( 0.0, -sinT, cosT );
-		sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+		// P = (h, r*cos(theta), r*sin(theta)).  v rotates CW viewed from +X
+		// to make the frame right-handed with the outward normal.
+		sd.dpdu = Vector3( 1.0, 0.0, 0.0 );
+		sd.dpdv = Vector3( 0.0, r * sinT, -r * cosT );
+		sd.dndu = Vector3( 0.0, 0.0, 0.0 );
+		sd.dndv = Vector3( 0.0, sinT, -cosT );
 		break;
 	case 'z':
-		// P = (r*cos(theta), r*sin(theta), h), radA=x, radB=y
-		sd.dpdu = Vector3( -r * sinT, r * cosT, 0.0 );
-		sd.dpdv = Vector3( 0.0, 0.0, 1.0 );
-		sd.dndu = Vector3( -sinT, cosT, 0.0 );
-		sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+		// P = (r*cos(theta), r*sin(theta), h).  v rotates CW viewed from +Z.
+		sd.dpdu = Vector3( 0.0, 0.0, 1.0 );
+		sd.dpdv = Vector3( r * sinT, -r * cosT, 0.0 );
+		sd.dndu = Vector3( 0.0, 0.0, 0.0 );
+		sd.dndv = Vector3( sinT, -cosT, 0.0 );
 		break;
 	case 'y':
 	default:
-		// P = (r*cos(theta), h, r*sin(theta)), radA=x, radB=z
-		sd.dpdu = Vector3( -r * sinT, 0.0, r * cosT );
-		sd.dpdv = Vector3( 0.0, 1.0, 0.0 );
-		sd.dndu = Vector3( -sinT, 0.0, cosT );
-		sd.dndv = Vector3( 0.0, 0.0, 0.0 );
+		// P = (r*cos(theta), h, r*sin(theta)).  v rotates CCW viewed from +Y.
+		sd.dpdu = Vector3( 0.0, 1.0, 0.0 );
+		sd.dpdv = Vector3( -r * sinT, 0.0, r * cosT );
+		sd.dndu = Vector3( 0.0, 0.0, 0.0 );
+		sd.dndv = Vector3( -sinT, 0.0, cosT );
 		break;
 	}
 
-	sd.uv = Point2( theta, axial );
+	sd.uv = Point2( axial, theta );  // matches the u↔axial, v↔theta swap
 	sd.valid = true;
 
 	return sd;

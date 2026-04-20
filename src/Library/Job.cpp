@@ -5272,6 +5272,73 @@ bool Job::SetMLTRasterizer(
 	return true;
 }
 
+bool Job::SetMMLTRasterizer(
+	const unsigned int maxEyeDepth,
+	const unsigned int maxLightDepth,
+	const unsigned int nBootstrap,
+	const unsigned int nChains,
+	const unsigned int nMutationsPerPixel,
+	const double largeStepProb,
+	const int forceDepth,
+	const char* shader,
+	const bool bShowLuminaires,
+	const bool bChooseOnlyOneLight,
+	const bool oidnDenoise,
+	const char* pixelFilter,
+	const double pixelFilterWidth,
+	const double pixelFilterHeight,
+	const double pixelFilterParamA,
+	const double pixelFilterParamB,
+	const StabilityConfig& stabilityConfig
+	)
+{
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetMMLTRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	// Same filter wiring as SetMLTRasterizer — MMLT splats through
+	// SplatFilm::SplatFiltered just like PSSMLT, so it needs a real
+	// reconstruction kernel.  The dummy 2-sample pixel sampler is
+	// only there to make GetSamplingAndFilterElements actually
+	// build the filter object; MMLT never reads from it.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter,
+			2, 1, 0, 0.0, 0, 0.0,
+			pixelFilter, pixelFilterWidth, pixelFilterHeight,
+			pixelFilterParamA, pixelFilterParamB ) )
+	{
+		safe_release( pCaster );
+		return false;
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE_API_CreateMMLTRasterizerWithFilter( &pRaster, pCaster,
+		maxEyeDepth, maxLightDepth, nBootstrap, nChains,
+		nMutationsPerPixel, largeStepProb, forceDepth, oidnDenoise,
+		pPixelSampler, pPixelFilter );
+
+	safe_release( pCaster );
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pRasterizer );
+
+	pRasterizer = pRaster;
+
+	return true;
+}
+
 bool Job::SetMLTSpectralRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,

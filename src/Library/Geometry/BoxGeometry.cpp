@@ -372,17 +372,18 @@ SurfaceDerivatives BoxGeometry::ComputeSurfaceDerivatives( const Point3& objSpac
 	}
 	else if( ay > az )
 	{
-		// Y face
+		// Y face — swap (u, v) so (dpdu × dpdv, n) is right-handed per
+		// docs/GEOMETRY_DERIVATIVES.md.
 		if( objSpaceNormal.y > 0 ) {
 			// +Y face
-			sd.dpdu = Vector3( 1, 0, 0 );
-			sd.dpdv = Vector3( 0, 0, 1 );
-			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, (objSpacePoint.z + dDepthOV2) * dOVDepth );
+			sd.dpdu = Vector3( 0, 0, 1 );
+			sd.dpdv = Vector3( 1, 0, 0 );
+			sd.uv = Point2( (objSpacePoint.z + dDepthOV2) * dOVDepth, (objSpacePoint.x + dWidthOV2) * dOVWidth );
 		} else {
 			// -Y face
-			sd.dpdu = Vector3( 1, 0, 0 );
-			sd.dpdv = Vector3( 0, 0, -1 );
-			sd.uv = Point2( (objSpacePoint.x + dWidthOV2) * dOVWidth, 1.0 - (objSpacePoint.z + dDepthOV2) * dOVDepth );
+			sd.dpdu = Vector3( 0, 0, -1 );
+			sd.dpdv = Vector3( 1, 0, 0 );
+			sd.uv = Point2( 1.0 - (objSpacePoint.z + dDepthOV2) * dOVDepth, (objSpacePoint.x + dWidthOV2) * dOVWidth );
 		}
 	}
 	else

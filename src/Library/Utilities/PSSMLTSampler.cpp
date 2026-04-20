@@ -56,6 +56,23 @@ PSSMLTSampler::PSSMLTSampler(
 	) :
   sampleIndex( 0 ),
   currentIteration( 0 ),
+  kNumStreams( kDefaultNumStreams ),
+  streamIndex( 0 ),
+  largeStepProb( largeStepProb_ ),
+  isLargeStep( true ),
+  lastLargeStepIteration( 0 ),
+  rng( seed )
+{
+}
+
+PSSMLTSampler::PSSMLTSampler(
+	const unsigned int seed,
+	const Scalar largeStepProb_,
+	const int numStreams_
+	) :
+  sampleIndex( 0 ),
+  currentIteration( 0 ),
+  kNumStreams( numStreams_ ),
   streamIndex( 0 ),
   largeStepProb( largeStepProb_ ),
   isLargeStep( true ),

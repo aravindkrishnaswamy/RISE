@@ -330,9 +330,25 @@ void ManifoldSolver::EvaluateConstraint(
 
 		// Tangent-plane projection: when Snell's law is satisfied,
 		// h is parallel to the normal, so these projections are zero.
-		// Use normalized tangent vectors for consistent scaling.
-		Vector3 s = Vector3Ops::Normalize( v.dpdu );
-		Vector3 t = Vector3Ops::Normalize( v.dpdv );
+		//
+		// Use the Gram-Schmidt-projected tangent basis
+		//     s = normalize(dpdu - (dpdu·n) n)
+		//     t = n × s
+		// (same convention as Cycles MNEE and BuildJacobian below).
+		// This matters for curved surfaces: the BuildJacobian's ds/du
+		// and dt/du analytical terms assume s is defined this way.  If
+		// EvaluateConstraint used plain Normalize(dpdu) instead, the
+		// Jacobian wouldn't match dC/dx and Newton would fail to
+		// converge on non-flat surfaces.
+		const Scalar dpdu_dot_n = Vector3Ops::Dot( v.dpdu, v.normal );
+		Vector3 s_unnorm(
+			v.dpdu.x - dpdu_dot_n * v.normal.x,
+			v.dpdu.y - dpdu_dot_n * v.normal.y,
+			v.dpdu.z - dpdu_dot_n * v.normal.z );
+		const Scalar s_len = Vector3Ops::Magnitude( s_unnorm );
+		Vector3 s = (s_len > NEARZERO) ? (s_unnorm * (1.0 / s_len)) :
+			Vector3Ops::Normalize( v.dpdu );
+		Vector3 t = Vector3Ops::Cross( v.normal, s );
 
 		C[2*i]   = Vector3Ops::Dot( s, h );
 		C[2*i+1] = Vector3Ops::Dot( t, h );
@@ -554,7 +570,8 @@ void ManifoldSolver::BuildJacobian(
 	const Point3& fixedEnd,
 	std::vector<Scalar>& diag,
 	std::vector<Scalar>& upper,
-	std::vector<Scalar>& lower
+	std::vector<Scalar>& lower,
+	bool includeCurvature
 	) const
 {
 	const unsigned int k = static_cast<unsigned int>( chain.size() );
@@ -687,37 +704,81 @@ void ManifoldSolver::BuildJacobian(
 			dh_dv = DeriveNormalized( h, dh_raw_dv, h_len );
 		}
 
-		// Derivative of tangent frame due to normal curvature.
-		// ds/du ≈ dndu projected onto s direction (Weingarten map).
-		// For the constraint dot(s, h), the chain rule gives:
-		//   d/du [dot(s, h)] = dot(ds/du, h) + dot(s, dh/du)
+		// Derivative of tangent frame w.r.t. surface parameters (u, v).
 		//
-		// ds/du = d/du [Normalize(dpdu)]
-		// The dominant term comes from the normal curvature rotating s:
-		//   ds/du ≈ (dndu - s * dot(s, dndu)) / |dpdu|
-		// but for the constraint projection this simplifies to just
-		// using the raw dndu projected onto the tangent plane.
-		const Scalar inv_dpdu_len = 1.0 / fmax( Vector3Ops::Magnitude( v.dpdu ), NEARZERO );
-		const Scalar inv_dpdv_len = 1.0 / fmax( Vector3Ops::Magnitude( v.dpdv ), NEARZERO );
+		// Derivation (from Blender Cycles MNEE, which matches Zeltner 2020):
+		// Let s = normalize(dpdu - (dpdu·n) n)  (Gram-Schmidt projection of
+		// dpdu into the tangent plane).  Treating dpdu as fixed while only
+		// n varies (the constraint function holds dpdu constant), the
+		// product rule gives:
+		//   ds/du = -1/|s| × [ (dpdu·dndu) n + (dpdu·n) dndu ]
+		// Then re-orthogonalize against s so ds/du stays perpendicular to s:
+		//   ds/du -= s × (s·ds/du)
+		// The corresponding bitangent t = n × s, so:
+		//   dt/du = dndu × s + n × ds/du
+		//
+		// CRITICAL: this formula produces a nonzero ds/du contribution at
+		// the converged specular solution (h ≈ n) for curved surfaces, which
+		// is essential for the Jacobian determinant to capture surface
+		// curvature (the ingredient that creates caustic focusing).
+		//
+		// The previous formula (dndu - s*(s·dndu))/|dpdu| degenerated to
+		// (dndu·t) t/|dpdu| because dndu·n = 0 identically.  Dotted with h=n
+		// at convergence, that gave zero, silently eliminating the curvature
+		// contribution from the Jacobian — the manifold then behaved as if
+		// on a flat surface regardless of actual displacement.
+		const Scalar dpdu_dot_n = Vector3Ops::Dot( v.dpdu, v.normal );
+		const Vector3 s_unnorm = Vector3(
+			v.dpdu.x - dpdu_dot_n * v.normal.x,
+			v.dpdu.y - dpdu_dot_n * v.normal.y,
+			v.dpdu.z - dpdu_dot_n * v.normal.z );
+		const Scalar s_len = Vector3Ops::Magnitude( s_unnorm );
+		const Scalar inv_s_len = 1.0 / fmax( s_len, NEARZERO );
+		// (s may differ slightly from the previously-computed s because
+		// that was Normalize(dpdu) without the tangent-plane projection;
+		// here we use the Gram-Schmidt variant to stay consistent with
+		// the product-rule derivation below.)
+		const Vector3 s_proj = s_unnorm * inv_s_len;
+		const Vector3 t_cross = Vector3Ops::Cross( v.normal, s_proj );
 
-		// ds/du and ds/dv (how s changes when moving along u or v)
-		// Using the Weingarten equation: dn/du rotates the tangent frame
-		const Vector3 ds_du = Vector3(
-			(v.dndu.x - s.x * Vector3Ops::Dot( s, v.dndu )) * inv_dpdu_len,
-			(v.dndu.y - s.y * Vector3Ops::Dot( s, v.dndu )) * inv_dpdu_len,
-			(v.dndu.z - s.z * Vector3Ops::Dot( s, v.dndu )) * inv_dpdu_len );
-		const Vector3 ds_dv = Vector3(
-			(v.dndv.x - s.x * Vector3Ops::Dot( s, v.dndv )) * inv_dpdu_len,
-			(v.dndv.y - s.y * Vector3Ops::Dot( s, v.dndv )) * inv_dpdu_len,
-			(v.dndv.z - s.z * Vector3Ops::Dot( s, v.dndv )) * inv_dpdu_len );
-		const Vector3 dt_du = Vector3(
-			(v.dndu.x - t.x * Vector3Ops::Dot( t, v.dndu )) * inv_dpdv_len,
-			(v.dndu.y - t.y * Vector3Ops::Dot( t, v.dndu )) * inv_dpdv_len,
-			(v.dndu.z - t.z * Vector3Ops::Dot( t, v.dndu )) * inv_dpdv_len );
-		const Vector3 dt_dv = Vector3(
-			(v.dndv.x - t.x * Vector3Ops::Dot( t, v.dndv )) * inv_dpdv_len,
-			(v.dndv.y - t.y * Vector3Ops::Dot( t, v.dndv )) * inv_dpdv_len,
-			(v.dndv.z - t.z * Vector3Ops::Dot( t, v.dndv )) * inv_dpdv_len );
+		Vector3 ds_du( 0, 0, 0 ), ds_dv( 0, 0, 0 );
+		Vector3 dt_du( 0, 0, 0 ), dt_dv( 0, 0, 0 );
+		if( includeCurvature ) {
+			const Scalar dpdu_dot_dndu = Vector3Ops::Dot( v.dpdu, v.dndu );
+			const Scalar dpdu_dot_dndv = Vector3Ops::Dot( v.dpdu, v.dndv );
+			ds_du = Vector3(
+				-inv_s_len * (dpdu_dot_dndu * v.normal.x + dpdu_dot_n * v.dndu.x),
+				-inv_s_len * (dpdu_dot_dndu * v.normal.y + dpdu_dot_n * v.dndu.y),
+				-inv_s_len * (dpdu_dot_dndu * v.normal.z + dpdu_dot_n * v.dndu.z) );
+			ds_dv = Vector3(
+				-inv_s_len * (dpdu_dot_dndv * v.normal.x + dpdu_dot_n * v.dndv.x),
+				-inv_s_len * (dpdu_dot_dndv * v.normal.y + dpdu_dot_n * v.dndv.y),
+				-inv_s_len * (dpdu_dot_dndv * v.normal.z + dpdu_dot_n * v.dndv.z) );
+			// Re-orthogonalize against s so ds_du stays ⊥ s.
+			const Scalar ds_du_dot_s = Vector3Ops::Dot( ds_du, s_proj );
+			const Scalar ds_dv_dot_s = Vector3Ops::Dot( ds_dv, s_proj );
+			ds_du = Vector3(
+				ds_du.x - s_proj.x * ds_du_dot_s,
+				ds_du.y - s_proj.y * ds_du_dot_s,
+				ds_du.z - s_proj.z * ds_du_dot_s );
+			ds_dv = Vector3(
+				ds_dv.x - s_proj.x * ds_dv_dot_s,
+				ds_dv.y - s_proj.y * ds_dv_dot_s,
+				ds_dv.z - s_proj.z * ds_dv_dot_s );
+			// t = n × s, so dt/d* = dn/d* × s + n × ds/d*.
+			dt_du = Vector3Ops::Cross( v.dndu, s_proj )
+				+ Vector3Ops::Cross( v.normal, ds_du );
+			dt_dv = Vector3Ops::Cross( v.dndv, s_proj )
+				+ Vector3Ops::Cross( v.normal, ds_dv );
+		}
+
+		// Use the Gram-Schmidt-projected s (consistent with the derivative
+		// formula above) for the constraint-projection terms, overriding
+		// the earlier s = Normalize(dpdu).  For well-conditioned tangent
+		// frames these differ only by a tiny rotation.
+		s = s_proj;
+		t = t_cross;
+
 
 		// ---- Diagonal block: dC_i / dX_i ----
 		// dC_i_s / du = dot(ds_du, h) + dot(s, dh_du)
@@ -1582,6 +1643,74 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 //   geometry with proper world/object space transforms.
 //////////////////////////////////////////////////////////////////////
 
+void ManifoldSolver::OrthonormalizeTangentFrame(
+	ManifoldVertex& vertex
+	) const
+{
+	// Project dpdu and dpdv into the tangent plane.
+	const Vector3& n = vertex.normal;
+	Scalar d;
+
+	d = Vector3Ops::Dot( vertex.dpdu, n );
+	vertex.dpdu = Vector3(
+		vertex.dpdu.x - n.x * d,
+		vertex.dpdu.y - n.y * d,
+		vertex.dpdu.z - n.z * d );
+
+	d = Vector3Ops::Dot( vertex.dpdv, n );
+	vertex.dpdv = Vector3(
+		vertex.dpdv.x - n.x * d,
+		vertex.dpdv.y - n.y * d,
+		vertex.dpdv.z - n.z * d );
+
+	// Gram-Schmidt: make dpdv perpendicular to dpdu.
+	const Scalar uSq = Vector3Ops::SquaredModulus( vertex.dpdu );
+	if( uSq > NEARZERO ) {
+		const Scalar proj = Vector3Ops::Dot( vertex.dpdv, vertex.dpdu ) / uSq;
+		vertex.dpdv = Vector3(
+			vertex.dpdv.x - vertex.dpdu.x * proj,
+			vertex.dpdv.y - vertex.dpdu.y * proj,
+			vertex.dpdv.z - vertex.dpdu.z * proj );
+	}
+
+	// If dpdu collapsed, pick any tangent.
+	const Scalar uLen = Vector3Ops::Magnitude( vertex.dpdu );
+	if( uLen < NEARZERO ) {
+		vertex.dpdu = Vector3Ops::Normalize( Vector3Ops::Perpendicular( n ) );
+	} else {
+		vertex.dpdu = vertex.dpdu * (1.0 / uLen);
+	}
+
+	// If dpdv collapsed, derive from cross product.
+	const Scalar vLen = Vector3Ops::Magnitude( vertex.dpdv );
+	if( vLen < NEARZERO ) {
+		vertex.dpdv = Vector3Ops::Cross( n, vertex.dpdu );
+	} else {
+		vertex.dpdv = vertex.dpdv * (1.0 / vLen);
+	}
+
+	// Scale normal derivatives so they represent rate of change per unit
+	// displacement in the NEW unit-length (dpdu, dpdv) basis.  The raw
+	// dn*/d* entries from the geometry are in the ORIGINAL parameterization
+	// scale (e.g. per triangle edge).  Dividing by the original magnitude
+	// converts to per-unit-length.  For flat surfaces these are zero
+	// either way and the rescale is a no-op.
+	if( uLen > NEARZERO ) {
+		const Scalar invU = 1.0 / uLen;
+		vertex.dndu = Vector3(
+			vertex.dndu.x * invU,
+			vertex.dndu.y * invU,
+			vertex.dndu.z * invU );
+	}
+	if( vLen > NEARZERO ) {
+		const Scalar invV = 1.0 / vLen;
+		vertex.dndv = Vector3(
+			vertex.dndv.x * invV,
+			vertex.dndv.y * invV,
+			vertex.dndv.z * invV );
+	}
+}
+
 bool ManifoldSolver::ComputeVertexDerivatives(
 	ManifoldVertex& vertex
 	) const
@@ -1591,10 +1720,81 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		return false;
 	}
 
-	// Compute derivatives numerically via central finite differences
-	// using ray-surface intersection.  Central differences give O(eps²)
-	// accuracy vs O(eps) for forward differences, which is critical for
-	// Newton convergence on curved meshes.
+	// Fast path: try to get analytical derivatives at the current
+	// position via a ray cast that the geometry can populate at
+	// intersection time (triangle meshes do this; see
+	// TriangleMeshGeometryIndexedSpecializations.h).  If the
+	// geometry populates ri.derivatives, we skip the expensive
+	// 4-probe FD walk below.
+	//
+	// This probe ALSO serves as the on-surface verification.  If the
+	// vertex has been pushed off the specular geometry (e.g. Newton
+	// stepping beyond a bounded plane's extent), the probe ray misses
+	// and we reject the vertex.  Without this, the fallback FD path
+	// would synthesize fake tangent frames from the stale normal and
+	// Newton would converge to algebraically-satisfied but
+	// geometrically-nonexistent paths, causing false contribution in
+	// the penumbra of bounded refractors.
+	bool onSurface = false;
+	{
+		const Scalar probeOffsetAnalytic = 0.05;
+		const Ray probeRay(
+			Point3Ops::mkPoint3( vertex.position, vertex.normal * probeOffsetAnalytic ),
+			Vector3( -vertex.normal.x, -vertex.normal.y, -vertex.normal.z ) );
+		RayIntersection ri( probeRay, nullRasterizerState );
+		vertex.pObject->IntersectRay( ri, 2.0 * probeOffsetAnalytic, true, true, false );
+		if( ri.geometric.bHit ) {
+			onSurface = true;
+			if( ri.geometric.derivatives.valid ) {
+				vertex.position = ri.geometric.ptIntersection;
+				vertex.normal = ri.geometric.vNormal;
+				vertex.dpdu = ri.geometric.derivatives.dpdu;
+				vertex.dpdv = ri.geometric.derivatives.dpdv;
+				vertex.dndu = ri.geometric.derivatives.dndu;
+				vertex.dndv = ri.geometric.derivatives.dndv;
+				OrthonormalizeTangentFrame( vertex );
+				vertex.valid = true;
+				return true;
+			}
+		} else {
+			// Probe from the opposite side too before giving up
+			const Ray probeRay2(
+				Point3Ops::mkPoint3( vertex.position, vertex.normal * (-probeOffsetAnalytic) ),
+				vertex.normal );
+			RayIntersection ri2( probeRay2, nullRasterizerState );
+			vertex.pObject->IntersectRay( ri2, 2.0 * probeOffsetAnalytic, true, true, false );
+			if( ri2.geometric.bHit ) {
+				onSurface = true;
+				if( ri2.geometric.derivatives.valid ) {
+					vertex.position = ri2.geometric.ptIntersection;
+					vertex.normal = ri2.geometric.vNormal;
+					vertex.dpdu = ri2.geometric.derivatives.dpdu;
+					vertex.dpdv = ri2.geometric.derivatives.dpdv;
+					vertex.dndu = ri2.geometric.derivatives.dndu;
+					vertex.dndv = ri2.geometric.derivatives.dndv;
+					OrthonormalizeTangentFrame( vertex );
+					vertex.valid = true;
+					return true;
+				}
+			}
+		}
+	}
+
+	if( !onSurface ) {
+		// Vertex is not on the specular geometry.  This happens when
+		// Newton steps beyond the object's extent or when a chain
+		// goes through empty space.  Reject — fake synthesized
+		// derivatives would mislead the solver into accepting
+		// non-physical paths.
+		return false;
+	}
+
+	// Fallback: central-difference FD probes.  Kept for geometries
+	// that don't yet populate ri.derivatives during IntersectRay.
+	// (Sphere, torus, ellipsoid, cylinder, box, disk, clipped plane,
+	// infinite plane — eventual plan is to populate derivatives at
+	// intersection time for all of them, then this FD path can be
+	// retired.)
 	const Scalar eps = 5e-4;
 
 	Vector3 tangent_u, tangent_v;
@@ -1615,44 +1815,63 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 
 	// Probe a surface point near vertex.position along a tangent direction.
 	// Returns true if successful, filling outPos and outNormal.
-	// Use a small probeOffset proportional to eps to avoid punching through
-	// thin geometry (the displaced slab is only ~0.15 thick).
+	//
+	// The probe ray shoots along -normal from above the test position, and
+	// must cover the local surface displacement amplitude to be reliable.
+	// Too small: misses displaced-mesh vertices whose local surface is
+	// higher/lower than the offset (observed: 85% failure rate with 0.01
+	// offset on a slab with 0.1 displacement range).  Too large: can
+	// punch through thin geometry and hit the far surface.
+	//
+	// Strategy: try a sequence of offsets from small to large, stopping
+	// at the first successful hit.  The smallest offset that works gives
+	// the most accurate hit (least tangential drift of the probe).
 	struct ProbeResult { Point3 pos; Vector3 normal; bool ok; };
-	const Scalar derivProbeOffset = fmin( eps * 20.0, 0.02 );
 	auto probeAt = [&]( const Point3& testPos ) -> ProbeResult
 	{
 		ProbeResult r;
 		r.ok = false;
-		const Scalar probeOffset = derivProbeOffset;
 
-		// Probe from the normal side
+		// Try a sequence of probe offsets.  Start small to avoid punching
+		// through thin geometry; grow to handle displaced meshes.
+		const Scalar probeOffsets[] = { 0.01, 0.05, 0.2, 1.0 };
+		const unsigned int nOffsets = sizeof(probeOffsets) / sizeof(probeOffsets[0]);
+
+		for( unsigned int oi = 0; oi < nOffsets; oi++ )
 		{
-			const Ray probeRay(
-				Point3Ops::mkPoint3( testPos, vertex.normal * probeOffset ),
-				Vector3( -vertex.normal.x, -vertex.normal.y, -vertex.normal.z ) );
-			RayIntersection ri( probeRay, nullRasterizerState );
-			vertex.pObject->IntersectRay( ri, 2.0 * probeOffset, true, true, false );
-			if( ri.geometric.bHit )
+			const Scalar probeOffset = probeOffsets[oi];
+
+			// Probe from the normal side (ray goes -n toward surface)
 			{
-				r.pos = ri.geometric.ptIntersection;
-				r.normal = ri.geometric.vNormal;
-				r.ok = true;
-				return r;
+				const Ray probeRay(
+					Point3Ops::mkPoint3( testPos, vertex.normal * probeOffset ),
+					Vector3( -vertex.normal.x, -vertex.normal.y, -vertex.normal.z ) );
+				RayIntersection ri( probeRay, nullRasterizerState );
+				vertex.pObject->IntersectRay( ri, 2.0 * probeOffset, true, true, false );
+				if( ri.geometric.bHit )
+				{
+					r.pos = ri.geometric.ptIntersection;
+					r.normal = ri.geometric.vNormal;
+					r.ok = true;
+					return r;
+				}
 			}
-		}
 
-		// Try from the other side
-		{
-			const Ray probeRay2(
-				Point3Ops::mkPoint3( testPos, vertex.normal * (-probeOffset) ),
-				vertex.normal );
-			RayIntersection ri2( probeRay2, nullRasterizerState );
-			vertex.pObject->IntersectRay( ri2, 2.0 * probeOffset, true, true, false );
-			if( ri2.geometric.bHit )
+			// Try from the other side (ray goes +n, for when the local
+			// surface is on the other side of testPos)
 			{
-				r.pos = ri2.geometric.ptIntersection;
-				r.normal = ri2.geometric.vNormal;
-				r.ok = true;
+				const Ray probeRay2(
+					Point3Ops::mkPoint3( testPos, vertex.normal * (-probeOffset) ),
+					vertex.normal );
+				RayIntersection ri2( probeRay2, nullRasterizerState );
+				vertex.pObject->IntersectRay( ri2, 2.0 * probeOffset, true, true, false );
+				if( ri2.geometric.bHit )
+				{
+					r.pos = ri2.geometric.ptIntersection;
+					r.normal = ri2.geometric.vNormal;
+					r.ok = true;
+					return r;
+				}
 			}
 		}
 
@@ -1664,6 +1883,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 	ProbeResult u_minus = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_u * (-eps) ) );
 	ProbeResult v_plus  = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_v * eps ) );
 	ProbeResult v_minus = probeAt( Point3Ops::mkPoint3( vertex.position, tangent_v * (-eps) ) );
+
 
 	if( u_plus.ok && u_minus.ok )
 	{
@@ -1807,9 +2027,15 @@ bool ManifoldSolver::NewtonSolve(
 			return true;  // Converged
 		}
 
-		// Build Jacobian (analytical half-vector, matching constraint)
+		// Build Jacobian for Newton step.  We skip the curvature terms
+		// (ds_du from Weingarten map) here because on a tri-mesh the
+		// per-triangle derivatives jump across edges, which destabilizes
+		// Newton when the curvature terms dominate.  The MEASURE Jacobian
+		// (computed in Solve after convergence) uses the full formula for
+		// correct caustic focusing.
 		std::vector<Scalar> diag, upper_blocks, lower_blocks;
-		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks );
+		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks,
+			/*includeCurvature=*/false );
 
 		// Solve for Newton step: J * delta = C  (we solve J * delta = C, then subtract)
 		std::vector<Scalar> delta;
@@ -2210,7 +2436,12 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
 
-		// Exact dielectric Fresnel reflectance
+		// Exact dielectric Fresnel reflectance.
+		// In BuildJacobian convention, wi points FROM v TOWARD prev.
+		// Sign of cosI = Dot(wi, v.normal) tells us which side of the
+		// interface prev is on: +ve means normal points toward prev
+		// (wi side = n=1 air); -ve means normal points away (wi side
+		// is inside material, n=v.eta).
 		const Scalar cosI_signed = Vector3Ops::Dot( wi, v.normal );
 		const Scalar cosI = fabs( cosI_signed );
 		const Scalar eta_i = (cosI_signed >= 0) ? 1.0 : v.eta;
@@ -2223,7 +2454,31 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		}
 		else
 		{
-			throughput = throughput * v.attenuation * (1.0 - fr);
+			// Radiance transport across a refracting interface:
+			//   L_receiver = T * (n_receiver / n_source)^2 * L_source
+			//
+			// This (n_r/n_s)^2 factor is the standard radiance rescaling
+			// across a dielectric boundary (radiance is NOT preserved;
+			// L/n^2 is).  RISE's PerfectRefractorSPF omits this factor
+			// in the forward path tracer; including it here only in SMS
+			// gives SMS physically correct radiance while leaving
+			// PT/VCM's "all air" convention intact.
+			//
+			// Direction convention in this code: wi points FROM v_k
+			// TOWARD prev (the chain step toward x).  Sign of
+			// Dot(wi, v.normal) selects eta_i vs eta_t:
+			//   cosI_signed >=0  -> wi on normal-facing side (n_air=1),
+			//                       eta_i=1, eta_t=v.eta
+			//   cosI_signed <0   -> wi on material side (glass side),
+			//                       eta_i=v.eta, eta_t=1
+			//
+			// So eta_i is the index on the prev (x-receiver) side and
+			// eta_t is the index on the next (y-source) side, for the
+			// photon's FORWARD direction (y -> v -> x).  The forward
+			// rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
+			const Scalar eta_ratio = eta_i / eta_t;
+			const Scalar radiance_rescale = eta_ratio * eta_ratio;
+			throughput = throughput * v.attenuation * (1.0 - fr) * radiance_rescale;
 		}
 	}
 
@@ -2348,6 +2603,172 @@ Scalar ManifoldSolver::ComputeManifoldGeometricTerm(
 	}
 
 	return geoTerm;
+}
+
+//////////////////////////////////////////////////////////////////////
+// ComputeLastBlockLightJacobian
+//
+//   Computes the 2x2 block ∂C_at_vk / ∂y_tangent.  Mirrors the half-
+//   vector setup in BuildJacobian, but differentiates with respect to
+//   the LIGHT endpoint y instead of the specular vertex position.
+//
+//   Only wo (direction from v_k to y) depends on y; wi does not.
+//   So ∂h_raw/∂y = (reflection ? ∂wo/∂y : -eta_eff * ∂wo/∂y).
+//
+//   Result is used with ComputeLightToFirstVertexJacobianDet to
+//   propagate y-perturbations through the chain via block-tridiagonal
+//   solve.
+//////////////////////////////////////////////////////////////////////
+
+void ManifoldSolver::ComputeLastBlockLightJacobian(
+	const ManifoldVertex& vk,
+	const Point3& prevPos,
+	const Point3& lightPos,
+	const Vector3& lightNormal,
+	Scalar Jy[4]
+	) const
+{
+	Jy[0] = Jy[1] = Jy[2] = Jy[3] = 0;
+
+	// wi: direction from vk toward prev (same sign convention as BuildJacobian)
+	Vector3 d_wi = Vector3Ops::mkVector3( prevPos, vk.position );
+	const Scalar dist_i = Vector3Ops::NormalizeMag( d_wi );
+	const Vector3 wi = d_wi;
+
+	// wo: direction from vk toward next (= y).  When y moves by δy,
+	// new d_wo = lightPos + δy - vk.position.  So ∂wo/∂y applies
+	// (I - wo⊗wo)/dist_o to δy (in world-space coordinates).
+	Vector3 d_wo = Vector3Ops::mkVector3( lightPos, vk.position );
+	const Scalar dist_o = Vector3Ops::NormalizeMag( d_wo );
+	const Vector3 wo = d_wo;
+
+	if( dist_i < NEARZERO || dist_o < NEARZERO ) return;
+
+	// Tangent frame at vk (assumes OrthonormalizeTangentFrame has been
+	// called upstream, so these are unit orthogonal).
+	const Vector3 s_v = Vector3Ops::Normalize( vk.dpdu );
+	const Vector3 t_v = Vector3Ops::Normalize( vk.dpdv );
+
+	// eta_eff (same convention as BuildJacobian)
+	Scalar eta_eff = vk.eta;
+	if( !vk.isReflection && Vector3Ops::Dot( wi, vk.normal ) < 0.0 )
+	{
+		eta_eff = 1.0 / vk.eta;
+	}
+
+	// Half-vector (sign follows BuildJacobian)
+	Vector3 h_raw;
+	if( vk.isReflection ) {
+		h_raw = Vector3( wi.x + wo.x, wi.y + wo.y, wi.z + wo.z );
+	} else {
+		h_raw = Vector3(
+			-(wi.x + eta_eff * wo.x),
+			-(wi.y + eta_eff * wo.y),
+			-(wi.z + eta_eff * wo.z) );
+	}
+	const Scalar h_len = Vector3Ops::Magnitude( h_raw );
+	if( h_len < NEARZERO ) return;
+	const Vector3 h = h_raw * (1.0 / h_len);
+
+	// Tangent basis at y (orthonormal, perpendicular to lightNormal)
+	Vector3 y_s = Vector3Ops::Perpendicular( lightNormal );
+	y_s = Vector3Ops::Normalize( y_s );
+	Vector3 y_t = Vector3Ops::Cross( lightNormal, y_s );
+	y_t = Vector3Ops::Normalize( y_t );
+
+	const Scalar inv_lo = 1.0 / dist_o;
+
+	// For each y tangent direction, compute ∂C/∂(that direction)
+	for( int j = 0; j < 2; j++ ) {
+		const Vector3& ydir = (j == 0) ? y_s : y_t;
+
+		// ∂wo/∂y_dir = (I - wo⊗wo) * ydir / dist_o
+		const Scalar wo_dot_ydir = Vector3Ops::Dot( wo, ydir );
+		const Vector3 dwo(
+			(ydir.x - wo.x * wo_dot_ydir) * inv_lo,
+			(ydir.y - wo.y * wo_dot_ydir) * inv_lo,
+			(ydir.z - wo.z * wo_dot_ydir) * inv_lo );
+
+		// ∂h_raw/∂y.  wi is independent of y (depends only on prev and vk).
+		Vector3 dh_raw;
+		if( vk.isReflection ) {
+			dh_raw = dwo;
+		} else {
+			dh_raw = Vector3( -eta_eff * dwo.x, -eta_eff * dwo.y, -eta_eff * dwo.z );
+		}
+
+		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len
+		const Scalar h_dot = Vector3Ops::Dot( h, dh_raw );
+		const Vector3 dh(
+			(dh_raw.x - h.x * h_dot) * (1.0 / h_len),
+			(dh_raw.y - h.y * h_dot) * (1.0 / h_len),
+			(dh_raw.z - h.z * h_dot) * (1.0 / h_len) );
+
+		// Project onto (s_v, t_v) basis at vk.  Row index = {s_v, t_v}.
+		const Scalar s_dot = Vector3Ops::Dot( s_v, dh );
+		const Scalar t_dot = Vector3Ops::Dot( t_v, dh );
+		Jy[ 0 * 2 + j ] = s_dot;  // ∂Cs/∂y_j
+		Jy[ 1 * 2 + j ] = t_dot;  // ∂Ct/∂y_j
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// ComputeLightToFirstVertexJacobianDet
+//
+//   Implicit-function-theorem application: the chain constraint
+//   C(v_1, ..., v_k, y) = 0 defines v as a function of y.  This
+//   returns |det(δv_1_⊥ / δy_⊥)|.
+//
+//   For k=1 this degenerates to |det(∂C/∂y)| / |det(∂C/∂v_1)|.
+//   For k>1 we must solve the block-tridiagonal system
+//     J_v * δv = -J_y * δy
+//   where J_y has only its last block nonzero.  We solve twice
+//   (one per y tangent direction) to recover the 2x2 matrix δv_1/δy.
+//////////////////////////////////////////////////////////////////////
+
+Scalar ManifoldSolver::ComputeLightToFirstVertexJacobianDet(
+	const std::vector<ManifoldVertex>& chain,
+	const Point3& shadingPoint,
+	const Point3& lightPos,
+	const Vector3& lightNormal
+	) const
+{
+	const unsigned int k = static_cast<unsigned int>( chain.size() );
+	if( k == 0 ) return 0;
+
+	// Build full chain Jacobian J_v (block-tridiagonal).
+	std::vector<Scalar> diag, upper, lower;
+	BuildJacobian( chain, shadingPoint, lightPos, diag, upper, lower );
+
+	// Build the light-side Jacobian block at v_k.
+	const Point3 prevPos = (k == 1)
+		? shadingPoint
+		: chain[k-2].position;
+	Scalar Jy[4];
+	ComputeLastBlockLightJacobian( chain[k-1], prevPos, lightPos, lightNormal, Jy );
+
+	// Solve J_v * δv = -RHS for each of two y-tangent directions.
+	// RHS is zero except for the last 2 entries = Jy column j.
+	Scalar dv1[4];  // row-major: [δv1_s for δy_s, δv1_s for δy_t; δv1_t for δy_s, δv1_t for δy_t]
+
+	for( unsigned int j = 0; j < 2; j++ ) {
+		std::vector<Scalar> rhs( 2 * k, 0.0 );
+		rhs[ 2 * (k - 1) + 0 ] = -Jy[ 0 * 2 + j ];
+		rhs[ 2 * (k - 1) + 1 ] = -Jy[ 1 * 2 + j ];
+
+		std::vector<Scalar> delta;
+		std::vector<Scalar> diag_copy = diag;  // SolveBlockTridiagonal takes non-const ref
+		if( !SolveBlockTridiagonal( diag_copy, upper, lower, rhs, k, delta ) ) {
+			return 0;
+		}
+
+		dv1[ 0 * 2 + j ] = delta[0];
+		dv1[ 1 * 2 + j ] = delta[1];
+	}
+
+	// 2x2 determinant
+	const Scalar det = dv1[0] * dv1[3] - dv1[1] * dv1[2];
+	return fabs( det );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2645,11 +3066,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
-
-	// Build seed chain toward the light sample.  If that ray misses the
-	// specular geometry, try fallback directions.  The Newton solver only
-	// needs the correct chain topology — it will reposition vertices to
-	// satisfy the specular constraint for the actual light sample.
+	// Build seed chain toward the light sample.
 	std::vector<ManifoldVertex> seedChain;
 	unsigned int chainLen = BuildSeedChain(
 		pos, lightSample.position,
@@ -2682,8 +3099,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			scene, caster, seedChain );
 	}
 
-	if( chainLen == 0 || seedChain.empty() )
-	{
+	if( chainLen == 0 || seedChain.empty() ) {
 		// No specular geometry found — skip.
 		return result;
 	}
@@ -2759,45 +3175,44 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		actualLe = lightSample.Le;
 	}
 
-	// SMS geometric factor (Zeltner et al. 2020).
+	// SMS measure-conversion via implicit function theorem.
 	//
-	// The path integral for a specular chain includes geometric coupling
-	// at every edge (G terms) in the numerator, divided by the constraint
-	// Jacobian determinant |det(∂C/∂x_⊥)| which converts the light-area
-	// sampling density to the path-space density:
+	// For a k-vertex specular chain x -> v_1 -> ... -> v_k -> y, we
+	// sample the light endpoint y on its area and need the Jacobian
+	// |dω_x / dA_y|.  Following Zeltner et al. 2020, applying the
+	// implicit function theorem to C(v_1, ..., v_k, y) = 0 gives:
 	//
-	//   L = f_s · cos(θ_x) · T_chain · Le · cos(θ_y) · G_chain
-	//       / (p(y) · |det(∂C/∂x_⊥)|)
+	//   |dω_x / dA_y| = G(x, v_1) · |det(δv_1_⊥ / δy_⊥)|
 	//
-	// G_chain = ∏[cos(θ_in_vi)/dist²] · 1/dist²(vk,y)  (via EvaluateChainGeometry)
+	// where G(x, v_1) = cos(θ_v1_at_x) / dist²(x, v_1) is the standard
+	// solid-angle-from-area factor at the first specular vertex, and
+	// |det(δv_1/δy)| is the 2x2 Jacobian computed by solving the
+	// block-tridiagonal system J_v · δv = -J_y · δy.
 	//
-	// Both G_chain and |det| blow up for thin slabs (small internal
-	// distances), but their RATIO is well-behaved — the determinant
-	// encodes the same 1/dist scaling from its direction derivatives.
+	// For k=1 this reduces to G(x, v_1) · |det(∂C/∂y)| / |det(∂C/∂v_1)|,
+	// which matches the analytical apparent-depth formula
+	// |dω_x/dA_y| = 1/(d_1 + n·d_2)² for a flat refractor at normal
+	// incidence.  (d_1 = x-to-v_1, d_2 = v_1-to-y, n = relative IOR.)
 	//
-	// Our BuildJacobian + Solve compute jacobianDet = |det(∂C/∂(u,v))|.
-	// With ||dpdu|| ≈ ||dpdv|| ≈ 1 (unit tangents from finite differences),
-	// this equals |det(∂C/∂x_⊥)| in projected-area coordinates.
-	// SMS geometric factor (Zeltner et al. 2020).
+	// cos(θ_y) is IMPLICIT in |det(∂C/∂y)| — y-tangent perturbations
+	// project onto the wo direction via (I - wo⊗wo), which naturally
+	// includes the cos_y factor.  Do NOT multiply by cosAtLight again.
 	//
-	// The path integral for a specular chain includes geometric coupling
-	// at every edge (G terms) in the numerator, divided by the constraint
-	// Jacobian determinant |det(∂C/∂x_⊥)| which converts the light-area
-	// sampling density to the path-space density.
-	//
-	// The reference implementation (Mitsuba) computes:
-	//   G = dw0_dx1 × |det(inv(∂C/∂x₁) × ∂C/∂x₂)|
-	// where dw0_dx1 = cos/dist² from shading point to first specular vertex
-	// and the determinant handles the specular-to-light propagation.
-	//
-	// Our formulation uses the full chain geometric term and the full
-	// constraint Jacobian determinant, which should produce the same result:
-	//   smsGeometric = cosAtLight × G_chain / |det(∂C/∂x_⊥)|
-	const Scalar chainGeom = EvaluateChainGeometry(
-		pos, lightSample.position, mResult.specularChain );
+	// The previous formula used 1/dist²(v_k, y) in place of |det(∂C/∂y)|
+	// and was off by an eta-dependent factor (e.g. 1.44x for ior=2.2 at
+	// normal incidence), producing systematically over-bright caustics
+	// except for ior→1.
+	const ManifoldVertex& firstSpecForG = mResult.specularChain[0];
+	Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpecForG.position, pos );
+	const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
+	if( distXtoV1 < 1e-8 ) return result;
+	const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpecForG.normal, dirXtoV1 ) );
+	const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 
-	const Scalar smsGeometric = cosAtLight * chainGeom
-		/ fmax( mResult.jacobianDet, 1e-20 );
+	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
+		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+
+	const Scalar smsGeometric = G_x_v1 * detDvDy;
 
 	// Clamp to prevent fireflies from near-singular Jacobians
 	const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
@@ -2807,8 +3222,13 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		* actualLe * cosAtShading * clampedGeometric
 		/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
+	// Silence unused-variable warning if cosAtLight ends up unused;
+	// keep its computation above for backface culling (non-delta lights).
+	(void)cosAtLight;
+
 	result.misWeight = 1.0 / mResult.pdf;
 	result.valid = true;
+
 
 	return result;
 }

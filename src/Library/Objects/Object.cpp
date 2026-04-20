@@ -232,6 +232,22 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.vNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal ));
 		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 
+		// Transform surface derivatives from object space to world space.
+		// dpdu, dpdv are tangent vectors — transform like positions (use
+		// the forward transform m_mxFinalTrans).  dndu, dndv are normals
+		// (change-of-normal is itself a normal-like quantity at first
+		// order) — transform like normals (inverse-transpose).
+		if( ri.geometric.derivatives.valid ) {
+			ri.geometric.derivatives.dpdu = Vector3Ops::Transform(
+				m_mxFinalTrans, ri.geometric.derivatives.dpdu );
+			ri.geometric.derivatives.dpdv = Vector3Ops::Transform(
+				m_mxFinalTrans, ri.geometric.derivatives.dpdv );
+			ri.geometric.derivatives.dndu = Vector3Ops::Transform(
+				m_mxInvTranspose, ri.geometric.derivatives.dndu );
+			ri.geometric.derivatives.dndv = Vector3Ops::Transform(
+				m_mxInvTranspose, ri.geometric.derivatives.dndv );
+		}
+
 		if( bComputeExitInfo ) {
 			ri.geometric.vNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal2 ) );
 			ri.geometric.ptObjExit = ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR );
