@@ -18,7 +18,7 @@ Built binaries land in `bin/tests/`.
 ## Current Test Inventory
 
 - Geometry and intersection:
-  `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`
+  `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`, `TessellatedShapeDerivativesTest.cpp`
 - Math and utility coverage:
   `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
 - Sampling, shading, and cache behavior:

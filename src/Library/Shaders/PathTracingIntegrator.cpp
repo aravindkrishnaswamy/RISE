@@ -1487,11 +1487,30 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
 					if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
 				}
+				// When SMS is live on THIS integrator, don't split.  Each
+				// split lobe continues via caster.CastRay, which dispatches
+				// through the hit's shader op.  The Job.cpp-registered
+				// "DefaultPathTracing" shader op owns its own
+				// PathTracingIntegrator that is constructed with
+				// smsEnabled=false (see Job::InitializeContainers), so the
+				// branched subpath's downstream integrator has pSolver=null
+				// and silently drops every SMS evaluation at diffuse vertices
+				// it reaches — e.g. a floor seen through the refract lobe
+				// of a perfectrefractor slab gets no caustic contribution
+				// because SMS never fires there and NEE shadow rays are
+				// blocked by the glass.  The single-sampled RandomlySelect
+				// fallback below stays inside this IntegrateFromHit call,
+				// keeping pSolver live for the downstream diffuse vertex.
+				// (Direct recursion into this->IntegrateFromHit was tried
+				// and is correct but explodes: each recursive frame resets
+				// splitFired, so heavy dielectric branching goes 2^N in
+				// stack frames.)
 				const bool shouldSplit =
 					!splitFired &&
 					allLobesDelta &&
 					scattered.Count() <= 4 &&
 					!bHadNonSpecularShading &&
+					!pSolver &&
 					normalizedThroughput > stabilityConfig.branchingThreshold;
 
 				if( shouldSplit )
@@ -1523,104 +1542,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							RISEPel cthis( 0, 0, 0 );
 							Ray ray = scat.ray;
 							ray.Advance( 1e-8 );
-
-							// Branching continuation semantics.
-							//
-							// Normally we'd delegate the scattered subpath
-							// to caster.CastRay, which dispatches the hit's
-							// shader.  For scenes whose shader is
-							// "DefaultPathTracing" (the Job.cpp default),
-							// that shader op owns its OWN PathTracingIntegrator
-							// whose ManifoldSolver is unconditionally disabled
-							// (AddPathTracingShaderOp called with
-							// smsEnabled=false in Job::InitializeContainers).
-							// When the rasterizer's integrator has SMS on,
-							// this means CastRay-dispatched branches silently
-							// lose SMS at every diffuse vertex they reach —
-							// e.g. a floor seen through the refract lobe of
-							// a perfectrefractor slab (sms_k2_flatslab,
-							// sms_k2_glassblock) gets no caustic contribution
-							// because SMS never fires at the downstream floor
-							// shading point, and NEE shadow rays are blocked
-							// by the glass itself.
-							//
-							// When SMS is active on THIS integrator, bypass
-							// CastRay and recurse directly into
-							// this->IntegrateFromHit so the downstream
-							// integrator is the same one — SMS stays on,
-							// emission-suppression flags stay coherent, and
-							// the shader op's disabled solver never enters
-							// the call chain.  Falls back to caster.CastRay
-							// whenever (a) SMS isn't active on this
-							// integrator (no semantic difference, keeps the
-							// well-exercised CastRay path — critical because
-							// direct recursion skips CastRay's
-							// nMaxRecursions gate and caustic-heavy
-							// non-SMS scenes would otherwise explode into
-							// 2^N branching), or (b) a participating medium
-							// is present on the branched segment (CastRay
-							// owns the medium-transport machinery).
-							const IORStack& childStack = scat.ior_stack ?
-								*scat.ior_stack : iorStack;
-							const IObject* _medObjProbe = 0;
-							const IMedium* _medProbe =
-								MediumTracking::GetCurrentMediumWithObject(
-									childStack, &scene, _medObjProbe );
-
-							if( !pSolver || _medProbe )
-							{
-								caster.CastRay( rc, rast, ray, cthis, rs2, 0,
-									pRadianceMap, childStack );
-							}
-							else
-							{
-								RayIntersection ri2( ray, rast );
-								ri2.geometric.glossyFilterWidth = rs2.glossyFilterWidth;
-								scene.GetObjects()->IntersectRay( ri2, true, true, false );
-
-								if( ri2.geometric.bHit )
-								{
-									if( ri2.pModifier ) {
-										ri2.pModifier->Modify( ri2.geometric );
-									}
-									IORStack childStackCopy( childStack );
-									childStackCopy.SetCurrentObject( ri2.pObject );
-
-									// Use an independent (iid) sampler for
-									// the branched subpath, mirroring the
-									// caster.CastRay -> PathTracingShaderOp
-									// -> PerformOperation path which
-									// constructs an IndependentSampler(
-									// rc.random) rather than sharing the
-									// parent Sobol stream.  Sharing the Sobol
-									// sampler across both reflect and refract
-									// lobes would make them consume the same
-									// dimensions, correlating the noise.
-									IndependentSampler branchSampler( rc.random );
-
-									cthis = this->IntegrateFromHit( rc, rast, ri2,
-										scene, caster, branchSampler, pRadianceMap,
-										rs2.depth, childStackCopy,
-										rs2.bsdfPdf, RISEPel( 0, 0, 0 ),
-										rs2.considerEmission, rs2.importance,
-										rs2.type,
-										rs2.diffuseBounces, rs2.glossyBounces,
-										rs2.transmissionBounces,
-										rs2.translucentBounces,
-										0, rs2.glossyFilterWidth,
-										rs2.smsPassedThroughSpecular,
-										rs2.smsHadNonSpecularShading );
-								}
-								else if( pRadianceMap )
-								{
-									cthis = pRadianceMap->GetRadiance( ray, rast );
-								}
-								else if( scene.GetGlobalRadianceMap() )
-								{
-									cthis = scene.GetGlobalRadianceMap()->GetRadiance(
-										ray, rast );
-								}
-							}
+							caster.CastRay( rc, rast, ray, cthis, rs2, 0,
+								pRadianceMap,
+								scat.ior_stack ? *scat.ior_stack : iorStack );
 
 							RISEPel indirect = scat.kray * cthis;
 							if( depth > 0 ) {
