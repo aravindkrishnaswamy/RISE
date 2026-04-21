@@ -285,12 +285,42 @@ namespace
 				return false;
 			}
 
-			// Determine ray-direction-dependent exit flag for SMS reuse.
-			// cosI = dir · normal.  Photon entering the object has
-			// dir pointing INTO the surface from the air side, so
-			// dir · (outward normal) < 0 → isEntering=true.
+			// Determine the entering/exiting flag for SMS chain reuse.
+			//
+			// Using the IOR stack rather than the raw cosI sign is
+			// REQUIRED for double-sided / displaced meshes where the
+			// canonical outward normal doesn't flip between the hits
+			// that enter and exit the glass — the cosI test then reports
+			// both hits with the same sign and we lose the entry/exit
+			// alternation, producing a chain where every vertex looks
+			// like an "exit refraction" and receiver-side SMS applies
+			// the n²·T radiance-exit factor twice (→ ~17× over-bright
+			// chainLen=2 fireflies in the firefly analysis).
+			//
+			// `containsCurrent()` returns true iff the current object's
+			// IOR has already been pushed onto the stack — i.e. the
+			// photon is CURRENTLY INSIDE that object, so this hit is an
+			// exit.  Matches BuildSeedChain's receiver-side logic.
+			//
+			// IMPORTANT: the chosen scatter mode (refraction vs reflection)
+			// matters for SMS chain semantics.  A refractor's Scatter()
+			// emits BOTH a refraction and a Fresnel reflection ray;
+			// picking the reflection branch means the photon bounced OFF
+			// the surface without changing medium.  We record bit 1 of
+			// flags for this so the SMS consumer can set mv.isReflection
+			// correctly and avoid applying the n²·T radiance-exit factor
+			// on a chain vertex the photon never actually refracted
+			// through.  When bReflection=true, the medium stays the same
+			// so we preserve the raw cosI-based side indicator (consumer
+			// uses it only for Fresnel eta_i/eta_t bookkeeping on the
+			// reflection, which is direction-dependent).
+			const bool bSameObjectAlready = ior_stack.containsCurrent();
 			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vNormal );
-			const bool bEntering = ( cosI < 0 );
+			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
+			const bool bEntering = bReflection
+			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
+			                             // cosI-based side for Fresnel lookup
+			    : ( !bSameObjectAlready ); // refraction: stack-tracked state
 
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];
@@ -305,7 +335,9 @@ namespace
 				SpecularInfo specInfo = ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
 				v.eta = specInfo.ior;
 			}
-			v.flags = bEntering ? 0 : 1;
+			v.flags = static_cast<unsigned char>(
+				( bEntering   ? 0x0 : 0x1 ) |
+				( bReflection ? 0x2 : 0x0 ) );
 			specularHits++;
 
 			ray = pScat->ray;

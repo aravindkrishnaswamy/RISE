@@ -3384,6 +3384,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	RISEPel totalContribution( 0, 0, 0 );
 	unsigned int validTrials = 0;
 
+	// Track per-trial geometric term (G_x_v1 × |det dv/dy|) UNCLAMPED so
+	// we can apply the config.maxGeometricTerm cap to the SUM across all
+	// accepted distinct preimages, instead of to each one independently.
+	//
+	// Rationale: fold caustics produce multiple preimages at the same
+	// pixel, each with a near-singular Jacobian.  A per-trial clamp then
+	// saturates every preimage at the cap and sums them — so the clamp
+	// scales with the number of trials instead of bounding the pixel.
+	// Capping the sum is the well-posed version of the same safeguard:
+	// "don't let the sum of specular-transport factors exceed a maximum
+	// physical density at any one receiver point".
+	std::vector<Scalar> acceptedGeoTerm;   ///< unclamped G·|det|
+	std::vector<RISEPel> acceptedPreGeo;   ///< trialContribution / smsGeoUsed
+
 	// photonCursor walks the photonSeeds list (filtering by entryObject as
 	// we go) so trial indices don't directly map to photon indices.
 	std::size_t photonCursor = 0;
@@ -3444,12 +3458,18 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				mv.pMaterial   = pv.pMaterial;
 				mv.eta         = pv.eta;
 				mv.attenuation = RISEPel( 1, 1, 1 );
-				mv.isReflection = false;    // photon-aided path is refractive; reflection-seeded photons
-				                             // are an edge case not yet recorded separately.
-				// Photon-direction isExiting flag flipped: what was
+				// Chain-vertex semantics recovered from the photon record:
+				//   flags bit 0 = photon-direction isExiting (refractions only)
+				//   flags bit 1 = isReflection (scatter picked reflection, not
+				//                  refraction — no medium change)
+				// Photon-direction isExiting flag is FLIPPED: what was
 				// ENTERING for the photon is EXITING for the receiver
 				// ray going the other way through the same surface.
-				mv.isExiting = ( ( pv.flags & 1 ) == 0 );
+				// Reflection vertices are direction-independent so no flip.
+				mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
+				mv.isExiting    = mv.isReflection
+				                ? ( ( pv.flags & 0x1 ) != 0 )    // preserve
+				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
 				mv.valid     = false;        // derivatives will be re-computed by Solve
 			}
 			trialSeed = newChain;
@@ -3609,8 +3629,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 		const Scalar smsGeometric = G_x_v1 * detDvDy;
 
-		// Clamp to prevent fireflies from near-singular Jacobians
-		const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+		// Defer clamping: we cap the SUM across distinct preimages, not
+		// each preimage individually, so fold-caustic pixels that produce
+		// many near-singular Jacobians don't accumulate clamp×N fireflies.
+		// The per-trial contribution carries the RAW smsGeometric; the
+		// final scale-down (if any) is applied post-loop below.
+		const Scalar clampedGeometric = smsGeometric;
 
 		RISEPel trialContribution = fBSDF
 			* mResult.contribution
@@ -3644,9 +3668,87 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		}
 #endif
 
+#if SMS_TRACE_DIAGNOSTIC
+		// Firefly-triggered diagnostic: log when per-trial contribution
+		// exceeds 5.0 luminance, regardless of positional gate, capped
+		// by an atomic counter to avoid log flooding.  This caught the
+		// reflection-vs-refraction photon-chain-flag bug — chainLen=1
+		// "refraction" chains whose photon had actually picked the
+		// Fresnel reflection branch carry a spurious n²·T ≈ 4.16
+		// throughput factor.
+		{
+			const Scalar trialLum = 0.2126 * trialContribution.r
+			                      + 0.7152 * trialContribution.g
+			                      + 0.0722 * trialContribution.b;
+			if( trialLum > 5.0 ) {
+				static std::atomic<int> g_smsFireflyCount{ 0 };
+				const int idx = g_smsFireflyCount.fetch_add( 1, std::memory_order_relaxed );
+				if( idx < 2000 ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"SMS_FIREFLY[%d]: trial=%u pos=(%.4f,%.4f,%.4f) lightP=(%.4f,%.4f,%.4f) "
+						"chainLen=%zu G_x_v1=%.3e detDvDy=%.3e smsGeoPre=%.3e smsGeoPost=%.3e "
+						"distX_V1=%.4f cosV1atX=%.3f cosAtShade=%.3f "
+						"fBSDF=(%.3e,%.3e,%.3e) attenChain=(%.3e,%.3e,%.3e) "
+						"Le=(%.1f,%.1f,%.1f) mPdf=%.3e lightPdf=%.3e trialLum=%.3f "
+						"trialContrib=(%.3e,%.3e,%.3e)",
+						idx, trial,
+						pos.x, pos.y, pos.z,
+						lightSample.position.x, lightSample.position.y, lightSample.position.z,
+						mResult.specularChain.size(),
+						G_x_v1, detDvDy, smsGeometric, clampedGeometric,
+						distXtoV1, cosV1atX, cosAtShading,
+						fBSDF.r, fBSDF.g, fBSDF.b,
+						mResult.contribution.r, mResult.contribution.g, mResult.contribution.b,
+						actualLe.r, actualLe.g, actualLe.b,
+						mResult.pdf, lightSample.pdfPosition,
+						trialLum,
+						trialContribution.r, trialContribution.g, trialContribution.b );
+					for( std::size_t vi = 0; vi < mResult.specularChain.size(); vi++ ) {
+						const ManifoldVertex& mv = mResult.specularChain[vi];
+						GlobalLog()->PrintEx( eLog_Event,
+							"SMS_FIREFLY[%d]:   v%zu obj=%p mat=%p pos=(%.4f,%.4f,%.4f) "
+							"n=(%.3f,%.3f,%.3f) eta=%.3f isExit=%d isRefl=%d atten=(%.3f,%.3f,%.3f)",
+							idx, vi, (void*)mv.pObject, (void*)mv.pMaterial,
+							mv.position.x, mv.position.y, mv.position.z,
+							mv.normal.x, mv.normal.y, mv.normal.z,
+							mv.eta, int(mv.isExiting), int(mv.isReflection),
+							mv.attenuation.r, mv.attenuation.g, mv.attenuation.b );
+					}
+				}
+			}
+		}
+#endif
+
 		totalContribution = totalContribution + trialContribution;
+		acceptedGeoTerm.push_back( smsGeometric );
+		acceptedPreGeo.push_back( trialContribution * ( smsGeometric > 1e-20 ? (1.0 / smsGeometric) : 0.0 ) );
 		acceptedRootPositions.push_back( firstPos );
 		validTrials++;
+	}
+
+	// ------------------------------------------------------------------
+	// Sum-level clamp: if the total geometric term across accepted
+	// preimages exceeds config.maxGeometricTerm, scale all per-trial
+	// contributions down so the sum equals the cap.  This preserves
+	// the RELATIVE weighting between preimages (so the caustic "shape"
+	// is still resolved) while bounding the pixel from fold-caustic
+	// firefly accumulation.
+	// ------------------------------------------------------------------
+	if( validTrials > 0 && config.maxGeometricTerm > 0 )
+	{
+		Scalar sumGeoTerm = 0;
+		for( Scalar g : acceptedGeoTerm ) sumGeoTerm += g;
+
+		if( sumGeoTerm > config.maxGeometricTerm )
+		{
+			const Scalar scale = config.maxGeometricTerm / sumGeoTerm;
+			totalContribution = RISEPel( 0, 0, 0 );
+			for( std::size_t i = 0; i < acceptedPreGeo.size(); i++ )
+			{
+				totalContribution = totalContribution +
+					acceptedPreGeo[i] * ( acceptedGeoTerm[i] * scale );
+			}
+		}
 	}
 
 #if SMS_TRACE_DIAGNOSTIC
@@ -3655,6 +3757,29 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			"SMS_TRACE: FINAL validTrials=%u acceptedRoots=%zu totalContrib=(%.4e,%.4e,%.4e)",
 			validTrials, acceptedRootPositions.size(),
 			totalContribution.r, totalContribution.g, totalContribution.b );
+	}
+
+	// Post-clamp firefly diagnostic: log when the FINAL per-SMS-call
+	// contribution exceeds 5.0 luminance.  This catches any remaining
+	// SMS-side fireflies that survive the sum-level clamp.
+	{
+		const Scalar totalLum = 0.2126 * totalContribution.r
+		                      + 0.7152 * totalContribution.g
+		                      + 0.0722 * totalContribution.b;
+		if( totalLum > 5.0 ) {
+			static std::atomic<int> g_smsFinalFF{ 0 };
+			const int idx = g_smsFinalFF.fetch_add( 1, std::memory_order_relaxed );
+			if( idx < 400 ) {
+				Scalar sumGeo = 0;
+				for( Scalar g : acceptedGeoTerm ) sumGeo += g;
+				GlobalLog()->PrintEx( eLog_Event,
+					"SMS_FINAL_FF[%d]: pos=(%.4f,%.4f,%.4f) validTrials=%u "
+					"sumGeoPre=%.3e cap=%.2f totalLum=%.3f totalContrib=(%.3e,%.3e,%.3e)",
+					idx, pos.x, pos.y, pos.z, validTrials,
+					sumGeo, config.maxGeometricTerm, totalLum,
+					totalContribution.r, totalContribution.g, totalContribution.b );
+			}
+		}
 	}
 #endif
 
@@ -3831,8 +3956,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				mv.pObject     = pv.pObject;
 				mv.pMaterial   = pv.pMaterial;
 				mv.attenuation = RISEPel( 1, 1, 1 );
-				mv.isReflection = false;
-				mv.isExiting   = ( ( pv.flags & 1 ) == 0 );
+				// Chain-vertex semantics recovered from the photon record;
+				// see the RGB path above for the full rationale.
+				mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
+				mv.isExiting    = mv.isReflection
+				                ? ( ( pv.flags & 0x1 ) != 0 )    // preserve
+				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
 				mv.valid       = false;
 
 				// Per-wavelength eta override (dispersion).
