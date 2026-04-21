@@ -1,0 +1,170 @@
+RISE ASCII SCENE 5
+# k=2 SMS test: two GLASS TORUSES at 90° intersecting each other.
+#
+# Replaces the single glass sphere with two identical glass toruses
+# that share a center but whose symmetry axes are orthogonal (one Y,
+# one Z).  The four ring-ring intersection points carve out a sharp,
+# non-spherical caustic structure on the floor — the image of the
+# light through both torus lenses superimposed, PLUS the double-
+# refraction caustic that passes through the inside-outside-inside-
+# outside of the intersecting shells.
+#
+# Torus is an implicit surface, so dpdu / dpdv / dndu / dndv are
+# computed analytically (see TorusGeometry::ComputeSurfaceDerivatives).
+# This isolates the SMS solver behaviour from any tessellation /
+# interpolated-normal artefacts that triangle-mesh lenses introduce.
+#
+# No SMS photons (sms_photon_count 0) and no multi-trial seeding
+# (sms_multi_trials 1) — we want to see what the bare SMS solver
+# produces against the VCM reference.
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       32
+	oidn_denoise                  FALSE
+	sms_enabled                   TRUE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_multi_trials              1
+	sms_photon_count              0
+	pixel_filter                  box
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_k2_torus_cross
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_k2_torus_cross
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
+}
+
+pinhole_camera
+{
+	location			0 2.0 3
+	lookat				0 0.2 0
+	up					0 1 0
+	width				200
+	height				150
+	fov					45.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.8 0.75 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				1.0 1.0 1.0
+}
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				2000.0
+	material			none
+}
+
+perfectrefractor_material
+{
+	name				glass_mat
+	refractance			pnt_glass
+	ior					2.2
+}
+
+# Shared torus geometry: ring radius 0.3, tube radius 0.075
+# (matches the glasssphere radius 0.3 in overall extent).
+torus_geometry
+{
+	name				torus_geom
+	majorradius			0.3
+	minorratio			0.25
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-0.1 0.0 -0.1
+	ptb					0.1 0.0 -0.1
+	ptc					0.1 0.0 0.1
+	ptd					-0.1 0.0 0.1
+}
+
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+# Torus 1: default orientation.  Symmetry axis along +Y;
+# ring lies in the XZ plane.
+standard_object
+{
+	name				glass_torus_y
+	geometry			torus_geom
+	position			0 0.6 0
+	material			glass_mat
+}
+
+# Torus 2: rotated 90° about X.  Symmetry axis along +Z;
+# ring lies in the XY plane.  Intersects torus 1 at four points.
+standard_object
+{
+	name				glass_torus_z
+	geometry			torus_geom
+	orientation			90 0 0
+	position			0 0.6 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			0 1.5 0
+	scale				0.4 0.4 0.4
+	material			light_mat
+}
