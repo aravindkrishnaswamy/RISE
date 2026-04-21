@@ -18,6 +18,13 @@
 #include "SMSPhotonMap.h"
 #include "Optics.h"
 #include "BDPTUtilities.h"
+
+// File-scope diagnostic gate.  Set to 1 to enable targeted per-pixel
+// SMS/Solve/BuildSeedChain trace logging (used while debugging the
+// torus-intersection accuracy issue that led to the OQS replacement).
+// Leave at 0 for production — the instrumentation stays in-source as
+// a regression aid but is compiled out.
+#define SMS_TRACE_DIAGNOSTIC 0
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
@@ -2181,6 +2188,21 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	Vector3 dir = Vector3Ops::mkVector3( end, start );
 	const Scalar totalDist = Vector3Ops::NormalizeMag( dir );
 
+#if defined(SMS_TRACE_DIAGNOSTIC) && SMS_TRACE_DIAGNOSTIC
+	static std::atomic<int> g_bsc{ 0 };
+	const bool traceBSC =
+		( std::fabs( start.x ) < 0.02 ) &&
+		( std::fabs( start.z ) < 0.02 ) &&
+		( start.y >= -0.02 && start.y <= 0.02 ) &&
+		( g_bsc.fetch_add( 1, std::memory_order_relaxed ) < 5 );
+	if( traceBSC ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_BSC: start=(%.4f,%.4f,%.4f) end=(%.4f,%.4f,%.4f) dir=(%.4f,%.4f,%.4f) totalDist=%.4f",
+			start.x, start.y, start.z, end.x, end.y, end.z,
+			dir.x, dir.y, dir.z, totalDist );
+	}
+#endif
+
 	if( totalDist < NEARZERO )
 	{
 		return 0;
@@ -2219,6 +2241,18 @@ unsigned int ManifoldSolver::BuildSeedChain(
 
 		// Scene-wide intersection via the acceleration structure
 		pObjMgr->IntersectRay( ri, true, true, false );
+
+#if defined(SMS_TRACE_DIAGNOSTIC) && SMS_TRACE_DIAGNOSTIC
+		if( traceBSC ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_BSC:  depth=%u origin=(%.4f,%.4f,%.4f) dir=(%.4f,%.4f,%.4f) hit=%d range=%.4f  hitPos=(%.4f,%.4f,%.4f) obj=%p",
+				depth, offsetOrigin.x, offsetOrigin.y, offsetOrigin.z,
+				dir.x, dir.y, dir.z,
+				int( ri.geometric.bHit ), ri.geometric.range,
+				ri.geometric.ptIntersection.x, ri.geometric.ptIntersection.y, ri.geometric.ptIntersection.z,
+				(void*)ri.pObject );
+		}
+#endif
 
 		if( !ri.geometric.bHit )
 		{
@@ -2919,6 +2953,22 @@ ManifoldResult ManifoldSolver::Solve(
 {
 	ManifoldResult result;
 
+#if SMS_TRACE_DIAGNOSTIC
+	static std::atomic<int> g_solveTraceCount{ 0 };
+	const bool traceSolve =
+		( std::fabs( shadingPoint.x ) < 0.02 ) &&
+		( std::fabs( shadingPoint.z ) < 0.02 ) &&
+		( shadingPoint.y >= -0.02 && shadingPoint.y <= 0.02 ) &&
+		( g_solveTraceCount.fetch_add( 1, std::memory_order_relaxed ) < 10 );
+	if( traceSolve ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_SOLVE: enter k=%zu  shading=(%.4f,%.4f,%.4f)  emitter=(%.4f,%.4f,%.4f)",
+			specularChain.size(),
+			shadingPoint.x, shadingPoint.y, shadingPoint.z,
+			emitterPoint.x, emitterPoint.y, emitterPoint.z );
+	}
+#endif
+
 	if( specularChain.empty() )
 	{
 		return result;
@@ -2951,8 +3001,20 @@ ManifoldResult ManifoldSolver::Solve(
 		Scalar norm2 = 0.0;
 		for( unsigned int i = 0; i < C0.size(); i++ )
 			norm2 += C0[i] * C0[i];
+#if SMS_TRACE_DIAGNOSTIC
+		if( traceSolve ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_SOLVE:  initial ||C||=%.4f  threshold=2.0", sqrt(norm2) );
+		}
+#endif
 		if( sqrt(norm2) > 2.0 )
 		{
+#if SMS_TRACE_DIAGNOSTIC
+			if( traceSolve ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"SMS_SOLVE:  EARLY-RETURN: seed too far from any valid path" );
+			}
+#endif
 			return result;  // Seed too far from valid path
 		}
 	}
@@ -2965,6 +3027,13 @@ ManifoldResult ManifoldSolver::Solve(
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
+#if SMS_TRACE_DIAGNOSTIC
+				if( traceSolve ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"SMS_SOLVE:  REJECTED: ComputeVertexDerivatives failed at vertex %u (pos=(%.4f,%.4f,%.4f))",
+						i, v.position.x, v.position.y, v.position.z );
+				}
+#endif
 				return result;
 			}
 		}
@@ -2986,11 +3055,39 @@ ManifoldResult ManifoldSolver::Solve(
 	// Run Newton solver
 	const bool converged = NewtonSolve( specularChain, shadingPoint, emitterPoint );
 
+#if SMS_TRACE_DIAGNOSTIC
+	if( traceSolve ) {
+		// Evaluate ||C|| after Newton to see how close it got
+		std::vector<Scalar> Cfinal;
+		EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Cfinal );
+		Scalar fn2 = 0;
+		for( std::size_t i = 0; i < Cfinal.size(); i++ ) fn2 += Cfinal[i] * Cfinal[i];
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_SOLVE:  NewtonSolve converged=%d  final ||C||=%.4e  threshold=%.1e",
+			int( converged ), sqrt( fn2 ), config.solverThreshold );
+		for( std::size_t i = 0; i < specularChain.size(); i++ ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_SOLVE:   v[%zu] pos=(%.4f,%.4f,%.4f) n=(%.3f,%.3f,%.3f) eta=%.3f isRefl=%d isExit=%d",
+				i,
+				specularChain[i].position.x, specularChain[i].position.y, specularChain[i].position.z,
+				specularChain[i].normal.x, specularChain[i].normal.y, specularChain[i].normal.z,
+				specularChain[i].eta,
+				int( specularChain[i].isReflection ), int( specularChain[i].isExiting ) );
+		}
+	}
+#endif
+
 	if( converged )
 	{
 		// Reject physically invalid converged solutions.
 		if( !ValidateChainPhysics( specularChain, shadingPoint, emitterPoint ) )
 		{
+#if SMS_TRACE_DIAGNOSTIC
+			if( traceSolve ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"SMS_SOLVE:  REJECTED by ValidateChainPhysics (wi/wo sidedness mismatch)" );
+			}
+#endif
 			return result;
 		}
 
@@ -3008,19 +3105,28 @@ ManifoldResult ManifoldSolver::Solve(
 			const Scalar minReliableSegment = 0.05;
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 			bool tooShort = false;
+			unsigned int tooShortIdx = 0;
+			Scalar tooShortDist = 0;
 			for( unsigned int i = 0; i < k && !tooShort; i++ )
 			{
 				const Point3 prevPos = (i == 0) ? shadingPoint : specularChain[i-1].position;
-				if( Point3Ops::Distance( prevPos, specularChain[i].position ) < minReliableSegment )
-					tooShort = true;
+				const Scalar d = Point3Ops::Distance( prevPos, specularChain[i].position );
+				if( d < minReliableSegment ) { tooShort = true; tooShortIdx = i; tooShortDist = d; }
 			}
 			if( k > 0 && !tooShort )
 			{
-				if( Point3Ops::Distance( specularChain[k-1].position, emitterPoint ) < minReliableSegment )
-					tooShort = true;
+				const Scalar d = Point3Ops::Distance( specularChain[k-1].position, emitterPoint );
+				if( d < minReliableSegment ) { tooShort = true; tooShortIdx = k; tooShortDist = d; }
 			}
 			if( tooShort )
 			{
+#if SMS_TRACE_DIAGNOSTIC
+				if( traceSolve ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"SMS_SOLVE:  REJECTED by minReliableSegment: segment %u too short (d=%.4f < %.4f)",
+						tooShortIdx, tooShortDist, minReliableSegment );
+				}
+#endif
 				return result;
 			}
 		}
@@ -3153,7 +3259,44 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			scene, caster, seedChain );
 	}
 
+	// ========================================================================
+	// DIAGNOSTIC: conditional per-pixel trace of the SMS solver.
+	// Gated by the file-scope SMS_TRACE_DIAGNOSTIC at the top; default 0.
+	// ========================================================================
+#if SMS_TRACE_DIAGNOSTIC
+	static std::atomic<int> g_smsTraceCount{ 0 };
+	// Wider trace window: the entire caustic region.  Gate to only fire
+	// on samples that END UP failing (or on the first few successes for
+	// comparison).  Uses a second static counter that only increments
+	// when valid_trials==0, so we see what's actually broken.
+	const bool traceHere =
+		( std::fabs( pos.x ) < 0.3 ) &&
+		( std::fabs( pos.z ) < 0.3 ) &&
+		( pos.y >= -0.02 && pos.y <= 0.02 ) &&
+		( g_smsTraceCount.fetch_add( 1, std::memory_order_relaxed ) < 40 );
+	if( traceHere ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_TRACE: pos=(%.4f,%.4f,%.4f) baseSeedLen=%u baseSeedEmpty=%d",
+			pos.x, pos.y, pos.z,
+			chainLen, int( seedChain.empty() ) );
+		for( std::size_t i = 0; i < seedChain.size(); i++ ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_TRACE:  v%zu obj=%p pos=(%.4f,%.4f,%.4f) n=(%.3f,%.3f,%.3f) eta=%.3f isExit=%d valid=%d",
+				i, (void*)seedChain[i].pObject,
+				seedChain[i].position.x, seedChain[i].position.y, seedChain[i].position.z,
+				seedChain[i].normal.x, seedChain[i].normal.y, seedChain[i].normal.z,
+				seedChain[i].eta, int( seedChain[i].isExiting ), int( seedChain[i].valid ) );
+		}
+	}
+#endif
+
 	if( chainLen == 0 || seedChain.empty() ) {
+#if SMS_TRACE_DIAGNOSTIC
+		if( traceHere ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_TRACE:  EARLY-RETURN: no seed chain" );
+		}
+#endif
 		return result;
 	}
 
@@ -3271,20 +3414,43 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			if( photonCursor >= photonSeeds.size() ) {
 				continue;  // no more photon seeds this trial round
 			}
-			const Point3 seedPt = photonSeeds[photonCursor].entryPoint;
+			const SMSPhoton& ph = photonSeeds[photonCursor];
 			photonCursor++;
 
-			// Trace from shading point toward the photon's entry point.
-			// BuildSeedChain follows the ray and applies Snell/reflection
-			// at each specular hit.  On a multi-caster chain the first
-			// hit is on the caster nearest the receiver (not the photon's
-			// entryObject) — that's the whole point.
-			std::vector<ManifoldVertex> newChain;
-			const unsigned int newLen = BuildSeedChain(
-				pos, seedPt, scene, caster, newChain );
-			if( newLen == 0 || newChain.empty() )
+			// Construct the SMS seed chain directly from the photon's
+			// recorded chain — this is what fixes the topology-loss
+			// problem.  The photon's chain is in photon-direction order
+			// (v[0] nearest light, v[k-1] nearest diffuse); SMS walks
+			// receiver→light, so we REVERSE the order and FLIP each
+			// vertex's exit flag.  Re-tracing via BuildSeedChain from
+			// the shading point would force the chain topology back to
+			// whatever Snell's law dictates for a straight-line seed
+			// target — typically k=2 even when the true caustic path is
+			// k=4.  Using the photon's recorded chain preserves the
+			// topology the photon itself followed.
+			const unsigned int k = ph.chainLen;
+			if( k == 0 || k > kSMSMaxPhotonChain ) {
+				continue;
+			}
+
+			std::vector<ManifoldVertex> newChain( k );
+			for( unsigned int i = 0; i < k; i++ )
 			{
-				continue;  // Trial is a wash; next one.
+				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
+				ManifoldVertex& mv = newChain[i];
+				mv.position    = pv.position;
+				mv.normal      = pv.normal;
+				mv.pObject     = pv.pObject;
+				mv.pMaterial   = pv.pMaterial;
+				mv.eta         = pv.eta;
+				mv.attenuation = RISEPel( 1, 1, 1 );
+				mv.isReflection = false;    // photon-aided path is refractive; reflection-seeded photons
+				                             // are an edge case not yet recorded separately.
+				// Photon-direction isExiting flag flipped: what was
+				// ENTERING for the photon is EXITING for the receiver
+				// ray going the other way through the same surface.
+				mv.isExiting = ( ( pv.flags & 1 ) == 0 );
+				mv.valid     = false;        // derivatives will be re-computed by Solve
 			}
 			trialSeed = newChain;
 		}
@@ -3293,6 +3459,25 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			pos, normal,
 			lightSample.position, lightSample.normal,
 			trialSeed, sampler );
+
+#if SMS_TRACE_DIAGNOSTIC
+		if( traceHere ) {
+			if( mResult.valid ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"SMS_TRACE:  trial=%u Solve VALID  v0=(%.4f,%.4f,%.4f) jacDet=%.3e contrib=(%.4f,%.4f,%.4f) pdf=%.4f",
+					trial,
+					mResult.specularChain[0].position.x,
+					mResult.specularChain[0].position.y,
+					mResult.specularChain[0].position.z,
+					mResult.jacobianDet,
+					mResult.contribution.r, mResult.contribution.g, mResult.contribution.b,
+					mResult.pdf );
+			} else {
+				GlobalLog()->PrintEx( eLog_Event,
+					"SMS_TRACE:  trial=%u Solve INVALID", trial );
+			}
+		}
+#endif
 
 		if( !mResult.valid ) continue;
 
@@ -3310,11 +3495,24 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				break;
 			}
 		}
+#if SMS_TRACE_DIAGNOSTIC
+		if( traceHere && duplicate ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_TRACE:  trial=%u DUPLICATE -> skipped", trial );
+		}
+#endif
 		if( duplicate ) continue;
 
 		// Visibility: check external segments of the specular chain
-		if( !CheckChainVisibility( pos, lightSample.position,
-			mResult.specularChain, caster ) ) continue;
+		const bool visible = CheckChainVisibility( pos, lightSample.position,
+			mResult.specularChain, caster );
+#if SMS_TRACE_DIAGNOSTIC
+		if( traceHere && !visible ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_TRACE:  trial=%u VISIBILITY FAIL", trial );
+		}
+#endif
+		if( !visible ) continue;
 
 		// Direction from shading point toward first specular vertex
 		const ManifoldVertex& firstSpec = mResult.specularChain[0];
@@ -3433,10 +3631,32 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			trialContribution = trialContribution / mResult.pdf;
 		}
 
+#if SMS_TRACE_DIAGNOSTIC
+		if( traceHere ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_TRACE:  trial=%u ACCEPTED  G_x_v1=%.3e detDvDy=%.3e smsGeo=%.3e clamp=%.2f "
+				"cosAtShade=%.3f Le=(%.3f,%.3f,%.3f) fBSDF=(%.3e,%.3e,%.3e) trialContrib=(%.3e,%.3e,%.3e)",
+				trial, G_x_v1, detDvDy, smsGeometric, config.maxGeometricTerm,
+				cosAtShading,
+				actualLe.r, actualLe.g, actualLe.b,
+				fBSDF.r, fBSDF.g, fBSDF.b,
+				trialContribution.r, trialContribution.g, trialContribution.b );
+		}
+#endif
+
 		totalContribution = totalContribution + trialContribution;
 		acceptedRootPositions.push_back( firstPos );
 		validTrials++;
 	}
+
+#if SMS_TRACE_DIAGNOSTIC
+	if( traceHere ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_TRACE: FINAL validTrials=%u acceptedRoots=%zu totalContrib=(%.4e,%.4e,%.4e)",
+			validTrials, acceptedRootPositions.size(),
+			totalContribution.r, totalContribution.g, totalContribution.b );
+	}
+#endif
 
 	if( validTrials == 0 ) return result;
 
@@ -3584,37 +3804,50 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
 
-		// See RGB variant for why we do NOT filter by entryObject.
+		// See RGB variant for the rationale: use photon's stored chain
+		// directly (reversed and with flipped isExiting) to preserve
+		// the topology the photon actually traversed.
 		if( trial > 0 )
 		{
 			if( photonCursor >= photonSeeds.size() ) {
 				continue;
 			}
-			const Point3 seedPt = photonSeeds[photonCursor].entryPoint;
+			const SMSPhoton& ph = photonSeeds[photonCursor];
 			photonCursor++;
 
-			std::vector<ManifoldVertex> newChain;
-			const unsigned int newLen = BuildSeedChain(
-				pos, seedPt, scene, caster, newChain );
-			if( newLen == 0 || newChain.empty() )
-			{
+			const unsigned int k = ph.chainLen;
+			if( k == 0 || k > kSMSMaxPhotonChain ) {
 				continue;
 			}
 
-			// Re-apply per-wavelength eta to the freshly-built chain.
+			std::vector<ManifoldVertex> newChain( k );
 			IORStack queryIor( 1.0 );
-			for( unsigned int i = 0; i < newChain.size(); i++ )
+			for( unsigned int i = 0; i < k; i++ )
 			{
-				if( newChain[i].pMaterial )
+				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
+				ManifoldVertex& mv = newChain[i];
+				mv.position    = pv.position;
+				mv.normal      = pv.normal;
+				mv.pObject     = pv.pObject;
+				mv.pMaterial   = pv.pMaterial;
+				mv.attenuation = RISEPel( 1, 1, 1 );
+				mv.isReflection = false;
+				mv.isExiting   = ( ( pv.flags & 1 ) == 0 );
+				mv.valid       = false;
+
+				// Per-wavelength eta override (dispersion).
+				if( pv.pMaterial )
 				{
-					Ray dummyRay( newChain[i].position, newChain[i].normal );
+					Ray dummyRay( pv.position, pv.normal );
 					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
 					rigLocal.bHit = true;
-					rigLocal.ptIntersection = newChain[i].position;
-					rigLocal.vNormal = newChain[i].normal;
-					SpecularInfo specNM = newChain[i].pMaterial->GetSpecularInfoNM(
+					rigLocal.ptIntersection = pv.position;
+					rigLocal.vNormal = pv.normal;
+					SpecularInfo specNM = pv.pMaterial->GetSpecularInfoNM(
 						rigLocal, queryIor, nm );
-					newChain[i].eta = specNM.ior;
+					mv.eta = specNM.ior;
+				} else {
+					mv.eta = pv.eta;
 				}
 			}
 			trialSeed = newChain;
@@ -3746,6 +3979,87 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 //   and light).
 //////////////////////////////////////////////////////////////////////
 
+namespace
+{
+	// Returns true if a non-specular (opaque) occluder lies along the
+	// segment [start, start + dir * maxDist].  SPECULAR surfaces are
+	// skipped — a photon can traverse them via Snell's law, so the
+	// straight-line shadow test must not treat them as opaque.  The
+	// walk terminates as soon as a non-specular hit is found or once
+	// the remaining distance budget is exhausted.
+	//
+	// Rationale: in multi-caster scenes (two intersecting toruses,
+	// glass-in-glass, displaced slabs) the "external segment" of an
+	// SMS chain frequently grazes another part of the SAME caster
+	// object that is NOT in the current Snell-traced chain — e.g. the
+	// shading→biased_v0 line for a path through the TOP tube of a
+	// torus may cross the bottom tube geometrically, even though the
+	// chain only contains top-tube vertices.  The naive shadow test
+	// drops that contribution; the filtered walk below keeps it.
+	//
+	// Only the surface-specular-info flag `isSpecular` is consulted
+	// — materials that are partly specular and partly diffuse (mixed
+	// BSDFs) are conservatively treated as opaque.  This matches the
+	// Snell-trace logic in BuildSeedChain.
+	bool SegmentOccludedIgnoringSpeculars(
+		const Point3& start,
+		const Vector3& dir,
+		const Scalar maxDist,
+		const IRayCaster& caster )
+	{
+		const IScene* pScene = caster.GetAttachedScene();
+		if( !pScene ) {
+			return caster.CastShadowRay( Ray( start, dir ), maxDist );
+		}
+		const IObjectManager* pObjMgr = pScene->GetObjects();
+		if( !pObjMgr ) {
+			return caster.CastShadowRay( Ray( start, dir ), maxDist );
+		}
+
+		// Walk forward, stepping past every specular hit we encounter.
+		// Hard iteration cap prevents pathological infinite loops when
+		// the ray keeps re-hitting an object it's inside (shouldn't
+		// happen with the 1e-4 advance, but be defensive).
+		const unsigned int kMaxSpecularTraversals = 8;
+		Point3 curOrigin = start;
+		Scalar distRemaining = maxDist;
+
+		for( unsigned int it = 0; it < kMaxSpecularTraversals; it++ )
+		{
+			Ray ray( curOrigin, dir );
+			RayIntersection ri( ray, nullRasterizerState );
+			pObjMgr->IntersectRay( ri, true, true, false );
+
+			if( !ri.geometric.bHit ) return false;
+			if( ri.geometric.range > distRemaining ) return false;
+
+			// Classify the hit material.  Anything without specular
+			// info (e.g. diffuse floor) OR with a mixed-non-specular
+			// contribution counts as opaque.
+			const IMaterial* pMat = ri.pMaterial;
+			bool isPureSpecular = false;
+			if( pMat ) {
+				IORStack dummyStack( 1.0 );
+				SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, dummyStack );
+				isPureSpecular = specInfo.isSpecular;
+			}
+			if( !isPureSpecular ) {
+				// Opaque or translucent-diffuse — really blocks.
+				return true;
+			}
+
+			// Specular hit: advance past it and continue.
+			const Scalar step = ri.geometric.range + 1e-4;
+			if( step >= distRemaining ) return false;
+			curOrigin = Point3Ops::mkPoint3( curOrigin, dir * step );
+			distRemaining -= step;
+		}
+		// Too many specular traversals — treat as unoccluded to avoid
+		// dropping contributions in deeply-nested glass topologies.
+		return false;
+	}
+}
+
 bool ManifoldSolver::CheckChainVisibility(
 	const Point3& shadingPoint,
 	const Point3& lightPoint,
@@ -3754,6 +4068,15 @@ bool ManifoldSolver::CheckChainVisibility(
 	) const
 {
 	if( chain.empty() ) return true;
+
+#if SMS_TRACE_DIAGNOSTIC
+	static std::atomic<int> g_visTraceCount{ 0 };
+	const bool visTrace =
+		( std::fabs( shadingPoint.x ) < 0.3 ) &&
+		( std::fabs( shadingPoint.z ) < 0.3 ) &&
+		( shadingPoint.y >= -0.02 && shadingPoint.y <= 0.02 ) &&
+		( g_visTraceCount.fetch_add( 1, std::memory_order_relaxed ) < 30 );
+#endif
 
 	// Segment 1: shading point to first specular vertex
 	//
@@ -3784,9 +4107,18 @@ bool ManifoldSolver::CheckChainVisibility(
 		Scalar dist = Vector3Ops::NormalizeMag( dir );
 		if( dist > 1e-4 )
 		{
-			Ray ray( shadingPoint, dir );
-			ray.Advance( 1e-4 );
-			if( caster.CastShadowRay( ray, dist - 2e-4 ) )
+			Point3 origin = Point3Ops::mkPoint3( shadingPoint, dir * 1e-4 );
+			const bool blocked = SegmentOccludedIgnoringSpeculars(
+				origin, dir, dist - 2e-4, caster );
+#if SMS_TRACE_DIAGNOSTIC
+			if( visTrace ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"VIS_SEG1: shading=(%.4f,%.4f,%.4f) biasedEnd=(%.4f,%.4f,%.4f) dist=%.4f blocked=%d",
+					shadingPoint.x, shadingPoint.y, shadingPoint.z,
+					biasedEnd.x, biasedEnd.y, biasedEnd.z, dist, int( blocked ) );
+			}
+#endif
+			if( blocked )
 				return false;
 		}
 	}
@@ -3818,8 +4150,17 @@ bool ManifoldSolver::CheckChainVisibility(
 		Scalar newDist = Vector3Ops::NormalizeMag( newDir );
 		if( newDist > 1e-4 )
 		{
-			Ray ray( biasedStart, newDir );
-			if( caster.CastShadowRay( ray, newDist - 1e-4 ) )
+			const bool blocked = SegmentOccludedIgnoringSpeculars(
+				biasedStart, newDir, newDist - 1e-4, caster );
+#if SMS_TRACE_DIAGNOSTIC
+			if( visTrace ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"VIS_SEG2: biasedStart=(%.4f,%.4f,%.4f) light=(%.4f,%.4f,%.4f) dist=%.4f blocked=%d",
+					biasedStart.x, biasedStart.y, biasedStart.z,
+					lightPoint.x, lightPoint.y, lightPoint.z, newDist, int( blocked ) );
+			}
+#endif
+			if( blocked )
 				return false;
 		}
 	}

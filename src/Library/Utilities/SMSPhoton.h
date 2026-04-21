@@ -46,18 +46,54 @@
 namespace RISE
 {
 	class IObject;
+	class IMaterial;
 
 	namespace Implementation
 	{
+		/// Per-specular-vertex record captured during the photon walk.
+		///
+		/// Stored in photon-direction order (v[0] is the specular hit
+		/// nearest the LIGHT, v[chainLen-1] is nearest the diffuse
+		/// landing).  When this chain is used to seed a receiver-side
+		/// SMS Newton solve, the consumer must iterate in REVERSE order
+		/// and flip `isExiting` on each vertex (the photon going
+		/// air→glass at a surface corresponds to the receiver ray going
+		/// glass→air at the same surface).
+		struct SMSPhotonChainVertex
+		{
+			Point3				position;
+			Vector3				normal;			///< Outward surface normal at hit (geometric, direction-independent).
+			Scalar				eta;			///< Material IOR at this vertex.
+			const IObject*		pObject;
+			const IMaterial*	pMaterial;
+			unsigned char		flags;			///< bit 0: isExiting (photon-direction)
+
+			SMSPhotonChainVertex() :
+				position( 0, 0, 0 ), normal( 0, 0, 0 ), eta( 1.0 ),
+				pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
+		};
+
+		/// Fixed upper bound on the number of specular vertices we store
+		/// per photon.  Photons with longer chains are dropped at
+		/// trace time rather than spilling into a dynamic allocation.
+		/// Empirically k=7 covers 99.9% of paths on test scenes and
+		/// keeps sizeof(SMSPhoton) at ~560 bytes — ~5.4 MB for a 10k
+		/// photon pass, which is negligible.
+		enum { kSMSMaxPhotonChain = 7 };
+
 		struct SMSPhoton
 		{
 			Point3				ptPosition;		///< REQUIRED FIRST: KD-tree builder reads [axis].  DIFFUSE-hit landing position.
 			unsigned char		plane;			///< REQUIRED SECOND: KD-tree builder writes this.
 			unsigned char		chainLen;		///< Number of specular vertices traversed (1 = entered one caster, 2 = entered+exited, etc.)
 
-			Point3				entryPoint;		///< First specular-surface hit — the SEED for SMS Newton.
-			const IObject*		entryObject;	///< Specular caster the photon entered.  Used to filter seeds to the caller's current chain caster.
-			RISEPel				power;			///< Cumulative throughput at deposit time, retained for future throughput-weighted seed sampling.  Unused in biased-mode dedupe.
+			Point3				entryPoint;		///< Kept for quick caster-matching queries: == chain[0].position when chainLen>0.
+			const IObject*		entryObject;	///< == chain[0].pObject when chainLen>0.
+			RISEPel				power;			///< Cumulative throughput at deposit time.
+
+			/// Full specular chain traversed by the photon, photon-direction order.
+			/// [0] = nearest LIGHT; [chainLen-1] = nearest DIFFUSE landing.
+			SMSPhotonChainVertex	chain[ kSMSMaxPhotonChain ];
 
 			SMSPhoton() :
 				ptPosition( 0, 0, 0 ),

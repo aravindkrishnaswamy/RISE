@@ -198,17 +198,16 @@ void SMSPhotonMap::Clear()
 //////////////////////////////////////////////////////////////////////
 namespace
 {
-	// Per-thread / per-photon scratch.  No heap allocation inside the hot loop.
-	struct PhotonWalkState
-	{
-		Point3			firstSpecularEntry;
-		const IObject*	firstSpecularObject;
-		unsigned char	specularHits;
-	};
-
 	// Walk one photon through the scene.  Returns true and fills 'out' if
 	// the photon terminated on a diffuse surface AFTER at least one
 	// specular hit (the caustic pattern).  Returns false otherwise.
+	//
+	// Records the FULL specular chain (positions, normals, objects,
+	// materials, eta, and ray-direction-dependent exit flags) into
+	// out.chain[0..chainLen-1] in photon-direction order.  Photons
+	// exceeding kSMSMaxPhotonChain specular hits are dropped (return
+	// false) rather than truncated — truncating would leave SMS with
+	// an incomplete seed chain that can't be used directly.
 	bool TraceSMSPhoton(
 		const IScene& scene,
 		Ray ray,
@@ -223,12 +222,7 @@ namespace
 		const IObjectManager* pObjMgr = scene.GetObjects();
 		if( !pObjMgr ) return false;
 
-		PhotonWalkState state;
-		state.firstSpecularEntry = Point3( 0, 0, 0 );
-		state.firstSpecularObject = 0;
-		state.specularHits = 0;
-
-		// Local copy of the IOR stack so we don't pollute the caller's.
+		unsigned char specularHits = 0;
 		IORStack ior_stack( ior_stack_in );
 
 		for( unsigned int bounce = 0; bounce < kMaxBounces; bounce++ )
@@ -267,12 +261,12 @@ namespace
 			// means "this photon landed on a diffuse surface".  If we've
 			// already traversed a specular chain, this is the deposit
 			// point we wanted.
-			if( pBRDF && state.specularHits > 0 ) {
+			if( pBRDF && specularHits > 0 ) {
 				out.ptPosition       = ri.geometric.ptIntersection;
 				out.plane            = 0;
-				out.entryPoint       = state.firstSpecularEntry;
-				out.entryObject      = state.firstSpecularObject;
-				out.chainLen         = state.specularHits;
+				out.chainLen         = specularHits;
+				out.entryPoint       = out.chain[0].position;
+				out.entryObject      = out.chain[0].pObject;
 				out.power            = power;
 				return true;
 			}
@@ -283,19 +277,36 @@ namespace
 			// per-ray kray weights.
 			ScatteredRay* pScat = scattered.RandomlySelectNonDiffuse( rng.CanonicalRandom(), false );
 			if( !pScat ) {
-				// All scattered rays were diffuse.  If we haven't entered a
-				// specular chain yet there's nothing useful here; if we had,
-				// this branch is unreachable (we'd have deposited above).
 				return false;
 			}
 
-			// Record the FIRST specular-hit position and object.  This is
-			// the seed we hand to SMS Newton iteration downstream.
-			if( state.specularHits == 0 ) {
-				state.firstSpecularEntry = ri.geometric.ptIntersection;
-				state.firstSpecularObject = ri.pObject;
+			// Drop photons whose chain would exceed the storage budget.
+			if( specularHits >= static_cast<unsigned char>( kSMSMaxPhotonChain ) ) {
+				return false;
 			}
-			state.specularHits++;
+
+			// Determine ray-direction-dependent exit flag for SMS reuse.
+			// cosI = dir · normal.  Photon entering the object has
+			// dir pointing INTO the surface from the air side, so
+			// dir · (outward normal) < 0 → isEntering=true.
+			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vNormal );
+			const bool bEntering = ( cosI < 0 );
+
+			// Record vertex in photon-direction order.
+			SMSPhotonChainVertex& v = out.chain[specularHits];
+			v.position  = ri.geometric.ptIntersection;
+			v.normal    = ri.geometric.vNormal;
+			v.pObject   = ri.pObject;
+			v.pMaterial = ri.pMaterial;
+			// eta comes from the material's specular info at this vertex.
+			// GetSpecularInfo returns (isSpecular, ior, canRefract, ...).
+			// Use the IOR of the material directly.
+			{
+				SpecularInfo specInfo = ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
+				v.eta = specInfo.ior;
+			}
+			v.flags = bEntering ? 0 : 1;
+			specularHits++;
 
 			ray = pScat->ray;
 			ray.Advance( 1e-8 );

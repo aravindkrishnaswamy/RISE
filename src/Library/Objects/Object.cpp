@@ -204,7 +204,24 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		dHowFar2 = factor*dHowFar;
 	}
 
-	// Compute ray intersection with box
+	// Compute ray intersection with box.
+	//
+	// When the ray's ORIGIN is inside the bounding box, RayBoxIntersection
+	// flips its contract: hit.dRange reports the distance to EXIT the box
+	// (i.e. tmax, since tmin is negative), and hit.dRange2 holds the
+	// negative tmin.  We detect "origin inside the box" via `dRange2 < 0`
+	// and skip the `dRange > dHowFar2` early-return in that case — the
+	// ray may still hit the geometry's surface within dHowFar even though
+	// the box it sits inside extends further.
+	//
+	// Prior to this fix, the early-return fired incorrectly on short
+	// probes (e.g. ManifoldSolver::ComputeVertexDerivatives, which
+	// shoots a 0.05 probe from +0.05 above a torus surface vertex back
+	// down toward it — both probe origin and target sit inside the
+	// torus bbox, so the bbox-exit distance ~0.2 always exceeded
+	// dHowFar2 = 0.1).  The probe was silently dropped and the SMS
+	// solver rejected the whole chain with "ComputeVertexDerivatives
+	// failed".  The torus surface was fine; the gate was wrong.
 	if( pGeometry->DoPreHitTest() )
 	{
 		BOX_HIT		hit;
@@ -214,7 +231,8 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			return;
 		}
 
-		if( hit.dRange > dHowFar2 ) {
+		const bool originInsideBox = ( hit.dRange2 < 0 );
+		if( !originInsideBox && hit.dRange > dHowFar2 ) {
 			return;
 		}
 	}
