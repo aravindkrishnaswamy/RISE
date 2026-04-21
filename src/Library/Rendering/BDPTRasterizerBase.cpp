@@ -200,12 +200,9 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 	const StabilityConfig& stabilityCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
+  BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
   pIntegrator( 0 ),
-  pManifoldSolver( 0 ),
-  pSplatFilm( 0 ),
-  pScratchImage( 0 ),
-  mSplatTotalSamples( 1.0 ),
-  mTotalAdaptiveSamples( 0 )
+  pManifoldSolver( 0 )
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 )
   ,pLightGuidingField( 0 )
@@ -213,7 +210,6 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   ,guidingAlphaScale( 1.0 )
 #endif
   ,guidingConfig( guidingCfg )
-  ,stabilityConfig( stabilityCfg )
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, stabilityCfg );
 
@@ -228,62 +224,13 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 {
 	safe_release( pIntegrator );
 	safe_release( pManifoldSolver );
-	safe_release( pSplatFilm );
-	safe_release( pScratchImage );
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
 	safe_release( pLightGuidingField );
 	safe_release( pCompletePathGuide );
 #endif
-}
-
-void BDPTRasterizerBase::AddAdaptiveSamples( uint64_t count ) const
-{
-	mTotalAdaptiveSamples.fetch_add( count, std::memory_order_relaxed );
-}
-
-void BDPTRasterizerBase::SplatContributionToFilm(
-	const Scalar fx,
-	const Scalar fy,
-	const RISEPel& contribution,
-	const unsigned int imageWidth,
-	const unsigned int imageHeight
-	) const
-{
-	if( !pSplatFilm ) {
-		return;
-	}
-
-	if( pPixelFilter )
-	{
-		// Spread through the configured reconstruction kernel.
-		// SplatFilm::SplatFiltered short-circuits to a point splat
-		// if the filter's half-width is ≤ 0.501 (box).
-		pSplatFilm->SplatFiltered( fx, fy, contribution, *pPixelFilter );
-	}
-	else
-	{
-		// No filter — round to nearest pixel, still better than the
-		// old truncation which introduced a half-pixel bias.
-		const Scalar rx = fx + Scalar( 0.5 );
-		const Scalar ry = fy + Scalar( 0.5 );
-		if( rx < 0 || ry < 0 ) return;
-		const unsigned int sx = static_cast<unsigned int>( rx );
-		const unsigned int sy = static_cast<unsigned int>( ry );
-		if( sx < imageWidth && sy < imageHeight ) {
-			pSplatFilm->Splat( sx, sy, contribution );
-		}
-	}
-}
-
-Scalar BDPTRasterizerBase::GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const
-{
-	const uint64_t totalSamples = mTotalAdaptiveSamples.load( std::memory_order_relaxed );
-	if( totalSamples > 0 && width > 0 && height > 0 ) {
-		const Scalar avgSPP = static_cast<Scalar>(totalSamples) / static_cast<Scalar>(width * height);
-		return avgSPP * GetSplatSampleScale();
-	}
-	return mSplatTotalSamples;
+	// pSplatFilm and pScratchImage are released by the
+	// BidirectionalRasterizerBase destructor.
 }
 
 void BDPTRasterizerBase::RasterizeScene(
@@ -1060,23 +1007,6 @@ void BDPTRasterizerBase::RasterizeScene(
 #endif
 }
 
-IRasterImage& BDPTRasterizerBase::GetIntermediateOutputImage( IRasterImage& primary ) const
-{
-	if( !pSplatFilm || !pScratchImage ) {
-		return primary;
-	}
-
-	// Copy the current primary image into the scratch buffer
-	const unsigned int w = primary.GetWidth();
-	const unsigned int h = primary.GetHeight();
-	for( unsigned int y=0; y<h; y++ ) {
-		for( unsigned int x=0; x<w; x++ ) {
-			pScratchImage->SetPEL( x, y, primary.GetPEL( x, y ) );
-		}
-	}
-
-	// Resolve splats into the scratch copy (primary is untouched)
-	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ) );
-
-	return *pScratchImage;
-}
+// SplatContributionToFilm, GetIntermediateOutputImage,
+// AddAdaptiveSamples, and GetEffectiveSplatSPP now live in
+// BidirectionalRasterizerBase.

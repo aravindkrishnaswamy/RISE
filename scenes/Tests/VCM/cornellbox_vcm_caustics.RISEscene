@@ -19,6 +19,7 @@ vcm_pel_rasterizer
 	merge_radius		0.1
 	vc_enabled			true
 	vm_enabled			true
+	pixel_filter		gaussian
 }
 
 file_rasterizeroutput

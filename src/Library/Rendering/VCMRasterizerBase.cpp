@@ -66,13 +66,9 @@ VCMRasterizerBase::VCMRasterizerBase(
 	const StabilityConfig& stabilityCfg
 	) :
 	PixelBasedRasterizerHelper( pCaster_ ),
+	BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
 	pIntegrator( 0 ),
-	pSplatFilm( 0 ),
-	pLightVertexStore( 0 ),
-	pScratchImage( 0 ),
-	mSplatTotalSamples( 1.0 ),
-	mTotalAdaptiveSamples( 0 ),
-	stabilityConfig( stabilityCfg )
+	pLightVertexStore( 0 )
 {
 	pIntegrator = new VCMIntegrator(
 		maxEyeDepth,
@@ -87,25 +83,10 @@ VCMRasterizerBase::VCMRasterizerBase(
 VCMRasterizerBase::~VCMRasterizerBase()
 {
 	safe_release( pIntegrator );
-	safe_release( pSplatFilm );
 	delete pLightVertexStore;
 	pLightVertexStore = 0;
-	safe_release( pScratchImage );
-}
-
-void VCMRasterizerBase::AddAdaptiveSamples( uint64_t count ) const
-{
-	mTotalAdaptiveSamples.fetch_add( count, std::memory_order_relaxed );
-}
-
-Scalar VCMRasterizerBase::GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const
-{
-	const uint64_t totalSamples = mTotalAdaptiveSamples.load( std::memory_order_relaxed );
-	if( totalSamples > 0 && width > 0 && height > 0 ) {
-		const Scalar avgSPP = static_cast<Scalar>( totalSamples ) / static_cast<Scalar>( width * height );
-		return avgSPP * GetSplatSampleScale();
-	}
-	return mSplatTotalSamples;
+	// pSplatFilm and pScratchImage are released by the
+	// BidirectionalRasterizerBase destructor.
 }
 
 namespace
@@ -717,62 +698,9 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		passIdx, totalStored, samplesPerSuperIter );
 }
 
-IRasterImage& VCMRasterizerBase::GetIntermediateOutputImage( IRasterImage& primary ) const
-{
-	if( !pSplatFilm ) {
-		return primary;
-	}
-
-	const unsigned int w = primary.GetWidth();
-	const unsigned int h = primary.GetHeight();
-
-	// Lazy scratch allocation so the override is free for scenes
-	// that have no splat film (e.g. VM-only configurations).
-	if( !pScratchImage ) {
-		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
-	}
-
-	// Copy the current primary image into the scratch buffer.
-	for( unsigned int y = 0; y < h; y++ ) {
-		for( unsigned int x = 0; x < w; x++ ) {
-			pScratchImage->SetPEL( x, y, primary.GetPEL( x, y ) );
-		}
-	}
-
-	// Resolve splats into the scratch copy (primary is untouched).
-	pSplatFilm->Resolve( *pScratchImage,
-		GetEffectiveSplatSPP( w, h ) );
-
-	return *pScratchImage;
-}
-
-namespace
-{
-	// Shared splat-resolve body used by all three flush paths.
-	// Copies 'src' into the instance's scratch buffer, resolves
-	// the splat film on top, and returns a reference to the
-	// scratch buffer for the caller to forward to the base class.
-	IRasterImage& ResolveSplatIntoScratch(
-		const IRasterImage& src,
-		SplatFilm* pSplatFilm,
-		IRasterImage*& pScratchImage,
-		const Scalar splatTotalSamples
-		)
-	{
-		const unsigned int w = src.GetWidth();
-		const unsigned int h = src.GetHeight();
-		if( !pScratchImage ) {
-			pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
-		}
-		for( unsigned int y = 0; y < h; y++ ) {
-			for( unsigned int x = 0; x < w; x++ ) {
-				pScratchImage->SetPEL( x, y, src.GetPEL( x, y ) );
-			}
-		}
-		pSplatFilm->Resolve( *pScratchImage, splatTotalSamples );
-		return *pScratchImage;
-	}
-}
+// GetIntermediateOutputImage and ResolveSplatIntoScratch are inherited
+// from BidirectionalRasterizerBase — both algorithms use the same
+// lazy-scratch splat composition.
 
 void VCMRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
@@ -780,9 +708,7 @@ void VCMRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcR
 		PixelBasedRasterizerHelper::FlushToOutputs( img, rcRegion, frame );
 		return;
 	}
-	IRasterImage& composited = ResolveSplatIntoScratch(
-		img, pSplatFilm, pScratchImage,
-		GetEffectiveSplatSPP( img.GetWidth(), img.GetHeight() ) );
+	IRasterImage& composited = ResolveSplatIntoScratch( img );
 	PixelBasedRasterizerHelper::FlushToOutputs( composited, rcRegion, frame );
 }
 
@@ -792,9 +718,7 @@ void VCMRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage& img, cons
 		PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( img, rcRegion, frame );
 		return;
 	}
-	IRasterImage& composited = ResolveSplatIntoScratch(
-		img, pSplatFilm, pScratchImage,
-		GetEffectiveSplatSPP( img.GetWidth(), img.GetHeight() ) );
+	IRasterImage& composited = ResolveSplatIntoScratch( img );
 	PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( composited, rcRegion, frame );
 }
 
@@ -808,8 +732,6 @@ void VCMRasterizerBase::FlushDenoisedToOutputs( const IRasterImage& img, const R
 		PixelBasedRasterizerHelper::FlushDenoisedToOutputs( img, rcRegion, frame );
 		return;
 	}
-	IRasterImage& composited = ResolveSplatIntoScratch(
-		img, pSplatFilm, pScratchImage,
-		GetEffectiveSplatSPP( img.GetWidth(), img.GetHeight() ) );
+	IRasterImage& composited = ResolveSplatIntoScratch( img );
 	PixelBasedRasterizerHelper::FlushDenoisedToOutputs( composited, rcRegion, frame );
 }

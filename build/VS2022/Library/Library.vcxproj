@@ -312,6 +312,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\AOVBuffers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\BDPTPelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\BDPTRasterizerBase.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\EnvironmentSampler.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.cpp" />
@@ -931,6 +932,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\AdaptiveTileSizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\BDPTPelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\BDPTRasterizerBase.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h" />

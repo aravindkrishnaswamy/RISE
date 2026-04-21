@@ -27,6 +27,7 @@ vcm_spectral_rasterizer
 	vm_enabled			true
 	hwss				true
 	oidn_denoise		true
+	pixel_filter		gaussian
 }
 
 file_rasterizeroutput

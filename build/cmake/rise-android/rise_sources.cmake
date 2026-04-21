@@ -234,6 +234,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/FilteredFilm.cpp"
     "${RISE_LIB}/Rendering/AdaptiveTileSizer.cpp"
     "${RISE_LIB}/Rendering/PreviewScheduler.cpp"
+    "${RISE_LIB}/Rendering/BidirectionalRasterizerBase.cpp"
     "${RISE_LIB}/Rendering/BDPTRasterizerBase.cpp"
     "${RISE_LIB}/Rendering/PathTracingPelRasterizer.cpp"
     "${RISE_LIB}/Rendering/PathTracingSpectralRasterizer.cpp"

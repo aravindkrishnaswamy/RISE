@@ -265,6 +265,7 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\
 	$(PATHLIBRARY)Rendering/AdaptiveTileSizer.cpp							\
 	$(PATHLIBRARY)Rendering/PreviewScheduler.cpp							\
+	$(PATHLIBRARY)Rendering/BidirectionalRasterizerBase.cpp					\
 	$(PATHLIBRARY)Rendering/BDPTRasterizerBase.cpp							\
 	$(PATHLIBRARY)Rendering/PathTracingPelRasterizer.cpp					\
 	$(PATHLIBRARY)Rendering/PathTracingSpectralRasterizer.cpp				\

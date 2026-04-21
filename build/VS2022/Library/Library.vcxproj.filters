@@ -919,6 +919,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\VCMRasterizerBase.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.cpp">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\VCMPelRasterizer.cpp">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
     </ClCompile>
@@ -2433,6 +2436,9 @@
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\BDPTRasterizerBase.h">
+      <Filter>Rendering\Rasterizers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.h">
       <Filter>Rendering\Rasterizers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.h">

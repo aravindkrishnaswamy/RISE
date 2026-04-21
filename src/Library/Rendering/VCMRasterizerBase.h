@@ -29,45 +29,29 @@
 #ifndef VCM_RASTERIZER_BASE_
 #define VCM_RASTERIZER_BASE_
 
-#include "PixelBasedRasterizerHelper.h"
-#include "SplatFilm.h"
+#include "BidirectionalRasterizerBase.h"
 #include "../Shaders/VCMIntegrator.h"
 #include "../Shaders/VCMLightVertexStore.h"
-#include "../Utilities/StabilityConfig.h"
-
-#include <atomic>
-#include <cstdint>
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class VCMRasterizerBase : public virtual PixelBasedRasterizerHelper
+		class VCMRasterizerBase : public BidirectionalRasterizerBase
 		{
 		protected:
 			VCMIntegrator*			pIntegrator;
-			mutable SplatFilm*		pSplatFilm;
 			mutable LightVertexStore*	pLightVertexStore;
-			mutable IRasterImage*	pScratchImage;		///< Scratch buffer for progressive output with splats
-			mutable Scalar			mSplatTotalSamples;	///< Cached for progressive resolve
-			mutable std::atomic<uint64_t>	mTotalAdaptiveSamples;	///< Total camera samples across all pixels (adaptive)
+
+			// pSplatFilm, pScratchImage, mSplatTotalSamples,
+			// mTotalAdaptiveSamples, stabilityConfig, and the
+			// splat-film helpers all live in BidirectionalRasterizerBase.
 
 			/// Per-iteration VCM normalization.  Recomputed at the
 			/// start of every light pass and read by the eye pass.
 			mutable VCMNormalization	mVCMNormalization;
 
-			StabilityConfig			stabilityConfig;
-
 			virtual ~VCMRasterizerBase();
-
-			/// Subclasses report a short rasterizer name used for the
-			/// progress title string.  Mirrors BDPTRasterizerBase.
-			virtual const char* GetProgressTitle() const = 0;
-
-			/// Returns a scaling factor for splat film resolution.  Pel
-			/// returns 1; Spectral returns nSpectralSamples.  Mirrors
-			/// BDPTRasterizerBase::GetSplatSampleScale.
-			virtual Scalar GetSplatSampleScale() const { return 1.0; }
 
 			/// Override called by PixelBasedRasterizerHelper::RasterizeScene
 			/// BEFORE the per-pixel block dispatch.  We use it to run
@@ -77,12 +61,7 @@ namespace RISE
 			/// then queries this store from IntegratePixel.
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
 
-			/// Override of the progressive preview hook to composite
-			/// the splat film on top of the primary image.  BDPT uses
-			/// the same pattern — see BDPTRasterizerBase::GetIntermediateOutputImage.
-			virtual IRasterImage& GetIntermediateOutputImage( IRasterImage& primary ) const;
-
-			/// VCM runs 1 SPP per pass (paper-correct iteration model).
+		/// VCM runs 1 SPP per pass (paper-correct iteration model).
 		/// Per-block intermediate output is wasted I/O; the end-of-pass
 		/// flush in the progressive loop still runs and gives the user
 		/// one progress update per iteration.
@@ -120,13 +99,6 @@ namespace RISE
 				const bool enableVM,
 				const StabilityConfig& stabilityCfg
 				);
-
-			/// Thread-safe: adds to the total adaptive sample counter.
-			void AddAdaptiveSamples( uint64_t count ) const;
-
-			/// Returns the effective SPP for splat film resolution,
-			/// accounting for adaptive / progressive sampling if active.
-			Scalar GetEffectiveSplatSPP( unsigned int width, unsigned int height ) const;
 
 			/// Normalization snapshot read by the eye pass.  Public
 			/// so IntegratePixel can reach it via a cast in Step 7.
