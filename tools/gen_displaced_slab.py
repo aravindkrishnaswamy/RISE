@@ -46,8 +46,13 @@ def surface_normal(disp_func, x, z, sign_y):
     mag = math.sqrt(nx*nx + ny*ny + nz*nz)
     return (nx/mag, ny/mag, nz/mag)
 
-vertices = []   # list of (x, y, z, nx, ny, nz)
+vertices = []   # list of (x, y, z, nx, ny, nz, u, v)
 triangles = []  # list of (i0, i1, i2) — 0-based
+
+# UVs follow the regular grid: (i/N, j/N) for top and bottom faces.
+# Side walls use (i/N, t) where t=0 at bottom and t=1 at top, so every
+# triangle has a non-degenerate 2×2 UV Jacobian — crucial for the
+# UV-Jacobian-inverted surface-derivative path in SMS / Manifold Solver.
 
 # ===== Bottom face (displaced, normal pointing down) =====
 bottom_start = len(vertices)
@@ -57,7 +62,9 @@ for j in range(N + 1):
         z = -HALF + j * (2.0 * HALF / N)
         y = displacement_bottom(x, z)
         nx, ny, nz = surface_normal(displacement_bottom, x, z, -1.0)
-        vertices.append((x, y, z, nx, ny, nz))
+        u = i / N
+        v = j / N
+        vertices.append((x, y, z, nx, ny, nz, u, v))
 
 for j in range(N):
     for i in range(N):
@@ -77,7 +84,9 @@ for j in range(N + 1):
         z = -HALF + j * (2.0 * HALF / N)
         y = THICKNESS + displacement_top(x, z)
         nx, ny, nz = surface_normal(displacement_top, x, z, 1.0)
-        vertices.append((x, y, z, nx, ny, nz))
+        u = i / N
+        v = j / N
+        vertices.append((x, y, z, nx, ny, nz, u, v))
 
 for j in range(N):
     for i in range(N):
@@ -94,19 +103,28 @@ for j in range(N):
 # We need to stitch corresponding vertices along each boundary.
 
 def add_side_wall(bottom_indices, top_indices, outward_normal):
-    """Stitch a strip between bottom and top edge vertex lists."""
+    """Stitch a strip between bottom and top edge vertex lists.
+
+    Each emitted side-wall vertex carries UV = (k/(N), 0) at the bottom
+    and (k/N, 1) at the top.  This gives a non-degenerate 2×2 UV
+    Jacobian on every side-wall triangle so the SMS/Manifold-Solver
+    surface-derivative path can invert it instead of falling back to
+    a per-triangle barycentric edge frame."""
     nx, ny, nz = outward_normal
-    for k in range(len(bottom_indices) - 1):
+    nK = len(bottom_indices) - 1  # number of wall quads along this edge
+    for k in range(nK):
         b0 = bottom_indices[k]
         b1 = bottom_indices[k + 1]
         t0 = top_indices[k]
         t1 = top_indices[k + 1]
+        u0 = k / nK
+        u1 = (k + 1) / nK
         # Two triangles per quad, wound so outward_normal faces out
         # We duplicate vertices with side-wall normals for sharp edges
-        vb0 = len(vertices); vertices.append((*vertices[b0][:3], nx, ny, nz))
-        vb1 = len(vertices); vertices.append((*vertices[b1][:3], nx, ny, nz))
-        vt0 = len(vertices); vertices.append((*vertices[t0][:3], nx, ny, nz))
-        vt1 = len(vertices); vertices.append((*vertices[t1][:3], nx, ny, nz))
+        vb0 = len(vertices); vertices.append((*vertices[b0][:3], nx, ny, nz, u0, 0.0))
+        vb1 = len(vertices); vertices.append((*vertices[b1][:3], nx, ny, nz, u1, 0.0))
+        vt0 = len(vertices); vertices.append((*vertices[t0][:3], nx, ny, nz, u0, 1.0))
+        vt1 = len(vertices); vertices.append((*vertices[t1][:3], nx, ny, nz, u1, 1.0))
         triangles.append((vb0, vb1, vt1))
         triangles.append((vb0, vt1, vt0))
 
@@ -137,8 +155,8 @@ num_tris = len(triangles)
 
 with open("models/raw/displaced_slab.raw", "w") as f:
     f.write(f"{num_verts} {num_tris}\n")
-    for (x, y, z, nx, ny, nz) in vertices:
-        f.write(f"v {x:.6f} {y:.6f} {z:.6f}    {nx:.6f} {ny:.6f} {nz:.6f}    0 0\n")
+    for (x, y, z, nx, ny, nz, u, v) in vertices:
+        f.write(f"v {x:.6f} {y:.6f} {z:.6f}    {nx:.6f} {ny:.6f} {nz:.6f}    {u:.6f} {v:.6f}\n")
     for (i0, i1, i2) in triangles:
         f.write(f"t {i0} {i1} {i2}\n")
 

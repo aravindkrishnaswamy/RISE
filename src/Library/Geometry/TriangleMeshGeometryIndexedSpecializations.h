@@ -162,37 +162,130 @@ namespace RISE
 					Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );
 
 				// Populate surface derivatives for SMS consumers.
-				// Free to do here because we already have the hit
-				// triangle and barycentric (a, b).  See
-				// docs/GEOMETRY_DERIVATIVES.md for the tangency convention
-				// and TriangleMeshGeometryIndexed.cpp's helper for the
-				// standalone (walk-the-mesh) variant.
+				//
+				// Strategy: use the per-vertex (u, v) texture coordinates
+				// stored in thisTri.pCoords to invert the triangle's UV
+				// Jacobian, yielding derivatives in the STORED
+				// PARAMETERIZATION — not in barycentric-edge space.
+				//
+				// For meshes produced by TessellateToMesh (sphere, torus,
+				// ellipsoid, cylinder, …), pCoords ARE the analytical
+				// shape's own parameterisation (sphere: (φ, θ)), so the
+				// derivatives come out aligned with and scaled like the
+				// analytical shape's dpdu / dpdv — to the fidelity of
+				// the piecewise-linear mesh approximation.  This
+				// CONTINUITY across triangles (shared vertex UVs at
+				// shared edges) is what a smooth-surface Newton iteration
+				// needs; the old edge-frame variant produced derivatives
+				// in a per-triangle barycentric frame that jumped
+				// discontinuously across every edge.
+				//
+				// Derivation: write
+				//   u(a, b) = u0 + a·Δu1 + b·Δu2
+				//   v(a, b) = v0 + a·Δv1 + b·Δv2
+				// where Δu1 = u1 − u0 etc.  Inverting the 2×2:
+				//   a = ( Δv2·(u−u0) − Δu2·(v−v0)) / det
+				//   b = (−Δv1·(u−u0) + Δu1·(v−v0)) / det
+				//   det = Δu1·Δv2 − Δu2·Δv1
+				// Chain rule, with ∂P/∂a = P1−P0, ∂P/∂b = P2−P0:
+				//   ∂P/∂u = ( (P1−P0)·Δv2 − (P2−P0)·Δv1 ) / det
+				//   ∂P/∂v = ( (P2−P0)·Δu1 − (P1−P0)·Δu2 ) / det
+				// Same with Ni in place of Pi for the raw normal
+				// interpolant.
+				//
+				// Fallbacks (valid still set to true so downstream SMS
+				// code doesn't spike):
+				//   - |det| < ε : pole triangle or collinear-UV triangle.
+				//     Fall back to edge-frame derivatives.
+				//   - pCoords[i] null on any vertex: no UV data; same
+				//     fall-back.
 				const Vector3 shadingNormal = Vector3Ops::Normalize( ri.vNormal );
 				const Vector3 e1 = Vector3Ops::mkVector3( *thisTri.pVertices[1], *thisTri.pVertices[0] );
 				const Vector3 e2 = Vector3Ops::mkVector3( *thisTri.pVertices[2], *thisTri.pVertices[0] );
-				// Project edges onto the shading-normal tangent plane.
-				const Scalar e1_dot_n = Vector3Ops::Dot( e1, shadingNormal );
-				const Scalar e2_dot_n = Vector3Ops::Dot( e2, shadingNormal );
-				Vector3 dpdu(
-					e1.x - shadingNormal.x * e1_dot_n,
-					e1.y - shadingNormal.y * e1_dot_n,
-					e1.z - shadingNormal.z * e1_dot_n );
-				Vector3 dpdv(
-					e2.x - shadingNormal.x * e2_dot_n,
-					e2.y - shadingNormal.y * e2_dot_n,
-					e2.z - shadingNormal.z * e2_dot_n );
 
+				// UV deltas (if vertex UVs are available).
+				bool useUVJacobian = false;
+				Scalar uvDet = 0.0;
+				Scalar duA = 0.0, duB = 0.0, dvA = 0.0, dvB = 0.0;
+				if( thisTri.pCoords[0] && thisTri.pCoords[1] && thisTri.pCoords[2] ) {
+					duA = thisTri.pCoords[1]->x - thisTri.pCoords[0]->x;
+					duB = thisTri.pCoords[2]->x - thisTri.pCoords[0]->x;
+					dvA = thisTri.pCoords[1]->y - thisTri.pCoords[0]->y;
+					dvB = thisTri.pCoords[2]->y - thisTri.pCoords[0]->y;
+					uvDet = duA * dvB - duB * dvA;
+					if( fabs( uvDet ) > NEARZERO ) {
+						useUVJacobian = true;
+					}
+				}
+
+
+				// Compute ∂P/∂u, ∂P/∂v.
+				Vector3 dpdu, dpdv;
+				if( useUVJacobian ) {
+					const Scalar invDet = 1.0 / uvDet;
+					dpdu = Vector3(
+						( e1.x * dvB - e2.x * dvA ) * invDet,
+						( e1.y * dvB - e2.y * dvA ) * invDet,
+						( e1.z * dvB - e2.z * dvA ) * invDet );
+					dpdv = Vector3(
+						( e2.x * duA - e1.x * duB ) * invDet,
+						( e2.y * duA - e1.y * duB ) * invDet,
+						( e2.z * duA - e1.z * duB ) * invDet );
+				} else {
+					// Fall back to edge-frame parameterisation (barycentric).
+					dpdu = e1;
+					dpdv = e2;
+				}
+
+				// Project dpdu, dpdv onto the shading-normal tangent plane.
+				// dpdu/dpdv may have a component along the shading normal
+				// if the triangle is curved (for non-flat shading) and we
+				// want derivatives that live on the smooth tangent plane.
+				const Scalar dpdu_dot_n = Vector3Ops::Dot( dpdu, shadingNormal );
+				const Scalar dpdv_dot_n = Vector3Ops::Dot( dpdv, shadingNormal );
+				dpdu = Vector3(
+					dpdu.x - shadingNormal.x * dpdu_dot_n,
+					dpdu.y - shadingNormal.y * dpdu_dot_n,
+					dpdu.z - shadingNormal.z * dpdu_dot_n );
+				dpdv = Vector3(
+					dpdv.x - shadingNormal.x * dpdv_dot_n,
+					dpdv.y - shadingNormal.y * dpdv_dot_n,
+					dpdv.z - shadingNormal.z * dpdv_dot_n );
+
+				// Compute ∂N/∂u, ∂N/∂v — same inversion applied to the
+				// vertex normal differences, then projected onto the
+				// shading tangent plane and normalized by |N_raw| to
+				// get the derivative of the unit shading normal.
 				Vector3 dndu( 0, 0, 0 );
 				Vector3 dndv( 0, 0, 0 );
 				if( thisTri.pNormals[0] && thisTri.pNormals[1] && thisTri.pNormals[2] ) {
-					const Vector3 dNraw_du(
+					const Vector3 dNraw_dA(
 						thisTri.pNormals[1]->x - thisTri.pNormals[0]->x,
 						thisTri.pNormals[1]->y - thisTri.pNormals[0]->y,
 						thisTri.pNormals[1]->z - thisTri.pNormals[0]->z );
-					const Vector3 dNraw_dv(
+					const Vector3 dNraw_dB(
 						thisTri.pNormals[2]->x - thisTri.pNormals[0]->x,
 						thisTri.pNormals[2]->y - thisTri.pNormals[0]->y,
 						thisTri.pNormals[2]->z - thisTri.pNormals[0]->z );
+
+					// Invert to (u, v) parameterisation, or fall back to
+					// (A, B) barycentric.
+					Vector3 dNraw_du, dNraw_dv;
+					if( useUVJacobian ) {
+						const Scalar invDet = 1.0 / uvDet;
+						dNraw_du = Vector3(
+							( dNraw_dA.x * dvB - dNraw_dB.x * dvA ) * invDet,
+							( dNraw_dA.y * dvB - dNraw_dB.y * dvA ) * invDet,
+							( dNraw_dA.z * dvB - dNraw_dB.z * dvA ) * invDet );
+						dNraw_dv = Vector3(
+							( dNraw_dB.x * duA - dNraw_dA.x * duB ) * invDet,
+							( dNraw_dB.y * duA - dNraw_dA.y * duB ) * invDet,
+							( dNraw_dB.z * duA - dNraw_dA.z * duB ) * invDet );
+					} else {
+						dNraw_du = dNraw_dA;
+						dNraw_dv = dNraw_dB;
+					}
+
 					const Scalar nrawLen = Vector3Ops::Magnitude( ri.vNormal );
 					const Scalar invLen = (nrawLen > NEARZERO) ? 1.0 / nrawLen : 0.0;
 					const Scalar du_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_du );

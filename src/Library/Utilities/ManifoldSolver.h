@@ -69,9 +69,10 @@ namespace RISE
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
 			Point2				uv;				///< Surface parameters
-			Scalar				eta;			///< IOR ratio (n_incoming / n_outgoing) at this vertex
+			Scalar				eta;			///< Material IOR at this vertex (e.g. 2.2 for IOR-2.2 glass)
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance)
 			bool				isReflection;	///< True if this vertex uses reflection, false for refraction
+			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
 			const IObject*		pObject;		///< Object this vertex lies on
 			const IMaterial*	pMaterial;		///< Material at this vertex
 			bool				valid;			///< True if vertex data is complete
@@ -85,6 +86,7 @@ namespace RISE
 			eta( 1.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
 			isReflection( false ),
+			isExiting( false ),
 			pObject( 0 ),
 			pMaterial( 0 ),
 			valid( false )

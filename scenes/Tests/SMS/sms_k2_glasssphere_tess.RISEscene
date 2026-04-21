@@ -1,10 +1,18 @@
 RISE ASCII SCENE 5
-#############################################################################################################
-#   Double-Refractive Slab (Close, SMS): SMS should produce visible caustic structure that matches the       #
-#   photon map reference.                                                                                    #
-#############################################################################################################
+# Tessellated-sphere SMS test.  Identical scene to sms_k2_glasssphere_boxfilter
+# except the glass_ball uses displaced_geometry(sphere, disp_scale=0) so we
+# force a triangle-mesh representation of a PERFECTLY closed sphere — no
+# actual displacement, but the tessellation discretizes the smooth surface.
+#
+# Purpose: isolate whether BuildSeedChain / Newton solver degradation is
+# caused by the tessellated-triangle surface derivatives (dpdu, dpdv, dndu,
+# dndv) vs the analytic sphere's smooth derivatives.  If this render matches
+# the analytic sphere render, the tessellation isn't the problem.  If it
+# diverges, we have the clue we're after.
 
 > set accelerator B 10 8
+
+> run scenes/colors.RISEscript
 
 standard_shader
 {
@@ -26,7 +34,7 @@ pathtracing_pel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_sms
+	pattern				rendered/sms_k2_glasssphere_tess
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -34,7 +42,7 @@ file_rasterizeroutput
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_sms
+	pattern				rendered/sms_k2_glasssphere_tess
 	type				EXR
 	bpp					32
 	color_space			Rec709RGB_Linear
@@ -45,8 +53,8 @@ pinhole_camera
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				400
-	height				300
+	width				200
+	height				150
 	fov					45.0
 }
 
@@ -89,13 +97,22 @@ perfectrefractor_material
 	ior					2.2
 }
 
-rawmesh2_geometry
+sphere_geometry
 {
-	name				slab_geom
-	file				models/raw/displaced_slab.raw
+	name				sphere_base
+	radius				0.3
+}
+
+# Tessellated sphere — identical closed sphere, but forced to triangle mesh.
+displaced_geometry
+{
+	name				sphere_tess
+	base_geometry		sphere_base
+	detail				64
+	disp_scale			0.0
 	maxpolygons			10
-	maxdepth			24
-	double_sided		TRUE
+	maxdepth			14
+	bsp					TRUE
 }
 
 clippedplane_geometry
@@ -125,10 +142,9 @@ standard_object
 
 standard_object
 {
-	name				glass_slab
-	geometry			slab_geom
-	orientation			-45 0 0
-	position			0 0.5 0
+	name				glass_ball
+	geometry			sphere_tess
+	position			0 0.6 0
 	material			glass_mat
 }
 
@@ -136,8 +152,7 @@ standard_object
 {
 	name				area_light
 	geometry			light_geom
-	position			0 1.2 -0.1
-	orientation 		-45 0 0
+	position			0 1.5 0
 	scale				0.4 0.4 0.4
 	material			light_mat
 }

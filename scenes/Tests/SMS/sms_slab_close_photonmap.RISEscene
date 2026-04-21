@@ -32,6 +32,14 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+file_rasterizeroutput
+{
+	pattern				rendered/sms_slab_close_photonmap
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
+}
+
 pinhole_camera
 {
 	location			0 2.0 3

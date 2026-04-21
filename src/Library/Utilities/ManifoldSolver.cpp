@@ -300,14 +300,12 @@ void ManifoldSolver::EvaluateConstraint(
 		}
 		else
 		{
-			// Refraction: determine effective eta based on which
-			// side of the surface wi arrives from.
-			Scalar eta_eff = v.eta;
-			if( Vector3Ops::Dot( wi, v.normal ) < 0.0 )
-			{
-				// wi on the opposite side of the normal → exiting
-				eta_eff = 1.0 / v.eta;
-			}
+			// Refraction: eta_eff is the chain-topological ratio determined
+			// by BuildSeedChain's IOR-stack bookkeeping (entering vs exiting).
+			// Do NOT re-derive from sign(dot(wi, normal)): that heuristic
+			// fails on double-sided thin-sheet meshes where the outward
+			// normal points the same way at the entry and exit crossings.
+			const Scalar eta_eff = v.isExiting ? (1.0 / v.eta) : v.eta;
 
 			// h = -(wi + eta_eff * wo)
 			h = Vector3(
@@ -614,9 +612,12 @@ void ManifoldSolver::BuildJacobian(
 		Vector3 s = Vector3Ops::Normalize( v.dpdu );
 		Vector3 t = Vector3Ops::Normalize( v.dpdv );
 
-		// Effective eta
+		// Effective eta — use the chain-topological flag set by
+		// BuildSeedChain's IOR-stack bookkeeping.  A local dot test on
+		// (wi, v.normal) is NOT a reliable "entering vs exiting" signal
+		// for thin double-sided meshes.
 		Scalar eta_eff = v.eta;
-		if( !v.isReflection && Vector3Ops::Dot( wi, v.normal ) < 0.0 )
+		if( !v.isReflection && v.isExiting )
 		{
 			eta_eff = 1.0 / v.eta;
 		}
@@ -1664,6 +1665,23 @@ void ManifoldSolver::OrthonormalizeTangentFrame(
 		vertex.dpdv.z - n.z * d );
 
 	// Gram-Schmidt: make dpdv perpendicular to dpdu.
+	//
+	// CRITICAL: apply the same projection to dndv (normal derivative)
+	// as we apply to dpdv.  Gram-Schmidt with
+	//     dpdv' = dpdv - α·dpdu     (α = (dpdv·dpdu)/|dpdu|²)
+	// is equivalent to reparameterizing along a new v-direction
+	// v' = v - α·u.  By the chain rule dn/dv' = dn/dv - α·dn/du, so
+	// dndv must receive the same correction or it ends up representing
+	// the rate of change in the OLD (non-orthogonal) v-direction while
+	// dpdv and the subsequent 1/|dpdv| rescale below are in the NEW
+	// (orthogonal) v-direction — inflating |dndv| by 1/sin(θ) where θ
+	// is the angle between the raw dpdu and dpdv.
+	// On analytic surfaces (sphere_geometry etc.) the raw dpdu, dpdv
+	// are already orthogonal and both projections collapse to zero —
+	// a no-op that costs a few flops but doesn't change results.
+	// On triangle meshes (including displaced_geometry with disp_scale=0)
+	// the raw derivatives come from e1=V1-V0, e2=V2-V0 which are NEVER
+	// orthogonal, so the correction is essential.
 	const Scalar uSq = Vector3Ops::SquaredModulus( vertex.dpdu );
 	if( uSq > NEARZERO ) {
 		const Scalar proj = Vector3Ops::Dot( vertex.dpdv, vertex.dpdu ) / uSq;
@@ -1671,6 +1689,10 @@ void ManifoldSolver::OrthonormalizeTangentFrame(
 			vertex.dpdv.x - vertex.dpdu.x * proj,
 			vertex.dpdv.y - vertex.dpdu.y * proj,
 			vertex.dpdv.z - vertex.dpdu.z * proj );
+		vertex.dndv = Vector3(
+			vertex.dndv.x - vertex.dndu.x * proj,
+			vertex.dndv.y - vertex.dndu.y * proj,
+			vertex.dndv.z - vertex.dndu.z * proj );
 	}
 
 	// If dpdu collapsed, pick any tangent.
@@ -2171,10 +2193,17 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	Point3 currentOrigin = start;
 	const Scalar offsetEps = 1e-2;
 
-	// Track IOR of current medium (start outside in air)
+	// Medium tracking:
+	//   - `currentIOR` (Scalar) is the physical incident-side IOR along the ray.
+	//   - `seedIor` (IORStack) is ONLY used for object-identity tracking:
+	//     `containsCurrent()` catches the same-IObject*-crossed-twice case
+	//     (thin double-sided displaced mesh) where a straight cosI sign
+	//     test would mis-classify the second crossing as entering.
+	// For multi-object slabs (two planes with opposite outward normals),
+	// cosI sign still decides entering/exiting because each plane is a
+	// distinct IObject* and the IOR stack never flags them.
 	Scalar currentIOR = 1.0;
 	IORStack seedIor( 1.0 );
-
 
 	for( unsigned int depth = 0; depth < config.maxChainDepth; depth++ )
 	{
@@ -2239,30 +2268,45 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		mv.isReflection = !specInfo.canRefract;
 		mv.valid = false;  // Derivatives not yet computed; Solve will handle it
 
+		// Determine entering vs exiting:
+		//   - If we've already pushed THIS IObject* onto the stack during
+		//     a previous crossing, the ray MUST be exiting (we're currently
+		//     inside this specific mesh).  Catches the thin-double-sided-
+		//     mesh case where both crossings have the normal pointing the
+		//     same way, so a raw cosI-sign test misses it.
+		//   - Else fall back to sign(dot(dir, normal)) < 0 ⇒ entering.
+		//     This is the correct test for closed volumes (sphere) AND
+		//     multi-object slabs-from-planes (each plane is a distinct
+		//     IObject* with a distinct outward normal direction).
+		seedIor.SetCurrentObject( ri.pObject );
+		const bool sameObjectAgain = seedIor.containsCurrent();
+		const Scalar cosI = Vector3Ops::Dot( dir, mv.normal );
+		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
+		mv.isExiting = !bEntering;
+
 		chain.push_back( mv );
 
 		// Follow refraction/reflection to determine the next ray direction.
-		// This is what allows the seed chain to discover multi-object
-		// paths through interlocking glass objects.
 		if( specInfo.canRefract )
 		{
-			// Determine if entering or exiting the object based on
-			// the angle between the ray direction and surface normal
-			const Scalar cosI = Vector3Ops::Dot( dir, mv.normal );
 			Vector3 n = mv.normal;
 			Scalar etaRatio;
-
-			if( cosI < 0 )
-			{
-				// Entering the object (ray and normal point in opposite directions)
+			if( bEntering ) {
 				etaRatio = currentIOR / specInfo.ior;
-				// Normal already points outward
-			}
-			else
-			{
-				// Exiting the object (ray and normal point same direction)
+				// normal already points outward relative to entering ray
+			} else {
 				etaRatio = specInfo.ior / currentIOR;
-				n = n * (-1.0);  // Flip normal to face the incoming ray
+				// For exiting, flip the normal to face the incoming ray
+				// (required by the Snell formula below).
+				if( Vector3Ops::Dot( dir, n ) > 0 ) {
+					n = n * (-1.0);
+				}
+			}
+			// For entering case too, ensure normal opposes dir (may need flip
+			// for the thin-sheet "same object crossed again with same-side normal"
+			// scenario that we coerced to exiting, plus any other grazing cases).
+			if( Vector3Ops::Dot( dir, n ) > 0 ) {
+				n = n * (-1.0);
 			}
 
 			// Compute refracted direction using Snell's law
@@ -2276,28 +2320,34 @@ unsigned int ManifoldSolver::BuildSeedChain(
 				dir = dir * etaRatio + n * (etaRatio * cosI2 - cosT);
 				dir = Vector3Ops::Normalize( dir );
 
-				// Update current medium IOR
-				if( cosI < 0 )
-				{
-					currentIOR = specInfo.ior;  // Now inside the object
-				}
-				else
-				{
-					currentIOR = 1.0;  // Back in air
+				// Update current medium IOR and push/pop the object stack.
+				if( bEntering ) {
+					currentIOR = specInfo.ior;
+					seedIor.SetCurrentObject( ri.pObject );
+					seedIor.push( specInfo.ior );
+				} else {
+					currentIOR = 1.0;  // back in air (matching old cosI-based behavior)
+					if( sameObjectAgain ) {
+						// Only pop if we pushed earlier.  The legacy
+						// slabs-from-planes pattern uses cosI-based
+						// exiting without a matching stack entry.
+						seedIor.SetCurrentObject( ri.pObject );
+						seedIor.pop();
+					}
 				}
 			}
 			else
 			{
-				// Total internal reflection
+				// Total internal reflection — no stack change
 				dir = dir + n * (2.0 * cosI2);
 				dir = Vector3Ops::Normalize( dir );
 			}
 		}
 		else
 		{
-			// Pure reflection (mirror)
-			const Scalar cosI = -Vector3Ops::Dot( dir, mv.normal );
-			dir = dir + mv.normal * (2.0 * cosI);
+			// Pure reflection (mirror) — no medium transition.
+			const Scalar cosI_refl = -Vector3Ops::Dot( dir, mv.normal );
+			dir = dir + mv.normal * (2.0 * cosI_refl);
 			dir = Vector3Ops::Normalize( dir );
 		}
 
@@ -2436,16 +2486,26 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
 
-		// Exact dielectric Fresnel reflectance.
-		// In BuildJacobian convention, wi points FROM v TOWARD prev.
-		// Sign of cosI = Dot(wi, v.normal) tells us which side of the
-		// interface prev is on: +ve means normal points toward prev
-		// (wi side = n=1 air); -ve means normal points away (wi side
-		// is inside material, n=v.eta).
-		const Scalar cosI_signed = Vector3Ops::Dot( wi, v.normal );
-		const Scalar cosI = fabs( cosI_signed );
-		const Scalar eta_i = (cosI_signed >= 0) ? 1.0 : v.eta;
-		const Scalar eta_t = (cosI_signed >= 0) ? v.eta : 1.0;
+		// Exact dielectric Fresnel reflectance.  Use the chain-topological
+		// flag `v.isExiting` (set by BuildSeedChain's IOR-stack bookkeeping)
+		// to select eta_i / eta_t, NOT a local sign(dot(wi, n)) test.  For
+		// a thin double-sided mesh the normal can point the same way at
+		// entry and exit, so the sign-of-cosI test reports both crossings
+		// as "entering" and the Fresnel factor comes out wrong.
+		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
+		// Convention: eta_i is the IOR on the prev (x-receiver) side,
+		// eta_t on the next (y-source) side, for the photon's FORWARD
+		// direction y -> v -> x.  In the chain-build (reverse) direction:
+		//   v.isExiting = false ⇒ chain-ray enters glass at v ⇒
+		//     prev side is outside (air)   → eta_i = 1
+		//     next side is inside (glass)  → eta_t = v.eta
+		//   v.isExiting = true  ⇒ chain-ray exits glass at v ⇒
+		//     prev side is inside (glass)  → eta_i = v.eta
+		//     next side is outside (air)   → eta_t = 1
+		// (This matches the old sign(dot(wi, n)) convention where
+		// cosI_signed >= 0 meant "wi points to air side".)
+		const Scalar eta_i = v.isExiting ? v.eta : 1.0;
+		const Scalar eta_t = v.isExiting ? 1.0 : v.eta;
 		const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 
 		if( v.isReflection )
@@ -2464,18 +2524,9 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			// gives SMS physically correct radiance while leaving
 			// PT/VCM's "all air" convention intact.
 			//
-			// Direction convention in this code: wi points FROM v_k
-			// TOWARD prev (the chain step toward x).  Sign of
-			// Dot(wi, v.normal) selects eta_i vs eta_t:
-			//   cosI_signed >=0  -> wi on normal-facing side (n_air=1),
-			//                       eta_i=1, eta_t=v.eta
-			//   cosI_signed <0   -> wi on material side (glass side),
-			//                       eta_i=v.eta, eta_t=1
-			//
-			// So eta_i is the index on the prev (x-receiver) side and
-			// eta_t is the index on the next (y-source) side, for the
-			// photon's FORWARD direction (y -> v -> x).  The forward
-			// rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
+			// eta_i is the index on the x-receiver side, eta_t on the
+			// y-source side, in the photon's FORWARD direction.  The
+			// forward rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
 			const Scalar eta_ratio = eta_i / eta_t;
 			const Scalar radiance_rescale = eta_ratio * eta_ratio;
 			throughput = throughput * v.attenuation * (1.0 - fr) * radiance_rescale;
@@ -2514,11 +2565,11 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		Vector3 wi = Vector3Ops::mkVector3( prevPos, v.position );
 		wi = Vector3Ops::Normalize( wi );
 
-		// Exact dielectric Fresnel reflectance
-		const Scalar cosI_signed = Vector3Ops::Dot( wi, v.normal );
-		const Scalar cosI = fabs( cosI_signed );
-		const Scalar eta_i = (cosI_signed >= 0) ? 1.0 : v.eta;
-		const Scalar eta_t = (cosI_signed >= 0) ? v.eta : 1.0;
+		// Exact dielectric Fresnel reflectance — use the chain-topological
+		// flag (see EvaluateChainThroughput RGB variant for full comment).
+		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
+		const Scalar eta_i = v.isExiting ? v.eta : 1.0;
+		const Scalar eta_t = v.isExiting ? 1.0 : v.eta;
 		const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 
 		if( v.isReflection )
@@ -2650,8 +2701,9 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 	const Vector3 t_v = Vector3Ops::Normalize( vk.dpdv );
 
 	// eta_eff (same convention as BuildJacobian)
+	// Effective eta via the chain-topological flag (see BuildJacobian).
 	Scalar eta_eff = vk.eta;
-	if( !vk.isReflection && Vector3Ops::Dot( wi, vk.normal ) < 0.0 )
+	if( !vk.isReflection && vk.isExiting )
 	{
 		eta_eff = 1.0 / vk.eta;
 	}
@@ -2899,7 +2951,7 @@ ManifoldResult ManifoldSolver::Solve(
 			norm2 += C0[i] * C0[i];
 		if( sqrt(norm2) > 2.0 )
 		{
-					return result;  // Seed too far from valid path
+			return result;  // Seed too far from valid path
 		}
 	}
 
@@ -2911,7 +2963,7 @@ ManifoldResult ManifoldSolver::Solve(
 		{
 			if( !ComputeVertexDerivatives( v ) )
 			{
-					return result;
+				return result;
 			}
 		}
 
@@ -3109,13 +3161,15 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		lightSample.position, lightSample.normal,
 		seedChain, sampler );
 
-	if( !mResult.valid )
+	if( !mResult.valid ) {
 		return result;
+	}
 
 	// Visibility: check external segments of the specular chain
 	if( !CheckChainVisibility( pos, lightSample.position,
-		mResult.specularChain, caster ) )
+		mResult.specularChain, caster ) ) {
 		return result;
+	}
 
 	// Direction from shading point toward first specular vertex
 	const ManifoldVertex& firstSpec = mResult.specularChain[0];

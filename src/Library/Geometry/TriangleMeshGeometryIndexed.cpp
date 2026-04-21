@@ -819,41 +819,102 @@ static SurfaceDerivatives ComputeTriangleDerivatives(
 	SurfaceDerivatives sd;
 	sd.valid = true;
 
-	// dpdu, dpdv = triangle edges, projected into the shading-normal
-	// tangent plane so the contract `dpdu·n ≈ 0` holds even for
-	// smooth-shaded triangles whose shading normal differs from the face
-	// normal.  (See docs/GEOMETRY_DERIVATIVES.md on the tangency invariant.)
+	// Strategy (mirrors TriangleMeshGeometryIndexedSpecializations.h):
+	// invert the 2×2 UV Jacobian using the stored per-vertex texture
+	// coordinates so derivatives come out in the stored parameterisation.
+	// For TessellateToMesh-produced meshes (sphere, torus, ellipsoid,
+	// cylinder) those UVs ARE the analytical shape's own (u,v), so the
+	// frame is aligned with the analytical parameterisation and scales
+	// match the analytical |dpdu|, |dpdv|.
+	//
+	// Fall back to the barycentric-edge frame when UVs are missing or
+	// degenerate (|det|<ε: pole triangle or collinear-UV triangle).
 	const Vector3 e1 = Vector3Ops::mkVector3( *tri.pVertices[1], *tri.pVertices[0] );
 	const Vector3 e2 = Vector3Ops::mkVector3( *tri.pVertices[2], *tri.pVertices[0] );
-	const Scalar e1_dot_n = Vector3Ops::Dot( e1, objSpaceNormal );
-	const Scalar e2_dot_n = Vector3Ops::Dot( e2, objSpaceNormal );
+
+	bool useUVJacobian = false;
+	Scalar uvDet = 0.0;
+	Scalar duA = 0.0, duB = 0.0, dvA = 0.0, dvB = 0.0;
+	if( tri.pCoords[0] && tri.pCoords[1] && tri.pCoords[2] ) {
+		duA = tri.pCoords[1]->x - tri.pCoords[0]->x;
+		duB = tri.pCoords[2]->x - tri.pCoords[0]->x;
+		dvA = tri.pCoords[1]->y - tri.pCoords[0]->y;
+		dvB = tri.pCoords[2]->y - tri.pCoords[0]->y;
+		uvDet = duA * dvB - duB * dvA;
+		if( fabs( uvDet ) > NEARZERO ) {
+			useUVJacobian = true;
+		}
+	}
+
+	Vector3 dpdu_raw, dpdv_raw;
+	if( useUVJacobian ) {
+		const Scalar invDet = 1.0 / uvDet;
+		dpdu_raw = Vector3(
+			( e1.x * dvB - e2.x * dvA ) * invDet,
+			( e1.y * dvB - e2.y * dvA ) * invDet,
+			( e1.z * dvB - e2.z * dvA ) * invDet );
+		dpdv_raw = Vector3(
+			( e2.x * duA - e1.x * duB ) * invDet,
+			( e2.y * duA - e1.y * duB ) * invDet,
+			( e2.z * duA - e1.z * duB ) * invDet );
+	} else {
+		dpdu_raw = e1;
+		dpdv_raw = e2;
+	}
+
+	// Project dpdu, dpdv into the shading-normal tangent plane so
+	// dpdu·n ≈ 0 even for smooth-shaded triangles whose shading normal
+	// differs from the face normal.  (See docs/GEOMETRY_DERIVATIVES.md.)
+	const Scalar dpdu_dot_n = Vector3Ops::Dot( dpdu_raw, objSpaceNormal );
+	const Scalar dpdv_dot_n = Vector3Ops::Dot( dpdv_raw, objSpaceNormal );
 	sd.dpdu = Vector3(
-		e1.x - objSpaceNormal.x * e1_dot_n,
-		e1.y - objSpaceNormal.y * e1_dot_n,
-		e1.z - objSpaceNormal.z * e1_dot_n );
+		dpdu_raw.x - objSpaceNormal.x * dpdu_dot_n,
+		dpdu_raw.y - objSpaceNormal.y * dpdu_dot_n,
+		dpdu_raw.z - objSpaceNormal.z * dpdu_dot_n );
 	sd.dpdv = Vector3(
-		e2.x - objSpaceNormal.x * e2_dot_n,
-		e2.y - objSpaceNormal.y * e2_dot_n,
-		e2.z - objSpaceNormal.z * e2_dot_n );
+		dpdv_raw.x - objSpaceNormal.x * dpdv_dot_n,
+		dpdv_raw.y - objSpaceNormal.y * dpdv_dot_n,
+		dpdv_raw.z - objSpaceNormal.z * dpdv_dot_n );
 
 	if( hasVertexNormals && tri.pNormals[0] && tri.pNormals[1] && tri.pNormals[2] ) {
-		// Raw normal-diff derivatives (before |N_raw| normalization)
-		const Vector3 dNraw_du = Vector3(
+		// Raw normal-diff derivatives (in barycentric (A, B)).
+		const Vector3 dNraw_dA = Vector3(
 			tri.pNormals[1]->x - tri.pNormals[0]->x,
 			tri.pNormals[1]->y - tri.pNormals[0]->y,
 			tri.pNormals[1]->z - tri.pNormals[0]->z );
-		const Vector3 dNraw_dv = Vector3(
+		const Vector3 dNraw_dB = Vector3(
 			tri.pNormals[2]->x - tri.pNormals[0]->x,
 			tri.pNormals[2]->y - tri.pNormals[0]->y,
 			tri.pNormals[2]->z - tri.pNormals[0]->z );
 
+		// Apply the same UV-Jacobian inversion to the normal derivatives
+		// as to dpdu/dpdv, so the resulting dN/du, dN/dv live in the
+		// SAME parameterisation as dpdu/dpdv.
+		Vector3 dNraw_du, dNraw_dv;
+		if( useUVJacobian ) {
+			const Scalar invDet = 1.0 / uvDet;
+			dNraw_du = Vector3(
+				( dNraw_dA.x * dvB - dNraw_dB.x * dvA ) * invDet,
+				( dNraw_dA.y * dvB - dNraw_dB.y * dvA ) * invDet,
+				( dNraw_dA.z * dvB - dNraw_dB.z * dvA ) * invDet );
+			dNraw_dv = Vector3(
+				( dNraw_dB.x * duA - dNraw_dA.x * duB ) * invDet,
+				( dNraw_dB.y * duA - dNraw_dA.y * duB ) * invDet,
+				( dNraw_dB.z * duA - dNraw_dA.z * duB ) * invDet );
+		} else {
+			dNraw_du = dNraw_dA;
+			dNraw_dv = dNraw_dB;
+		}
+
 		// Reconstruct |N_raw| at this (u,v) using the interpolated
 		// unnormalized normal. The caller-supplied objSpaceNormal is
-		// already normalized, so we can use the raw interpolation.
+		// already normalized, so we can use the raw barycentric
+		// interpolation (using dNraw_dA, dNraw_dB, the original basis —
+		// barU/barV are in barycentric space, not (u,v) space).
 		const Vector3 Nraw = Vector3(
-			tri.pNormals[0]->x + barU * dNraw_du.x + barV * dNraw_dv.x,
-			tri.pNormals[0]->y + barU * dNraw_du.y + barV * dNraw_dv.y,
-			tri.pNormals[0]->z + barU * dNraw_du.z + barV * dNraw_dv.z );
+			tri.pNormals[0]->x + barU * dNraw_dA.x + barV * dNraw_dB.x,
+			tri.pNormals[0]->y + barU * dNraw_dA.y + barV * dNraw_dB.y,
+			tri.pNormals[0]->z + barU * dNraw_dA.z + barV * dNraw_dB.z );
 		const Scalar len = Vector3Ops::Magnitude( Nraw );
 		const Scalar invLen = (len > NEARZERO) ? 1.0 / len : 0.0;
 

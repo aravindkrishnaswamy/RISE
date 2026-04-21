@@ -111,12 +111,23 @@ void DisplacedGeometry::BuildMesh()
 		return;
 	}
 
-	if( m_pDisplacement ) {
+	// Did we actually move any vertex positions?  With disp_scale==0 (or a null
+	// displacement painter) ApplyDisplacementMapToObject is a no-op and the
+	// analytical per-vertex normals coming out of TessellateToMesh are still
+	// correct.  Topology-averaged normals would REPLACE those analytic normals
+	// with a locally-linear approximation — fine for displaced surfaces, but
+	// unnecessarily lossy when nothing was displaced.  This matters a lot for
+	// SMS / Manifold-Solver tests that use disp_scale=0 as a "force tessellation
+	// of an otherwise analytic shape" idiom: with this shortcut the tessellated
+	// sphere's |∂N/∂u|/|∂P/∂u| ratio lands on 1/R (exactly the analytic value)
+	// everywhere except the pole-cap degenerate triangles.
+	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
+	if( bVerticesDisplaced ) {
 		RemapTextureCoords( coords );
 		ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
 	}
 
-	if( !m_bUseFaceNormals ) {
+	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
 	}
 
