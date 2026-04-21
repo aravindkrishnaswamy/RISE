@@ -343,8 +343,23 @@ void TorusGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void TorusGeometry::RegenerateData( )
 {
-	m_p1 = ((m_dMajorRadius - m_dMinorRadius) / 2);
-	m_p0 = m_p1+m_dMinorRadius;
-	m_sqrP1 = m_p1 * m_p1;
+	// Standard torus parameterisation matching the scene spec:
+	//   majorradius = ring radius (distance from torus axis to ring centre)
+	//   minorradius = tube radius
+	//   Implicit:  (sqrt(x² + z²) − R)² + y² = r²
+	//
+	// Prior to 2026-04, this code computed m_p0 = (R + r)/2 and
+	// m_p1 = (R − r)/2 — representing a torus whose OUTER boundary sat
+	// at d=R and INNER boundary at d=r, with ring radius (R+r)/2.  That
+	// model is internally consistent (solver + normal use matching m_p0,
+	// m_sqrP1) but it does NOT match either (a) the scene-file intent
+	// stated in the comments ("ring radius 0.3, tube radius 0.075") or
+	// (b) TessellateToMesh, which uses m_p0 as the ring radius and m_p1
+	// as the tube radius when placing vertices.  The disagreement went
+	// unnoticed because both SMS and VCM rendered *some* torus — just
+	// a smaller, fatter one than the user asked for.
+	m_p0 = m_dMajorRadius;
+	m_p1 = m_dMinorRadius;
 	m_sqrP0 = m_p0 * m_p0;
+	m_sqrP1 = m_p1 * m_p1;
 }
