@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "ManifoldSolver.h"
+#include "SMSPhotonMap.h"
 #include "Optics.h"
 #include "BDPTUtilities.h"
 #include "../Interfaces/ILog.h"
@@ -36,7 +37,8 @@ using namespace RISE::Implementation;
 
 ManifoldSolver::ManifoldSolver( const ManifoldSolverConfig& cfg ) :
 config( cfg ),
-pLightSampler( 0 )
+pLightSampler( 0 ),
+pPhotonMap( 0 )
 {
 	pLightSampler = new LightSampler();
 }
@@ -3155,131 +3157,296 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		return result;
 	}
 
-	// Run manifold solve
-	ManifoldResult mResult = Solve(
-		pos, normal,
-		lightSample.position, lightSample.normal,
-		seedChain, sampler );
+	// Multi-trial Specular Manifold Sampling with PHOTON-AIDED first-vertex
+	// seeding (Zeltner et al. 2020 biased estimator + photon-guided priors
+	// à la Kondapaneni et al. 2023).
+	//
+	// A single Snell-traced seed chain + one Newton solve finds ONE root of
+	// the specular-manifold constraint.  On a smooth convex refractor that is
+	// the unique physically admissible caustic path; on a bumpy / displaced
+	// surface there are typically several local manifold solutions per
+	// (shading-point, emitter) pair and each is a legitimate caustic path
+	// contribution.
+	//
+	// Local perturbation (first-pass attempt) proved inadequate: Newton's
+	// basin around the "direct" Snell root is large enough that perturbed
+	// seeds always fall back.  Uniform surface sampling (second-pass) DID
+	// uncover more roots but cost O(N) Newton solves per shading point per
+	// sample, most of which land on back-faces or non-caustic regions and
+	// return zero contribution.  Photon-aided seeding solves both problems:
+	// a one-time light-pass at scene-prep time deposits photons on diffuse
+	// surfaces AFTER traversing specular chains, and each deposit records
+	// the photon's FIRST specular-caster entry.  A render-time fixed-radius
+	// kd-tree query "photons whose landing is near this shading point"
+	// returns entry points that are KNOWN to produce valid caustic paths
+	// ending in the shading-point neighborhood.
+	//
+	// Seed construction per trial:
+	//   - Trial 0: the deterministic Snell-traced baseSeedChain (for
+	//     N==1 backward compatibility and as a "guaranteed" good seed).
+	//   - Trials 1..N-1: pull up to N-1 photons from the photon map,
+	//     filter to those whose entryObject matches the base chain's
+	//     first caster, and rebuild the seed chain toward each photon's
+	//     recorded entryPoint.  If the photon map is null (no photon pass
+	//     was run — sms_photon_count == 0) or the query returns nothing,
+	//     the remaining trials are no-ops.
+	//
+	// Dedupe by first-vertex world position, sum contributions of unique
+	// converged chains.  No /N division: contributions per root are
+	// well-defined; we're not computing E[f(random seed)] but rather
+	// Σ_r f_r restricted to discovered roots.
+	//
+	// Unbiased mode (config.biased==false) still applies the Bernoulli 1/p
+	// weighting per-trial before the dedupe.
+	const unsigned int N = ( config.multiTrials > 0 ) ? config.multiTrials : 1;
+	// Dedupe threshold: roots whose first specular vertices are within this
+	// world-space distance are treated as the same root.  Use the config
+	// uniquenessThreshold (default 1e-4) — tight enough that distinct
+	// bumps on a displaced surface count as separate roots, loose enough
+	// that Newton-iteration round-off doesn't declare the same root
+	// different across trials.
+	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
+		? config.uniquenessThreshold : 1e-4;
+	const std::vector<ManifoldVertex> baseSeedChain = seedChain;
 
-	if( !mResult.valid ) {
-		return result;
+	// The specular caster the base seed belongs to.  We restrict photon
+	// seeds to the same object so the Newton solve operates on the chain
+	// topology the caller built — crossing to a different caster would
+	// require rebuilding the chain from scratch with potentially different
+	// k, and changes the IOR stack semantics.
+	const IObject* pFirstCaster = baseSeedChain[0].pObject;
+
+	// Pull photon-aided seeds from the rasterizer-owned photon map, if one
+	// was built.  Query radius: the config-supplied value if positive,
+	// otherwise the map's auto-computed value (bbox-diagonal * 0.01 —
+	// analogous to VCM's merge-radius auto-fallback).
+	std::vector<SMSPhoton> photonSeeds;
+	if( pPhotonMap && pPhotonMap->IsBuilt() && N > 1 )
+	{
+		Scalar r = config.photonSearchRadius;
+		if( r <= 0 ) {
+			r = pPhotonMap->GetAutoRadius();
+		}
+		if( r > 0 ) {
+			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+		}
 	}
 
-	// Visibility: check external segments of the specular chain
-	if( !CheckChainVisibility( pos, lightSample.position,
-		mResult.specularChain, caster ) ) {
-		return result;
-	}
+	// Store the first specular vertex position of every accepted root so we
+	// can dedupe later trials that converge to the same basin.  First-vertex
+	// position is a unique enough identifier in practice: distinct roots of
+	// the manifold constraint have distinct entry points on the specular
+	// surface.
+	std::vector<Point3> acceptedRootPositions;
+	RISEPel totalContribution( 0, 0, 0 );
+	unsigned int validTrials = 0;
 
-	// Direction from shading point toward first specular vertex
-	const ManifoldVertex& firstSpec = mResult.specularChain[0];
-	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
-		firstSpec.position, pos );
-	Scalar distToFirstSpec = Vector3Ops::Magnitude( dirToFirstSpec );
-	if( distToFirstSpec < 1e-8 ) return result;
-	dirToFirstSpec = dirToFirstSpec * (1.0 / distToFirstSpec);
+	// photonCursor walks the photonSeeds list (filtering by entryObject as
+	// we go) so trial indices don't directly map to photon indices.
+	std::size_t photonCursor = 0;
 
-	const Vector3 wiAtShading = dirToFirstSpec;
+	for( unsigned int trial = 0; trial < N; trial++ )
+	{
+		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
 
-	// Evaluate BSDF at shading point
-	// RISE convention: ri.ray.Dir() is toward the surface (negate woOutgoing)
-	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
-	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
-	rig.bHit = true;
-	rig.ptIntersection = pos;
-	rig.vNormal = normal;
-	rig.onb = onb;
+		// Trial 0 uses the deterministic Snell-traced base seed; later
+		// trials consume one photon from the map per trial.  If we've
+		// exhausted the photons, subsequent trials contribute 0 (we don't
+		// fall back to uniform sampling — it's too slow to be worthwhile,
+		// per earlier testing).
+		//
+		// NOTE on entryObject: the photon's entryObject is the FIRST
+		// caster the LIGHT'S ray hit — for a k>1 chain (e.g. a slab:
+		// light hits top plane, then bottom, then floor) that's the caster
+		// NEAREST the light.  SMS's chain is built in the opposite
+		// direction (shading point -> light), so its first caster is the
+		// one NEAREST the receiver.  Those are DIFFERENT objects for any
+		// k>1 chain.  We therefore do NOT filter by caster identity; the
+		// photon's entryPoint is useful simply as an aim-point: a ray from
+		// the shading point toward that world position crosses the chain
+		// in the right direction regardless of which side of the chain
+		// the photon happened to enter from.
+		if( trial > 0 )
+		{
+			if( photonCursor >= photonSeeds.size() ) {
+				continue;  // no more photon seeds this trial round
+			}
+			const Point3 seedPt = photonSeeds[photonCursor].entryPoint;
+			photonCursor++;
 
-	RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
-	if( ColorMath::MaxValue( fBSDF ) <= 0 )
-		return result;
+			// Trace from shading point toward the photon's entry point.
+			// BuildSeedChain follows the ray and applies Snell/reflection
+			// at each specular hit.  On a multi-caster chain the first
+			// hit is on the caster nearest the receiver (not the photon's
+			// entryObject) — that's the whole point.
+			std::vector<ManifoldVertex> newChain;
+			const unsigned int newLen = BuildSeedChain(
+				pos, seedPt, scene, caster, newChain );
+			if( newLen == 0 || newChain.empty() )
+			{
+				continue;  // Trial is a wash; next one.
+			}
+			trialSeed = newChain;
+		}
 
-	// Cosine at shading point: uses the actual direction toward the
-	// first specular vertex (where light arrives from after refraction).
-	const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
-	if( cosAtShading <= 0 ) return result;
+		ManifoldResult mResult = Solve(
+			pos, normal,
+			lightSample.position, lightSample.normal,
+			trialSeed, sampler );
 
-	// Direction and distance from last specular vertex to light
-	// (needed for cosine evaluation at the light surface).
-	const ManifoldVertex& lastSpec = mResult.specularChain.back();
-	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
-		lastSpec.position, lightSample.position );
-	Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
-	if( distSpecToLight < 1e-8 ) return result;
-	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
+		if( !mResult.valid ) continue;
 
-	// For delta-position lights (point/spot), there is no surface at the
-	// light — the geometric coupling has no cosine term.  The emitted
-	// radiance must also be re-evaluated for the actual direction from the
-	// light toward the last specular vertex, since the LightSample's Le
-	// was evaluated at a random photon direction.
-	Scalar cosAtLight;
-	RISEPel actualLe;
-	if( lightSample.isDelta ) {
-		cosAtLight = 1.0;
-		if( lightSample.pLight ) {
-			actualLe = lightSample.pLight->emittedRadiance( dirSpecToLight );
+		// Dedupe: if this trial's first vertex coincides with a previously
+		// accepted root, skip.  (The remainder of the chain is determined
+		// by the first vertex plus Snell/reflection laws, so first-vertex
+		// uniqueness is sufficient.)
+		const Point3& firstPos = mResult.specularChain[0].position;
+		bool duplicate = false;
+		for( unsigned int r = 0; r < acceptedRootPositions.size(); r++ )
+		{
+			if( Point3Ops::Distance( firstPos, acceptedRootPositions[r] ) < dedupeThr )
+			{
+				duplicate = true;
+				break;
+			}
+		}
+		if( duplicate ) continue;
+
+		// Visibility: check external segments of the specular chain
+		if( !CheckChainVisibility( pos, lightSample.position,
+			mResult.specularChain, caster ) ) continue;
+
+		// Direction from shading point toward first specular vertex
+		const ManifoldVertex& firstSpec = mResult.specularChain[0];
+		Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
+			firstSpec.position, pos );
+		Scalar distToFirstSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+		if( distToFirstSpec < 1e-8 ) continue;
+		dirToFirstSpec = dirToFirstSpec * (1.0 / distToFirstSpec);
+
+		const Vector3 wiAtShading = dirToFirstSpec;
+
+		// Evaluate BSDF at shading point
+		// RISE convention: ri.ray.Dir() is toward the surface (negate woOutgoing)
+		Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
+		RayIntersectionGeometric rig( evalRay, nullRasterizerState );
+		rig.bHit = true;
+		rig.ptIntersection = pos;
+		rig.vNormal = normal;
+		rig.onb = onb;
+
+		RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
+		if( ColorMath::MaxValue( fBSDF ) <= 0 ) continue;
+
+		// Cosine at shading point: uses the actual direction toward the
+		// first specular vertex (where light arrives from after refraction).
+		const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+		if( cosAtShading <= 0 ) continue;
+
+		// Direction and distance from last specular vertex to light
+		// (needed for cosine evaluation at the light surface).
+		const ManifoldVertex& lastSpec = mResult.specularChain.back();
+		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+			lastSpec.position, lightSample.position );
+		Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
+		if( distSpecToLight < 1e-8 ) continue;
+		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
+
+		// For delta-position lights (point/spot), there is no surface at the
+		// light — the geometric coupling has no cosine term.  The emitted
+		// radiance must also be re-evaluated for the actual direction from the
+		// light toward the last specular vertex, since the LightSample's Le
+		// was evaluated at a random photon direction.
+		Scalar cosAtLight;
+		RISEPel actualLe;
+		if( lightSample.isDelta ) {
+			cosAtLight = 1.0;
+			if( lightSample.pLight ) {
+				actualLe = lightSample.pLight->emittedRadiance( dirSpecToLight );
+			} else {
+				actualLe = lightSample.Le;
+			}
 		} else {
+			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+			if( cosAtLight <= 0 ) continue;
 			actualLe = lightSample.Le;
 		}
-	} else {
-		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-		if( cosAtLight <= 0 ) return result;
-		actualLe = lightSample.Le;
+
+		// SMS measure-conversion via implicit function theorem.
+		//
+		// For a k-vertex specular chain x -> v_1 -> ... -> v_k -> y, we
+		// sample the light endpoint y on its area and need the Jacobian
+		// |dω_x / dA_y|.  Following Zeltner et al. 2020, applying the
+		// implicit function theorem to C(v_1, ..., v_k, y) = 0 gives:
+		//
+		//   |dω_x / dA_y| = G(x, v_1) · |det(δv_1_⊥ / δy_⊥)|
+		//
+		// where G(x, v_1) = cos(θ_v1_at_x) / dist²(x, v_1) is the standard
+		// solid-angle-from-area factor at the first specular vertex, and
+		// |det(δv_1/δy)| is the 2x2 Jacobian computed by solving the
+		// block-tridiagonal system J_v · δv = -J_y · δy.
+		//
+		// For k=1 this reduces to G(x, v_1) · |det(∂C/∂y)| / |det(∂C/∂v_1)|,
+		// which matches the analytical apparent-depth formula
+		// |dω_x/dA_y| = 1/(d_1 + n·d_2)² for a flat refractor at normal
+		// incidence.  (d_1 = x-to-v_1, d_2 = v_1-to-y, n = relative IOR.)
+		//
+		// cos(θ_y) is IMPLICIT in |det(∂C/∂y)| — y-tangent perturbations
+		// project onto the wo direction via (I - wo⊗wo), which naturally
+		// includes the cos_y factor.  Do NOT multiply by cosAtLight again.
+		//
+		// The previous formula used 1/dist²(v_k, y) in place of |det(∂C/∂y)|
+		// and was off by an eta-dependent factor (e.g. 1.44x for ior=2.2 at
+		// normal incidence), producing systematically over-bright caustics
+		// except for ior→1.
+		const ManifoldVertex& firstSpecForG = mResult.specularChain[0];
+		Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpecForG.position, pos );
+		const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
+		if( distXtoV1 < 1e-8 ) continue;
+		const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpecForG.normal, dirXtoV1 ) );
+		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
+
+		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
+			mResult.specularChain, pos, lightSample.position, lightSample.normal );
+
+		const Scalar smsGeometric = G_x_v1 * detDvDy;
+
+		// Clamp to prevent fireflies from near-singular Jacobians
+		const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+
+		RISEPel trialContribution = fBSDF
+			* mResult.contribution
+			* actualLe * cosAtShading * clampedGeometric
+			/ (lightSample.pdfPosition * lightSample.pdfSelect);
+
+		// Silence unused-variable warning if cosAtLight ends up unused;
+		// keep its computation above for backface culling (non-delta lights).
+		(void)cosAtLight;
+
+		// Fold the SMS sampler's own PDF into the per-trial contribution.
+		//   Biased: mResult.pdf == 1.0, no change.
+		//   Unbiased: mResult.pdf carries the Bernoulli-estimated 1/p, so
+		//   dividing here yields a correctly re-weighted unbiased estimate
+		//   for this trial.
+		if( mResult.pdf > 1e-20 )
+		{
+			trialContribution = trialContribution / mResult.pdf;
+		}
+
+		totalContribution = totalContribution + trialContribution;
+		acceptedRootPositions.push_back( firstPos );
+		validTrials++;
 	}
 
-	// SMS measure-conversion via implicit function theorem.
-	//
-	// For a k-vertex specular chain x -> v_1 -> ... -> v_k -> y, we
-	// sample the light endpoint y on its area and need the Jacobian
-	// |dω_x / dA_y|.  Following Zeltner et al. 2020, applying the
-	// implicit function theorem to C(v_1, ..., v_k, y) = 0 gives:
-	//
-	//   |dω_x / dA_y| = G(x, v_1) · |det(δv_1_⊥ / δy_⊥)|
-	//
-	// where G(x, v_1) = cos(θ_v1_at_x) / dist²(x, v_1) is the standard
-	// solid-angle-from-area factor at the first specular vertex, and
-	// |det(δv_1/δy)| is the 2x2 Jacobian computed by solving the
-	// block-tridiagonal system J_v · δv = -J_y · δy.
-	//
-	// For k=1 this reduces to G(x, v_1) · |det(∂C/∂y)| / |det(∂C/∂v_1)|,
-	// which matches the analytical apparent-depth formula
-	// |dω_x/dA_y| = 1/(d_1 + n·d_2)² for a flat refractor at normal
-	// incidence.  (d_1 = x-to-v_1, d_2 = v_1-to-y, n = relative IOR.)
-	//
-	// cos(θ_y) is IMPLICIT in |det(∂C/∂y)| — y-tangent perturbations
-	// project onto the wo direction via (I - wo⊗wo), which naturally
-	// includes the cos_y factor.  Do NOT multiply by cosAtLight again.
-	//
-	// The previous formula used 1/dist²(v_k, y) in place of |det(∂C/∂y)|
-	// and was off by an eta-dependent factor (e.g. 1.44x for ior=2.2 at
-	// normal incidence), producing systematically over-bright caustics
-	// except for ior→1.
-	const ManifoldVertex& firstSpecForG = mResult.specularChain[0];
-	Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpecForG.position, pos );
-	const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
-	if( distXtoV1 < 1e-8 ) return result;
-	const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpecForG.normal, dirXtoV1 ) );
-	const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
+	if( validTrials == 0 ) return result;
 
-	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
-		mResult.specularChain, pos, lightSample.position, lightSample.normal );
-
-	const Scalar smsGeometric = G_x_v1 * detDvDy;
-
-	// Clamp to prevent fireflies from near-singular Jacobians
-	const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
-
-	result.contribution = fBSDF
-		* mResult.contribution
-		* actualLe * cosAtShading * clampedGeometric
-		/ (lightSample.pdfPosition * lightSample.pdfSelect);
-
-	// Silence unused-variable warning if cosAtLight ends up unused;
-	// keep its computation above for backface culling (non-delta lights).
-	(void)cosAtLight;
-
-	result.misWeight = 1.0 / mResult.pdf;
+	// No /N division — we've deduped by root so totalContribution is the
+	// sum Σ_r f_r over the distinct roots discovered by the N trials.
+	// This is what we want for multi-root caustics; in the single-root
+	// case (smooth specular surface, N=1) it reduces exactly to the
+	// pre-multi-trial single-solve contribution.
+	result.contribution = totalContribution;
+	result.misWeight = 1.0;  // PDF weighting already folded into contribution
 	result.valid = true;
 
 	return result;
@@ -3381,88 +3548,182 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		}
 	}
 
-	// Run manifold solve with wavelength-dependent IOR
-	ManifoldResult mResult = Solve(
-		pos, normal,
-		lightSample.position, lightSample.normal,
-		seedChain, sampler );
+	// Multi-trial SMS with photon-aided seeding + root-dedupe — see
+	// EvaluateAtShadingPoint (RGB) for the full rationale.
+	//
+	// For NM (spectral): each trial's new seed chain is built by
+	// BuildSeedChain WITHOUT the wavelength-dependent eta override.  We
+	// re-apply the per-wavelength eta to the new chain inside the trial
+	// loop so every converged root uses the correct dispersion IOR.
+	const unsigned int N = ( config.multiTrials > 0 ) ? config.multiTrials : 1;
+	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
+		? config.uniquenessThreshold : 1e-4;
+	const std::vector<ManifoldVertex> baseSeedChain = seedChain;
 
-	if( !mResult.valid )
-		return result;
+	const IObject* pFirstCaster = baseSeedChain[0].pObject;
 
-	// Visibility: check external segments of the specular chain
-	if( !CheckChainVisibility( pos, lightSample.position,
-		mResult.specularChain, caster ) )
-		return result;
-
-	// Direction from shading point toward first specular vertex
-	const ManifoldVertex& firstSpec = mResult.specularChain[0];
-	Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
-		firstSpec.position, pos );
-	Scalar distToFirstSpec = Vector3Ops::Magnitude( dirToFirstSpec );
-	if( distToFirstSpec < 1e-8 ) return result;
-	dirToFirstSpec = dirToFirstSpec * (1.0 / distToFirstSpec);
-
-	const Vector3 wiAtShading = dirToFirstSpec;
-
-	// Evaluate BSDF at shading point (spectral)
-	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
-	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
-	rig.bHit = true;
-	rig.ptIntersection = pos;
-	rig.vNormal = normal;
-	rig.onb = onb;
-
-	Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
-	if( fBSDF <= 0 )
-		return result;
-
-	// Cosine at shading point
-	Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
-	if( cosAtShading <= 0 ) return result;
-
-	// Chain throughput (spectral — per-wavelength Fresnel)
-	Scalar chainThroughput = EvaluateChainThroughputNM(
-		pos, lightSample.position, mResult.specularChain, nm );
-
-	// Direction from last specular vertex to light (for cosine eval)
-	const ManifoldVertex& lastSpec = mResult.specularChain.back();
-	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
-		lastSpec.position, lightSample.position );
-	Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
-	if( distSpecToLight < 1e-8 ) return result;
-	dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
-
-	Scalar cosAtLight;
-	Scalar Le;
-	if( lightSample.isDelta ) {
-		cosAtLight = 1.0;
-		if( lightSample.pLight ) {
-			Le = ColorMath::Luminance(
-				lightSample.pLight->emittedRadiance( dirSpecToLight ) );
-		} else {
-			Le = ColorMath::Luminance( lightSample.Le );
+	std::vector<SMSPhoton> photonSeeds;
+	if( pPhotonMap && pPhotonMap->IsBuilt() && N > 1 )
+	{
+		Scalar r = config.photonSearchRadius;
+		if( r <= 0 ) {
+			r = pPhotonMap->GetAutoRadius();
 		}
-	} else {
-		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-		if( cosAtLight <= 0 ) return result;
-		Le = ColorMath::Luminance( lightSample.Le );
+		if( r > 0 ) {
+			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+		}
 	}
 
-	// SMS geometric factor (see RGB variant for derivation).
-	const Scalar chainGeom = EvaluateChainGeometry(
-		pos, lightSample.position, mResult.specularChain );
+	std::vector<Point3> acceptedRootPositions;
+	Scalar totalContribution = 0.0;
+	unsigned int validTrials = 0;
 
-	const Scalar smsGeometric = cosAtLight * chainGeom
-		/ fmax( mResult.jacobianDet, 1e-20 );
-	const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+	std::size_t photonCursor = 0;
 
-	result.contribution = fBSDF
-		* chainThroughput
-		* Le * cosAtShading * clampedGeometric
-		/ (lightSample.pdfPosition * lightSample.pdfSelect);
+	for( unsigned int trial = 0; trial < N; trial++ )
+	{
+		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
 
-	result.misWeight = 1.0 / mResult.pdf;
+		// See RGB variant for why we do NOT filter by entryObject.
+		if( trial > 0 )
+		{
+			if( photonCursor >= photonSeeds.size() ) {
+				continue;
+			}
+			const Point3 seedPt = photonSeeds[photonCursor].entryPoint;
+			photonCursor++;
+
+			std::vector<ManifoldVertex> newChain;
+			const unsigned int newLen = BuildSeedChain(
+				pos, seedPt, scene, caster, newChain );
+			if( newLen == 0 || newChain.empty() )
+			{
+				continue;
+			}
+
+			// Re-apply per-wavelength eta to the freshly-built chain.
+			IORStack queryIor( 1.0 );
+			for( unsigned int i = 0; i < newChain.size(); i++ )
+			{
+				if( newChain[i].pMaterial )
+				{
+					Ray dummyRay( newChain[i].position, newChain[i].normal );
+					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
+					rigLocal.bHit = true;
+					rigLocal.ptIntersection = newChain[i].position;
+					rigLocal.vNormal = newChain[i].normal;
+					SpecularInfo specNM = newChain[i].pMaterial->GetSpecularInfoNM(
+						rigLocal, queryIor, nm );
+					newChain[i].eta = specNM.ior;
+				}
+			}
+			trialSeed = newChain;
+		}
+
+		ManifoldResult mResult = Solve(
+			pos, normal,
+			lightSample.position, lightSample.normal,
+			trialSeed, sampler );
+
+		if( !mResult.valid ) continue;
+
+		// Dedupe: skip if we've already accepted a root at this first-vertex.
+		const Point3& firstPos = mResult.specularChain[0].position;
+		bool duplicate = false;
+		for( unsigned int r = 0; r < acceptedRootPositions.size(); r++ )
+		{
+			if( Point3Ops::Distance( firstPos, acceptedRootPositions[r] ) < dedupeThr )
+			{
+				duplicate = true;
+				break;
+			}
+		}
+		if( duplicate ) continue;
+
+		// Visibility: check external segments of the specular chain
+		if( !CheckChainVisibility( pos, lightSample.position,
+			mResult.specularChain, caster ) ) continue;
+
+		// Direction from shading point toward first specular vertex
+		const ManifoldVertex& firstSpec = mResult.specularChain[0];
+		Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
+			firstSpec.position, pos );
+		Scalar distToFirstSpec = Vector3Ops::Magnitude( dirToFirstSpec );
+		if( distToFirstSpec < 1e-8 ) continue;
+		dirToFirstSpec = dirToFirstSpec * (1.0 / distToFirstSpec);
+
+		const Vector3 wiAtShading = dirToFirstSpec;
+
+		// Evaluate BSDF at shading point (spectral)
+		Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
+		RayIntersectionGeometric rig( evalRay, nullRasterizerState );
+		rig.bHit = true;
+		rig.ptIntersection = pos;
+		rig.vNormal = normal;
+		rig.onb = onb;
+
+		Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+		if( fBSDF <= 0 ) continue;
+
+		// Cosine at shading point
+		Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+		if( cosAtShading <= 0 ) continue;
+
+		// Chain throughput (spectral — per-wavelength Fresnel)
+		Scalar chainThroughput = EvaluateChainThroughputNM(
+			pos, lightSample.position, mResult.specularChain, nm );
+
+		// Direction from last specular vertex to light (for cosine eval)
+		const ManifoldVertex& lastSpec = mResult.specularChain.back();
+		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+			lastSpec.position, lightSample.position );
+		Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
+		if( distSpecToLight < 1e-8 ) continue;
+		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
+
+		Scalar cosAtLight;
+		Scalar Le;
+		if( lightSample.isDelta ) {
+			cosAtLight = 1.0;
+			if( lightSample.pLight ) {
+				Le = ColorMath::Luminance(
+					lightSample.pLight->emittedRadiance( dirSpecToLight ) );
+			} else {
+				Le = ColorMath::Luminance( lightSample.Le );
+			}
+		} else {
+			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+			if( cosAtLight <= 0 ) continue;
+			Le = ColorMath::Luminance( lightSample.Le );
+		}
+
+		// SMS geometric factor (see RGB variant for derivation).
+		const Scalar chainGeom = EvaluateChainGeometry(
+			pos, lightSample.position, mResult.specularChain );
+
+		const Scalar smsGeometric = cosAtLight * chainGeom
+			/ fmax( mResult.jacobianDet, 1e-20 );
+		const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+
+		Scalar trialContribution = fBSDF
+			* chainThroughput
+			* Le * cosAtShading * clampedGeometric
+			/ (lightSample.pdfPosition * lightSample.pdfSelect);
+
+		if( mResult.pdf > 1e-20 )
+		{
+			trialContribution = trialContribution / mResult.pdf;
+		}
+
+		totalContribution += trialContribution;
+		acceptedRootPositions.push_back( firstPos );
+		validTrials++;
+	}
+
+	if( validTrials == 0 ) return result;
+
+	result.contribution = totalContribution;  // Σ_r f_r over unique roots
+	result.misWeight = 1.0;  // PDF weighting already folded into contribution
 	result.valid = true;
 
 	return result;

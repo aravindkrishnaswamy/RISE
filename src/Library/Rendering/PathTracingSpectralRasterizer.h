@@ -22,6 +22,7 @@
 #include "PixelBasedSpectralIntegratingRasterizer.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/SMSPhotonMap.h"
 #include "../Utilities/Color/CIE_XYZ.h"
 #include <stdint.h>
 
@@ -39,6 +40,10 @@ namespace RISE
 
 			PathTracingIntegrator*	pIntegrator;
 			AdaptiveSamplingConfig	adaptiveConfig;
+
+			/// SMS photon-aided seeding store (see BDPTRasterizerBase).
+			mutable SMSPhotonMap*	pSMSPhotonMap;
+			unsigned int			mSMSPhotonCount;
 
 			void IntegratePixel(
 				const RuntimeContext& rc,
@@ -78,6 +83,11 @@ namespace RISE
 				bool useZSobol_,
 				bool useHWSS_
 				);
+
+			virtual void PreRenderSetup(
+				const IScene& pScene,
+				const Rect* pRect
+				) const;
 		};
 	}
 }

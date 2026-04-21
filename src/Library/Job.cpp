@@ -4639,6 +4639,8 @@ bool Job::SetBDPTPelRasterizer(
 	const unsigned int smsMaxChainDepth,
 	const bool smsBiased,
 	const unsigned int smsBernoulliTrials,
+	const unsigned int smsMultiTrials,
+	const unsigned int smsPhotonCount,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
@@ -4691,7 +4693,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4736,6 +4738,8 @@ bool Job::SetBDPTSpectralRasterizer(
 	const unsigned int smsMaxChainDepth,
 	const bool smsBiased,
 	const unsigned int smsBernoulliTrials,
+	const unsigned int smsMultiTrials,
+	const unsigned int smsPhotonCount,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
@@ -4789,7 +4793,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, stabilityConfig, useZSobol, useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5042,6 +5046,8 @@ bool Job::SetPathTracingPelRasterizer(
 	const unsigned int smsMaxChainDepth,
 	const bool smsBiased,
 	const unsigned int smsBernoulliTrials,
+	const unsigned int smsMultiTrials,
+	const unsigned int smsPhotonCount,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
@@ -5094,7 +5100,7 @@ bool Job::SetPathTracingPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5137,6 +5143,8 @@ bool Job::SetPathTracingSpectralRasterizer(
 	const unsigned int smsMaxChainDepth,
 	const bool smsBiased,
 	const unsigned int smsBernoulliTrials,
+	const unsigned int smsMultiTrials,
+	const unsigned int smsPhotonCount,
 	const bool oidnDenoise,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
@@ -5190,7 +5198,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );

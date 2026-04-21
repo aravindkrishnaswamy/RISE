@@ -123,8 +123,18 @@ void DisplacedGeometry::BuildMesh()
 	// everywhere except the pole-cap degenerate triangles.
 	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
 	if( bVerticesDisplaced ) {
-		RemapTextureCoords( coords );
-		ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
+		// RemapTextureCoords is a tent-fold (u → 1−2u on [0,0.5]; u → 2u−1 on
+		// [0.5,1]) used ONLY to keep the displacement value consistent across
+		// the u=0 / u=1 wrap seam of closed parametric surfaces (sphere,
+		// torus, cylinder).  It is destructive to the linear (u, v)
+		// parameterisation that the SMS / Manifold-Solver UV-Jacobian path
+		// relies on: every triangle straddling u=0.5 or v=0.5 ends up with
+		// a non-monotonic UV triple (tent vertex in the middle), degenerating
+		// the 2×2 Jacobian.  Keep the original coords for the mesh and feed
+		// a tent-remapped COPY into the displacement evaluator only.
+		TexCoordsListType displacementCoords = coords;
+		RemapTextureCoords( displacementCoords );
+		ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {

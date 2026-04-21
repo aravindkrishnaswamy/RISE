@@ -23,6 +23,7 @@
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/SMSPhotonMap.h"
 #include <stdint.h>
 
 namespace RISE
@@ -38,6 +39,11 @@ namespace RISE
 			virtual ~PathTracingPelRasterizer();
 
 			PathTracingIntegrator*	pIntegrator;
+
+			/// SMS photon-aided seeding store.  See BDPTRasterizerBase for
+			/// the full rationale.  Null when smsConfig.photonCount was 0.
+			mutable SMSPhotonMap*	pSMSPhotonMap;
+			unsigned int			mSMSPhotonCount;
 
 			/// Progressive rendering should run to adaptive_max_samples
 			/// when adaptive sampling is enabled.
@@ -76,6 +82,15 @@ namespace RISE
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_
 				);
+
+			/// Runs the one-time SMS photon-aided seeding pass when
+			/// smsConfig.photonCount > 0.  Inherited from
+			/// PixelBasedRasterizerHelper; invoked by the base
+			/// RasterizeScene before the per-pixel dispatch.
+			virtual void PreRenderSetup(
+				const IScene& pScene,
+				const Rect* pRect
+				) const;
 		};
 	}
 }

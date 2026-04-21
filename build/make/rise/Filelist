@@ -55,6 +55,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/RandomWalkSSS.cpp					\
 	$(PATHLIBRARY)Utilities/MersenneTwister.cpp					\
 	$(PATHLIBRARY)Utilities/ManifoldSolver.cpp					\
+	$(PATHLIBRARY)Utilities/SMSPhotonMap.cpp					\
 	$(PATHLIBRARY)Utilities/CompletePathGuide.cpp				\
 	$(PATHLIBRARY)Utilities/PathGuidingField.cpp				\
 	$(PATHLIBRARY)Utilities/Optics.cpp							\

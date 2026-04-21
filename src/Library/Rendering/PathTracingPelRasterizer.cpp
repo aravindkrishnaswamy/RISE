@@ -38,7 +38,9 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ ),
-  pIntegrator( 0 )
+  pIntegrator( 0 ),
+  pSMSPhotonMap( 0 ),
+  mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
 	pIntegrator = new PathTracingIntegrator(
 		smsConfig,
@@ -50,6 +52,38 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 PathTracingPelRasterizer::~PathTracingPelRasterizer()
 {
 	safe_release( pIntegrator );
+	if( pSMSPhotonMap ) {
+		delete pSMSPhotonMap;
+		pSMSPhotonMap = 0;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// PreRenderSetup — SMS photon-aided seeding pass (optional).
+//
+// See BDPTRasterizerBase::PreRenderSetup for the full rationale;
+// the body here is structurally identical but reaches the solver
+// through pIntegrator->GetSolver() since PathTracing rasterizers
+// don't hold a separate ManifoldSolver* member.
+//////////////////////////////////////////////////////////////////////
+void PathTracingPelRasterizer::PreRenderSetup(
+	const IScene& pScene,
+	const Rect* /*pRect*/
+	) const
+{
+	if( mSMSPhotonCount == 0 || !pIntegrator ) {
+		return;
+	}
+	ManifoldSolver* pSolver = pIntegrator->GetSolver();
+	if( !pSolver ) {
+		return;
+	}
+
+	if( !pSMSPhotonMap ) {
+		pSMSPhotonMap = new SMSPhotonMap();
+	}
+	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
+	pSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
 }
 
 unsigned int PathTracingPelRasterizer::GetProgressiveTotalSPP() const

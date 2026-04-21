@@ -39,6 +39,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/RandomWalkSSS.cpp"
     "${RISE_LIB}/Utilities/MersenneTwister.cpp"
     "${RISE_LIB}/Utilities/ManifoldSolver.cpp"
+    "${RISE_LIB}/Utilities/SMSPhotonMap.cpp"
     "${RISE_LIB}/Utilities/CompletePathGuide.cpp"
     "${RISE_LIB}/Utilities/PathGuidingField.cpp"
     "${RISE_LIB}/Utilities/Optics.cpp"

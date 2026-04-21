@@ -106,6 +106,40 @@ namespace RISE
 			unsigned int	maxChainDepth;			///< Maximum number of specular vertices in chain
 			Scalar			maxGeometricTerm;		///< Clamp for manifold geometric term
 
+			/// Number of independent Newton solves per `EvaluateAtShadingPoint`
+			/// call.  Trial 0 uses the deterministic Snell-traced seed chain
+			/// (for backward compatibility and as a reliable first seed);
+			/// trials 1..N-1 use photon-aided seeds (when photonCount>0) or
+			/// skip otherwise.  Converged chains are deduped by first-vertex
+			/// world-space position and the unique contributions are summed.
+			/// On smooth specular surfaces every trial converges to the same
+			/// root so N>1 is wasted work; on bumpy / displaced surfaces each
+			/// trial can land in a DIFFERENT basin of attraction, uncovering
+			/// caustic paths the single Snell-traced seed misses entirely.
+			/// Default 1 preserves the pre-multi-trial single-solve behavior.
+			unsigned int	multiTrials;
+
+			/// Number of photons to emit at scene-prep time to build the
+			/// photon-aided seed map.  0 disables the photon pass; trials
+			/// 1..N-1 then have nothing to draw from and the solver behaves
+			/// as if multiTrials==1 for those pixels (trial 0's deterministic
+			/// Snell seed is the only contribution).
+			///
+			/// When > 0 the rasterizer owns an SMSPhotonMap built in
+			/// PreRenderSetup; photons are deposited at their first
+			/// diffuse-after-specular landing and each stored record
+			/// remembers the FIRST specular-caster entry point as a known-
+			/// good Newton seed.  Multi-trial queries the map by shading-
+			/// point position to pull only seeds whose photons landed in
+			/// the same neighborhood (fixed-radius kd-tree query).
+			unsigned int	photonCount;
+
+			/// World-space search radius for photon-seed lookup.  0 lets
+			/// the photon map auto-compute a sensible default from the
+			/// bounding box of photon landing positions (≈ 0.01 × bbox
+			/// diagonal — mirrors VCM's auto merge radius heuristic).
+			Scalar			photonSearchRadius;
+
 			ManifoldSolverConfig() :
 			enabled( false ),
 			maxIterations( 15 ),
@@ -114,7 +148,10 @@ namespace RISE
 			maxBernoulliTrials( 100 ),
 			biased( true ),
 			maxChainDepth( 30 ),
-			maxGeometricTerm( 10.0 )
+			maxGeometricTerm( 10.0 ),
+			multiTrials( 1 ),
+			photonCount( 0 ),
+			photonSearchRadius( 0 )
 			{
 			}
 		};
@@ -145,6 +182,7 @@ namespace RISE
 		/// finds a valid path through a chain of specular surfaces using Newton
 		/// iteration on the specular constraint manifold.
 		class LightSampler;
+		class SMSPhotonMap;
 
 		class ManifoldSolver :
 			public virtual IReference,
@@ -154,10 +192,24 @@ namespace RISE
 			ManifoldSolverConfig config;
 			LightSampler* pLightSampler;
 
+			/// Optional photon-aided seeding pass.  Set once by the
+			/// rasterizer in PreRenderSetup (pointer borrowed, not owned
+			/// — the rasterizer keeps the storage alive for the full
+			/// render).  Null means no photon pass was run; multi-trial
+			/// falls back to the deterministic Snell seed only.
+			const SMSPhotonMap* pPhotonMap;
+
 			virtual ~ManifoldSolver();
 
 		public:
 			ManifoldSolver( const ManifoldSolverConfig& cfg );
+
+			/// Attach a photon-aided seed map.  Must be called AFTER the
+			/// map's Build() has completed (the map is read-only from
+			/// then on, so concurrent render workers are safe).  Pass
+			/// nullptr to detach.
+			void SetPhotonMap( const SMSPhotonMap* pm ) { pPhotonMap = pm; }
+			const SMSPhotonMap* GetPhotonMap() const { return pPhotonMap; }
 
 			/// Main entry point: solve for a specular path connecting
 			/// shadingPoint to emitterPoint through the given chain of

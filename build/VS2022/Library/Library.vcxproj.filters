@@ -249,6 +249,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Primes.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\SMSPhotonMap.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -2580,6 +2583,12 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\ManifoldSolver.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SMSPhoton.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SMSPhotonMap.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MediumTracking.h">

@@ -1426,6 +1426,10 @@
 		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
 		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
+		F2A00000000000000000001A /* SMSPhoton.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001B /* SMSPhoton.h */; };
+		F2A00000000000000000001C /* SMSPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001D /* SMSPhotonMap.h */; };
+		F2A00000000000000000001E /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
+		F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
 		F2C7C8D92F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DA2F75DF1C0030CB78 /* SMSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */; };
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
@@ -2300,6 +2304,9 @@
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
 		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
+		F2A00000000000000000001B /* SMSPhoton.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhoton.h; sourceTree = "<group>"; };
+		F2A00000000000000000001D /* SMSPhotonMap.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhotonMap.h; sourceTree = "<group>"; };
+		F2A00000000000000000001F /* SMSPhotonMap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSPhotonMap.cpp; sourceTree = "<group>"; };
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
@@ -3332,6 +3339,9 @@
 				F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */,
 				F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */,
 				F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */,
+				F2A00000000000000000001B /* SMSPhoton.h */,
+				F2A00000000000000000001D /* SMSPhotonMap.h */,
+				F2A00000000000000000001F /* SMSPhotonMap.cpp */,
 				F2C5D5D62F70D4D000546C97 /* HankelTransform.h */,
 				F2C5D5D72F70D4D000546C97 /* SumOfExponentialsFit.h */,
 				F2C5D57D2F6EA5B300546C97 /* PSSMLTSampler.h */,
@@ -3994,6 +4004,8 @@
 				F27F0CAF069C42910069C9E5 /* VolumeOp_MIP.h in Headers */,
 				F27F0CB0069C42910069C9E5 /* ZuckerHummelOperator.h in Headers */,
 				F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */,
+				F2A00000000000000000001A /* SMSPhoton.h in Headers */,
+				F2A00000000000000000001C /* SMSPhotonMap.h in Headers */,
 				F2C5D5752F6E44DE00546C97 /* LightSampler.h in Headers */,
 				F298C65407B14247007CDF08 /* StandardShader.h in Headers */,
 				F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */,
@@ -4189,6 +4201,7 @@
 				F27F0B13069C42910069C9E5 /* RayBoxIntersection.cpp in Sources */,
 				F27F0B14069C42910069C9E5 /* RayCylinderIntersection.cpp in Sources */,
 				F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */,
+				F2A00000000000000000001E /* SMSPhotonMap.cpp in Sources */,
 				F27F0B17069C42910069C9E5 /* RayPlaneIntersection.cpp in Sources */,
 				F27F0B19069C42910069C9E5 /* RayQuadricIntersection.cpp in Sources */,
 				F27F0B1A069C42910069C9E5 /* RaySphereIntersection.cpp in Sources */,
@@ -4908,6 +4921,7 @@
 				F24B738D2F52A632008304C4 /* PixelBasedPelRasterizer.cpp in Sources */,
 				F24B738E2F52A632008304C4 /* PixelBasedPelRasterizer.h in Sources */,
 				F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */,
+				F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */,
 				F24B73912F52A632008304C4 /* PixelBasedRasterizerHelper.cpp in Sources */,
 				F24B73922F52A632008304C4 /* PixelBasedRasterizerHelper.h in Sources */,
 				F24B73932F52A632008304C4 /* PixelBasedSpectralIntegratingRasterizer.cpp in Sources */,

@@ -399,6 +399,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Log\Win32Console.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\MajorantGrid.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\ManifoldSolver.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\SMSPhotonMap.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Math3D\Math3D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\MediaPathLocator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\MediumTransport.cpp" />
@@ -980,6 +981,8 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MISWeights.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MajorantGrid.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ManifoldSolver.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\SMSPhoton.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\SMSPhotonMap.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MediumTracking.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MediumTransport.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetEnergyLUT.h" />

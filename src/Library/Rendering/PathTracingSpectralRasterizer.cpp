@@ -46,7 +46,9 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
   PixelBasedRasterizerHelper( pCaster_ ),
   PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, stabilityCfg, useZSobol_, useHWSS_ ),
   pIntegrator( 0 ),
-  adaptiveConfig( adaptiveConfig )
+  adaptiveConfig( adaptiveConfig ),
+  pSMSPhotonMap( 0 ),
+  mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )
 {
 	pIntegrator = new PathTracingIntegrator(
 		smsConfig,
@@ -58,6 +60,30 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()
 {
 	safe_release( pIntegrator );
+	if( pSMSPhotonMap ) {
+		delete pSMSPhotonMap;
+		pSMSPhotonMap = 0;
+	}
+}
+
+void PathTracingSpectralRasterizer::PreRenderSetup(
+	const IScene& pScene,
+	const Rect* /*pRect*/
+	) const
+{
+	if( mSMSPhotonCount == 0 || !pIntegrator ) {
+		return;
+	}
+	ManifoldSolver* pSolver = pIntegrator->GetSolver();
+	if( !pSolver ) {
+		return;
+	}
+
+	if( !pSMSPhotonMap ) {
+		pSMSPhotonMap = new SMSPhotonMap();
+	}
+	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
+	pSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
 }
 
 unsigned int PathTracingSpectralRasterizer::GetProgressiveTotalSPP() const

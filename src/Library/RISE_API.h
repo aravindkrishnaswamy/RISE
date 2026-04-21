@@ -2180,6 +2180,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
@@ -2206,6 +2208,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2268,6 +2272,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
@@ -2292,6 +2298,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
 								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
+								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
+								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls

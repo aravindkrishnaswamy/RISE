@@ -43,6 +43,12 @@ namespace RISE
 
 			const char* GetProgressTitle() const { return "BDPT Spectral Rasterizing: "; }
 
+			// See BDPTPelRasterizer for the diamond-disambiguation rationale.
+			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
+			{
+				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
+			}
+
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
 			/// the default from PixelBasedRasterizerHelper.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

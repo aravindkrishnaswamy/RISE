@@ -27,6 +27,7 @@
 #include "AOVBuffers.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Utilities/ManifoldSolver.h"
+#include "../Utilities/SMSPhotonMap.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/CompletePathGuide.h"
 
@@ -41,6 +42,14 @@ namespace RISE
 		protected:
 			BDPTIntegrator*			pIntegrator;
 			ManifoldSolver*			pManifoldSolver;
+
+			/// SMS photon-aided seeding store.  Lazily built on the first
+			/// PreRenderSetup when smsConfig.photonCount > 0; null when
+			/// photon-aided seeding is disabled.  Attached to the manifold
+			/// solver after Build() completes so render workers get
+			/// read-only access to a frozen kd-tree.
+			mutable SMSPhotonMap*	pSMSPhotonMap;
+			unsigned int			mSMSPhotonCount;
 
 			// pAOVBuffers is inherited from PixelBasedRasterizerHelper.
 			// pSplatFilm, pScratchImage, mSplatTotalSamples,
@@ -71,6 +80,17 @@ namespace RISE
 				const IScene& pScene,
 				const Rect* pRect,
 				IRasterizeSequence* pRasterSequence
+				) const;
+
+			/// Run the one-time SMS photon-aided seeding pass if enabled.
+			/// Invoked from RasterizeScene BEFORE the eye-pass dispatch
+			/// so every render worker sees a completed, read-only map.
+			///
+			/// No-op when smsConfig.photonCount was 0; safe to call repeatedly
+			/// — subsequent calls short-circuit once the map is built.
+			virtual void PreRenderSetup(
+				const IScene& pScene,
+				const Rect* pRect
 				) const;
 		};
 	}

@@ -6134,6 +6134,8 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
+					unsigned int smsMultiTrials = 1;
+					unsigned int smsPhotonCount = 0;
 					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
@@ -6200,6 +6202,10 @@ namespace RISE
 							smsBiased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
 							smsBernoulliTrials = pvalue.toUInt();
+						} else if( pname == "sms_multi_trials" ) {
+							smsMultiTrials = pvalue.toUInt();
+						} else if( pname == "sms_photon_count" ) {
+							smsPhotonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -6279,7 +6285,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
 
@@ -6314,6 +6320,8 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
+					unsigned int smsMultiTrials = 1;
+					unsigned int smsPhotonCount = 0;
 					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					bool useHWSS = false;
@@ -6390,6 +6398,10 @@ namespace RISE
 							smsBiased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
 							smsBernoulliTrials = pvalue.toUInt();
+						} else if( pname == "sms_multi_trials" ) {
+							smsMultiTrials = pvalue.toUInt();
+						} else if( pname == "sms_photon_count" ) {
+							smsPhotonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -6458,7 +6470,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
 				}
 			};
 
@@ -6768,6 +6780,8 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
+					unsigned int smsMultiTrials = 1;
+					unsigned int smsPhotonCount = 0;
 					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
@@ -6830,6 +6844,10 @@ namespace RISE
 							smsBiased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
 							smsBernoulliTrials = pvalue.toUInt();
+						} else if( pname == "sms_multi_trials" ) {
+							smsMultiTrials = pvalue.toUInt();
+						} else if( pname == "sms_photon_count" ) {
+							smsPhotonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -6908,7 +6926,7 @@ namespace RISE
 						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
 				}
 			};
 
@@ -6941,6 +6959,8 @@ namespace RISE
 					unsigned int smsMaxChainDepth = 30;
 					bool smsBiased = true;
 					unsigned int smsBernoulliTrials = 100;
+					unsigned int smsMultiTrials = 1;
+					unsigned int smsPhotonCount = 0;
 					bool oidnDenoise = true;
 					bool blueNoiseSampler = true;
 					bool useHWSS = false;
@@ -7013,6 +7033,10 @@ namespace RISE
 							smsBiased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
 							smsBernoulliTrials = pvalue.toUInt();
+						} else if( pname == "sms_multi_trials" ) {
+							smsMultiTrials = pvalue.toUInt();
+						} else if( pname == "sms_photon_count" ) {
+							smsPhotonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "adaptive_max_samples" ) {
@@ -7066,7 +7090,7 @@ namespace RISE
 						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
 						showLuminaires, onlyonelight,
 						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, oidnDenoise, adaptiveConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
+						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, adaptiveConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
 				}
 			};
 
