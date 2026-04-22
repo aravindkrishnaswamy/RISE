@@ -2051,6 +2051,24 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			translucentBounces = rs2.translucentBounces;
 			glossyFilterWidth = rs2.glossyFilterWidth;
 
+			// Track specular transitions for SMS double-counting prevention.
+			// The branching (multi-scatter) path does this at line 1612; the
+			// single-scatter iterative path previously did NOT, which caused
+			// diffuse-floor → BSDF-sample → glass-chain → light paths to slip
+			// through the emission suppression at the light: the suppression
+			// check requires `bPassedThroughSpecular && bHadNonSpecularShading`
+			// and the latter was never set, so `considerEmission=true` at the
+			// light + `bsdfPdf=0` from the last delta gave MIS weight 1.0 and
+			// full emission was accumulated — a deterministic firefly
+			// contribution of hundreds of luminance units per sample at any
+			// pixel whose random BSDF sequence found this path.
+			if( pS->isDelta ) {
+				bPassedThroughSpecular = true;
+			} else {
+				bPassedThroughSpecular = false;
+				bHadNonSpecularShading = true;
+			}
+
 			currentRay = traceRay;
 			currentRay.Advance( 1e-8 );
 

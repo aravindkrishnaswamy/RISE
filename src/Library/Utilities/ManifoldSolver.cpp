@@ -2954,6 +2954,29 @@ ManifoldResult ManifoldSolver::Solve(
 	ManifoldResult result;
 
 #if SMS_TRACE_DIAGNOSTIC
+	// Ungated global counters: every Solve call increments one of these
+	// buckets so we can see the failure breakdown across the whole image
+	// (the traceSolve-gated verbose logging only looks at one patch).
+	static std::atomic<int> g_solveTotal{ 0 };
+	static std::atomic<int> g_solveEmpty{ 0 };
+	static std::atomic<int> g_solveSeedTooFar{ 0 };
+	static std::atomic<int> g_solveDerivFail{ 0 };
+	static std::atomic<int> g_solveNewtonFail{ 0 };
+	static std::atomic<int> g_solvePhysicsFail{ 0 };
+	static std::atomic<int> g_solveShortSeg{ 0 };
+	static std::atomic<int> g_solveOk{ 0 };
+	const int st = g_solveTotal.fetch_add( 1, std::memory_order_relaxed );
+	// Periodic print (every 200k solves) so we see the rate without flooding
+	if( (st & 0x3ffff) == 0 && st > 0 ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_SOLVE_STATS: total=%d empty=%d seedTooFar=%d derivFail=%d newtonFail=%d physicsFail=%d shortSeg=%d ok=%d",
+			st,
+			g_solveEmpty.load(), g_solveSeedTooFar.load(),
+			g_solveDerivFail.load(), g_solveNewtonFail.load(),
+			g_solvePhysicsFail.load(), g_solveShortSeg.load(),
+			g_solveOk.load() );
+	}
+
 	static std::atomic<int> g_solveTraceCount{ 0 };
 	const bool traceSolve =
 		( std::fabs( shadingPoint.x ) < 0.02 ) &&
@@ -2971,6 +2994,9 @@ ManifoldResult ManifoldSolver::Solve(
 
 	if( specularChain.empty() )
 	{
+#if SMS_TRACE_DIAGNOSTIC
+		g_solveEmpty.fetch_add( 1, std::memory_order_relaxed );
+#endif
 		return result;
 	}
 
@@ -3010,6 +3036,7 @@ ManifoldResult ManifoldSolver::Solve(
 		if( sqrt(norm2) > 2.0 )
 		{
 #if SMS_TRACE_DIAGNOSTIC
+			g_solveSeedTooFar.fetch_add( 1, std::memory_order_relaxed );
 			if( traceSolve ) {
 				GlobalLog()->PrintEx( eLog_Event,
 					"SMS_SOLVE:  EARLY-RETURN: seed too far from any valid path" );
@@ -3028,6 +3055,7 @@ ManifoldResult ManifoldSolver::Solve(
 			if( !ComputeVertexDerivatives( v ) )
 			{
 #if SMS_TRACE_DIAGNOSTIC
+				g_solveDerivFail.fetch_add( 1, std::memory_order_relaxed );
 				if( traceSolve ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"SMS_SOLVE:  REJECTED: ComputeVertexDerivatives failed at vertex %u (pos=(%.4f,%.4f,%.4f))",
@@ -3077,12 +3105,20 @@ ManifoldResult ManifoldSolver::Solve(
 	}
 #endif
 
+	if( !converged )
+	{
+#if SMS_TRACE_DIAGNOSTIC
+		g_solveNewtonFail.fetch_add( 1, std::memory_order_relaxed );
+#endif
+	}
+
 	if( converged )
 	{
 		// Reject physically invalid converged solutions.
 		if( !ValidateChainPhysics( specularChain, shadingPoint, emitterPoint ) )
 		{
 #if SMS_TRACE_DIAGNOSTIC
+			g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
 			if( traceSolve ) {
 				GlobalLog()->PrintEx( eLog_Event,
 					"SMS_SOLVE:  REJECTED by ValidateChainPhysics (wi/wo sidedness mismatch)" );
@@ -3102,7 +3138,16 @@ ManifoldResult ManifoldSolver::Solve(
 		// ratio can swing by 10-50× at nearby positions, causing
 		// fireflies on displaced meshes with grazing-edge paths.
 		{
-			const Scalar minReliableSegment = 0.05;
+			// Lowered from 0.05 to 0.01: for scenes with fine glass features
+			// (torus tube radius 0.075, displaced mesh facets ~0.03), the
+			// 0.05 threshold was rejecting a large fraction of legitimate
+			// refraction chains — up to 85% of the rejections in the
+			// torus_cross scene fell between 0.010 and 0.025.  These are
+			// grazing paths through a thin tube that are entirely physical.
+			// 0.01 still catches the truly pathological cases (e.g. < 1mm
+			// separation where the derivative stencil radius 0.01 literally
+			// overlaps the next vertex) without shedding good roots.
+			const Scalar minReliableSegment = 0.01;
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 			bool tooShort = false;
 			unsigned int tooShortIdx = 0;
@@ -3121,6 +3166,24 @@ ManifoldResult ManifoldSolver::Solve(
 			if( tooShort )
 			{
 #if SMS_TRACE_DIAGNOSTIC
+				g_solveShortSeg.fetch_add( 1, std::memory_order_relaxed );
+				// Bucket the rejected distance to understand distribution
+				static std::atomic<int> g_shortSegHist[5]{ {0}, {0}, {0}, {0}, {0} };
+				int bucket = 0;
+				if( tooShortDist < 0.001 ) bucket = 0;
+				else if( tooShortDist < 0.005 ) bucket = 1;
+				else if( tooShortDist < 0.010 ) bucket = 2;
+				else if( tooShortDist < 0.025 ) bucket = 3;
+				else bucket = 4;  // 0.025 - 0.05
+				int n = g_shortSegHist[bucket].fetch_add( 1, std::memory_order_relaxed );
+				// Periodic dump
+				if( (g_solveShortSeg.load() & 0x7fff) == 0 ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"SMS_SHORTSEG_HIST: [<0.001]=%d  [0.001-0.005]=%d  [0.005-0.010]=%d  [0.010-0.025]=%d  [0.025-0.050]=%d",
+						g_shortSegHist[0].load(), g_shortSegHist[1].load(),
+						g_shortSegHist[2].load(), g_shortSegHist[3].load(),
+						g_shortSegHist[4].load() );
+				}
 				if( traceSolve ) {
 					GlobalLog()->PrintEx( eLog_Event,
 						"SMS_SOLVE:  REJECTED by minReliableSegment: segment %u too short (d=%.4f < %.4f)",
@@ -3131,6 +3194,9 @@ ManifoldResult ManifoldSolver::Solve(
 			}
 		}
 
+#if SMS_TRACE_DIAGNOSTIC
+		g_solveOk.fetch_add( 1, std::memory_order_relaxed );
+#endif
 		result.valid = true;
 		result.specularChain = specularChain;
 
@@ -3526,6 +3592,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// Visibility: check external segments of the specular chain
 		const bool visible = CheckChainVisibility( pos, lightSample.position,
 			mResult.specularChain, caster );
+#if SMS_TRACE_DIAGNOSTIC
+		{
+			static std::atomic<int> g_visTotal{ 0 };
+			static std::atomic<int> g_visBlocked{ 0 };
+			const int tot = g_visTotal.fetch_add( 1, std::memory_order_relaxed );
+			if( !visible ) g_visBlocked.fetch_add( 1, std::memory_order_relaxed );
+			if( (tot & 0x3ffff) == 0 && tot > 0 ) {
+				GlobalLog()->PrintEx( eLog_Event,
+					"SMS_VIS_STATS: total=%d blocked=%d (%.2f%%)",
+					tot, g_visBlocked.load(),
+					100.0 * g_visBlocked.load() / tot );
+			}
+		}
+#endif
 #if SMS_TRACE_DIAGNOSTIC
 		if( traceHere && !visible ) {
 			GlobalLog()->PrintEx( eLog_Event,
@@ -4187,6 +4267,79 @@ namespace
 		// dropping contributions in deeply-nested glass topologies.
 		return false;
 	}
+
+	// Chain-aware variant: the segment is considered BLOCKED if the ray
+	// passes through a specular caster that is NOT in the allowed set
+	// (the chain's caster objects).  Specular hits on allowed casters
+	// are traversed like above (the chain already accounts for them);
+	// hits on *unrelated* specular objects mean the physical photon
+	// path would also refract there, making the k-vertex chain an
+	// incomplete description of the transport.  Rejecting them prevents
+	// computing light through a chain topology shorter than the actual
+	// physics would demand — a major firefly source on
+	// intersecting-glass scenes (torus_cross) where shadow rays through
+	// the caustic center graze the other torus.
+	bool SegmentOccludedByNonChainSpeculars(
+		const Point3& start,
+		const Vector3& dir,
+		const Scalar maxDist,
+		const IRayCaster& caster,
+		const std::vector<const IObject*>& allowedSpecularObjects )
+	{
+		const IScene* pScene = caster.GetAttachedScene();
+		if( !pScene ) {
+			return caster.CastShadowRay( Ray( start, dir ), maxDist );
+		}
+		const IObjectManager* pObjMgr = pScene->GetObjects();
+		if( !pObjMgr ) {
+			return caster.CastShadowRay( Ray( start, dir ), maxDist );
+		}
+
+		const unsigned int kMaxSpecularTraversals = 8;
+		Point3 curOrigin = start;
+		Scalar distRemaining = maxDist;
+
+		for( unsigned int it = 0; it < kMaxSpecularTraversals; it++ )
+		{
+			Ray ray( curOrigin, dir );
+			RayIntersection ri( ray, nullRasterizerState );
+			pObjMgr->IntersectRay( ri, true, true, false );
+
+			if( !ri.geometric.bHit ) return false;
+			if( ri.geometric.range > distRemaining ) return false;
+
+			const IMaterial* pMat = ri.pMaterial;
+			bool isPureSpecular = false;
+			if( pMat ) {
+				IORStack dummyStack( 1.0 );
+				SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, dummyStack );
+				isPureSpecular = specInfo.isSpecular;
+			}
+			if( !isPureSpecular ) {
+				return true;  // Opaque blocker
+			}
+
+			// Is this specular hit on one of the chain's casters?
+			bool inChain = false;
+			for( std::size_t a = 0; a < allowedSpecularObjects.size(); a++ )
+			{
+				if( ri.pObject == allowedSpecularObjects[a] ) { inChain = true; break; }
+			}
+			if( !inChain ) {
+				// Specular object not in the chain — the physical path
+				// through here requires additional refractions we don't
+				// have.  Treat as blocked.
+				return true;
+			}
+
+			// Allowed specular: traverse past and keep going.
+			const Scalar step = ri.geometric.range + 1e-4;
+			if( step >= distRemaining ) return false;
+			curOrigin = Point3Ops::mkPoint3( curOrigin, dir * step );
+			distRemaining -= step;
+		}
+		return false;
+	}
 }
 
 bool ManifoldSolver::CheckChainVisibility(
@@ -4206,6 +4359,24 @@ bool ManifoldSolver::CheckChainVisibility(
 		( shadingPoint.y >= -0.02 && shadingPoint.y <= 0.02 ) &&
 		( g_visTraceCount.fetch_add( 1, std::memory_order_relaxed ) < 30 );
 #endif
+
+	// Build the "allowed specular objects" list from the chain's vertex
+	// casters.  Any specular hit on an object NOT in this list on an
+	// external segment means the straight-line shadow path would refract
+	// there — the k-vertex chain is incomplete and should be rejected.
+	// See the block comment on SegmentOccludedByNonChainSpeculars.
+	std::vector<const IObject*> chainCasters;
+	chainCasters.reserve( chain.size() );
+	for( std::size_t i = 0; i < chain.size(); i++ ) {
+		const IObject* o = chain[i].pObject;
+		if( o ) {
+			bool have = false;
+			for( std::size_t j = 0; j < chainCasters.size(); j++ ) {
+				if( chainCasters[j] == o ) { have = true; break; }
+			}
+			if( !have ) chainCasters.push_back( o );
+		}
+	}
 
 	// Segment 1: shading point to first specular vertex
 	//
@@ -4237,8 +4408,8 @@ bool ManifoldSolver::CheckChainVisibility(
 		if( dist > 1e-4 )
 		{
 			Point3 origin = Point3Ops::mkPoint3( shadingPoint, dir * 1e-4 );
-			const bool blocked = SegmentOccludedIgnoringSpeculars(
-				origin, dir, dist - 2e-4, caster );
+			const bool blocked = SegmentOccludedByNonChainSpeculars(
+				origin, dir, dist - 2e-4, caster, chainCasters );
 #if SMS_TRACE_DIAGNOSTIC
 			if( visTrace ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -4279,8 +4450,8 @@ bool ManifoldSolver::CheckChainVisibility(
 		Scalar newDist = Vector3Ops::NormalizeMag( newDir );
 		if( newDist > 1e-4 )
 		{
-			const bool blocked = SegmentOccludedIgnoringSpeculars(
-				biasedStart, newDir, newDist - 1e-4, caster );
+			const bool blocked = SegmentOccludedByNonChainSpeculars(
+				biasedStart, newDir, newDist - 1e-4, caster, chainCasters );
 #if SMS_TRACE_DIAGNOSTIC
 			if( visTrace ) {
 				GlobalLog()->PrintEx( eLog_Event,
@@ -4292,6 +4463,75 @@ bool ManifoldSolver::CheckChainVisibility(
 			if( blocked )
 				return false;
 		}
+	}
+
+	// Segment I: inter-specular AIR segments between consecutive
+	// chain vertices.  A chain whose topology traverses two or more
+	// DISTINCT casters (e.g. the k=2×2 path through two different
+	// toruses) has air segments in between each pair of casters:
+	//
+	//   shading  -[air]-  v_i (enter cast A)  -[A glass]-  v_{i+1}
+	//              (exit A)  -[air]-  v_{i+2} (enter cast B)  -[B glass]-
+	//              v_{i+3} (exit B)  -[air]-  light
+	//
+	// A segment v_i → v_{i+1} is in AIR when v_i.isExiting==true
+	// (receiver ray leaves glass at v_i) AND v_{i+1}.isExiting==false
+	// (receiver ray enters glass at v_{i+1}).  These segments need
+	// the same chain-aware visibility check as the outer two: if they
+	// cross a specular caster NOT in the chain, the k-vertex
+	// description is missing refractions that the physical photon
+	// would have to undergo, and the chain should be rejected.
+	// (The complementary topology — v_i entering glass, v_{i+1}
+	// exiting same object — is an IN-GLASS segment and intentionally
+	// skipped: the chain accounts for the refractions bracketing it.)
+	for( std::size_t i = 0; i + 1 < chain.size(); i++ )
+	{
+		const ManifoldVertex& a = chain[i];
+		const ManifoldVertex& b = chain[i+1];
+		if( !a.isExiting ) continue;   // segment starts INSIDE glass
+		if( b.isExiting )  continue;   // segment ends INSIDE glass
+
+		// Both endpoints are on the AIR side of their surface —
+		// segment is in air.  Bias the origin out along a's outward
+		// normal (away from its glass), endpoint back along b's
+		// outward normal (away from its glass).
+		Vector3 outN_a = a.normal;
+		{
+			Vector3 dirOutA = Vector3Ops::mkVector3( b.position, a.position );
+			if( Vector3Ops::Dot( outN_a, dirOutA ) < 0 )
+				outN_a = Vector3( -outN_a.x, -outN_a.y, -outN_a.z );
+		}
+		Vector3 outN_b = b.normal;
+		{
+			Vector3 dirOutB = Vector3Ops::mkVector3( a.position, b.position );
+			if( Vector3Ops::Dot( outN_b, dirOutB ) < 0 )
+				outN_b = Vector3( -outN_b.x, -outN_b.y, -outN_b.z );
+		}
+
+		const Scalar biasEps = 5e-2;
+		const Point3 biasedStart = Point3Ops::mkPoint3(
+			a.position, outN_a * biasEps );
+		const Point3 biasedEnd = Point3Ops::mkPoint3(
+			b.position, outN_b * biasEps );
+
+		Vector3 segDir = Vector3Ops::mkVector3( biasedEnd, biasedStart );
+		const Scalar segDist = Vector3Ops::NormalizeMag( segDir );
+		if( segDist < 1e-4 ) continue;
+
+		const bool blocked = SegmentOccludedByNonChainSpeculars(
+			biasedStart, segDir, segDist - 1e-4, caster, chainCasters );
+#if SMS_TRACE_DIAGNOSTIC
+		if( visTrace ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"VIS_SEGI[%zu-%zu]: a=(%.4f,%.4f,%.4f) b=(%.4f,%.4f,%.4f) dist=%.4f blocked=%d",
+				i, i+1,
+				a.position.x, a.position.y, a.position.z,
+				b.position.x, b.position.y, b.position.z,
+				segDist, int( blocked ) );
+		}
+#endif
+		if( blocked )
+			return false;
 	}
 
 	return true;
