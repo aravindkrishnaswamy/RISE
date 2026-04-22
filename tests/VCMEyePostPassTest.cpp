@@ -391,6 +391,84 @@ static void TestMediumPreservesIndex()
 	Check( outMis[0].dVC == outMis[1].dVC, "medium: dVC carries through" );
 }
 
+//
+// Test 5: A diffusion BSSRDF entry vertex carries an area-density
+// directly in pdfFwd.  The VCM post-pass must expose 1/pdfFwd as
+// dVCM so VC strategies through the entry point are MIS-weighted
+// against the sampled BSSRDF transport.  It must not leave the state
+// frozen from the previous delta-marked surface.
+//
+static void TestBSSRDFEntryAreaPdf()
+{
+	printf( "Test 5: BSSRDF entry area PDF contributes to dVCM\n" );
+
+	std::vector<BDPTVertex> verts;
+
+	{
+		BDPTVertex v;
+		v.type = BDPTVertex::CAMERA;
+		v.position = Point3( 0, 0, 0 );
+		v.normal = Vector3( 1, 0, 0 );
+		v.pdfFwd = 1.0;
+		v.emissionPdfW = 1.0;
+		v.cosAtGen = 1.0;
+		v.isDelta = false;
+		v.isConnectible = true;
+		verts.push_back( v );
+	}
+
+	{
+		BDPTVertex v;
+		v.type = BDPTVertex::SURFACE;
+		v.position = Point3( 1, 0, 0 );
+		v.normal = Vector3( -1, 0, 0 );
+		v.pdfFwd = 1.0;
+		v.cosAtGen = 1.0;
+		v.isDelta = true;
+		v.isConnectible = true;
+		verts.push_back( v );
+	}
+
+	{
+		BDPTVertex v;
+		v.type = BDPTVertex::SURFACE;
+		v.position = Point3( 2, 0, 0 );
+		v.normal = Vector3( -1, 0, 0 );
+		v.pdfFwd = 0.25;
+		v.cosAtGen = 0.0;
+		v.isDelta = false;
+		v.isConnectible = true;
+		v.isBSSRDFEntry = true;
+		verts.push_back( v );
+	}
+
+	{
+		BDPTVertex v;
+		v.type = BDPTVertex::SURFACE;
+		v.position = Point3( 3, 0, 0 );
+		v.normal = Vector3( -1, 0, 0 );
+		v.pdfFwd = 0.5;
+		v.cosAtGen = 1.0;
+		v.isDelta = false;
+		v.isConnectible = true;
+		verts.push_back( v );
+	}
+
+	const VCMNormalization norm = ComputeNormalization( 100, 100, 0.0, true, false );
+
+	std::vector<VCMMisQuantities> outMis;
+	VCMIntegrator::ConvertEyeSubpath( verts, norm, outMis );
+
+	Check( outMis.size() == 4, "bssrdf: size 4" );
+	if( outMis.size() != 4 ) {
+		return;
+	}
+	CheckClose( outMis[2].dVCM, 4.0, 1e-12, "bssrdf: dVCM = 1/pdfSurface" );
+	CheckClose( outMis[2].dVC, 0.0, 1e-15, "bssrdf: dVC reset" );
+	CheckClose( outMis[2].dVM, 0.0, 1e-15, "bssrdf: dVM reset" );
+	CheckClose( outMis[3].dVCM, 2.0, 1e-12, "bssrdf: onward cosine PDF reaches next vertex" );
+}
+
 //////////////////////////////////////////////////////////////////////
 // Main
 //////////////////////////////////////////////////////////////////////
@@ -402,6 +480,7 @@ int main()
 	TestSpecularInMiddle();
 	TestDegenerateInputs();
 	TestMediumPreservesIndex();
+	TestBSSRDFEntryAreaPdf();
 
 	printf( "\nPassed: %d\nFailed: %d\n", g_pass, g_fail );
 	if( g_fail > 0 ) {

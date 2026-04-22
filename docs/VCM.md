@@ -27,6 +27,10 @@ BDPT follows the Veach convention of storing `pdfFwd = 0` on any vertex reached 
 
 The converter detects `isDelta` on the vertex itself and applies the **specular branch** of `ApplyBsdfSamplingUpdate` (which only needs `cosThetaOut` and explicitly zeros `dVCM` per Veach's convention) instead of the non-specular branch that would require `next.pdfFwd > 0`.  This preserves the SmallVCM recurrence across arbitrary specular chains and is essential for VCM to catch S-D-S-E caustics on dielectric / mirror scenes like triplecaustic.
 
+### BSSRDF entry vertices
+
+BSSRDF entry vertices are not ordinary edge-sampled BSDF vertices: their `pdfFwd` is already a spatial area-density for the sampled entry point, not a solid-angle PDF that should be converted through `dist^2 / cos`.  `ConvertLightSubpath` / `ConvertEyeSubpath` therefore skip the edge-Jacobian recurrence at `isBSSRDFEntry` and write `dVCM = 1 / pdfFwd` into the parallel MIS array.  They are still kept out of the merge store.  This lets VC strategies through SSS entry points compete with the sampled BSSRDF transport instead of inheriting the previous delta-marked boundary state and over-weighting `eye -> SSS -> light` paths.
+
 ### Endpoint eligibility: `isConnectible` vs `isDelta`
 
 BDPT records two distinct flags per vertex: `isDelta` (which lobe was *sampled* to continue the subpath) and `isConnectible` (whether the material has any non-delta BxDF component).  A mixed material that sampled its specular lobe is `isDelta=true, isConnectible=true`.  BDPT explicitly clears endpoint `isDelta` for connectible vertices before MIS weight computation (BDPTIntegrator.cpp:4283) because connection evaluation uses the full non-delta BSDF, independent of the previously sampled lobe.

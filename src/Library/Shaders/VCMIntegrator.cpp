@@ -45,6 +45,11 @@ using RISE::SpectralDispatch::PelTag;
 using RISE::SpectralDispatch::NMTag;
 using RISE::SpectralDispatch::SpectralValueTraits;
 
+static inline Scalar AreaToSolidAngleFactor(
+	const BDPTVertex& v,
+	const Vector3& dirFromAdjacent
+	);
+
 namespace
 {
 	// Local copy of BDPT's internal ray epsilon so VCM doesn't
@@ -64,6 +69,56 @@ namespace
 		Ray shadowRay( p1, d );
 		shadowRay.Advance( VCM_RAY_EPSILON );
 		return !caster.CastShadowRay( shadowRay, dist - 2.0 * VCM_RAY_EPSILON );
+	}
+
+	inline VCMMisQuantities ApplyBSSRDFEntryAreaUpdate(
+		const BDPTVertex& v
+		)
+	{
+		VCMMisQuantities r;
+		if( v.pdfFwd > NEARZERO ) {
+			// BSSRDF entry sampling gives an area-density directly; there is
+			// no edge Jacobian to invert.  The VC MIS state at the entry
+			// therefore carries the reciprocal area PDF, so NEE/interior
+			// connections compete with the sampled BSSRDF transport.
+			r.dVCM = Scalar( 1 ) / v.pdfFwd;
+		}
+		return r;
+	}
+
+	inline VCMMisQuantities ApplyBSSRDFEntryOnwardUpdate(
+		const VCMMisQuantities& mis,
+		const std::vector<BDPTVertex>& verts,
+		const std::size_t i,
+		const VCMNormalization& norm
+		)
+	{
+		if( i + 1 >= verts.size() ) {
+			return mis;
+		}
+
+		const BDPTVertex& v = verts[i];
+		const BDPTVertex& next = verts[i + 1];
+		if( next.pdfFwd <= 0 ) {
+			return mis;
+		}
+
+		const Vector3 nextStep = Vector3Ops::mkVector3( next.position, v.position );
+		const Scalar nextDistSq = Vector3Ops::SquaredModulus( nextStep );
+		if( nextDistSq <= 0 ) {
+			return mis;
+		}
+		const Scalar nextDist = std::sqrt( nextDistSq );
+		const Vector3 wo = nextStep * ( Scalar( 1 ) / nextDist );
+		const Scalar nextFactor = AreaToSolidAngleFactor( next, -wo );
+		if( nextFactor <= 0 ) {
+			return mis;
+		}
+
+		const Scalar cosThetaOut = fabs( Vector3Ops::Dot( v.normal, wo ) );
+		const Scalar bsdfDirPdfW = next.pdfFwd * nextDistSq / nextFactor;
+		return ApplyBsdfSamplingUpdate(
+			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
 	}
 
 	// Luminance approximation for ILight sources that only expose a
@@ -331,11 +386,11 @@ static inline Scalar AreaToSolidAngleFactor(
 //                        plan's "medium support deferred" note.
 //   v[i] = CAMERA     -> never appears on a light subpath
 //
-// Special-flagged vertices (BSSRDF re-entry, random-walk SSS exits)
-// have non-analytic pdfFwd values that don't correspond to a
-// solid-angle BSDF pdf.  Their cosAtGen field is left at 0 by the
-// generator, which triggers the "no inversion" path and excludes
-// them from the store.
+// BSSRDF re-entry vertices carry their spatial sampling density in
+// area measure directly.  They skip the ordinary edge-Jacobian
+// inversion, are excluded from the merge store, and still populate the
+// parallel MIS array with dVCM = 1/pdfFwd so VC connections through SSS
+// compete with the sampled BSSRDF transport.
 //////////////////////////////////////////////////////////////////////
 void VCMIntegrator::ConvertLightSubpath(
 	const std::vector<BDPTVertex>& verts,
@@ -389,10 +444,20 @@ void VCMIntegrator::ConvertLightSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
+		// BSSRDF re-entry vertices carry their spatial sampling PDF
+		// directly in area measure.  They do not go through the ordinary
+		// edge Jacobian path below, but VC MIS still needs the reciprocal
+		// area PDF at the entry so connections through SSS compete with
+		// the sampled BSSRDF transport instead of receiving weight ~1.
+		if( v.isBSSRDFEntry ) {
+			mis = ApplyBSSRDFEntryAreaUpdate( v );
+			if( outMis ) (*outMis)[i] = mis;
+			mis = ApplyBSSRDFEntryOnwardUpdate( mis, verts, i, norm );
+			continue;
+		}
+
 		// Skip vertices that lack a valid area-measure conversion
-		// factor.  BSSRDF re-entry and random-walk SSS exit are
-		// always skipped.  Their dVCM/dVC/dVM are frozen from the
-		// previous vertex (propagated via outMis[i] = mis).
+		// factor.
 		//
 		// MEDIUM vertices ARE propagated through both the geometric
 		// update (using sigma_t_scalar in place of |cos|) and the
@@ -408,8 +473,7 @@ void VCMIntegrator::ConvertLightSubpath(
 		// every post-specular light vertex from the store, making
 		// VM unable to catch caustics at all.
 		const bool isMedium = ( v.type == BDPTVertex::MEDIUM );
-		const bool skipRecurrence = ( v.type != BDPTVertex::SURFACE && !isMedium ) ||
-		                            ( v.isBSSRDFEntry );
+		const bool skipRecurrence = ( v.type != BDPTVertex::SURFACE && !isMedium );
 
 		// Surface vertices use cosAtGen; medium vertices use
 		// sigma_t_scalar (the area-measure Jacobian factor).
@@ -1410,16 +1474,23 @@ void VCMIntegrator::ConvertEyeSubpath(
 		// isn't the tail vertex, a BSDF-sampling update.
 		//
 
-		// Mirror of ConvertLightSubpath's skip logic.  MEDIUM
-		// vertices propagate both the geometric update (using
+		// Mirror of ConvertLightSubpath's BSSRDF handling: the entry
+		// vertex supplies an area-density directly, so record its
+		// reciprocal for VC MIS and skip the ordinary edge-Jacobian path.
+		if( v.isBSSRDFEntry ) {
+			mis = ApplyBSSRDFEntryAreaUpdate( v );
+			outMis[i] = mis;
+			mis = ApplyBSSRDFEntryOnwardUpdate( mis, verts, i, norm );
+			continue;
+		}
+
+		// MEDIUM vertices propagate both the geometric update (using
 		// sigma_t_scalar) and the phase-function sampling update.
-		// BSSRDF re-entry is always skipped.
 		//
 		// IMPORTANT: we DO NOT skip on `pdfFwd <= 0`.  See the
 		// matching comment in ConvertLightSubpath.
 		const bool isMedium = ( v.type == BDPTVertex::MEDIUM );
-		const bool skipRecurrence = ( v.type != BDPTVertex::SURFACE && !isMedium ) ||
-		                            ( v.isBSSRDFEntry );
+		const bool skipRecurrence = ( v.type != BDPTVertex::SURFACE && !isMedium );
 
 		const Scalar cosFix = isMedium ? v.sigma_t_scalar : v.cosAtGen;
 		if( skipRecurrence || cosFix <= 0 ) {
