@@ -1,0 +1,145 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Glass Teapot (Close, VCM reference): identical setup to sms_teapot_close_sms.RISEscene but rendered
+#   with the Vertex Connection and Merging integrator as the ground-truth photon-map reference to compare
+#   SMS's specular-chain estimator against.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+vcm_pel_rasterizer
+{
+	max_eye_depth		10
+	max_light_depth		10
+	samples				64
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+	pixel_filter                  box
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_teapot_close_vcm
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_teapot_close_vcm
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
+}
+
+pinhole_camera
+{
+	location			0 2.0 3
+	lookat				0 0.2 0
+	up					0 1 0
+	width				400
+	height				300
+	fov					45.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.8 0.75 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				1.0 1.0 1.0
+}
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				2000.0
+	material			none
+}
+
+perfectrefractor_material
+{
+	name				glass_mat
+	refractance			pnt_glass
+	ior					2.2
+}
+
+bezierpatch_geometry
+{
+	name				teapot_geom
+	file				models/raw/teapot.bezier
+	maxpatches			2
+	maxdepth			7
+	bsp					TRUE
+	center_object		TRUE
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-0.1 0.0 -0.1
+	ptb					0.1 0.0 -0.1
+	ptc					0.1 0.0 0.1
+	ptd					-0.1 0.0 0.1
+}
+
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+standard_object
+{
+	name				glass_teapot
+	geometry			teapot_geom
+	position			0 0.425 0
+	scale				0.15 0.15 0.15
+	orientation		0 -30 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			0 1.2 -0.1
+	orientation 		-45 0 0
+	scale				0.4 0.4 0.4
+	material			light_mat
+}

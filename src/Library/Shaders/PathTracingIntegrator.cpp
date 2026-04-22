@@ -1349,6 +1349,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 										rs2.transmissionBounces = transmissionBounces;
 										rs2.translucentBounces = nextTranslucentBounces;
 										rs2.glossyFilterWidth = glossyFilterWidth;
+										// BSSRDF emerges as a diffuse scatter at a
+										// non-specular shading point — propagate
+										// SMS emission-suppression state so an
+										// onwards child ray through glass to a
+										// light doesn't re-enable emission.
+										rs2.smsPassedThroughSpecular = false;
+										rs2.smsHadNonSpecularShading = true;
 
 										caster.CastRay( rc, rast, continuationRay,
 											cthis, rs2, 0, pRadianceMap, iorStack );
@@ -1465,6 +1472,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 										rs2.transmissionBounces = transmissionBounces;
 										rs2.translucentBounces = nextTranslucentBounces;
 										rs2.glossyFilterWidth = glossyFilterWidth;
+										// BSSRDF emerges as a diffuse scatter at a
+										// non-specular shading point — propagate
+										// SMS emission-suppression state so an
+										// onwards child ray through glass to a
+										// light doesn't re-enable emission.
+										rs2.smsPassedThroughSpecular = false;
+										rs2.smsHadNonSpecularShading = true;
 
 										caster.CastRay( rc, rast, continuationRay,
 											cthis, rs2, 0, pRadianceMap, iorStack );
@@ -1887,6 +1901,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					rs2.transmissionBounces = transmissionBounces;
 					rs2.translucentBounces = translucentBounces;
 					rs2.glossyFilterWidth = glossyFilterWidth;
+					// Propagate SMS emission-suppression state across the
+					// recursive CastRay.  Without this the child path starts
+					// with default false/false, so a child that goes
+					// non-specular shading → glass → light would re-enable
+					// emission at the light and double-count what SMS at
+					// the parent shading point already sampled.  Mirrors
+					// the update logic used by the iterative single-scatter
+					// path below.
+					rs2.smsPassedThroughSpecular = scat.isDelta;
+					rs2.smsHadNonSpecularShading = bHadNonSpecularShading || !scat.isDelta;
 
 					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
 					{
@@ -2459,7 +2483,9 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	unsigned int transmissionBounces,
 	unsigned int translucentBounces,
 	unsigned int volumeBounces,
-	Scalar glossyFilterWidth
+	Scalar glossyFilterWidth,
+	bool smsPassedThroughSpecular_initial,
+	bool smsHadNonSpecularShading_initial
 	) const
 {
 	Scalar result = 0;
@@ -2474,6 +2500,18 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
 	const LightSampler* pLS = caster.GetLightSampler();
+
+	// SMS emission-suppression bookkeeping — matches the RGB path.  Without
+	// these flags, spectral (NM / HWSS) rendering would re-enable emission
+	// on BSDF-sampled camera-through-glass-to-light paths that SMS already
+	// handled at the diffuse shading point, producing per-wavelength
+	// fireflies in the emitter hit.  Conversely, with them we must NOT
+	// broadly kill camera-glass-light paths that have no diffuse vertex at
+	// all — the AND check below uses both the "passed specular" and "had
+	// non-specular shading" flags exactly as the RGB path does.
+	const bool bSMSEnabled = ( pSolver != 0 );
+	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
+	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
 
 #ifdef RISE_ENABLE_OPENPGL
 	// Path guiding uses RGB internally; for NM we still collect
@@ -2700,7 +2738,16 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		// ============================================================
 		{
 			IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
-			if( pEmitter && considerEmission )
+			// When SMS is active, suppress emission from BSDF paths that
+			// passed through specular surfaces IF there was a prior
+			// non-specular shading point where SMS was evaluated.
+			// Without the bHadNonSpecularShading clause the camera looking
+			// directly through glass at the light would be killed too (no
+			// diffuse vertex exists for SMS to cover that contribution).
+			// Mirrors the RGB path at the same position.
+			const bool smsSuppressEmission = bSMSEnabled
+				&& bPassedThroughSpecular && bHadNonSpecularShading;
+			if( pEmitter && considerEmission && !smsSuppressEmission )
 			{
 				Scalar emission = pEmitter->emittedRadianceNM(
 					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
@@ -3049,7 +3096,13 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						rs2.importance = importance * scat.krayNM;
 						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
 						rs2.type = PathTracingRayType( scat );
-						rs2.considerEmission = true;
+						// SMS emission suppression: delta scatters beyond a
+						// non-specular shading point must not re-enable
+						// emission at the light.  Matches the RGB branching
+						// path.  Pass SMS flags to the recursive child too.
+						rs2.considerEmission = ( scat.isDelta && bSMSEnabled ) ? false : true;
+						rs2.smsPassedThroughSpecular = scat.isDelta;
+						rs2.smsHadNonSpecularShading = bHadNonSpecularShading || !scat.isDelta;
 						rs2.diffuseBounces = diffuseBounces;
 						rs2.glossyBounces = glossyBounces;
 						rs2.transmissionBounces = transmissionBounces;
@@ -3089,7 +3142,13 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				rs2.importance = importance * pS->krayNM;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
-				rs2.considerEmission = true;
+				// SMS emission-suppression: a delta continuation beyond a
+				// non-specular shading point must not re-enable emission
+				// at the next surface (SMS already covered that path).
+				// Matches the RGB iterative continuation logic.
+				const bool nextConsiderEmissionNM = ( pS->isDelta && bSMSEnabled )
+					? false : true;
+				rs2.considerEmission = nextConsiderEmissionNM;
 				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
 					break;
 				}
@@ -3098,13 +3157,26 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
 				bsdfTimesCosNM = 0;
-				considerEmission = true;
+				considerEmission = nextConsiderEmissionNM;
 				rayType = rs2.type;
 				diffuseBounces = rs2.diffuseBounces;
 				glossyBounces = rs2.glossyBounces;
 				transmissionBounces = rs2.transmissionBounces;
 				translucentBounces = rs2.translucentBounces;
 				glossyFilterWidth = rs2.glossyFilterWidth;
+
+				// Track specular transitions for SMS double-counting
+				// prevention.  Same semantic as the RGB path: a delta
+				// scatter sets bPassedThroughSpecular=true; a non-delta
+				// scatter resets that flag and raises
+				// bHadNonSpecularShading so any subsequent specular chain
+				// to the light gets suppressed at the light hit.
+				if( pS->isDelta ) {
+					bPassedThroughSpecular = true;
+				} else {
+					bPassedThroughSpecular = false;
+					bHadNonSpecularShading = true;
+				}
 
 				currentRay = pS->ray;
 				currentRay.Advance( 1e-8 );

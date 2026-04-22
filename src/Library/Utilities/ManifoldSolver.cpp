@@ -2293,7 +2293,14 @@ unsigned int ManifoldSolver::BuildSeedChain(
 			break;
 		}
 
-		// Create ManifoldVertex from this intersection
+		// Create ManifoldVertex from this intersection.  mv.isReflection is
+		// PROVISIONALLY set to !canRefract (true only for mirror-only
+		// materials) and then promoted to true below if the Snell test for
+		// a refractive material produces total internal reflection — the
+		// geometric direction we follow then IS a reflection, and if we
+		// left the flag as refraction Newton would solve the wrong
+		// half-vector constraint (or reject the chain), and throughput
+		// would use the wrong eta pair.
 		ManifoldVertex mv;
 		mv.position = ri.geometric.ptIntersection;
 		mv.normal = ri.geometric.vNormal;
@@ -2320,6 +2327,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
 		mv.isExiting = !bEntering;
 
+		const std::size_t idxJustPushed = chain.size();
 		chain.push_back( mv );
 
 		// Follow refraction/reflection to determine the next ray direction.
@@ -2374,7 +2382,16 @@ unsigned int ManifoldSolver::BuildSeedChain(
 			}
 			else
 			{
-				// Total internal reflection — no stack change
+				// Total internal reflection on a refractive material.  The
+				// geometric direction we follow from here on IS a reflection,
+				// so promote the just-pushed manifold vertex from its
+				// provisional `isReflection=false` (refractive material) to
+				// `isReflection=true` — otherwise Newton would solve the
+				// refractive half-vector constraint at this vertex and
+				// either fail or converge to a physically-wrong chain, and
+				// EvaluateChainThroughput would apply the refraction (1-Fr)
+				// factor instead of the reflection Fr factor.
+				chain[ idxJustPushed ].isReflection = true;
 				dir = dir + n * (2.0 * cosI2);
 				dir = Vector3Ops::Normalize( dir );
 			}
@@ -3514,6 +3531,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			}
 
 			std::vector<ManifoldVertex> newChain( k );
+			IORStack queryIor( 1.0 );
 			for( unsigned int i = 0; i < k; i++ )
 			{
 				const SMSPhotonChainVertex& pv = ph.chain[ k - 1 - i ];
@@ -3523,7 +3541,26 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				mv.pObject     = pv.pObject;
 				mv.pMaterial   = pv.pMaterial;
 				mv.eta         = pv.eta;
-				mv.attenuation = RISEPel( 1, 1, 1 );
+				// Query the material at this vertex for its actual specular
+				// attenuation (a.k.a. refractance color for dielectrics,
+				// reflectance for mirrors).  The previous hardcoded white
+				// was correct for the typical white-glass test scenes but
+				// silently dropped material colour for any coloured specular
+				// — a colour / absorption bias in the caustic that only
+				// photon-aided multi-trial SMS would expose as an occasional
+				// bright-channel-mismatched trial.  BuildSeedChain already
+				// does this lookup at line 2303; parity restores it here.
+				if( pv.pMaterial ) {
+					Ray dummyRay( pv.position, pv.normal );
+					RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
+					rigLocal.bHit = true;
+					rigLocal.ptIntersection = pv.position;
+					rigLocal.vNormal = pv.normal;
+					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
+					mv.attenuation = spec.attenuation;
+				} else {
+					mv.attenuation = RISEPel( 1, 1, 1 );
+				}
 				// Chain-vertex semantics recovered from the photon record:
 				//   flags bit 0 = photon-direction isExiting (refractions only)
 				//   flags bit 1 = isReflection (scatter picked reflection, not
@@ -4035,7 +4072,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				mv.normal      = pv.normal;
 				mv.pObject     = pv.pObject;
 				mv.pMaterial   = pv.pMaterial;
-				mv.attenuation = RISEPel( 1, 1, 1 );
+				// mv.attenuation is set alongside mv.eta below from the
+				// per-wavelength SpecularInfo (dropping the hardcoded white
+				// that previously bypassed material colour).
 				// Chain-vertex semantics recovered from the photon record;
 				// see the RGB path above for the full rationale.
 				mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
@@ -4044,7 +4083,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
 				mv.valid       = false;
 
-				// Per-wavelength eta override (dispersion).
+				// Per-wavelength eta override (dispersion).  Also take the
+				// per-wavelength attenuation at this vertex — a coloured or
+				// absorbing glass's caustic otherwise comes out white/too-
+				// bright whenever a multi-trial round discovers a root
+				// through photon-aided seeding.
 				if( pv.pMaterial )
 				{
 					Ray dummyRay( pv.position, pv.normal );
@@ -4055,8 +4098,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 					SpecularInfo specNM = pv.pMaterial->GetSpecularInfoNM(
 						rigLocal, queryIor, nm );
 					mv.eta = specNM.ior;
+					mv.attenuation = specNM.attenuation;
 				} else {
 					mv.eta = pv.eta;
+					mv.attenuation = RISEPel( 1, 1, 1 );
 				}
 			}
 			trialSeed = newChain;
@@ -4139,13 +4184,30 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 			Le = ColorMath::Luminance( lightSample.Le );
 		}
 
-		// SMS geometric factor (see RGB variant for derivation).
-		const Scalar chainGeom = EvaluateChainGeometry(
-			pos, lightSample.position, mResult.specularChain );
-
-		const Scalar smsGeometric = cosAtLight * chainGeom
-			/ fmax( mResult.jacobianDet, 1e-20 );
+		// SMS measure-conversion factor — must match the RGB path exactly
+		// (see the long comment in EvaluateAtShadingPoint for derivation).
+		// The previous `cosAtLight * chainGeom / jacobianDet` formulation is
+		// obsolete: it double-counts distance terms via the chainGeom
+		// product and applies cos(θ_y) explicitly even though cos(θ_y) is
+		// implicit in |det(∂C/∂y)|.  Replacing with G(x, v_1) · |det(δv_1/δy)|
+		// keeps the spectral caustic intensity consistent with the RGB path
+		// (important for HWSS regressions and spectral fireflies that would
+		// otherwise leak in only at certain wavelengths).
+		const ManifoldVertex& firstSpecForG = mResult.specularChain[0];
+		Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpecForG.position, pos );
+		const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
+		if( distXtoV1 < 1e-8 ) continue;
+		const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpecForG.normal, dirXtoV1 ) );
+		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
+		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
+			mResult.specularChain, pos, lightSample.position, lightSample.normal );
+		const Scalar smsGeometric = G_x_v1 * detDvDy;
 		const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+
+		// cosAtLight is no longer multiplied here — it is implicit in the
+		// Jacobian.  Keep its evaluation above for the backface-cull guard
+		// on non-delta lights; silence the unused-variable warning:
+		(void)cosAtLight;
 
 		Scalar trialContribution = fBSDF
 			* chainThroughput
