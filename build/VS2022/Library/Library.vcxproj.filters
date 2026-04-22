@@ -492,9 +492,6 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderBezier.cpp">
-      <Filter>Geometry\Mesh Loaders</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClCompile>
@@ -1407,7 +1404,6 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\BezierTesselation.h">
       <Filter>Geometry</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Geometry\BezierValueGenerator.h">
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\BilinearPatchGeometry.h">
@@ -1450,9 +1446,6 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h">
-      <Filter>Geometry\Mesh Loaders</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderBezier.h">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h">

@@ -372,7 +372,6 @@ namespace RISE
 #include "Geometry/TriangleMeshLoader3DS.h"
 #include "Geometry/TriangleMeshLoaderRAW.h"
 #include "Geometry/TriangleMeshLoaderRAW2.h"
-#include "Geometry/TriangleMeshLoaderBezier.h"
 #include "Geometry/TriangleMeshLoaderPLY.h"
 
 namespace RISE
@@ -570,29 +569,6 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a mesh loader capable of loading from a series of bezier patches
-	/// \return TRUE if successful, FALSE otherwise
-	/// \todo this is deprecated and should be removed
-	bool RISE_API_CreateBezierTriangleMeshLoader(
-						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
-						const char* szFileName,					///< [in] Name of the file to load from
-						const unsigned int detail,				///< [in] Level of tesselation
-						const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-						const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-						IFunction2D* displacement,				///< [in] Displacement function for static displacement mapping
-						const Scalar disp_scale					///< [in] Displacement scale factor
-						)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new TriangleMeshLoaderBezier( szFileName, detail, bCombineSharedVertices, bCenterObject, displacement, disp_scale );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mesh loader bezier" );
-		return true;
-	}
-
-
 	//! Creates a mesh loader capable of loading from a raw file
 	/// \return TRUE if successful, FALSE otherwise
 	/// \todo this is deprecated and should be removed
@@ -646,30 +622,20 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a geometry object made up of a series of bezier patches
+	//! Creates a bezier-patch geometry (analytic intersection).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBezierPatchGeometry(
 						IBezierPatchGeometry** ppi,				///< [out] Pointer to recieve the geometry
-						const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-						const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-						const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-						const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-						const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-						const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-						const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-						const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-						const unsigned int detail,				///< [in] Level of tesselation for polygons
-						IFunction2D* displacement,				///< [in] Displacement function for static displacement mapping
-						const Scalar disp_scale					///< [in] Displacement scale factor
+						const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+						const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+						const bool use_bsp						///< [in] Use BSP tree (true) or Octree (false)
 						)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new BezierPatchGeometry( max_patches, max_recur, use_bsp, bAnalytic, cache_size, max_polys, max_poly_recursion, bDoubleSided, bPolyUseBSP, bUseFaceNormals, detail, displacement, disp_scale );
+		(*ppi) = new BezierPatchGeometry( max_patches, max_recur, use_bsp );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bezier patch geometry" );
 
 		return true;

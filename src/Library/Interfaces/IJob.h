@@ -900,24 +900,6 @@ namespace RISE
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Adds a triangle mesh geometry from a series of bezier patches
-		/// \return TRUE if successful, FALSE otherwise
-		/// \todo this is deprecated and should be removed
-		virtual bool AddBezierTriangleMeshGeometry(
-							const char* name,						///< [in] Name of the geometry
-							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int detail,				///< [in] Level of tesselation
-							const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-							const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-							const bool face_normals,				///< [in] Use face normals rather than vertex normals
-							const char* displacement,				///< [in] Displacement function for static displacement mapping
-							const double disp_scale					///< [in] Displacement scale factor
-							) = 0;
-
 		//! Creates a triangle mesh geometry from a ply file
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPLYTriangleMeshGeometry(
@@ -940,24 +922,19 @@ namespace RISE
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Creates a bezier patch geometry
+		//! Creates a bezier patch geometry.
+		//! Rendering is always analytic (Kajiya resultant + 2D Newton polish).
+		//! Displacement is NOT a parameter either — wrap this geometry in a
+		//! `displaced_geometry` chunk for displacement, and for bulk-tessellated
+		//! rendering use `displaced_geometry { displacement none disp_scale 0 }`.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddBezierPatchGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-							const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-							const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-							const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-							const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-							const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-							const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-							const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-							const unsigned int detail,				///< [in] Level of tesselation for polygons
-							const char* displacement,				///< [in] Displacement function for static displacement mapping
-							const double disp_scale					///< [in] Displacement scale factor
+							const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+							const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+							const bool use_bsp,						///< [in] Use BSP tree (true) or Octree (false) for the patch accelerator
+							const bool bCenterObject				///< [in] Recenter all patch control points around the object-space origin
 							) = 0;
 
 		//! Creates a bilinear patch geometry

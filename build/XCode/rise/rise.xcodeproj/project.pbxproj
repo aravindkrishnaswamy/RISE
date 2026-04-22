@@ -107,7 +107,6 @@
 		F24B72142F52A632008304C4 /* BezierPatchGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F081F069C428F0069C9E5 /* BezierPatchGeometry.h */; };
 		F24B72152F52A632008304C4 /* BezierTesselation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0820069C428F0069C9E5 /* BezierTesselation.cpp */; };
 		F24B72162F52A632008304C4 /* BezierTesselation.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0821069C428F0069C9E5 /* BezierTesselation.h */; };
-		F24B72172F52A632008304C4 /* BezierValueGenerator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0822069C428F0069C9E5 /* BezierValueGenerator.h */; };
 		F24B72182F52A632008304C4 /* BilinearPatchGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0823069C428F0069C9E5 /* BilinearPatchGeometry.cpp */; };
 		F24B72192F52A632008304C4 /* BilinearPatchGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0824069C428F0069C9E5 /* BilinearPatchGeometry.h */; };
 		F24B721A2F52A632008304C4 /* BoxGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0825069C428F0069C9E5 /* BoxGeometry.cpp */; };
@@ -146,8 +145,6 @@
 		F24B72392F52A632008304C4 /* TriangleMeshGeometrySpecializations.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */; };
 		F24B723A2F52A632008304C4 /* TriangleMeshLoader3DS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */; };
 		F24B723B2F52A632008304C4 /* TriangleMeshLoader3DS.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0846069C428F0069C9E5 /* TriangleMeshLoader3DS.h */; };
-		F24B723C2F52A632008304C4 /* TriangleMeshLoaderBezier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0847069C428F0069C9E5 /* TriangleMeshLoaderBezier.cpp */; };
-		F24B723D2F52A632008304C4 /* TriangleMeshLoaderBezier.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0848069C428F0069C9E5 /* TriangleMeshLoaderBezier.h */; };
 		F24B723E2F52A632008304C4 /* TriangleMeshLoaderPLY.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */; };
 		F24B723F2F52A632008304C4 /* TriangleMeshLoaderPLY.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F084A069C428F0069C9E5 /* TriangleMeshLoaderPLY.h */; };
 		F24B72402F52A632008304C4 /* TriangleMeshLoaderPSurf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */; };
@@ -813,7 +810,6 @@
 		F27F0A8C069C42910069C9E5 /* BezierPatchGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F081F069C428F0069C9E5 /* BezierPatchGeometry.h */; };
 		F27F0A8D069C42910069C9E5 /* BezierTesselation.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0820069C428F0069C9E5 /* BezierTesselation.cpp */; };
 		F27F0A8E069C42910069C9E5 /* BezierTesselation.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0821069C428F0069C9E5 /* BezierTesselation.h */; };
-		F27F0A8F069C42910069C9E5 /* BezierValueGenerator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0822069C428F0069C9E5 /* BezierValueGenerator.h */; };
 		F27F0A90069C42910069C9E5 /* BilinearPatchGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0823069C428F0069C9E5 /* BilinearPatchGeometry.cpp */; };
 		F27F0A91069C42910069C9E5 /* BilinearPatchGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0824069C428F0069C9E5 /* BilinearPatchGeometry.h */; };
 		F27F0A92069C42910069C9E5 /* BoxGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0825069C428F0069C9E5 /* BoxGeometry.cpp */; };
@@ -852,8 +848,6 @@
 		F27F0AB1069C42910069C9E5 /* TriangleMeshGeometrySpecializations.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */; };
 		F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */; };
 		F27F0AB3069C42910069C9E5 /* TriangleMeshLoader3DS.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0846069C428F0069C9E5 /* TriangleMeshLoader3DS.h */; };
-		F27F0AB4069C42910069C9E5 /* TriangleMeshLoaderBezier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0847069C428F0069C9E5 /* TriangleMeshLoaderBezier.cpp */; };
-		F27F0AB5069C42910069C9E5 /* TriangleMeshLoaderBezier.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0848069C428F0069C9E5 /* TriangleMeshLoaderBezier.h */; };
 		F27F0AB6069C42910069C9E5 /* TriangleMeshLoaderPLY.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */; };
 		F27F0AB7069C42910069C9E5 /* TriangleMeshLoaderPLY.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F084A069C428F0069C9E5 /* TriangleMeshLoaderPLY.h */; };
 		F27F0AB8069C42910069C9E5 /* TriangleMeshLoaderPSurf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */; };
@@ -1716,7 +1710,6 @@
 		F27F081F069C428F0069C9E5 /* BezierPatchGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierPatchGeometry.h; sourceTree = "<group>"; };
 		F27F0820069C428F0069C9E5 /* BezierTesselation.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BezierTesselation.cpp; sourceTree = "<group>"; };
 		F27F0821069C428F0069C9E5 /* BezierTesselation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierTesselation.h; sourceTree = "<group>"; };
-		F27F0822069C428F0069C9E5 /* BezierValueGenerator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierValueGenerator.h; sourceTree = "<group>"; };
 		F27F0823069C428F0069C9E5 /* BilinearPatchGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BilinearPatchGeometry.cpp; sourceTree = "<group>"; };
 		F27F0824069C428F0069C9E5 /* BilinearPatchGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BilinearPatchGeometry.h; sourceTree = "<group>"; };
 		F27F0825069C428F0069C9E5 /* BoxGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BoxGeometry.cpp; sourceTree = "<group>"; };
@@ -1755,8 +1748,6 @@
 		F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshGeometrySpecializations.h; sourceTree = "<group>"; };
 		F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TriangleMeshLoader3DS.cpp; sourceTree = "<group>"; };
 		F27F0846069C428F0069C9E5 /* TriangleMeshLoader3DS.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshLoader3DS.h; sourceTree = "<group>"; };
-		F27F0847069C428F0069C9E5 /* TriangleMeshLoaderBezier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TriangleMeshLoaderBezier.cpp; sourceTree = "<group>"; };
-		F27F0848069C428F0069C9E5 /* TriangleMeshLoaderBezier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshLoaderBezier.h; sourceTree = "<group>"; };
 		F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TriangleMeshLoaderPLY.cpp; sourceTree = "<group>"; };
 		F27F084A069C428F0069C9E5 /* TriangleMeshLoaderPLY.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshLoaderPLY.h; sourceTree = "<group>"; };
 		F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TriangleMeshLoaderPSurf.cpp; sourceTree = "<group>"; };
@@ -2613,7 +2604,6 @@
 				F27F081F069C428F0069C9E5 /* BezierPatchGeometry.h */,
 				F27F0820069C428F0069C9E5 /* BezierTesselation.cpp */,
 				F27F0821069C428F0069C9E5 /* BezierTesselation.h */,
-				F27F0822069C428F0069C9E5 /* BezierValueGenerator.h */,
 				F27F0823069C428F0069C9E5 /* BilinearPatchGeometry.cpp */,
 				F27F0824069C428F0069C9E5 /* BilinearPatchGeometry.h */,
 				F27F0825069C428F0069C9E5 /* BoxGeometry.cpp */,
@@ -2652,8 +2642,6 @@
 				F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */,
 				F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */,
 				F27F0846069C428F0069C9E5 /* TriangleMeshLoader3DS.h */,
-				F27F0847069C428F0069C9E5 /* TriangleMeshLoaderBezier.cpp */,
-				F27F0848069C428F0069C9E5 /* TriangleMeshLoaderBezier.h */,
 				F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */,
 				F27F084A069C428F0069C9E5 /* TriangleMeshLoaderPLY.h */,
 				F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */,
@@ -3554,7 +3542,6 @@
 				F27F0A8C069C42910069C9E5 /* BezierPatchGeometry.h in Headers */,
 				F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */,
 				F27F0A8E069C42910069C9E5 /* BezierTesselation.h in Headers */,
-				F27F0A8F069C42910069C9E5 /* BezierValueGenerator.h in Headers */,
 				F27F0A91069C42910069C9E5 /* BilinearPatchGeometry.h in Headers */,
 				F27F0A93069C42910069C9E5 /* BoxGeometry.h in Headers */,
 				F27F0A95069C42910069C9E5 /* BoxUVGenerator.h in Headers */,
@@ -3591,7 +3578,6 @@
 				F27F0AB0069C42910069C9E5 /* TriangleMeshGeometryIndexedSpecializations.h in Headers */,
 				F27F0AB1069C42910069C9E5 /* TriangleMeshGeometrySpecializations.h in Headers */,
 				F27F0AB3069C42910069C9E5 /* TriangleMeshLoader3DS.h in Headers */,
-				F27F0AB5069C42910069C9E5 /* TriangleMeshLoaderBezier.h in Headers */,
 				F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */,
 				F27F0AB7069C42910069C9E5 /* TriangleMeshLoaderPLY.h in Headers */,
 				F286395B2F9244AC0009D9AE /* ThreadLocalSplatBuffer.h in Headers */,
@@ -4191,7 +4177,6 @@
 				F27F0AAC069C42910069C9E5 /* TriangleMeshGeometry.cpp in Sources */,
 				F27F0AAE069C42910069C9E5 /* TriangleMeshGeometryIndexed.cpp in Sources */,
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
-				F27F0AB4069C42910069C9E5 /* TriangleMeshLoaderBezier.cpp in Sources */,
 				F27F0AB6069C42910069C9E5 /* TriangleMeshLoaderPLY.cpp in Sources */,
 				F27F0AB8069C42910069C9E5 /* TriangleMeshLoaderPSurf.cpp in Sources */,
 				F27F0ABA069C42910069C9E5 /* TriangleMeshLoaderRAW.cpp in Sources */,
@@ -4498,7 +4483,6 @@
 				F24B72142F52A632008304C4 /* BezierPatchGeometry.h in Sources */,
 				F24B72152F52A632008304C4 /* BezierTesselation.cpp in Sources */,
 				F24B72162F52A632008304C4 /* BezierTesselation.h in Sources */,
-				F24B72172F52A632008304C4 /* BezierValueGenerator.h in Sources */,
 				F24B72182F52A632008304C4 /* BilinearPatchGeometry.cpp in Sources */,
 				F24B72192F52A632008304C4 /* BilinearPatchGeometry.h in Sources */,
 				F24B721A2F52A632008304C4 /* BoxGeometry.cpp in Sources */,
@@ -4542,8 +4526,6 @@
 				F24B72392F52A632008304C4 /* TriangleMeshGeometrySpecializations.h in Sources */,
 				F24B723A2F52A632008304C4 /* TriangleMeshLoader3DS.cpp in Sources */,
 				F24B723B2F52A632008304C4 /* TriangleMeshLoader3DS.h in Sources */,
-				F24B723C2F52A632008304C4 /* TriangleMeshLoaderBezier.cpp in Sources */,
-				F24B723D2F52A632008304C4 /* TriangleMeshLoaderBezier.h in Sources */,
 				F24B723E2F52A632008304C4 /* TriangleMeshLoaderPLY.cpp in Sources */,
 				F24B723F2F52A632008304C4 /* TriangleMeshLoaderPLY.h in Sources */,
 				F24B72402F52A632008304C4 /* TriangleMeshLoaderPSurf.cpp in Sources */,

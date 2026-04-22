@@ -600,13 +600,131 @@ inline Vector3 BilinearTanV(
 
 
 //! Finds the normal of a bilinear patch at the given co-ordinates
-Vector3 GeometricUtilities::BilinearPatchNormalAt( 
+Vector3 GeometricUtilities::BilinearPatchNormalAt(
 	const BilinearPatch& patch,
-	const Scalar u, 
-	const Scalar v 
+	const Scalar u,
+	const Scalar v
 	)
 {
 	return Vector3Ops::Cross( BilinearTanU(patch,v), BilinearTanV(patch,u) );
+}
+
+//
+// Bicubic Bezier patch helpers
+//
+// Bernstein cubic basis:
+//   B_0(t) = (1-t)^3,  B_1(t) = 3t(1-t)^2,  B_2(t) = 3t^2(1-t),  B_3(t) = t^3
+// Derivative:
+//   B'(t) = 3[(B_0', B_1', B_2', B_3')_cubic] — but closed form is simpler:
+//   dB_0/dt = -3(1-t)^2,  dB_3/dt = 3t^2
+//   dB_1/dt = 3(1-t)^2 - 6t(1-t) = 3(1-t)(1-3t)
+//   dB_2/dt = 6t(1-t) - 3t^2     = 3t(2-3t)
+//
+namespace {
+	inline void BernsteinCubic( const Scalar t, Scalar (&B)[4] )
+	{
+		const Scalar mt  = 1.0 - t;
+		const Scalar mt2 = mt*mt;
+		const Scalar t2  = t*t;
+		B[0] = mt2 * mt;
+		B[1] = 3.0 * mt2 * t;
+		B[2] = 3.0 * mt  * t2;
+		B[3] = t2  * t;
+	}
+
+	inline void BernsteinCubicDeriv( const Scalar t, Scalar (&dB)[4] )
+	{
+		const Scalar mt  = 1.0 - t;
+		const Scalar mt2 = mt*mt;
+		const Scalar t2  = t*t;
+		dB[0] = -3.0 * mt2;
+		dB[1] =  3.0 * mt2 - 6.0 * mt * t;   // 3(1-t)(1-3t)
+		dB[2] =  6.0 * mt * t - 3.0 * t2;    // 3t(2-3t)
+		dB[3] =  3.0 * t2;
+	}
+}
+
+//! Evaluates a bicubic Bezier patch via direct Bernstein sum.
+//! Slightly cheaper than nested de Casteljau and numerically adequate
+//! in double precision for patches of bounded extent.
+Point3 GeometricUtilities::EvaluateBezierPatchAt(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	Scalar Bu[4], Bv[4];
+	BernsteinCubic( u, Bu );
+	BernsteinCubic( v, Bv );
+
+	Scalar x = 0.0, y = 0.0, z = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar w = Bu[i] * Bv[j];
+			const Point3& p = patch.c[i].pts[j];
+			x += w * p.x;
+			y += w * p.y;
+			z += w * p.z;
+		}
+	}
+	return Point3( x, y, z );
+}
+
+Vector3 GeometricUtilities::BezierPatchTangentU(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	Scalar dBu[4], Bv[4];
+	BernsteinCubicDeriv( u, dBu );
+	BernsteinCubic( v, Bv );
+
+	Scalar x = 0.0, y = 0.0, z = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar w = dBu[i] * Bv[j];
+			const Point3& p = patch.c[i].pts[j];
+			x += w * p.x;
+			y += w * p.y;
+			z += w * p.z;
+		}
+	}
+	return Vector3( x, y, z );
+}
+
+Vector3 GeometricUtilities::BezierPatchTangentV(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	Scalar Bu[4], dBv[4];
+	BernsteinCubic( u, Bu );
+	BernsteinCubicDeriv( v, dBv );
+
+	Scalar x = 0.0, y = 0.0, z = 0.0;
+	for( int i = 0; i < 4; i++ ) {
+		for( int j = 0; j < 4; j++ ) {
+			const Scalar w = Bu[i] * dBv[j];
+			const Point3& p = patch.c[i].pts[j];
+			x += w * p.x;
+			y += w * p.y;
+			z += w * p.z;
+		}
+	}
+	return Vector3( x, y, z );
+}
+
+Vector3 GeometricUtilities::BezierPatchNormalAt(
+	const BezierPatch& patch,
+	const Scalar u,
+	const Scalar v
+	)
+{
+	return Vector3Ops::Cross(
+		BezierPatchTangentU( patch, u, v ),
+		BezierPatchTangentV( patch, u, v ) );
 }
 
 char GeometricUtilities::WhichSideOfPlane( 

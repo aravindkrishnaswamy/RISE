@@ -105,15 +105,13 @@ lambertian_material
 # Objects
 ##################################################
 
-beziermesh_geometry
+bezierpatch_geometry
 {
 	name				teapotgeom
 	file				models/raw/teapot.bezier
-	detail				15
-	maxdepth			24
-	maxpolygons			10
+	maxpatches			2
+	maxdepth			7
 	bsp					TRUE
-	combine_shared		TRUE
 	center_object		TRUE
 }
 

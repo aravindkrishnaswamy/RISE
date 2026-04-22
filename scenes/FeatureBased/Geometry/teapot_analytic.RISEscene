@@ -2,10 +2,12 @@ RISE ASCII SCENE 5
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           teapot.scn                                                                              #
-#   Description:    A simple Utah teapot                                                                    #
+#   File:           teapot_analytic.RISEscene                                                               #
+#   Description:    Utah teapot rendered with ANALYTIC bezier-patch intersection.                           #
+#                   Uses the Kajiya (1982) resultant method + OQS quartic solver for                        #
+#                   high-precision ray-patch roots, no tessellation.                                        #
 #   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      January 23, 2002                                                                        #
+#   Birthdate:      January 23, 2002 (analytic variant added 2026)                                          #
 #                                                                                                           #
 #############################################################################################################
 
@@ -33,20 +35,10 @@ pixelpel_rasterizer
 	radiance_map		pnt_rad
 	radiance_background	TRUE
 }
-/*
-file_rasterizeroutput
-{
-	pattern				rendered/teapot/frame
-	type				PNG
-	bpp					8
-	multiple			TRUE
-	color_space			sRGB
-}
-*/
 
 file_rasterizeroutput
 {
-	pattern				rendered/teapot
+	pattern				rendered/teapot_analytic
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -73,7 +65,6 @@ pinhole_camera
 	width				1200
 	height				800
 	fov					39.0
-#	exposure			$((1.0/@FRAMES)*0.5)	
 }
 
 ##################################################
@@ -118,18 +109,6 @@ iridescent_painter
 	bias				-0.5
 }
 
-mandelbrot_painter
-{
-	name				pnt_mandelbrot
-	colora				color_black
-	colorb				color_white
-	xstart				-1.75
-	xend				0.75
-	ystart				-1.25
-	yend				1.25
-	exponent			12.0
-}
-
 cooktorrance_material
 {
 	name				ct
@@ -150,7 +129,7 @@ polished_material
 	reflectance			pnt_iri
 	tau					color_silver
 	scattering			256.0
-	ior					10000	
+	ior					10000
 }
 
 perfectreflector_material
@@ -169,33 +148,20 @@ lambertian_material
 # Objects
 ##################################################
 #
-# Displacement pipeline: bicubic Bezier patches are the underlying shape
-# (tessellated on demand by DisplacedGeometry), and the displacement map
-# is applied along per-vertex normals of the tessellated mesh.  Using
-# bezierpatch_geometry as the base keeps a single source of truth for
-# the Utah teapot model — the same .bezier file feeds the analytic
-# variant (teapot_analytic.RISEscene) and this displacement variant.
+# ANALYTIC bezier patches: every ray/patch test is solved algebraically
+# via Kajiya's Bezout-resultant reduction to a univariate polynomial,
+# which is root-bracketed in Bernstein basis and refined with the
+# new OQS quartic solver plus 2D Newton polish.  No tessellation, no
+# silhouette faceting at any zoom level.
 #
 bezierpatch_geometry
 {
-	name				teapotgeom_base
+	name				teapotgeom
 	file				models/raw/teapot.bezier
 	maxpatches			2
 	maxdepth			7
 	bsp					TRUE
 	center_object		TRUE
-}
-
-displaced_geometry
-{
-	name				teapotgeom
-	base_geometry		teapotgeom_base
-	detail				128
-	displacement		pnt_disp
-	disp_scale			0.1
-	maxpolygons			10
-	maxdepth			24
-	bsp					TRUE
 }
 
 standard_object
@@ -207,15 +173,7 @@ standard_object
 	casts_shadows		FALSE
 	receives_shadows	FALSE
 }
-/*
-directional_light
-{
-	name		light
-	power		3.0
-	color		1.0 1.0 1.0
-	direction	0 0 1
-}
-*/
+
 omni_light
 {
 	name		light
@@ -223,23 +181,6 @@ omni_light
 	color		1.0 1.0 1.0
 	position	0 0 8.5
 }
-/*
-timeline
-{
-	element_type		object
-	element				teapot
-	param				orientation
-
-	time 0
-	value 0 0 0
-
-	time 0.5
-	value 90 270 0
-
-	time 1
-	value 360 360 0
-}
-*/
 
 timeline
 {
@@ -288,5 +229,3 @@ timeline
 	time 1
 	value 0 0 800
 }
-
-

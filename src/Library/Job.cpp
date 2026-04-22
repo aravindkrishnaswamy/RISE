@@ -2746,49 +2746,6 @@ bool Job::AddRAW2TriangleMeshGeometry(
 }
 
 
-//! Creates a triangle mesh geometry from a series of bezier patches
-/// \return TRUE if successful, FALSE otherwise
-/// \todo this is deprecated and should be removed
-bool Job::AddBezierTriangleMeshGeometry(
-					const char* name,						///< [in] Name of the geometry
-					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int detail,				///< [in] Level of tesselation
-					const bool bCombineSharedVertices,		///< [in] Should we try to combine shared vertices?
-					const bool bCenterObject,				///< [in] Should the object be re-centered around the origin
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-					const bool face_normals,				///< [in] Use face normals rather than vertex normals
-					const char* displacement,				///< [in] Displacement function for static displacement mapping
-					const double disp_scale					///< [in] Displacement scale factor
-					)
-{
-	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
-
-	IFunction2D* pFunc = 0;
-	if( displacement ) {
-		pFunc = pFunc2DManager->GetItem( displacement );
-		if( !pFunc ) {
-			GlobalLog()->PrintEx( eLog_Error, "Job::AddBezierTriangleMeshGeometry:: Displacement function `%s` not found", displacement );
-		}
-	}
-
-	ITriangleMeshLoaderIndexed* pLoader = 0;
-	RISE_API_CreateBezierTriangleMeshLoader( &pLoader, szFileName, detail, bCombineSharedVertices, bCenterObject, pFunc, disp_scale );
-
-	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
-	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
-	}
-
-	safe_release( pGeometry );
-
-	safe_release( pLoader );
-	return bRet;
-}
-
 //! Creates a triangle mesh geometry from a ply file
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPLYTriangleMeshGeometry(
@@ -2882,24 +2839,15 @@ bool Job::AddRISEMeshTriangleMeshGeometry(
 	return bRet;
 }
 
-//! Creates a bezier patch geometry
+//! Creates a bezier patch geometry (analytic rendering always).
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddBezierPatchGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_patches,			///< [in] Maximum number of patches / octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
-					const bool bAnalytic,					///< [in] Should the patches be analytically rendered?
-					const unsigned int cache_size,			///< [in] Size of the geometry cache for non-analytic rendering
-					const unsigned int max_polys,			///< [in] Maximum polygons / triangle octant node
-					const unsigned char max_poly_recursion, ///< [in] Maximum polygon recursion
-					const bool bDoubleSided,				///< [in] Are generated polygons double sided ?
-					const bool bPolyUseBSP,					///< [in] Should the polygon list use a BSP tree?
-					const bool bUseFaceNormals,				///< [in] Should we use face normals rather than vertex normals?
-					const unsigned int detail,				///< [in] Level of tesselation for polygons
-					const char* displacement,				///< [in] Displacement function for static displacement mapping
-					const double disp_scale					///< [in] Displacement scale factor
+					const unsigned int max_patches,			///< [in] Maximum number of patches per accelerator leaf
+					const unsigned char max_recur,			///< [in] Maximum accelerator recursion depth
+					const bool use_bsp,						///< [in] Use BSP tree (true) or Octree (false) for the patch accelerator
+					const bool bCenterObject				///< [in] Recenter all patch control points around the object-space origin
 					)
 {
 	FILE* inputFile = fopen( GlobalMediaPathLocator().Find(szFileName).c_str(), "r" );
@@ -2909,16 +2857,12 @@ bool Job::AddBezierPatchGeometry(
 		return false;
 	}
 
-	IFunction2D* pFunc = 0;
-	if( displacement ) {
-		pFunc = pFunc2DManager->GetItem( displacement );
-		if( !pFunc ) {
-			GlobalLog()->PrintEx( eLog_Error, "Job::AddBezierPatchGeometry:: Displacement function `%s` not found", displacement );
-		}
-	}
-
 	IBezierPatchGeometry* pGeometry = 0;
-	RISE_API_CreateBezierPatchGeometry( &pGeometry, max_patches, max_recur, use_bsp, bAnalytic, cache_size, max_polys, max_poly_recursion, bDoubleSided, bPolyUseBSP, bUseFaceNormals, detail, pFunc, disp_scale );
+	RISE_API_CreateBezierPatchGeometry( &pGeometry, max_patches, max_recur, use_bsp );
+
+	// Load all patches first so we can optionally recenter them before
+	// handing them to the geometry's BSP/Octree build in Prepare().
+	BezierPatchesListType loadedPatches;
 
 	char line[4096] = {0};
 
@@ -2927,6 +2871,7 @@ bool Job::AddBezierPatchGeometry(
 		// patches are dealing with here
 		unsigned int	numPatches = 0;
 		sscanf( line, "%u", &numPatches );
+		loadedPatches.reserve( numPatches );
 
 		for( unsigned int i=0; i<numPatches; i++ )
 		{
@@ -2937,7 +2882,9 @@ bool Job::AddBezierPatchGeometry(
 				for( int k=0; k<4; k++ ) {
 					double x, y, z;
 					if( fscanf( inputFile, "%lf %lf %lf", &x, &y, &z ) == EOF ) {
-						GlobalLog()->PrintSourceError( "TriangleMeshLoaderBezier:: Fatal error while reading file.  Nothing will be loaded", __FILE__, __LINE__ );
+						GlobalLog()->PrintSourceError( "Job::AddBezierPatchGeometry:: Fatal error while reading file.  Nothing will be loaded", __FILE__, __LINE__ );
+						fclose( inputFile );
+						safe_release( pGeometry );
 						return false;
 					}
 
@@ -2945,11 +2892,49 @@ bool Job::AddBezierPatchGeometry(
 				}
 			}
 
-			pGeometry->AddPatch( patch );
+			loadedPatches.push_back( patch );
+		}
+
+		// Recenter the object around the origin by shifting every control
+		// point by -bbox_center.  Mirrors the mesh-path CenterObject() in
+		// GeometryUtilities — operating on control points is equivalent
+		// because the Bezier surface lies inside the convex hull of its
+		// control net, so the bbox of control points bounds the surface.
+		if( bCenterObject && !loadedPatches.empty() ) {
+			Point3 vMin(  RISE_INFINITY,  RISE_INFINITY,  RISE_INFINITY );
+			Point3 vMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+			for( BezierPatchesListType::const_iterator it = loadedPatches.begin(); it != loadedPatches.end(); ++it ) {
+				for( int j = 0; j < 4; j++ ) {
+					for( int k = 0; k < 4; k++ ) {
+						const Point3& p = it->c[j].pts[k];
+						if( p.x < vMin.x ) vMin.x = p.x;
+						if( p.y < vMin.y ) vMin.y = p.y;
+						if( p.z < vMin.z ) vMin.z = p.z;
+						if( p.x > vMax.x ) vMax.x = p.x;
+						if( p.y > vMax.y ) vMax.y = p.y;
+						if( p.z > vMax.z ) vMax.z = p.z;
+					}
+				}
+			}
+			const Point3 center = Point3Ops::WeightedAverage2( vMax, vMin, 0.5 );
+			const Vector3 offset = Vector3Ops::mkVector3( center, Point3(0,0,0) );
+			for( BezierPatchesListType::iterator it = loadedPatches.begin(); it != loadedPatches.end(); ++it ) {
+				for( int j = 0; j < 4; j++ ) {
+					for( int k = 0; k < 4; k++ ) {
+						it->c[j].pts[k] = Point3Ops::mkPoint3( it->c[j].pts[k], -offset );
+					}
+				}
+			}
+		}
+
+		for( BezierPatchesListType::const_iterator it = loadedPatches.begin(); it != loadedPatches.end(); ++it ) {
+			pGeometry->AddPatch( *it );
 		}
 
 		pGeometry->Prepare();
 	}
+
+	fclose( inputFile );
 
 	pGeomManager->AddItem( pGeometry, name );
 	safe_release( pGeometry );

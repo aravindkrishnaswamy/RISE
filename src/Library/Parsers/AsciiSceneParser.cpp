@@ -3882,70 +3882,6 @@ namespace RISE
 				}
 			};
 
-			struct BezierMeshGeometryAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String file = "none";
-					unsigned int maxPoly = 10;
-					unsigned int maxRecur = 8;
-					unsigned int detail = 6;
-					bool combine_shared = false;
-					bool center_object = false;
-					bool double_sided = false;
-					bool bsp = false;
-					bool face_normals = false;
-
-					String displacement = "none";
-					double disp_scale = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "detail" ) {
-							detail = pvalue.toUInt();
-						} else if( pname == "combine_shared" ) {
-							combine_shared = pvalue.toBoolean();
-						} else if( pname == "center_object" ) {
-							center_object = pvalue.toBoolean();
-						} else if( pname == "double_sided" ) {
-							double_sided = pvalue.toBoolean();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else if( pname == "face_normals" ) {
-							face_normals = pvalue.toBoolean();
-						} else if( pname == "displacement" ) {
-							displacement = pvalue;
-						} else if( pname == "disp_scale" ) {
-							disp_scale = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddBezierTriangleMeshGeometry( name.c_str(), file.c_str(), detail, combine_shared, center_object, maxPoly, maxRecur, double_sided, bsp, face_normals, displacement=="none"?0:displacement.c_str(), disp_scale );
-				}
-			};
-
 			struct RISEMeshGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -4021,41 +3957,36 @@ namespace RISE
 				}
 			};
 
+			// bezierpatch_geometry is always analytic now.  The chunk accepts
+			// ONLY the minimal set of parameters that control the patch file
+			// and the patch-level acceleration structure.  Every parameter
+			// that relates to tessellation (detail, face_normals, double_sided,
+			// maxpolygons, maxpolydepth/poly_bsp, cache_size) or to the binary
+			// analytic/mesh switch (analytic) or to displacement (displacement,
+			// disp_scale) lives on `displaced_geometry` or is gone entirely.
+			// Any such parameter found here is rejected with a clear message
+			// so out-of-date scenes get an actionable error instead of silent
+			// behaviour drift.
 			struct BezierPatchGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
+					// Set up the set of parameters we want with defaults.
 					String name = "noname";
 					String file = "none";
 					unsigned int maxPatches = 2;
 					unsigned int maxRecur = 8;
 					bool bsp = false;
-					bool analytic = false;
-					unsigned int cache_size = 30;
-
-					unsigned int maxPoly = 10;
-					unsigned int maxPolyRecur = 8;
-					bool double_sided = false;
-					bool poly_bsp = false;
-					bool face_normals = false;
-
-					unsigned int detail = 6;
-
-					String displacement = "none";
-					double disp_scale = 1.0;
+					bool center_object = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
-						// Split the param
 						String pname;
 						String pvalue;
 						if( !string_split( *i, pname, pvalue, ' ' ) ) {
 							return false;
 						}
 
-						// Now search the parameter value names
 						if( pname == "name" ) {
 							name = pvalue;
 						} else if( pname == "file" ) {
@@ -4066,33 +3997,29 @@ namespace RISE
 							maxRecur = pvalue.toUInt();
 						} else if( pname == "bsp" ) {
 							bsp = pvalue.toBoolean();
-						} else if( pname == "analytic" ) {
-							analytic = pvalue.toBoolean();
-						} else if( pname == "cache_size" ) {
-							cache_size = pvalue.toUInt();
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "double_sided" ) {
-							double_sided = pvalue.toBoolean();
-						} else if( pname == "poly_bsp" ) {
-							poly_bsp = pvalue.toBoolean();
-						} else if( pname == "face_normals" ) {
-							face_normals = pvalue.toBoolean();
-						} else if( pname == "detail" ) {
-							detail = pvalue.toUInt();
-						} else if( pname == "displacement" ) {
-							displacement = pvalue;
-						} else if( pname == "disp_scale" ) {
-							disp_scale = pvalue.toDouble();
+						} else if( pname == "center_object" ) {
+							center_object = pvalue.toBoolean();
+						} else if( pname == "analytic"        || pname == "cache_size"
+						       ||  pname == "detail"          || pname == "face_normals"
+						       ||  pname == "double_sided"    || pname == "poly_bsp"
+						       ||  pname == "maxpolygons"     || pname == "maxpolydepth"
+						       ||  pname == "displacement"    || pname == "disp_scale" ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"bezierpatch_geometry: parameter `%s` is no longer "
+								"accepted.  Rendering is always analytic; for a "
+								"tessellated or displaced mesh wrap the geometry in "
+								"a displaced_geometry chunk and set detail/"
+								"face_normals/double_sided/displacement/disp_scale "
+								"there.",
+								pname.c_str() );
+							return false;
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddBezierPatchGeometry( name.c_str(), file.c_str(), maxPatches, maxRecur, bsp, analytic, cache_size, maxPoly, maxPolyRecur, double_sided, poly_bsp, face_normals, detail, displacement=="none"?0:displacement.c_str(), disp_scale );
+					return pJob.AddBezierPatchGeometry( name.c_str(), file.c_str(), maxPatches, maxRecur, bsp, center_object );
 				}
 			};
 
@@ -8336,7 +8263,6 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["3dsmesh_geometry"] = new Mesh3DSGeometryAsciiChunkParser();
 	chunks["rawmesh_geometry"] = new RAWMeshGeometryAsciiChunkParser();
 	chunks["rawmesh2_geometry"] = new RAWMesh2GeometryAsciiChunkParser();
-	chunks["beziermesh_geometry"] = new BezierMeshGeometryAsciiChunkParser();
 	chunks["risemesh_geometry"] = new RISEMeshGeometryAsciiChunkParser();
 	chunks["circulardisk_geometry"] = new CircularDiskGeometryAsciiChunkParser();
 	chunks["bezierpatch_geometry"] = new BezierPatchGeometryAsciiChunkParser();

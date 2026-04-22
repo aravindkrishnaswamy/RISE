@@ -501,14 +501,11 @@ static void TestBilinearPatch()
 static void TestBezierPatch()
 {
 	std::cout << "Testing BezierPatchGeometry..." << std::endl;
-	// Constructor args, per RISE_API.cpp::672:
-	//   max_patches, max_recur, bUseBSP, bAnalytic, cache_size,
-	//   max_polys, max_poly_recursion, bDoubleSided, bPolyUseBSP,
-	//   bUseFaceNormals, detail, IFunction2D* displacement, disp_scale
-	BezierPatchGeometry* g = new BezierPatchGeometry(
-		10, 8, false, false, 0,
-		10, 8, false, false, false,
-		6, 0, 0.0 );
+	// Constructor args, per RISE_API.cpp::CreateBezierPatchGeometry:
+	//   max_patches_per_node, max_recursion_level, bUseBSP
+	// (Rendering is always analytic; displacement / tessellation belong
+	//  on a wrapping DisplacedGeometry, not on the patch geometry itself.)
+	BezierPatchGeometry* g = new BezierPatchGeometry( 10, 8, false );
 
 	// Construct a CURVED bezier patch — the 16 control points form a
 	// gently warped surface.  Analytical derivatives must be nonzero in

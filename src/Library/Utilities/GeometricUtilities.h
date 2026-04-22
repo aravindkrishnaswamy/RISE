@@ -248,8 +248,41 @@ namespace RISE
 					);
 
 		//! Finds the normal of a bilinear patch at the given co-ordinates
-		extern Vector3 BilinearPatchNormalAt( 
+		extern Vector3 BilinearPatchNormalAt(
 					const BilinearPatch& patch,							///< [in] The bilinear patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Evaluates a bicubic Bezier patch P(u,v) using the Bernstein basis.
+		//! Convention: P(u,v) = sum_{i,j} B_i(u) * B_j(v) * patch.c[i].pts[j]
+		//! where i indexes the curve (u direction) and j indexes the control
+		//! point along the curve (v direction).
+		extern Point3 EvaluateBezierPatchAt(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Partial derivative dP/du of a bicubic Bezier patch.
+		extern Vector3 BezierPatchTangentU(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Partial derivative dP/dv of a bicubic Bezier patch.
+		extern Vector3 BezierPatchTangentV(
+					const BezierPatch& patch,							///< [in] The bezier patch
+					const Scalar u,										///< [in] Evaluation parameter u
+					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		//! Surface normal = dP/du x dP/dv (not normalized).  Caller should
+		//! normalize.  At degenerate points (coincident tangents) may return
+		//! the zero vector.
+		extern Vector3 BezierPatchNormalAt(
+					const BezierPatch& patch,							///< [in] The bezier patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
 					);

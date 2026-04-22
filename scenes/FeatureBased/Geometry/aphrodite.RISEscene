@@ -82,34 +82,13 @@ lambertian_material
 ##################################################
 # Objects
 ##################################################
-/*
 bezierpatch_geometry
 {
 	name				bezgeom
 	file				models/bezier/aphrodite.bezier
-	detail				7
 	maxpatches			10
 	maxdepth			24
-	maxpolygons			10
-	maxpolydepth		24
 	bsp					TRUE
-	poly_bsp			TRUE
-	face_normals		FALSE
-	double_sided		TRUE
-	cache_size			5000
-}
-*/
-
-beziermesh_geometry
-{
-	name				bezgeom
-	file				models/bezier/aphrodite.bezier
-	detail				7
-	maxdepth			24
-	maxpolygons			10
-	bsp					TRUE
-	face_normals		FALSE
-	double_sided		TRUE
 }
 
 standard_object

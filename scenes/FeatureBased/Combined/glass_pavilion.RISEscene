@@ -231,15 +231,13 @@ sphere_geometry
 }
 
 # Bezier teapot as a decorative vase
-beziermesh_geometry
+bezierpatch_geometry
 {
 	name				vasegeom
 	file				models/raw/teapot.bezier
-	detail				20
-	maxdepth			16
-	maxpolygons			10
+	maxpatches			2
+	maxdepth			7
 	bsp					TRUE
-	combine_shared		TRUE
 	center_object		TRUE
 }
 

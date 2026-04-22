@@ -38,10 +38,17 @@ namespace RISE
 			return coef[index];
 		}
 
+		// Infinity-norm of the coefficient vector: max |coef[i]|.
+		// Used by Resultant() to decide which Bezout form to apply based on
+		// the leading-column magnitudes.  The fabs is essential — omitting it
+		// (the pre-2026 form) returns zero for all-negative coefficient
+		// vectors, which then makes Resultant() silently drop to a lower-
+		// degree Bezout form and miss real bicubic roots on those patches.
 		Scalar magnitude() const {
 			Scalar size = 0;
 			for (unsigned int i=0; i < numCoef; i++) {
-				size = r_max(size, coef[i]);
+				const Scalar a = (coef[i] < 0) ? -coef[i] : coef[i];
+				if (a > size) size = a;
 			}
 			return size;
 		}

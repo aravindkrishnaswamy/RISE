@@ -106,7 +106,8 @@ namespace RISE
 				unsigned int volumeBounces_,
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_,
-				bool smsHadNonSpecularShading_
+				bool smsHadNonSpecularShading_,
+				bool splitFired_
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (NM).

@@ -26,7 +26,7 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples                       512
+	samples                       128
 }
 
 file_rasterizeroutput

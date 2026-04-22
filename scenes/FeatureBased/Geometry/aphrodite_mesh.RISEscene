@@ -2,8 +2,11 @@ RISE ASCII SCENE 5
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           f16.scn                                                                                 #
-#   Description:    F-16 bezier model
+#   File:           aphrodite_mesh.RISEscene                                                                #
+#   Description:    Aphrodite rendered via a high-detail tessellated mesh.  Identical scene to             #
+#                   aphrodite.RISEscene except the bezier patches are wrapped in a displaced_geometry     #
+#                   with displacement=none and disp_scale=0 — giving a pure triangle-mesh render that      #
+#                   is the ground-truth reference for the analytic path.                                   #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      May 20, 2004                                                                            #
 #                                                                                                           #
@@ -29,7 +32,7 @@ pixelpel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/f16
+	pattern				rendered/aphrodite_mesh
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -41,11 +44,11 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			0 0 17.5
+	location			0 0 16.5
 	lookat				0 0 0
 	up					0 1 0
-	width				700
-	height				500
+	width				500
+	height				700
 	fov					39.0
 }
 
@@ -82,12 +85,33 @@ lambertian_material
 ##################################################
 # Objects
 ##################################################
+#
+# High-detail tessellated-mesh variant: the bezier patches are the base
+# geometry, wrapped by displaced_geometry (displacement=none, disp_scale=0)
+# which tessellates the patches up-front into triangles and ray-traces the
+# triangle mesh.  detail=20 gives (20+1)^2 = 441 triangles per patch — well
+# above the point where the curved silhouette becomes smooth.  double_sided
+# is on to match aphrodite.bezier's patch-winding convention.
+#
 bezierpatch_geometry
 {
-	name				bezgeom
-	file				models/bezier/f16.bezier
+	name				bezgeom_base
+	file				models/bezier/aphrodite.bezier
 	maxpatches			10
 	maxdepth			24
+	bsp					TRUE
+}
+
+displaced_geometry
+{
+	name				bezgeom
+	base_geometry		bezgeom_base
+	detail				32	
+	displacement		none
+	disp_scale			0.0
+	maxpolygons			10
+	maxdepth			24
+	double_sided		TRUE
 	bsp					TRUE
 }
 
@@ -95,7 +119,8 @@ standard_object
 {
 	name				bez
 	geometry			bezgeom
-	orientation			20 150 0
+	position			0 -1.0 0
+	orientation			0 180 0
 	material			white
 #	casts_shadows		FALSE
 #	receives_shadows	FALSE

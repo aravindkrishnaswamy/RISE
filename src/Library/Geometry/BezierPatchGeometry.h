@@ -18,10 +18,27 @@
 #include "../Interfaces/IBezierPatchGeometry.h"
 #include "../Octree.h"
 #include "../BSPTreeSAH.h"
-#include "BezierValueGenerator.h"
+#include "../Utilities/BoundingBox.h"
 
 namespace RISE
 {
+	// Element type stored in the per-geometry BSP tree / Octree.  Pairs a
+	// non-owning pointer to the underlying BezierPatch with its index and
+	// precomputed AABB (the Bezier convex-hull bound over 16 control
+	// points).  Equality is id-based so the accelerator's element set
+	// behaves correctly when the same patch lives in multiple BSP leaves.
+	struct MYBEZIERPATCH
+	{
+		BezierPatch*				pPatch;
+		unsigned int				id;
+		BoundingBox					bbox;
+
+		bool operator==( const MYBEZIERPATCH& other ) const
+		{
+			return other.id == id;
+		}
+	};
+
 	namespace Implementation
 	{
 		class BezierPatchGeometry : 
@@ -35,41 +52,31 @@ namespace RISE
 			typedef std::vector<MYBEZIERPATCH>			BezierPatchPtrList;
 
 		protected:
-			// The BSP tree of bezier patches
-				BSPTreeSAH<MYBEZIERPATCH>*		pBSPTree;
+			// BSP tree of bezier patches (one accelerator or the other).
+			BSPTreeSAH<MYBEZIERPATCH>*		pBSPTree;
 
-			// The Octree tree of bezier patches
-			Octree<MYBEZIERPATCH>*		pOctree;
+			// Octree of bezier patches (used when bUseBSP is false).
+			Octree<MYBEZIERPATCH>*			pOctree;
 
 			BezierPatchList			patches;			// List of bezier patches
-			unsigned int			nMaxPerOctantNode;	// Maximum number of polygons per octant node
-			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
-			bool					bUseBSP;			// Are we using BSP trees ?
-			bool					bAnalytic;			// Are we going to analytically render the bezier patches ?
-
-			// The value generator generates tesselated patches
-			BezierValueGenerator generator;
-
-			// The MRU cache 
-			mutable MRUCache<MYBEZIERPATCH, ITriangleMeshGeometryIndexed> cache;
+			unsigned int			nMaxPerOctantNode;	// Max patches per accelerator leaf
+			unsigned char			nMaxRecursionLevel;	// Max accelerator recursion depth
+			bool					bUseBSP;			// BSP tree (true) or Octree (false)?
 
 			virtual ~BezierPatchGeometry( );
 
 		public:
+			// Rendering is ALWAYS analytic (Kajiya resultant + 2D Newton polish).
+			// The old tessellate-on-demand fallback (MRU cache + per-patch
+			// `detail` + `face_normals` + polygon-accelerator sub-tree) is gone
+			// along with its control parameters.  Scenes that want a tessellated
+			// mesh wrap this geometry in a DisplacedGeometry (with
+			// disp_scale=0 / displacement=none for a pure-tessellation path).
+			// Displacement itself is also owned by DisplacedGeometry.
 			BezierPatchGeometry(
-				const unsigned int max_patch_per_node, 
+				const unsigned int max_patches_per_node,
 				const unsigned char max_recursion_level,
-				const bool bUseBSP,
-				const bool bAnalytic,
-				const unsigned int cache_size,
-				const unsigned int max_polys_per_node, 
-				const unsigned char max_poly_recursion_level, 
-				const bool bDoubleSided,
-				const bool bPolyUseBSP,
-				const bool bUseFaceNormals,
-				const unsigned int detail,
-				const IFunction2D* displacement,
-				const Scalar disp_scale
+				const bool bUseBSP
 				);
 
 			// Adds a new patch to the list

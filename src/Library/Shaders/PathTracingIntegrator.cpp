@@ -58,6 +58,7 @@ using PathTransportUtilities::PropagateBounceLimits;
 //////////////////////////////////////////////////////////////////////
 
 #include "BSSRDFEntryAdapters.h"
+#include "../Utilities/FireflyTrace.h"
 using RISE::BSSRDFAdapters::BSSRDFEntryBSDF;
 using RISE::BSSRDFAdapters::RandomWalkEntryBSDF;
 using RISE::BSSRDFAdapters::BSSRDFEntryMaterial;
@@ -819,7 +820,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	unsigned int volumeBounces,
 	Scalar glossyFilterWidth,
 	bool smsPassedThroughSpecular_initial,
-	bool smsHadNonSpecularShading_initial
+	bool smsHadNonSpecularShading_initial,
+	bool splitFired_initial
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -830,6 +832,19 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	Ray currentRay = ri.geometric.ray;
 	IORStack iorStack = initialIorStack;
 	bool needsIntersection = false;
+
+	// Firefly tracing: assigns a monotonically increasing per-pixel sample
+	// ID so the output log can be grouped by sample.  Only enabled when
+	// env RISE_FFTRACE_X/Y match rast.x/y AND we're at startDepth==0
+	// (top-level camera path).
+	const bool ff = FF_TRACE_ACTIVE( rast.x, rast.y ) && startDepth == 0;
+	static thread_local unsigned long ffSampleId = 0;
+	const unsigned long ffSample = ff ? (++ffSampleId) : 0;
+	::RISE::FireflyTrace::PathScope ffPathScope( ff );
+	if( ff ) {
+		FF_TRACE( "=== SAMPLE %lu px(%u,%u) startDepth=%u firstHit.bHit=%d ===",
+			ffSample, rast.x, rast.y, startDepth, (int)ri.geometric.bHit );
+	}
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
@@ -842,7 +857,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	// subpath as its own origin (so the threshold is always anchored to
 	// "fraction of this subpath's starting energy surviving").
 	const Scalar betaInitial = ColorMath::MaxValue( throughput );
-	bool splitFired = false;
+	bool splitFired = splitFired_initial;
 
 	// When SMS is active, track whether the BSDF-sampled path went
 	// through a specular surface.  If it did AND there was a prior
@@ -1114,6 +1129,15 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
 #endif
 
+		if( ff ) {
+			FF_TRACE( "  depth=%u HIT obj=%p mat=%p pos=(%.4f,%.4f,%.4f) n=(%.4f,%.4f,%.4f) thr=(%.4f,%.4f,%.4f) psS=%d nsS=%d",
+				depth, (const void*)ri.pObject, (const void*)ri.pMaterial,
+				ri.geometric.ptIntersection.x, ri.geometric.ptIntersection.y, ri.geometric.ptIntersection.z,
+				ri.geometric.vNormal.x, ri.geometric.vNormal.y, ri.geometric.vNormal.z,
+				throughput[0], throughput[1], throughput[2],
+				(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
+		}
+
 		// ============================================================
 		// PART 1: Emission
 		// ============================================================
@@ -1128,6 +1152,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				// paths (with no diffuse receiver) would be killed.
 				if( pSolver && bPassedThroughSpecular && bHadNonSpecularShading )
 				{
+					if( ff ) {
+						RISEPel rawE = pEmitter->emittedRadiance(
+							ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+						FF_TRACE( "  depth=%u EMISSION-SUPPRESSED-BY-SMS rawE=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e)",
+							depth, rawE[0], rawE[1], rawE[2],
+							throughput[0], throughput[1], throughput[2] );
+					}
 					// Skip emission entirely; SMS handles this contribution.
 				}
 				else
@@ -1208,6 +1239,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				}
 
 				result = result + throughput * emission;
+
+				if( ff ) {
+					const RISEPel contrib = throughput * emission;
+					FF_TRACE( "  depth=%u EMISSION rawE=(%.3e,%.3e,%.3e) mis=%.4f thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
+						depth, rawEmission[0], rawEmission[1], rawEmission[2],
+						emissionMiWeight,
+						throughput[0], throughput[1], throughput[2],
+						contrib[0], contrib[1], contrib[2],
+						result[0], result[1], result[2] );
+				}
 
 #ifdef RISE_ENABLE_OPENPGL
 				if( guidingSegment && depth >= 2 &&
@@ -1487,30 +1528,21 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
 					if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
 				}
-				// When SMS is live on THIS integrator, don't split.  Each
-				// split lobe continues via caster.CastRay, which dispatches
-				// through the hit's shader op.  The Job.cpp-registered
-				// "DefaultPathTracing" shader op owns its own
-				// PathTracingIntegrator that is constructed with
-				// smsEnabled=false (see Job::InitializeContainers), so the
-				// branched subpath's downstream integrator has pSolver=null
-				// and silently drops every SMS evaluation at diffuse vertices
-				// it reaches — e.g. a floor seen through the refract lobe
-				// of a perfectrefractor slab gets no caustic contribution
-				// because SMS never fires there and NEE shadow rays are
-				// blocked by the glass.  The single-sampled RandomlySelect
-				// fallback below stays inside this IntegrateFromHit call,
-				// keeping pSolver live for the downstream diffuse vertex.
-				// (Direct recursion into this->IntegrateFromHit was tried
-				// and is correct but explodes: each recursive frame resets
-				// splitFired, so heavy dielectric branching goes 2^N in
-				// stack frames.)
+				// Split at the first multi-lobe delta vertex whenever the
+				// normalized throughput survives the threshold.  When SMS
+				// is live on THIS integrator (pSolver != 0) the split
+				// block recurses via this->IntegrateFromHit with
+				// splitFired_=true, which keeps pSolver accessible for
+				// every downstream diffuse vertex and caps the recursion
+				// fan-out at N (each recursive frame can't split again).
+				// When SMS is off, the split block still uses
+				// caster.CastRay (legacy path) since the dispatch-to-
+				// shader-op behavior is otherwise identical.
 				const bool shouldSplit =
 					!splitFired &&
 					allLobesDelta &&
 					scattered.Count() <= 4 &&
 					!bHadNonSpecularShading &&
-					!pSolver &&
 					normalizedThroughput > stabilityConfig.branchingThreshold;
 
 				if( shouldSplit )
@@ -1520,38 +1552,83 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					{
 						ScatteredRay& scat = scattered[i];
 						const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
-						if( scatmaxv > 0 )
-						{
-							IRayCaster::RAY_STATE rs2;
-							rs2.depth = depth + 1;
-							rs2.importance = importance * scatmaxv;
-							rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-							rs2.type = PathTracingRayType( scat );
-							rs2.considerEmission = true;
-							rs2.diffuseBounces = diffuseBounces;
-							rs2.glossyBounces = glossyBounces;
-							rs2.transmissionBounces = transmissionBounces;
-							rs2.translucentBounces = translucentBounces;
-							rs2.glossyFilterWidth = glossyFilterWidth;
-							rs2.smsPassedThroughSpecular = scat.isDelta ? true : bPassedThroughSpecular;
-							rs2.smsHadNonSpecularShading = bHadNonSpecularShading;
-							if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-								continue;
-							}
-
-							RISEPel cthis( 0, 0, 0 );
-							Ray ray = scat.ray;
-							ray.Advance( 1e-8 );
-							caster.CastRay( rc, rast, ray, cthis, rs2, 0,
-								pRadianceMap,
-								scat.ior_stack ? *scat.ior_stack : iorStack );
-
-							RISEPel indirect = scat.kray * cthis;
-							if( depth > 0 ) {
-								indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
-							}
-							result = result + throughput * indirect;
+						if( scatmaxv <= 0 ) {
+							continue;
 						}
+
+						IRayCaster::RAY_STATE rs2;
+						rs2.depth = depth + 1;
+						rs2.importance = importance * scatmaxv;
+						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
+						rs2.type = PathTracingRayType( scat );
+						rs2.considerEmission = true;
+						rs2.diffuseBounces = diffuseBounces;
+						rs2.glossyBounces = glossyBounces;
+						rs2.transmissionBounces = transmissionBounces;
+						rs2.translucentBounces = translucentBounces;
+						rs2.glossyFilterWidth = glossyFilterWidth;
+						rs2.smsPassedThroughSpecular = scat.isDelta ? true : bPassedThroughSpecular;
+						rs2.smsHadNonSpecularShading = bHadNonSpecularShading;
+						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
+							continue;
+						}
+
+						Ray branchRay = scat.ray;
+						branchRay.Advance( 1e-8 );
+						const IORStack& branchStack =
+							scat.ior_stack ? *scat.ior_stack : iorStack;
+
+						RISEPel cthis( 0, 0, 0 );
+
+						if( pSolver )
+						{
+							// SMS-preserving branch: stay inside this
+							// integrator so downstream diffuse vertices
+							// still see pSolver.  splitFired_=true caps
+							// fan-out at N per depth.
+							RayIntersection branchRI( branchRay, rast );
+							branchRI.geometric.glossyFilterWidth = glossyFilterWidth;
+							scene.GetObjects()->IntersectRay(
+								branchRI, true, true, false );
+
+							if( !branchRI.geometric.bHit )
+							{
+								if( pRadianceMap ) {
+									cthis = pRadianceMap->GetRadiance( branchRay, rast );
+								} else if( scene.GetGlobalRadianceMap() ) {
+									cthis = scene.GetGlobalRadianceMap()->GetRadiance(
+										branchRay, rast );
+								}
+							}
+							else
+							{
+								cthis = IntegrateFromHit(
+									rc, rast, branchRI, scene, caster,
+									sampler, pRadianceMap,
+									depth + 1, branchStack,
+									rs2.bsdfPdf, RISEPel( 0, 0, 0 ), true,
+									rs2.importance, rs2.type,
+									rs2.diffuseBounces, rs2.glossyBounces,
+									rs2.transmissionBounces, rs2.translucentBounces,
+									volumeBounces, rs2.glossyFilterWidth,
+									rs2.smsPassedThroughSpecular,
+									rs2.smsHadNonSpecularShading,
+									true );
+							}
+						}
+						else
+						{
+							// Legacy path: no SMS active, so dispatcher
+							// indirection through caster.CastRay is fine.
+							caster.CastRay( rc, rast, branchRay, cthis, rs2, 0,
+								pRadianceMap, branchStack );
+						}
+
+						RISEPel indirect = scat.kray * cthis;
+						if( depth > 0 ) {
+							indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
+						}
+						result = result + throughput * indirect;
 					}
 					break;
 				}
@@ -1617,6 +1694,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					bHadNonSpecularShading = true;
 				}
 
+				if( ff ) {
+					FF_TRACE( "  depth=%u SCAT-MULTI-SEL isDelta=%d kray=(%.3e,%.3e,%.3e) pdf=%.3e selProb=%.3e dir=(%.4f,%.4f,%.4f) thr->(%.3e,%.3e,%.3e) psS=%d nsS=%d",
+						depth, (int)pS->isDelta,
+						pS->kray[0], pS->kray[1], pS->kray[2],
+						pS->pdf, selectProb,
+						pS->ray.Dir().x, pS->ray.Dir().y, pS->ray.Dir().z,
+						throughput[0], throughput[1], throughput[2],
+						(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
+				}
+
 				currentRay = pS->ray;
 				currentRay.Advance( 1e-8 );
 
@@ -1665,6 +1752,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					bHadNonSpecularShading = true;
 				}
 
+				if( ff ) {
+					FF_TRACE( "  depth=%u SCAT-SINGLE isDelta=%d kray=(%.3e,%.3e,%.3e) pdf=%.3e dir=(%.4f,%.4f,%.4f) thr->(%.3e,%.3e,%.3e) psS=%d nsS=%d",
+						depth, (int)pS->isDelta,
+						pS->kray[0], pS->kray[1], pS->kray[2],
+						pS->pdf,
+						pS->ray.Dir().x, pS->ray.Dir().y, pS->ray.Dir().z,
+						throughput[0], throughput[1], throughput[2],
+						(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
+				}
+
 				currentRay = pS->ray;
 				currentRay.Advance( 1e-8 );
 
@@ -1689,6 +1786,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				ri.pObject, pCurrentMedium, false, pMediumObject );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			result = result + throughput * directAll;
+			if( ff ) {
+				const RISEPel ct = throughput * directAll;
+				FF_TRACE( "  depth=%u NEE direct=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
+					depth, directAll[0], directAll[1], directAll[2],
+					throughput[0], throughput[1], throughput[2],
+					ct[0], ct[1], ct[2],
+					result[0], result[1], result[2] );
+			}
 
 #ifdef RISE_ENABLE_OPENPGL
 			if( depth >= 2 ) {
@@ -1721,14 +1826,28 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			if( sms.valid )
 			{
 				RISEPel smsContrib = sms.contribution * sms.misWeight;
+				const RISEPel smsRaw = sms.contribution;
+				const RISEPel smsClampedIn = smsContrib;
 				smsContrib = ClampContribution( smsContrib, stabilityConfig.directClamp );
 				result = result + throughput * smsContrib;
+				if( ff ) {
+					const RISEPel ct = throughput * smsContrib;
+					FF_TRACE( "  depth=%u SMS raw=(%.3e,%.3e,%.3e) mis=%.4f preClamp=(%.3e,%.3e,%.3e) postClamp=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
+						depth, smsRaw[0], smsRaw[1], smsRaw[2], sms.misWeight,
+						smsClampedIn[0], smsClampedIn[1], smsClampedIn[2],
+						smsContrib[0], smsContrib[1], smsContrib[2],
+						throughput[0], throughput[1], throughput[2],
+						ct[0], ct[1], ct[2],
+						result[0], result[1], result[2] );
+				}
 
 #ifdef RISE_ENABLE_OPENPGL
 				if( depth >= 2 ) {
 					AddPTIGuidingScatteredContribution( guidingSegment, sms.contribution * sms.misWeight );
 				}
 #endif
+			} else if( ff ) {
+				FF_TRACE( "  depth=%u SMS invalid (no path)", depth );
 			}
 
 		}
@@ -2065,6 +2184,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		}
 	}
 
+	if( ff ) {
+		const Scalar lum = ColorMath::MaxValue( result );
+		FF_TRACE( "=== END SAMPLE %lu result=(%.3e,%.3e,%.3e) maxLum=%.3e ===",
+			ffSample, result[0], result[1], result[2], lum );
+	}
+
 	return result;
 }
 
@@ -2225,7 +2350,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayDiffuse,
 				0, 0, 0, 0, 1, 0,
-				false, false );
+				false, false, false );
 
 			return result + volThroughput * hitResult;
 		}
@@ -2247,7 +2372,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				0, RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayView,
 				0, 0, 0, 0, 0, 0,
-				false, false );
+				false, false, false );
 
 			return Tr * hitResult;
 		}
@@ -2274,7 +2399,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 		0, RISEPel( 0, 0, 0 ), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
 		0, 0, 0, 0, 0, 0,
-		false, false );
+		false, false, false );
 }
 
 
