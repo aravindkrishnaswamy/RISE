@@ -144,7 +144,7 @@ namespace RISE
 			enabled( false ),
 			maxIterations( 15 ),
 			solverThreshold( 1e-4 ),
-			uniquenessThreshold( 1e-4 ),
+			uniquenessThreshold( 1e-2 ),
 			maxBernoulliTrials( 100 ),
 			biased( true ),
 			maxChainDepth( 30 ),

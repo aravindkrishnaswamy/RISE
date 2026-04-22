@@ -66,7 +66,7 @@ namespace RISE
 			Scalar				eta;			///< Material IOR at this vertex.
 			const IObject*		pObject;
 			const IMaterial*	pMaterial;
-			unsigned char		flags;			///< bit 0: isExiting (photon-direction)
+			unsigned char		flags;			///< bit 0: isExiting (photon-direction, refractions only); bit 1: isReflection (scatter chose reflection, not refraction).
 
 			SMSPhotonChainVertex() :
 				position( 0, 0, 0 ), normal( 0, 0, 0 ), eta( 1.0 ),

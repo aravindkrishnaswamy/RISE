@@ -14,14 +14,14 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples                       32
+	samples                       4
 	oidn_denoise                  FALSE
 	sms_enabled                   TRUE
 	sms_max_iterations            30
 	sms_threshold                 1e-4
 	sms_max_chain_depth           10
 	sms_biased                    TRUE
-	sms_multi_trials              8
+	sms_multi_trials              16
 	sms_photon_count              100000
 	pixel_filter                  box
 }
