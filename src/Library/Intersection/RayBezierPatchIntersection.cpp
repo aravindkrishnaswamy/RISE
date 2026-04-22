@@ -84,12 +84,15 @@
 
 #include "pch.h"
 #include "RayPrimitiveIntersections.h"
+#include "BezierClipping.h"
 #include "../Functions/Polynomial.h"
 #include "../Functions/Resultant.h"
 #include "../Utilities/Plane.h"
 #include "../Utilities/GeometricUtilities.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
 using namespace RISE;
@@ -237,33 +240,10 @@ inline Scalar EvaluateBiCubic( const BiCubicPolynomial& f, const Scalar u, const
 	return ((fu[3]*u + fu[2])*u + fu[1])*u + fu[0];
 }
 
-// Partial derivative df/du as a scalar at (u,v).
-inline Scalar EvaluateBiCubic_dU( const BiCubicPolynomial& f, const Scalar u, const Scalar v )
-{
-	Scalar fu[4];
-	for( int k = 0; k < 4; k++ ) {
-		const SmallPolynomial& p = f.poly[k];
-		fu[k] = ((p.coef[3]*v + p.coef[2])*v + p.coef[1])*v + p.coef[0];
-	}
-	// d/du of fu[0] + fu[1]*u + fu[2]*u^2 + fu[3]*u^3
-	return fu[1] + 2.0*fu[2]*u + 3.0*fu[3]*u*u;
-}
-
-inline Scalar EvaluateBiCubic_dV( const BiCubicPolynomial& f, const Scalar u, const Scalar v )
-{
-	// df/dv = sum_k u^k * poly[k]'(v), where poly[k]'(v) = c1 + 2*c2*v + 3*c3*v^2.
-	Scalar fpv[4];
-	for( int k = 0; k < 4; k++ ) {
-		const SmallPolynomial& p = f.poly[k];
-		fpv[k] = p.coef[1] + 2.0*p.coef[2]*v + 3.0*p.coef[3]*v*v;
-	}
-	return ((fpv[3]*u + fpv[2])*u + fpv[1])*u + fpv[0];
-}
-
 // Combined eval: returns f(u,v), df/du, df/dv in a single Horner pass.
 // Shares the 4 Horner-in-v evaluations (for the value) and 4 derivative-
 // in-v evaluations across all three outputs.  Roughly halves the FP work
-// vs calling EvaluateBiCubic + _dU + _dV separately — each of those did
+// vs calling separate value + d/du + d/dv evaluators, each of which did
 // its own 4-term Horner-in-v from scratch.  Called from NewtonPolish
 // twice per iter (once for F1, once for F2).
 inline void EvaluateBiCubicFull(
@@ -387,11 +367,13 @@ void AccumulateRoot(
 	hit.v      = v;
 }
 
-} // anonymous namespace
-
-namespace RISE {
-
-void RayBezierPatchIntersection(
+// Intersect_Resultant: the Kajiya-resultant analytic intersection that was
+// the sole implementation through commit 1bee131.  Pulled into the anonymous
+// namespace as a helper so the public RayBezierPatchIntersection entry point
+// can dispatch to either this or the Bezier-clipping path (Phase 2) via an
+// env-var selector.  Body is textually identical to the pre-refactor public
+// function — the move is a pure rename and emits bit-identical hits.
+void Intersect_Resultant(
 	const Ray& ray,
 	BEZIER_HIT& hit,
 	const BezierPatch& patch
@@ -604,6 +586,266 @@ void RayBezierPatchIntersection(
 
 			AccumulateRoot( hit, ray, uPol, vPol, patch );
 		}
+	}
+}
+
+// ============================================================================
+// Bezier-clipping implementation (Phase 2)
+// ----------------------------------------------------------------------------
+// Alternate analytic intersection path based on recursive parameter-space
+// Bezier clipping (Nishita, Sederberg, Kakimoto 1990).  Shares setup, polish,
+// and accumulate helpers with Intersect_Resultant above; differs only in how
+// root candidates are isolated — convex-hull envelope pruning on the 4x4
+// Bernstein distance grid instead of a degree-18 univariate resultant.
+//
+// Dispatched from the public entry point based on RISE_BEZIER_ALGO env var.
+// See Intersect_Resultant above for the original / default implementation.
+// ============================================================================
+
+// One UV candidate from the clipping recursion.  Stack-allocated in a
+// fixed-size buffer so the recursion stays allocation-free.
+//
+// Buffer sizing: the Kajiya resultant bound is degree 18 (up to 18 roots
+// per bicubic-patch/ray intersection), and split-recursion can emit
+// additional near-root candidates that collapse to the same basin at
+// Newton-polish time.  kMaxClipCandidates must sit comfortably above
+// that bound — when the buffer fills, ClipRecursive bails out in
+// depth-first traversal order, which has no correlation with ray-distance
+// order, so dropping late candidates could silently hide the closest hit.
+// 64 is 3.5× the theoretical root bound and handles degenerate
+// split-splatter without risk of silent drops.
+struct UVCandidate { Scalar u; Scalar v; };
+static const int kMaxClipCandidates = 64;
+
+// Recursive parameter-space clipping.  At each call the two distance grids
+// d1, d2 represent F_1 and F_2 on the CURRENT sub-patch's own (u', v') in
+// [0,1]^2; box maps that back to the ORIGINAL patch's (u, v).  We clip
+// against each plane's envelope in both axes, intersect the four brackets,
+// and either recurse into the tighter sub-patch or split at midpoint if the
+// clip isn't making progress.
+void ClipRecursive(
+	const BezierClip::DistanceGrid& d1,
+	const BezierClip::DistanceGrid& d2,
+	const BezierClip::ParamBox& box,
+	int depth,
+	UVCandidate* out,
+	int& n_out )
+{
+	if( n_out >= kMaxClipCandidates ) return;
+
+	// Termination: box too small or recursion too deep.  Emit the box
+	// centre as a candidate; Newton-polish will refine it.
+	const Scalar kAreaEps  = 1e-10;       // (1e-5)^2 from the plan
+	const int    kMaxDepth = 25;
+	if( box.Area() < kAreaEps || depth > kMaxDepth ) {
+		Scalar uc, vc;
+		box.Map( 0.5, 0.5, uc, vc );
+		out[n_out].u = uc;
+		out[n_out].v = vc;
+		++n_out;
+		return;
+	}
+
+	// Clip tolerance per plane — relative to the grid's own magnitude,
+	// matching the convex-hull prefilter in ProjectPatchOntoPlane.
+	const Scalar eps1 = 1e-6 * BezierClip::GridMaxAbs( d1 ) + 1e-10;
+	const Scalar eps2 = 1e-6 * BezierClip::GridMaxAbs( d2 ) + 1e-10;
+
+	// Clip both axes against both planes.  A root exists only in the
+	// intersection of all four brackets.
+	Scalar u_lo1, u_hi1, v_lo1, v_hi1;
+	Scalar u_lo2, u_hi2, v_lo2, v_hi2;
+	if( !BezierClip::ConvexHullClipU( d1, eps1, u_lo1, u_hi1 ) ) return;
+	if( !BezierClip::ConvexHullClipV( d1, eps1, v_lo1, v_hi1 ) ) return;
+	if( !BezierClip::ConvexHullClipU( d2, eps2, u_lo2, u_hi2 ) ) return;
+	if( !BezierClip::ConvexHullClipV( d2, eps2, v_lo2, v_hi2 ) ) return;
+
+	const Scalar u_lo = (u_lo1 > u_lo2) ? u_lo1 : u_lo2;
+	const Scalar u_hi = (u_hi1 < u_hi2) ? u_hi1 : u_hi2;
+	const Scalar v_lo = (v_lo1 > v_lo2) ? v_lo1 : v_lo2;
+	const Scalar v_hi = (v_hi1 < v_hi2) ? v_hi1 : v_hi2;
+	if( u_hi < u_lo || v_hi < v_lo ) return;
+
+	const Scalar u_width   = u_hi - u_lo;
+	const Scalar v_width   = v_hi - v_lo;
+	const Scalar clip_area = u_width * v_width;  // fraction of current sub-patch
+
+	// Map clip bracket back to original patch coordinates.  new_box is the
+	// ParamBox we need WHETHER we recurse on the clipped sub-grid or split
+	// it further — so extract the clipped sub-grids up front to keep the
+	// "d1/d2 live on [0,1]^2 representing new_box" invariant intact in
+	// both branches.  Doing this unconditionally costs four ExtractSubRange
+	// calls (eight DeCasteljau at worst) but guarantees the grids and the
+	// ParamBox always describe the same sub-patch.
+	BezierClip::ParamBox new_box;
+	box.Map( u_lo, v_lo, new_box.u_lo, new_box.v_lo );
+	box.Map( u_hi, v_hi, new_box.u_hi, new_box.v_hi );
+
+	BezierClip::DistanceGrid d1_sub, d2_sub, d1_tmp, d2_tmp;
+	BezierClip::ExtractSubRangeU( d1, u_lo, u_hi, d1_tmp );
+	BezierClip::ExtractSubRangeV( d1_tmp, v_lo, v_hi, d1_sub );
+	BezierClip::ExtractSubRangeU( d2, u_lo, u_hi, d2_tmp );
+	BezierClip::ExtractSubRangeV( d2_tmp, v_lo, v_hi, d2_sub );
+
+	// If the clip is converging (area reduced by >= 20%), step into the
+	// sub-grid directly.  Otherwise split at midpoint of the larger axis
+	// to tease apart potential multiple roots — splitting the clipped
+	// sub-grid (not the pre-clip one) so the halves align with halves of
+	// new_box.
+	const Scalar kClipRatioThresh = 0.8;
+	if( clip_area < kClipRatioThresh ) {
+		ClipRecursive( d1_sub, d2_sub, new_box, depth + 1, out, n_out );
+		return;
+	}
+
+	// Choose the split axis by the current sub-patch's remaining width in
+	// each axis.  Since d1_sub / d2_sub both live on [0,1]^2, that's just
+	// new_box's aspect — wider half gets split first.
+	if( new_box.UWidth() >= new_box.VWidth() ) {
+		BezierClip::DistanceGrid d1L, d1R, d2L, d2R;
+		BezierClip::DeCasteljauU( d1_sub, 0.5, d1L, d1R );
+		BezierClip::DeCasteljauU( d2_sub, 0.5, d2L, d2R );
+		const Scalar u_mid = 0.5 * (new_box.u_lo + new_box.u_hi);
+		BezierClip::ParamBox boxL = { new_box.u_lo, u_mid,        new_box.v_lo, new_box.v_hi };
+		BezierClip::ParamBox boxR = { u_mid,        new_box.u_hi, new_box.v_lo, new_box.v_hi };
+		ClipRecursive( d1L, d2L, boxL, depth + 1, out, n_out );
+		ClipRecursive( d1R, d2R, boxR, depth + 1, out, n_out );
+	} else {
+		BezierClip::DistanceGrid d1L, d1R, d2L, d2R;
+		BezierClip::DeCasteljauV( d1_sub, 0.5, d1L, d1R );
+		BezierClip::DeCasteljauV( d2_sub, 0.5, d2L, d2R );
+		const Scalar v_mid = 0.5 * (new_box.v_lo + new_box.v_hi);
+		BezierClip::ParamBox boxL = { new_box.u_lo, new_box.u_hi, new_box.v_lo, v_mid        };
+		BezierClip::ParamBox boxR = { new_box.u_lo, new_box.u_hi, v_mid,        new_box.v_hi };
+		ClipRecursive( d1L, d2L, boxL, depth + 1, out, n_out );
+		ClipRecursive( d1R, d2R, boxR, depth + 1, out, n_out );
+	}
+}
+
+// Intersect_Clipping: Bezier-clipping analytic intersection.  Setup + polish
+// + accumulate are shared with Intersect_Resultant; only the root isolation
+// stage (Step 4 below) differs.
+void Intersect_Clipping(
+	const Ray& ray,
+	BEZIER_HIT& hit,
+	const BezierPatch& patch
+	)
+{
+	hit.bHit = false;
+	hit.u    = 0.0;
+	hit.v    = 0.0;
+
+	// Step 1: two orthogonal planes whose intersection is the ray.
+	Plane plane1, plane2;
+	MakePlanes( plane1, plane2, ray );
+
+	// Step 2: project control points onto each plane.  Same helper as the
+	// resultant path; the d grids ARE the Bernstein coefficients of F_k.
+	Scalar d1raw[4][4], d2raw[4][4];
+	Scalar d1min, d1max, d2min, d2max;
+	if( !ProjectPatchOntoPlane( plane1, patch, d1raw, d1min, d1max ) ) return;
+	if( !ProjectPatchOntoPlane( plane2, patch, d2raw, d2min, d2max ) ) return;
+
+	// Step 3: repack into DistanceGrid structs for the clipping recursion.
+	BezierClip::DistanceGrid d1grid, d2grid;
+	for( int i = 0; i < 4; ++i ) {
+		for( int j = 0; j < 4; ++j ) {
+			d1grid.d[i][j] = d1raw[i][j];
+			d2grid.d[i][j] = d2raw[i][j];
+		}
+	}
+
+	// Step 4: recursive convex-hull clipping -> UV candidates.
+	UVCandidate candidates[kMaxClipCandidates];
+	int nCandidates = 0;
+	const BezierClip::ParamBox fullBox = { 0.0, 1.0, 0.0, 1.0 };
+	ClipRecursive( d1grid, d2grid, fullBox, 0, candidates, nCandidates );
+	if( nCandidates == 0 ) return;
+
+	// Step 5: build bicubic polynomials in power basis for Newton polish.
+	// Same helper the resultant path uses — cost is 2 * 64 FMAs, amortised
+	// over all surviving candidates.
+	BiCubicPolynomial F1, F2;
+	MakeBiCubicPolyFromD( d1raw, F1 );
+	MakeBiCubicPolyFromD( d2raw, F2 );
+
+	const Scalar residualTol = 1e-10;
+
+	// Step 6: Newton polish each candidate and accept the closest valid hit.
+	// De-dup polished (u,v) pairs that converge to the same basin.
+	Scalar acceptedU[kMaxClipCandidates], acceptedV[kMaxClipCandidates];
+	int nAccepted = 0;
+	for( int c = 0; c < nCandidates; ++c ) {
+		Scalar u = candidates[c].u;
+		Scalar v = candidates[c].v;
+		NewtonPolish( F1, F2, u, v, residualTol, 20 );
+
+		if( u < 0.0 || u > 1.0 ) continue;
+		if( v < 0.0 || v > 1.0 ) continue;
+
+		const Scalar f1 = EvaluateBiCubic( F1, u, v );
+		const Scalar f2 = EvaluateBiCubic( F2, u, v );
+		if( fabs( f1 ) > 1e-5 || fabs( f2 ) > 1e-5 ) continue;
+
+		bool dup = false;
+		for( int a = 0; a < nAccepted; ++a ) {
+			if( fabs( acceptedU[a] - u ) < 1e-5 &&
+			    fabs( acceptedV[a] - v ) < 1e-5 ) { dup = true; break; }
+		}
+		if( dup ) continue;
+		acceptedU[nAccepted] = u;
+		acceptedV[nAccepted] = v;
+		++nAccepted;
+
+		AccumulateRoot( hit, ray, u, v, patch );
+	}
+}
+
+// ============================================================================
+// Algorithm selector
+// ----------------------------------------------------------------------------
+// Cached at static-init time from RISE_BEZIER_ALGO:
+//   "clipping"  -> kAlgoClipping
+//   "resultant" -> kAlgoResultant  (also the default when the var is unset)
+//   anything else falls through to kAlgoResultant.
+// A const global means zero per-call overhead after static init.
+// ============================================================================
+enum BezierAlgo { kAlgoResultant, kAlgoClipping };
+
+BezierAlgo ResolveBezierAlgoFromEnv()
+{
+	// Default changed to kAlgoClipping after the Phase 2 / 6 gates
+	// landed green on teapot_analytic, aphrodite, f16 (2.14x / 5.37x /
+	// 4.04x speedups at MC-noise-floor pixel diff vs the resultant path).
+	// Set RISE_BEZIER_ALGO=resultant to fall back to the Kajiya-resultant
+	// pipeline — still on disk as the reference implementation.
+	const char* env = std::getenv( "RISE_BEZIER_ALGO" );
+	if( env == 0 ) return kAlgoClipping;
+	if( std::strcmp( env, "clipping"  ) == 0 ) return kAlgoClipping;
+	if( std::strcmp( env, "resultant" ) == 0 ) return kAlgoResultant;
+	return kAlgoClipping;                       // unrecognised → new default
+}
+
+const BezierAlgo g_bezierAlgo = ResolveBezierAlgoFromEnv();
+
+} // anonymous namespace
+
+namespace RISE {
+
+// Public entry point.  Dispatches between Intersect_Clipping (Phase 2+) and
+// Intersect_Resultant (the original resultant-based path).  Selection is
+// driven by the RISE_BEZIER_ALGO environment variable; see the selector
+// comment above for details.
+void RayBezierPatchIntersection(
+	const Ray& ray,
+	BEZIER_HIT& hit,
+	const BezierPatch& patch
+	)
+{
+	if( g_bezierAlgo == kAlgoClipping ) {
+		Intersect_Clipping( ray, hit, patch );
+	} else {
+		Intersect_Resultant( ray, hit, patch );
 	}
 }
 
