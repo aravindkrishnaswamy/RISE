@@ -23,6 +23,8 @@ Built binaries land in `bin/tests/`.
   `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
 - Sampling, shading, and cache behavior:
   `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `IrradianceCacheTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
+- SMS (Specular Manifold Sampling):
+  `ManifoldSolverTest.cpp` (block-tridiagonal Jacobian, specular-direction math, chain geometry/throughput, TIR, light-to-first-vertex Jacobian determinant), `BDPTSMSSuppressionTest.cpp` (cross-strategy emission suppression for BDPT (s==0) to prevent SMS caustic double-counting)
 - Sampler and dimension budget:
   `SobolDimensionBudgetTest.cpp`, `PSSMLTStreamAliasingTest.cpp`
 - Diagnostic or performance-oriented coverage:
@@ -87,9 +89,19 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/SMS/sms_visibility_occluded.RI
 
 ```sh
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Spectral/spectral_dispersive_caustic_pt_sms.RISEscene
+printf "render\nquit\n" | ./bin/rise scenes/Tests/Spectral/spectral_dispersive_caustic_bdpt_sms.RISEscene
 ```
 
-**Expected**: Dispersive glass caustic with per-wavelength evaluation. The sphere should show a slight chromatic tint from dispersion.
+**Expected**: Dispersive glass caustic with per-wavelength evaluation. The sphere should show a slight chromatic tint from dispersion. The BDPT variant validates that `EvaluateSMSStrategiesNM` delegates correctly to `ManifoldSolver::EvaluateAtShadingPointNM` (G(x,v_1) · |det(δv_1/δy)| geometry) — a regression to the obsolete `cosAtLight · chainGeom / jacobianDet` formula would appear as a spectral tint shift on the caustic versus the PT reference.
+
+### BDPT + SMS Double-Counting Regression
+
+```sh
+printf "render\nquit\n" | ./bin/rise scenes/Tests/SMS/sms_slab_close_vcm.RISEscene       # reference
+printf "render\nquit\n" | ./bin/rise scenes/Tests/SMS/sms_slab_close_bdpt_sms.RISEscene   # unit under test
+```
+
+**Expected**: The BDPT+SMS render's caustic mean luminance should match the VCM reference within ~5%. Before the (s==0) suppression fix in `BDPTIntegrator::ConnectAndEvaluate`, BDPT+SMS would render caustics ~1.5–2× brighter than VCM because (s==0) BSDF-sampled emission and the SMS estimator both contributed at full weight for the same path space. The fix uses `BDPTIntegrator::ShouldSuppressSMSOverlap` (covered by `tests/BDPTSMSSuppressionTest.cpp`) to mirror PT's `bPassedThroughSpecular && bHadNonSpecularShading` rule over the eye subpath.
 
 ## Production Stability Controls (Roadmap Step 3)
 

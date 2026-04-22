@@ -228,7 +228,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 
 	// SMS contributions per eye-branch.  Each branch has its own
 	// first non-specular eye vertex, which is where SMS anchors
-	// its manifold chain.
+	// its manifold chain.  Double-counting with BDPT's (s==0) is
+	// prevented by the matching suppression in
+	// BDPTIntegrator::ConnectAndEvaluateNM — see the long comment
+	// in the RGB Pel rasterizer for the MIS analysis.
 	if( pIntegrator ) {
 		sampler.StartStream( 31 );
 		for( size_t eb = 0; eb < numEyeBranches; eb++ ) {
@@ -541,7 +544,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			// SMS contributions per eye-branch at hero wavelength only
 			// (SMS geometry is specular-chain dependent and cannot be
 			// shared across wavelengths the way EvaluateAllStrategiesNM
-			// can via RecomputeSubpathThroughputNM).
+			// can via RecomputeSubpathThroughputNM).  Double-counting
+			// with BDPT's (s==0) strategy is prevented by the matching
+			// suppression in BDPTIntegrator::ConnectAndEvaluateNM.
 			if( pIntegrator ) {
 				sampler.StartStream( 31 );
 				Scalar smsValue = 0;

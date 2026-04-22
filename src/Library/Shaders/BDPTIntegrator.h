@@ -454,6 +454,28 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+			/// SMS cross-strategy emission-suppression predicate.
+			/// Walks the first t-1 vertices of an eye subpath and
+			/// returns true when the subpath has an SMS-reachable
+			/// topology (non-delta shading point followed by a delta
+			/// chain to the emitter).  Used by ConnectAndEvaluate and
+			/// ConnectAndEvaluateNM in the (s==0) branch to avoid
+			/// double-counting SMS caustic paths.  Mirrors PT's
+			/// `bPassedThroughSpecular && bHadNonSpecularShading` rule
+			/// — see PathTracingIntegrator.cpp:1703-1708 for the
+			/// original update rule, and the long comment in
+			/// ConnectAndEvaluate for the MIS analysis proving why
+			/// suppression is required.
+			///
+			/// \param eyeVerts Eye subpath vertices [0]=camera .. [t-1]=emitter
+			/// \param t        Number of eye vertices; must be <= eyeVerts.size()
+			/// \return true if the (s==0) emission contribution should be
+			///         suppressed in favor of the SMS estimator.
+			static bool ShouldSuppressSMSOverlap(
+				const std::vector<BDPTVertex>& eyeVerts,
+				unsigned int t
+				);
+
 		protected:
 			/// Helper: evaluates the BSDF at a surface vertex for given
 			/// incoming and outgoing directions.

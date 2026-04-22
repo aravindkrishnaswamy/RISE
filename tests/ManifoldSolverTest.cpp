@@ -1013,6 +1013,140 @@ void TestValidateChain_InvalidReflection()
 }
 
 // ============================================================
+// Group 11: Light-to-First-Vertex Jacobian Determinant
+//
+// The SMS measure-conversion factor uses |det(δv_1_⊥ / δy_⊥)|
+// (Zeltner et al. 2020, Eq. 14).  This block-tridiagonal
+// solve underlies the G(x,v_1) · |det(δv/δy)| formula that
+// replaced the obsolete cosAtLight × chainGeom / jacobianDet in
+// EvaluateAtShadingPoint{NM}.  A regression here would silently
+// shift caustic intensity — the kind of thing that only shows
+// up as a bias-vs-variance mismatch against VCM reference.
+// ============================================================
+
+void TestLightToVertexJac_EmptyChain()
+{
+	std::cout << "Testing light-to-vertex Jacobian empty chain returns 0..." << std::endl;
+	TestableManifoldSolver solver;
+	std::vector<ManifoldVertex> chain;
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, Point3(0,1,0), Point3(0,-1,0), Vector3(0,1,0) );
+	assert( IsClose( det, 0.0 ) );
+}
+
+void TestLightToVertexJac_SingleRefraction_Positive()
+{
+	std::cout << "Testing light-to-vertex Jacobian single-refraction positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Geometry: shading point above, refractor plane at origin
+	// (normal +Y, eta=1.5), light below.  Symmetric about Y axis
+	// so the Jacobian should be finite and positive.
+	const Point3 shadingPoint( 0.0, 1.0, 0.0 );
+	const Point3 lightPos( 0.0, -1.0, 0.0 );
+	const Vector3 lightNormal( 0.0, 1.0, 0.0 );
+
+	ManifoldVertex v = MakeVertex(
+		Point3( 0, 0, 0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, /*isReflection=*/false );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, shadingPoint, lightPos, lightNormal );
+
+	// The Jacobian det should be strictly positive and finite.
+	// Exact value is scene-dependent, but zero or NaN would be a bug.
+	assert( det > 0 );
+	assert( std::isfinite( det ) );
+}
+
+void TestLightToVertexJac_SingleReflection_Positive()
+{
+	std::cout << "Testing light-to-vertex Jacobian single-reflection positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Geometry: shading above, mirror plane at origin (normal +Y),
+	// "light" above-right so reflection reaches it.  For reflection
+	// chain the Jacobian is expected positive and finite.
+	const Point3 shadingPoint( -1.0, 1.0, 0.0 );
+	const Point3 lightPos( 1.0, 1.0, 0.0 );
+	const Vector3 lightNormal( 0.0, -1.0, 0.0 );
+
+	ManifoldVertex v = MakeVertex(
+		Point3( 0, 0, 0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.0, /*isReflection=*/true );
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, shadingPoint, lightPos, lightNormal );
+
+	assert( det > 0 );
+	assert( std::isfinite( det ) );
+}
+
+void TestLightToVertexJac_TwoRefraction_Positive()
+{
+	std::cout << "Testing light-to-vertex Jacobian k=2 (glass slab) positive..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Two parallel refractors (entry/exit of a slab).  Back-to-back
+	// eta cancellation means the chain is physically valid with
+	// entry eta=1.5 then exit eta=1/1.5 ≈ 0.667.
+	const Point3 shadingPoint( 0.0, 2.0, 0.0 );
+	const Point3 lightPos( 0.0, -2.0, 0.0 );
+	const Vector3 lightNormal( 0.0, 1.0, 0.0 );
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( MakeVertex(
+		Point3( 0.0, 0.5, 0.0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, /*isReflection=*/false ) );
+	chain.push_back( MakeVertex(
+		Point3( 0.0, -0.5, 0.0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.0 / 1.5, /*isReflection=*/false ) );
+
+	const Scalar det = solver.ComputeLightToFirstVertexJacobianDet(
+		chain, shadingPoint, lightPos, lightNormal );
+
+	assert( det > 0 );
+	assert( std::isfinite( det ) );
+}
+
+void TestLastBlockLightJac_NormalIncidence()
+{
+	std::cout << "Testing ComputeLastBlockLightJacobian returns finite Jy..." << std::endl;
+	TestableManifoldSolver solver;
+
+	// Single refractor, light directly below.
+	ManifoldVertex vk = MakeVertex(
+		Point3( 0, 0, 0 ), Vector3(0,1,0),
+		Vector3(1,0,0), Vector3(0,0,1),
+		1.5, /*isReflection=*/false );
+	Point3 prevPos( 0, 1, 0 );
+	Point3 lightPos( 0, -1, 0 );
+	Vector3 lightNormal( 0, 1, 0 );
+
+	Scalar Jy[4] = { 0, 0, 0, 0 };
+	solver.ComputeLastBlockLightJacobian( vk, prevPos, lightPos, lightNormal, Jy );
+
+	// All four entries should be finite.  Symmetric geometry makes
+	// the off-diagonals 0 to numerical precision, but we don't rely
+	// on that — just require finiteness and non-zero determinant.
+	assert( std::isfinite( Jy[0] ) );
+	assert( std::isfinite( Jy[1] ) );
+	assert( std::isfinite( Jy[2] ) );
+	assert( std::isfinite( Jy[3] ) );
+
+	const Scalar detJy = Jy[0] * Jy[3] - Jy[1] * Jy[2];
+	assert( std::fabs( detJy ) > 1e-12 );
+}
+
+// ============================================================
 // Group 12: ComputeSphericalDerivatives
 // ============================================================
 
@@ -1367,6 +1501,13 @@ int main()
 	TestValidateChain_InvalidRefraction();
 	TestValidateChain_ValidReflection();
 	TestValidateChain_InvalidReflection();
+
+	// Group 11: Light-to-First-Vertex Jacobian Determinant (SMS geometry)
+	TestLightToVertexJac_EmptyChain();
+	TestLightToVertexJac_SingleRefraction_Positive();
+	TestLightToVertexJac_SingleReflection_Positive();
+	TestLightToVertexJac_TwoRefraction_Positive();
+	TestLastBlockLightJac_NormalIncidence();
 
 	// Group 12: ComputeSphericalDerivatives
 	TestSphericalDeriv_ThetaGradient();

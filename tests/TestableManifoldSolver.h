@@ -38,6 +38,8 @@ namespace RISE
 			using ManifoldSolver::ComputeBlockTridiagonalDeterminant;
 			using ManifoldSolver::BuildJacobianAngleDiff;
 			using ManifoldSolver::BuildJacobianAngleDiffNumerical;
+			using ManifoldSolver::ComputeLastBlockLightJacobian;
+			using ManifoldSolver::ComputeLightToFirstVertexJacobianDet;
 		};
 	}
 }

@@ -3461,6 +3461,29 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
+		// SMS cross-strategy suppression.
+		//
+		// When SMS is enabled (pManifoldSolver != nullptr), the EvaluateSMS*
+		// pipelines produce the same caustic paths as this (s==0) strategy
+		// via the Zeltner 2020 manifold estimator.  Adding both the (s==0)
+		// BSDF-sampled contribution AND the SMS-sampled contribution
+		// double-counts energy because:
+		//   1. The BDPT power-heuristic denominator assigns (s==0) weight
+		//      ~1.0 for SDS-shaped paths — the eye-subpath MIS walk skips
+		//      every delta vertex in the chain (both vj.isDelta and
+		//      eyeVerts[j-1].isDelta guards trigger `continue`), so no
+		//      alternative strategy contributes.
+		//   2. SMS emits its contribution with misWeight = 1.0 (no cross-
+		//      strategy MIS), so both estimators land at full weight.
+		//
+		// Full rule lives in ShouldSuppressSMSOverlap (see the long comment
+		// there for the MIS analysis and the PT analogy).
+		if( pManifoldSolver && ShouldSuppressSMSOverlap( eyeVerts, t ) ) {
+			// SMS owns this caustic path; leave the (s==0) strategy silent
+			// to avoid doubling the estimator.
+			return result;
+		}
+
 		// The eye path naturally arrived at an emitter
 		// The outgoing emission direction is from the emitter toward the
 		// predecessor eye vertex (the reverse of the eye ray's travel).
@@ -7018,6 +7041,23 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
+		if( !eyeEnd.pMaterial->GetEmitter() ) {
+			return result;
+		}
+
+		// SMS cross-strategy suppression (NM).  Mirrors the RGB
+		// ConnectAndEvaluate (s==0) suppression — see the long comment
+		// in ShouldSuppressSMSOverlap for the MIS analysis and PT
+		// analogy.  Without this guard SMS-shaped caustic paths are
+		// double-counted: BDPT's eye-walk MIS power-heuristic assigns
+		// (s==0) weight ~1.0 for SDS paths (delta-vertex skips kill
+		// every alternative), and the spectral SMS rasterizer adds
+		// its contribution with misWeight=1.0.
+		if( pManifoldSolver && ShouldSuppressSMSOverlap( eyeVerts, t ) ) {
+			// SMS owns this caustic path at the current wavelength.
+			return result;
+		}
+
 		Vector3 woFromEmitter;
 		if( t >= 2 ) {
 			woFromEmitter = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
@@ -7900,7 +7940,67 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrateg
 }
 
 //////////////////////////////////////////////////////////////////////
+// ShouldSuppressSMSOverlap
+//
+// Pure function used by the (s==0) branch in ConnectAndEvaluate and
+// ConnectAndEvaluateNM to decide whether to let SMS own a caustic
+// path instead of contributing via BSDF-sampled emission.
+//
+// Mirrors the PT update rule at PathTracingIntegrator.cpp:1703-1708:
+//   - `bPassedThroughSpecular` is sticky after a delta scatter but
+//     resets on a non-delta scatter.
+//   - `bHadNonSpecularShading` becomes sticky after any non-delta
+//     scatter.
+//   - BSSRDF entry vertices are treated as non-delta shading regardless
+//     of their own isDelta flag, matching PT's handoff which sets
+//     `smsPassedThroughSpecular=false; smsHadNonSpecularShading=true`
+//     at the BSSRDF emergence point.
+//
+// The walk is bounded by [1, t-2] so it skips the camera vertex
+// (index 0, no BSDF lobe) and the emitter vertex (index t-1, whose
+// isDelta refers to its receiving BSDF, not the emission).  Paths
+// with t < 3 cannot have both a shading point and a specular chain
+// between camera and emitter, so no suppression applies.
+//////////////////////////////////////////////////////////////////////
+
+bool BDPTIntegrator::ShouldSuppressSMSOverlap(
+	const std::vector<BDPTVertex>& eyeVerts,
+	unsigned int t
+	)
+{
+	if( t < 3 || t > eyeVerts.size() ) {
+		return false;
+	}
+
+	bool bPassedThroughSpecular = false;
+	bool bHadNonSpecularShading = false;
+	for( unsigned int j = 1; j + 1 < t; ++j )
+	{
+		const BDPTVertex& vj = eyeVerts[j];
+		const bool treatAsNonDelta = vj.isBSSRDFEntry || !vj.isDelta;
+		if( treatAsNonDelta ) {
+			bPassedThroughSpecular = false;
+			bHadNonSpecularShading = true;
+		} else {
+			bPassedThroughSpecular = true;
+		}
+	}
+	return bPassedThroughSpecular && bHadNonSpecularShading;
+}
+
+//////////////////////////////////////////////////////////////////////
 // EvaluateSMSStrategiesNM - SMS for spectral (single wavelength).
+//
+// Mirrors the RGB EvaluateSMSStrategies: for each non-delta eye
+// vertex, delegate to ManifoldSolver::EvaluateAtShadingPointNM so the
+// spectral path benefits from every shared-solver fix (G(x,v1)·|det|
+// geometry, TIR labelling promotion, photon-aided seeding with
+// correct per-vertex attenuation, multi-trial dedupe).  The previous
+// in-line implementation carried an obsolete
+// `cosAtLight · chainGeom / jacobianDet` formulation that double-
+// counted distance terms and spectrally biased caustic intensity —
+// replacing it with the shared solver keeps RGB and NM in agreement
+// and future-proofs against further solver changes.
 //////////////////////////////////////////////////////////////////////
 
 std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrategiesNM(
@@ -7915,18 +8015,10 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 	std::vector<ConnectionResultNM> results;
 
 	if( !pManifoldSolver ) return results;
-	if( !pLightSampler ) return results;
 
-	// Get luminaries list from the caster
-	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-	LuminaryManager::LuminariesList emptyList;
-	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
-		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
-
-	// Limit SMS to the first few diffuse eye vertices.
-	// Deeper vertices contribute diminishing caustic energy and the
-	// cost of BuildSeedChain (one ray-trace per vertex) adds up.
+	// Limit SMS to the first few diffuse eye vertices.  Deeper vertices
+	// contribute diminishing caustic energy and the cost of BuildSeedChain
+	// (one ray-trace per vertex) adds up.  Matches the RGB variant.
 	const unsigned int maxSMSDepth = (eyeVerts.size() < 4) ?
 		static_cast<unsigned int>(eyeVerts.size()) : 4;
 	for( unsigned int t = 1; t < maxSMSDepth; t++ )
@@ -7937,138 +8029,34 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		if( eyeVertex.isDelta || !eyeVertex.isConnectible ) continue;
 		if( eyeVertex.type != BDPTVertex::SURFACE || !eyeVertex.pMaterial ) continue;
 
-		// Sample a light
-		LightSample lightSample;
-		if( !pLightSampler->SampleLight( scene, luminaries, sampler, lightSample ) ) continue;
-
-		// Build seed chain with normal-direction fallback
-		std::vector<ManifoldVertex> seedChain;
-		unsigned int chainLen = pManifoldSolver->BuildSeedChain(
-			eyeVertex.position, lightSample.position,
-			scene, caster, seedChain );
-
-		if( chainLen == 0 || seedChain.empty() )
-		{
-			const Point3 normalTarget = Point3Ops::mkPoint3(
-				eyeVertex.position, eyeVertex.normal * 100.0 );
-			chainLen = pManifoldSolver->BuildSeedChain(
-				eyeVertex.position, normalTarget,
-				scene, caster, seedChain );
-		}
-
-		if( chainLen == 0 || seedChain.empty() )
-		{
-			// Fallback: midpoint direction (for tilted geometry)
-			const Point3 midpoint(
-				(eyeVertex.position.x + lightSample.position.x) * 0.5,
-				(eyeVertex.position.y + lightSample.position.y) * 0.5,
-				(eyeVertex.position.z + lightSample.position.z) * 0.5 );
-			const Point3 midTarget = Point3Ops::mkPoint3(
-				eyeVertex.position,
-				Vector3Ops::Normalize( Vector3Ops::mkVector3(
-					midpoint, eyeVertex.position ) ) * 100.0 );
-			chainLen = pManifoldSolver->BuildSeedChain(
-				eyeVertex.position, midTarget,
-				scene, caster, seedChain );
-		}
-
-		if( chainLen == 0 || seedChain.empty() ) continue;
-
-		// Run manifold solve
-		ManifoldResult mResult = pManifoldSolver->Solve(
-			eyeVertex.position, eyeVertex.normal,
-			lightSample.position, lightSample.normal,
-			seedChain, sampler );
-
-		if( !mResult.valid ) continue;
-
-		// Visibility: check external segments of the specular chain
-		if( !pManifoldSolver->CheckChainVisibility(
-			eyeVertex.position, lightSample.position,
-			mResult.specularChain, caster ) )
-			continue;
-
-		// Compute contribution
-		// BSDF at eye vertex toward first specular vertex
-		// mkVector3(b, a) = b - a, so mkVector3(spec, eye) points from eye to spec
-		Vector3 dirToFirstSpec = Vector3Ops::mkVector3(
-			mResult.specularChain[0].position, eyeVertex.position );
-		Scalar distToSpec = Vector3Ops::Magnitude( dirToFirstSpec );
-		if( distToSpec < 1e-8 ) continue;
-		dirToFirstSpec = dirToFirstSpec * (1.0 / distToSpec);
-
-		const Vector3 wiAtEye = dirToFirstSpec;
-
+		// Outgoing direction at eye vertex (toward previous vertex).
+		// Matches the RGB variant's convention so the delegated call sees
+		// the same woOutgoing as a PT-anchored SMS evaluation would.
 		Vector3 woAtEye;
 		if( t >= 2 ) {
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[t-2].position, eyeVertex.position );
-			woAtEye = Vector3Ops::Normalize( woAtEye );
 		} else {
 			woAtEye = Vector3Ops::mkVector3( eyeVerts[0].position, eyeVertex.position );
-			woAtEye = Vector3Ops::Normalize( woAtEye );
 		}
+		woAtEye = Vector3Ops::Normalize( woAtEye );
 
-		Scalar fEye = EvalBSDFAtVertexNM( eyeVertex, wiAtEye, woAtEye, nm );
-		if( fEye <= 0 ) continue;
+		// Delegate to the standalone EvaluateAtShadingPointNM.  This
+		// function owns light sampling, seed-chain construction with
+		// all three fallbacks, Newton solve, visibility, multi-trial
+		// dedupe, G_x_v1 × detDvDy geometry, and per-wavelength
+		// chain throughput — everything the obsolete in-line body did
+		// by hand, with the correct spectral geometry formula.
+		ManifoldSolver::SMSContributionNM smsNM =
+			pManifoldSolver->EvaluateAtShadingPointNM(
+				eyeVertex.position, eyeVertex.normal, eyeVertex.onb,
+				eyeVertex.pMaterial, woAtEye,
+				scene, caster, sampler, nm );
 
-		// SMS geometric factor (Zeltner et al. 2020).
-		//
-		// The path integral for the specular chain includes G terms at
-		// every edge, divided by the constraint Jacobian determinant.
-		// After delta-BSDF cancellation, the surviving geometric terms
-		// are captured by EvaluateChainGeometry.  See the RGB variant
-		// in ManifoldSolver::EvaluateAtShadingPoint for the derivation.
+		if( !smsNM.valid ) continue;
 
-		// Cosine at eye vertex toward first specular vertex
-		const Scalar cosAtEye = fabs( Vector3Ops::Dot( eyeVertex.normal, wiAtEye ) );
-		if( cosAtEye <= 0 ) continue;
-
-		// Direction from last specular vertex to light
-		const ManifoldVertex& lastSpec = mResult.specularChain.back();
-		Vector3 dirSpecToLight = Vector3Ops::mkVector3(
-			lastSpec.position, lightSample.position );
-		Scalar distSpecToLight = Vector3Ops::Magnitude( dirSpecToLight );
-		if( distSpecToLight < 1e-8 ) continue;
-		dirSpecToLight = dirSpecToLight * (1.0 / distSpecToLight);
-
-		Scalar cosAtLight;
-		Scalar Le;
-		if( lightSample.isDelta ) {
-			cosAtLight = 1.0;
-			if( lightSample.pLight ) {
-				Le = ColorMath::Luminance(
-					lightSample.pLight->emittedRadiance( dirSpecToLight ) );
-			} else {
-				Le = ColorMath::Luminance( lightSample.Le );
-			}
-		} else {
-			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
-			if( cosAtLight <= 0 ) continue;
-			Le = ColorMath::Luminance( lightSample.Le );
-		}
-
-		// Chain geometry and manifold Jacobian (see RGB variant
-		// in ManifoldSolver::EvaluateAtShadingPoint for derivation).
-		const Scalar chainGeom = pManifoldSolver->EvaluateChainGeometry(
-			eyeVertex.position, lightSample.position, mResult.specularChain );
-
-		Scalar smsGeometric = cosAtLight * chainGeom
-			/ fmax( mResult.jacobianDet, 1e-20 );
-		smsGeometric = fmin( smsGeometric,
-			pManifoldSolver->GetConfig().maxGeometricTerm );
-
-		// Chain throughput: per-wavelength Fresnel evaluation
-		Scalar smsChainContrib = pManifoldSolver->EvaluateChainThroughputNM(
-			eyeVertex.position, lightSample.position,
-			mResult.specularChain, nm );
-
-		// Full contribution
 		ConnectionResultNM cr;
-		cr.contribution = eyeVertex.throughputNM * fEye
-			* cosAtEye * smsChainContrib * smsGeometric * Le
-			/ (lightSample.pdfSelect * lightSample.pdfPosition);
-
-		cr.misWeight = 1.0 / mResult.pdf;
+		cr.contribution = eyeVertex.throughputNM * smsNM.contribution;
+		cr.misWeight = smsNM.misWeight;
 		cr.needsSplat = false;
 		cr.valid = true;
 

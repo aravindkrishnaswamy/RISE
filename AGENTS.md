@@ -108,6 +108,7 @@ precisely because ad-hoc judgment reliably misses them.
 | [performance-work-with-baselines](docs/skills/performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
 | [abi-preserving-api-evolution](docs/skills/abi-preserving-api-evolution.md) | Change a public API — exported function, virtual interface, or abstract base class. |
 | [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — apply this decision tree first. |
+| [sms-firefly-diagnosis](docs/skills/sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; user reports "fireflies" in an SMS scene. |
 
 Claude Code auto-discovers these via thin shims under
 `.claude/skills/<name>/SKILL.md`.  Other LLM tools should read the

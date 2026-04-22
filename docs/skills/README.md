@@ -51,6 +51,7 @@ mechanism, or follow references from [AGENTS.md](../../AGENTS.md).
 | [performance-work-with-baselines](performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
 | [abi-preserving-api-evolution](abi-preserving-api-evolution.md) | Change a public API — exported function, virtual interface, or abstract base class. |
 | [const-correctness-over-escape-hatches](const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — stop and apply this decision tree first. |
+| [sms-firefly-diagnosis](sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; "fireflies" reported; a new SMS scene differs from its VCM reference by bright speckles. |
 
 ## Authoring New Skills
 

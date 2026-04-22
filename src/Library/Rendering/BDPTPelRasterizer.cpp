@@ -265,12 +265,17 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 
 	// SMS contributions for specular caustic chains.
 	//
-	// SMS results are added directly to the BDPT result without
-	// cross-strategy MIS.  This is correct because the path spaces
-	// are disjoint: BDPT only connects non-delta vertices, while
-	// SMS paths pass exclusively through delta (specular) surfaces.
-	// BDPT cannot generate caustic paths through perfect specular
-	// geometry, so no double-counting occurs.
+	// SMS results are added with SMS's internal misWeight only (no
+	// cross-strategy BDPT MIS).  The two estimators DO sample
+	// overlapping path spaces — BDPT's (s==0) strategy generates
+	// delta-through caustic paths whenever an eye subpath naturally
+	// BSDF-samples a delta lobe and terminates at an emitter.
+	// Double-counting is prevented upstream in
+	// BDPTIntegrator::ConnectAndEvaluate's (s==0) branch, which
+	// suppresses emission when the eye subpath has the SMS-reachable
+	// topology (non-delta shading point followed by a delta chain
+	// to the emitter).  That mirrors PT's
+	// `bPassedThroughSpecular && bHadNonSpecularShading` rule.
 	//
 	// Per eye-branch: each branch has its own first non-specular
 	// eye vertex, which is where SMS anchors the manifold chain.
