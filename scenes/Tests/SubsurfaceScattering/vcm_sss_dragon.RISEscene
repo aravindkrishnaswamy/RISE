@@ -2,10 +2,10 @@ RISE ASCII SCENE 5
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
-#   File:           bdpt_sss_dragon.RISEscene                                                               #
-#   Description:    Dragon with volumetric random walk SSS material, rendered with BDPT                     #
+#   File:           vcm_sss_dragon.RISEscene                                                                #
+#   Description:    Dragon with volumetric random walk SSS material, rendered with VCM                      #
 #   Author:         Aravind Krishnaswamy                                                                    #
-#   Birthdate:      March 21, 2026                                                                          #
+#   Birthdate:      April 21, 2026                                                                          #
 #                                                                                                           #
 #############################################################################################################
 
@@ -18,16 +18,20 @@ standard_shader
 	name		global
 	shaderop	DefaultPathTracing
 }
-bdpt_pel_rasterizer
+vcm_pel_rasterizer
 {
 	max_eye_depth		16
 	max_light_depth		16
 	samples				64
+	merge_radius		0.1
+	vc_enabled			true
+	vm_enabled			true
+	pixel_filter		gaussian
 }
 
 file_rasterizeroutput
 {
-	pattern				rendered/bdpt_sss_dragon
+	pattern				rendered/vcm_sss_dragon
 	type				PNG
 	bpp					8
 	color_space			sRGB

@@ -705,8 +705,27 @@ namespace
 				: Scalar( 0 );
 			const Scalar emissionPdfW = directPdfA * emissionDirPdfSA;
 
-			const Scalar wCamera = directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
-			const Scalar weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+			// SmallVCM: path length 1 (eye ray directly hits emitter) has
+			// no competing strategies.  NEE (s=1, t=1) cannot generate it
+			// because there is no intermediate eye vertex to sample from;
+			// the LIGHT-endpoint-to-camera splat (s=1, t=1) is skipped in
+			// SplatLightSubpathToCamera for the same reason; and the
+			// merging strategy has zero probability since photons emitted
+			// from a light never land on the emitter surface.  Returning
+			// full radiance with weight=1 is the unique unbiased estimator.
+			//
+			// Without this gate, naive balance-heuristic MIS downweights
+			// s=0 by wCamera = directPdfA * dVCM > 0 even though no other
+			// strategy exists, producing a systematically dim emitter.
+			// Matches SmallVCM GetLightRadiance: `if (mPathLength == 1)
+			// return radiance;` — see vertexcm.hxx.
+			Scalar weight;
+			if( i == 1 ) {
+				weight = Scalar( 1 );
+			} else {
+				const Scalar wCamera = directPdfA * eyeMis[i].dVCM + emissionPdfW * eyeMis[i].dVC;
+				weight = Scalar( 1 ) / ( VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
+			}
 
 			total = total + ( VertexThroughput<Tag>( v, tag ) * Le * weight );
 		}
@@ -991,7 +1010,19 @@ namespace
 			if( !v.isConnectible ) {
 				continue;
 			}
-			if( v.type != BDPTVertex::LIGHT && v.type != BDPTVertex::SURFACE ) {
+			// SmallVCM: the LIGHT endpoint (i=0) is not splatted to the
+			// camera.  Its sole possible contribution — "primary ray hits
+			// emitter" — is already accounted for by EvaluateS0 with
+			// full weight (see the i==1 gate in EvaluateS0Impl).
+			// Splatting it here too would be pure double counting, and
+			// MIS can't rescue that because with VM enabled the wLight
+			// formula includes mMisVmWeightFactor which has no mirror
+			// term in wCamera at eyeMis[1] (dVC=0 there), producing an
+			// asymmetric weight split that dims the emitter.
+			if( i == 0 || v.type == BDPTVertex::LIGHT ) {
+				continue;
+			}
+			if( v.type != BDPTVertex::SURFACE ) {
 				continue;
 			}
 

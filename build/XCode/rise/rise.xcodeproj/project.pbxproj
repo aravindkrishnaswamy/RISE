@@ -235,6 +235,7 @@
 		F24B72962F52A632008304C4 /* IVolumeAccessor.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */; };
 		F24B72972F52A632008304C4 /* IVolumeOperation.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */; };
 		F24B72982F52A632008304C4 /* IWriteBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */; };
+		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		F24B72992F52A632008304C4 /* RayBezierPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */; };
 		F24B729A2F52A632008304C4 /* RayBilinearPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */; };
 		F24B729B2F52A632008304C4 /* RayBoxIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */; };
@@ -938,6 +939,7 @@
 		F27F0B0E069C42910069C9E5 /* IVolumeAccessor.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */; };
 		F27F0B0F069C42910069C9E5 /* IVolumeOperation.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */; };
 		F27F0B10069C42910069C9E5 /* IWriteBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */; };
+		5EDAF71C14454D71AD5365FC /* BezierClipping.h in Headers */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		F27F0B11069C42910069C9E5 /* RayBezierPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */; };
 		F27F0B12069C42910069C9E5 /* RayBilinearPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */; };
 		F27F0B13069C42910069C9E5 /* RayBoxIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */; };
@@ -1838,6 +1840,7 @@
 		F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IVolumeAccessor.h; sourceTree = "<group>"; };
 		F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IVolumeOperation.h; sourceTree = "<group>"; };
 		F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IWriteBuffer.h; sourceTree = "<group>"; };
+		876B3710A0D34ED183373077 /* BezierClipping.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierClipping.h; sourceTree = "<group>"; };
 		F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RayBezierPatchIntersection.cpp; sourceTree = "<group>"; };
 		F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RayBilinearPatchIntersection.cpp; sourceTree = "<group>"; };
 		F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RayBoxIntersection.cpp; sourceTree = "<group>"; };
@@ -2746,6 +2749,7 @@
 		F27F08A5069C428F0069C9E5 /* Intersection */ = {
 			isa = PBXGroup;
 			children = (
+				876B3710A0D34ED183373077 /* BezierClipping.h */,
 				F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */,
 				F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */,
 				F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */,
@@ -3689,6 +3693,7 @@
 				F27F0B0E069C42910069C9E5 /* IVolumeAccessor.h in Headers */,
 				F27F0B0F069C42910069C9E5 /* IVolumeOperation.h in Headers */,
 				F27F0B10069C42910069C9E5 /* IWriteBuffer.h in Headers */,
+				5EDAF71C14454D71AD5365FC /* BezierClipping.h in Headers */,
 				F27F0B15069C42910069C9E5 /* RayIntersection.h in Headers */,
 				F27F0B16069C42910069C9E5 /* RayIntersectionGeometric.h in Headers */,
 				F27F0B18069C42910069C9E5 /* RayPrimitiveIntersections.h in Headers */,
@@ -4618,6 +4623,7 @@
 				F24B72962F52A632008304C4 /* IVolumeAccessor.h in Sources */,
 				F24B72972F52A632008304C4 /* IVolumeOperation.h in Sources */,
 				F24B72982F52A632008304C4 /* IWriteBuffer.h in Sources */,
+				2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */,
 				F24B72992F52A632008304C4 /* RayBezierPatchIntersection.cpp in Sources */,
 				F24B729A2F52A632008304C4 /* RayBilinearPatchIntersection.cpp in Sources */,
 				F24B729B2F52A632008304C4 /* RayBoxIntersection.cpp in Sources */,

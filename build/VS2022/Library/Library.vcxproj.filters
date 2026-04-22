@@ -1481,6 +1481,9 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometrySpecializations.h">
       <Filter>Geometry\Triangle Mesh</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Intersection\BezierClipping.h">
+      <Filter>Intersection</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersection.h">
       <Filter>Intersection</Filter>
     </ClInclude>

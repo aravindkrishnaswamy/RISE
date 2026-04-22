@@ -576,6 +576,7 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IVolumeAccessor.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IVolumeOperation.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IWriteBuffer.h" />
+    <ClInclude Include="..\..\..\src\Library\Intersection\BezierClipping.h" />
     <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersection.h" />
     <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersectionGeometric.h" />
     <ClInclude Include="..\..\..\src\Library\Intersection\RayPrimitiveIntersections.h" />
