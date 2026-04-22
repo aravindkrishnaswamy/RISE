@@ -49,7 +49,7 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples				128
+	samples				16
 	pathguiding				TRUE
 	pathguiding_iterations	6
 	pathguiding_spp			4
@@ -57,11 +57,13 @@ pathtracing_pel_rasterizer
 	pathguiding_max_depth	3
     pathguiding_light_max_depth 0
 	pathguiding_sampling_type	ris
-	sms_enabled			FALSE
-	sms_max_iterations	20
-	sms_threshold		1e-3
-	sms_max_chain_depth	20
-	sms_biased			TRUE
+	sms_enabled                   FALSE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_multi_trials              16
+	sms_photon_count              1000000
 	oidn_denoise 		TRUE
 	blue_noise_sampler	TRUE
 #	adaptive_max_samples	4096

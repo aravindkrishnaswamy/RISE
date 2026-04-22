@@ -1,0 +1,157 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   Glass Teapot (Close, SMS): Utah teapot rendered as an ANALYTIC bezier-patch glass caster.  Produces a
+#   complex caustic pattern on the floor from the teapot's curved body, lid, spout, and handle — a much
+#   richer specular-manifold target than the flat slab or torus tests.
+#
+#   Uses bezierpatch_geometry with center_object TRUE + the analytic Kajiya/OQS ray-patch solver, so the
+#   surface is smooth at every zoom level (no tessellation artefacts for SMS's finite-difference derivative
+#   stencil to chase).
+#############################################################################################################
+
+> set accelerator B 10 8
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       4
+	oidn_denoise                  FALSE
+	sms_enabled                   TRUE
+	sms_max_iterations            10
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_multi_trials              16
+	sms_photon_count              100000
+	pixel_filter                  box
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_teapot_close_sms
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_teapot_close_sms
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
+}
+
+pinhole_camera
+{
+	location			0 2.0 3
+	lookat				0 0.2 0
+	up					0 1 0
+	width				400
+	height				300
+	fov					45.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_floor
+	color				0.8 0.75 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				1.0 1.0 1.0
+}
+
+lambertian_material
+{
+	name				floor_mat
+	reflectance			pnt_floor
+}
+
+lambertian_luminaire_material
+{
+	name				light_mat
+	exitance			pnt_light
+	scale				2000.0
+	material			none
+}
+
+perfectrefractor_material
+{
+	name				glass_mat
+	refractance			pnt_glass
+	ior					2.2
+}
+
+bezierpatch_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	maxpatches			2
+	maxdepth			7
+	bsp					TRUE
+	center_object		TRUE
+}
+
+clippedplane_geometry
+{
+	name				floor_geom
+	pta					-4.0 0.0 -4.0
+	ptb					-4.0 0.0 4.0
+	ptc					4.0 0.0 4.0
+	ptd					4.0 0.0 -4.0
+}
+
+clippedplane_geometry
+{
+	name				light_geom
+	pta					-0.1 0.0 -0.1
+	ptb					0.1 0.0 -0.1
+	ptc					0.1 0.0 0.1
+	ptd					-0.1 0.0 0.1
+}
+
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			floor_mat
+}
+
+# Teapot native size is roughly 6.5 x 3 x 4 in its .bezier file.  After
+# center_object TRUE the centroid is at the origin; scale 0.15 makes it
+# about 1 x 0.45 x 0.6 units in world — small enough to sit comfortably
+# above the 4x4 floor and below the overhead light while still projecting
+# a meaningful caustic.
+standard_object
+{
+	name				glass_teapot
+	geometry			teapotgeom
+	position			0 0.425 0
+	scale				0.15 0.15 0.15
+	orientation		0 -30 0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				area_light
+	geometry			light_geom
+	position			0 1.2 -0.1
+	orientation 		-45 0 0
+	scale				0.4 0.4 0.4
+	material			light_mat
+}

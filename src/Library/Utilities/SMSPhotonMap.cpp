@@ -245,6 +245,17 @@ namespace
 
 			ior_stack.SetCurrentObject( ri.pObject );
 
+			// CAPTURE the pre-scatter "is this object already in the stack"
+			// state before the SPF mutates the stack.  The SPF's Scatter()
+			// pushes the object's IOR on entry and pops on exit, so calling
+			// containsCurrent() AFTER Scatter() gives the POST-transition
+			// state — the exact opposite of what the chain-vertex flag
+			// semantics want.  Earlier bug: reading it post-scatter flagged
+			// every entering refraction as exiting, producing spurious
+			// chainLen=1 "exit" vertices and massive fireflies on bezier-
+			// patch teapot + displaced-shell geometries.
+			const bool bSameObjectAlreadyPreScatter = ior_stack.containsCurrent();
+
 			ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
 			IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
@@ -314,13 +325,12 @@ namespace
 			// so we preserve the raw cosI-based side indicator (consumer
 			// uses it only for Fresnel eta_i/eta_t bookkeeping on the
 			// reflection, which is direction-dependent).
-			const bool bSameObjectAlready = ior_stack.containsCurrent();
 			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vNormal );
 			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
 			const bool bEntering = bReflection
 			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
 			                             // cosI-based side for Fresnel lookup
-			    : ( !bSameObjectAlready ); // refraction: stack-tracked state
+			    : ( !bSameObjectAlreadyPreScatter ); // refraction: pre-scatter stack state
 
 			// Record vertex in photon-direction order.
 			SMSPhotonChainVertex& v = out.chain[specularHits];
