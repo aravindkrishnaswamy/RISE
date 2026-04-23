@@ -857,15 +857,15 @@ namespace
 		double zero[3] = { 0.0, 0.0, 0.0 };
 		double one[3] = { 1.0, 1.0, 1.0 };
 
+		RISE::RadianceMapConfig object_radiance_map;
+
 		if( !job.AddObject(
 			object.name,
 			object.geometry_name,
 			object.material_name,
 			object.modifier_name,
 			0,
-			0,
-			1.0,
-			zero,
+			object_radiance_map,
 			zero,
 			zero,
 			one,
@@ -1147,15 +1147,15 @@ namespace
 			return false;
 		}
 
+		RISE::RadianceMapConfig volume_object_radiance_map;
+
 		if( !job.AddObject(
 			object_name.c_str(),
 			geometry_name.c_str(),
 			"none",
 			0,
 			0,
-			0,
-			1.0,
-			zero,
+			volume_object_radiance_map,
 			center,
 			zero,
 			one,
@@ -1347,27 +1347,21 @@ namespace
 		stability_config.maxTranslucentBounce = bounce_limit_from_ui( settings.stability_max_translucent_bounce );
 		stability_config.maxVolumeBounce = bounce_limit_from_ui( settings.stability_max_volume_bounce );
 
-		double orientation[3] = { 0.0, 0.0, 0.0 };
+		RISE::PixelFilterConfig pixel_filter_config;
+		pixel_filter_config.filter = "none";
+		pixel_filter_config.paramA = 0.0;
+		pixel_filter_config.paramB = 0.0;
+		RISE::RadianceMapConfig radiance_map_config;
 		if( !job.SetPixelBasedPelRasterizer(
 			std::max<uint32_t>( settings.pixel_samples, 1u ),
 			std::max<uint32_t>( settings.light_samples, 1u ),
 			std::max<uint32_t>( settings.max_recursion, 1u ),
 			kShaderName,
-			0,
-			false,
-			1.0,
-			orientation,
+			radiance_map_config,
 			0,
 			0.0,
-			0,
-			0.0,
-			0,
-			1.0,
-			1.0,
-			0.0,
-			0.0,
+			pixel_filter_config,
 			settings.show_lights != 0,
-			settings.choose_one_light != 0,
 			settings.oidn_denoise != 0,
 			guiding_config,
 			adaptive_config,

@@ -52,8 +52,7 @@ RayCaster::RayCaster(
 	const bool seeRadianceMap,
 	const unsigned int maxR,
 	const IShader& pDefaultShader_,
-	const bool showLuminaires,
-	const bool chooseonlyoneluminaire
+	const bool showLuminaires
 	) :
   pScene( 0 ),
   pDefaultShader( pDefaultShader_ ),
@@ -63,7 +62,6 @@ RayCaster::RayCaster(
   bConsiderRMapAsBackground( seeRadianceMap ),
   nMaxRecursions( maxR ),
   bShowLuminaires( showLuminaires ),
-  bChooseOnlyOneLuminaire( chooseonlyoneluminaire ),
   dPendingLightRRThreshold( 0 ),
   bPendingUseLightBVH( false )
 {
@@ -95,7 +93,7 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 
 		safe_release( pLuminaryManager );
 
-		LuminaryManager* pConcreteLumMgr = new LuminaryManager( bChooseOnlyOneLuminaire );
+		LuminaryManager* pConcreteLumMgr = new LuminaryManager();
 		pLuminaryManager = pConcreteLumMgr;
 		GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
 		pLuminaryManager->AttachScene( pScene );

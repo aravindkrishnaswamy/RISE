@@ -1,13 +1,15 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  DirectLightingShaderOp.h - The direct lighting shader op 
-//    computes direct lighting from both non physically-based
-//    light sources and area light sources.
+//  DirectLightingShaderOp.h - Next-event-estimation shader op that
+//    delegates light selection and evaluation to the unified
+//    LightSampler.  Handles analytic lights (ambient, directional,
+//    point, spot) and mesh luminaires through a single path, with
+//    optional Light BVH / RIS importance sampling when the scene
+//    requests it.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 28, 2005
 //  Tabs: 4
-//  Comments:  
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -24,30 +26,24 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class DirectLightingShaderOp : 
-			public virtual IShaderOp, 
+		class DirectLightingShaderOp :
+			public virtual IShaderOp,
 			public virtual Reference
 		{
 		protected:
 			virtual ~DirectLightingShaderOp();
 
 			const IMaterial* pBSDF;
-			const bool nonmeshlights;
-			const bool meshlights;
-			const bool cache;
 
 		public:
 			DirectLightingShaderOp(
-				const IMaterial* pBSDF_,
-				const bool nonmeshlights_,
-				const bool meshlights_,
-				const bool cache_
+				const IMaterial* pBSDF_
 				);
 
 			//! Tells the shader to apply shade to the given intersection point
-			void PerformOperation( 
+			void PerformOperation(
 				const RuntimeContext& rc,					///< [in] Runtime context
-				const RayIntersection& ri,					///< [in] Intersection information 
+				const RayIntersection& ri,					///< [in] Intersection information
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				RISEPel& c,									///< [in/out] Resultant color from op
@@ -56,10 +52,10 @@ namespace RISE
 				) const;
 
 			//! Tells the shader to apply shade to the given intersection point for the given wavelength
-			/// \return Amplitude of spectral function 
-			Scalar PerformOperationNM( 
+			/// \return Amplitude of spectral function
+			Scalar PerformOperationNM(
 				const RuntimeContext& rc,					///< [in] Runtime context
-				const RayIntersection& ri,					///< [in] Intersection information 
+				const RayIntersection& ri,					///< [in] Intersection information
 				const IRayCaster& caster,					///< [in] The Ray Caster to use for all ray casting needs
 				const IRayCaster::RAY_STATE& rs,			///< [in] Current ray state
 				const Scalar caccum,						///< [in] Current value for wavelength

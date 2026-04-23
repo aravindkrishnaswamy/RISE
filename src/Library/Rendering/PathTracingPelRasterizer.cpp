@@ -152,7 +152,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
@@ -250,8 +250,11 @@ void PathTracingPelRasterizer::IntegratePixel(
 						static_cast<Scalar>(x) + (*m).x - 0.5,
 						static_cast<Scalar>(height-y) + (*m).y - 0.5 );
 					weight = 1.0;
-				} else {
+				} else if( pPixelFilter ) {
 					weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				} else {
+					ptOnScreen = Point2( x, height-y );
+					weight = 1.0;
 				}
 			} else {
 				ptOnScreen = Point2( x, height-y );

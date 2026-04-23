@@ -36,7 +36,6 @@ namespace RISE
 				Scalar	value;
 			};
 
-			mutable std::vector<SPECTRAL_SAMPLE>	vecSpectralSamples;
 			const Scalar							lambda_begin;
 			const Scalar							lambda_end;
 			const Scalar							lambda_diff;

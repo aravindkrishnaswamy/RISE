@@ -58,7 +58,7 @@ namespace RISE
 			pScene( 0 ),
 			pLumManager( 0 )
 			{
-				pLumManager = new LuminaryManager(false);
+				pLumManager = new LuminaryManager();
 				GlobalLog()->PrintNew( pLumManager, __FILE__, __LINE__, "luminary manager" );
 			}
 

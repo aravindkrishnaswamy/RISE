@@ -4410,9 +4410,7 @@ namespace RISE
 					String material = "none";
 					String modifier = "none";
 					String shader = "none";
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
+					RadianceMapConfig radianceMapConfig;
 					bool bCastsShadows = true;
 					bool bReceivesShadows = true;
 					String interior_medium = "none";
@@ -4438,14 +4436,14 @@ namespace RISE
 						} else if( pname == "shader" ) {
 							shader = pvalue;
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "position" ) {
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &pos[0], &pos[1], &pos[2] );
 						} else if( pname == "orientation" ) {
@@ -4467,7 +4465,7 @@ namespace RISE
 						}
 					}
 
-					bool bRet = pJob.AddObject( name.c_str(), geometry.c_str(), material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radianceScale, radorient, pos, orient, scale, bCastsShadows, bReceivesShadows );
+					bool bRet = pJob.AddObject( name.c_str(), geometry.c_str(), material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
 
 					if( bRet && !(interior_medium == "none") ) {
 						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
@@ -4492,9 +4490,7 @@ namespace RISE
 					String material = "none";
 					String modifier = "none";
 					String shader = "none";
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
+					RadianceMapConfig radianceMapConfig;
 					bool bCastsShadows = true;
 					bool bReceivesShadows = true;
 
@@ -4521,14 +4517,14 @@ namespace RISE
 						} else if( pname == "shader" ) {
 							shader = pvalue;
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "position" ) {
 							sscanf( pvalue.c_str(), "%lf %lf %lf", &pos[0], &pos[1], &pos[2] );
 						} else if( pname == "orientation" ) {
@@ -4556,7 +4552,7 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radianceScale, radorient, pos, orient, bCastsShadows, bReceivesShadows );
+					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows );
 				}
 			};
 
@@ -4995,9 +4991,6 @@ namespace RISE
 					// with defaults for each
 					String name = "noname";
 					String bsdf = "none";
-					bool nonmeshlights = true;
-					bool meshlights = true;
-					bool cache = false;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
 					for( ;i!=e; i++ ) {
@@ -5013,19 +5006,21 @@ namespace RISE
 							name = pvalue;
 						} else if( pname == "bsdf" ) {
 							bsdf = pvalue;
-						} else if( pname == "nonmeshlights" ) {
-							nonmeshlights = pvalue.toBoolean();
-						} else if( pname == "meshlights" ) {
-							meshlights = pvalue.toBoolean();
-						} else if( pname == "cache" ) {
-							cache = pvalue.toBoolean();
+						} else if( pname == "nonmeshlights" ||
+								   pname == "meshlights" ||
+								   pname == "cache" ) {
+							// Legacy parameters — silently ignored.
+							// The unified LightSampler now handles both
+							// analytic and mesh lights through one path,
+							// and `cache` was never correct with the
+							// stochastic sampler.
 						} else {
 							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
 							return false;
 						}
 					}
 
-					return pJob.AddDirectLightingShaderOp( name.c_str(), bsdf=="none"?0:bsdf.c_str(), nonmeshlights, meshlights, cache );
+					return pJob.AddDirectLightingShaderOp( name.c_str(), bsdf=="none"?0:bsdf.c_str() );
 				}
 			};
 
@@ -5646,23 +5641,12 @@ namespace RISE
 					unsigned int maxRecur = 10;
 					unsigned int numSamples = 1;
 					unsigned int numLumSamples = 1;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					String luminarySampler = "none";
-					double pixelSamplerParam = 1.0;
 					double luminarySamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
@@ -5687,40 +5671,42 @@ namespace RISE
 						} else if( pname == "lum_samples" ) {
 							numLumSamples = pvalue.toUInt();
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "luminary_sampler" ) {
 							luminarySampler = pvalue;
 						} else if( pname == "luminary_sampler_param" ) {
 							luminarySamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -5797,11 +5783,10 @@ namespace RISE
 					}
 
 					return pJob.SetPixelBasedPelRasterizer( numSamples, numLumSamples,
-						maxRecur, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
+						maxRecur, defaultshader.c_str(), radianceMapConfig,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						pixelFilterConfig,
+						showLuminaires, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -5815,28 +5800,13 @@ namespace RISE
 					unsigned int maxRecur = 10;
 					unsigned int numSamples = 1;
 					unsigned int numLumSamples = 1;
-					unsigned int numSpectralSamples = 1;
-					unsigned int numWavelengths = 10;
-					double nmbegin = 380.0;
-					double nmend = 780.0;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
+					SpectralConfig spectralConfig;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					String luminarySampler = "none";
-					double pixelSamplerParam = 1.0;
 					double luminarySamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
-					bool useHWSS = false;
 					bool integrateRGB = false;
 					std::vector<double> spd_wavelengths;
 					std::vector<double> spd_r;
@@ -5863,50 +5833,48 @@ namespace RISE
 						} else if( pname == "lum_samples" ) {
 							numLumSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
-						} else if( pname == "spectral_samples" ) {
-							numSpectralSamples = pvalue.toUInt();
-						} else if( pname == "num_wavelengths" ) {
-							numWavelengths = pvalue.toUInt();
-						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
-						} else if( pname == "radiance_map" ) {
-							radiancemap = pname;
-						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+						} else if( pname == "spectral_samples" ) {
+							spectralConfig.spectralSamples = pvalue.toUInt();
+						} else if( pname == "num_wavelengths" ) {
+							spectralConfig.numWavelengths = pvalue.toUInt();
+						} else if( pname == "nmbegin" ) {
+							spectralConfig.nmBegin = pvalue.toDouble();
+						} else if( pname == "nmend" ) {
+							spectralConfig.nmEnd = pvalue.toDouble();
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "luminary_sampler" ) {
 							luminarySampler = pvalue;
 						} else if( pname == "luminary_sampler_param" ) {
 							luminarySamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "integrate_rgb" ) {
 							integrateRGB = pvalue.toBoolean();
 						} else if( pname == "rgb_spd" ) {
@@ -5990,9 +5958,9 @@ namespace RISE
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "hwss" ) {
-							useHWSS = pvalue.toBoolean();
+							spectralConfig.useHWSS = pvalue.toBoolean();
 						} else if( pname == "direct_clamp" ) {
 							stabilityConfig.directClamp = pvalue.toDouble();
 						} else if( pname == "indirect_clamp" ) {
@@ -6023,13 +5991,12 @@ namespace RISE
 						}
 					}
 
-					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, numSpectralSamples, nmbegin, nmend, numWavelengths, maxRecur, defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
+					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, spectralConfig, maxRecur, defaultshader.c_str(), radianceMapConfig,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
+						pixelFilterConfig,
+						showLuminaires,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
-						oidnDenoise, stabilityConfig, blueNoiseSampler, useHWSS
+						oidnDenoise, stabilityConfig
 						);
 				}
 			};
@@ -6042,29 +6009,11 @@ namespace RISE
 					unsigned int numSamples = 1;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
-					double pixelSamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
-					bool smsEnabled = false;
-					unsigned int smsMaxIterations = 20;
-					double smsThreshold = 1e-5;
-					unsigned int smsMaxChainDepth = 30;
-					bool smsBiased = true;
-					unsigned int smsBernoulliTrials = 100;
-					unsigned int smsMultiTrials = 1;
-					unsigned int smsPhotonCount = 0;
+					SMSConfig smsConfig;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
@@ -6087,52 +6036,54 @@ namespace RISE
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "sms_enabled" ) {
-							smsEnabled = pvalue.toBoolean();
+							smsConfig.enabled = pvalue.toBoolean();
 						} else if( pname == "sms_max_iterations" ) {
-							smsMaxIterations = pvalue.toUInt();
+							smsConfig.maxIterations = pvalue.toUInt();
 						} else if( pname == "sms_threshold" ) {
-							smsThreshold = pvalue.toDouble();
+							smsConfig.threshold = pvalue.toDouble();
 						} else if( pname == "sms_max_chain_depth" ) {
-							smsMaxChainDepth = pvalue.toUInt();
+							smsConfig.maxChainDepth = pvalue.toUInt();
 						} else if( pname == "sms_biased" ) {
-							smsBiased = pvalue.toBoolean();
+							smsConfig.biased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
-							smsBernoulliTrials = pvalue.toUInt();
+							smsConfig.bernoulliTrials = pvalue.toUInt();
 						} else if( pname == "sms_multi_trials" ) {
-							smsMultiTrials = pvalue.toUInt();
+							smsConfig.multiTrials = pvalue.toUInt();
 						} else if( pname == "sms_photon_count" ) {
-							smsPhotonCount = pvalue.toUInt();
+							smsConfig.photonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -6208,11 +6159,10 @@ namespace RISE
 
 					return pJob.SetBDPTPelRasterizer( numSamples,
 						maxEyeDepth, maxLightDepth,
-						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -6224,34 +6174,12 @@ namespace RISE
 					unsigned int numSamples = 1;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
-					double pixelSamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
-					double nmbegin = 380.0;
-					double nmend = 780.0;
-					unsigned int num_wavelengths = 80;
-					unsigned int spectral_samples = 16;
-					bool smsEnabled = false;
-					unsigned int smsMaxIterations = 20;
-					double smsThreshold = 1e-5;
-					unsigned int smsMaxChainDepth = 30;
-					bool smsBiased = true;
-					unsigned int smsBernoulliTrials = 100;
-					unsigned int smsMultiTrials = 1;
-					unsigned int smsPhotonCount = 0;
+					SpectralConfig spectralConfig;
+					SMSConfig smsConfig;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
-					bool useHWSS = false;
 					PathGuidingConfig guidingConfig;
 					StabilityConfig stabilityConfig;
 					ProgressiveConfig progressiveConfig;
@@ -6273,62 +6201,64 @@ namespace RISE
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "hwss" ) {
-							useHWSS = pvalue.toBoolean();
+							spectralConfig.useHWSS = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
+							spectralConfig.nmBegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
+							spectralConfig.nmEnd = pvalue.toDouble();
 						} else if( pname == "num_wavelengths" ) {
-							num_wavelengths = pvalue.toUInt();
+							spectralConfig.numWavelengths = pvalue.toUInt();
 						} else if( pname == "spectral_samples" ) {
-							spectral_samples = pvalue.toUInt();
+							spectralConfig.spectralSamples = pvalue.toUInt();
 						} else if( pname == "sms_enabled" ) {
-							smsEnabled = pvalue.toBoolean();
+							smsConfig.enabled = pvalue.toBoolean();
 						} else if( pname == "sms_max_iterations" ) {
-							smsMaxIterations = pvalue.toUInt();
+							smsConfig.maxIterations = pvalue.toUInt();
 						} else if( pname == "sms_threshold" ) {
-							smsThreshold = pvalue.toDouble();
+							smsConfig.threshold = pvalue.toDouble();
 						} else if( pname == "sms_max_chain_depth" ) {
-							smsMaxChainDepth = pvalue.toUInt();
+							smsConfig.maxChainDepth = pvalue.toUInt();
 						} else if( pname == "sms_biased" ) {
-							smsBiased = pvalue.toBoolean();
+							smsConfig.biased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
-							smsBernoulliTrials = pvalue.toUInt();
+							smsConfig.bernoulliTrials = pvalue.toUInt();
 						} else if( pname == "sms_multi_trials" ) {
-							smsMultiTrials = pvalue.toUInt();
+							smsConfig.multiTrials = pvalue.toUInt();
 						} else if( pname == "sms_photon_count" ) {
-							smsPhotonCount = pvalue.toUInt();
+							smsConfig.photonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -6392,12 +6322,11 @@ namespace RISE
 
 					return pJob.SetBDPTSpectralRasterizer( numSamples,
 						maxEyeDepth, maxLightDepth,
-						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
-						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						spectralConfig,
+						smsConfig, oidnDenoise, guidingConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -6409,24 +6338,13 @@ namespace RISE
 					unsigned int numSamples = 1;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
-					double pixelSamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
 					double mergeRadius = 0.0;	// 0 => scene-auto fallback
 					bool enableVC = true;
 					bool enableVM = true;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
@@ -6449,34 +6367,36 @@ namespace RISE
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "merge_radius" ) {
 							mergeRadius = pvalue.toDouble();
 						} else if( pname == "vc_enabled" ) {
@@ -6486,7 +6406,7 @@ namespace RISE
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "adaptive_max_samples" ) {
 							adaptiveConfig.maxSamples = pvalue.toUInt();
 						} else if( pname == "adaptive_threshold" ) {
@@ -6528,12 +6448,11 @@ namespace RISE
 
 					return pJob.SetVCMPelRasterizer( numSamples,
 						maxEyeDepth, maxLightDepth,
-						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
 						mergeRadius, enableVC, enableVM, oidnDenoise,
-						guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -6545,29 +6464,14 @@ namespace RISE
 					unsigned int numSamples = 1;
 					unsigned int maxEyeDepth = 8;
 					unsigned int maxLightDepth = 8;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
-					double pixelSamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
-					double nmbegin = 380.0;
-					double nmend = 780.0;
-					unsigned int num_wavelengths = 80;
-					unsigned int spectral_samples = 16;
+					SpectralConfig spectralConfig;
 					double mergeRadius = 0.0;	// 0 => scene-auto fallback
 					bool enableVC = true;
 					bool enableVM = true;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
-					bool useHWSS = false;
 					PathGuidingConfig guidingConfig;
 					StabilityConfig stabilityConfig;
 					ProgressiveConfig progressiveConfig;
@@ -6589,46 +6493,48 @@ namespace RISE
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "hwss" ) {
-							useHWSS = pvalue.toBoolean();
+							spectralConfig.useHWSS = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
+							spectralConfig.nmBegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
+							spectralConfig.nmEnd = pvalue.toDouble();
 						} else if( pname == "num_wavelengths" ) {
-							num_wavelengths = pvalue.toUInt();
+							spectralConfig.numWavelengths = pvalue.toUInt();
 						} else if( pname == "spectral_samples" ) {
-							spectral_samples = pvalue.toUInt();
+							spectralConfig.spectralSamples = pvalue.toUInt();
 						} else if( pname == "merge_radius" ) {
 							mergeRadius = pvalue.toDouble();
 						} else if( pname == "vc_enabled" ) {
@@ -6672,13 +6578,12 @@ namespace RISE
 
 					return pJob.SetVCMSpectralRasterizer( numSamples,
 						maxEyeDepth, maxLightDepth,
-						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
-						nmbegin, nmend, num_wavelengths, spectral_samples,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						spectralConfig,
 						mergeRadius, enableVC, enableVM, oidnDenoise,
-						guidingConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
+						guidingConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -6688,29 +6593,11 @@ namespace RISE
 				{
 					String defaultshader = "global";
 					unsigned int numSamples = 1;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
-					double pixelSamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
-					bool smsEnabled = false;
-					unsigned int smsMaxIterations = 20;
-					double smsThreshold = 1e-5;
-					unsigned int smsMaxChainDepth = 30;
-					bool smsBiased = true;
-					unsigned int smsBernoulliTrials = 100;
-					unsigned int smsMultiTrials = 1;
-					unsigned int smsPhotonCount = 0;
+					SMSConfig smsConfig;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
 					PathGuidingConfig guidingConfig;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
@@ -6729,52 +6616,54 @@ namespace RISE
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "sms_enabled" ) {
-							smsEnabled = pvalue.toBoolean();
+							smsConfig.enabled = pvalue.toBoolean();
 						} else if( pname == "sms_max_iterations" ) {
-							smsMaxIterations = pvalue.toUInt();
+							smsConfig.maxIterations = pvalue.toUInt();
 						} else if( pname == "sms_threshold" ) {
-							smsThreshold = pvalue.toDouble();
+							smsConfig.threshold = pvalue.toDouble();
 						} else if( pname == "sms_max_chain_depth" ) {
-							smsMaxChainDepth = pvalue.toUInt();
+							smsConfig.maxChainDepth = pvalue.toUInt();
 						} else if( pname == "sms_biased" ) {
-							smsBiased = pvalue.toBoolean();
+							smsConfig.biased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
-							smsBernoulliTrials = pvalue.toUInt();
+							smsConfig.bernoulliTrials = pvalue.toUInt();
 						} else if( pname == "sms_multi_trials" ) {
-							smsMultiTrials = pvalue.toUInt();
+							smsConfig.multiTrials = pvalue.toUInt();
 						} else if( pname == "sms_photon_count" ) {
-							smsPhotonCount = pvalue.toUInt();
+							smsConfig.photonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pathguiding" ) {
@@ -6849,11 +6738,10 @@ namespace RISE
 					}
 
 					return pJob.SetPathTracingPelRasterizer( numSamples,
-						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, blueNoiseSampler, progressiveConfig );
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -6863,34 +6751,12 @@ namespace RISE
 				{
 					String defaultshader = "global";
 					unsigned int numSamples = 1;
-					String radiancemap = "none";
-					double radianceScale = 1.0;
-					double radorient[3] = {0};
-					bool radback = true;
-					String pixelFilter = "none";
-					String pixelSampler = "none";
-					double pixelSamplerParam = 1.0;
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					RadianceMapConfig radianceMapConfig;
+					PixelFilterConfig pixelFilterConfig;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
-					double nmbegin = 380.0;
-					double nmend = 780.0;
-					unsigned int num_wavelengths = 81;
-					unsigned int spectral_samples = 16;
-					bool smsEnabled = false;
-					unsigned int smsMaxIterations = 20;
-					double smsThreshold = 1e-5;
-					unsigned int smsMaxChainDepth = 30;
-					bool smsBiased = true;
-					unsigned int smsBernoulliTrials = 100;
-					unsigned int smsMultiTrials = 1;
-					unsigned int smsPhotonCount = 0;
+					SpectralConfig spectralConfig;
+					SMSConfig smsConfig;
 					bool oidnDenoise = true;
-					bool blueNoiseSampler = true;
-					bool useHWSS = false;
 					AdaptiveSamplingConfig adaptiveConfig;
 					StabilityConfig stabilityConfig;
 					ProgressiveConfig progressiveConfig;
@@ -6908,62 +6774,64 @@ namespace RISE
 						} else if( pname == "samples" ) {
 							numSamples = pvalue.toUInt();
 						} else if( pname == "radiance_map" ) {
-							radiancemap = pvalue;
+							radianceMapConfig.name = pvalue;
 						} else if( pname == "radiance_scale" ) {
-							radianceScale = pvalue.toDouble();
+							radianceMapConfig.scale = pvalue.toDouble();
 						} else if( pname == "radiance_background" ) {
-							radback = pvalue.toBoolean();
+							radianceMapConfig.isBackground = pvalue.toBoolean();
 						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radorient[0], &radorient[1], &radorient[2] );
-							radorient[0] *= DEG_TO_RAD;
-							radorient[1] *= DEG_TO_RAD;
-							radorient[2] *= DEG_TO_RAD;
+							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
 						} else if( pname == "pixel_sampler" ) {
-							pixelSampler = pvalue;
+							pixelFilterConfig.pixelSampler = pvalue;
 						} else if( pname == "pixel_sampler_param" ) {
-							pixelSamplerParam = pvalue.toDouble();
+							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
+							spectralConfig.nmBegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
+							spectralConfig.nmEnd = pvalue.toDouble();
 						} else if( pname == "num_wavelengths" ) {
-							num_wavelengths = pvalue.toUInt();
+							spectralConfig.numWavelengths = pvalue.toUInt();
 						} else if( pname == "spectral_samples" ) {
-							spectral_samples = pvalue.toUInt();
+							spectralConfig.spectralSamples = pvalue.toUInt();
 						} else if( pname == "blue_noise_sampler" ) {
-							blueNoiseSampler = pvalue.toBoolean();
+							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
 						} else if( pname == "use_hwss" ) {
-							useHWSS = pvalue.toBoolean();
+							spectralConfig.useHWSS = pvalue.toBoolean();
 						} else if( pname == "sms_enabled" ) {
-							smsEnabled = pvalue.toBoolean();
+							smsConfig.enabled = pvalue.toBoolean();
 						} else if( pname == "sms_max_iterations" ) {
-							smsMaxIterations = pvalue.toUInt();
+							smsConfig.maxIterations = pvalue.toUInt();
 						} else if( pname == "sms_threshold" ) {
-							smsThreshold = pvalue.toDouble();
+							smsConfig.threshold = pvalue.toDouble();
 						} else if( pname == "sms_max_chain_depth" ) {
-							smsMaxChainDepth = pvalue.toUInt();
+							smsConfig.maxChainDepth = pvalue.toUInt();
 						} else if( pname == "sms_biased" ) {
-							smsBiased = pvalue.toBoolean();
+							smsConfig.biased = pvalue.toBoolean();
 						} else if( pname == "sms_bernoulli_trials" ) {
-							smsBernoulliTrials = pvalue.toUInt();
+							smsConfig.bernoulliTrials = pvalue.toUInt();
 						} else if( pname == "sms_multi_trials" ) {
-							smsMultiTrials = pvalue.toUInt();
+							smsConfig.multiTrials = pvalue.toUInt();
 						} else if( pname == "sms_photon_count" ) {
-							smsPhotonCount = pvalue.toUInt();
+							smsConfig.photonCount = pvalue.toUInt();
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "adaptive_max_samples" ) {
@@ -7012,12 +6880,11 @@ namespace RISE
 					}
 
 					return pJob.SetPathTracingSpectralRasterizer( numSamples,
-						defaultshader.c_str(), radiancemap=="none"?0:radiancemap.c_str(), radback, radianceScale, radorient,
-						pixelSampler=="none"?0:pixelSampler.c_str(), pixelSamplerParam,
-						pixelFilter=="none"?0:pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB,
-						showLuminaires, onlyonelight,
-						nmbegin, nmend, num_wavelengths, spectral_samples,
-						smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, adaptiveConfig, stabilityConfig, blueNoiseSampler, useHWSS, progressiveConfig );
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						spectralConfig,
+						smsConfig, oidnDenoise, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 			};
 
@@ -7033,7 +6900,6 @@ namespace RISE
 					unsigned int mutationsPerPixel = 100;
 					double largeStepProb = 0.3;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
 					// MLT defaults oidn_denoise to FALSE because the
 					// entire MLT image lives in the splat film, so OIDN
 					// would denoise an already-accumulated / filter-
@@ -7060,11 +6926,7 @@ namespace RISE
 					// filtering — the cause of the hard edges / aliasing
 					// the user reported.  Scenes that genuinely want an
 					// unfiltered image can specify pixel_filter none.
-					String pixelFilter = "mitchell-netravali";
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					PixelFilterConfig pixelFilterConfig;
 					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -7092,19 +6954,21 @@ namespace RISE
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else if( pname == "branching_threshold" ) {
@@ -7117,9 +6981,8 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, onlyonelight, oidnDenoise,
-						pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight,
-						pixelFilterParamA, pixelFilterParamB,
+						defaultshader.c_str(), showLuminaires, oidnDenoise,
+						pixelFilterConfig,
 						stabilityConfig );
 				}
 			};
@@ -7140,13 +7003,8 @@ namespace RISE
 					// force_depth N explicitly to pin to one depth.
 					int forceDepth = -1;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
 					bool oidnDenoise = false;
-					String pixelFilter = "mitchell-netravali";
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					PixelFilterConfig pixelFilterConfig;
 					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -7179,19 +7037,21 @@ namespace RISE
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else {
@@ -7203,9 +7063,8 @@ namespace RISE
 					return pJob.SetMMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						forceDepth,
-						defaultshader.c_str(), showLuminaires, onlyonelight, oidnDenoise,
-						pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight,
-						pixelFilterParamA, pixelFilterParamB,
+						defaultshader.c_str(), showLuminaires, oidnDenoise,
+						pixelFilterConfig,
 						stabilityConfig );
 				}
 			};
@@ -7222,20 +7081,12 @@ namespace RISE
 					unsigned int mutationsPerPixel = 100;
 					double largeStepProb = 0.3;
 					bool showLuminaires = true;
-					bool onlyonelight = false;
 					// MLT spectral also defaults OIDN off — see the Pel
 					// MLT parser above for the detailed rationale.
 					bool oidnDenoise = false;
-					double nmbegin = 400;
-					double nmend = 700;
-					unsigned int spectralSamples = 1;
-					bool useHWSS = false;
+					SpectralConfig spectralConfig;
 					// See MLTRasterizerAsciiChunkParser for rationale.
-					String pixelFilter = "mitchell-netravali";
-					double pixelFilterWidth = 1.0;
-					double pixelFilterHeight = 1.0;
-					double pixelFilterParamA = 1.0/3.0;
-					double pixelFilterParamB = 1.0/3.0;
+					PixelFilterConfig pixelFilterConfig;
 					StabilityConfig stabilityConfig;
 
 					ParamsList::const_iterator i=in.begin(), e=in.end();
@@ -7263,27 +7114,29 @@ namespace RISE
 						} else if( pname == "show_luminaires" ) {
 							showLuminaires = pvalue.toBoolean();
 						} else if( pname == "choose_one_light" ) {
-							onlyonelight = pvalue.toBoolean();
+							// Legacy parameter — silently ignored.  All
+							// integrators now select exactly one light
+							// per NEE via the unified LightSampler.
 						} else if( pname == "oidn_denoise" ) {
 							oidnDenoise = pvalue.toBoolean();
 						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
+							spectralConfig.nmBegin = pvalue.toDouble();
 						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
+							spectralConfig.nmEnd = pvalue.toDouble();
 						} else if( pname == "spectral_samples" ) {
-							spectralSamples = pvalue.toUInt();
+							spectralConfig.spectralSamples = pvalue.toUInt();
 						} else if( pname == "hwss" ) {
-							useHWSS = pvalue.toBoolean();
+							spectralConfig.useHWSS = pvalue.toBoolean();
 						} else if( pname == "pixel_filter" ) {
-							pixelFilter = pvalue;
+							pixelFilterConfig.filter = pvalue;
 						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterWidth = pvalue.toDouble();
+							pixelFilterConfig.width = pvalue.toDouble();
 						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterHeight = pvalue.toDouble();
+							pixelFilterConfig.height = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterParamA = pvalue.toDouble();
+							pixelFilterConfig.paramA = pvalue.toDouble();
 						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterParamB = pvalue.toDouble();
+							pixelFilterConfig.paramB = pvalue.toDouble();
 						} else if( pname == "light_bvh" ) {
 							stabilityConfig.useLightBVH = pvalue.toBoolean();
 						} else if( pname == "branching_threshold" ) {
@@ -7296,10 +7149,9 @@ namespace RISE
 
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, onlyonelight,
-						nmbegin, nmend, spectralSamples, useHWSS, oidnDenoise,
-						pixelFilter.c_str(), pixelFilterWidth, pixelFilterHeight,
-						pixelFilterParamA, pixelFilterParamB,
+						defaultshader.c_str(), showLuminaires,
+						spectralConfig, oidnDenoise,
+						pixelFilterConfig,
 						stabilityConfig );
 				}
 			};

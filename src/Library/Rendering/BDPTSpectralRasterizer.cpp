@@ -644,7 +644,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 	}
 
 	// Determine how many samples to take
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
 	const unsigned int maxSamples = batchSize;
 
@@ -740,8 +740,15 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			Point2 ptOnScreen;
 			Scalar weight = 1.0;
 
+			// Uniform sub-pixel jitter for eye-subpath samples.
+			// See BDPTPelRasterizer::IntegratePixel for the full
+			// rationale — short version: filter.warp here double-filters
+			// against SplatFilm::SplatFiltered and blurs the result
+			// with wide-support kernels (gaussian/mitchell).
 			if( bMultiSample ) {
-				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				ptOnScreen = Point2(
+					static_cast<Scalar>(x) + (*m).x - 0.5,
+					static_cast<Scalar>(height-y) + (*m).y - 0.5 );
 			} else {
 				ptOnScreen = Point2( x, height-y );
 			}

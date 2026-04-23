@@ -352,7 +352,7 @@ void BDPTPelRasterizer::IntegratePixel(
 		}
 	}
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	// ZSobol (blue-noise): seed from Morton index for spatially
@@ -435,8 +435,22 @@ void BDPTPelRasterizer::IntegratePixel(
 			Point2 ptOnScreen;
 			Scalar weight = 1.0;
 
+			// Uniform sub-pixel jitter for eye-subpath samples.  We
+			// deliberately do NOT call pPixelFilter->warpOnScreen here:
+			// that was the pre-existing behaviour but it aims rays at
+			// screen positions dictated by the filter's importance
+			// density (e.g. GaussianPixelFilter::warp lands samples
+			// outside the pixel), which then get accumulated into this
+			// pixel's bucket — a double-filtering that produces severe
+			// blur with wide-support kernels.  Uniform jitter gives the
+			// correct Monte-Carlo estimate of the per-pixel integral;
+			// light-subpath splats go through SplatContributionToFilm
+			// → SplatFilm::SplatFiltered which still uses the filter's
+			// EvaluateFilter for cross-pixel reconstruction.
 			if( bMultiSample ) {
-				weight = pPixelFilter->warpOnScreen( rc.random, *m, ptOnScreen, x, height-y );
+				ptOnScreen = Point2(
+					static_cast<Scalar>(x) + (*m).x - 0.5,
+					static_cast<Scalar>(height-y) + (*m).y - 0.5 );
 			} else {
 				ptOnScreen = Point2( x, height-y );
 			}

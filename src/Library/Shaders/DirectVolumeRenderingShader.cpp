@@ -19,6 +19,7 @@
 #include "../Volume/VolumeAccessor_NNB.h"
 #include "../Volume/VolumeAccessor_TRI.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Lights/LightSampler.h"
 #include "../Volume/VolumeAccessor_TriCubic.h"
 #include "../Volume/VolumeOp_Average.h"
 #include "../Volume/VolumeOp_Composite.h"
@@ -303,18 +304,26 @@ void DirectVolumeRenderingShader::Shade(
 
 						RISEPel diffuse;
 
-						// Account for lighting from non mesh based lights
-						const ILightManager* pLM = pScene->GetLights();
-						if( pLM ) {
-							pLM->ComputeDirectLighting( myri.geometric, caster, *pBRDF, ri.pObject->DoesReceiveShadows(), diffuse );
-						}
-
-						const ILuminaryManager* pLumManager = caster.GetLuminaries();
-						// Account for lighting from luminaries
-						if( pLumManager ) {
+						// Unified light sampling through LightSampler —
+						// covers analytic lights + mesh luminaires with
+						// importance-weighted selection.  `isVolumeScatter`
+						// is false here because `myri` represents a
+						// gradient-reconstructed surface at the ISO
+						// boundary, not a bulk volume scatter event.
+						const LightSampler* pLS = caster.GetLightSampler();
+						if( pLS ) {
 							IndependentSampler fallbackSampler( rc.random );
-							ISampler& lumSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-							diffuse = diffuse + pLumManager->ComputeDirectLighting( myri, *pBRDF, lumSampler, caster, pScene->GetShadowMap() );
+							ISampler& sampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
+							diffuse = pLS->EvaluateDirectLighting(
+								myri.geometric,
+								*pBRDF,
+								ri.pMaterial,
+								caster,
+								sampler,
+								ri.pObject,
+								0,		// pMedium
+								false,	// isVolumeScatter
+								0 );	// pMediumObject
 						}
 
 						cPel.base = cPel.base * diffuse;
@@ -444,13 +453,23 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 						myri.geometric.vNormal = Vector3Ops::Normalize(Vector3Ops::Transform(ri.pObject->GetFinalTransformMatrix(),-pGradientEstimator->ComputeGradient( pVolume, voxel ).vNormal));
 						myri.geometric.onb.CreateFromW( myri.geometric.vNormal );
 
-						const ILuminaryManager* pLumManager = caster.GetLuminaries();
-						// Account for lighting from luminaries
-						if( pLumManager ) {
+						// Unified light sampling through LightSampler (NM variant).
+						const LightSampler* pLS_NM = caster.GetLightSampler();
+						if( pLS_NM ) {
 							IndependentSampler fallbackSamplerNM( rc.random );
-							ISampler& lumSamplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
-							cPel.second *= pLumManager->ComputeDirectLightingNM( myri, *pBRDF, nm, lumSamplerNM, caster, pScene->GetShadowMap() );
-						}						
+							ISampler& samplerNM = rc.pSampler ? *rc.pSampler : fallbackSamplerNM;
+							cPel.second *= pLS_NM->EvaluateDirectLightingNM(
+								myri.geometric,
+								*pBRDF,
+								ri.pMaterial,
+								nm,
+								caster,
+								samplerNM,
+								ri.pObject,
+								0,		// pMedium
+								false,	// isVolumeScatter
+								0 );	// pMediumObject
+						}
 					}
 				}
 

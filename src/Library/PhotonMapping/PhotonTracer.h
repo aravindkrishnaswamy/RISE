@@ -22,9 +22,60 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		//
+		// THREAD-SAFETY STATUS: SINGLE-THREADED ONLY.
+		//
+		// `TracePhotons()` runs on one thread and iterates luminaires +
+		// photons serially.  Everything below is sized for that contract.
+		// Parallelising the photon shoot — which is the obvious win for
+		// big scenes — has to address each of these points explicitly:
+		//
+		//   1. `pScene` (mutable IScenePriv*) is written by AttachScene()
+		//      during setup and read inside TraceNPhotons().  Fine today
+		//      because AttachScene() always completes before trace begins
+		//      and there is no concurrent AttachScene.  Parallel shoots
+		//      can keep this as setup-only read-shared state — DO NOT
+		//      call AttachScene from any worker.
+		//
+		//   2. `geomsampler` and `random` are RandomNumberGenerator
+		//      instances whose MersenneTwister is `mutable`.  Concurrent
+		//      CanonicalRandom() calls across threads race on the MT
+		//      state.  Parallelisation needs per-thread RNGs seeded from
+		//      a master stream (see RuntimeContext::random for the
+		//      pattern the rasterizers use).
+		//
+		//   3. TraceNPhotons' inner loop is bounded by
+		//      `pPhotonMap->NumStored() < thislummax`, and each
+		//      TraceSinglePhoton deposits into the same PhotonMapType.
+		//      Going parallel requires: (a) PhotonMapType::Store() to be
+		//      thread-safe (atomic append or per-thread bucket then
+		//      merge), (b) the loop-bound check tolerant of NumStored()
+		//      drifting (use an atomic counter + compare-and-fetch), and
+		//      (c) `numshot` converted to std::atomic<unsigned int> or
+		//      accumulated per-thread and reduced after the pool joins.
+		//
+		//   4. `pScene->GetAnimator()->EvaluateAtTime()` inside the
+		//      temporal-sampling branch mutates scene transforms and is
+		//      absolutely NOT safe to run concurrently with shooting.
+		//      Keep the temporal loop serial and only parallelise
+		//      photon-shooting within a single time step.
+		//
+		//   5. LuminaryManager's luminaire list iteration is read-only,
+		//      but `(*i).pLum` exposes methods that internally cache
+		//      precomputed area integrals — verify those are frozen
+		//      after scene prep before allowing workers to hit them.
+		//
+		// Parallel design sketch: make TraceNPhotons launch a thread
+		// pool, each worker shoots a share of the target count for its
+		// assigned luminaire, emits photons into a thread-local batch,
+		// and the batches are merged into the shared PhotonMapType
+		// under a single lock (or via a lock-free append buffer) once
+		// the pool barrier is reached.  Temporal-sampling loop stays
+		// serial.
+		//
 		template< class PhotonMapType >
-		class PhotonTracer : 
-			public virtual IPhotonTracer, 
+		class PhotonTracer :
+			public virtual IPhotonTracer,
 			public virtual Reference
 		{
 		protected:
@@ -33,9 +84,11 @@ namespace RISE
 			const Scalar				dPowerScale;			///< How much to scale shooting power by
 			const unsigned int			nNumTemporalSamples;	///< Number of temporal samples to take when tracing at a particular time
 			const bool					bRegenerateSpecificTime;///< Should the photon map regenerate when asked to for a specific time?
-			mutable IScenePriv*			pScene;
+			mutable IScenePriv*			pScene;					///< Scene pointer, setup-only writes via AttachScene() (see class docstring for parallel-shoot constraints)
 			LuminaryManager*			pLumManager;
 
+			// Shared RNG state: MUST be made per-thread before the photon
+			// shoot is parallelised.  See class docstring point (2).
 			const RandomNumberGenerator	geomsampler;
 			const RandomNumberGenerator random;
 
@@ -54,7 +107,7 @@ namespace RISE
 			  pScene( 0 ),
 			  pLumManager( 0 )
 			{
-				pLumManager = new LuminaryManager(false);
+				pLumManager = new LuminaryManager();
 				GlobalLog()->PrintNew( pLumManager, __FILE__, __LINE__, "luminary manager" );
 			}
 

@@ -3868,17 +3868,14 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDirectLightingShaderOp(
 								IShaderOp** ppi,				///< [out] Pointer to recieve the shaderop
-								const IMaterial* bsdf,			///< [in] BSDF to use when computing radiance (overrides object BSDF)
-								const bool nonmeshlights,		///< [in] Compute lighting from non mesh lights?
-								const bool meshlights,			///< [in] Compute lighting from mesh lights (area light sources)?
-								const bool cache					///< [in] Should the rasterizer state cache be used?
+								const IMaterial* bsdf			///< [in] BSDF to use when computing radiance (overrides object BSDF)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		DirectLightingShaderOp* pShaderOp = new DirectLightingShaderOp( bsdf, nonmeshlights, meshlights, cache );
+		DirectLightingShaderOp* pShaderOp = new DirectLightingShaderOp( bsdf );
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "direct lighting shaderop" );
@@ -4381,15 +4378,14 @@ namespace RISE
 	//! Creates a luminary manager
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateLuminaryManager(
-								ILuminaryManager** ppi,				///< [out] Pointer to recieve the luminary manager
-								const bool bChooseOnlyOneLight		///< [in] Choose only one luminaire for each sample
+								ILuminaryManager** ppi				///< [out] Pointer to recieve the luminary manager
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		LuminaryManager* pLum = new LuminaryManager( bChooseOnlyOneLight );
+		LuminaryManager* pLum = new LuminaryManager();
 
 		(*ppi) = pLum;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "luminary manager" );
@@ -4403,15 +4399,14 @@ namespace RISE
 								const bool seeRadianceMap,			///< [in] Is the radiance map (environment) visible to the view rays?
 								const unsigned int maxR,			///< [in] Maximum recursion level
 								const IShader& pDefaultShader,		///< [in] The default global shader
-								const bool showLuminaires,			///< [in] Should we be able to see luminaries?
-								const bool chooseonlyonelight		///< [in] For luminaire sampling, a random light is chosen for each sample
+								const bool showLuminaires			///< [in] Should we be able to see luminaries?
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		RayCaster* pCaster = new RayCaster( seeRadianceMap, maxR, pDefaultShader, showLuminaires, chooseonlyonelight );
+		RayCaster* pCaster = new RayCaster( seeRadianceMap, maxR, pDefaultShader, showLuminaires );
 
 		(*ppi) = pCaster;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ray caster" );

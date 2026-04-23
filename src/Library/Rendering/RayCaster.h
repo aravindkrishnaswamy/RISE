@@ -45,8 +45,6 @@ namespace RISE
 
 			const bool					bShowLuminaires;
 
-			const bool					bChooseOnlyOneLuminaire;
-
 			Scalar						dPendingLightRRThreshold;
 			bool						bPendingUseLightBVH;
 
@@ -57,8 +55,7 @@ namespace RISE
 				const bool seeRadianceMap,
 				const unsigned int maxR,
 				const IShader& pDefaultShader_,
-				const bool showLuminaires,
-				const bool chooseonlyoneluminaire
+				const bool showLuminaires
 				);
 
 			void AttachScene( const IScene* pScene_ );

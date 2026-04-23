@@ -47,7 +47,6 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	  stabilityConfig( stabilityCfg )
 {
 	useZSobol = useZSobol_;
-	vecSpectralSamples.reserve( nSpectralSamples );
 }
 
 PixelBasedSpectralIntegratingRasterizer::~PixelBasedSpectralIntegratingRasterizer( )
@@ -93,9 +92,15 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 			c.a = 1.0;
 		}
 	}
-	else 
+	else
 	{
-		vecSpectralSamples.clear();
+		// Per-thread local buffer — must NOT be a class member, since
+		// worker threads all call this const method concurrently on
+		// the same rasterizer instance.  Using a shared mutable
+		// member produced a classic std::vector race, manifesting as
+		// scrambled tile output whenever spectral_samples > 1.
+		std::vector<SPECTRAL_SAMPLE> vecSpectralSamples;
+		vecSpectralSamples.reserve( nSpectralSamples );
 
 		// Take n samples
 		for( unsigned int i=0; i<nSpectralSamples; i++ )

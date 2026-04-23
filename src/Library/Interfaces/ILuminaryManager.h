@@ -49,30 +49,9 @@ namespace RISE
 			) = 0;
 
 		//! Sets up luminaire sampling
-		virtual void SetLuminaireSampling( 
+		virtual void SetLuminaireSampling(
 			ISampling2D* pLumSam											///< [in] Sampling kernel to use when the luminaire needs to be sampled
 			) = 0;
-
-		//! Computes direct lighting for all luminaires
-		/// \return Direct lighting value as an RISEPel
-		virtual RISEPel ComputeDirectLighting(
-			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
-			const IBSDF& pBRDF,												///< [in] BRDF of the material
-			ISampler& sampler,												///< [in] Low-discrepancy sampler
-			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
-			) const = 0;
-
-		//! Computes direct lighting for a single wavelength
-		/// \return Direct lighting value for the particular wavelength as a scalar
-		virtual	Scalar ComputeDirectLightingNM(
-			const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
-			const IBSDF& pBRDF,												///< [in] BRDF of the material
-			const Scalar nm,												///< [in] Wavelength
-			ISampler& sampler,												///< [in] Low-discrepancy sampler
-			const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-			const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
-			) const = 0;
 	};
 }
 

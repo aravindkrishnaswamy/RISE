@@ -23,6 +23,7 @@ bdpt_pel_rasterizer
 	max_eye_depth		16
 	max_light_depth		16
 	samples				64
+	pixel_filter		gaussian
 }
 
 file_rasterizeroutput

@@ -86,6 +86,7 @@
 #include "BDPTVertex.h"
 #include "../Utilities/RandomNumbers.h"
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 namespace RISE
@@ -140,7 +141,20 @@ namespace RISE
 			};
 
 		protected:
+			// Training-pass diagnostic accumulator.  Updated from
+			// RecordGuidingTrainingPath(), which is called from the
+			// per-pixel BDPT worker loop — so every one of the three
+			// Scalar accumulators and two size_t counters below is
+			// reached by N render threads concurrently.  Plain
+			// `+=` / `++` on those is a data race (torn writes for
+			// doubles, lost updates for size_t), so the struct is
+			// guarded by `guidingTrainingStatsMutex`.  Contention is
+			// low — RecordGuidingTrainingPath fires once per path,
+			// not per ray — so the mutex is cheaper than promoting
+			// each field to std::atomic (especially the doubles,
+			// which would need C++20 `fetch_add` or a CAS loop).
 			mutable GuidingTrainingStats guidingTrainingStats;
+			mutable std::mutex guidingTrainingStatsMutex;
 #endif
 
 			virtual ~BDPTIntegrator();
@@ -162,7 +176,11 @@ namespace RISE
 				bool enableStrategySelection = false,
 				unsigned int strategySamples = 0 );
 			void ResetGuidingTrainingStats() const;
-			const GuidingTrainingStats& GetGuidingTrainingStats() const;
+			/// Returns a locked snapshot of the training stats.
+			/// Returned by value (not reference) so callers hold a
+			/// stable copy even if a new training iteration begins
+			/// writing after the call returns.
+			GuidingTrainingStats GetGuidingTrainingStats() const;
 			void ResetStrategySelectionStats() const;
 			void GetStrategySelectionStats(
 				unsigned long long& pathCount,

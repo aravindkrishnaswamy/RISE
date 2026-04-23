@@ -111,7 +111,7 @@ void Job::InitializeContainers()
 		this->AddReflectionShaderOp( "DefaultReflection" );
 		this->AddRefractionShaderOp( "DefaultRefraction" );
 		this->AddEmissionShaderOp( "DefaultEmission" );
-		this->AddDirectLightingShaderOp( "DefaultDirectLighting", 0, true, true, false );
+		this->AddDirectLightingShaderOp( "DefaultDirectLighting", 0 );
 		this->AddCausticPelPhotonMapShaderOp( "DefaultCausticPelPhotonMap" );
 		this->AddCausticSpectralPhotonMapShaderOp( "DefaultCausticSpectralPhotonMap" );
 		this->AddGlobalPelPhotonMapShaderOp( "DefaultGlobalPelPhotonMap" );
@@ -3221,9 +3221,7 @@ bool Job::AddObject(
 	const char* material,									///< [in] Name of the material
 	const char* modifier,									///< [in] Name of the modifier
 	const char* shader,										///< [in] Name of the shader
-	const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-	const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-	const double radiance_orient[3],						///< [in] Orientation of the object
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` ignored here
 	const double pos[3],									///< [in] Position of the object
 	const double orient[3],									///< [in] Orientation of the object
 	const double scale[3],									///< [in] Object scaling
@@ -3273,16 +3271,16 @@ bool Job::AddObject(
 		}
 	}
 
-	if( radiancemap ) {
-		IPainter* pPnt = pPntManager->GetItem(radiancemap);
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* pPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 		if( pPnt ) {
 			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radiancemap_scale );
-			pRadianceMap->SetOrientation( Vector3( radiance_orient ) );
+			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
+			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 			object->AssignRadianceMap( *pRadianceMap );
 			safe_release( pRadianceMap );
 		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radiancemap );
+			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
 			return false;
 		}
 	}
@@ -3528,9 +3526,7 @@ bool Job::AddCSGObject(
 	const char* material,									///< [in] Name of the material
 	const char* modifier,									///< [in] Name of the modifier
 	const char* shader,										///< [in] Name of the shader
-	const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-	const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-	const double radiance_orient[3],						///< [in] Orientation of the object
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` ignored here
 	const double pos[3],									///< [in] Position of the object
 	const double orient[3],									///< [in] Orientation of the object
 	const bool bCastsShadows,								///< [in] Does the object cast shadows?
@@ -3569,17 +3565,17 @@ bool Job::AddCSGObject(
 		}
 	}
 
-	if( radiancemap ) {
-		IPainter* pPnt = pPntManager->GetItem(radiancemap);
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* pPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 		if( pPnt ) {
 			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radiancemap_scale );
-			pRadianceMap->SetOrientation( Vector3( radiance_orient ) );
+			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
+			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 			object->AssignRadianceMap( *pRadianceMap );
 			safe_release( pRadianceMap );
 			safe_release( pPnt );
 		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radiancemap );
+			GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
 		}
 	}
 
@@ -3634,10 +3630,7 @@ bool Job::AddEmissionShaderOp(
 
 bool Job::AddDirectLightingShaderOp(
 	const char* name,										///< [in] Name of the shaderop
-	const char* bsdf,										///< [in] BSDF to use when computing radiance (overrides object BSDF)
-	const bool nonmeshlights,								///< [in] Compute lighting from non mesh lights?
-	const bool meshlights,									///< [in] Compute lighting from mesh lights (area light sources)?
-	const bool cache										///< [in] Should the rasterizer state cache be used?
+	const char* bsdf										///< [in] BSDF to use when computing radiance (overrides object BSDF)
 	)
 {
 	IMaterial* pBSDF = 0;
@@ -3646,7 +3639,7 @@ bool Job::AddDirectLightingShaderOp(
 	}
 
 	IShaderOp* pShaderOp = 0;
-	RISE_API_CreateDirectLightingShaderOp( &pShaderOp, pBSDF, nonmeshlights, meshlights, cache );
+	RISE_API_CreateDirectLightingShaderOp( &pShaderOp, pBSDF );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );
@@ -4248,100 +4241,91 @@ bool GetSamplingAndFilterElements(
 	IPixelFilter** pPixelFilter,
 	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 	const unsigned int numLumSamples,						///< [in] Number of samples / lumin
-	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
 	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-	const double pixelFilterParamB							///< [in] Pixel filter parameter B
+	const PixelFilterConfig& pixelFilterConfig				///< [in] Pixel sampling + reconstruction filter
 	)
 {
 	if( numPixelSamples > 1) {
-		if( pixelSampler ) {
-			String sPixelSampler( pixelSampler );
-			if( sPixelSampler == "nrooks" ) {
-				RISE_API_CreateNRooksSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
-			} else if( sPixelSampler == "uniform" ) {
-				RISE_API_CreateUniformSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "random" ) {
-				RISE_API_CreateRandomSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "stratified" ) {
-				RISE_API_CreateStratifiedSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
-			} else if( sPixelSampler == "poisson" ) {
-				RISE_API_CreatePoissonDiskSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
-			} else if( sPixelSampler == "multijittered" ) {
-				RISE_API_CreateMultiJitteredSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "halton" ) {
-				RISE_API_CreateHaltonPointsSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else if( sPixelSampler == "sobol" ) {
-				RISE_API_CreateSobolSampling2D( pPixelSampler, 1.0, 1.0 );
-			} else {
-				GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", pixelSampler );
-				return false;
-			}
-		} else {
+		const String& sPixelSampler = pixelFilterConfig.pixelSampler;
+		const double pixelSamplerParam = pixelFilterConfig.pixelSamplerParam;
+		if( sPixelSampler == "nrooks" ) {
+			RISE_API_CreateNRooksSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
+		} else if( sPixelSampler == "uniform" ) {
+			RISE_API_CreateUniformSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "random" ) {
+			RISE_API_CreateRandomSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "stratified" ) {
+			RISE_API_CreateStratifiedSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
+		} else if( sPixelSampler == "poisson" ) {
+			RISE_API_CreatePoissonDiskSampling2D( pPixelSampler, 1.0, 1.0, pixelSamplerParam );
+		} else if( sPixelSampler == "multijittered" ) {
 			RISE_API_CreateMultiJitteredSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "halton" ) {
+			RISE_API_CreateHaltonPointsSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else if( sPixelSampler == "sobol" ) {
+			RISE_API_CreateSobolSampling2D( pPixelSampler, 1.0, 1.0 );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", sPixelSampler.c_str() );
+			return false;
 		}
 		(*pPixelSampler)->SetNumSamples( numPixelSamples );
 
-		if( pixelFilter ) {
-			String sPixelFilter( pixelFilter );
-			if( sPixelFilter == "none" ) {
-				// Explicit opt-out: leave pPixelFilter null, caller
-				// renders without sub-pixel reconstruction.
-			} else if( sPixelFilter == "box" ) {
-				RISE_API_CreateBoxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "tent" ) {
-				RISE_API_CreateTrianglePixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "gaussian" ) {
-				RISE_API_CreateGaussianPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
-			} else if( sPixelFilter == "sinc" ) {
-				RISE_API_CreateSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_box" ) {
-				RISE_API_CreateBoxWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_bartlett" ) {
-				RISE_API_CreateBartlettWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_welch" ) {
-				RISE_API_CreateWelchWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_hanning" ) {
-				RISE_API_CreateHanningWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_hamming" ) {
-				RISE_API_CreateHammingWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_blackman" ) {
-				RISE_API_CreateBlackmanWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_lanczos" ) {
-				RISE_API_CreateLanczosWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "windowed_sinc_kaiser" ) {
-				RISE_API_CreateKaiserWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA );
-			} else if( sPixelFilter == "cook" ) {
-				RISE_API_CreateCookPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
-			} else if( sPixelFilter == "max" ) {
-				RISE_API_CreateMaxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB );
-			} else if( sPixelFilter == "mitchell-netravali" ) {
-				RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
-			} else if( sPixelFilter == "lanczos" ) {
-				RISE_API_CreateLanczosPixelFilter( pPixelFilter );
-			} else if( sPixelFilter == "catmull-rom" ) {
-				RISE_API_CreateCatmullRomPixelFilter( pPixelFilter );
-			} else if( sPixelFilter == "cubic_bspline" ) {
-				RISE_API_CreateCubicBSplinePixelFilter( pPixelFilter );
-			} else if( sPixelFilter == "quadratic_bspline" ) {
-				RISE_API_CreateQuadraticBSplinePixelFilter( pPixelFilter );
-			} else {
-				// Mirrors the pixel-sampler branch above — a typo in a
-				// scene file must fail loudly rather than silently
-				// rendering without a filter.  Before this fix an
-				// unknown name produced an error log but left
-				// pPixelFilter null and returned true, so the render
-				// silently proceeded unfiltered.
-				GlobalLog()->PrintEx( eLog_Error, "Unknown filter type: `%s`", pixelFilter );
-				return false;
-			}
+		const String& sPixelFilter = pixelFilterConfig.filter;
+		const double pixelFilterWidth = pixelFilterConfig.width;
+		const double pixelFilterHeight = pixelFilterConfig.height;
+		const double pixelFilterParamA = pixelFilterConfig.paramA;
+		const double pixelFilterParamB = pixelFilterConfig.paramB;
+		if( sPixelFilter == "none" ) {
+			// Explicit opt-out: leave pPixelFilter null, caller
+			// renders without sub-pixel reconstruction.
+		} else if( sPixelFilter == "box" ) {
+			RISE_API_CreateBoxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "tent" ) {
+			RISE_API_CreateTrianglePixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "gaussian" ) {
+			RISE_API_CreateGaussianPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
+		} else if( sPixelFilter == "sinc" ) {
+			RISE_API_CreateSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_box" ) {
+			RISE_API_CreateBoxWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_bartlett" ) {
+			RISE_API_CreateBartlettWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_welch" ) {
+			RISE_API_CreateWelchWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_hanning" ) {
+			RISE_API_CreateHanningWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_hamming" ) {
+			RISE_API_CreateHammingWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_blackman" ) {
+			RISE_API_CreateBlackmanWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_lanczos" ) {
+			RISE_API_CreateLanczosWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "windowed_sinc_kaiser" ) {
+			RISE_API_CreateKaiserWindowedSincPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA );
+		} else if( sPixelFilter == "cook" ) {
+			RISE_API_CreateCookPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight );
+		} else if( sPixelFilter == "max" ) {
+			RISE_API_CreateMaxPixelFilter( pPixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB );
+		} else if( sPixelFilter == "mitchell-netravali" ) {
+			RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, pixelFilterParamA, pixelFilterParamB );
+		} else if( sPixelFilter == "lanczos" ) {
+			RISE_API_CreateLanczosPixelFilter( pPixelFilter );
+		} else if( sPixelFilter == "catmull-rom" ) {
+			RISE_API_CreateCatmullRomPixelFilter( pPixelFilter );
+		} else if( sPixelFilter == "cubic_bspline" ) {
+			RISE_API_CreateCubicBSplinePixelFilter( pPixelFilter );
+		} else if( sPixelFilter == "quadratic_bspline" ) {
+			RISE_API_CreateQuadraticBSplinePixelFilter( pPixelFilter );
 		} else {
-			RISE_API_CreateMitchellNetravaliPixelFilter( pPixelFilter, 1.0/3.0, 1.0/3.0 );
+			// Mirrors the pixel-sampler branch above — a typo in a
+			// scene file must fail loudly rather than silently
+			// rendering without a filter.  Before this fix an
+			// unknown name produced an error log but left
+			// pPixelFilter null and returned true, so the render
+			// silently proceeded unfiltered.
+			GlobalLog()->PrintEx( eLog_Error, "Unknown filter type: `%s`", sPixelFilter.c_str() );
+			return false;
 		}
 	}
 
@@ -4365,7 +4349,7 @@ bool GetSamplingAndFilterElements(
 			} else if( sLuminarySampler == "sobol" ) {
 				RISE_API_CreateSobolSampling2D( pLumSampler, 1.0, 1.0 );
 			} else {
-				GlobalLog()->PrintEx( eLog_Error, "Unknown sampler type: `%s`", pixelSampler );
+				GlobalLog()->PrintEx( eLog_Error, "Unknown luminary sampler type: `%s`", luminarySampler );
 				return false;
 			}
 		} else {
@@ -4384,26 +4368,15 @@ bool Job::SetPixelBasedPelRasterizer(
 	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
 	const char* shader,										///< [in] The default shader
-	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-	const bool bBackground,									///< [in] Is the radiance map a background object
-	const double scale,										///< [in] How much to scale the radiance values
-	const double orient[3],									///< [in] Euler angles for orienting the radiance map
-	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+	const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 	const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-	const bool useZSobol,									///< [in] Use Z-Sobol sampler
 	const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 	)
 {
@@ -4412,7 +4385,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		luminarySampler, luminarySamplerParam, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4424,15 +4397,15 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, maxRecur, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4454,7 +4427,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4475,27 +4448,14 @@ bool Job::SetPixelBasedPelRasterizer(
 bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 	const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-	const unsigned int specSamples,							///< [in] Number of spectral samples / pixel
-	const double lambda_begin,								///< [in] Wavelength to start sampling at
-	const double lambda_end,								///< [in] Wavelength to finish sampling at
-	const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
+	const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 	const unsigned int maxRecur,							///< [in] Maximum recursion level
 	const char* shader,										///< [in] The default shader
-	const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-	const bool bBackground,									///< [in] Is the radiance map a background object
-	const double scale,										///< [in] How much to scale the radiance values
-	const double orient[3],									///< [in] Euler angles for orienting the radiance map
-	const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-	const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+	const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 	const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 	const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-	const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-	const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-	const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-	const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-	const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+	const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-	const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 	const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 	const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
 	const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
@@ -4503,9 +4463,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-	const bool useZSobol,									///< [in] Use Z-Sobol sampler
-	const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
 	ISampling2D* pPixelSampler = 0;
@@ -4513,7 +4471,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, numLumSamples,
-		pixelSampler, pixelSamplerParam, luminarySampler, luminarySamplerParam, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		luminarySampler, luminarySamplerParam, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4525,15 +4483,15 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, maxRecur, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, maxRecur, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4574,7 +4532,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 			green->addControlPoints( numSPDvalues, rgb_spd_frequencies, rgb_spd_g );
 			blue->addControlPoints( numSPDvalues, rgb_spd_frequencies, rgb_spd_b );
 
-			RISE_API_CreatePixelBasedSpectralIntegratingRasterizerRGB( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, *red, *green, *blue );
+			RISE_API_CreatePixelBasedSpectralIntegratingRasterizerRGB( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, *red, *green, *blue );
 
 			safe_release( red );
 			safe_release( green );
@@ -4584,7 +4542,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, specSamples, lambda_begin, lambda_end, num_wavelengths, oidnDenoise, stabilityConfig, useZSobol, useHWSS );
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, oidnDenoise, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 	}
 
 	safe_release( pPixelSampler );
@@ -4605,32 +4563,14 @@ bool Job::SetBDPTPelRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
-	const unsigned int smsMultiTrials,
-	const unsigned int smsPhotonCount,
+	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
@@ -4639,7 +4579,7 @@ bool Job::SetBDPTPelRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4651,15 +4591,15 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4678,7 +4618,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4700,36 +4640,14 @@ bool Job::SetBDPTSpectralRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int num_wavelengths,
-	const unsigned int spectral_samples,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
-	const unsigned int smsMultiTrials,
-	const unsigned int smsPhotonCount,
+	const SpectralConfig& spectralConfig,
+	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
-	const bool useHWSS,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
@@ -4738,7 +4656,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4750,15 +4668,15 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4777,8 +4695,8 @@ bool Job::SetBDPTSpectralRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4800,19 +4718,9 @@ bool Job::SetVCMPelRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
 	const double mergeRadius,
 	const bool enableVC,
 	const bool enableVM,
@@ -4820,7 +4728,6 @@ bool Job::SetVCMPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
@@ -4829,7 +4736,7 @@ bool Job::SetVCMPelRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4841,15 +4748,15 @@ bool Job::SetVCMPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4881,7 +4788,7 @@ bool Job::SetVCMPelRasterizer(
 		guidingConfig,
 		adaptiveConfig,
 		stabilityConfig,
-		useZSobol );
+		pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4903,31 +4810,16 @@ bool Job::SetVCMSpectralRasterizer(
 	const unsigned int maxEyeDepth,
 	const unsigned int maxLightDepth,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int num_wavelengths,
-	const unsigned int spectral_samples,
+	const SpectralConfig& spectralConfig,
 	const double mergeRadius,
 	const bool enableVC,
 	const bool enableVM,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
-	const bool useHWSS,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
@@ -4936,7 +4828,7 @@ bool Job::SetVCMSpectralRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -4948,15 +4840,15 @@ bool Job::SetVCMSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -4981,18 +4873,18 @@ bool Job::SetVCMSpectralRasterizer(
 		pPixelFilter,
 		maxEyeDepth,
 		maxLightDepth,
-		nmbegin,
-		nmend,
-		num_wavelengths,
-		spectral_samples,
+		spectralConfig.nmBegin,
+		spectralConfig.nmEnd,
+		spectralConfig.numWavelengths,
+		spectralConfig.spectralSamples,
 		mergeRadius,
 		enableVC,
 		enableVM,
 		oidnDenoise,
 		guidingConfig,
 		stabilityConfig,
-		useZSobol,
-		useHWSS );
+		pixelFilterConfig.blueNoiseSampler,
+		spectralConfig.useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5012,32 +4904,14 @@ bool Job::SetVCMSpectralRasterizer(
 bool Job::SetPathTracingPelRasterizer(
 	const unsigned int numPixelSamples,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
-	const unsigned int smsMultiTrials,
-	const unsigned int smsPhotonCount,
+	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
@@ -5046,7 +4920,7 @@ bool Job::SetPathTracingPelRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -5058,15 +4932,15 @@ bool Job::SetPathTracingPelRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -5085,7 +4959,7 @@ bool Job::SetPathTracingPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5105,36 +4979,14 @@ bool Job::SetPathTracingPelRasterizer(
 bool Job::SetPathTracingSpectralRasterizer(
 	const unsigned int numPixelSamples,
 	const char* shader,
-	const char* globalRadianceMap,
-	const bool bBackground,
-	const double scale,
-	const double orient[3],
-	const char* pixelSampler,
-	const double pixelSamplerParam,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int num_wavelengths,
-	const unsigned int spectral_samples,
-	const bool smsEnabled,
-	const unsigned int smsMaxIterations,
-	const double smsThreshold,
-	const unsigned int smsMaxChainDepth,
-	const bool smsBiased,
-	const unsigned int smsBernoulliTrials,
-	const unsigned int smsMultiTrials,
-	const unsigned int smsPhotonCount,
+	const SpectralConfig& spectralConfig,
+	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const bool useZSobol,
-	const bool useHWSS,
 	const ProgressiveConfig& progressiveConfig
 	)
 {
@@ -5143,7 +4995,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	IPixelFilter* pPixelFilter = 0;
 
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
-		pixelSampler, pixelSamplerParam, 0, 0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0, pixelFilterConfig ) )
 	{
 		return false;
 	}
@@ -5155,15 +5007,15 @@ bool Job::SetPathTracingSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, bBackground, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
 
-	if( globalRadianceMap ) {
-		IPainter* p = pPntManager->GetItem( globalRadianceMap );
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
 
 		if( p ) {
 			IRadianceMap* pRm = 0;
-			RISE_API_CreateRadianceMap( &pRm, *p, scale );
-			pRm->SetOrientation( Vector3( orient ) );
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
 
 			pScene->SetGlobalRadianceMap( pRm );
 			safe_release( pRm );
@@ -5182,8 +5034,8 @@ bool Job::SetPathTracingSpectralRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		nmbegin, nmend, num_wavelengths, spectral_samples,
-		smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased, smsBernoulliTrials, smsMultiTrials, smsPhotonCount, oidnDenoise, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5209,13 +5061,8 @@ bool Job::SetMLTRasterizer(
 	const double largeStepProb,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
@@ -5226,7 +5073,7 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -5243,7 +5090,7 @@ bool Job::SetMLTRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, 2, 1,
-		0, 0.0, 0, 0.0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0.0, pixelFilterConfig ) )
 	{
 		safe_release( pCaster );
 		return false;
@@ -5275,13 +5122,8 @@ bool Job::SetMMLTRasterizer(
 	const int forceDepth,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
 	const bool oidnDenoise,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig
 	)
 {
@@ -5292,7 +5134,7 @@ bool Job::SetMMLTRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -5307,9 +5149,7 @@ bool Job::SetMMLTRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter,
-			2, 1, 0, 0.0, 0, 0.0,
-			pixelFilter, pixelFilterWidth, pixelFilterHeight,
-			pixelFilterParamA, pixelFilterParamB ) )
+			2, 1, 0, 0.0, pixelFilterConfig ) )
 	{
 		safe_release( pCaster );
 		return false;
@@ -5341,17 +5181,9 @@ bool Job::SetMLTSpectralRasterizer(
 	const double largeStepProb,
 	const char* shader,
 	const bool bShowLuminaires,
-	const bool bChooseOnlyOneLight,
-	const double nmbegin,
-	const double nmend,
-	const unsigned int nSpectralSamples,
-	const bool useHWSS,
+	const SpectralConfig& spectralConfig,
 	const bool oidnDenoise,
-	const char* pixelFilter,
-	const double pixelFilterWidth,
-	const double pixelFilterHeight,
-	const double pixelFilterParamA,
-	const double pixelFilterParamB,
+	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig
 	)
 {
@@ -5362,7 +5194,7 @@ bool Job::SetMLTSpectralRasterizer(
 	}
 
 	IRayCaster* pCaster = 0;
-	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires, bChooseOnlyOneLight );
+	RISE_API_CreateRayCaster( &pCaster, false, 10, *pShader, bShowLuminaires );
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
@@ -5373,7 +5205,7 @@ bool Job::SetMLTSpectralRasterizer(
 	ISampling2D* pLumSampler = 0;
 	IPixelFilter* pPixelFilter = 0;
 	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, 2, 1,
-		0, 0.0, 0, 0.0, pixelFilter, pixelFilterWidth, pixelFilterHeight, pixelFilterParamA, pixelFilterParamB ) )
+		0, 0.0, pixelFilterConfig ) )
 	{
 		safe_release( pCaster );
 		return false;
@@ -5382,7 +5214,7 @@ bool Job::SetMLTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTSpectralRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-		nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise,
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.spectralSamples, spectralConfig.useHWSS, oidnDenoise,
 		pPixelSampler, pPixelFilter );
 
 	safe_release( pCaster );

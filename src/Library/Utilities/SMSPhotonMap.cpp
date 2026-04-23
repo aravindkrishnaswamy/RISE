@@ -377,7 +377,7 @@ unsigned int SMSPhotonMap::Build(
 	// PhotonTracer does in its constructor / AttachScene pair.
 	// LuminaryManager's destructor is protected (reference-counted), so
 	// heap-allocate and safe_release at the end.
-	LuminaryManager* pLumManager = new LuminaryManager( false );
+	LuminaryManager* pLumManager = new LuminaryManager();
 	// AttachScene wants IScenePriv* which derives from IScene; the only
 	// in-tree implementation is Scene.  Cast is safe here because the
 	// rasterizer always constructs through Scene.

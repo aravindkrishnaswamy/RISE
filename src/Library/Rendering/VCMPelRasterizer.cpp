@@ -158,7 +158,7 @@ void VCMPelRasterizer::IntegratePixel(
 		}
 	}
 
-	const bool bMultiSample = pSampling && pPixelFilter && rc.UsesPixelSampling();
+	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
 
 	// Mirror BDPT's adaptive + ZSobol seed computation.
@@ -271,9 +271,13 @@ void VCMPelRasterizer::IntegratePixel(
 		{
 			Point2 ptOnScreen;
 			Scalar weight = 1.0;
+			// Uniform sub-pixel jitter for eye-subpath samples — see
+			// BDPTPelRasterizer::IntegratePixel for the rationale
+			// (filter.warp causes severe blur with wide kernels).
 			if( bMultiSample ) {
-				weight = pPixelFilter->warpOnScreen(
-					rc.random, *m, ptOnScreen, x, height - y );
+				ptOnScreen = Point2(
+					static_cast<Scalar>(x) + (*m).x - 0.5,
+					static_cast<Scalar>(height - y) + (*m).y - 0.5 );
 			} else {
 				ptOnScreen = Point2( x, height - y );
 			}

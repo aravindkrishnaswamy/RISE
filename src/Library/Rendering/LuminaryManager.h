@@ -43,36 +43,9 @@ namespace RISE
 
 			ISampling2D*			pLumSampling;
 			LuminariesList			luminaries;
-			Scalar					dOVcSamples;
-			const bool				bRandomlySelect;							// Randomly selects only one luminaire to sample
-
-			RISEPel ComputeDirectLightingForLuminary(
-				const RayIntersectionGeometric& ri,
-				const IObject& pObject,
-				const Point2& ptLum,
-				const IBSDF& pBRDF,
-				const IMaterial* pMaterial,										///< [in] Material at shading point (for MIS PDF)
-				ISampler& sampler,
-				const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-				const bool bShadowRays
-				) const;
-
-			Scalar ComputeDirectLightingForLuminaryNM(
-				const RayIntersectionGeometric& ri,
-				const IObject& pObject,
-				const Point2& ptLum,
-				const IBSDF& pBRDF,
-				const IMaterial* pMaterial,										///< [in] Material at shading point (for MIS PDF)
-				const Scalar nm,
-				ISampler& sampler,
-				const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-				const bool bShadowRays
-				) const;
 
 		public:
-			LuminaryManager(
-				const bool randomly_select
-				);
+			LuminaryManager();
 
 			//! Binds the luminary manager to a particular scene
 			void AttachScene(
@@ -85,30 +58,9 @@ namespace RISE
 				);
 
 			//! Sets up luminaire sampling
-			void SetLuminaireSampling( 
+			void SetLuminaireSampling(
 				ISampling2D* pLumSam											///< [in] Sampling kernel to use when the luminaire needs to be sampled
 				);
-
-			//! Computes direct lighting for all luminaires
-			/// \return Direct lighting value as an RISEPel
-			RISEPel ComputeDirectLighting(
-				const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
-				const IBSDF& pBRDF,												///< [in] BRDF of the material
-				ISampler& sampler,												///< [in] Low-discrepancy sampler
-				const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-				const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
-				) const;
-
-			//! Computes direct lighting for a single wavelength
-			/// \return Direct lighting value for the particular wavelength as a scalar
-			Scalar ComputeDirectLightingNM(
-				const RayIntersection& ri,										///< [in] Intersection information at point we computing lighting for
-				const IBSDF& pBRDF,												///< [in] BRDF of the material
-				const Scalar nm,												///< [in] Wavelength
-				ISampler& sampler,												///< [in] Low-discrepancy sampler
-				const IRayCaster& caster,										///< [in] Ray Caster to use for shadow checks
-				const IShadowPhotonMap* pShadowMap								///< [in] Shadow photon map for speeding up shadow checks
-				) const;
 
 			//! Returns the list of luminaries
 			const LuminariesList& getLuminaries( ){ return luminaries; };

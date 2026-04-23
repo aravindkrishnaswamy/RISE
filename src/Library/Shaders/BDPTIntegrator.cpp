@@ -288,9 +288,16 @@ namespace
 		return clamped;
 	}
 
+	// Called from BDPTPelRasterizer::IntegratePixel on N worker
+	// threads concurrently.  `pStats` and its `pStatsMutex` live on
+	// the shared BDPTIntegrator instance, so every field of `*pStats`
+	// is a potential race target.  We accumulate into a stack-local
+	// snapshot during the per-result loop (zero contention) and
+	// merge once at the end under `*pStatsMutex`.
 	inline void RecordGuidingTrainingPath(
 		PathGuidingField* pGuidingField,
 		BDPTIntegrator::GuidingTrainingStats* pStats,
+		std::mutex* pStatsMutex,
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<BDPTIntegrator::ConnectionResult>& results
 		)
@@ -312,6 +319,11 @@ namespace
 		if( !hasSegments ) {
 			return;
 		}
+
+		// Per-call local accumulator — merged into *pStats under
+		// *pStatsMutex at the end.  Keeps the hot per-result loop
+		// lock-free.
+		BDPTIntegrator::GuidingTrainingStats localStats;
 
 		static thread_local GuidingTrainingPathScratch scratch;
 		if( !scratch.pathSegments ) {
@@ -366,16 +378,16 @@ namespace
 					effectiveContribution[2] * Scalar( 0.0722 );
 				if( energy > 0 )
 				{
-					pStats->totalEnergy += energy;
+					localStats.totalEnergy += energy;
 					if( cr.t >= 3 )
 					{
-						pStats->deepEyeConnectionEnergy += energy;
-						pStats->deepEyeConnectionCount++;
+						localStats.deepEyeConnectionEnergy += energy;
+						localStats.deepEyeConnectionCount++;
 					}
 					else if( cr.s >= 2 && cr.t >= 2 )
 					{
-						pStats->firstSurfaceConnectionEnergy += energy;
-						pStats->firstSurfaceConnectionCount++;
+						localStats.firstSurfaceConnectionEnergy += energy;
+						localStats.firstSurfaceConnectionCount++;
 					}
 				}
 			}
@@ -459,6 +471,19 @@ namespace
 			false,
 			false,
 			false );
+
+		// Flush this path's stats into the shared accumulator.
+		// Single lock acquisition per path; no contention during
+		// the per-result accumulation loop above.
+		if( pStats && pStatsMutex )
+		{
+			std::lock_guard<std::mutex> lock( *pStatsMutex );
+			pStats->totalEnergy += localStats.totalEnergy;
+			pStats->firstSurfaceConnectionEnergy += localStats.firstSurfaceConnectionEnergy;
+			pStats->deepEyeConnectionEnergy += localStats.deepEyeConnectionEnergy;
+			pStats->firstSurfaceConnectionCount += localStats.firstSurfaceConnectionCount;
+			pStats->deepEyeConnectionCount += localStats.deepEyeConnectionCount;
+		}
 	}
 
 	/// Record light subpath vertices as guiding training samples.
@@ -787,12 +812,20 @@ void BDPTIntegrator::SetCompletePathGuide(
 
 void BDPTIntegrator::ResetGuidingTrainingStats() const
 {
+	// Typically called from the dispatcher between training
+	// iterations (single-threaded), but take the lock anyway so
+	// we're defensible against future callers that reset mid-pass.
+	std::lock_guard<std::mutex> lock( guidingTrainingStatsMutex );
 	guidingTrainingStats = GuidingTrainingStats();
 }
 
-const BDPTIntegrator::GuidingTrainingStats&
+BDPTIntegrator::GuidingTrainingStats
 BDPTIntegrator::GetGuidingTrainingStats() const
 {
+	// Returns a snapshot copy under the lock so the caller keeps a
+	// stable value even if a subsequent training iteration starts
+	// accumulating into guidingTrainingStats.
+	std::lock_guard<std::mutex> lock( guidingTrainingStatsMutex );
 	return guidingTrainingStats;
 }
 
@@ -4670,7 +4703,7 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 	}
 
 	if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() ) {
-		RecordGuidingTrainingPath( pGuidingField, &guidingTrainingStats, eyeVerts, results );
+		RecordGuidingTrainingPath( pGuidingField, &guidingTrainingStats, &guidingTrainingStatsMutex, eyeVerts, results );
 	}
 	if( pLightGuidingField && pLightGuidingField->IsCollectingTrainingSamples() ) {
 		RecordGuidingTrainingLightPath( pLightGuidingField, lightVerts, maxLightGuidingDepth );

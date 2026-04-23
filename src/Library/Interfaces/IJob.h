@@ -27,6 +27,10 @@
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include "../Utilities/PixelFilterConfig.h"
+#include "../Utilities/SMSConfig.h"
+#include "../Utilities/SpectralConfig.h"
+#include "../Utilities/RadianceMapConfig.h"
 
 namespace RISE
 {
@@ -1123,9 +1127,7 @@ namespace RISE
 			const char* material,									///< [in] Name of the material
 			const char* modifier,									///< [in] Name of the modifier
 			const char* shader,										///< [in] Name of the shader
-			const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-			const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-			const double radiance_orient[3],						///< [in] Orientation of the object
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` is ignored here
 			const double pos[3],									///< [in] Position of the object
 			const double orient[3],									///< [in] Orientation of the object
 			const double scale[3],									///< [in] Object scaling
@@ -1147,9 +1149,7 @@ namespace RISE
 			const char* material,									///< [in] Name of the material
 			const char* modifier,									///< [in] Name of the modifier
 			const char* shader,										///< [in] Name of the shader
-			const char* radiancemap,								///< [in] Name of the painter to use as a radiance map
-			const double radiancemap_scale,							///< [in] How much to scale the radiance map values by
-			const double radiance_orient[3],						///< [in] Orientation of the object
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL); `isBackground` is ignored here
 			const double pos[3],									///< [in] Position of the object
 			const double orient[3],									///< [in] Orientation of the object
 			const bool bCastsShadows,								///< [in] Does the object cast shadows?
@@ -1174,10 +1174,7 @@ namespace RISE
 
 		virtual bool AddDirectLightingShaderOp(
 			const char* name,										///< [in] Name of the shaderop
-			const char* bsdf,										///< [in] BSDF to use when computing radiance (overrides object BSDF)
-			const bool nonmeshlights,								///< [in] Compute lighting from non mesh lights?
-			const bool meshlights,									///< [in] Compute lighting from mesh lights (area light sources)?
-			const bool cache										///< [in] Should the rasterizer state cache be used?
+			const char* bsdf										///< [in] BSDF to use when computing radiance (overrides object BSDF)
 			) = 0;
 
 		virtual bool AddCausticPelPhotonMapShaderOp(
@@ -1397,26 +1394,15 @@ namespace RISE
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1424,27 +1410,14 @@ namespace RISE
 		virtual bool SetPixelBasedSpectralIntegratingRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const unsigned int numLumSamples,						///< [in] Number of samples / luminaire
-			const unsigned int specSamples,							///< [in] Number of spectral samples / pixel
-			const double lambda_begin,								///< [in] Wavelength to start sampling at
-			const double lambda_end,								///< [in] Wavelength to finish sampling at
-			const unsigned int num_wavelengths,						///< [in] Number of wavelengths to sample
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const unsigned int maxRecur,							///< [in] Maximum recursion level
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 			const char* luminarySampler,							///< [in] Type of sampling to use for luminaries
 			const double luminarySamplerParam,						///< [in] Parameter for the luminary sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool bIntegrateRGB,								///< [in] Should we use the CIE XYZ spd functions or will they be specified now?
 			const unsigned int numSPDvalues,						///< [in] Number of values in the RGB SPD arrays
 			const double rgb_spd_frequencies[],						///< [in] Array that contains the RGB SPD frequencies
@@ -1452,9 +1425,7 @@ namespace RISE
 			const double rgb_spd_g[],								///< [in] Array that contains the RGB SPD amplitudes for green
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS										///< [in] Use Hero Wavelength Spectral Sampling
+			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
 		//! Sets the rasterizer type to be Pel (RGB) BDPT
@@ -1463,32 +1434,14 @@ namespace RISE
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
-		const unsigned int smsMultiTrials,						///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
-		const unsigned int smsPhotonCount,						///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1498,36 +1451,14 @@ namespace RISE
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start wavelength (nm)
-			const double nmend,										///< [in] End wavelength (nm)
-			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
-			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
-		const unsigned int smsMultiTrials,						///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
-		const unsigned int smsPhotonCount,						///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
+			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1537,19 +1468,9 @@ namespace RISE
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const double mergeRadius,								///< [in] Photon merge radius (0 => scene-auto fallback)
 			const bool enableVC,									///< [in] Enable vertex connection strategies
 			const bool enableVM,									///< [in] Enable vertex merging strategy
@@ -1557,7 +1478,6 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1567,31 +1487,16 @@ namespace RISE
 			const unsigned int maxEyeDepth,							///< [in] Maximum eye subpath depth
 			const unsigned int maxLightDepth,						///< [in] Maximum light subpath depth
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start wavelength (nm)
-			const double nmend,										///< [in] End wavelength (nm)
-			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
-			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const double mergeRadius,								///< [in] Photon merge radius (0 => scene-auto fallback)
 			const bool enableVC,									///< [in] Enable vertex connection strategies
 			const bool enableVM,									///< [in] Enable vertex merging strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1599,32 +1504,14 @@ namespace RISE
 		virtual bool SetPathTracingPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
-		const unsigned int smsMultiTrials,						///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
-		const unsigned int smsPhotonCount,						///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1632,36 +1519,14 @@ namespace RISE
 		virtual bool SetPathTracingSpectralRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
 			const char* shader,										///< [in] The default shader
-			const char* globalRadianceMap,							///< [in] Name of the painter for global IBL
-			const bool bBackground,									///< [in] Is the radiance map a background object
-			const double scale,										///< [in] How much to scale the radiance values
-			const double orient[3],									///< [in] Euler angles for orienting the radiance map
-			const char* pixelSampler,								///< [in] Type of sampling to use for the pixel sampler
-			const double pixelSamplerParam,							///< [in] Parameter for the pixel sampler
-			const char* pixelFilter,								///< [in] Type of filtering to use for the pixels
-			const double pixelFilterWidth,							///< [in] How wide is the pixel filter?
-			const double pixelFilterHeight,							///< [in] How high is the pixel filter?
-			const double pixelFilterParamA,							///< [in] Pixel filter parameter A
-			const double pixelFilterParamB,							///< [in] Pixel filter parameter B
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start wavelength (nm)
-			const double nmend,										///< [in] End wavelength (nm)
-			const unsigned int num_wavelengths,						///< [in] Number of wavelength bins
-			const unsigned int spectral_samples,					///< [in] Spectral samples per pixel
-			const bool smsEnabled,									///< [in] Enable Specular Manifold Sampling
-			const unsigned int smsMaxIterations,					///< [in] SMS Newton iteration limit
-			const double smsThreshold,								///< [in] SMS convergence threshold
-			const unsigned int smsMaxChainDepth,					///< [in] SMS maximum specular chain depth
-			const bool smsBiased,									///< [in] SMS biased mode (skip Bernoulli PDF)
-			const unsigned int smsBernoulliTrials,					///< [in] SMS Bernoulli trials for unbiased PDF
-		const unsigned int smsMultiTrials,						///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
-		const unsigned int smsPhotonCount,						///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
+			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const bool useZSobol,									///< [in] Use Z-Sobol sampler
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			) = 0;
 
@@ -1678,13 +1543,8 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const char* pixelFilter,								///< [in] Pixel filter name ("mitchell","lanczos","box",…)
-			const double pixelFilterWidth,							///< [in] Filter width (pixels)
-			const double pixelFilterHeight,							///< [in] Filter height (pixels)
-			const double pixelFilterParamA,							///< [in] Filter parameter A (e.g. Mitchell B)
-			const double pixelFilterParamB,							///< [in] Filter parameter B (e.g. Mitchell C)
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
@@ -1706,16 +1566,17 @@ namespace RISE
 			const double largeStepProb,
 			const char* shader,
 			const bool bShowLuminaires,
-			const bool bChooseOnlyOneLight,
 			const bool oidnDenoise,
 			const StabilityConfig& stabilityConfig
 			)
 		{
+			PixelFilterConfig legacyNone;
+			legacyNone.filter = "none";
 			return SetMLTRasterizer(
 				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 				nMutationsPerPixel, largeStepProb, shader,
-				bShowLuminaires, bChooseOnlyOneLight, oidnDenoise,
-				"none", 1.0, 1.0, 1.0/3.0, 1.0/3.0, stabilityConfig );
+				bShowLuminaires, oidnDenoise,
+				legacyNone, stabilityConfig );
 		}
 
 		//! Sets up an MMLT (Multiplexed Metropolis Light Transport)
@@ -1738,13 +1599,8 @@ namespace RISE
 			const int forceDepth,									///< [in] Phase 3: force every chain to this depth
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const char* pixelFilter,								///< [in] Pixel filter name
-			const double pixelFilterWidth,							///< [in] Filter width (pixels)
-			const double pixelFilterHeight,							///< [in] Filter height (pixels)
-			const double pixelFilterParamA,							///< [in] Filter parameter A
-			const double pixelFilterParamB,							///< [in] Filter parameter B
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
@@ -1759,17 +1615,9 @@ namespace RISE
 			const double largeStepProb,								///< [in] Large step probability
 			const char* shader,										///< [in] The default shader
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const bool bChooseOnlyOneLight,							///< [in] For the luminaire sampler only one random light is chosen for each sample
-			const double nmbegin,									///< [in] Start of spectral range (nm)
-			const double nmend,										///< [in] End of spectral range (nm)
-			const unsigned int nSpectralSamples,					///< [in] Spectral samples per evaluation
-			const bool useHWSS,										///< [in] Use Hero Wavelength Spectral Sampling
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
-			const char* pixelFilter,								///< [in] Pixel filter name ("mitchell","lanczos","box",…)
-			const double pixelFilterWidth,							///< [in] Filter width (pixels)
-			const double pixelFilterHeight,							///< [in] Filter height (pixels)
-			const double pixelFilterParamA,							///< [in] Filter parameter A (e.g. Mitchell B)
-			const double pixelFilterParamB,							///< [in] Filter parameter B (e.g. Mitchell C)
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
@@ -1785,7 +1633,6 @@ namespace RISE
 			const double largeStepProb,
 			const char* shader,
 			const bool bShowLuminaires,
-			const bool bChooseOnlyOneLight,
 			const double nmbegin,
 			const double nmend,
 			const unsigned int nSpectralSamples,
@@ -1794,12 +1641,19 @@ namespace RISE
 			const StabilityConfig& stabilityConfig
 			)
 		{
+			PixelFilterConfig legacyNone;
+			legacyNone.filter = "none";
+			SpectralConfig legacySpectral;
+			legacySpectral.nmBegin = nmbegin;
+			legacySpectral.nmEnd = nmend;
+			legacySpectral.spectralSamples = nSpectralSamples;
+			legacySpectral.useHWSS = useHWSS;
 			return SetMLTSpectralRasterizer(
 				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 				nMutationsPerPixel, largeStepProb, shader,
-				bShowLuminaires, bChooseOnlyOneLight,
-				nmbegin, nmend, nSpectralSamples, useHWSS, oidnDenoise,
-				"none", 1.0, 1.0, 1.0/3.0, 1.0/3.0, stabilityConfig );
+				bShowLuminaires,
+				legacySpectral, oidnDenoise,
+				legacyNone, stabilityConfig );
 		}
 
 		//

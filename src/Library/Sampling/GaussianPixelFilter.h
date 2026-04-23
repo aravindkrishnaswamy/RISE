@@ -18,6 +18,8 @@
 
 #include "PixelFilter.h"
 #include "../Utilities/Reference.h"
+#include <algorithm>
+#include <cmath>
 
 //
 // Definition of the gaussian(normal) pixel filter
@@ -29,25 +31,28 @@ namespace RISE
 		class GaussianPixelFilter : public virtual PixelFilter, public virtual Reference
 		{
 		protected:
-			Scalar		dKernelSizeSigmaRatioExp;
 			Scalar		dSigma;
+			Scalar		dTruncationBoundary;	///< exp(-K²/2) where K = radiusMax/sigma; the lower bound of the remapped uniform in the inverse-CDF radius sampler
 
 			virtual ~GaussianPixelFilter( ){};
 
 		public:
-
-			// We choose to perform the most basic form of the 
-			// Box-Muller transform.  I realize we could use the polar form of the transform...
-
 			GaussianPixelFilter( const Scalar size, const Scalar sigma ) :
 			  dSigma( sigma )
 			{
 				dKernelWidth = size;
 				dKernelHeight = size;
 
-				Scalar	dKernelSizeSigmaRatio = size / dSigma;
-
-				dKernelSizeSigmaRatioExp = exp( dKernelSizeSigmaRatio*dKernelSizeSigmaRatio*(-0.5) );
+				// For the warp, we truncate the sampled radius to the
+				// inscribed disk of radius min(halfW, halfH) so every
+				// sample lands inside the kernel's rectangular support.
+				// Pre-compute exp(-K²/2) where K is the radius bound in
+				// standard-normal units; this is the lower limit of the
+				// remapped uniform we feed into the radial CDF inverse
+				// (see the warp() comment for the derivation).
+				const Scalar radiusMax = std::min( dKernelWidth, dKernelHeight ) * Scalar( 0.5 );
+				const Scalar K = ( dSigma > Scalar( 0 ) ) ? ( radiusMax / dSigma ) : Scalar( 0 );
+				dTruncationBoundary = std::exp( -K * K * Scalar( 0.5 ) );
 			}
 
 			// Truncated 2D Gaussian: exp(-r²/(2σ²)) / (2πσ²) inside the
@@ -72,32 +77,53 @@ namespace RISE
 				return norm * exp( -r2 / twoSigma2 );
 			}
 
-			virtual Scalar warp( const RandomNumberGenerator& rng, const Point2& canonical, Point2& warped ) const
+			// Importance-sample the Gaussian kernel using the inverse
+			// CDF of the truncated radial distribution.  Derivation:
+			//
+			//   A 2D isotropic N(0, σ²) has radial marginal
+			//     f_r(x) = (x/σ²) exp(-x²/(2σ²)),  x ≥ 0
+			//   with CDF F_r(x) = 1 - exp(-x²/(2σ²)).
+			//   Inverting:  x = σ sqrt(-2 ln(1 - u))  for u ∈ [0, 1).
+			//
+			//   To truncate to a disk of radius R = σ·K (inscribed in
+			//   the square kernel), restrict u to [0, F_r(R)] =
+			//   [0, 1 - exp(-K²/2)].  Equivalently, let v = 1 - u map
+			//   to [T, 1] where T = exp(-K²/2), then
+			//     x = σ sqrt(-2 ln v).
+			//   Remapping canonical.x ∈ [0, 1) uniformly onto [T, 1]
+			//   preserves stratification.
+			//
+			//   Angular coordinate is uniform on [0, 2π), sourced from
+			//   canonical.y to keep the warp deterministic from the
+			//   caller's stratified pair.
+			//
+			// Returned weight is 1 because this is a perfect
+			// importance-sample of the kernel — callers that combine
+			// warp() with per-pixel accumulation (rather than a
+			// filter-aware splat) get the filter integral estimator
+			// automatically.
+			//
+			// The `rng` argument is unused here; the warp is driven
+			// entirely by the caller's stratified canonical sample so
+			// that low-discrepancy pixel samplers stay coherent.
+			virtual Scalar warp( const RandomNumberGenerator& /*rng*/, const Point2& canonical, Point2& warped ) const
 			{
-				Scalar r = rng.CanonicalRandom() * dKernelSizeSigmaRatioExp;
-				Scalar a = rng.CanonicalRandom();
+				// Remap canonical.x from [0, 1) to [T, 1] so that
+				// sqrt(-2 log v) stays bounded by K.
+				// Bias canonical.x away from 1 to avoid log(0) if it
+				// arrives as exactly 1; the 1 - canonical.x form maps
+				// the standard [0, 1) convention onto the inverse-CDF
+				// output in one step.
+				const Scalar v = dTruncationBoundary +
+					( Scalar( 1 ) - dTruncationBoundary ) * canonical.x;
+				const Scalar vSafe = std::max( v, Scalar( 1e-30 ) );
+				const Scalar r = dSigma * std::sqrt( -Scalar( 2 ) * std::log( vSafe ) );
+				const Scalar theta = TWO_PI * canonical.y;
 
-				Scalar sqrt_log = sqrt(-2.0*log(r));
-				Scalar two_pi_a = TWO_PI*a;
+				warped.x = r * std::cos( theta );
+				warped.y = r * std::sin( theta );
 
-				warped.x = dSigma * (sqrt_log * cos(two_pi_a));
-				warped.y = dSigma * (sqrt_log * sin(two_pi_a));
-
-				/* Polar Box-Muller with two independant variables with sigma of 1
-				Scalar x1, x2, w, y1, y2;
-				do {
-					 x1 = 2.0 * rng.CanonicalRandom() - 1.0;
-					 x2 = 2.0 * rng.CanonicalRandom() - 1.0;
-					 w = x1 * x1 + x2 * x2;
-				} while ( w >= 1.0 );
-
-				w = sqrt( (-2.0 * log( w ) ) / w );
-
-				warped.x = canonical.x * w;
-				warped.y = canonical.y * w;
-				*/
-
-				return 1.0;
+				return Scalar( 1 );
 			}
 		};
 	}

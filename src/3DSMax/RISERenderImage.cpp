@@ -237,11 +237,14 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 		const char* shaderops = "3DSMAX";
 		pJob->AddStandardShader( "global", 1, &shaderops );
 
-		double or[3] = {0,0,0};
-
+		RISE::PixelFilterConfig pixelFilterConfig;
+		pixelFilterConfig.filter = "none";
+		pixelFilterConfig.paramA = 0.0;
+		pixelFilterConfig.paramB = 0.0;
+		RISE::RadianceMapConfig radianceMapConfig;
 		pJob->SetPixelBasedPelRasterizer(
 			1, 1, 10, 0.01,
-			"global", 0, true, 0, or, 0, 0, 0, 0, 0, 1.0, 1.0, 0.0, 0.0, true, false, false, true,
+			"global", radianceMapConfig, 0, 0, pixelFilterConfig, true, false,
 			RISE::PathGuidingConfig(), RISE::AdaptiveSamplingConfig(), RISE::StabilityConfig() );
 	} else {
 		prog->SetTitle( "Loading renderer settings and materials" );
@@ -393,8 +396,13 @@ int RiseRenderer::RenderImage( RiseRendererParams& rp, TimeValue t, Bitmap* tobm
 			const Matrix3& tm = pInst->objToWorld;
 			Point3 p  = tm.GetTrans();
 
-			double pos[3]={0}, orient[3]={0}, scale[3]={0}, radorient[3]={0};
-			if( pJob->AddObject( pInst->GetName(), geomname, material_name, bModifier?modifier_name.data():0, bShader?shader_name.data():0, bRadianceMap?radiancemap_name.data():0, radiancemap_scale, radorient, pos, orient, scale, !!pInst->GetINode()->CastShadows(), !!pInst->GetINode()->RcvShadows() ) ) {
+			double pos[3]={0}, orient[3]={0}, scale[3]={0};
+			RISE::RadianceMapConfig objectRadianceMap;
+			if( bRadianceMap ) {
+				objectRadianceMap.name = radiancemap_name.data();
+				objectRadianceMap.scale = radiancemap_scale;
+			}
+			if( pJob->AddObject( pInst->GetName(), geomname, material_name, bModifier?modifier_name.data():0, bShader?shader_name.data():0, objectRadianceMap, pos, orient, scale, !!pInst->GetINode()->CastShadows(), !!pInst->GetINode()->RcvShadows() ) ) {
 
 				// Manually set the transformation matrix, since MAX may have done offset transformations
 				RISE::IObjectPriv* pObject = pJob->GetObjects()->GetItem( pInst->GetName() );
