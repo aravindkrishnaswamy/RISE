@@ -177,8 +177,6 @@ namespace RISE
 		/// opposite direction).  cosThetaOut is the outgoing cosine.
 		/// Specular vertices take a simpler branch because their
 		/// delta BSDF has no finite solid-angle PDF.
-		///
-		/// Step 0: returns the input unchanged.  Step 2 fills this in.
 		VCMMisQuantities ApplyBsdfSamplingUpdate(
 			const VCMMisQuantities& q,
 			const Scalar cosThetaOut,

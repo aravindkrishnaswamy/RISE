@@ -18,7 +18,7 @@ mlt_spectral_rasterizer
 	max_light_depth			5
 	bootstrap_samples		10000
 	chains					64
-	mutations_per_pixel		50
+	mutations_per_pixel		256
 	large_step_prob			0.3
 	nmbegin					405
 	nmend					705

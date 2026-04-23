@@ -48,11 +48,9 @@ standard_shader
 pixelpel_rasterizer
 {
 	max_recursion		10
-	samples				9
+	samples				16
 	lum_samples			1
-	pixel_filter		tent
-	pixel_filter_width	1.5
-	pixel_filter_height	1.5
+
 }
 
 file_rasterizeroutput
@@ -179,7 +177,7 @@ caustic_pel_photonmap
 	num					20000
 	max_recursion		5
 	min_importance		0.001
-	power_scale			300.0
+	power_scale			3000.0
 	branch				TRUE
 	reflect				FALSE
 	refract				TRUE

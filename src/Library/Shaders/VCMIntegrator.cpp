@@ -452,7 +452,8 @@ void VCMIntegrator::ConvertLightSubpath(
 		if( v.isBSSRDFEntry ) {
 			mis = ApplyBSSRDFEntryAreaUpdate( v );
 			if( outMis ) (*outMis)[i] = mis;
-			mis = ApplyBSSRDFEntryOnwardUpdate( mis, verts, i, norm );
+			mis = ApplyBSSRDFEntryOnwardUpdate(
+				mis, verts, i, norm );
 			continue;
 		}
 
@@ -555,6 +556,16 @@ void VCMIntegrator::ConvertLightSubpath(
 		// prepares dVCM/dVC/dVM for the NEXT vertex, not for
 		// this one.
 		//
+		// Standard SmallVCM stores at every connectible (non-delta)
+		// surface vertex.  Filtering the store to post-specular
+		// only (caustic-only PM) was tried and produced ~50% too-
+		// dim indirect / caustic regions in glass-heavy scenes —
+		// because the SmallVCM MIS formula assumes merge is a
+		// valid strategy at every non-delta surface, and removing
+		// deposits without a matching MIS correction leaves the
+		// merge weight < 1 on SDS paths that only VM can sample.
+		// Keep unfiltered deposits; if splotches become a problem,
+		// tune merge radius or light-subpath count instead.
 		if( v.isConnectible )
 		{
 			LightVertex lv;
@@ -1480,7 +1491,9 @@ void VCMIntegrator::ConvertEyeSubpath(
 		if( v.isBSSRDFEntry ) {
 			mis = ApplyBSSRDFEntryAreaUpdate( v );
 			outMis[i] = mis;
-			mis = ApplyBSSRDFEntryOnwardUpdate( mis, verts, i, norm );
+			// Eye side ungated — see comment at top of ConvertEyeSubpath.
+			mis = ApplyBSSRDFEntryOnwardUpdate(
+				mis, verts, i, norm );
 			continue;
 		}
 
@@ -1536,6 +1549,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 					const Scalar bsdfRevPdfW = ( prev.pdfRev > 0 && prevFactor > 0 )
 						? prev.pdfRev * distSq / prevFactor : Scalar( 0 );
 
+					// Eye side ungated — see top-of-function comment.
 					mis = ApplyBsdfSamplingUpdate(
 						mis, cosThetaOutMed, bsdfDirPdfW, bsdfRevPdfW,
 						false, norm );
@@ -1584,6 +1598,7 @@ void VCMIntegrator::ConvertEyeSubpath(
 				bsdfRevPdfW_out = prev.pdfRev * distSq / prevFactor;
 			}
 
+			// Eye side ungated — see top-of-function comment.
 			mis = ApplyBsdfSamplingUpdate(
 				mis, cosThetaOut,
 				bsdfDirPdfW_out, bsdfRevPdfW_out,

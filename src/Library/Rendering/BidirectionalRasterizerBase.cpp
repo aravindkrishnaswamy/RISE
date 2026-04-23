@@ -17,6 +17,7 @@
 
 #include "pch.h"
 #include "BidirectionalRasterizerBase.h"
+#include "FilteredFilm.h"
 #include "../RasterImages/RasterImage.h"
 
 using namespace RISE;
@@ -99,15 +100,15 @@ IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 	IRasterImage& primary
 	) const
 {
-	if( !pSplatFilm ) {
+	if( !pSplatFilm && !pFilteredFilm ) {
 		return primary;
 	}
 
 	const unsigned int w = primary.GetWidth();
 	const unsigned int h = primary.GetHeight();
 
-	// Lazy allocation: only pay the scratch cost once a splat film
-	// actually needs composition.
+	// Lazy allocation: only pay the scratch cost once we actually need
+	// to compose splats or filtered film.
 	if( !pScratchImage ) {
 		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
 	}
@@ -119,8 +120,17 @@ IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 		}
 	}
 
-	// Resolve splats into the scratch copy (primary is untouched).
-	pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ) );
+	// Overlay the filter-reconstructed eye-subpath image (approach C)
+	// on top of the per-pixel box accumulation, then add t=1 splats.
+	// Order matters: FilteredFilm::Resolve OVERWRITES pixels where
+	// weightSum > 0, so it must go first; SplatFilm::Resolve ADDs on
+	// top.  Primary is never mutated.
+	if( pFilteredFilm ) {
+		pFilteredFilm->Resolve( *pScratchImage );
+	}
+	if( pSplatFilm ) {
+		pSplatFilm->Resolve( *pScratchImage, GetEffectiveSplatSPP( w, h ) );
+	}
 
 	return *pScratchImage;
 }

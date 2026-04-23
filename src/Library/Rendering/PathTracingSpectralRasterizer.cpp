@@ -66,11 +66,18 @@ PathTracingSpectralRasterizer::~PathTracingSpectralRasterizer()
 	}
 }
 
+// Delegates to PixelBasedSpectralIntegratingRasterizer::PreRenderSetup
+// for the path guiding training phase before (optionally) building
+// the SMS photon map.  See PathTracingPelRasterizer::PreRenderSetup
+// for the full rationale — missing the super-class call silently
+// disables path guiding.
 void PathTracingSpectralRasterizer::PreRenderSetup(
 	const IScene& pScene,
-	const Rect* /*pRect*/
+	const Rect* pRect
 	) const
 {
+	PixelBasedSpectralIntegratingRasterizer::PreRenderSetup( pScene, pRect );
+
 	if( mSMSPhotonCount == 0 || !pIntegrator ) {
 		return;
 	}

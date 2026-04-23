@@ -163,6 +163,8 @@ static void TestTwoBounceDiffuseEye()
 	//     bsdfDirPdfW   = 0.2 * 9 / 1 = 1.8
 	//     bsdfRevPdfW   = 0.3 * 4 / 1 = 1.2
 	//   factor = 1 / 1.8
+	//
+	//   factor = 1 / 1.8
 	//   dVC  = (1/1.8) * (0*1.2 + 20000 + 0)      = 20000/1.8
 	//   dVM  = (1/1.8) * (0*1.2 + 20000*0 + 1)    = 1/1.8
 	//   dVCM = 1/1.8

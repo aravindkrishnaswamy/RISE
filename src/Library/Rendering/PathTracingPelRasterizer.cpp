@@ -59,18 +59,27 @@ PathTracingPelRasterizer::~PathTracingPelRasterizer()
 }
 
 //////////////////////////////////////////////////////////////////////
-// PreRenderSetup — SMS photon-aided seeding pass (optional).
+// PreRenderSetup — path-guiding training + SMS photon-aided seeding.
 //
-// See BDPTRasterizerBase::PreRenderSetup for the full rationale;
-// the body here is structurally identical but reaches the solver
-// through pIntegrator->GetSolver() since PathTracing rasterizers
-// don't hold a separate ManifoldSolver* member.
+// Delegates to PixelBasedPelRasterizer::PreRenderSetup for the path
+// guiding training phase, then (optionally) builds the SMS photon
+// map.  Missing the super-class call was a silent bug: guiding was
+// configured, OpenPGL linked, but the training loop never ran, so
+// pGuidingField stayed null and IntegratePixelRGB fell back to BRDF
+// sampling.
+//
+// See BDPTRasterizerBase::PreRenderSetup for the SMS rationale; the
+// body here is structurally identical but reaches the solver through
+// pIntegrator->GetSolver() since PathTracing rasterizers don't hold a
+// separate ManifoldSolver* member.
 //////////////////////////////////////////////////////////////////////
 void PathTracingPelRasterizer::PreRenderSetup(
 	const IScene& pScene,
-	const Rect* /*pRect*/
+	const Rect* pRect
 	) const
 {
+	PixelBasedPelRasterizer::PreRenderSetup( pScene, pRect );
+
 	if( mSMSPhotonCount == 0 || !pIntegrator ) {
 		return;
 	}

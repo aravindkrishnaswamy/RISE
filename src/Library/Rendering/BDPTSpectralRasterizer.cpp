@@ -774,6 +774,17 @@ void BDPTSpectralRasterizer::IntegratePixel(
 				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 );
 #endif
 			const RISEPel samplePel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z );
+
+			// Approach C: cross-pixel filter-weighted splat — see
+			// BDPTPelRasterizer::IntegratePixel for the rationale.
+			if( pFilteredFilm ) {
+				pFilteredFilm->Splat(
+					ptOnScreen.x,
+					static_cast<Scalar>(height) - ptOnScreen.y,
+					samplePel,
+					*pPixelFilter );
+			}
+
 			colAccrued = colAccrued + samplePel * weight;
 			alphas += weight;
 

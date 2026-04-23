@@ -28,15 +28,16 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-/*
+
 bdpt_pel_rasterizer
 {
 	max_eye_depth		10
 	max_light_depth		10
-	samples				256
+	samples				64
 }
-*/
 
+
+/*
 pathtracing_pel_rasterizer
 {
 	samples				64
@@ -57,6 +58,7 @@ pathtracing_pel_rasterizer
 	adaptive_max_samples	256
 	adaptive_threshold		0.1
 }
+*/
 
 file_rasterizeroutput
 {

@@ -594,6 +594,17 @@ void VCMSpectralRasterizer::IntegratePixel(
 			}
 
 			const RISEPel samplePel( spectralSum.X, spectralSum.Y, spectralSum.Z );
+
+			// Approach C: cross-pixel filter-weighted splat — see
+			// BDPTPelRasterizer::IntegratePixel for the rationale.
+			if( pFilteredFilm ) {
+				pFilteredFilm->Splat(
+					ptOnScreen.x,
+					static_cast<Scalar>(height) - ptOnScreen.y,
+					samplePel,
+					*pPixelFilter );
+			}
+
 			colAccrued = colAccrued + samplePel * weight;
 			alphasAccrued += weight;
 

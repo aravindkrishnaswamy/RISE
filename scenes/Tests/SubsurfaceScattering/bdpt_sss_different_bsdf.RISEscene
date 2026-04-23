@@ -20,7 +20,7 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-bdpt_pel_rasterizer
+vcm_pel_rasterizer
 {
 	max_eye_depth		16
 	max_light_depth		16

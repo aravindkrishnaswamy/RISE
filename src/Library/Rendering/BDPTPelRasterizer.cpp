@@ -480,6 +480,20 @@ void BDPTPelRasterizer::IntegratePixel(
 				effectiveIndex, pixelSeed, 0 );
 #endif
 
+			// Approach C: cross-pixel filter-weighted splat.  With a
+			// wide-support filter, this spreads every eye-subpath
+			// sample across the neighbouring pixels using the filter's
+			// EvaluateFilter weights — mirroring PathTracingPelRasterizer.
+			// When pFilteredFilm is null (narrow filter or filter off)
+			// we fall through to per-pixel box accumulation below.
+			if( pFilteredFilm ) {
+				pFilteredFilm->Splat(
+					ptOnScreen.x,
+					static_cast<Scalar>(height) - ptOnScreen.y,
+					sampleColor,
+					*pPixelFilter );
+			}
+
 			colAccrued = colAccrued + sampleColor * weight;
 			alphas += weight;
 

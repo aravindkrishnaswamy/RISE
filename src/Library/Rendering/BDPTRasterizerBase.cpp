@@ -40,6 +40,7 @@
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
 #include "ProgressiveFilm.h"
+#include "FilteredFilm.h"
 #include "../RISE_API.h"
 
 using namespace RISE;
@@ -740,6 +741,21 @@ void BDPTRasterizerBase::RasterizeScene(
 	safe_release( pScratchImage );
 	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 
+	// Allocate FilteredFilm for wide-support reconstruction (approach
+	// C: uniform sub-pixel jitter + per-sample splat across neighbours
+	// weighted by EvaluateFilter).  Matches what
+	// PathTracingPelRasterizer does — gives BDPT eye-subpath samples
+	// the same cross-pixel sharing benefit, turning the per-pixel box
+	// estimator into a proper filter-weighted reconstruction.  When
+	// UseFilteredFilm() returns false (narrow / no filter configured),
+	// IntegratePixel falls back to per-pixel accumulation.
+	safe_release( pFilteredFilm );
+	safe_release( pFilteredScratch );
+	if( UseFilteredFilm() ) {
+		pFilteredFilm = new FilteredFilm( width, height );
+		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+	}
+
 	{
 		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
 
@@ -959,11 +975,30 @@ void BDPTRasterizerBase::RasterizeScene(
 	const bool bWillDenoise = false;
 #endif
 
+	// Approach C final resolve: overlay the eye-subpath filter-
+	// reconstructed image on top of the per-pixel accumulated
+	// pImage.  FilteredFilm::Resolve overwrites pixels with
+	// colorSum/weightSum only where weightSum > 0, so pixels that
+	// somehow got no splat retain their per-pixel box-accumulated
+	// fallback.
+	//
+	// CRITICAL: skip this when OIDN will denoise.  OIDN needs per-
+	// pixel independent MC noise — filter reconstruction introduces
+	// spatial correlation between neighbouring pixels, which is
+	// exactly what OIDN's docs warn against ("Weighted pixel
+	// sampling ... causes the denoising to fail").  In the denoise
+	// path we keep the inline box-filtered pImage for OIDN input;
+	// the pre-denoised output below also uses inline + splat so the
+	// user can compare fairly against the denoised result.
+	if( pFilteredFilm && !bWillDenoise ) {
+		pFilteredFilm->Resolve( *pImage );
+	}
+
 	if( bWillDenoise ) {
-		// Build the pre-denoised (but fully splatted) image on a scratch
-		// buffer so we can write it out before denoising mutates pImage.
-		// pImage currently holds only the non-splat accumulations; copy
-		// it and then resolve splats onto the copy.
+		// Pre-denoised output = inline box + splats.  Mirrors the
+		// input we're about to feed OIDN (inline box) plus the
+		// splat contributions OIDN can't handle — matches PT's
+		// pre-denoised output convention.
 		IRasterImage* pPreDenoised = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 		GlobalLog()->PrintNew( pPreDenoised, __FILE__, __LINE__, "pre-denoised image" );
 		for( unsigned int y = 0; y < height; y++ ) {
@@ -1044,6 +1079,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	pSplatFilm = 0;
 	safe_release( pScratchImage );
 	pScratchImage = 0;
+	safe_release( pFilteredFilm );
+	pFilteredFilm = 0;
+	safe_release( pFilteredScratch );
+	pFilteredScratch = 0;
 #ifdef RISE_ENABLE_OIDN
 	delete pAOVBuffers;
 	pAOVBuffers = 0;

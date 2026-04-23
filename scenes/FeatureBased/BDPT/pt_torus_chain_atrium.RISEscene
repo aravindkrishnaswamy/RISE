@@ -49,7 +49,7 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
-	samples				16
+	samples				128
 	pathguiding				TRUE
 	pathguiding_iterations	6
 	pathguiding_spp			4

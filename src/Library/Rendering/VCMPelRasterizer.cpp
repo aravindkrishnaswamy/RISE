@@ -462,6 +462,16 @@ void VCMPelRasterizer::IntegratePixel(
 				}
 			}
 
+			// Approach C: cross-pixel filter-weighted splat — see
+			// BDPTPelRasterizer::IntegratePixel for the rationale.
+			if( pFilteredFilm ) {
+				pFilteredFilm->Splat(
+					ptOnScreen.x,
+					static_cast<Scalar>(height) - ptOnScreen.y,
+					sampleColor,
+					*pPixelFilter );
+			}
+
 			colAccrued = colAccrued + sampleColor * weight;
 			alphasAccrued += weight;
 
