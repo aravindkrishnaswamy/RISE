@@ -79,6 +79,7 @@
 #include "../Rendering/LuminaryManager.h"
 #include "../Rendering/RayCaster.h"
 #include "../Utilities/MediumTracking.h"
+#include "../Utilities/IORStackSeeding.h"
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPhaseFunction.h"
 #include "../Utilities/IndependentSampler.h"
@@ -1332,6 +1333,16 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		return 0;
 	}
 
+	// Seed the IOR stack with the chain of dielectric objects that
+	// physically contain the light-emission point.  Without this, a
+	// luminaire sealed inside nested refractors (e.g. a lambertian
+	// sphere inside an `air_cavity` inside a glass egg) scatters its
+	// first bounce as if entering the inner boundary from outside —
+	// which for an IOR-matched inner boundary turns into a noise-
+	// Fresnel reflection that destroys throughput by ~32 orders of
+	// magnitude and leaves the walls unlit.
+	IORStackSeeding::SeedFromPoint( iorStack, ls.position, scene );
+
 	vertices.reserve( maxLightDepth + 1 );
 
 	//
@@ -2465,6 +2476,14 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 	Scalar pdfFwdPrev = pdfCamDir;
 	IORStack iorStack( 1.0 );
+	// Seed from the camera position: if the camera sits inside a
+	// dielectric (submerged camera, camera inside a medium volume),
+	// the first scatter needs the stack to reflect that containment.
+	// For cameras in free space this is a no-op — the probe finds no
+	// enclosing objects and leaves the stack as-is.
+	if( pCamera ) {
+		IORStackSeeding::SeedFromPoint( iorStack, pCamera->GetLocation(), scene );
+	}
 
 #ifdef RISE_ENABLE_OPENPGL
 	static thread_local GuidingDistributionHandle guideDist;
@@ -5007,6 +5026,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		return 0;
 	}
 
+	// Seed the IOR stack with the nested dielectrics containing the
+	// emission point — see the RGB light subpath for the rationale.
+	IORStackSeeding::SeedFromPoint( iorStack, ls.position, scene );
+
 	vertices.reserve( maxLightDepth + 1 );
 
 	// Convert Le from RISEPel to scalar at wavelength nm
@@ -6113,6 +6136,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 
 	Scalar pdfFwdPrev = pdfCamDir;
 	IORStack iorStack( 1.0 );
+	// Seed from the camera position — see the RGB eye subpath for
+	// why this matters and why it's a no-op for cameras in free space.
+	if( pCamera ) {
+		IORStackSeeding::SeedFromPoint( iorStack, pCamera->GetLocation(), scene );
+	}
 
 #ifdef RISE_ENABLE_OPENPGL
 	static thread_local GuidingDistributionHandle guideDist;

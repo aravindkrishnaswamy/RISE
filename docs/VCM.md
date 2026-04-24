@@ -6,7 +6,7 @@ This document describes the VCM integrator, a unified bidirectional light transp
 
 - **VCMIntegrator** with **VCMPelRasterizer** (RGB) and **VCMSpectralRasterizer** (HWSS).
 - Surface-only merging.  Medium scatter vertices traverse the recurrence (geometric + phase-function sampling updates using `sigma_t_scalar`) but are not stored or merged.  Connection transmittance through media is Tr=1 in v1.
-- Fixed merge radius (no progressive radius shrinkage), with automatic median-segment-based fallback.
+- SPPM-style progressive radius shrinkage (global per-iteration, clamped by an adaptive density floor), with automatic median-segment-based fallback for the initial radius.  Set `vcm_disable_progressive_radius=true` in global options to revert to fixed-radius SmallVCM.
 - Balance-heuristic MIS (matches SmallVCM); RISE BDPT's power-heuristic path is untouched.
 - No SMS interop; no OpenPGL guiding.
 
@@ -169,9 +169,25 @@ At 256 spp the diffuse Cornell box matches BDPT within 1% on both the pre-denois
 ## Merge Radius
 
 The `merge_radius` parameter controls VM merging:
-- **`merge_radius > 0`** — explicit radius in world units, used directly.
-- **`merge_radius 0` + `vm_enabled true`** — automatic radius.  `VCMRasterizerBase::PreRenderSetup` runs a pre-pass over the generated light subpaths, collects the length of every segment where **at least one endpoint is a storeable vertex** (`isConnectible` surface), takes the **median** and multiplies by `0.01` to derive the merge radius.  Filtering to storeable segments avoids skewing the median with long specular chains through glass.  The median is robust against outliers from infinite-plane hits at shallow angles.  The chosen value is logged as `auto-radius segments=... median_segment=... effective_radius=...`.
+- **`merge_radius > 0`** — explicit radius in world units, used as the initial `r_0`.
+- **`merge_radius 0` + `vm_enabled true`** — automatic radius.  `VCMRasterizerBase::PreRenderSetup` runs a pre-pass over the generated light subpaths, collects the length of every segment where **at least one endpoint is a storeable vertex** (`isConnectible` surface), takes the **median** and multiplies by `0.01` to derive the initial merge radius `r_0`.  Filtering to storeable segments avoids skewing the median with long specular chains through glass.  The median is robust against outliers from infinite-plane hits at shallow angles.  The chosen value is logged as `auto-radius segments=... median_segment=... effective_radius=...`.
 - **`vm_enabled false`** — VM is disabled regardless of radius; VCM degenerates to VC-only (matching BDPT).
+
+### Progressive radius shrinkage (SPPM-style)
+
+By default (`mProgressiveRadiusEnabled = true`), `VCMRasterizerBase` applies the Hachisuka-Ogaki-Jensen shrinkage formula once per progressive pass:
+
+```
+r_{n+1} = r_n * sqrt( (n + alpha) / (n + 1) )
+```
+
+with `alpha = 2/3` (asymptotically optimal rate) and `n = mMergeRadiusPassCount`.  The shrunk radius is clamped below by `mMergeRadiusFloor`, an adaptive lower bound derived from `mTargetPhotonsPerQuery` (default 20) and the current photon density so that Poisson noise on photon count does not drown out bias reduction.  A scene-derived safety floor (`0.001 * medianSegment`) prevents the radius from collapsing below a geometric floor on pathologically sparse scenes.
+
+The photon-store build renormalizes `mLightSubPathCount` with the actual `pathsShot` each pass, so branching at multi-lobe delta vertices in the light subpath generator does not desynchronize the SmallVCM weights from the number of stored photons.
+
+To revert to the legacy fixed-radius SmallVCM behavior for benchmarking or regression comparison, set `vcm_disable_progressive_radius=true` in `global.options` (or via `RISE_OPTIONS_FILE`).
+
+Defaults live in `VCMRasterizerBase::VCMRasterizerBase` at [src/Library/Rendering/VCMRasterizerBase.cpp](../src/Library/Rendering/VCMRasterizerBase.cpp).  The shrinkage call site is `OnProgressivePassBegin`.
 
 ## Spectral / HWSS Variant
 
@@ -211,7 +227,7 @@ Worker count comes from `HowManyThreadsToSpawn()` (respects `maximum_thread_coun
 
 The literature (SmallVCM, Mitsuba 3, PBRT-v4 SPPM) suggests batching K classical iterations into one super-iteration: `K × W × H` light subpaths in the store, K eye samples per pixel per super-iteration.  Georgiev eq. (20) confirms ηVCM = (nVM/nVC) × πr² is invariant under uniform K-scaling.
 
-**Measured on RISE:** K=32 on diacaustic runs 5.8× slower per eye sample than K=1.  The issue is that per-iteration photon density scales K× and merge candidate counts scale K× too — merge evaluation becomes K× more expensive per sample.  SmallVCM/Mitsuba counter this with SPPM-style progressive radius reduction (r scales as 1/√K), which keeps candidate count constant.  That requires per-pixel radius tracking — a v3 feature.
+**Measured on RISE:** K=32 on diacaustic runs 5.8× slower per eye sample than K=1.  The issue is that per-iteration photon density scales K× and merge candidate counts scale K× too — merge evaluation becomes K× more expensive per sample.  SmallVCM/Mitsuba counter this with SPPM-style progressive radius reduction (r scales as 1/√K), which keeps candidate count constant.  RISE now applies SPPM-style shrinkage **across progressive passes (each K=1)** — see "Progressive radius shrinkage" above.  True super-iteration batching (K>1 with intra-batch per-pixel radius tracking) remains out of scope.
 
 For v2, K=1 matches the paper and minimizes per-sample merge cost.  Parallel efficiency comes from within-iteration parallelism (tile-based dispatch) rather than cross-iteration batching.
 

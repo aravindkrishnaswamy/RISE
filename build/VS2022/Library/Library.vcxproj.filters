@@ -987,6 +987,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h">
       <Filter>Utilities</Filter>
     </ClInclude>

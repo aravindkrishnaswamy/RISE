@@ -18,16 +18,28 @@ Built binaries land in `bin/tests/`.
 ## Current Test Inventory
 
 - Geometry and intersection:
-  `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`, `TessellatedShapeDerivativesTest.cpp`
+  `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `BezierClippingUnitsTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `DisplacedGeometryTest.cpp`, `GeometrySurfaceDerivativesTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `TessellatedShapeDerivativesTest.cpp`
 - Math and utility coverage:
-  `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
+  `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `MortonCodeTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
+- Noise and procedural-texture generators:
+  `CurlNoise3DTest.cpp`, `DomainWarpNoise3DTest.cpp`, `GaborNoise3DTest.cpp`, `PerlinWorleyNoise3DTest.cpp`, `ReactionDiffusion3DTest.cpp`, `SDFPrimitive3DTest.cpp`, `SimplexNoise3DTest.cpp`, `TurbulenceNoise3DTest.cpp`, `WaveletNoise3DTest.cpp`, `WorleyNoise3DTest.cpp`
 - Sampling, shading, and cache behavior:
-  `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `IrradianceCacheTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
+  `BSSRDFEntryPointTest.cpp`, `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `GGXWhiteFurnaceTest.cpp`, `IORStackBehaviorTest.cpp`, `IORStackTest.cpp`, `IrradianceCacheTest.cpp`, `LightExitanceTest.cpp`, `RandomWalkSSSTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
+- Light sampling and volumes:
+  `LightBVHTest.cpp`, `MajorantGridTest.cpp`, `PainterVolumeAccessorTest.cpp`
+- MIS and integrator building blocks:
+  `MISWeightsTest.cpp`, `OptimalMISAccumulatorTest.cpp`, `PathValueOpsTest.cpp`
+- Spectral support:
+  `SampledWavelengthsTest.cpp`, `SpectralValueTraitsTest.cpp`
 - SMS (Specular Manifold Sampling):
   `ManifoldSolverTest.cpp` (block-tridiagonal Jacobian, specular-direction math, chain geometry/throughput, TIR, light-to-first-vertex Jacobian determinant), `BDPTSMSSuppressionTest.cpp` (cross-strategy emission suppression for BDPT (s==0) to prevent SMS caustic double-counting)
+- VCM (Vertex Connection and Merging):
+  `VCMEyePostPassTest.cpp`, `VCMLightPostPassTest.cpp`, `VCMLightVertexStoreTest.cpp`, `VCMRecurrenceTest.cpp`, `VCMSpectralRecurrenceTest.cpp`
 - Sampler and dimension budget:
-  `SobolDimensionBudgetTest.cpp`, `PSSMLTStreamAliasingTest.cpp`
-- Diagnostic or performance-oriented coverage:
+  `MMLTStrategySelectionTest.cpp`, `PSSMLTStreamAliasingTest.cpp`, `SobolDimensionBudgetTest.cpp`, `ZSobolSamplerTest.cpp`
+- Image comparison, diagnostics, and instrumentation:
+  `ExrRegionCompareTest.cpp`, `FindFireflyTest.cpp`, `ImageDiffTest.cpp`, `RasterSanityScanTest.cpp`, `RenderETAEstimatorTest.cpp`
+- Performance-oriented coverage:
   `MailboxingPerformanceTest.cpp`
 
 ## Style Of Test Used Here

@@ -61,47 +61,35 @@ metric-conversion step. Specifically:
 | Geometry | `u` | `v` | `|dpdu|` | `|dpdv|` | `u` range | `v` range | Status |
 |---|---|---|---|---|---|---|---|
 | `SphereGeometry` | φ azimuth | θ polar from +Y | `r·sin θ` | `r` | `(-π, π]` | `[0, π]` | ✅ curvature-aware |
-| `TorusGeometry` | u around major axis | v on cross-section | `R + r·cos v` | `r` | `(-π, π]` | `(-π, π]` | ✅ curvature-aware |
-| `CylinderGeometry` | θ around axis | axial coord | `r` | `1` | `(-π, π]` | cylinder height | ✅ curvature-aware |
+| `TorusGeometry` | v on cross-section (tube) | u around major axis (ring) | `r` | `R + r·cos v_tube` | `(-π, π]` | `(-π, π]` | ✅ curvature-aware (swapped from natural order for right-handedness) |
+| `CylinderGeometry` | axial coord | θ around axis | `1` | `r` | cylinder height | `(-π, π]` | ✅ curvature-aware (swapped from natural order for right-handedness) |
 | `EllipsoidGeometry` | φ azimuth | θ polar | non-trivial | non-trivial | `(-π, π]` | `[0, π]` | ✅ curvature-aware (gradient-based normal) |
 | `BoxGeometry` | face-local u | face-local v | `1` | `1` | `[0, 1]` per face | `[0, 1]` per face | ✅ correctly flat |
 | `CircularDiskGeometry` | world X on face | world Y on face | `1` | `1` | `[-1, 1]` scaled by radius | `[-1, 1]` | ✅ correctly flat |
 | `ClippedPlaneGeometry` | normalized along edge 0→1 | n × dpdu | `1` | `1` | barycentric-like | barycentric-like | ✅ correctly flat |
 | `InfinitePlaneGeometry` | world X | world Y | `1` | `1` | `(-∞, ∞)` | `(-∞, ∞)` | ✅ correctly flat |
-| `TriangleMeshGeometry` | barycentric edge 0→1 | barycentric edge 0→2 | edge-length dependent | edge-length dependent | `[0, 1]` | `[0, 1]` (with `u+v ≤ 1`) | ❌ **STUB** — to fix |
-| `TriangleMeshGeometryIndexed` | same as above | same | same | same | same | same | ❌ **STUB** — to fix |
-| `BilinearPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — to fix |
-| `BezierPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — to fix |
+| `TriangleMeshGeometry` | stored per-vertex UV | stored per-vertex UV | set by UV-Jacobian inversion | set by UV-Jacobian inversion | `[0, 1]` typical | `[0, 1]` typical | ✅ implemented (UV-Jacobian invert + tangent-plane projection, barycentric-edge fallback) |
+| `TriangleMeshGeometryIndexed` | stored per-vertex UV | stored per-vertex UV | set by UV-Jacobian inversion | set by UV-Jacobian inversion | `[0, 1]` typical | `[0, 1]` typical | ✅ implemented (shared with non-indexed via `ComputeTriangleDerivatives`) |
+| `BilinearPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — flat tangent frame only |
+| `BezierPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — flat tangent frame only (analytical Bezier intersection supplies tangents via `GeometricUtilities::BezierPatchTangentU/V` but they are not wired into `ComputeSurfaceDerivatives` yet) |
 | `DisplacedGeometry` | forwards to wrapped mesh | forwards | forwards | forwards | forwards | forwards | 🔁 forwarder |
 
 ### Handedness audit
 
-`(dpdu × dpdv) · n` sign at a representative non-degenerate point:
+`(dpdu × dpdv) · n` must be positive at every non-degenerate point.  The torus and cylinder originally returned left-handed frames under their natural `(ring, cross-section)` / `(θ, axial)` parameterisation.  **Resolved**: both implementations swap their natural `u`/`v` ordering so that `(dpdu × dpdv) · n > 0` at every point.  See the code comments in [TorusGeometry::ComputeSurfaceDerivatives](../src/Library/Geometry/TorusGeometry.cpp) and [CylinderGeometry::ComputeSurfaceDerivatives](../src/Library/Geometry/CylinderGeometry.cpp) — the per-axis cylinder permutation is worked out case-by-case so that the swap produces right-handed frames for x-, y-, and z-axis cylinders.
 
-- **SphereGeometry**, point at `(r, 0, 0)`, n=`(1,0,0)`:
-  `dpdu = (0,0,r)`, `dpdv = (0,-r,0)` → `dpdu × dpdv = (r²,0,0)`, dot with n = **+r²** ✅
-- **TorusGeometry**, u=0, v=0 (outer ring), n = `(1,0,0)`:
-  `dpdu = (0,0,R+r)`, `dpdv = (0,0,0)` — degenerate, not the test point.
-  Pick u=0, v=π/2 (top of ring): position `(R, r, 0)`, n = `(0,1,0)`,
-  `dpdu = (0,0,R)`, `dpdv = (-r,0,0)` → cross = `(0,-r·R,0)`, dot with n = `-r·R` — **LEFT-HANDED** ⚠️
-- **CylinderGeometry** (Y-axis), θ=0: position `(r, h, 0)`, n = `(1,0,0)`,
-  `dpdu = (0, 0, r)`, `dpdv = (0, 1, 0)` → cross = `(-r, 0, 0)`, dot with n = `-r` — **LEFT-HANDED** ⚠️
-- **BoxGeometry**, +X face: `dpdu = (0,0,-1)`, `dpdv = (0,1,0)` → cross = `(1,0,0)`, n = `(1,0,0)` — **+1** ✅
-- **EllipsoidGeometry** (same as sphere with a=b=c): presumably ✅ same as sphere
-- **CircularDiskGeometry**, z-axis: `dpdu=(1,0,0)`, `dpdv=(0,1,0)`, n=`(0,0,1)` → cross=`(0,0,1)` — **+1** ✅
-- **ClippedPlaneGeometry**: `dpdv = n × dpdu` by construction, so cross = `dpdu × (n × dpdu) = n·|dpdu|² - dpdu·(dpdu·n) = n` (when dpdu ⊥ n) — **+1** ✅
-- **InfinitePlaneGeometry**: `dpdu=(1,0,0)`, `dpdv=(0,1,0)`, n=`(0,0,1)` — **+1** ✅
+Current sign check at representative non-degenerate points (all must be **+**):
 
-**Conclusion:** Torus and Cylinder use a LEFT-HANDED frame. Sphere uses a
-RIGHT-HANDED frame. This is **inconsistent** and must be fixed before the
-Jacobian-determinant sign can be relied on across geometries.
+- **SphereGeometry**, point at `(r, 0, 0)`, n=`(1,0,0)`: `dpdu = (0,0,r)`, `dpdv = (0,-r,0)` → cross dot n = **+r²** ✅
+- **TorusGeometry** (post-swap), u=tube v=ring, u=π/2 v=0 (top of ring): right-handed by construction ✅
+- **CylinderGeometry** (post-swap, per-axis), u=axial v=θ: right-handed by construction ✅
+- **BoxGeometry**, +X face: **+1** ✅
+- **EllipsoidGeometry**: **+** (gradient-based normal, same handedness as sphere) ✅
+- **CircularDiskGeometry**, z-axis: **+1** ✅
+- **ClippedPlaneGeometry**: `dpdv = n × dpdu` by construction, cross dot n = **+** ✅
+- **InfinitePlaneGeometry**: **+1** ✅
 
-**Fix option (preferred):** swap `dpdu` and `dpdv` (and correspondingly
-`dndu` and `dndv`) in the torus and cylinder implementations so every
-geometry returns a right-handed frame. The ManifoldSolver uses `|det|` with
-`fabs`, so magnitude is preserved, but consistent handedness removes a
-latent source of sign errors for any consumer that does care about
-orientation (e.g. texture-space normal mapping, future glossy SMS).
+Handedness is now uniform across all implemented geometries.  Consumers that care about orientation sign (texture-space normal mapping, future glossy SMS) can rely on `(dpdu × dpdv) · n > 0` without per-geometry conditioning.
 
 ## Consumer expectations (SMS `ManifoldSolver`)
 

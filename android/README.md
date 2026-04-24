@@ -4,9 +4,7 @@ Native Android front-end for the RISE ray tracer, structured the same way
 as the macOS and Windows apps: the library (`src/Library/`) is unchanged and
 statically linked; a thin JNI bridge adapts it to Kotlin + Jetpack Compose.
 
-See `C:\Users\micro\.claude\plans\fancy-sprouting-peacock.md` for the full
-design document, or `../build/cmake/rise-android/toolchain_notes.md` for
-NDK-specific build notes.
+See [`../build/cmake/rise-android/toolchain_notes.md`](../build/cmake/rise-android/toolchain_notes.md) for NDK-specific build notes.
 
 ## Requirements
 

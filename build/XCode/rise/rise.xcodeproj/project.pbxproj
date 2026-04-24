@@ -715,6 +715,7 @@
 		F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */; };
 		F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */; };
 		F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544B2F7CAB67009AF16D /* MediumTracking.h */; };
+		F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */ = {isa = PBXBuildFile; fileRef = F24D00002F7CAB67009AF16D /* IORStackSeeding.h */; };
 		F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544C2F7CAB67009AF16D /* MediumTransport.h */; };
 		F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
 		F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */; };
@@ -1622,6 +1623,7 @@
 		F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HomogeneousMedium.h; sourceTree = "<group>"; };
 		F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HomogeneousMedium.cpp; sourceTree = "<group>"; };
 		F24C544B2F7CAB67009AF16D /* MediumTracking.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTracking.h; sourceTree = "<group>"; };
+		F24D00002F7CAB67009AF16D /* IORStackSeeding.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IORStackSeeding.h; sourceTree = "<group>"; };
 		F24C544C2F7CAB67009AF16D /* MediumTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTransport.h; sourceTree = "<group>"; };
 		F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MediumTransport.cpp; sourceTree = "<group>"; };
 		F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetEnergyLUT.h; sourceTree = "<group>"; };
@@ -3319,6 +3321,7 @@
 				F24C54672F859F87009AF16D /* RandomWalkSSS.h */,
 				F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */,
 				F24C544B2F7CAB67009AF16D /* MediumTracking.h */,
+				F24D00002F7CAB67009AF16D /* IORStackSeeding.h */,
 				F24C544C2F7CAB67009AF16D /* MediumTransport.h */,
 				F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */,
 				F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */,
@@ -3607,6 +3610,7 @@
 				F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */,
 				F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */,
 				F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */,
+				F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */,
 				F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */,
 				F27F0ACD069C42910069C9E5 /* IFunction2D.h in Headers */,
 				F27F0ACE069C42910069C9E5 /* IFunction2DManager.h in Headers */,

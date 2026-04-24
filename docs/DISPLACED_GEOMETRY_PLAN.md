@@ -1,9 +1,12 @@
 # RISE DisplacedGeometry Plan
 
-**Status**: Draft for review. No code changes made yet.
+**Status**: COMPLETE — all 12 phases landed on 2026-04-18 (commit fd1c2de).  Retained as the historical design record; the §5 phase plans and §3 locked decisions describe the plan as executed, not pending work.
+
+**Post-completion amendment (2026-04-21, commit 5f81bf9)**: `BezierPatchGeometry` was subsequently refactored to render analytically (no tessellation pipeline) and `BezierValueGenerator.h` was removed.  References to `BezierValueGenerator.h` in the body below were live at plan-time and are preserved as historical context.  The Phase 3b normal-recompute back-port (§3.5, §5 Phase 3b) is now moot for Bezier — analytical rendering supplies derivatives directly and no post-tessellation normal recomputation is required.  `DisplacedGeometry` itself is unaffected.
+
 **Owner**: Aravind Krishnaswamy
 **Scope**: New `DisplacedGeometry` type + new `IGeometry::TessellateToMesh` contract + per-geometry tessellation overrides + parser/API/test-scene/regression surface.
-**Precedent**: [src/Library/Geometry/BezierPatchGeometry.cpp](../src/Library/Geometry/BezierPatchGeometry.cpp) + [src/Library/Geometry/BezierValueGenerator.h](../src/Library/Geometry/BezierValueGenerator.h) + [src/Library/Geometry/GeometryUtilities.cpp](../src/Library/Geometry/GeometryUtilities.cpp).
+**Precedent (plan-time)**: [src/Library/Geometry/BezierPatchGeometry.cpp](../src/Library/Geometry/BezierPatchGeometry.cpp) + `src/Library/Geometry/BezierValueGenerator.h` (removed in 5f81bf9) + [src/Library/Geometry/GeometryUtilities.cpp](../src/Library/Geometry/GeometryUtilities.cpp).
 
 ---
 

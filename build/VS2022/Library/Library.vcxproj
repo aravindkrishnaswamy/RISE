@@ -822,6 +822,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\IORStack.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\IORStackSeeding.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\LoadLibrary.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\Log.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Log\LogEvent.h" />

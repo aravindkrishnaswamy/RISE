@@ -17,6 +17,7 @@ hitting a diffuse receiver.
 |------|------|
 | `src/Library/Utilities/ManifoldSolver.h` | Solver interface, config, result structs |
 | `src/Library/Utilities/ManifoldSolver.cpp` | Full Newton solver, constraint, Jacobian, contribution eval |
+| `src/Library/Utilities/SMSPhotonMap.h/cpp` | Photon-aided seeding; kd-tree of proven-good SMS seeds queried by `ManifoldSolver::EvaluateAtShadingPoint` |
 | `src/Library/Shaders/SMSShaderOp.h/cpp` | Unidirectional PT integration |
 | `src/Library/Shaders/BDPTIntegrator.cpp` | BDPT integration (`EvaluateSMSStrategies`) |
 | `src/Library/Rendering/BDPTPelRasterizer.cpp` | Rendering loop: SMS added to BDPT result |

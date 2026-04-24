@@ -772,13 +772,19 @@ pathtracing_spectral_rasterizer
 
 ---
 
-## 9. VCM (Vertex Connection And Merging)
+## 9. VCM (Vertex Connection And Merging) — DONE
 
-### Why This Is Ninth
+Landed as `VCMIntegrator` + `VCMPelRasterizer` (RGB) + `VCMSpectralRasterizer` (HWSS), reusing BDPT's subpath generators via a single-pass post-walk that produces the SmallVCM `(dVCM, dVC, dVM)` quantities.  Balance-heuristic MIS; SPPM-style progressive radius shrinkage with adaptive density floor; parallel light pass via tile-based dispatcher.  Full implementation notes, MIS formulas, regression scenes, and known limitations live in [docs/VCM.md](VCM.md).
+
+### Original specification
+
+The original specification is preserved below for reference.
+
+---
+
+### Why This Was Ninth
 
 RISE already has both BDPT and photon mapping. VCM (Georgiev et al., SIGGRAPH Asia 2012) unifies them under MIS, subsuming PT, LT, BDPT, and photon mapping as special cases. The marginal implementation effort is lower than for most renderers since both halves already exist. VCM provides robust caustic rendering without relying solely on SMS.
-
-This is listed as a non-goal in the current roadmap, but it is worth reconsidering once the higher-priority items are complete.
 
 ### What To Implement
 
