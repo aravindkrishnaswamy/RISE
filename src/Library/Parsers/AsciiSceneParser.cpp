@@ -6987,88 +6987,6 @@ namespace RISE
 				}
 			};
 
-			struct MMLTRasterizerAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					String defaultshader = "global";
-					unsigned int maxEyeDepth = 10;
-					unsigned int maxLightDepth = 10;
-					unsigned int bootstrapSamples = 100000;
-					unsigned int chains = 512;
-					unsigned int mutationsPerPixel = 200;
-					double largeStepProb = 0.3;
-					// Phase 3: -1 = no force (will fail at runtime until
-					// Phase 4 lands per-depth pools).  Test scenes set
-					// force_depth N explicitly to pin to one depth.
-					int forceDepth = -1;
-					bool showLuminaires = true;
-					bool oidnDenoise = false;
-					PixelFilterConfig pixelFilterConfig;
-					StabilityConfig stabilityConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "bootstrap_samples" ) {
-							bootstrapSamples = pvalue.toUInt();
-						} else if( pname == "chains" ) {
-							chains = pvalue.toUInt();
-						} else if( pname == "mutations_per_pixel" ) {
-							mutationsPerPixel = pvalue.toUInt();
-						} else if( pname == "large_step_prob" ) {
-							largeStepProb = pvalue.toDouble();
-						} else if( pname == "force_depth" ) {
-							// Allow signed integer (incl. negative for
-							// "no force" once Phase 4 lands; Phase 3
-							// requires forceDepth >= 0).
-							forceDepth = static_cast<int>( pvalue.toInt() );
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.SetMMLTRasterizer( maxEyeDepth, maxLightDepth,
-						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						forceDepth,
-						defaultshader.c_str(), showLuminaires, oidnDenoise,
-						pixelFilterConfig,
-						stabilityConfig );
-				}
-			};
-
 			struct MLTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
@@ -8157,8 +8075,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	chunks["pathtracing_pel_rasterizer"] = new PathTracingPelRasterizerAsciiChunkParser();
 	chunks["pathtracing_spectral_rasterizer"] = new PathTracingSpectralRasterizerAsciiChunkParser();
 	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();
-	chunks["mmlt_rasterizer"] = new MMLTRasterizerAsciiChunkParser();
-chunks["mlt_spectral_rasterizer"] = new MLTSpectralRasterizerAsciiChunkParser();
+	chunks["mlt_spectral_rasterizer"] = new MLTSpectralRasterizerAsciiChunkParser();
 	chunks["file_rasterizeroutput"] = new FileRasterizerOutputAsciiChunkParser();
 
 	chunks["ambient_light"] = new AmbientLightAsciiChunkParser();

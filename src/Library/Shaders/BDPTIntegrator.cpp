@@ -1301,8 +1301,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	std::vector<BDPTVertex>& vertices,
 	std::vector<uint32_t>& subpathStarts,
 	const RandomNumberGenerator& random,
-	Scalar branchingThresholdOverride,
-	unsigned int maxBouncesOverride
+	Scalar branchingThresholdOverride
 	) const
 {
 	vertices.clear();
@@ -1473,20 +1472,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 	// Loop limit accounts for both surface and volume bounces.
 	// Surface bounces are capped by maxLightDepth, volume bounces by maxVolumeBounce.
 	// Saturating add; see matching comment in GenerateEyeSubpath for rationale.
-	// Also guard the effective surface cap `>= 1024` directly so the
-	// subtraction in the first half of the ternary doesn't underflow
-	// (unsigned wrap) when a scene sets maxLightDepth pathologically high.
-	//
-	// `maxBouncesOverride` lets MMLT chains shrink the surface cap below
-	// `maxLightDepth` when the chain only needs a short subpath (chain at
-	// depth d needs at most d light bounces).  Default UINT_MAX preserves
-	// PSSMLT/BDPT behaviour unchanged.
-	const unsigned int effectiveSurfaceCap = std::min( maxLightDepth, maxBouncesOverride );
+	// Also guard `maxLightDepth >= 1024` directly so the subtraction in
+	// the first half of the ternary doesn't underflow (unsigned wrap)
+	// when a scene sets maxLightDepth pathologically high.
 	const unsigned int maxLightTotalDepth =
-		( effectiveSurfaceCap >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - effectiveSurfaceCap ) ?
+		( maxLightDepth >= 1024u ||
+		  stabilityConfig.maxVolumeBounce > 1024u - maxLightDepth ) ?
 			1024u :
-			effectiveSurfaceCap + stabilityConfig.maxVolumeBounce;
+			maxLightDepth + stabilityConfig.maxVolumeBounce;
 
 	do {
 	if( !firstBranchIter ) {
@@ -2409,8 +2402,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	ISampler& sampler,
 	std::vector<BDPTVertex>& vertices,
 	std::vector<uint32_t>& subpathStarts,
-	Scalar branchingThresholdOverride,
-	unsigned int maxBouncesOverride
+	Scalar branchingThresholdOverride
 	) const
 {
 	// Resolve effective branching threshold: override if caller passed
@@ -2569,15 +2561,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	// guard the effective surface cap `>= 1024` directly so the subtraction
 	// in the first half of the ternary doesn't underflow (unsigned wrap)
 	// when a scene sets maxEyeDepth pathologically high.
-	//
-	// See GenerateLightSubpath for `maxBouncesOverride` rationale (MMLT
-	// chain-depth-aware short-cap).
-	const unsigned int effectiveSurfaceCap = std::min( maxEyeDepth, maxBouncesOverride );
 	const unsigned int maxEyeTotalDepth =
-		( effectiveSurfaceCap >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - effectiveSurfaceCap ) ?
+		( maxEyeDepth >= 1024u ||
+		  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
 			1024u :
-			effectiveSurfaceCap + stabilityConfig.maxVolumeBounce;
+			maxEyeDepth + stabilityConfig.maxVolumeBounce;
 
 	do {
 	if( !firstBranchIter ) {
@@ -4440,44 +4428,6 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 }
 
 //////////////////////////////////////////////////////////////////////
-// ConnectAndEvaluateForMMLT - single-strategy entry point.
-//
-// Mirrors the inner loop body of EvaluateAllStrategies' non-OpenPGL
-// branch: validate s,t (ConnectAndEvaluate does that), call
-// ConnectAndEvaluate, then stamp cr.s and cr.t since the underlying
-// method does not.  Kept thin so that any future change to BDPT's
-// per-strategy semantics goes through ONE code path that both
-// EvaluateAllStrategies and MMLT pick up.
-//
-// What we DELIBERATELY skip versus EvaluateAllStrategies:
-//   * The deterministic zero-exitance-light fallback (lines 4129-4189
-//     of EvaluateAllStrategies).  It exists to capture directional /
-//     ambient light contributions that no (s,t) strategy can sample;
-//     MMLT has no natural place for it and PBRT v3 MMLT documents the
-//     same restriction.
-//   * The OpenPGL strategy-selection / training-sample recording.
-//     Path-guiding statistics from MMLT samples would be highly
-//     correlated and corrupt the training set.
-//////////////////////////////////////////////////////////////////////
-
-BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluateForMMLT(
-	const std::vector<BDPTVertex>& lightVerts,
-	const std::vector<BDPTVertex>& eyeVerts,
-	unsigned int s,
-	unsigned int t,
-	const IScene& scene,
-	const IRayCaster& caster,
-	const ICamera& camera
-	) const
-{
-	ConnectionResult cr = ConnectAndEvaluate(
-		lightVerts, eyeVerts, s, t, scene, caster, camera );
-	cr.s = s;
-	cr.t = t;
-	return cr;
-}
-
-//////////////////////////////////////////////////////////////////////
 // EvaluateAllStrategies
 //////////////////////////////////////////////////////////////////////
 
@@ -4625,10 +4575,6 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 #endif
 	{
 		// Iterate over all valid (s,t) combinations where s + t >= 2.
-		// Routed through ConnectAndEvaluateForMMLT so the per-strategy
-		// stamping logic (cr.s, cr.t) lives in exactly one place — any
-		// future change to that contract is shared with MMLT's chain
-		// loop and cannot drift between the two callers.
 		for( unsigned int t = 1; t <= nEye; t++ )
 		{
 			for( unsigned int s = 0; s <= nLight; s++ )
@@ -4637,8 +4583,10 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 					continue;
 				}
 
-				ConnectionResult cr = ConnectAndEvaluateForMMLT(
+				ConnectionResult cr = ConnectAndEvaluate(
 					lightVerts, eyeVerts, s, t, scene, caster, camera );
+				cr.s = s;
+				cr.t = t;
 
 				if( cr.valid ) {
 					results.push_back( cr );

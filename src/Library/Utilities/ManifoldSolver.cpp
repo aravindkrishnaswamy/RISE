@@ -66,6 +66,54 @@ ManifoldSolver::~ManifoldSolver()
 //     normal = outward surface normal
 //////////////////////////////////////////////////////////////////////
 
+namespace
+{
+	// Resolve the (η_i, η_t) pair to use for a vertex's half-vector /
+	// Snell / Fresnel math.  Two paths:
+	//
+	//   1. Modern: BuildSeedChain (RGB and NM) populates v.etaI and
+	//      v.etaT explicitly using the IOR stack.  This works for both
+	//      single dielectric in air AND nested dielectric scenes.
+	//
+	//   2. Back-compat: hand-constructed chains in the existing test
+	//      corpus (ManifoldSolverTest.cpp) often only set v.eta and
+	//      leave (etaI, etaT) at their default (1.0, 1.0).  Those
+	//      tests assume "the other side of every interface is air"
+	//      — which is exactly what the OLD `eta_eff = isExiting ?
+	//      1/eta : eta` formula computed.  When we detect this case
+	//      (both etaI and etaT at default 1.0 BUT v.eta != 1.0), we
+	//      fall back to the air-as-other-side assumption so no
+	//      pre-existing test breaks.
+	//
+	// A consequence: a test that explicitly wants etaI=1.0 AND
+	// etaT=1.0 AND eta != 1.0 (a degenerate / pathological case)
+	// would get the back-compat path instead, but no such test
+	// exists in the current corpus.  If one is added, populate
+	// (etaI, etaT) explicitly.
+	inline void GetEffectiveEtas(
+		const RISE::Implementation::ManifoldVertex& v,
+		Scalar& eta_i,
+		Scalar& eta_t )
+	{
+		const bool backCompat =
+			( v.etaI == Scalar( 1.0 ) ) &&
+			( v.etaT == Scalar( 1.0 ) ) &&
+			( v.eta  != Scalar( 1.0 ) );
+		if( backCompat ) {
+			if( v.isExiting ) {
+				eta_i = v.eta;
+				eta_t = Scalar( 1.0 );
+			} else {
+				eta_i = Scalar( 1.0 );
+				eta_t = v.eta;
+			}
+		} else {
+			eta_i = v.etaI;
+			eta_t = v.etaT;
+		}
+	}
+}
+
 bool ManifoldSolver::ComputeSpecularDirection(
 	const Vector3& wi,
 	const Vector3& normal,
@@ -309,18 +357,34 @@ void ManifoldSolver::EvaluateConstraint(
 		}
 		else
 		{
-			// Refraction: eta_eff is the chain-topological ratio determined
-			// by BuildSeedChain's IOR-stack bookkeeping (entering vs exiting).
-			// Do NOT re-derive from sign(dot(wi, normal)): that heuristic
-			// fails on double-sided thin-sheet meshes where the outward
-			// normal points the same way at the entry and exit crossings.
-			const Scalar eta_eff = v.isExiting ? (1.0 / v.eta) : v.eta;
+			// Refraction: Walter et al. 2007 generalized half-vector
+			//   h ∝ -(η_i wi + η_t wo)
+			// where η_i is the IOR on the wi side (incoming medium) and
+			// η_t is the IOR on the wo side (outgoing medium).  Pulled
+			// from BuildSeedChain's per-vertex (etaI, etaT) population.
+			//
+			// The OLD formula `h = -(wi + eta_eff*wo)` with `eta_eff =
+			// isExiting ? 1/eta : eta` is mathematically equivalent for
+			// the air-on-the-other-side case (it differs by a constant
+			// factor of η_i, which the normalization downstream washes
+			// out).  But it silently hardcodes "the other side is air"
+			// — wrong for nested dielectrics like an air-cavity inside
+			// glass, where the inner-cavity vertex has η=1.5 on one
+			// side and η=1.0 on the other.  Walter's form handles
+			// nested dielectrics correctly.
+			//
+			// GetEffectiveEtas falls back to the old air-as-other-side
+			// behaviour when (etaI, etaT) are at default-1.0 — this
+			// preserves bit-exact behaviour for the existing test
+			// corpus that hand-constructs vertices with only `eta`
+			// set.  See GetEffectiveEtas docstring for full rationale.
+			Scalar eta_i, eta_t;
+			GetEffectiveEtas( v, eta_i, eta_t );
 
-			// h = -(wi + eta_eff * wo)
 			h = Vector3(
-				-(wi.x + eta_eff * wo.x),
-				-(wi.y + eta_eff * wo.y),
-				-(wi.z + eta_eff * wo.z)
+				-(eta_i * wi.x + eta_t * wo.x),
+				-(eta_i * wi.y + eta_t * wo.y),
+				-(eta_i * wi.z + eta_t * wo.z)
 			);
 		}
 
@@ -382,6 +446,21 @@ void ManifoldSolver::EvaluateConstraint(
 //   iteration with distant initial guesses.
 //////////////////////////////////////////////////////////////////////
 
+// NOTE: EvaluateConstraintAtVertex (this function), BuildJacobianAngleDiff,
+// and BuildJacobianAngleDiffNumerical use the angle-difference constraint
+// form via ComputeSpecularDirection.  ComputeSpecularDirection silently
+// assumes "the other side of the interface is air" — same nested-dielectric
+// bug as the OLD eta_eff formula in EvaluateConstraint.  Production code
+// (ManifoldSolver::Solve) uses the half-vector form via EvaluateConstraint
+// and BuildJacobian, both of which have been fixed via GetEffectiveEtas to
+// use the per-vertex (etaI, etaT) populated by BuildSeedChain.
+//
+// The angle-diff functions are TEST-ONLY (called from ManifoldSolverTest.cpp
+// to validate the analytical-vs-numerical Jacobian agreement on flat single-
+// IOR test geometry).  Their air-on-other-side assumption holds for the
+// existing test corpus.  If a future test wants to exercise nested-
+// dielectric topology via the angle-diff path, ComputeSpecularDirection
+// would need an (eta_i, eta_t) overload — left as a future cleanup.
 void ManifoldSolver::EvaluateConstraintAtVertex(
 	const Point3& vertexPos,
 	const Vector3& vertexNormal,
@@ -621,14 +700,22 @@ void ManifoldSolver::BuildJacobian(
 		Vector3 s = Vector3Ops::Normalize( v.dpdu );
 		Vector3 t = Vector3Ops::Normalize( v.dpdv );
 
-		// Effective eta — use the chain-topological flag set by
-		// BuildSeedChain's IOR-stack bookkeeping.  A local dot test on
-		// (wi, v.normal) is NOT a reliable "entering vs exiting" signal
-		// for thin double-sided meshes.
-		Scalar eta_eff = v.eta;
-		if( !v.isReflection && v.isExiting )
-		{
-			eta_eff = 1.0 / v.eta;
+		// Walter et al. 2007 generalized half-vector (η_i, η_t form).
+		// Resolved from the per-vertex (etaI, etaT) populated by
+		// BuildSeedChain's IOR-stack tracking; falls back to the
+		// "air-on-the-other-side" assumption for hand-constructed test
+		// chains that only set v.eta.  See GetEffectiveEtas docstring.
+		//
+		// The OLD `eta_eff` form (`isExiting ? 1/eta : eta`) is
+		// equivalent to Walter's form divided by η_i — same direction
+		// after normalization, same Jacobian after the chain rule (the
+		// constant scaling cancels in DeriveNormalized).  But it
+		// silently hardcodes "the other side is air" — wrong for
+		// nested dielectrics like an air-cavity inside glass.
+		Scalar eta_i_v = Scalar( 1.0 );
+		Scalar eta_t_v = Scalar( 1.0 );
+		if( !v.isReflection ) {
+			GetEffectiveEtas( v, eta_i_v, eta_t_v );
 		}
 
 		// Half-vector (unnormalized)
@@ -640,9 +727,9 @@ void ManifoldSolver::BuildJacobian(
 		else
 		{
 			h_raw = Vector3(
-				-(wi.x + eta_eff * wo.x),
-				-(wi.y + eta_eff * wo.y),
-				-(wi.z + eta_eff * wo.z) );
+				-(eta_i_v * wi.x + eta_t_v * wo.x),
+				-(eta_i_v * wi.y + eta_t_v * wo.y),
+				-(eta_i_v * wi.z + eta_t_v * wo.z) );
 		}
 
 		Scalar h_len = Vector3Ops::Magnitude( h_raw );
@@ -682,10 +769,11 @@ void ManifoldSolver::BuildJacobian(
 			}
 			else
 			{
+				// Walter form: ∂h/∂p = -(η_i ∂wi/∂p + η_t ∂wo/∂p)
 				dh_raw_du = Vector3(
-					-(dwi_du.x + eta_eff * dwo_du.x),
-					-(dwi_du.y + eta_eff * dwo_du.y),
-					-(dwi_du.z + eta_eff * dwo_du.z) );
+					-(eta_i_v * dwi_du.x + eta_t_v * dwo_du.x),
+					-(eta_i_v * dwi_du.y + eta_t_v * dwo_du.y),
+					-(eta_i_v * dwi_du.z + eta_t_v * dwo_du.z) );
 			}
 			dh_du = DeriveNormalized( h, dh_raw_du, h_len );
 
@@ -702,14 +790,15 @@ void ManifoldSolver::BuildJacobian(
 			Vector3 dh_raw_dv;
 			if( v.isReflection )
 			{
-				dh_raw_dv = Vector3( dwi_dv.x + dwo_dv.x, dwi_dv.y + dwo_dv.y, dwi_dv.z + dwo_dv.z );
+				dh_raw_dv = Vector3( dwi_dv.x + dwo_dv.x, dwi_dv.y + dwo_dv.y, dwi_dv.z + dwo_dv.z );	// reflection: η_i = η_t (irrelevant)
 			}
 			else
 			{
+				// Walter form: ∂h/∂p = -(η_i ∂wi/∂p + η_t ∂wo/∂p)
 				dh_raw_dv = Vector3(
-					-(dwi_dv.x + eta_eff * dwo_dv.x),
-					-(dwi_dv.y + eta_eff * dwo_dv.y),
-					-(dwi_dv.z + eta_eff * dwo_dv.z) );
+					-(eta_i_v * dwi_dv.x + eta_t_v * dwo_dv.x),
+					-(eta_i_v * dwi_dv.y + eta_t_v * dwo_dv.y),
+					-(eta_i_v * dwi_dv.z + eta_t_v * dwo_dv.z) );
 			}
 			dh_dv = DeriveNormalized( h, dh_raw_dv, h_len );
 		}
@@ -826,7 +915,9 @@ void ManifoldSolver::BuildJacobian(
 				if( v.isReflection )
 					dh_raw_next = dwo;
 				else
-					dh_raw_next = Vector3( -eta_eff * dwo.x, -eta_eff * dwo.y, -eta_eff * dwo.z );
+					// Walter form: ∂h/∂p_{i+1} = -η_t ∂wo/∂p (only wo
+					// depends on next vertex)
+					dh_raw_next = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 
 				const Vector3 dh_next = DeriveNormalized( h, dh_raw_next, h_len );
 
@@ -854,7 +945,16 @@ void ManifoldSolver::BuildJacobian(
 				if( v.isReflection )
 					dh_raw_prev = dwi;
 				else
-					dh_raw_prev = Vector3( -dwi.x, -dwi.y, -dwi.z );
+					// Walter form: ∂h/∂p_{i-1} = -η_i ∂wi/∂p (only wi
+					// depends on previous vertex).  The OLD code had
+					// no eta factor here — equivalent to assuming
+					// η_i = 1 (the single-dielectric-in-air case
+					// where the Walter form divided by η_i puts
+					// 1·wi on the wi side).  For nested dielectrics
+					// where the previous-side medium IS the object
+					// (e.g. crossing into the air-cavity from
+					// glass), η_i = 1.5 here and matters.
+					dh_raw_prev = Vector3( -eta_i_v * dwi.x, -eta_i_v * dwi.y, -eta_i_v * dwi.z );
 
 				const Vector3 dh_prev = DeriveNormalized( h, dh_raw_prev, h_len );
 
@@ -2327,6 +2427,38 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
 		mv.isExiting = !bEntering;
 
+		// Populate (etaI, etaT) — Walter et al. 2007 η_i / η_t for the
+		// half-vector / Snell / Fresnel math downstream.  See the field
+		// docs in ManifoldSolver.h for the rationale; in short, the old
+		// `eta_eff = isExiting ? 1/eta : eta` formula assumed the OTHER
+		// side of every interface was air (IOR=1.0), which is wrong
+		// for nested dielectrics like the Veach Egg's air-cavity inside
+		// glass (where the inner sphere's "other side" is glass at
+		// IOR=1.5, not air).
+		//
+		// For ENTERING: the ray was in `currentIOR` (the surrounding
+		// medium); after crossing this interface it'll be in
+		// `specInfo.ior` (the object material).  η_i = surrounding,
+		// η_t = object.
+		//
+		// For EXITING: the ray was inside the object (etaI = surface
+		// material's IOR); after crossing it'll be back in whatever was
+		// on the IOR stack BEFORE we entered this object.  We pop the
+		// stack BELOW (in the canRefract / bEntering=false branch) and
+		// READ THE NEW TOP — that's the post-pop surrounding medium.
+		// We update mv.etaT after the pop using the stack's `top()`,
+		// not the pre-existing hardcoded `currentIOR = 1.0` (which
+		// silently assumed every exit lands in air).  For the egg
+		// air-cavity exit back into the glass shell, this restores
+		// etaT = 1.5 instead of 1.0.
+		if( bEntering ) {
+			mv.etaI = currentIOR;
+			mv.etaT = specInfo.ior;
+		} else {
+			mv.etaI = specInfo.ior;
+			mv.etaT = currentIOR;	// provisional; corrected after the pop below
+		}
+
 		const std::size_t idxJustPushed = chain.size();
 		chain.push_back( mv );
 
@@ -2370,14 +2502,32 @@ unsigned int ManifoldSolver::BuildSeedChain(
 					seedIor.SetCurrentObject( ri.pObject );
 					seedIor.push( specInfo.ior );
 				} else {
-					currentIOR = 1.0;  // back in air (matching old cosI-based behavior)
 					if( sameObjectAgain ) {
 						// Only pop if we pushed earlier.  The legacy
 						// slabs-from-planes pattern uses cosI-based
 						// exiting without a matching stack entry.
 						seedIor.SetCurrentObject( ri.pObject );
 						seedIor.pop();
+						// After pop, the stack's top() is the IOR of
+						// the medium we just re-entered.  For nested
+						// dielectrics (e.g. air-cavity inside glass)
+						// this is NOT 1.0; for a single dielectric in
+						// air it IS 1.0 (the environment IOR pushed
+						// by the IORStack constructor).
+						currentIOR = seedIor.top();
+					} else {
+						// No matching push — legacy slabs-from-planes
+						// pattern.  Fall back to the old hardcoded
+						// "back to air" behaviour for this case so we
+						// don't break tests that exercise it.
+						currentIOR = 1.0;
 					}
+					// Backfill the just-pushed vertex's etaT with the
+					// post-pop surrounding-medium IOR.  Provisional
+					// value (set above to currentIOR) used the OLD
+					// currentIOR = inside-object IOR, which is wrong
+					// for the half-vector math.
+					chain[ idxJustPushed ].etaT = currentIOR;
 				}
 			}
 			else
@@ -2391,6 +2541,15 @@ unsigned int ManifoldSolver::BuildSeedChain(
 				// either fail or converge to a physically-wrong chain, and
 				// EvaluateChainThroughput would apply the refraction (1-Fr)
 				// factor instead of the reflection Fr factor.
+				//
+				// On TIR, etaI/etaT semantics for "reflection at this
+				// interface" are still meaningful for the Fresnel call
+				// below — they describe the INTERFACE the ray reflects
+				// off, even though the ray doesn't transmit.  Leave
+				// etaI/etaT as set above (per entering/exiting); the
+				// reflection branch of EvaluateConstraint and
+				// BuildJacobian doesn't read them anyway (it uses
+				// h = wi + wo with no IOR weighting).
 				chain[ idxJustPushed ].isReflection = true;
 				dir = dir + n * (2.0 * cosI2);
 				dir = Vector3Ops::Normalize( dir );
@@ -2557,8 +2716,21 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		//     next side is outside (air)   → eta_t = 1
 		// (This matches the old sign(dot(wi, n)) convention where
 		// cosI_signed >= 0 meant "wi points to air side".)
-		const Scalar eta_i = v.isExiting ? v.eta : 1.0;
-		const Scalar eta_t = v.isExiting ? 1.0 : v.eta;
+		// Pull (η_i, η_t) from the vertex's BuildSeedChain-populated
+		// fields, with back-compat fallback to "air on the other side"
+		// for hand-constructed test chains.  The OLD code had:
+		//   const Scalar eta_i = v.isExiting ? v.eta : 1.0;
+		//   const Scalar eta_t = v.isExiting ? 1.0 : v.eta;
+		// which silently assumed every interface had air on the
+		// non-material side — wrong for nested dielectrics (Veach Egg
+		// air_cavity inside glass).  Fresnel reflectance at a
+		// glass→air interface (Fr ≈ 0.04 for normal incidence) differs
+		// substantially from a glass→glass interface (Fr = 0 if same
+		// IOR, monotonic in |Δη| otherwise), so the bug shows up as
+		// caustic energy that's the wrong intensity even when the
+		// chain itself converged.
+		Scalar eta_i, eta_t;
+		GetEffectiveEtas( v, eta_i, eta_t );
 		const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 
 		if( v.isReflection )
@@ -2620,9 +2792,12 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 
 		// Exact dielectric Fresnel reflectance — use the chain-topological
 		// flag (see EvaluateChainThroughput RGB variant for full comment).
+		// Pull (η_i, η_t) from the per-vertex fields populated by
+		// BuildSeedChainNM — same air-on-other-side bug fix as the
+		// RGB variant.
 		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
-		const Scalar eta_i = v.isExiting ? v.eta : 1.0;
-		const Scalar eta_t = v.isExiting ? 1.0 : v.eta;
+		Scalar eta_i, eta_t;
+		GetEffectiveEtas( v, eta_i, eta_t );
 		const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 
 		if( v.isReflection )
@@ -2753,12 +2928,12 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 	const Vector3 s_v = Vector3Ops::Normalize( vk.dpdu );
 	const Vector3 t_v = Vector3Ops::Normalize( vk.dpdv );
 
-	// eta_eff (same convention as BuildJacobian)
-	// Effective eta via the chain-topological flag (see BuildJacobian).
-	Scalar eta_eff = vk.eta;
-	if( !vk.isReflection && vk.isExiting )
-	{
-		eta_eff = 1.0 / vk.eta;
+	// Walter form half-vector (η_i, η_t) — same convention and back-
+	// compat fallback as BuildJacobian / EvaluateConstraint.
+	Scalar eta_i_v = Scalar( 1.0 );
+	Scalar eta_t_v = Scalar( 1.0 );
+	if( !vk.isReflection ) {
+		GetEffectiveEtas( vk, eta_i_v, eta_t_v );
 	}
 
 	// Half-vector (sign follows BuildJacobian)
@@ -2767,9 +2942,9 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 		h_raw = Vector3( wi.x + wo.x, wi.y + wo.y, wi.z + wo.z );
 	} else {
 		h_raw = Vector3(
-			-(wi.x + eta_eff * wo.x),
-			-(wi.y + eta_eff * wo.y),
-			-(wi.z + eta_eff * wo.z) );
+			-(eta_i_v * wi.x + eta_t_v * wo.x),
+			-(eta_i_v * wi.y + eta_t_v * wo.y),
+			-(eta_i_v * wi.z + eta_t_v * wo.z) );
 	}
 	const Scalar h_len = Vector3Ops::Magnitude( h_raw );
 	if( h_len < NEARZERO ) return;
@@ -2795,11 +2970,12 @@ void ManifoldSolver::ComputeLastBlockLightJacobian(
 			(ydir.z - wo.z * wo_dot_ydir) * inv_lo );
 
 		// ∂h_raw/∂y.  wi is independent of y (depends only on prev and vk).
+		// Walter form: ∂h/∂y = -η_t ∂wo/∂y (only wo depends on y).
 		Vector3 dh_raw;
 		if( vk.isReflection ) {
 			dh_raw = dwo;
 		} else {
-			dh_raw = Vector3( -eta_eff * dwo.x, -eta_eff * dwo.y, -eta_eff * dwo.z );
+			dh_raw = Vector3( -eta_t_v * dwo.x, -eta_t_v * dwo.y, -eta_t_v * dwo.z );
 		}
 
 		// ∂h/∂y = (dh_raw - h * dot(h, dh_raw)) / h_len
@@ -3574,6 +3750,17 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				                ? ( ( pv.flags & 0x1 ) != 0 )    // preserve
 				                : ( ( pv.flags & 0x1 ) == 0 );   // flip
 				mv.valid     = false;        // derivatives will be re-computed by Solve
+				// SMS photon storage doesn't carry the IOR-stack
+				// snapshot at each vertex — only `eta` (the surface
+				// material's IOR).  mv.etaI and mv.etaT stay at the
+				// default 1.0 here, and downstream half-vector /
+				// Fresnel math falls back to the air-on-other-side
+				// assumption via GetEffectiveEtas.  Correct for
+				// single-dielectric-in-air photon caustics; WRONG
+				// for nested-dielectric photon-seeded chains.  See
+				// the matching comment in EvaluateAtShadingPointNM
+				// for the full rationale and the path to fix it
+				// (extend SMSPhotonChainVertex storage at emission).
 			}
 			trialSeed = newChain;
 		}
@@ -4007,6 +4194,26 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 			SpecularInfo specNM = seedChain[i].pMaterial->GetSpecularInfoNM(
 				rig, queryIor, nm );
 			seedChain[i].eta = specNM.ior;
+			// Also update the wavelength-dependent side of the
+			// (etaI, etaT) pair populated by BuildSeedChain.  The
+			// vertex's "outgoing-medium IOR" for entering, or
+			// "incoming-medium IOR" for exiting, IS the surface
+			// material's IOR — which is what specNM.ior gives us
+			// per wavelength (dispersion).  The OPPOSITE side's IOR
+			// (the surrounding medium) is left as set by the RGB
+			// BuildSeedChain pass; for typical SMS scenes (single
+			// dielectric in air, surrounding = 1.0) this is
+			// wavelength-independent and correct.  For doubly-
+			// nested dispersive scenes (e.g. dispersive-glass inside
+			// dispersive-glass) the surrounding side would also be
+			// wavelength-dependent and needs a separate per-vertex
+			// stack-of-NM-IORs to track exactly — left for a future
+			// extension when such a scene exists.
+			if( seedChain[i].isExiting ) {
+				seedChain[i].etaI = specNM.ior;
+			} else {
+				seedChain[i].etaT = specNM.ior;
+			}
 		}
 	}
 
@@ -4103,6 +4310,21 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 					mv.eta = pv.eta;
 					mv.attenuation = RISEPel( 1, 1, 1 );
 				}
+				// Photon-aided seed reconstruction does not currently
+				// store the IOR-stack snapshot at each vertex — the
+				// SMSPhoton record only carries `eta` (the surface
+				// material's IOR).  As a result, mv.etaI and mv.etaT
+				// stay at their default 1.0 here, and downstream
+				// math (EvaluateConstraint, BuildJacobian, etc.) falls
+				// back to the air-on-other-side assumption via
+				// GetEffectiveEtas.  Correct for single-dielectric-in-
+				// air photon caustics (the typical SMS photon use
+				// case); WRONG for nested-dielectric scenes seeded via
+				// photons.  Fixing this requires extending SMSPhoton
+				// per-vertex storage with (etaIncidentRGB, etaT) at
+				// emission time — left as a future extension for when
+				// nested-dielectric scenes actually use SMS photon
+				// seeding (PathMLT defaults to photonCount=0).
 			}
 			trialSeed = newChain;
 		}

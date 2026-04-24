@@ -543,6 +543,163 @@ void TestHalfVectorConstraint_AtSolution_Refraction()
 	assert( IsClose( C[1], 0.0, 1e-10 ) );
 }
 
+//----------------------------------------------------------------------
+// Nested-dielectric constraint correctness — regression test for the
+// air-on-the-other-side bug fixed by the (etaI, etaT) change.
+//
+// Setup: a flat interface at the origin with the surface MATERIAL'S IOR
+// = 1.0 (analogous to the air_cavity boundary inside the Veach Egg's
+// glass shell).  The OTHER side of this interface has IOR=1.5 (the
+// glass).  The ray comes from the glass side (incident medium = 1.5),
+// hits the interface, and refracts into the air-like medium on the
+// other side.
+//
+// At normal incidence, the refracted direction is exactly the same as
+// the incident direction — no bending.  The Walter-form half-vector
+// at this configuration:
+//     wi = (0, 1, 0)       (toward "previous", which is the source on
+//                           the eta=1.5 side)
+//     wo = (0,-1, 0)       (toward "next", normal-incidence transmission)
+//     normal = (0, 1, 0)   (outward from the eta=1.0 material)
+//     eta_i = 1.5, eta_t = 1.0
+//     h = -(1.5*wi + 1.0*wo) = -(1.5*(0,1,0) + 1.0*(0,-1,0)) = -(0, 0.5, 0)
+//     h_normalized = (0, -1, 0)   (parallel to -normal, which is the
+//                                  same direction as +normal up to sign;
+//                                  the constraint projects onto tangent
+//                                  s, t — both projections must be 0.)
+//
+// The OLD eta_eff formula (`isExiting ? 1/eta : eta` with v.eta = 1.0)
+// would compute eta_eff = 1.0 (entering case from the buggy code's POV)
+// and h = -(wi + 1.0*wo) = -(0, 0, 0) = ZERO VECTOR — degenerate.  The
+// constraint would be set to (1, 1) per the NEARZERO branch, indicating
+// "infinitely far from satisfied" even though we're exactly on a valid
+// Snell solution.
+//
+// With the (etaI, etaT) fix, h is non-degenerate and the constraint
+// correctly evaluates to ≈ 0.
+//----------------------------------------------------------------------
+void TestHalfVectorConstraint_AtSolution_NestedDielectric_NormalIncidence()
+{
+	std::cout << "Testing nested-dielectric constraint (air-cavity inside glass, normal incidence)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	const Point3 prevPos( 0,  1, 0 );
+	const Point3 vertPos( 0,  0, 0 );
+	const Point3 nextPos( 0, -1, 0 );
+
+	ManifoldVertex v = MakeVertex(
+		vertPos, Vector3( 0, 1, 0 ),
+		Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ),
+		1.0,	// surface material IOR (air_cavity-style)
+		false );	// refraction
+	v.etaI = 1.5;	// incident-side IOR (glass shell surrounding the cavity)
+	v.etaT = 1.0;	// outgoing-side IOR (air_cavity material)
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+//----------------------------------------------------------------------
+// Same air-cavity boundary, but with a non-normal-incidence Snell pair.
+// Ray comes from glass (eta=1.5) at 45 degrees; refracts to a wider
+// angle in the eta=1.0 medium per Snell's law:
+//     sin(θ_t) = (η_i / η_t) sin(θ_i) = 1.5 * sin(45°) = 1.5 * √2/2
+//             ≈ 1.06   →  this angle would be TIR for a real glass→air
+//                          interface (critical angle ≈ 41.8°).
+//
+// Use 30° instead so it transmits cleanly:
+//     sin(θ_t) = 1.5 * sin(30°) = 1.5 * 0.5 = 0.75
+//     cos(θ_t) = √(1 − 0.5625) = √0.4375 ≈ 0.6614
+// Set up wi at θ_i=30° from normal in the +x direction, wo at θ_t in
+// the -x direction so they're on opposite sides of the normal.
+//
+// This exercises the η_i ≠ η_t case at non-normal incidence — the OLD
+// eta_eff formula (which treats the other side as air, eta_eff=1.0)
+// would compute h = -(wi + wo) = -2*(sin·x̂)*x̂  WHICH HAS A NONZERO
+// TANGENT COMPONENT, so the OLD constraint at this Snell solution
+// evaluates to a non-zero (s, t) projection — i.e. would tell Newton
+// "you're not at a solution" when in fact you are.  The (etaI, etaT)
+// fix evaluates correctly to ≈ 0.
+//----------------------------------------------------------------------
+void TestHalfVectorConstraint_AtSolution_NestedDielectric_45Deg()
+{
+	std::cout << "Testing nested-dielectric constraint (air-cavity inside glass, 30 degree incidence)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	const Scalar sinI = 0.5;					// sin(30°)
+	const Scalar cosI = std::sqrt( Scalar( 0.75 ) );	// cos(30°)
+	const Scalar etaI = 1.5;
+	const Scalar etaT = 1.0;
+	const Scalar sinT = ( etaI / etaT ) * sinI;	// = 0.75
+	const Scalar cosT = std::sqrt( Scalar( 1.0 ) - sinT * sinT );
+
+	// Place prev at unit distance along (sinI, cosI, 0) from the origin.
+	// This means the direction FROM origin TO prev is (sinI, cosI, 0),
+	// which is `wi` in the constraint convention.
+	const Point3 prevPos(  sinI, cosI, 0 );
+	const Point3 vertPos(    0,    0, 0 );
+	// Place next at unit distance along (-sinT, -cosT, 0) from origin.
+	// Direction FROM origin TO next is (-sinT, -cosT, 0), which is `wo`.
+	const Point3 nextPos( -sinT, -cosT, 0 );
+
+	ManifoldVertex v = MakeVertex(
+		vertPos, Vector3( 0, 1, 0 ),
+		Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ),
+		1.0, false );	// surface material IOR = 1.0
+	v.etaI = etaI;
+	v.etaT = etaT;
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
+//----------------------------------------------------------------------
+// Back-compat regression: the existing test corpus (and any user code
+// that hand-constructs ManifoldVertex objects with only `eta` set)
+// must continue to behave as before.  GetEffectiveEtas detects the
+// "default (etaI=1.0, etaT=1.0) AND eta != 1.0" case and falls back
+// to the old `isExiting ? 1/eta : eta` derivation.
+//
+// Verify by repeating the existing
+// TestHalfVectorConstraint_AtSolution_Refraction test setup explicitly
+// — same MakeVertex call (no etaI/etaT override), expect ≈ 0
+// constraint at the Snell solution.  If GetEffectiveEtas's back-compat
+// logic ever drifts, this test will catch it.
+//----------------------------------------------------------------------
+void TestHalfVectorConstraint_BackCompat_SingleIORInAir()
+{
+	std::cout << "Testing back-compat: single-IOR-in-air vertex (no etaI/etaT override)..." << std::endl;
+	TestableManifoldSolver solver;
+
+	const Point3 prevPos( 0,  1, 0 );
+	const Point3 vertPos( 0,  0, 0 );
+	const Point3 nextPos( 0, -1, 0 );
+
+	// MakeVertex sets eta=1.5; etaI and etaT default to 1.0.
+	ManifoldVertex v = MakeVertex(
+		vertPos, Vector3( 0, 1, 0 ),
+		Vector3( 1, 0, 0 ), Vector3( 0, 0, 1 ),
+		1.5, false );
+
+	std::vector<ManifoldVertex> chain;
+	chain.push_back( v );
+
+	std::vector<Scalar> C;
+	solver.EvaluateConstraint( chain, prevPos, nextPos, C );
+	assert( IsClose( C[0], 0.0, 1e-10 ) );
+	assert( IsClose( C[1], 0.0, 1e-10 ) );
+}
+
 void TestAngleDiffConstraint_AtSolution()
 {
 	std::cout << "Testing angle-diff constraint at solution..." << std::endl;
@@ -1468,6 +1625,9 @@ int main()
 	TestHalfVectorConstraint_AtSolution_Reflection();
 	TestHalfVectorConstraint_NotAtSolution();
 	TestHalfVectorConstraint_AtSolution_Refraction();
+	TestHalfVectorConstraint_AtSolution_NestedDielectric_NormalIncidence();
+	TestHalfVectorConstraint_AtSolution_NestedDielectric_45Deg();
+	TestHalfVectorConstraint_BackCompat_SingleIORInAir();
 	TestAngleDiffConstraint_AtSolution();
 
 	// Group 6: Analytical vs Numerical Jacobian

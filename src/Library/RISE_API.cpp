@@ -4515,7 +4515,6 @@ namespace RISE
 #include "Rendering/PathTracingSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 #include "Rendering/MLTSpectralRasterizer.h"
-#include "Rendering/MMLTRasterizer.h"
 #include "Utilities/ManifoldSolver.h"
 
 namespace RISE
@@ -4958,52 +4957,6 @@ namespace RISE
 		return RISE_API_CreateMLTRasterizerWithFilter( ppi, caster,
 			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 			nMutationsPerPixel, largeStepProb, oidnDenoise, 0, 0 );
-	}
-
-	// MMLT factory.  Mirrors RISE_API_CreateMLTRasterizerWithFilter:
-	// constructs the rasterizer, installs the pixel filter via
-	// SubSampleRays so the splat path can use SplatFilm::SplatFiltered,
-	// returns the IRasterizer pointer.  No legacy wrapper — MMLT is a
-	// new feature so there is no pre-filter ABI to preserve.
-	bool RISE_API_CreateMMLTRasterizerWithFilter(
-								IRasterizer** ppi,
-								IRayCaster* caster,
-								const unsigned int maxEyeDepth,
-								const unsigned int maxLightDepth,
-								const unsigned int nBootstrap,
-								const unsigned int nChains,
-								const unsigned int nMutationsPerPixel,
-								const Scalar largeStepProb,
-								const int forceDepth,
-								const bool oidnDenoise,
-								ISampling2D* pSampler,
-								IPixelFilter* pFilter
-								)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		MMLTRasterizer* pRasterizer = new MMLTRasterizer( caster,
-			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
-			nMutationsPerPixel, largeStepProb, forceDepth );
-
-		// MMLT does not (yet) wire OIDN.  PSSMLT also defaults OIDN
-		// off because the post-splat film is incompatible with the
-		// noise distribution OIDN is trained on.  Warn if requested.
-		if( oidnDenoise ) {
-			GlobalLog()->PrintEasyWarning(
-				"OIDN denoising requested with MMLT but the splat-film "
-				"output is not OIDN-friendly; ignoring oidn_denoise." );
-		}
-
-		if( pSampler || pFilter ) {
-			pRasterizer->SubSampleRays( pSampler, pFilter );
-		}
-
-		(*ppi) = pRasterizer;
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "MMLT rasterizer" );
-		return true;
 	}
 
 	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(

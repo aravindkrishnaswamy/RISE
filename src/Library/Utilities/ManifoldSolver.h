@@ -69,7 +69,13 @@ namespace RISE
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
 			Vector3				dndv;			///< Normal derivative w.r.t. second surface param (world space)
 			Point2				uv;				///< Surface parameters
-			Scalar				eta;			///< Material IOR at this vertex (e.g. 2.2 for IOR-2.2 glass)
+			Scalar				eta;			///< Surface MATERIAL'S IOR at this vertex (e.g. 1.5 for typical glass).  Kept for backward compatibility with callers that just want "the dielectric's nominal IOR".  For half-vector / Snell / Fresnel math, prefer (etaI, etaT) below — they encode the actual interface, including nested-dielectric cases where neither side is air.
+			Scalar				etaI;			///< IOR on the INCOMING (`wi`) side of the interface — Walter et al. 2007 notation η_i.  This is the medium the ray is travelling FROM as it hits this vertex.  Default 1.0 (air).
+			Scalar				etaT;			///< IOR on the OUTGOING (`wo`) side of the interface — Walter et al. 2007 notation η_t.  This is the medium the ray is travelling INTO as it leaves this vertex.  Default 1.0 (air).
+			///<
+			///< Together (etaI, etaT) replace the old `eta_eff = isExiting ? 1/eta : eta` derivation, which silently assumed the OPPOSITE side of every interface was air (IOR=1.0).  That assumption holds for a single dielectric in air (the typical SMS test case) but BREAKS for nested dielectrics — e.g. an air-cavity sphere (IOR=1.0) inside a glass shell (IOR=1.5), where the inner sphere's interface has glass on one side and air on the other.  Without (etaI, etaT), Newton would solve the half-vector constraint h ∝ -(1·wi + 1·wo) at the air-cavity vertex (which is the REFLECTION constraint) instead of the actual Snell refraction h ∝ -(1.5·wi + 1.0·wo).  Convergence at the wrong constraint root explains the SMS rejection cliff on Veach Egg / luminous orb scenes.
+			///<
+			///< Populated by BuildSeedChain (RGB and NM variants) at the time of each hit, using the same `currentIOR` and IOR-stack the seed-trace already maintains.  Single-IOR scenes (the existing test corpus) get etaI=1.0 (entering) or etaT=1.0 (exiting), matching the old hardcoded defaults — so unchanged behaviour for those scenes.  ValidateChainPhysics may also fall back to `eta` when (etaI, etaT) are at default-1.0 for back-compat with hand-constructed chains.
 			RISEPel				attenuation;	///< Color attenuation at this vertex (e.g., colored glass refractance)
 			bool				isReflection;	///< True if this vertex uses reflection, false for refraction
 			bool				isExiting;		///< True if ray EXITS the object at this vertex (glass→air).  Set at seed-build time via IOR-stack object tracking.  Refraction-direction code uses this (NOT a local dot test) because a double-sided thin-sheet mesh can be crossed twice with the normal pointing in the same direction at both hits.
@@ -84,6 +90,8 @@ namespace RISE
 			dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
 			uv( Point2(0,0) ),
 			eta( 1.0 ),
+			etaI( 1.0 ),
+			etaT( 1.0 ),
 			attenuation( 1.0, 1.0, 1.0 ),
 			isReflection( false ),
 			isExiting( false ),
