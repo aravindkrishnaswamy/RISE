@@ -16,6 +16,7 @@
 #include "Log.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <cstring>
 
 #include "StreamPrinter.h"
 #include <fstream>

@@ -17,6 +17,8 @@
 
 #include <vector>
 #include <ctype.h>			// for toupper
+#include <cstdio>			// for sscanf
+#include <cstring>			// for strlen / strcpy
 
 namespace RISE
 {

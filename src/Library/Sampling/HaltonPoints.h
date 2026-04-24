@@ -16,6 +16,7 @@
 
 #include "../Utilities/Primes.h"
 #include <vector>
+#include <cstring>
 
 #ifdef NO_HALTON
 #include "../Utilities/RandomNumbers.h"

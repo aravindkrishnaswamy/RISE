@@ -32,6 +32,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <iostream>
+#include <iomanip>
 #include <cmath>
 #include <cstdlib>
 #include <cassert>

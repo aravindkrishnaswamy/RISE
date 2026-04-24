@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "SplatFilm.h"
 #include "ThreadLocalSplatBuffer.h"
+#include <atomic>
 
 using namespace RISE;
 using namespace RISE::Implementation;
