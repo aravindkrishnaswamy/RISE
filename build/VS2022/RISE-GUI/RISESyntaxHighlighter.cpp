@@ -19,62 +19,75 @@ const QRegularExpression RISESyntaxHighlighter::s_mathExprRegex(QStringLiteral("
 const QRegularExpression RISESyntaxHighlighter::s_numberRegex(QStringLiteral("(?<=\\s)-?(?:\\d+\\.?\\d*|\\.\\d+)(?=\\s|$)"));
 const QRegularExpression RISESyntaxHighlighter::s_propertyKeyRegex(QStringLiteral("^(\\t+)(\\w+)"));
 
-// 107 block keywords from AsciiSceneParser.cpp (matching Mac app)
+// 126 block keywords from AsciiSceneParser.cpp::ParseAndLoadScene (matching Mac app).
+// Keep synchronized with RISESceneSyntaxHighlighter.swift.
 const QSet<QString> RISESyntaxHighlighter::s_blockKeywords = {
-    // Painters
+    // Painters (27)
     "uniformcolor_painter", "spectral_painter", "png_painter", "hdr_painter",
     "exr_painter", "tiff_painter", "checker_painter", "lines_painter",
-    "mandelbrot_painter", "perlin2d_painter", "perlin3d_painter",
+    "mandelbrot_painter", "perlin2d_painter", "gerstnerwave_painter",
+    "perlin3d_painter", "turbulence3d_painter", "wavelet3d_painter",
+    "reactiondiffusion3d_painter", "gabor3d_painter", "simplex3d_painter",
+    "sdf3d_painter", "curlnoise3d_painter", "domainwarp3d_painter",
+    "perlinworley3d_painter", "worley3d_painter",
     "voronoi2d_painter", "voronoi3d_painter", "iridescent_painter",
     "blackbody_painter", "blend_painter",
-    // Functions
+    // Functions (2)
     "piecewise_linear_function", "piecewise_linear_function2d",
-    // Materials
+    // Materials (23)
     "lambertian_material", "perfectreflector_material", "perfectrefractor_material",
-    "polished_material", "dielectric_material", "lambertian_luminaire_material",
-    "phong_luminaire_material", "ashikminshirley_anisotropicphong_material",
-    "isotropic_phong_material", "translucent_material", "biospec_skin_material",
-    "generic_human_tissue_material", "composite_material",
-    "ward_isotropic_material", "ward_anisotropic_material",
-    "cooktorrance_material", "orennayar_material", "schlick_material",
-    "datadriven_material",
-    // Cameras
+    "polished_material", "dielectric_material",
+    "subsurfacescattering_material", "randomwalk_sss_material",
+    "lambertian_luminaire_material", "phong_luminaire_material",
+    "ashikminshirley_anisotropicphong_material", "isotropic_phong_material",
+    "translucent_material", "biospec_skin_material",
+    "donner_jensen_skin_bssrdf_material", "generic_human_tissue_material",
+    "composite_material", "ward_isotropic_material", "ward_anisotropic_material",
+    "ggx_material", "cooktorrance_material", "orennayar_material",
+    "schlick_material", "datadriven_material",
+    // Cameras (6)
     "pinhole_camera", "onb_pinhole_camera", "thinlens_camera",
     "realistic_camera", "fisheye_camera", "orthographic_camera",
-    // Geometry
+    // Geometry (15)
     "sphere_geometry", "ellipsoid_geometry", "cylinder_geometry",
     "torus_geometry", "infiniteplane_geometry", "box_geometry",
     "clippedplane_geometry", "3dsmesh_geometry", "rawmesh_geometry",
-    "rawmesh2_geometry", "beziermesh_geometry", "risemesh_geometry",
-    "circulardisk_geometry", "bezierpatch_geometry", "bilinearpatch_geometry",
-    // Modifiers
+    "rawmesh2_geometry", "risemesh_geometry", "circulardisk_geometry",
+    "bezierpatch_geometry", "bilinearpatch_geometry", "displaced_geometry",
+    // Modifiers (1)
     "bumpmap_modifier",
-    // Objects
+    // Media (3)
+    "homogeneous_medium", "heterogeneous_medium", "painter_heterogeneous_medium",
+    // Objects (2)
     "standard_object", "csg_object",
-    // Shader operations
+    // Shader operations (12; mis_pathtracing_shaderop is a legacy alias)
     "ambientocclusion_shaderop", "directlighting_shaderop",
-    "pathtracing_shaderop", "distributiontracing_shaderop",
+    "pathtracing_shaderop", "mis_pathtracing_shaderop",
+    "sms_shaderop", "distributiontracing_shaderop",
     "finalgather_shaderop", "simple_sss_shaderop",
-    "diffusion_approximation_sss_shaderop", "arealight_shaderop",
-    "transparency_shaderop",
-    // Shaders
+    "diffusion_approximation_sss_shaderop", "donner_jensen_skin_sss_shaderop",
+    "arealight_shaderop", "transparency_shaderop",
+    // Shaders (4)
     "standard_shader", "advanced_shader",
     "directvolumerendering_shader", "spectraldirectvolumerendering_shader",
-    // Rasterizers
+    // Rasterizers (10)
     "pixelpel_rasterizer", "pixelintegratingspectral_rasterizer",
-    "adaptivepixelpel_rasterizer", "contrastAApixelpel_rasterizer",
-    // Output
+    "bdpt_pel_rasterizer", "bdpt_spectral_rasterizer",
+    "vcm_pel_rasterizer", "vcm_spectral_rasterizer",
+    "pathtracing_pel_rasterizer", "pathtracing_spectral_rasterizer",
+    "mlt_rasterizer", "mlt_spectral_rasterizer",
+    // Output (1)
     "file_rasterizeroutput",
-    // Lights
+    // Lights (4)
     "ambient_light", "omni_light", "spot_light", "directional_light",
-    // Photon maps & gather
+    // Photon maps & gather (12)
     "caustic_pel_photonmap", "translucent_pel_photonmap",
     "caustic_spectral_photonmap", "global_pel_photonmap",
     "global_spectral_photonmap", "shadow_photonmap",
     "caustic_pel_gather", "translucent_pel_gather",
     "caustic_spectral_gather", "global_pel_gather",
     "global_spectral_gather", "shadow_gather",
-    // Other
+    // Other (4)
     "irradiance_cache", "keyframe", "timeline", "animation_options",
 };
 
