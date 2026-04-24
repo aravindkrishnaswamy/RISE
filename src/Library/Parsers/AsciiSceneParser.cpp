@@ -18,6 +18,7 @@
 #include <stack>
 #include <string>
 #include <sstream>
+#include <algorithm>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiSceneParser.h"

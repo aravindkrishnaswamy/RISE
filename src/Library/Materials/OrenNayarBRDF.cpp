@@ -93,3 +93,11 @@ Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeo
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
+
+// Explicit instantiation so other TUs (OrenNayarSPF.cpp) can link to the
+// scalar overload without seeing the template body.  The RISEPel flavour
+// is instantiated implicitly through OrenNayarBRDF::value above.
+template void OrenNayarBRDF::ComputeFactor<Scalar>(
+	Scalar&, Scalar&,
+	const Vector3&, const RayIntersectionGeometric&,
+	const Vector3&, const Scalar& );

@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "MemoryTracker.h"
 #include <fstream>
+#include <cstring>
 
 //#define TRACK_PEDANTIC
 
