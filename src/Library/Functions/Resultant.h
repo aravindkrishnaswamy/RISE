@@ -15,6 +15,7 @@
 #define RESULTANT_
 
 #include <assert.h>
+#include <cstring>
 
 #define MAX_COEF 37
 
