@@ -38,7 +38,11 @@ Built binaries land in `bin/tests/`.
 - Sampler and dimension budget:
   `MMLTStrategySelectionTest.cpp`, `PSSMLTStreamAliasingTest.cpp`, `SobolDimensionBudgetTest.cpp`, `ZSobolSamplerTest.cpp`
 - Image comparison, diagnostics, and instrumentation:
-  `ExrRegionCompareTest.cpp`, `FindFireflyTest.cpp`, `ImageDiffTest.cpp`, `RasterSanityScanTest.cpp`, `RenderETAEstimatorTest.cpp`
+  `RasterSanityScanTest.cpp`, `RenderETAEstimatorTest.cpp`
+  (CLI diagnostic utilities like `ImageDiffTest`, `FindFireflyTest`,
+  `ExrRegionCompareTest`, and `ExrFireflyInspect` live in `tools/`,
+  not here, because they require file arguments and are not
+  assertion-based tests.)
 - Performance-oriented coverage:
   `MailboxingPerformanceTest.cpp`
 

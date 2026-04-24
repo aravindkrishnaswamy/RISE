@@ -619,7 +619,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 			}
 
 			if( clamped > 0 ) {
-				GlobalLog()->PrintEx( eLog_Event,
+				GlobalLog()->PrintEx( eLog_Info,
 					"VCMRasterizerBase::PreRenderSetup:: throughput clamp "
 					"median=%g threshold=%g clamped=%llu of %zu vertices",
 					(double)medianThroughput, (double)clampThreshold,
@@ -636,7 +636,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	}
 	mSplatTotalSamples *= GetSplatSampleScale();
 
-	GlobalLog()->PrintEx( eLog_Event,
+	GlobalLog()->PrintEx( eLog_Info,
 		"VCMRasterizerBase::PreRenderSetup:: light pass done — "
 		"paths shot=%llu, light vertices stored=%llu, kd-tree built=%d",
 		pathsShot,

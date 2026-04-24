@@ -12,8 +12,8 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
-    <ProjectGuid>{E2345678-5678-5678-5678-567890123EF0}</ProjectGuid>
-    <RootNamespace>ExrFireflyInspect</RootNamespace>
+    <ProjectGuid>{F4567890-6789-6789-6789-678901234F01}</ProjectGuid>
+    <RootNamespace>FindFireflyTest</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <VcpkgEnabled>true</VcpkgEnabled>
     <VcpkgEnableManifest>true</VcpkgEnableManifest>
@@ -27,8 +27,8 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)..\..\bin\tests\</OutDir>
-    <IntDir>$(Platform)\$(Configuration)\ExrFireflyInspect\</IntDir>
+    <OutDir>$(SolutionDir)..\..\bin\tools\</OutDir>
+    <IntDir>$(Platform)\$(Configuration)\FindFireflyTest\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -36,7 +36,7 @@
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Full</Optimization>
       <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Dev\GitHub\RISE\build\VS2022\vcpkg_installed\x64-windows\x64-windows\include;C:\Dev\GitHub\RISE\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>
       <AdditionalOptions>/Zc:__cplusplus /permissive- %(AdditionalOptions)</AdditionalOptions>
@@ -46,11 +46,11 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <AdditionalDependencies>RISE.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>C:\Dev\GitHub\RISE\bin\;C:\Dev\GitHub\RISE\build\VS2022\vcpkg_installed\x64-windows\x64-windows\lib\;C:\Dev\oidn-2.4.1.x64.windows\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;C:\Dev\oidn-2.4.1.x64.windows\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\tests\ExrFireflyInspect.cpp" />
+    <ClCompile Include="..\..\..\tools\FindFireflyTest.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

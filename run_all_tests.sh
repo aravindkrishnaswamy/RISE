@@ -7,7 +7,10 @@ BIN_DIR="$REPO_ROOT/bin/tests"
 SRC_DIR="$REPO_ROOT/tests"
 BUILD_DIR="$REPO_ROOT/build/make/rise"
 LIB_DIR="$REPO_ROOT/src/Library"
-LOG_DIR="$BIN_DIR/.logs"
+# Logs go outside the repo so they survive cloud-sync providers (iCloud,
+# Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
+# locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
+LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
 
 if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"

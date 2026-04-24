@@ -29,7 +29,7 @@ vcm_pel_rasterizer
 {
 	max_eye_depth		10
 	max_light_depth		10
-	samples				64
+	samples				32
 	merge_radius		0.0
 	vc_enabled			true
 	vm_enabled			true
@@ -41,6 +41,28 @@ bdpt_pel_rasterizer
 	max_eye_depth		10
 	max_light_depth		10
 	samples				64
+	sms_enabled                   FALSE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_multi_trials              16
+	sms_photon_count              100000
+}
+*/
+
+/*
+pathtracing_pel_rasterizer
+{
+	samples                       4
+	oidn_denoise                  FALSE
+	sms_enabled                   TRUE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_multi_trials              16
+	sms_photon_count              100000
 }
 */
 

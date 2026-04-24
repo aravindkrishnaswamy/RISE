@@ -230,15 +230,33 @@ void LightVertexStore::Append( const LightVertex& v )
 
 void LightVertexStore::Concat( std::vector<LightVertex>&& localBuffer )
 {
-	if( mVertices.empty() ) {
-		mVertices = std::move( localBuffer );
-	} else {
-		mVertices.insert(
-			mVertices.end(),
-			std::make_move_iterator( localBuffer.begin() ),
-			std::make_move_iterator( localBuffer.end() ) );
-		localBuffer.clear();
+	// Always insert — never move-assign the whole source over mVertices,
+	// even when mVertices.empty() is true.
+	//
+	// Why: the "empty" fast path historically did
+	//   mVertices = std::move(localBuffer)
+	// which deallocates mVertices' existing capacity buffer (allocated
+	// by the caller via Reserve) and steals localBuffer's buffer.  In
+	// the GUI build that deallocation occasionally crashed inside
+	// libsystem_malloc on the second+ animation frame (PAC-tagged
+	// indirect branch to an invalid address during
+	// xzm_segment_group_free_chunk).  The pattern — deallocate a large
+	// main-thread buffer between frames from code running on a Swift
+	// cooperative-pool thread — seems to hit an allocator edge case.
+	//
+	// insert() preserves the Reserve'd capacity (zero reallocation when
+	// the pre-reserved size is sufficient), does an element-wise move
+	// of the POD-ish LightVertex structs, and — crucially — never
+	// frees the destination's buffer.  That sidesteps the crash.
+	if( localBuffer.empty() ) {
+		mBuilt = false;
+		return;
 	}
+	mVertices.insert(
+		mVertices.end(),
+		std::make_move_iterator( localBuffer.begin() ),
+		std::make_move_iterator( localBuffer.end() ) );
+	localBuffer.clear();
 	mBuilt = false;
 }
 

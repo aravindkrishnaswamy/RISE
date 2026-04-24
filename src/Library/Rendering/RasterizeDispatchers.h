@@ -169,9 +169,12 @@ namespace RISE
 				IRasterizeSequence& seq_,
 				const PixelBasedRasterizerHelper& rasterizer_,
 				IProgressCallback* pProgressFunc_,
-				const PixelBasedRasterizerHelper::AnimFrameData& animData_
+				const PixelBasedRasterizerHelper::AnimFrameData& animData_,
+				const double progressBase_,
+				const double progressWeight_,
+				const double progressTotal_
 				) :
-			  RasterizeBlockDispatcher( pass_, image_, scene_, seq_, rasterizer_, pProgressFunc_, 0, 0, 0 ),
+			  RasterizeBlockDispatcher( pass_, image_, scene_, seq_, rasterizer_, pProgressFunc_, progressBase_, progressWeight_, progressTotal_ ),
 			  animData( animData_ )
 			{
 			}

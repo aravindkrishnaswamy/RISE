@@ -1065,8 +1065,12 @@ void TestThroughput_NormalIncidence_Refraction()
 
 	RISEPel t = solver.EvaluateChainThroughput( start, end, chain );
 	// F at normal incidence: ((1-1.5)/(1+1.5))^2 = 0.04
-	// Refraction throughput: 1 - 0.04 = 0.96
-	assert( IsClose( t[0], 0.96, 1e-4 ) );
+	// Refraction radiance throughput: (1 - F) * (eta_i/eta_t)^2
+	//   = 0.96 * (1/1.5)^2 ≈ 0.4267
+	// The (eta_i/eta_t)^2 factor is the standard radiance rescale
+	// across a dielectric boundary (see EvaluateChainThroughput for
+	// the full rationale).
+	assert( IsClose( t[0], 0.96 * (1.0/1.5) * (1.0/1.5), 1e-4 ) );
 }
 
 void TestThroughput_NormalIncidence_Reflection()

@@ -37,8 +37,17 @@ PATHTESTDEST = $(PATHDEST)tests/
 SRCTESTS = $(wildcard $(PATHTESTS)*.cpp)
 OBJTESTS = $(SRCTESTS:.cpp=.o)
 
+# Tool source and output lists. Tools are standalone CLI utilities
+# (image diff, firefly inspection, etc.) that link against librise.a
+# but are NOT part of the test suite — they require arguments and
+# should not be invoked by run_all_tests.sh.
+PATHTOOLS = ../../../tools/
+PATHTOOLDEST = $(PATHDEST)tools/
+SRCTOOLS = $(wildcard $(PATHTOOLS)*.cpp)
+OBJTOOLS = $(SRCTOOLS:.cpp=.o)
+
 # Source trees owned by this makefile. Sweep these for stale object files during clean.
-CLEAN_OBJECT_DIRS = $(PATHLIBRARY) $(PATHSRCS) $(PATHSRCSDRISE) $(PATHTESTS)
+CLEAN_OBJECT_DIRS = $(PATHLIBRARY) $(PATHSRCS) $(PATHSRCSDRISE) $(PATHTESTS) $(PATHTOOLS)
 
 # Rules section
 # Normally you would define target upstairs and build it here, but 
@@ -125,6 +134,30 @@ $(PATHTESTDEST)% : $(PATHTESTS)%.cpp $(OBJLIB)
 	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $< -o $(PATHTESTS)$*.o
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(OBJLIB) $(LDLIBS)
 
+# Build all tools. Mirrors the `tests` target — same loop-and-continue
+# pattern so one broken tool doesn't block the rest.
+tools : $(OBJLIB)
+	@mkdir -p $(PATHTOOLDEST)
+	@fail_count=0; failed_list=""; \
+	for tool_src in $(SRCTOOLS); do \
+		tool_name=`basename $$tool_src .cpp`; \
+		echo Compiling: $$tool_src; \
+		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $$tool_src -o $(PATHTOOLS)$$tool_name.o; then \
+			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$tool_name(compile)"; \
+			continue; \
+		fi; \
+		echo Linking $(PATHTOOLDEST)$$tool_name; \
+		if ! $(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)$$tool_name $(PATHTOOLS)$$tool_name.o $(OBJLIB) $(LDLIBS); then \
+			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$tool_name(link)"; \
+		fi; \
+	done; \
+	echo "============================================================"; \
+	if [ $$fail_count -ne 0 ]; then \
+		echo "tools: $$fail_count tool(s) failed to build:$$failed_list"; \
+		exit 1; \
+	fi; \
+	echo "tools: all built successfully"
+
 # Build only the library .o files needed to link tests. Used by
 # run_all_tests.sh as a one-shot library-build phase before per-test builds.
 test-objs : $(OBJLIB)
@@ -164,6 +197,7 @@ clean:
 	@rm -rf $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o $(PATHSRCSDRISE)drise_client.o $(PATHSRCSDRISE)drise_submitter.o
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
 	@rm -rf $(OBJTESTS) $(PATHTESTDEST)
+	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
 	@find $(CLEAN_OBJECT_DIRS) -type f -name '*.o' -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
 	@rm -rf $(PATHLIBRARY)Animation/ii_files

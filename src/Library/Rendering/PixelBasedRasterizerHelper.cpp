@@ -307,7 +307,22 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	const AnimFrameData& framedata
 	) const
 {
-	if( framedata.field == FIELD_BOTH ) {
+	// Progressive tile-level early-out: skip if no pixel in the tile
+	// needs more samples.  Mirrors SPRasterizeSingleBlock so VCM's
+	// per-iteration progressive film properly short-circuits converged
+	// tiles during animation.
+	if( rc.pProgressiveFilm && rc.pProgressiveFilm->IsTileDone( rect, rc.totalProgressiveSPP ) ) {
+		return;
+	}
+
+	// Mirror SPRasterizeSingleBlock: when the rasterizer opts out of
+	// per-block intermediate output (VCM does, because each pass is 1
+	// SPP and flushing after every 32×32 block both wastes I/O and
+	// paints visible "rasterizer blocks" over the whole-image preview
+	// that the per-pass Resolve writes).
+	const bool skipBlockOutput = SkipPerBlockIntermediateOutput();
+
+	if( !skipBlockOutput && framedata.field == FIELD_BOTH ) {
 		// Draw red toggles to show we are working on this tile
 		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
 
@@ -345,11 +360,13 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		}
 	}
 
-	// After every sequence block, report progress
-	// Also iterate through outputs and get them to intermediate rasterize
-	RasterizerOutputListType::const_iterator	r, s;
-	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-		(*r)->OutputIntermediateImage( image, &rect );
+	if( !skipBlockOutput ) {
+		// After every sequence block, iterate through outputs and get
+		// them to intermediate-rasterize.  Skipped for VCM etc.
+		RasterizerOutputListType::const_iterator	r, s;
+		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+			(*r)->OutputIntermediateImage( image, &rect );
+		}
 	}
 }
 
@@ -762,7 +779,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		// Reuse the global thread pool (see RasterizeScenePass above).
 
-		RasterizeBlockAnimationDispatcher dispatcher( pass, image, pScene, seq, *this, pProgressFunc, framedata );
+		RasterizeBlockAnimationDispatcher dispatcher(
+			pass, image, pScene, seq, *this, pProgressFunc, framedata,
+			mProgressBase, mProgressWeight, mProgressTotal );
 
 		ThreadPool& pool = GlobalThreadPool();
 		const unsigned int numWorkers = static_cast<unsigned int>( threads );
@@ -845,6 +864,22 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	framedata.pixelRate = pixelRate;
 	framedata.scanningRate = scanningRate;
 
+	// Pre-render hook: e.g. VCM traces light subpaths and populates its
+	// light vertex store here.  RasterizeScene calls this before the
+	// main render; the animation path historically skipped it, so the
+	// eye pass queried an empty store and users saw the block
+	// dispatcher paint tile-by-tile instead of VCM's normal whole-
+	// image progressive preview.  PreRenderSetup is idempotent across
+	// frames — VCM clears and rebuilds its store each call.  It may
+	// also flip progressiveConfig.enabled / samplesPerPass on for VM;
+	// the per-iteration loop below honors that just like RasterizeScene.
+	PreRenderSetup( pScene, pRect );
+
+	// Capture the progress base the animation caller set for this
+	// frame — the per-pass loop below extends it; the caller advances
+	// it once we return.
+	const double frameStartBase = mProgressBase;
+
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
 		const unsigned int tileEdgeAnim = ComputeTileSize(
@@ -853,14 +888,152 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			8, 8, 64 );
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdgeAnim );
 		pProgressFunc->SetTitle( "Irradiance Pass: " );
+		// Use legacy per-pass progress for the irradiance pre-pass so
+		// it doesn't pollute the movie-wide progress accounting.
+		const double savedBase   = mProgressBase;
+		const double savedWeight = mProgressWeight;
+		const double savedTotal  = mProgressTotal;
+		mProgressBase = mProgressWeight = mProgressTotal = 0;
 		RenderFrameOfAnimationPass( RuntimeContext::PASS_IRRADIANCE_CACHE, pScene, pRect, field, image, time, *irrad_seq, framedata );
+		mProgressBase   = savedBase;
+		mProgressWeight = savedWeight;
+		mProgressTotal  = savedTotal;
 		pIrradianceCache->FinishedPrecomputation();
 		safe_release( irrad_seq );
-		pProgressFunc->SetTitle( "Rasterizing Field/Frame: " );
+		pProgressFunc->SetTitle( "Rasterizing Animation: " );
 	}
 
-	// Do a pass
-	RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq, framedata );
+	// Main render — progressive loop (VCM SPPM-style) or single pass.
+	// Mirrors RasterizeScene's progressive path: split total SPP into
+	// passes of samplesPerPass each, rebuild per-iteration state via
+	// OnProgressivePassBegin, and resolve ProgressiveFilm into `image`
+	// between passes so preview refreshes the whole frame rather than
+	// appearing block-by-block.
+	if( progressiveConfig.enabled && pSampling )
+	{
+		const unsigned int width = image.GetWidth();
+		const unsigned int height = image.GetHeight();
+
+		const unsigned int totalSPP = GetProgressiveTotalSPP();
+		const unsigned int spp = progressiveConfig.samplesPerPass > 0 ? progressiveConfig.samplesPerPass : 1;
+		const unsigned int numPasses = (totalSPP + spp - 1) / spp;
+
+		ProgressiveFilm progFilm( width, height );
+		mProgressiveFilm = &progFilm;
+		mTotalProgressiveSPP = totalSPP;
+
+		ISampling2D* pSavedSampling = pSampling;
+
+		const unsigned int tileEdgeAnim = ComputeTileSize(
+			width, height,
+			static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+			8, 8, 64 );
+
+		// Number of tiles we'll dispatch per pass — matches what
+		// MortonRasterizeSequence will produce below.  Used to extend
+		// mProgressBase by (tiles × passSPP) per pass so the single
+		// movie-wide progress bar advances smoothly across passes.
+		unsigned int animStartX, animStartY, animEndX, animEndY;
+		BoundsFromRect( animStartX, animStartY, animEndX, animEndY, pRect, width, height );
+		const unsigned int animTilesX = ( ( animEndX - animStartX + 1 ) + tileEdgeAnim - 1 ) / tileEdgeAnim;
+		const unsigned int animTilesY = ( ( animEndY - animStartY + 1 ) + tileEdgeAnim - 1 ) / tileEdgeAnim;
+		const unsigned int animNumTiles = animTilesX * animTilesY;
+
+		PreviewScheduler previewScheduler( 7.5 );
+
+		for( unsigned int passIdx = 0; passIdx < numPasses; passIdx++ )
+		{
+			const unsigned int passSPP = r_min( spp, totalSPP - passIdx * spp );
+
+			ISampling2D* pPassSampling = pSavedSampling->Clone();
+			pPassSampling->SetNumSamples( passSPP );
+			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pPassSampling;
+
+			OnProgressivePassBegin( pScene, passIdx );
+
+			if( pProgressFunc ) {
+				pProgressFunc->SetTitle( mProgressTotal > 0 ? "Rasterizing Animation: " : "Rasterizing Field/Frame: " );
+			}
+
+			// Extend mProgressBase by the cumulative tile-sample units
+			// consumed by earlier passes in THIS frame.  With weighted
+			// mode (mProgressTotal>0) the block dispatcher reports a
+			// single 0..1 across all frames × passes; without it (legacy)
+			// the adjustment is harmless because progressTotal=0 still
+			// triggers the per-pass 0..1 fallback in GetNextBlock.
+			mProgressBase   = frameStartBase
+			                + static_cast<double>( passIdx )
+			                * static_cast<double>( animNumTiles )
+			                * static_cast<double>( passSPP );
+			mProgressWeight = static_cast<double>( passSPP );
+
+			MortonRasterizeSequence* pPassSeq = new MortonRasterizeSequence( tileEdgeAnim );
+			RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, *pPassSeq, framedata );
+			safe_release( pPassSeq );
+
+			const_cast<PixelBasedRasterizerHelper*>(this)->pSampling = pSavedSampling;
+			safe_release( pPassSampling );
+
+			// Cancellation between passes — break before the remaining
+			// iterations so the outer animation loop can flush this
+			// frame's partial image (or decide to skip it).  Use the
+			// movie-wide progress fraction when in weighted mode so the
+			// bar reports one continuous 0..1 across the whole render.
+			if( pProgressFunc ) {
+				double num, denom;
+				if( mProgressTotal > 0 ) {
+					num   = mProgressBase + static_cast<double>(animNumTiles) * static_cast<double>(passSPP);
+					denom = mProgressTotal;
+				} else {
+					num   = static_cast<double>(passIdx+1);
+					denom = static_cast<double>(numPasses);
+				}
+				if( !pProgressFunc->Progress( num, denom ) ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"RenderFrameOfAnimation:: cancelled after pass %u/%u",
+						passIdx+1, numPasses );
+					break;
+				}
+			}
+
+			const bool isFinalPass = ( passIdx == numPasses - 1 );
+			const bool runPreview  = isFinalPass || previewScheduler.ShouldRunPreview();
+
+			if( runPreview ) {
+				// Rebuild `image` from the accumulated progressive
+				// state so each preview is cumulative across passes.
+				progFilm.Resolve( image );
+
+				IRasterImage& outputImage = GetIntermediateOutputImage( image );
+				RasterizerOutputListType::const_iterator r, s;
+				for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
+					(*r)->OutputIntermediateImage( outputImage, pRect );
+				}
+				previewScheduler.MarkPreviewRan();
+			}
+		}
+
+		// Ensure `image` carries the final progressive state even when
+		// the loop exited early (cancellation) without a final preview.
+		progFilm.Resolve( image );
+
+		mProgressiveFilm = 0;
+		mTotalProgressiveSPP = 0;
+
+		// Leave mProgressBase at frameStartBase — caller advances by a
+		// full frame's units after we return.
+		mProgressBase = frameStartBase;
+	}
+	else
+	{
+		// Single-pass: PT/BDPT/MLT without explicit progressive config.
+		// mProgressBase/Weight/Total were set by the caller (they may be
+		// zero for legacy per-frame progress).
+		RenderFrameOfAnimationPass( RuntimeContext::PASS_NORMAL, pScene, pRect, field, image, time, seq, framedata );
+	}
+
+	// Post-render hook (symmetric with RasterizeScene).
+	PostRenderCleanup();
 
 	// Resolve filtered film for this frame
 	if( pFilteredFilm ) {
@@ -918,7 +1091,43 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// Get the ray caster ready to roll
 	pCaster->AttachScene( &pScene );
 
+	// Build any pending photon maps (deferred from scene parse).
+	// Matches RasterizeScene: runs once before the render loop,
+	// idempotent on re-entry.  The per-frame PrepareForRendering /
+	// SetSceneTime calls below handle transform updates; photon maps
+	// themselves aren't rebuilt per frame (that's a separate concern).
+	if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
+		pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+	}
+
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
+
+	// Movie-wide progress accounting.  One RenderFrameOfAnimation
+	// call processes numTilesPerPass tiles at `totalSPPPerFrame`
+	// samples each; we call it once per frame (or twice per frame
+	// in fields mode).  Sum across all calls gives a single 0..1
+	// progress across the whole render instead of per-pass or per-
+	// frame 0..100 cycles.
+	const unsigned int total_frames = specificFrame?1:num_frames;
+	unsigned int animRenderStartX, animRenderStartY, animRenderEndX, animRenderEndY;
+	BoundsFromRect( animRenderStartX, animRenderStartY, animRenderEndX, animRenderEndY, pRect, width, height );
+	const unsigned int animRenderPixelsX = animRenderEndX - animRenderStartX + 1;
+	const unsigned int animRenderPixelsY = animRenderEndY - animRenderStartY + 1;
+	const unsigned int animTileEdge = ComputeTileSize(
+		width, height,
+		static_cast<unsigned int>( HowManyThreadsToSpawn() ),
+		8, 8, 64 );
+	const unsigned int animTilesX = ( animRenderPixelsX + animTileEdge - 1 ) / animTileEdge;
+	const unsigned int animTilesY = ( animRenderPixelsY + animTileEdge - 1 ) / animTileEdge;
+	const unsigned int animNumTilesPerPass = animTilesX * animTilesY;
+	const unsigned int totalSPPPerFrame = pSampling ? pSampling->GetNumSamples() : 1;
+	const unsigned int animCalls = do_fields ? ( total_frames * 2u ) : total_frames;
+	const double unitsPerCall = static_cast<double>( animNumTilesPerPass )
+	                          * static_cast<double>( totalSPPPerFrame );
+	const double totalProgressUnits = static_cast<double>( animCalls ) * unitsPerCall;
+	double accumulatedProgress = 0;
+	mProgressTotal  = totalProgressUnits;
+	mProgressWeight = static_cast<double>( totalSPPPerFrame );
 
 	// Cancellation note: the inner tile dispatcher breaks out of a
 	// single frame when Progress() returns false, but it leaves a
@@ -929,7 +1138,6 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// animation loop entirely instead of churning through the
 	// remaining frames.  The caller (e.g. RISEBridge::rasterizeAnimation)
 	// still runs finalize() on the MOV writer after we return.
-	const unsigned int total_frames = specificFrame?1:num_frames;
 	bool cancelled = false;
 	for( unsigned int i=0; i<total_frames && !cancelled; i++ )
 	{
@@ -948,12 +1156,14 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_upper );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2 +1, num_frames*2 );
+			mProgressBase = accumulatedProgress;
 			RenderFrameOfAnimation( pScene, pRect, do_fields?(invert_fields?FIELD_LOWER:FIELD_UPPER):FIELD_BOTH, *pImage, curtime_upper, *pRasterSequence );
+			accumulatedProgress += unitsPerCall;
 
 			// If the user cancelled during the upper field, don't
 			// render the lower field — the partial image here never
 			// gets flushed.
-			if( pProgressFunc && !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(total_frames) ) ) {
+			if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
 				GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 				cancelled = true;
 				break;
@@ -967,7 +1177,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.GetObjects()->PrepareForRendering();
 			pScene.SetSceneTime( curtime_lower );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing field %u of %u", (specificFrame?*specificFrame:i)*2+1 +1, num_frames*2 );
+			mProgressBase = accumulatedProgress;
 			RenderFrameOfAnimation( pScene, pRect, do_fields?((invert_fields?FIELD_UPPER:FIELD_LOWER)):FIELD_BOTH, *pImage, curtime_lower, *pRasterSequence );
+			accumulatedProgress += unitsPerCall;
 		} else {
 			// Render to frames
 			const Scalar curtime = time_start + Scalar(specificFrame?(*specificFrame):i)*step_size;
@@ -981,13 +1193,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 			pScene.SetSceneTime( curtime );
 			GlobalLog()->PrintEx( eLog_Event, "Rasterizing frame %u of %u", (specificFrame?*specificFrame:i) +1, num_frames );
 
+			mProgressBase = accumulatedProgress;
 			RenderFrameOfAnimation( pScene, pRect, FIELD_BOTH, *pImage, curtime, *pRasterSequence );
+			accumulatedProgress += unitsPerCall;
 		}
 
 		// If the user cancelled during this frame, skip the flush so
 		// the MOV writer doesn't receive a partial tail frame, and
 		// break out of the loop.
-		if( pProgressFunc && !pProgressFunc->Progress( static_cast<double>(i+1), static_cast<double>(total_frames) ) ) {
+		if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
 			GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 			cancelled = true;
 			break;
@@ -997,6 +1211,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		FlushToOutputs( *pImage, pRect, specificFrame?*specificFrame:i );
 		pImage->Clear( RISEColor(0,0,0,0), pRect );
 	}
+
+	// Reset progress-weighting state.
+	mProgressBase = mProgressWeight = mProgressTotal = 0;
 
 	RISE_PROFILE_REPORT(GlobalLog());
 
