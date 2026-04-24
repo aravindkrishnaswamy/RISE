@@ -451,3 +451,24 @@ Scalar LightVertexStore::ComputeBBoxDiagonal() const
 	const Vector3 d = Vector3Ops::mkVector3( mx, mn );
 	return Vector3Ops::Magnitude( d );
 }
+
+Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
+{
+	if( mVertices.empty() ) {
+		return 0;
+	}
+
+	Point3 mn = mVertices[0].ptPosition;
+	Point3 mx = mn;
+	for( std::size_t i = 1; i < mVertices.size(); i++ ) {
+		const Point3& p = mVertices[i].ptPosition;
+		if( p.x < mn.x ) mn.x = p.x;  if( p.x > mx.x ) mx.x = p.x;
+		if( p.y < mn.y ) mn.y = p.y;  if( p.y > mx.y ) mx.y = p.y;
+		if( p.z < mn.z ) mn.z = p.z;  if( p.z > mx.z ) mx.z = p.z;
+	}
+
+	const Scalar dx = mx.x - mn.x;
+	const Scalar dy = mx.y - mn.y;
+	const Scalar dz = mx.z - mn.z;
+	return Scalar( 2 ) * ( dx * dy + dy * dz + dz * dx );
+}

@@ -114,6 +114,17 @@ namespace RISE
 			/// Returns 0 when the store is empty.
 			Scalar ComputeBBoxDiagonal() const;
 
+			/// Surface area of the axis-aligned bounding box of
+			/// currently stored vertices.  Used to estimate photon
+			/// density (stored-count / area) for the adaptive radius
+			/// floor.  Returns 0 when the store is empty.  Slight
+			/// over-estimate for very flat photon distributions (e.g.
+			/// all photons on one plane) because the two degenerate
+			/// side faces still contribute; this is a conservative
+			/// (radius-shrinks-further) bias that matches our intent
+			/// (use area, underestimate density, keep larger radius).
+			Scalar ComputeBBoxSurfaceArea() const;
+
 		private:
 			std::vector<LightVertex>	mVertices;
 			bool						mBuilt;

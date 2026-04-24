@@ -36,6 +36,7 @@
 
 #include "pch.h"
 #include "VCMRasterizerBase.h"
+#include "../Interfaces/IOptions.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/IRayCaster.h"
@@ -68,7 +69,19 @@ VCMRasterizerBase::VCMRasterizerBase(
 	PixelBasedRasterizerHelper( pCaster_ ),
 	BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
 	pIntegrator( 0 ),
-	pLightVertexStore( 0 )
+	pLightVertexStore( 0 ),
+	mBaseMergeRadius( 0 ),
+	mCurrentMergeRadius( 0 ),
+	mMergeRadiusFloor( 0 ),
+	mGeometricRadiusFloor( 0 ),
+	mMergeRadiusPassCount( 0 ),
+	mRadiusShrinkAlpha( Scalar( 2.0 ) / Scalar( 3.0 ) ),
+	mTargetPhotonsPerQuery( Scalar( 20 ) ),
+	// `vcm_disable_progressive_radius=true` in global.options (or via
+	// RISE_OPTIONS_FILE) reverts to fixed-radius SmallVCM — used for
+	// benchmarking + regression comparison.
+	mProgressiveRadiusEnabled(
+		!GlobalOptions().ReadBool( "vcm_disable_progressive_radius", false ) )
 {
 	pIntegrator = new VCMIntegrator(
 		maxEyeDepth,
@@ -230,13 +243,13 @@ namespace
 							// slice independently so dVCM/dVC/dVM
 							// recurrences are correct (a single-chain
 							// Convert on the concatenated multi-branch
-							// array would corrupt seams).  Each non-empty
-							// branch counts as its own subpath in
-							// pathsShot; the caller renormalizes
-							// mLightSubPathCount after the light pass so
-							// the VM density estimator matches the
-							// actual stored photon / effective-subpath
-							// ratio.
+							// array would corrupt seams).  See the
+							// "NORMALIZATION INVARIANT" block below for
+							// why pathsShot counts emissions, not
+							// branches — the per-emission density
+							// estimate is already correctly normalized
+							// without treating each branch as an
+							// independent subpath.
 							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random, Scalar( -1 ) );
 							if( tl.tmpLightVerts.empty() ) {
 								continue;
@@ -492,11 +505,17 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 			std::sort( segLens.begin(), segLens.end() );
 			const Scalar medianSeg = segLens[segLens.size() / 2];
 			effectiveMergeRadius = Scalar( 0.01 ) * medianSeg;
+			// Scene-geometric floor: 1/10th of the initial auto-radius.
+			// Prevents progressive shrinkage collapsing to sub-numeric-
+			// precision on pathological scenes.  Users can override via
+			// a scene param in a later step.
+			mGeometricRadiusFloor = Scalar( 0.001 ) * medianSeg;
 
 			GlobalLog()->PrintEx( eLog_Event,
 				"VCMRasterizerBase::PreRenderSetup:: auto-radius "
-				"segments=%zu median_segment=%g effective_radius=%g",
-				segLens.size(), (double)medianSeg, (double)effectiveMergeRadius );
+				"segments=%zu median_segment=%g effective_radius=%g geom_floor=%g",
+				segLens.size(), (double)medianSeg,
+				(double)effectiveMergeRadius, (double)mGeometricRadiusFloor );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning,
 				"VCMRasterizerBase::PreRenderSetup:: auto-radius "
@@ -504,6 +523,17 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 			effectiveMergeRadius = 0;
 		}
 	}
+
+	// Set up progressive-radius state.  With user-supplied radius, the
+	// geometric floor defaults to 1/10th of it (mirrors the auto path).
+	if( mGeometricRadiusFloor <= 0 && effectiveMergeRadius > 0 ) {
+		mGeometricRadiusFloor = effectiveMergeRadius * Scalar( 0.1 );
+	}
+	mBaseMergeRadius = effectiveMergeRadius;
+	mCurrentMergeRadius = effectiveMergeRadius;
+	mMergeRadiusFloor = mGeometricRadiusFloor;
+	mMergeRadiusPassCount = 0;
+
 
 	// K = 1 (samplesPerPass forced to 1 above).  Normalization uses
 	// W × H (one light subpath per pixel per iteration).
@@ -622,6 +652,11 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 // from a single fixed store.  Uses passIdx as a seed offset so each
 // pass generates different photon positions.
 //
+// Also shrinks the merge radius using the Hachisuka-Ogaki-Jensen
+// (SPPM) formula r_{n+1} = r_n * sqrt((n+alpha)/(n+1)), clamped from
+// below by mMergeRadiusFloor so shrinkage stops once Poisson noise
+// on photon count per query would dominate bias reduction.
+//
 // Pass 0 is a no-op because PreRenderSetup already built the store.
 //////////////////////////////////////////////////////////////////////
 void VCMRasterizerBase::OnProgressivePassBegin(
@@ -654,11 +689,51 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	const unsigned int width = pCamera->GetWidth();
 	const unsigned int height = pCamera->GetHeight();
 
+	// ---------------------------------------------------------------
+	// Progressive radius reduction.
+	//
+	// Hachisuka-Ogaki-Jensen SPPM shrinkage:
+	//     r_{n+1}^2 = r_n^2 * (n + alpha) / (n + 1)
+	// with alpha in (0,1).  `n` is the 1-based completed-iteration
+	// count: at the very first shrink call it equals 1 and the factor
+	// is sqrt((1+alpha)/2) ~= 0.913 for alpha=2/3 — NOT sqrt(alpha),
+	// which would be the formula one iteration later.
+	//
+	// We track mMergeRadiusPassCount as that 1-based counter.  Pre-
+	// increment: value before ++ is the previous iteration's n,
+	// post-increment it becomes current n.  Apply the factor
+	// sqrt((n+alpha)/(n+1)) where n is the current value.
+	//
+	// The adaptive floor `mMergeRadiusFloor` caps further shrinkage.
+	// When disabled (`mProgressiveRadiusEnabled=false`) or when the
+	// floor == base, the radius stays at r_0 forever — matches the
+	// prior fixed-radius behavior exactly.
+	// ---------------------------------------------------------------
+	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 )
+	{
+		mMergeRadiusPassCount++;
+		const Scalar n = static_cast<Scalar>( mMergeRadiusPassCount );
+		const Scalar alpha = mRadiusShrinkAlpha;
+		const Scalar shrinkFactor = std::sqrt( ( n + alpha ) / ( n + Scalar( 1 ) ) );
+		const Scalar rShrunk = mCurrentMergeRadius * shrinkFactor;
+		const Scalar rClamped = std::max( rShrunk, mMergeRadiusFloor );
+		mCurrentMergeRadius = rClamped;
+	}
+
 	pLightVertexStore->Clear();
 
 	// K = 1 matches the forced samplesPerPass = 1 in PreRenderSetup.
 	const unsigned int samplesPerSuperIter = 1;
 	const uint32_t baseSampleIndex = passIdx;
+
+	// Recompute normalization against the current (possibly shrunken)
+	// radius BEFORE generating the light pass; the dispatcher passes
+	// mVCMNormalization into ConvertLightSubpath, which stores the MIS
+	// quantities against this normalization on every LightVertex.
+	mVCMNormalization = ComputeNormalization(
+		width, height, mCurrentMergeRadius,
+		pIntegrator->GetEnableVC(),
+		pIntegrator->GetEnableVM() );
 
 	unsigned long long totalStored = 0;
 	unsigned long long pathsShot = 0;
@@ -684,7 +759,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	// than W×H subpaths; the per-pixel VC/VM weights must match.
 	if( pathsShot > 0 ) {
 		mVCMNormalization = ComputeNormalization(
-			width, height, mVCMNormalization.mMergeRadius,
+			width, height, mCurrentMergeRadius,
 			pIntegrator->GetEnableVC(),
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
@@ -692,10 +767,39 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 
 	pLightVertexStore->BuildKDTreeParallel();
 
-	GlobalLog()->PrintEx( eLog_Info,
+	// Update the adaptive radius floor from the just-built store's
+	// photon density.  Target K photons per merge query:
+	//   r_floor_density = sqrt(K / (pi * density))
+	//   density         = storeSize / bboxSurfaceArea
+	// Cap at 0.5 * r_0 so the adaptive floor can never prevent at
+	// least a 2x shrinkage — otherwise pathologically sparse scenes
+	// would freeze at the initial auto-radius.  The geometric floor
+	// (0.001 * medianSegment, set in PreRenderSetup) is the hard
+	// lower bound to avoid sub-numeric-precision collapse.
+	if( mProgressiveRadiusEnabled && mBaseMergeRadius > 0 && totalStored > 0 ) {
+		const Scalar surfaceArea = pLightVertexStore->ComputeBBoxSurfaceArea();
+		if( surfaceArea > NEARZERO ) {
+			const Scalar density = static_cast<Scalar>( totalStored ) / surfaceArea;
+			if( density > NEARZERO ) {
+				const Scalar rFloorRaw = std::sqrt( mTargetPhotonsPerQuery / ( PI * density ) );
+				const Scalar rFloorCapped = std::min( rFloorRaw, mBaseMergeRadius * Scalar( 0.5 ) );
+				mMergeRadiusFloor = std::max( mGeometricRadiusFloor, rFloorCapped );
+			}
+		}
+	}
+
+	// Periodic logging of shrinkage schedule.
+	const bool verbose =
+		( passIdx == 1 ) ||
+		( passIdx <= 4 ) ||
+		( ( passIdx % 16 ) == 0 );
+	const LOG_ENUM logLevel = verbose ? eLog_Event : eLog_Info;
+	GlobalLog()->PrintEx( logLevel,
 		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
-		"rebuilt store with %llu light vertices (K=%u)",
-		passIdx, totalStored, samplesPerSuperIter );
+		"rebuilt store with %llu light vertices (K=%u, r=%g, floor=%g, r/r_0=%.3f)",
+		passIdx, totalStored, samplesPerSuperIter,
+		(double)mCurrentMergeRadius, (double)mMergeRadiusFloor,
+		(double)( mBaseMergeRadius > 0 ? mCurrentMergeRadius / mBaseMergeRadius : 1.0 ) );
 }
 
 // GetIntermediateOutputImage and ResolveSplatIntoScratch are inherited

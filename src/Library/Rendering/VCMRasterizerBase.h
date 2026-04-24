@@ -51,6 +51,24 @@ namespace RISE
 			/// start of every light pass and read by the eye pass.
 			mutable VCMNormalization	mVCMNormalization;
 
+			///////////////////////////////////////////////////////////
+			// Progressive radius reduction state (SPPM-style with
+			// adaptive floor).  r_{n+1} = r_n * sqrt((n-1+alpha)/n),
+			// clamped to mMergeRadiusFloor so we don't shrink past
+			// the point where Poisson noise on photon count drowns
+			// out bias reduction.
+			///////////////////////////////////////////////////////////
+			mutable Scalar mBaseMergeRadius;			///< r_0, fixed for the render (auto-radius or user-supplied)
+			mutable Scalar mCurrentMergeRadius;			///< r_n, shrinks each progressive pass
+			mutable Scalar mMergeRadiusFloor;			///< Adaptive lower bound on r_n (recomputed per pass)
+			mutable Scalar mGeometricRadiusFloor;		///< Scene-derived safety floor (0.001 * medianSegment)
+			mutable unsigned int mMergeRadiusPassCount;	///< n in the Hachisuka shrinkage formula
+
+			// Tunable constants (exposed via scene params in a later step).
+			Scalar mRadiusShrinkAlpha;			///< Hachisuka alpha; 2/3 gives optimal rate
+			Scalar mTargetPhotonsPerQuery;		///< Expected photons-per-query used to derive density floor
+			bool   mProgressiveRadiusEnabled;	///< Kill-switch: false => fixed radius (legacy behavior)
+
 			virtual ~VCMRasterizerBase();
 
 			/// Override called by PixelBasedRasterizerHelper::RasterizeScene
