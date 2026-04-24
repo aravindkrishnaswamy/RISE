@@ -11,11 +11,11 @@
 #define SCENEEDITOR_H
 
 #include <QWidget>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QLabel>
 
 class RISESyntaxHighlighter;
+class SceneTextEdit;
 
 class SceneEditor : public QWidget
 {
@@ -42,7 +42,7 @@ private slots:
     void onTextChanged();
 
 private:
-    QPlainTextEdit* m_editor = nullptr;
+    SceneTextEdit* m_editor = nullptr;
     RISESyntaxHighlighter* m_highlighter = nullptr;
     QPushButton* m_revertBtn = nullptr;
     QPushButton* m_saveBtn = nullptr;

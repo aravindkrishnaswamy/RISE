@@ -49,8 +49,10 @@ private:
     static const QRegularExpression s_numberRegex;
     static const QRegularExpression s_propertyKeyRegex;
 
-    // Block keywords
-    static const QSet<QString> s_blockKeywords;
+    // Block keywords — lazily populated from SceneGrammar on first call so the
+    // 126-entry list is the parser's Describe() output (single source of truth),
+    // not a duplicated literal.
+    static const QSet<QString>& blockKeywords();
 };
 
 #endif // RISESYNTAXHIGHLIGHTER_H

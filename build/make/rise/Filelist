@@ -364,6 +364,13 @@ SRCLIBPARSERS =\
 	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\
 	$(PATHLIBRARY)Options.cpp
 
+# Scene-editor suggestion engine
+SRCLIBSCENEEDITORSUGGESTIONS =\
+	$(PATHLIBRARY)SceneEditorSuggestions/SceneGrammar.cpp			\
+	$(PATHLIBRARY)SceneEditorSuggestions/CompletionContext.cpp		\
+	$(PATHLIBRARY)SceneEditorSuggestions/NameIndex.cpp				\
+	$(PATHLIBRARY)SceneEditorSuggestions/SuggestionEngine.cpp
+
 # Miscellaneous stuff
 SRCLIBMISC =\
 	$(PATHLIBRARY)DetectorSpheres/DetectorSphere.cpp				\
@@ -393,6 +400,7 @@ SRCLIB =\
 	$(SRCLIBLIGHTS)					\
 	$(SRCLIBANIMATION)				\
 	$(SRCLIBPARSERS)				\
+	$(SRCLIBSCENEEDITORSUGGESTIONS)	\
 	$(SRCLIBMISC)					\
 	$(SRCLIBSCENEMANAGEMENT)
 

@@ -409,6 +409,17 @@
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
 		F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
+		F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000100000000000000A1 /* ChunkDescriptor.h */; };
+		F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
+		F2CD000300000000000000B1 /* IAsciiChunkParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
+		F2E0000100000000000000B1 /* SceneGrammar.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000100000000000000A1 /* SceneGrammar.h */; };
+		F2E0000200000000000000B1 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
+		F2E0000300000000000000B1 /* CompletionContext.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000300000000000000A1 /* CompletionContext.h */; };
+		F2E0000400000000000000B1 /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
+		F2E0000500000000000000B1 /* NameIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000500000000000000A1 /* NameIndex.h */; };
+		F2E0000600000000000000B1 /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
+		F2E0000700000000000000B1 /* SuggestionEngine.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000700000000000000A1 /* SuggestionEngine.h */; };
+		F2E0000800000000000000B1 /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
 		F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F24B73452F52A632008304C4 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F24B73462F52A632008304C4 /* pch.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -1109,6 +1120,17 @@
 		F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
 		F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
+		F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000100000000000000A1 /* ChunkDescriptor.h */; };
+		F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
+		F2CD000300000000000000C1 /* IAsciiChunkParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
+		F2E0000100000000000000C1 /* SceneGrammar.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000100000000000000A1 /* SceneGrammar.h */; };
+		F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
+		F2E0000300000000000000C1 /* CompletionContext.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000300000000000000A1 /* CompletionContext.h */; };
+		F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
+		F2E0000500000000000000C1 /* NameIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000500000000000000A1 /* NameIndex.h */; };
+		F2E0000600000000000000C1 /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
+		F2E0000700000000000000C1 /* SuggestionEngine.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000700000000000000A1 /* SuggestionEngine.h */; };
+		F2E0000800000000000000C1 /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
 		F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F27F0BBD069C42910069C9E5 /* pch.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -2006,6 +2028,27 @@
 		F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MathExpressionEvaluator.cpp; sourceTree = "<group>"; };
 		F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MathExpressionEvaluator.h; sourceTree = "<group>"; };
 		F27F0958069C42900069C9E5 /* StdOutProgress.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StdOutProgress.h; sourceTree = "<group>"; };
+		F2CD000100000000000000A1 /* ChunkDescriptor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptor.h; sourceTree = "<group>"; };
+		F2CD000200000000000000A1 /* ChunkParserRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkParserRegistry.h; sourceTree = "<group>"; };
+		F2CD000300000000000000A1 /* IAsciiChunkParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IAsciiChunkParser.h; sourceTree = "<group>"; };
+		F2E0000100000000000000A1 /* SceneGrammar.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneGrammar.h; sourceTree = "<group>"; };
+		F2E0000200000000000000A1 /* SceneGrammar.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneGrammar.cpp; sourceTree = "<group>"; };
+		F2E0000300000000000000A1 /* CompletionContext.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompletionContext.h; sourceTree = "<group>"; };
+		F2E0000400000000000000A1 /* CompletionContext.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CompletionContext.cpp; sourceTree = "<group>"; };
+		F2E0000500000000000000A1 /* NameIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NameIndex.h; sourceTree = "<group>"; };
+		F2E0000600000000000000A1 /* NameIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = NameIndex.cpp; sourceTree = "<group>"; };
+		F2E0000700000000000000A1 /* SuggestionEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SuggestionEngine.h; sourceTree = "<group>"; };
+		F2E0000800000000000000A1 /* SuggestionEngine.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SuggestionEngine.cpp; sourceTree = "<group>"; };
+		F2E0FF0000000000000000G1 /* SceneEditorSuggestions */ = {isa = PBXGroup; children = (
+			F2E0000100000000000000A1 /* SceneGrammar.h */,
+			F2E0000200000000000000A1 /* SceneGrammar.cpp */,
+			F2E0000300000000000000A1 /* CompletionContext.h */,
+			F2E0000400000000000000A1 /* CompletionContext.cpp */,
+			F2E0000500000000000000A1 /* NameIndex.h */,
+			F2E0000600000000000000A1 /* NameIndex.cpp */,
+			F2E0000700000000000000A1 /* SuggestionEngine.h */,
+			F2E0000800000000000000A1 /* SuggestionEngine.cpp */,
+		); path = SceneEditorSuggestions; sourceTree = "<group>"; };
 		F27F0959069C42900069C9E5 /* pch.cpp */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.cpp; fileEncoding = 30; path = pch.cpp; sourceTree = "<group>"; };
 		F27F095A069C42900069C9E5 /* pch.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = pch.h; sourceTree = "<group>"; };
 		F27F095C069C42900069C9E5 /* CausticPelPhotonMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CausticPelPhotonMap.cpp; sourceTree = "<group>"; };
@@ -2518,6 +2561,7 @@
 				F27F09B2069C42900069C9E5 /* Sampling */,
 				F27F09D3069C42900069C9E5 /* Scene.cpp */,
 				F27F09D4069C42900069C9E5 /* Scene.h */,
+				F2E0FF0000000000000000G1 /* SceneEditorSuggestions */,
 				F27F09D5069C42900069C9E5 /* Shaders */,
 				F27F09E2069C42900069C9E5 /* TreeElementProcessor.h */,
 				F27F09E3069C42900069C9E5 /* Utilities */,
@@ -3036,6 +3080,9 @@
 				F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */,
 				F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */,
 				F27F0958069C42900069C9E5 /* StdOutProgress.h */,
+				F2CD000100000000000000A1 /* ChunkDescriptor.h */,
+				F2CD000200000000000000A1 /* ChunkParserRegistry.h */,
+				F2CD000300000000000000A1 /* IAsciiChunkParser.h */,
 			);
 			path = Parsers;
 			sourceTree = "<group>";
@@ -3792,6 +3839,13 @@
 				F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */,
 				F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */,
 				F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */,
+				F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */,
+				F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */,
+				F2CD000300000000000000C1 /* IAsciiChunkParser.h in Headers */,
+				F2E0000100000000000000C1 /* SceneGrammar.h in Headers */,
+				F2E0000300000000000000C1 /* CompletionContext.h in Headers */,
+				F2E0000500000000000000C1 /* NameIndex.h in Headers */,
+				F2E0000700000000000000C1 /* SuggestionEngine.h in Headers */,
 				F27F0BBD069C42910069C9E5 /* pch.h in Headers */,
 				F27F0BBF069C42910069C9E5 /* CausticPelPhotonMap.h in Headers */,
 				F27F0BC1069C42910069C9E5 /* CausticPelPhotonTracer.h in Headers */,
@@ -4265,6 +4319,10 @@
 				F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */,
 				F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */,
 				F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */,
+				F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */,
+				F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */,
+				F2E0000600000000000000C1 /* NameIndex.cpp in Sources */,
+				F2E0000800000000000000C1 /* SuggestionEngine.cpp in Sources */,
 				F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
 				F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */,
 				F27F0BBE069C42910069C9E5 /* CausticPelPhotonMap.cpp in Sources */,
@@ -4812,6 +4870,17 @@
 				F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */,
 				F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */,
 				F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */,
+				F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */,
+				F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */,
+				F2CD000300000000000000B1 /* IAsciiChunkParser.h in Sources */,
+				F2E0000100000000000000B1 /* SceneGrammar.h in Sources */,
+				F2E0000200000000000000B1 /* SceneGrammar.cpp in Sources */,
+				F2E0000300000000000000B1 /* CompletionContext.h in Sources */,
+				F2E0000400000000000000B1 /* CompletionContext.cpp in Sources */,
+				F2E0000500000000000000B1 /* NameIndex.h in Sources */,
+				F2E0000600000000000000B1 /* NameIndex.cpp in Sources */,
+				F2E0000700000000000000B1 /* SuggestionEngine.h in Sources */,
+				F2E0000800000000000000B1 /* SuggestionEngine.cpp in Sources */,
 				F24B73452F52A632008304C4 /* pch.cpp in Sources */,
 				F24B73462F52A632008304C4 /* pch.h in Sources */,
 				F24B73472F52A632008304C4 /* CausticPelPhotonMap.cpp in Sources */,

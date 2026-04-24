@@ -178,6 +178,9 @@
     <Filter Include="Parser">
       <UniqueIdentifier>{f564682b-43c0-406d-a282-6172220be2ee}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Scene Editor Suggestions">
+      <UniqueIdentifier>{9e1d8a4f-5b6c-47a2-83c1-4f2e9b1d5a3c}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Shaders">
       <UniqueIdentifier>{475ddab5-6e37-423b-a6c0-40308e931b0c}</UniqueIdentifier>
     </Filter>
@@ -647,6 +650,18 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Scene.cpp">
       <Filter>Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\CompletionContext.cpp">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\NameIndex.cpp">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SceneGrammar.cpp">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.cpp">
+      <Filter>Scene Editor Suggestions</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Lights\DirectionalLight.cpp">
       <Filter>Non Mesh Lights</Filter>
@@ -1649,6 +1664,18 @@
     <ClInclude Include="..\..\..\src\Library\Scene.h">
       <Filter>Scene</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\CompletionContext.h">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\NameIndex.h">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SceneGrammar.h">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.h">
+      <Filter>Scene Editor Suggestions</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Lights\AmbientLight.h">
       <Filter>Non Mesh Lights</Filter>
     </ClInclude>
@@ -2127,6 +2154,15 @@
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiScriptParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\ChunkDescriptor.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">

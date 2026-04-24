@@ -8,6 +8,7 @@
 
 #include "SceneEditor.h"
 #include "RISESyntaxHighlighter.h"
+#include "SceneTextEdit.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -60,8 +61,9 @@ SceneEditor::SceneEditor(QWidget* parent)
     toolbarLayout->addStretch();
     layout->addLayout(toolbarLayout);
 
-    // Editor
-    m_editor = new QPlainTextEdit();
+    // Editor — SceneTextEdit adds right-click suggestions pulled from the
+    // library's SceneEditorSuggestions::SuggestionEngine.
+    m_editor = new SceneTextEdit();
     QFont monoFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     monoFont.setPointSize(12);
     m_editor->setFont(monoFont);

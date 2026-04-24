@@ -350,6 +350,10 @@
     <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling1D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Sampling\UniformSampling2D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Scene.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\CompletionContext.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\NameIndex.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SceneGrammar.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AreaLightShaderOp.cpp" />
@@ -678,6 +682,9 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiCommandParser.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiSceneParser.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiScriptParser.h" />
+    <ClInclude Include="..\..\..\src\Library\Parsers\ChunkDescriptor.h" />
+    <ClInclude Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.h" />
+    <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h" />
     <ClInclude Include="..\..\..\src\Library\pch.h" />
@@ -760,6 +767,10 @@
     <ClInclude Include="..\..\..\src\Library\Sampling\UniformSampling2D.h" />
     <ClInclude Include="..\..\..\src\Library\Sampling\WindowedSincPixelFilter.h" />
     <ClInclude Include="..\..\..\src\Library\Scene.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\CompletionContext.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\NameIndex.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SceneGrammar.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AreaLightShaderOp.h" />

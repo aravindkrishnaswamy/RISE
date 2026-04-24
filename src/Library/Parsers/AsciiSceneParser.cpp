@@ -23,6 +23,8 @@
 #include <sys/stat.h>
 #include "AsciiSceneParser.h"
 #include "AsciiCommandParser.h"
+#include "IAsciiChunkParser.h"
+#include "ChunkParserRegistry.h"
 #include "StdOutProgress.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/OrthonormalBasis3D.h"
@@ -236,23 +238,11 @@ inline bool evaluate_expressions_in_tokens( String* tokens, const unsigned int n
 	return true;
 }
 
-namespace RISE
-{
-	//
-	// Interface to an ascii chunk parser
-	//
-	class IAsciiChunkParser
-	{
-	protected:
-		IAsciiChunkParser(){};
-
-	public:
-		typedef std::vector<String> ParamsList;
-		virtual ~IAsciiChunkParser(){};
-
-		virtual bool ParseChunk( const ParamsList& in, IJob& pJob ) const = 0;
-	};
-}
+//////////////////////////////////////////////////
+// IAsciiChunkParser moved to IAsciiChunkParser.h
+// Descriptor types in ChunkDescriptor.h
+// Factory declared in ChunkParserRegistry.h
+//////////////////////////////////////////////////
 
 //////////////////////////////////////////////////
 // Implementation of the different kinds of
@@ -290,6 +280,201 @@ namespace RISE
 			// can validate energy conservation at scene-definition time.
 			struct PainterColor { double c[3]; };
 			static std::map<std::string, PainterColor> s_painterColors;
+
+			// Generic dispatch used by migrated chunk parsers to replace the
+			// hand-rolled if/else chain inside each ParseChunk.  Given a
+			// chunk descriptor and a concrete per-chunk state instance, it
+			// walks the input parameter lines, looks up each parameter in
+			// the descriptor, and calls the matching apply function (which
+			// downcasts the state to its concrete subclass).  Returns
+			// false (and logs) on the first unknown parameter, matching
+			// the pre-refactor behaviour of the legacy if/else chains.
+			inline bool DispatchChunkParameters(
+				const ChunkDescriptor& desc,
+				IChunkParseState& state,
+				const IAsciiChunkParser::ParamsList& params )
+			{
+				for( IAsciiChunkParser::ParamsList::const_iterator i = params.begin(); i != params.end(); ++i ) {
+					String pname;
+					String pvalue;
+					if( !string_split( *i, pname, pvalue, ' ' ) ) {
+						return false;
+					}
+
+					const ParameterDescriptor* found = 0;
+					for( std::vector<ParameterDescriptor>::const_iterator p = desc.parameters.begin(); p != desc.parameters.end(); ++p ) {
+						if( p->name == std::string(pname.c_str()) ) {
+							found = &(*p);
+							break;
+						}
+					}
+
+					if( found && found->apply ) {
+						found->apply( state, pvalue );
+					} else {
+						GlobalLog()->PrintEx( eLog_Error,
+							"ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+						return false;
+					}
+				}
+				return true;
+			}
+
+			//////////////////////////////////////////
+			// Descriptor helpers — shared parameter groups used by
+			// chunk-parser Describe() implementations below.  Defined
+			// here so every chunk parser that uses them sees a complete
+			// declaration before the call site.
+			//////////////////////////////////////////
+
+			// Optional rasterizer params accepted only by a subset.
+			template<typename PushFn>
+			static void AddOptimalMISParams( PushFn P ) {
+				{ auto& p = P(); p.name = "optimal_mis";                     p.kind = ValueKind::Bool; p.description = "Enable optimal MIS";                  p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "optimal_mis_training_iterations"; p.kind = ValueKind::UInt; p.description = "Optimal-MIS training iterations";    p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "optimal_mis_tile_size";           p.kind = ValueKind::UInt; p.description = "Optimal-MIS tile size";              p.defaultValueHint = "32"; }
+			}
+
+			// StabilityConfig params accepted by all non-MLT rasterizers.
+			template<typename PushFn>
+			static void AddStabilityConfigParams( PushFn P ) {
+				{ auto& p = P(); p.name = "direct_clamp";                           p.kind = ValueKind::Double; p.description = "Clamp on direct-lighting contribution"; p.defaultValueHint = "0 (disabled)"; }
+				{ auto& p = P(); p.name = "indirect_clamp";                         p.kind = ValueKind::Double; p.description = "Clamp on indirect contribution";         p.defaultValueHint = "0 (disabled)"; }
+				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = "5"; }
+				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = "0.01"; }
+				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounce depth";              p.defaultValueHint = "-1"; }
+				{ auto& p = P(); p.name = "max_glossy_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max glossy bounce depth";               p.defaultValueHint = "-1"; }
+				{ auto& p = P(); p.name = "max_transmission_bounce";                p.kind = ValueKind::UInt;   p.description = "Max transmission bounce depth";         p.defaultValueHint = "-1"; }
+				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounce depth";          p.defaultValueHint = "-1"; }
+				{ auto& p = P(); p.name = "max_volume_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max volume bounce depth";               p.defaultValueHint = "-1"; }
+				{ auto& p = P(); p.name = "light_bvh";                              p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "branching_threshold";                    p.kind = ValueKind::Double; p.description = "Normalized throughput gate for subpath splitting at multi-lobe delta vertices (0 = always branch, 1 = never)"; p.defaultValueHint = "0.5"; }
+			}
+			template<typename PushFn>
+			static void AddPathGuidingParams( PushFn P ) {
+				{ auto& p = P(); p.name = "pathguiding";                            p.kind = ValueKind::Bool;   p.description = "Enable path guiding";                   p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "pathguiding_iterations";                 p.kind = ValueKind::UInt;   p.description = "Training iterations";                   p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "pathguiding_spp";                        p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training";     p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "pathguiding_alpha";                      p.kind = ValueKind::Double; p.description = "Mixing factor with BSDF sampling";      p.defaultValueHint = "0.5"; }
+				{ auto& p = P(); p.name = "pathguiding_max_depth";                  p.kind = ValueKind::UInt;   p.description = "Max depth to apply guiding";            p.defaultValueHint = "8"; }
+				{ auto& p = P(); p.name = "pathguiding_light_max_depth";            p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";               p.defaultValueHint = "8"; }
+				{ auto& p = P(); p.name = "pathguiding_sampling_type";              p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy (any string other than ris/RIS selects OneSampleMIS)";  p.defaultValueHint = "OneSampleMIS"; }
+				{ auto& p = P(); p.name = "pathguiding_ris_candidates";             p.kind = ValueKind::UInt;   p.description = "RIS candidate count";                   p.defaultValueHint = "8"; }
+				{ auto& p = P(); p.name = "pathguiding_complete_paths";             p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding";          p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_selection"; p.kind = ValueKind::Bool; p.description = "Enable complete-path strategy selection"; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_samples";   p.kind = ValueKind::UInt; p.description = "Complete-path strategy samples";          p.defaultValueHint = "64"; }
+			}
+			template<typename PushFn>
+			static void AddAdaptiveSamplingParams( PushFn P ) {
+				{ auto& p = P(); p.name = "adaptive_max_samples";                   p.kind = ValueKind::UInt;   p.description = "Max adaptive samples per pixel";        p.defaultValueHint = "0 (disabled)"; }
+				{ auto& p = P(); p.name = "adaptive_threshold";                     p.kind = ValueKind::Double; p.description = "Relative-error threshold";              p.defaultValueHint = "0.05"; }
+				{ auto& p = P(); p.name = "show_adaptive_map";                      p.kind = ValueKind::Bool;   p.description = "Visualize the adaptive sample map";     p.defaultValueHint = "FALSE"; }
+			}
+			template<typename PushFn>
+			static void AddPixelFilterParams( PushFn P ) {
+				{ auto& p = P(); p.name = "pixel_sampler";                          p.kind = ValueKind::String; p.description = "Pixel sampler strategy";                p.defaultValueHint = "stratified"; }
+				{ auto& p = P(); p.name = "pixel_sampler_param";                    p.kind = ValueKind::Double; p.description = "Sampler-specific parameter";            p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "pixel_filter";                           p.kind = ValueKind::String; p.description = "Reconstruction filter";                 p.defaultValueHint = "box"; }
+				{ auto& p = P(); p.name = "pixel_filter_width";                     p.kind = ValueKind::Double; p.description = "Filter width";                          p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "pixel_filter_height";                    p.kind = ValueKind::Double; p.description = "Filter height";                         p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "pixel_filter_paramA";                    p.kind = ValueKind::Double; p.description = "Filter paramA";                         p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "pixel_filter_paramB";                    p.kind = ValueKind::Double; p.description = "Filter paramB";                         p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "blue_noise_sampler";                     p.kind = ValueKind::Bool;   p.description = "Use blue-noise sampler";                p.defaultValueHint = "FALSE"; }
+			}
+			template<typename PushFn>
+			static void AddRadianceMapParams( PushFn P ) {
+				{ auto& p = P(); p.name = "radiance_map";                           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Environment radiance painter"; }
+				{ auto& p = P(); p.name = "radiance_scale";                         p.kind = ValueKind::Double; p.description = "Scale applied to radiance map";         p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "radiance_background";                    p.kind = ValueKind::Bool;   p.description = "Also use as camera background";         p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "radiance_orient";                        p.kind = ValueKind::DoubleVec3; p.description = "Rotation (degrees) X Y Z";           p.defaultValueHint = "0 0 0"; }
+			}
+			template<typename PushFn>
+			static void AddProgressiveParams( PushFn P ) {
+				{ auto& p = P(); p.name = "progressive_rendering";                  p.kind = ValueKind::Bool;   p.description = "Enable progressive rendering";          p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "progressive_samples_per_pass";           p.kind = ValueKind::UInt;   p.description = "Samples per progressive pass";          p.defaultValueHint = "1"; }
+			}
+			template<typename PushFn>
+			static void AddSpectralConfigParams( PushFn P ) {
+				{ auto& p = P(); p.name = "spectral_samples";                       p.kind = ValueKind::UInt;   p.description = "Number of spectral samples per pixel";  p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "nmbegin";                                p.kind = ValueKind::Double; p.description = "Start wavelength (nm)";                 p.defaultValueHint = "380"; }
+				{ auto& p = P(); p.name = "nmend";                                  p.kind = ValueKind::Double; p.description = "End wavelength (nm)";                   p.defaultValueHint = "780"; }
+				{ auto& p = P(); p.name = "num_wavelengths";                        p.kind = ValueKind::UInt;   p.description = "Discrete wavelengths sampled";          p.defaultValueHint = "16"; }
+				{ auto& p = P(); p.name = "hwss";                                   p.kind = ValueKind::Bool;   p.description = "Enable hero-wavelength stratified sampling"; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "integrate_rgb";                          p.kind = ValueKind::Bool;   p.description = "Integrate directly to RGB (skip spectral storage)"; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "rgb_spd";                                p.kind = ValueKind::String; p.description = "RGB-to-SPD conversion type";            p.defaultValueHint = "smits"; }
+				{ auto& p = P(); p.name = "rgb_spd_wavelengths";                    p.kind = ValueKind::String; p.description = "Wavelengths for custom RGB-SPD tables";  p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_r";                              p.kind = ValueKind::String; p.description = "Red channel SPD samples";               p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_g";                              p.kind = ValueKind::String; p.description = "Green channel SPD samples";             p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_b";                              p.kind = ValueKind::String; p.description = "Blue channel SPD samples";              p.defaultValueHint = ""; }
+			}
+			template<typename PushFn>
+			static void AddSMSConfigParams( PushFn P ) {
+				{ auto& p = P(); p.name = "sms_enabled";                            p.kind = ValueKind::Bool;   p.description = "Enable Specular Manifold Sampling";     p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "sms_max_iterations";                     p.kind = ValueKind::UInt;   p.description = "Max SMS Newton iterations";             p.defaultValueHint = "20"; }
+				{ auto& p = P(); p.name = "sms_threshold";                          p.kind = ValueKind::Double; p.description = "SMS convergence threshold";             p.defaultValueHint = "1e-5"; }
+				{ auto& p = P(); p.name = "sms_max_chain_depth";                    p.kind = ValueKind::UInt;   p.description = "Max SMS manifold-chain depth";          p.defaultValueHint = "2"; }
+				{ auto& p = P(); p.name = "sms_biased";                             p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator";              p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "sms_bernoulli_trials";                   p.kind = ValueKind::UInt;   p.description = "Bernoulli trials per vertex";           p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "sms_multi_trials";                       p.kind = ValueKind::UInt;   p.description = "Multi-trials per vertex";               p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "sms_photon_count";                       p.kind = ValueKind::UInt;   p.description = "SMS photon budget";                     p.defaultValueHint = "10000"; }
+			}
+			template<typename PushFn>
+			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "num";                      p.kind = ValueKind::UInt;   p.description = "Photon count to shoot";                     p.defaultValueHint = "10000"; }
+				{ auto& p = P(); p.name = "power_scale";              p.kind = ValueKind::Double; p.description = "Photon power multiplier";                   p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt;   p.description = "Max photon scattering depth";               p.defaultValueHint = "10"; }
+				{ auto& p = P(); p.name = "min_importance";           p.kind = ValueKind::Double; p.description = "Photon-throughput cutoff";                  p.defaultValueHint = "0.01"; }
+				{ auto& p = P(); p.name = "branch";                   p.kind = ValueKind::Bool;   p.description = "Branch at dielectric splits";               p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "reflect";                  p.kind = ValueKind::Bool;   p.description = "Trace reflected photons";                   p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "refract";                  p.kind = ValueKind::Bool;   p.description = "Trace refracted photons";                   p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "shootFromNonMeshLights";   p.kind = ValueKind::Bool;   p.description = "Shoot from point / directional lights";     p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "shootFromMeshLights";      p.kind = ValueKind::Bool;   p.description = "Shoot from area / mesh luminaires";         p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "temporal_samples";         p.kind = ValueKind::UInt;   p.description = "Temporal samples for animated lights";      p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "regenerate";               p.kind = ValueKind::Bool;   p.description = "Regenerate per frame";                      p.defaultValueHint = "FALSE"; }
+			}
+			template<typename PushFn>
+			static void AddPhotonMapGatherCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "radius";        p.kind = ValueKind::Double; p.description = "Max gather radius"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "ellipse_ratio"; p.kind = ValueKind::Double; p.description = "Flattening ratio for the gather ellipsoid"; p.defaultValueHint = "0.05"; }
+				{ auto& p = P(); p.name = "min_photons";   p.kind = ValueKind::UInt;   p.description = "Minimum photons to gather"; p.defaultValueHint = "8"; }
+				{ auto& p = P(); p.name = "max_photons";   p.kind = ValueKind::UInt;   p.description = "Maximum photons to gather"; p.defaultValueHint = "150"; }
+			}
+			template<typename PushFn>
+			static void AddCameraCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "World-space position"; }
+				{ auto& p = P(); p.name = "lookat";             p.kind = ValueKind::DoubleVec3; p.description = "Look-at target point"; }
+				{ auto& p = P(); p.name = "up";                 p.kind = ValueKind::DoubleVec3; p.description = "Up vector"; p.defaultValueHint = "0 1 0"; }
+				{ auto& p = P(); p.name = "width";              p.kind = ValueKind::UInt;       p.description = "Image width (pixels)"; p.defaultValueHint = "640"; }
+				{ auto& p = P(); p.name = "height";             p.kind = ValueKind::UInt;       p.description = "Image height (pixels)"; p.defaultValueHint = "480"; }
+				{ auto& p = P(); p.name = "pixelAR";            p.kind = ValueKind::Double;     p.description = "Pixel aspect ratio"; p.defaultValueHint = "1.0"; }
+				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "scanning_rate";      p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "pixel_rate";         p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
+				{ auto& p = P(); p.name = "pitch";              p.kind = ValueKind::Double;     p.description = "Pitch rotation (degrees)"; }
+				{ auto& p = P(); p.name = "roll";               p.kind = ValueKind::Double;     p.description = "Roll rotation (degrees)"; }
+				{ auto& p = P(); p.name = "yaw";                p.kind = ValueKind::Double;     p.description = "Yaw rotation (degrees)"; }
+				{ auto& p = P(); p.name = "orientation";        p.kind = ValueKind::DoubleVec3; p.description = "Euler orientation (degrees)"; }
+				{ auto& p = P(); p.name = "theta";              p.kind = ValueKind::Double;     p.description = "Polar angle (radians)"; }
+				{ auto& p = P(); p.name = "phi";                p.kind = ValueKind::Double;     p.description = "Azimuthal angle (radians)"; }
+				{ auto& p = P(); p.name = "target_orientation"; p.kind = ValueKind::DoubleVec3; p.description = "Target Euler orientation"; }
+			}
+			template<typename PushFn>
+			static void AddNoisePainterCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name";                p.defaultValueHint = "noname"; }
+				{ auto& p = P(); p.name = "colora";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+				{ auto& p = P(); p.name = "colorb";      p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+				{ auto& p = P(); p.name = "persistence"; p.kind = ValueKind::Double;     p.description = "Octave amplitude falloff";   p.defaultValueHint = "0.5"; }
+				{ auto& p = P(); p.name = "octaves";     p.kind = ValueKind::UInt;       p.description = "Number of noise octaves";    p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";             p.defaultValueHint = "1 1 1"; }
+				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";             p.defaultValueHint = "0 0 0"; }
+			}
+			template<typename PushFn>
+			static void AddBaseRasterizerParams( PushFn P ) {
+				{ auto& p = P(); p.name = "defaultshader";                          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = "global"; }
+				{ auto& p = P(); p.name = "samples";                                p.kind = ValueKind::UInt;   p.description = "Samples per pixel";                     p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = "TRUE"; }
+			}
 
 			//////////////////////////////////////////
 			// Painters
@@ -331,6 +516,20 @@ namespace RISE
 					s_painterColors[name.c_str()] = pc;
 
 					return pJob.AddUniformColorPainter( name.c_str(), color, color_space.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "uniformcolor_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Constant RGB painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name";                          p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B values";                         p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace";p.kind = ValueKind::String;    p.description = "Interpretation of R G B";             p.defaultValueHint = "sRGB"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -424,6 +623,25 @@ namespace RISE
 
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "spectral_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Spectral painter defined by wavelength/amplitude samples.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "nmbegin"; p.kind = ValueKind::Double;   p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";   p.kind = ValueKind::Double;   p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;   p.description = "Overall amplitude scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Wavelength,amplitude sample (repeatable)"; }
+						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
+						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
+						{ auto& p = P(); p.name = "ampfile"; p.kind = ValueKind::Filename; p.description = "Amplitude list file"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct PngPainterAsciiChunkParser : public IAsciiChunkParser
@@ -494,6 +712,24 @@ namespace RISE
 
 					return pJob.AddPNGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "png_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a PNG image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "PNG file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct HdrPainterAsciiChunkParser : public IAsciiChunkParser
@@ -549,6 +785,23 @@ namespace RISE
 					}
 
 					return pJob.AddHDRTexturePainter( name.c_str(), filename.c_str(), filter_type, lowmemory, scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hdr_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a Radiance HDR image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "HDR file path"; }
+						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -620,6 +873,24 @@ namespace RISE
 
 					return pJob.AddEXRTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "exr_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads an OpenEXR image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "EXR file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "Rec709RGB_Linear"; }
+						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct TiffPainterAsciiChunkParser : public IAsciiChunkParser
@@ -690,6 +961,24 @@ namespace RISE
 
 					return pJob.AddTIFFTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "tiff_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a TIFF image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "TIFF file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 
@@ -729,6 +1018,21 @@ namespace RISE
 					}
 
 					return pJob.AddCheckerPainter( name.c_str(), size, colora.c_str(), colorb.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "checker_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Two-colour checkerboard painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; }
+						{ auto& p = P(); p.name = "size";   p.kind = ValueKind::Double;    p.description = "Checker cell size"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -771,6 +1075,22 @@ namespace RISE
 					}
 
 					return pJob.AddLinesPainter( name.c_str(), size, colora.c_str(), colorb.c_str(), vertical );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lines_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Two-colour stripe painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour (painter)"; }
+						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour (painter)"; }
+						{ auto& p = P(); p.name = "size";     p.kind = ValueKind::Double;    p.description = "Stripe width"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "vertical"; p.kind = ValueKind::Bool;      p.description = "Vertical (vs horizontal) stripes"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -823,6 +1143,25 @@ namespace RISE
 
 					return pJob.AddMandelbrotFractalPainter( name.c_str(), colora.c_str(), colorb.c_str(), xstart, xend, ystart, yend, exponent );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "mandelbrot_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Procedural Mandelbrot-fractal painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside-set colour"; }
+						{ auto& p = P(); p.name = "colorb";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside-set colour"; }
+						{ auto& p = P(); p.name = "xstart";   p.kind = ValueKind::Double;    p.description = "Real-axis start"; p.defaultValueHint = "-2.0"; }
+						{ auto& p = P(); p.name = "xend";     p.kind = ValueKind::Double;    p.description = "Real-axis end";   p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "ystart";   p.kind = ValueKind::Double;    p.description = "Imag-axis start"; p.defaultValueHint = "-2.0"; }
+						{ auto& p = P(); p.name = "yend";     p.kind = ValueKind::Double;    p.description = "Imag-axis end";   p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "exponent"; p.kind = ValueKind::Double;    p.description = "Iteration exponent"; p.defaultValueHint = "2.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct Perlin2DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -870,6 +1209,18 @@ namespace RISE
 					}
 
 					return pJob.AddPerlin2DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "2D Perlin noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -943,6 +1294,30 @@ namespace RISE
 						seed,
 						time );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gerstnerwave_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Procedural ocean-wave painter (Gerstner waves).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Trough colour"; }
+						{ auto& p = P(); p.name = "colorb";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Crest colour"; }
+						{ auto& p = P(); p.name = "num_waves";           p.kind = ValueKind::UInt;      p.description = "Number of wave components"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "median_wavelength";   p.kind = ValueKind::Double;    p.description = "Median wavelength"; }
+						{ auto& p = P(); p.name = "wavelength_range";    p.kind = ValueKind::Double;    p.description = "Wavelength spread"; }
+						{ auto& p = P(); p.name = "median_amplitude";    p.kind = ValueKind::Double;    p.description = "Median amplitude"; }
+						{ auto& p = P(); p.name = "amplitude_power";     p.kind = ValueKind::Double;    p.description = "Amplitude falloff exponent"; }
+						{ auto& p = P(); p.name = "wind_dir";            p.kind = ValueKind::DoubleVec3;p.description = "Wind direction"; }
+						{ auto& p = P(); p.name = "directional_spread";  p.kind = ValueKind::Double;    p.description = "Angular spread"; }
+						{ auto& p = P(); p.name = "dispersion_speed";    p.kind = ValueKind::Double;    p.description = "Dispersion coefficient"; }
+						{ auto& p = P(); p.name = "seed";                p.kind = ValueKind::UInt;      p.description = "RNG seed"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double;    p.description = "Time variable"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct Perlin3DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -991,6 +1366,18 @@ namespace RISE
 
 					return pJob.AddPerlin3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perlin3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Perlin noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct Wavelet3DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1027,6 +1414,19 @@ namespace RISE
 					}
 
 					return pJob.AddWavelet3DPainter( name.c_str(), tile_size, persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "wavelet3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D wavelet noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "tile_size"; p.kind = ValueKind::UInt; p.description = "Precomputed tile edge length"; p.defaultValueHint = "32"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1070,6 +1470,28 @@ namespace RISE
 					}
 
 					return pJob.AddReactionDiffusion3DPainter( name.c_str(), grid_size, da, db, feed, kill, iterations, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "reactiondiffusion3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Reaction-diffusion procedural texture.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "grid_size";  p.kind = ValueKind::UInt;       p.description = "Simulation grid edge";        p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "da";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of A";          p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "db";         p.kind = ValueKind::Double;     p.description = "Diffusion rate of B";          p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "feed";       p.kind = ValueKind::Double;     p.description = "Feed rate";                    p.defaultValueHint = "0.055"; }
+						{ auto& p = P(); p.name = "kill";       p.kind = ValueKind::Double;     p.description = "Kill rate";                    p.defaultValueHint = "0.062"; }
+						{ auto& p = P(); p.name = "iterations"; p.kind = ValueKind::UInt;       p.description = "Simulation iterations";        p.defaultValueHint = "5000"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";      p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";               p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1121,6 +1543,26 @@ namespace RISE
 
 					return pJob.AddGabor3DPainter( name.c_str(), frequency, bandwidth, orientation, impulse_density, colora.c_str(), colorb.c_str(), scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gabor3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Gabor noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb";          p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "frequency";       p.kind = ValueKind::Double;     p.description = "Carrier frequency";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bandwidth";       p.kind = ValueKind::Double;     p.description = "Gaussian bandwidth";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3; p.description = "Orientation vector"; }
+						{ auto& p = P(); p.name = "impulse_density"; p.kind = ValueKind::Double;     p.description = "Impulses per unit volume"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "scale";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";      p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";           p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";      p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct Simplex3DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1164,6 +1606,18 @@ namespace RISE
 					}
 
 					return pJob.AddSimplex3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simplex3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D simplex noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1228,6 +1682,29 @@ namespace RISE
 
 					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sdf3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Signed-distance-field procedural painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inside colour"; }
+						{ auto& p = P(); p.name = "colorb";           p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Outside colour"; }
+						{ auto& p = P(); p.name = "type";             p.kind = ValueKind::Enum;       p.enumValues = {"sphere","box","torus","cylinder","plane","gyroid","menger"}; p.description = "SDF primitive"; }
+						{ auto& p = P(); p.name = "param1";           p.kind = ValueKind::Double;     p.description = "Shape parameter 1"; }
+						{ auto& p = P(); p.name = "param2";           p.kind = ValueKind::Double;     p.description = "Shape parameter 2"; }
+						{ auto& p = P(); p.name = "param3";           p.kind = ValueKind::Double;     p.description = "Shape parameter 3"; }
+						{ auto& p = P(); p.name = "shell_thickness";  p.kind = ValueKind::Double;     p.description = "Shell/band thickness"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "noise_amplitude";  p.kind = ValueKind::Double;     p.description = "Noise displacement amplitude"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "noise_frequency";  p.kind = ValueKind::Double;     p.description = "Noise displacement frequency"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";            p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct CurlNoise3DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1274,6 +1751,19 @@ namespace RISE
 					}
 
 					return pJob.AddCurlNoise3DPainter( name.c_str(), persistence, octaves, epsilon, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "curlnoise3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D curl-noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "epsilon"; p.kind = ValueKind::Double; p.description = "Finite-difference step"; p.defaultValueHint = "1e-4"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1325,6 +1815,20 @@ namespace RISE
 
 					return pJob.AddDomainWarp3DPainter( name.c_str(), persistence, octaves, warp_amplitude, warp_levels, colora.c_str(), colorb.c_str(), scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "domainwarp3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D domain-warped noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "warp_amplitude"; p.kind = ValueKind::Double; p.description = "Warp displacement amplitude"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "warp_levels";    p.kind = ValueKind::UInt;   p.description = "Warp iteration levels"; p.defaultValueHint = "2"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct PerlinWorley3DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1374,6 +1878,20 @@ namespace RISE
 					}
 
 					return pJob.AddPerlinWorley3DPainter( name.c_str(), persistence, octaves, worley_jitter, blend, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perlinworley3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Hybrid Perlin + Worley noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						{ auto& p = P(); p.name = "worley_jitter"; p.kind = ValueKind::Double; p.description = "Worley feature jitter amount"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "blend";         p.kind = ValueKind::Double; p.description = "Perlin/Worley blend weight";    p.defaultValueHint = "0.5"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1428,6 +1946,25 @@ namespace RISE
 
 					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "worley3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Worley (cellular / Voronoi) noise painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "jitter"; p.kind = ValueKind::Double;     p.description = "Feature jitter";               p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "metric"; p.kind = ValueKind::Enum;       p.enumValues = {"euclidean","manhattan","chebyshev","minkowski"}; p.description = "Distance metric"; p.defaultValueHint = "euclidean"; }
+						{ auto& p = P(); p.name = "output"; p.kind = ValueKind::Enum;       p.enumValues = {"f1","f2","f2_minus_f1"};      p.description = "Value function"; p.defaultValueHint = "f1"; }
+						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";               p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";  p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";               p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct Turbulence3DPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1471,6 +2008,18 @@ namespace RISE
 					}
 
 					return pJob.AddTurbulence3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "turbulence3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D turbulence (absolute-valued Perlin) painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddNoisePainterCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1546,6 +2095,21 @@ namespace RISE
 					delete [] pntrmem;
 
 					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "voronoi2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "2D Voronoi painter with per-cell colours.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "pt";         p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi point: x y paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1629,6 +2193,21 @@ namespace RISE
 
 					return bRet;
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "voronoi3d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "3D Voronoi painter with per-cell colours.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "pt";         p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi point: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct IridescentPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1667,6 +2246,21 @@ namespace RISE
 					}
 
 					return pJob.AddIridescentPainter( name.c_str(), colora.c_str(), colorb.c_str(), bias );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "iridescent_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Angle-dependent iridescent painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-incidence colour"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Grazing-angle colour"; }
+						{ auto& p = P(); p.name = "bias";   p.kind = ValueKind::Double;    p.description = "View-angle bias";               p.defaultValueHint = "0.5"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1717,6 +2311,24 @@ namespace RISE
 
 					return pJob.AddBlackBodyPainter( name.c_str(), temperature, lambda_begin, lambda_end, num_freq, normalize, scale );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "blackbody_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Planckian blackbody spectrum painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "temperature";  p.kind = ValueKind::Double; p.description = "Temperature in Kelvin"; p.defaultValueHint = "5600"; }
+						{ auto& p = P(); p.name = "nmbegin";      p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";        p.kind = ValueKind::Double; p.description = "End wavelength (nm)";   p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "numfreq";      p.kind = ValueKind::UInt;   p.description = "Sample count";          p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "normalize";    p.kind = ValueKind::Bool;   p.description = "Normalize peak to 1";   p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::Double; p.description = "Overall amplitude";     p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct BlendPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1755,6 +2367,21 @@ namespace RISE
 					}
 
 					return pJob.AddBlendPainter( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "blend_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Blend two painters using a third painter as mask.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First colour"; }
+						{ auto& p = P(); p.name = "colorb"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second colour"; }
+						{ auto& p = P(); p.name = "mask";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Blend-weight painter"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1819,6 +2446,21 @@ namespace RISE
 
 					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], static_cast<unsigned int>(cp_x.size()), bUseLUTs, lutsize );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "piecewise_linear_function"; cd.category = ChunkCategory::Function;
+						cd.description = "1D piecewise-linear scalar function.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String; p.repeatable = true; p.description = "Control point: x y (repeatable)"; }
+						{ auto& p = P(); p.name = "uselut";  p.kind = ValueKind::Bool;   p.description = "Use lookup table for fast evaluation"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "lutsize"; p.kind = ValueKind::UInt;   p.description = "LUT size";                              p.defaultValueHint = "1024"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct PiecewiseLinearFunction2DChunkParser : public IAsciiChunkParser
@@ -1867,6 +2509,19 @@ namespace RISE
 
 					return bRet;
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "piecewise_linear_function2d"; cd.category = ChunkCategory::Function;
+						cd.description = "2D piecewise-linear function (1D row at each x).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "cp";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Row: x then space-separated y values (repeatable)"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			//////////////////////////////////////////
@@ -1904,6 +2559,19 @@ namespace RISE
 
 					return pJob.AddLambertianMaterial( name.c_str(), reflectance.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lambertian_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Pure Lambertian (diffuse) material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo painter"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct PerfectReflectorMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -1936,6 +2604,19 @@ namespace RISE
 					}
 
 					return pJob.AddPerfectReflectorMaterial( name.c_str(), reflectance.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perfectreflector_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Perfect mirror reflector.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance painter"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -1972,6 +2653,20 @@ namespace RISE
 					}
 
 					return pJob.AddPerfectRefractorMaterial( name.c_str(), refractance.c_str(), ior.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "perfectrefractor_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Perfect refractor (glass).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "refractance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance painter"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2018,6 +2713,23 @@ namespace RISE
 
 					return pJob.AddPolishedMaterial( name.c_str(), reflectance.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "polished_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Polished surface (Fresnel dielectric over Lambertian substrate).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
+						{ auto& p = P(); p.name = "tau";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "scat";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
+						{ auto& p = P(); p.name = "hg";          p.kind = ValueKind::Double;    p.description = "Henyey-Greenstein g parameter"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct DielectricMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2060,6 +2772,22 @@ namespace RISE
 
 					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "dielectric_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Fresnel dielectric (reflect + refract) with optional volumetric scattering.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "tau";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ior";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "scat"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
+						{ auto& p = P(); p.name = "hg";   p.kind = ValueKind::Double;    p.description = "Henyey-Greenstein g parameter"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct SubSurfaceScatteringMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2100,6 +2828,23 @@ namespace RISE
 					}
 
 					return pJob.AddSubSurfaceScatteringMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "subsurfacescattering_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Diffusion-based subsurface scattering material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption coefficient"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
+						{ auto& p = P(); p.name = "g";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
+						{ auto& p = P(); p.name = "roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2145,6 +2890,24 @@ namespace RISE
 
 					return pJob.AddRandomWalkSSSMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str(), maxBounces.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "randomwalk_sss_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Random-walk (path-traced) subsurface scattering.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "absorption";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Absorption"; }
+						{ auto& p = P(); p.name = "scattering";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						{ auto& p = P(); p.name = "g";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Henyey-Greenstein g"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						{ auto& p = P(); p.name = "max_bounces"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Max volume bounces per ray"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct LambertianLuminaireMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2183,6 +2946,21 @@ namespace RISE
 					}
 
 					return pJob.AddLambertianLuminaireMaterial( name.c_str(), painter.c_str(), material.c_str(), scale );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "lambertian_luminaire_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Emissive Lambertian material (area light).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
+						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2226,6 +3004,22 @@ namespace RISE
 
 					return pJob.AddPhongLuminaireMaterial( name.c_str(), painter.c_str(), material.c_str(), N.c_str(), scale );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "phong_luminaire_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Emissive Phong (directional) luminaire.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "exitance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emitted radiance"; }
+						{ auto& p = P(); p.name = "material"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Underlying material"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Exitance multiplier"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2268,6 +3062,22 @@ namespace RISE
 
 					return pJob.AddAshikminShirleyAnisotropicPhongMaterial( name.c_str(), rd.c_str(), rs.c_str(), Nu.c_str(), Nv.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ashikminshirley_anisotropicphong_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Ashikhmin-Shirley anisotropic Phong BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "Nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent"; }
+						{ auto& p = P(); p.name = "Nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct IsotropicPhongMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2306,6 +3116,21 @@ namespace RISE
 					}
 
 					return pJob.AddIsotropicPhongMaterial( name.c_str(), rd.c_str(), rs.c_str(), N.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "isotropic_phong_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Isotropic Phong BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2404,6 +3229,23 @@ namespace RISE
 
 					return pJob.AddTranslucentMaterial( name.c_str(), ref.c_str(), tau.c_str(), ext.c_str(), N.c_str(), scat.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "translucent_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Translucent material combining reflection and transmission.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "ref";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Reflectance"; }
+						{ auto& p = P(); p.name = "tau";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ext";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Extinction"; }
+						{ auto& p = P(); p.name = "N";          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct BioSpecSkinMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2498,6 +3340,30 @@ namespace RISE
 						bilirubin_concentration.c_str(), betacarotene_concentration_SC.c_str(), betacarotene_concentration_epidermis.c_str(), betacarotene_concentration_dermis.c_str(),
 						folds_aspect_ratio.c_str(), bSubdermalLayer );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "biospec_skin_material"; cd.category = ChunkCategory::Material;
+						cd.description = "BioSpec multi-layer skin model (Krishnaswamy & Baranoski).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						static const char* painterRefs[] = {
+							"thickness_SC","thickness_epidermis","thickness_papillary_dermis","thickness_reticular_dermis",
+							"ior_SC","ior_epidermis","ior_papillary_dermis","ior_reticular_dermis",
+							"concentration_eumelanin","concentration_pheomelanin","melanosomes_in_epidermis",
+							"hb_ratio","whole_blood_in_papillary_dermis","whole_blood_in_reticular_dermis",
+							"bilirubin_concentration","betacarotene_concentration_SC","betacarotene_concentration_epidermis","betacarotene_concentration_dermis",
+							"folds_aspect_ratio"
+						};
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						for (const char* n : painterRefs) {
+							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
+						}
+						{ auto& p = P(); p.name = "subdermal_layer"; p.kind = ValueKind::Bool; p.description = "Include subdermal fat layer"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct DonnerJensenSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2560,6 +3426,26 @@ namespace RISE
 						ior_epidermis.c_str(), ior_dermis.c_str(),
 						blood_oxygenation.c_str(), roughness.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "donner_jensen_skin_bssrdf_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Donner & Jensen 2008 spectral skin BSSRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						static const char* painterRefs[] = {
+							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
+							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis",
+							"blood_oxygenation","roughness"
+						};
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						for (const char* n : painterRefs) {
+							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
+						}
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct GenericHumanTissueMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2610,6 +3496,25 @@ namespace RISE
 					}
 
 					return pJob.AddGenericHumanTissueMaterial( name.c_str(), sca.c_str(), g.c_str(), whole_blood, hb_ratio, bilirubin_concentration, betacarotene_concentration, diffuse );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "generic_human_tissue_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Parametric human-tissue scattering material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "sca";                      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering amplitude"; }
+						{ auto& p = P(); p.name = "g";                        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phase-function asymmetry"; }
+						{ auto& p = P(); p.name = "whole_blood";              p.kind = ValueKind::Double;    p.description = "Blood volume fraction"; p.defaultValueHint = "0.012"; }
+						{ auto& p = P(); p.name = "hb_ratio";                 p.kind = ValueKind::Double;    p.description = "Oxygenated hemoglobin ratio"; p.defaultValueHint = "0.75"; }
+						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; }
+						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "2.1e-4"; }
+						{ auto& p = P(); p.name = "diffuse";                  p.kind = ValueKind::Bool;      p.description = "Use diffuse approximation"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2668,6 +3573,27 @@ namespace RISE
 
 					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_reflection_recur, max_refraction_recur, max_diffuse_recur, max_translucent_recur, thickness, extinction.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "composite_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Layered composite of two materials separated by a translucent interior.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "top";                  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Top material"; }
+						{ auto& p = P(); p.name = "bottom";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Bottom material"; }
+						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Max composite recursion"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Max reflection recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Max refraction recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Interior extinction"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct WardIsotropicGaussianMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2706,6 +3632,21 @@ namespace RISE
 					}
 
 					return pJob.AddWardIsotropicGaussianMaterial( name.c_str(), rd.c_str(), rs.c_str(), alpha.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ward_isotropic_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Ward isotropic Gaussian BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2748,6 +3689,22 @@ namespace RISE
 					}
 
 					return pJob.AddWardAnisotropicEllipticalGaussianMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ward_anisotropic_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Ward anisotropic elliptical-Gaussian BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction roughness"; }
+						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction roughness"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2792,6 +3749,24 @@ namespace RISE
 					}
 
 					return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ggx_material"; cd.category = ChunkCategory::Material;
+						cd.description = "GGX (Trowbridge-Reitz) microfacet BRDF with optional Fresnel.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance (F0)"; }
+						{ auto& p = P(); p.name = "alphax";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness"; }
+						{ auto& p = P(); p.name = "alphay";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR"; }
+						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2838,6 +3813,23 @@ namespace RISE
 
 					return pJob.AddCookTorranceMaterial( name.c_str(), rd.c_str(), rs.c_str(), facets.c_str(), ior.c_str(), extinction.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cooktorrance_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Cook-Torrance microfacet BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR"; }
+						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct OrenNayarMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2873,6 +3865,20 @@ namespace RISE
 					}
 
 					return pJob.AddOrenNayarMaterial( name.c_str(), reflectance.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "orennayar_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Oren-Nayar rough-diffuse BRDF.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (sigma)"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -2916,6 +3922,22 @@ namespace RISE
 
 					return pJob.AddSchlickMaterial( name.c_str(), rd.c_str(), rs.c_str(), roughness.c_str(), isotropy.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "schlick_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Schlick BRDF approximation.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct DataDrivenMaterialAsciiChunkParser : public IAsciiChunkParser
@@ -2948,6 +3970,19 @@ namespace RISE
 					}
 
 					return pJob.AddDataDrivenMaterial( name.c_str(), filename.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "datadriven_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Data-driven BRDF loaded from file (MERL format).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "filename"; p.kind = ValueKind::Filename; p.description = "BRDF data file"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3034,6 +4069,19 @@ namespace RISE
 
 					return pJob.SetPinholeCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pinhole_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Standard perspective (pinhole) camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "fov"; p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct ONBPinholeCameraAsciiChunkParser : public IAsciiChunkParser
@@ -3115,6 +4163,28 @@ namespace RISE
 					double ONB_V[3] = {onb.v().x, onb.v().y, onb.v().z};
 					double ONB_W[3] = {onb.w().x, onb.w().y, onb.w().z};
 					return pJob.SetPinholeCameraONB( ONB_U, ONB_V, ONB_W, loc, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "onb_pinhole_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Pinhole camera oriented via an orthonormal basis (U, V, W).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "location";      p.kind = ValueKind::DoubleVec3; p.description = "Eye position"; }
+						{ auto& p = P(); p.name = "u";             p.kind = ValueKind::DoubleVec3; p.description = "ONB U axis"; }
+						{ auto& p = P(); p.name = "v";             p.kind = ValueKind::DoubleVec3; p.description = "ONB V axis"; }
+						{ auto& p = P(); p.name = "w";             p.kind = ValueKind::DoubleVec3; p.description = "ONB W axis"; }
+						{ auto& p = P(); p.name = "fov";           p.kind = ValueKind::Double;     p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "width";         p.kind = ValueKind::UInt;       p.description = "Image width"; p.defaultValueHint = "640"; }
+						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::UInt;       p.description = "Image height"; p.defaultValueHint = "480"; }
+						{ auto& p = P(); p.name = "pixelAR";       p.kind = ValueKind::Double;     p.description = "Pixel aspect ratio"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "scanning_rate"; p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "pixel_rate";    p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3209,6 +4279,22 @@ namespace RISE
 					target_orientation[1] *= DEG_TO_RAD;
 
 					return pJob.SetThinlensCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focal, focus );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "thinlens_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Perspective camera with thin-lens depth of field.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "fov";             p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "aperture_size";  p.kind = ValueKind::Double; p.description = "Aperture radius"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "focus_distance"; p.kind = ValueKind::Double; p.description = "Focal distance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "focal_length";  p.kind = ValueKind::Double; p.description = "Focal length (legacy alias)"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3312,6 +4398,22 @@ namespace RISE
 
 					return pJob.SetThinlensCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focal, focus );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "realistic_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Thin-lens camera with extra lens elements (defaults to thin-lens internally).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "fov";             p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "aperture_size";  p.kind = ValueKind::Double; p.description = "Aperture radius"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "focus_distance"; p.kind = ValueKind::Double; p.description = "Focal distance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "focal_length";  p.kind = ValueKind::Double; p.description = "Focal length"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct FisheyeCameraAsciiChunkParser : public IAsciiChunkParser
@@ -3391,6 +4493,19 @@ namespace RISE
 					target_orientation[1] *= DEG_TO_RAD;
 
 					return pJob.SetFisheyeCamera( loc, lookat, up, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "fisheye_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Fisheye (equidistant) camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "scale"; p.kind = ValueKind::Double; p.description = "Fisheye scale factor"; p.defaultValueHint = "1.0"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3472,6 +4587,19 @@ namespace RISE
 
 					return pJob.SetOrthographicCamera( loc, lookat, up, xres, yres, vpscale, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "orthographic_camera"; cd.category = ChunkCategory::Camera;
+						cd.description = "Orthographic (parallel-projection) camera.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::Double; p.description = "Orthographic viewport scale"; p.defaultValueHint = "1.0"; }
+						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			//////////////////////////////////////////
@@ -3509,6 +4637,19 @@ namespace RISE
 
 					return pJob.AddSphereGeometry( name.c_str(), radius );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sphere_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit sphere geometry.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Sphere radius"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct EllipsoidGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -3541,6 +4682,19 @@ namespace RISE
 					}
 
 					return pJob.AddEllipsoidGeometry( name.c_str(), radii );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ellipsoid_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit ellipsoid (per-axis radii).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radii"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis radii"; p.defaultValueHint = "1 1 1"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3581,6 +4735,21 @@ namespace RISE
 
 					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cylinder_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit cylinder.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Cylinder axis"; p.defaultValueHint = "x"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Cylinder radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Double; p.description = "Cylinder height"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct TorusGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -3617,6 +4786,20 @@ namespace RISE
 
 					return pJob.AddTorusGeometry( name.c_str(), majorradius, minorratio*majorradius );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "torus_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Implicit torus.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "major_radius"; p.kind = ValueKind::Double; p.description = "Major (tube-centre) radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "minor_radius"; p.kind = ValueKind::Double; p.description = "Minor (tube) radius ratio"; p.defaultValueHint = "0.25"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct InfinitePlaneGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -3652,6 +4835,20 @@ namespace RISE
 					}
 
 					return pJob.AddInfinitePlaneGeometry( name.c_str(), xtile, ytile );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "infiniteplane_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Infinite tiling plane.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "xtile"; p.kind = ValueKind::Double; p.description = "Tile size in X"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "ytile"; p.kind = ValueKind::Double; p.description = "Tile size in Y"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3691,6 +4888,21 @@ namespace RISE
 					}
 
 					return pJob.AddBoxGeometry( name.c_str(), width, height, depth );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "box_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Axis-aligned box.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "width";  p.kind = ValueKind::Double; p.description = "X extent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Double; p.description = "Y extent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "depth";  p.kind = ValueKind::Double; p.description = "Z extent"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3736,6 +4948,23 @@ namespace RISE
 					}
 
 					return pJob.AddClippedPlaneGeometry( name.c_str(), pta, ptb, ptc, ptd, doublesided );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "clippedplane_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Quad patch defined by four corner points.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "pta";         p.kind = ValueKind::DoubleVec3; p.description = "Corner A"; }
+						{ auto& p = P(); p.name = "ptb";         p.kind = ValueKind::DoubleVec3; p.description = "Corner B"; }
+						{ auto& p = P(); p.name = "ptc";         p.kind = ValueKind::DoubleVec3; p.description = "Corner C"; }
+						{ auto& p = P(); p.name = "ptd";         p.kind = ValueKind::DoubleVec3; p.description = "Corner D"; }
+						{ auto& p = P(); p.name = "doublesided"; p.kind = ValueKind::Bool;       p.description = "Rendered on both sides"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3788,6 +5017,24 @@ namespace RISE
 
 					return pJob.Add3DSTriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp, face_normals );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "3dsmesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a 3D Studio .3ds file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .3ds file"; }
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build a BSP acceleration structure"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Use flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct RAWMeshGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -3832,6 +5079,23 @@ namespace RISE
 					}
 
 					return pJob.AddRAWTriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "rawmesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a RAW vertex file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW file"; }
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -3881,6 +5145,24 @@ namespace RISE
 
 					return pJob.AddRAW2TriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp, face_normals );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "rawmesh2_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a RAW v2 file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW2 file"; }
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct RISEMeshGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -3920,6 +5202,21 @@ namespace RISE
 
 					return pJob.AddRISEMeshTriangleMeshGeometry( name.c_str(), file.c_str(), loadintomem, face_normals );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "risemesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a RISE-native .risemesh file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";          p.kind = ValueKind::Filename; p.description = "Source .risemesh file"; }
+						{ auto& p = P(); p.name = "load_into_mem"; p.kind = ValueKind::Bool;     p.description = "Load entire mesh into memory"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct CircularDiskGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -3955,6 +5252,20 @@ namespace RISE
 					}
 
 					return pJob.AddCircularDiskGeometry( name.c_str(), radius, axis );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "circulardisk_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Flat circular disk.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Normal axis"; p.defaultValueHint = "y"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -4022,6 +5333,23 @@ namespace RISE
 
 					return pJob.AddBezierPatchGeometry( name.c_str(), file.c_str(), maxPatches, maxRecur, bsp, center_object );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bezierpatch_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Bézier patch surface from file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";          p.kind = ValueKind::Filename; p.description = "Patch file"; }
+						{ auto& p = P(); p.name = "maxpatches";    p.kind = ValueKind::UInt;     p.description = "Max patches per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxrecursion";  p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "center_object"; p.kind = ValueKind::Bool;     p.description = "Auto-center the mesh"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct BilinearPatchGeometryAsciiChunkParser : public IAsciiChunkParser
@@ -4063,6 +5391,22 @@ namespace RISE
 					}
 
 					return pJob.AddBilinearPatchGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, bsp );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bilinearpatch_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Bilinear patch surface from file.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Patch file"; }
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -4132,6 +5476,27 @@ namespace RISE
 						bsp,
 						face_normals );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "displaced_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Tessellated geometry with painter-driven vertex displacement.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_geometry";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
+						{ auto& p = P(); p.name = "detail";          p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "displacement";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
+						{ auto& p = P(); p.name = "displacement_scale"; p.kind = ValueKind::Double; p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "maxpolygons";     p.kind = ValueKind::UInt;      p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxrecursion";    p.kind = ValueKind::UInt;      p.description = "Max BSP depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "double_sided";    p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "bsp";             p.kind = ValueKind::Bool;      p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals";    p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			//////////////////////////////////////////
@@ -4174,6 +5539,21 @@ namespace RISE
 					}
 
 					return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Bump-map modifier perturbing surface normal via a painter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "window";   p.kind = ValueKind::Double;    p.description = "Finite-difference step"; p.defaultValueHint = "1e-3"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -4222,6 +5602,21 @@ namespace RISE
 					}
 
 					return pJob.AddHomogeneousMedium( name.c_str(), sigma_a, sigma_s, phase_type.c_str(), phase_g );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "homogeneous_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Uniform participating medium.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "absorption"; p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient (R G B)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "scattering"; p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient (R G B)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "phase";      p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -4305,6 +5700,31 @@ namespace RISE
 						max_sigma_a, max_sigma_s, emission, phase_type.c_str(), phase_g,
 						volume_pattern.c_str(), vol_width, vol_height, vol_startz, vol_endz,
 						accessor, bbox_min, bbox_max );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "heterogeneous_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Voxel-grid heterogeneous participating medium loaded from a raw volume pattern.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "max_sigma_a";     p.kind = ValueKind::DoubleVec3; p.description = "Max absorption"; }
+						{ auto& p = P(); p.name = "max_sigma_s";     p.kind = ValueKind::DoubleVec3; p.description = "Max scattering"; }
+						{ auto& p = P(); p.name = "emission";        p.kind = ValueKind::DoubleVec3; p.description = "Emission"; }
+						{ auto& p = P(); p.name = "phase_type";      p.kind = ValueKind::Enum;       p.enumValues = {"isotropic","henyey-greenstein"}; p.description = "Phase function"; p.defaultValueHint = "isotropic"; }
+						{ auto& p = P(); p.name = "phase_g";         p.kind = ValueKind::Double;     p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "volume_pattern";  p.kind = ValueKind::String;     p.description = "Volume file pattern (printf-style)"; }
+						{ auto& p = P(); p.name = "volume_width";    p.kind = ValueKind::UInt;       p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "volume_height";   p.kind = ValueKind::UInt;       p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "volume_startz";   p.kind = ValueKind::UInt;       p.description = "Start slice index"; }
+						{ auto& p = P(); p.name = "volume_endz";     p.kind = ValueKind::UInt;       p.description = "End slice index"; }
+						{ auto& p = P(); p.name = "accessor";        p.kind = ValueKind::String;     p.description = "Voxel accessor type"; p.defaultValueHint = "trilinear"; }
+						{ auto& p = P(); p.name = "bbox_min";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
+						{ auto& p = P(); p.name = "bbox_max";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -4390,6 +5810,28 @@ namespace RISE
 						density_painter.c_str(), resolution, color_to_scalar,
 						bbox_min, bbox_max );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "painter_heterogeneous_medium"; cd.category = ChunkCategory::Medium;
+						cd.description = "Heterogeneous medium whose density field comes from a painter evaluation.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "max_sigma_a";    p.kind = ValueKind::DoubleVec3; p.description = "Max absorption"; }
+						{ auto& p = P(); p.name = "max_sigma_s";    p.kind = ValueKind::DoubleVec3; p.description = "Max scattering"; }
+						{ auto& p = P(); p.name = "emission";       p.kind = ValueKind::DoubleVec3; p.description = "Emission"; }
+						{ auto& p = P(); p.name = "phase_type";     p.kind = ValueKind::Enum;       p.enumValues = {"isotropic","henyey-greenstein"}; p.description = "Phase function"; p.defaultValueHint = "isotropic"; }
+						{ auto& p = P(); p.name = "phase_g";        p.kind = ValueKind::Double;     p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "density_painter";p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Density painter"; }
+						{ auto& p = P(); p.name = "resolution";     p.kind = ValueKind::UInt;       p.description = "Voxel resolution"; p.defaultValueHint = "128"; }
+						{ auto& p = P(); p.name = "color_to_scalar";p.kind = ValueKind::String;     p.description = "RGB→scalar rule (luminance|max|sum)"; p.defaultValueHint = "luminance"; }
+						{ auto& p = P(); p.name = "bbox_min";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
+						{ auto& p = P(); p.name = "bbox_max";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 
@@ -4474,6 +5916,31 @@ namespace RISE
 
 					return bRet;
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "standard_object"; cd.category = ChunkCategory::Object;
+						cd.description = "Scene object instancing a geometry with material, modifier, and shader.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to instance"; }
+						{ auto& p = P(); p.name = "material";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Surface material"; }
+						{ auto& p = P(); p.name = "modifier";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Geometry modifier"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Shader override"; }
+						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "radiance_map";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
+						{ auto& p = P(); p.name = "radiance_scale";   p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "radiance_orient";  p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "interior_medium";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Medium}; p.description = "Interior participating medium"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct CSGObjectAsciiChunkParser : public IAsciiChunkParser
@@ -4555,6 +6022,28 @@ namespace RISE
 
 					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "csg_object"; cd.category = ChunkCategory::Object;
+						cd.description = "Constructive solid geometry combining two objects by a boolean operation.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "obja";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "First operand object"; }
+						{ auto& p = P(); p.name = "objb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Object}; p.description = "Second operand object"; }
+						{ auto& p = P(); p.name = "operation";   p.kind = ValueKind::Enum;      p.enumValues = {"union","intersection","subtraction"}; p.description = "CSG operation"; }
+						{ auto& p = P(); p.name = "material";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override material"; }
+						{ auto& p = P(); p.name = "modifier";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Override modifier"; }
+						{ auto& p = P(); p.name = "shader";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Override shader"; }
+						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool; p.description = "Casts shadows"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool; p.description = "Receives shadows"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			//////////////////////////////////////////
@@ -4566,174 +6055,194 @@ namespace RISE
 			// Lights
 			//////////////////////////////////////////
 
+			// AmbientLight — descriptor-driven (reference pattern for migrations).
+			// State holds the accumulator values; apply functions below populate
+			// it; kAmbientLightDescriptor lists every valid parameter with its
+			// metadata and apply binding; ParseChunk creates a state, dispatches
+			// via the descriptor, then hands the state to pJob.AddAmbientLight.
+			// Adding or removing a parameter is a single edit in the descriptor.
+			struct AmbientLightState : public IChunkParseState
+			{
+				String name = "noname";
+				double color[3] = {0,0,0};
+				double power = 1.0;
+			};
+
+			static void ApplyAmbientLight_Name( IChunkParseState& s, const String& v )  { static_cast<AmbientLightState&>(s).name  = v; }
+			static void ApplyAmbientLight_Power( IChunkParseState& s, const String& v ) { static_cast<AmbientLightState&>(s).power = v.toDouble(); }
+			static void ApplyAmbientLight_Color( IChunkParseState& s, const String& v ) {
+				AmbientLightState& st = static_cast<AmbientLightState&>(s);
+				sscanf( v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2] );
+			}
+
+			static const ChunkDescriptor& GetAmbientLightDescriptor()
+			{
+				static const ChunkDescriptor d = [](){
+					ChunkDescriptor cd;
+					cd.keyword     = "ambient_light";
+					cd.category    = ChunkCategory::Light;
+					cd.description = "Uniform ambient illumination (no spatial variation).";
+
+					ParameterDescriptor name;
+					name.name             = "name";
+					name.kind             = ValueKind::String;
+					name.description      = "Unique name for this light";
+					name.defaultValueHint = "noname";
+					name.apply            = &ApplyAmbientLight_Name;
+					cd.parameters.push_back( name );
+
+					ParameterDescriptor power;
+					power.name             = "power";
+					power.kind             = ValueKind::Double;
+					power.description      = "Power scale (multiplies color)";
+					power.defaultValueHint = "1.0";
+					power.apply            = &ApplyAmbientLight_Power;
+					cd.parameters.push_back( power );
+
+					ParameterDescriptor color;
+					color.name             = "color";
+					color.kind             = ValueKind::DoubleVec3;
+					color.description      = "R G B in scene colour space";
+					color.defaultValueHint = "0 0 0";
+					color.apply            = &ApplyAmbientLight_Color;
+					cd.parameters.push_back( color );
+
+					return cd;
+				}();
+				return d;
+			}
+
 			struct AmbientLightAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double color[3] = {0};
-					double power = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "power" ) {
-							power = pvalue.toDouble();
-						} else if( pname == "color" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					AmbientLightState state;
+					if( !DispatchChunkParameters( GetAmbientLightDescriptor(), state, in ) ) {
+						return false;
 					}
-
-					return pJob.AddAmbientLight( name.c_str(), power, color );
+					return pJob.AddAmbientLight( state.name.c_str(), state.power, state.color );
 				}
+
+				const ChunkDescriptor& Describe() const { return GetAmbientLightDescriptor(); }
 			};
 
 
-			struct OmniLightAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double position[3] = {0};
-					double color[3] = {0};
-					double power = 1.0;
-					bool shootphotons = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "power" ) {
-							power = pvalue.toDouble();
-						} else if( pname == "position" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &position[0], &position[1], &position[2] );
-						} else if( pname == "color" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else if( pname == "shootphotons" ) {
-							shootphotons = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddPointOmniLight( name.c_str(), power, color, position, shootphotons );
+			// OmniLight — descriptor-driven
+			struct OmniLightState : public IChunkParseState {
+				String name = "noname";
+				double position[3] = {0,0,0};
+				double color[3] = {0,0,0};
+				double power = 1.0;
+				bool shootphotons = true;
+			};
+			static const ChunkDescriptor& GetOmniLightDescriptor() {
+				static const ChunkDescriptor d = []{
+					ChunkDescriptor cd;
+					cd.keyword = "omni_light"; cd.category = ChunkCategory::Light;
+					cd.description = "Point light radiating uniformly in all directions.";
+					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+					{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";         p.defaultValueHint = "noname";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<OmniLightState&>(s).name = v; }; }
+					{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";    p.defaultValueHint = "1.0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<OmniLightState&>(s).power = v.toDouble(); }; }
+					{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";              p.defaultValueHint = "0 0 0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ OmniLightState& st = static_cast<OmniLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.position[0], &st.position[1], &st.position[2]); }; }
+					{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";             p.defaultValueHint = "0 0 0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ OmniLightState& st = static_cast<OmniLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2]); }; }
+					{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons";  p.defaultValueHint = "TRUE";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<OmniLightState&>(s).shootphotons = v.toBoolean(); }; }
+					return cd;
+				}();
+				return d;
+			}
+			struct OmniLightAsciiChunkParser : public IAsciiChunkParser {
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const {
+					OmniLightState st;
+					if( !DispatchChunkParameters( GetOmniLightDescriptor(), st, in ) ) return false;
+					return pJob.AddPointOmniLight( st.name.c_str(), st.power, st.color, st.position, st.shootphotons );
 				}
+				const ChunkDescriptor& Describe() const { return GetOmniLightDescriptor(); }
 			};
 
 
-			struct SpotLightAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double position[3] = {0};
-					double target[3] = {0};
-					double color[3] = {0};
-					double power = 1.0;
-					double inner = PI_OV_FOUR;
-					double outer = PI_OV_TWO;
-					bool shootphotons = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "power" ) {
-							power = pvalue.toDouble();
-						} else if( pname == "inner" ) {
-							inner = pvalue.toDouble() * DEG_TO_RAD;
-						} else if( pname == "outer" ) {
-							outer = pvalue.toDouble() * DEG_TO_RAD;
-						} else if( pname == "position" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &position[0], &position[1], &position[2] );
-						} else if( pname == "target" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &target[0], &target[1], &target[2] );
-						} else if( pname == "color" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else if( pname == "shootphotons" ) {
-							shootphotons = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, shootphotons );
+			// SpotLight — descriptor-driven
+			struct SpotLightState : public IChunkParseState {
+				String name = "noname";
+				double position[3] = {0,0,0};
+				double target[3] = {0,0,0};
+				double color[3] = {0,0,0};
+				double power = 1.0;
+				double inner = PI_OV_FOUR;
+				double outer = PI_OV_TWO;
+				bool shootphotons = true;
+			};
+			static const ChunkDescriptor& GetSpotLightDescriptor() {
+				static const ChunkDescriptor d = []{
+					ChunkDescriptor cd;
+					cd.keyword = "spot_light"; cd.category = ChunkCategory::Light;
+					cd.description = "Cone spot light with inner and outer falloff angles.";
+					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+					{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";                p.defaultValueHint = "noname";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).name = v; }; }
+					{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";            p.defaultValueHint = "1.0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).power = v.toDouble(); }; }
+					{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)";           p.defaultValueHint = "45";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).inner = v.toDouble() * DEG_TO_RAD; }; }
+					{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)";           p.defaultValueHint = "90";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).outer = v.toDouble() * DEG_TO_RAD; }; }
+					{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";                      p.defaultValueHint = "0 0 0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ SpotLightState& st = static_cast<SpotLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.position[0], &st.position[1], &st.position[2]); }; }
+					{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";                  p.defaultValueHint = "0 0 -1";
+					  p.apply = +[](IChunkParseState& s, const String& v){ SpotLightState& st = static_cast<SpotLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.target[0], &st.target[1], &st.target[2]); }; }
+					{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";                     p.defaultValueHint = "0 0 0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ SpotLightState& st = static_cast<SpotLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2]); }; }
+					{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons";          p.defaultValueHint = "TRUE";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).shootphotons = v.toBoolean(); }; }
+					return cd;
+				}();
+				return d;
+			}
+			struct SpotLightAsciiChunkParser : public IAsciiChunkParser {
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const {
+					SpotLightState st;
+					if( !DispatchChunkParameters( GetSpotLightDescriptor(), st, in ) ) return false;
+					return pJob.AddPointSpotLight( st.name.c_str(), st.power, st.color, st.target, st.inner, st.outer, st.position, st.shootphotons );
 				}
+				const ChunkDescriptor& Describe() const { return GetSpotLightDescriptor(); }
 			};
 
-			struct DirectionalLightAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
-				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double dir[3] = {0};
-					double color[3] = {0};
-					double power = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "power" ) {
-							power = pvalue.toDouble();
-						} else if( pname == "direction" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &dir[0], &dir[1], &dir[2] );
-						} else if( pname == "color" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddDirectionalLight( name.c_str(), power, color, dir );
+			// DirectionalLight — descriptor-driven
+			struct DirectionalLightState : public IChunkParseState {
+				String name = "noname";
+				double dir[3] = {0,0,0};
+				double color[3] = {0,0,0};
+				double power = 1.0;
+			};
+			static const ChunkDescriptor& GetDirectionalLightDescriptor() {
+				static const ChunkDescriptor d = []{
+					ChunkDescriptor cd;
+					cd.keyword = "directional_light"; cd.category = ChunkCategory::Light;
+					cd.description = "Parallel rays from a fixed direction (e.g. sunlight).";
+					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+					{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light"; p.defaultValueHint = "noname";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<DirectionalLightState&>(s).name = v; }; }
+					{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<DirectionalLightState&>(s).power = v.toDouble(); }; }
+					{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector"; p.defaultValueHint = "0 -1 0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ DirectionalLightState& st = static_cast<DirectionalLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.dir[0], &st.dir[1], &st.dir[2]); }; }
+					{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour"; p.defaultValueHint = "0 0 0";
+					  p.apply = +[](IChunkParseState& s, const String& v){ DirectionalLightState& st = static_cast<DirectionalLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2]); }; }
+					return cd;
+				}();
+				return d;
+			}
+			struct DirectionalLightAsciiChunkParser : public IAsciiChunkParser {
+				bool ParseChunk( const ParamsList& in, IJob& pJob ) const {
+					DirectionalLightState st;
+					if( !DispatchChunkParameters( GetDirectionalLightDescriptor(), st, in ) ) return false;
+					return pJob.AddDirectionalLight( st.name.c_str(), st.power, st.color, st.dir );
 				}
+				const ChunkDescriptor& Describe() const { return GetDirectionalLightDescriptor(); }
 			};
 
 			//////////////////////////////////////////
@@ -4789,6 +6298,23 @@ namespace RISE
 
 					return pJob.AddPathTracingShaderOp( name.c_str(), smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pathtracing_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Unidirectional path-tracing shader op with optional Specular Manifold Sampling.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "sms_enabled";         p.kind = ValueKind::Bool;   p.description = "Enable SMS"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "sms_max_iterations";  p.kind = ValueKind::UInt;   p.description = "SMS Newton iterations"; p.defaultValueHint = "20"; }
+						{ auto& p = P(); p.name = "sms_threshold";       p.kind = ValueKind::Double; p.description = "SMS convergence threshold"; p.defaultValueHint = "1e-5"; }
+						{ auto& p = P(); p.name = "sms_max_chain_depth"; p.kind = ValueKind::UInt;   p.description = "SMS chain depth"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "sms_biased";          p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct SMSShaderOpAsciiChunkParser : public IAsciiChunkParser
@@ -4826,6 +6352,22 @@ namespace RISE
 					}
 
 					return pJob.AddSMSShaderOp( name.c_str(), maxIterations, threshold, maxChainDepth, biased );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sms_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Specular Manifold Sampling shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "max_iterations";   p.kind = ValueKind::UInt;   p.description = "Newton iterations"; p.defaultValueHint = "20"; }
+						{ auto& p = P(); p.name = "threshold";        p.kind = ValueKind::Double; p.description = "Convergence threshold"; p.defaultValueHint = "1e-5"; }
+						{ auto& p = P(); p.name = "max_chain_depth";  p.kind = ValueKind::UInt;   p.description = "Max manifold-chain depth"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "biased";           p.kind = ValueKind::Bool;   p.description = "Biased SMS estimator"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -4881,6 +6423,25 @@ namespace RISE
 
 					return pJob.AddDistributionTracingShaderOp( name.c_str(), samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "distributiontracing_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Distribution ray tracing shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "samples";              p.kind = ValueKind::UInt;   p.description = "Samples per hit"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "irradiance_caching";   p.kind = ValueKind::Bool;   p.description = "Enable irradiance caching"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "force_check_emitters"; p.kind = ValueKind::Bool;   p.description = "Force emitter visibility checks"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "reflections";          p.kind = ValueKind::Bool;   p.description = "Trace reflection rays"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "refractions";          p.kind = ValueKind::Bool;   p.description = "Trace refraction rays"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "diffuse";              p.kind = ValueKind::Bool;   p.description = "Trace diffuse-reflection rays"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "translucents";         p.kind = ValueKind::Bool;   p.description = "Trace translucent rays"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct FinalGatherShaderOpAsciiChunkParser : public IAsciiChunkParser
@@ -4934,6 +6495,24 @@ namespace RISE
 
 					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "finalgather_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Irradiance-cache final-gather shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                        p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "thetasamples";                p.kind = ValueKind::UInt;   p.description = "Theta (elevation) samples"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "phisamples";                  p.kind = ValueKind::UInt;   p.description = "Phi (azimuth) samples"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "cachegradients";              p.kind = ValueKind::Bool;   p.description = "Cache irradiance gradients"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "min_effective_contributors";  p.kind = ValueKind::UInt;   p.description = "Min contributors for reuse"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "high_variation_reuse_scale";  p.kind = ValueKind::Double; p.description = "Reuse-scale for high-variation regions"; p.defaultValueHint = "2.0"; }
+						{ auto& p = P(); p.name = "cache";                       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::IrradianceCache}; p.description = "Irradiance cache"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 
@@ -4982,6 +6561,22 @@ namespace RISE
 
 					return pJob.AddAmbientOcclusionShaderOp( name.c_str(), numtheta, numphi, multiplybrdf, irradiance_cache );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "ambientocclusion_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Screen-space / hemisphere ambient occlusion.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numtheta";         p.kind = ValueKind::UInt;   p.description = "Elevation samples"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "numphi";           p.kind = ValueKind::UInt;   p.description = "Azimuth samples"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "multiplybrdf";     p.kind = ValueKind::Bool;   p.description = "Multiply by surface BRDF"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "irradiance_cache"; p.kind = ValueKind::Bool;   p.description = "Use irradiance cache"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct DirectLightingShaderOpAsciiChunkParser : public IAsciiChunkParser
@@ -5022,6 +6617,19 @@ namespace RISE
 					}
 
 					return pJob.AddDirectLightingShaderOp( name.c_str(), bsdf=="none"?0:bsdf.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "directlighting_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Direct lighting only (no indirect).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "bsdf"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override BSDF"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -5088,6 +6696,30 @@ namespace RISE
 					}
 
 					return pJob.AddSimpleSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, extinction );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "simple_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Simple point-cloud subsurface scattering.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";           p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "20000"; }
+						{ auto& p = P(); p.name = "error";               p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.1"; }
+						{ auto& p = P(); p.name = "max_points_per_node"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_depth";           p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "irrad_scale";         p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "geometric_scale";     p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiplybsdf";        p.kind = ValueKind::Bool;   p.description = "Multiply result by BSDF"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "regenerate";          p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "shader";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
+						{ auto& p = P(); p.name = "cache";               p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "low_discrepancy";     p.kind = ValueKind::Bool;   p.description = "Use low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "extinction";          p.kind = ValueKind::DoubleVec3; p.description = "Extinction coefficient"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -5163,6 +6795,33 @@ namespace RISE
 					}
 
 					return pJob.AddDiffusionApproximationSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, scattering, absorption, ior, g );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "diffusion_approximation_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Diffusion-approximation point-cloud SSS (Jensen et al.).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";           p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "20000"; }
+						{ auto& p = P(); p.name = "error";               p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.1"; }
+						{ auto& p = P(); p.name = "max_points_per_node"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_depth";           p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "irrad_scale";         p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "geometric_scale";     p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiplybsdf";        p.kind = ValueKind::Bool;   p.description = "Multiply by BSDF"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "regenerate";          p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "shader";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
+						{ auto& p = P(); p.name = "cache";               p.kind = ValueKind::Bool;   p.description = "Cache irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "low_discrepancy";     p.kind = ValueKind::Bool;   p.description = "Low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scattering";          p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient"; }
+						{ auto& p = P(); p.name = "absorption";          p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient"; }
+						{ auto& p = P(); p.name = "ior";                 p.kind = ValueKind::Double; p.description = "Index of refraction"; p.defaultValueHint = "1.5"; }
+						{ auto& p = P(); p.name = "g";                   p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -5255,6 +6914,35 @@ namespace RISE
 						hemoglobin_epidermis_offset.c_str(),
 						hemoglobin_dermis_offset.c_str() );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "donner_jensen_skin_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Donner-Jensen spectral skin SSS shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						static const char* doubles[] = {
+							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
+							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis","blood_oxygenation"
+						};
+						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";           p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "20000"; }
+						{ auto& p = P(); p.name = "error";               p.kind = ValueKind::Double; p.description = "Octree error"; p.defaultValueHint = "0.1"; }
+						{ auto& p = P(); p.name = "max_points_per_node"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_depth";           p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "irrad_scale";         p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "shader";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Irradiance-gather shader"; }
+						{ auto& p = P(); p.name = "cache";               p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
+						for (const char* n : doubles) {
+							auto& p = P(); p.name = n; p.kind = ValueKind::Double; p.description = "Donner-Jensen skin parameter";
+						}
+						{ auto& p = P(); p.name = "melanin_fraction_offset";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial melanin offset"; }
+						{ auto& p = P(); p.name = "hemoglobin_epidermis_offset";p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial hb-epi offset"; }
+						{ auto& p = P(); p.name = "hemoglobin_dermis_offset";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Spatial hb-derm offset"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct AreaLightShaderOpAsciiChunkParser : public IAsciiChunkParser
@@ -5321,6 +7009,28 @@ namespace RISE
 
 					return pJob.AddAreaLightShaderOp( name.c_str(), width, height, location, dir, samples, emm.c_str(), power, N.c_str(), hotspot, cache );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "arealight_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Area-light shader op (direct sampling of an emitting rectangle).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "width";    p.kind = ValueKind::Double;     p.description = "Rectangle width"; }
+						{ auto& p = P(); p.name = "height";   p.kind = ValueKind::Double;     p.description = "Rectangle height"; }
+						{ auto& p = P(); p.name = "location"; p.kind = ValueKind::DoubleVec3; p.description = "World-space center"; }
+						{ auto& p = P(); p.name = "dir";      p.kind = ValueKind::DoubleVec3; p.description = "Rectangle normal"; }
+						{ auto& p = P(); p.name = "samples";  p.kind = ValueKind::UInt;       p.description = "Samples per shade"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "emmision"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emission colour"; }
+						{ auto& p = P(); p.name = "power";    p.kind = ValueKind::Double;     p.description = "Radiant power"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality exponent"; }
+						{ auto& p = P(); p.name = "hotspot";  p.kind = ValueKind::Bool;       p.description = "Visualize hotspot"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "cache";    p.kind = ValueKind::Bool;       p.description = "Cache direct-light estimate"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct TransparencyShaderOpAsciiChunkParser : public IAsciiChunkParser
@@ -5356,6 +7066,20 @@ namespace RISE
 					}
 
 					return pJob.AddTransparencyShaderOp( name.c_str(), trans.c_str(), one_sided );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "transparency_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Alpha-transparency shader op.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; }
+						{ auto& p = P(); p.name = "one_sided";    p.kind = ValueKind::Bool;      p.description = "Transparent from one side only"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -5408,6 +7132,19 @@ namespace RISE
 					delete [] shmem;
 
 					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "standard_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Linear chain of shader ops evaluated per hit.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "shaderop"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::ShaderOp}; p.repeatable = true; p.description = "Shader op to chain (repeatable)"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -5465,6 +7202,19 @@ namespace RISE
 					delete [] shmem;
 
 					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "advanced_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Depth-scoped shader chain with per-op recursion ranges and composition operators.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "shaderop"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Shader-op triple: <shaderop-name> <min-depth> <max-depth> <op>"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -5549,6 +7299,35 @@ namespace RISE
 						accessor, gradient, composite, dThresholdStart, dThresholdEnd, sampler, samples, transfer_red.c_str(), transfer_green.c_str(), transfer_blue.c_str(), transfer_alpha.c_str(), iso_shader=="none"?0:iso_shader.c_str()
 						);
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "directvolumerendering_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Direct volume rendering shader.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "volume_pattern";  p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
+						{ auto& p = P(); p.name = "width";           p.kind = ValueKind::UInt;     p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "height";          p.kind = ValueKind::UInt;     p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "startz";          p.kind = ValueKind::UInt;     p.description = "Start slice index"; }
+						{ auto& p = P(); p.name = "endz";            p.kind = ValueKind::UInt;     p.description = "End slice index"; }
+						{ auto& p = P(); p.name = "accessor";        p.kind = ValueKind::Enum;     p.enumValues = {"n","t"}; p.description = "Voxel accessor"; p.defaultValueHint = "n"; }
+						{ auto& p = P(); p.name = "gradient";        p.kind = ValueKind::Enum;     p.enumValues = {"i","c","s"}; p.description = "Gradient estimator"; p.defaultValueHint = "i"; }
+						{ auto& p = P(); p.name = "composite";       p.kind = ValueKind::Enum;     p.enumValues = {"c","m","i"}; p.description = "Compositing op"; p.defaultValueHint = "c"; }
+						{ auto& p = P(); p.name = "threshold_start"; p.kind = ValueKind::Double;   p.description = "Low opacity cutoff"; p.defaultValueHint = "0.4"; }
+						{ auto& p = P(); p.name = "threshold_end";   p.kind = ValueKind::Double;   p.description = "High opacity cutoff"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "sampler";         p.kind = ValueKind::Enum;     p.enumValues = {"u","s"}; p.description = "Ray sampler"; p.defaultValueHint = "u"; }
+						{ auto& p = P(); p.name = "samples";         p.kind = ValueKind::UInt;     p.description = "Samples along ray"; p.defaultValueHint = "50"; }
+						{ auto& p = P(); p.name = "transfer_red";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "R transfer function"; }
+						{ auto& p = P(); p.name = "transfer_green";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "G transfer function"; }
+						{ auto& p = P(); p.name = "transfer_blue";   p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "B transfer function"; }
+						{ auto& p = P(); p.name = "transfer_alpha";  p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "A transfer function"; }
+						{ auto& p = P(); p.name = "iso_shader";      p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Shader}; p.description = "Iso-surface shader"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct SpectralDirectVolumeRenderingShaderAsciiChunkParser : public IAsciiChunkParser
@@ -5626,11 +7405,47 @@ namespace RISE
 						accessor, gradient, composite, dThresholdStart, dThresholdEnd, sampler, samples, transfer_alpha.c_str(), transfer_spectral.c_str(), iso_shader=="none"?0:iso_shader.c_str()
 						);
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "spectraldirectvolumerendering_shader"; cd.category = ChunkCategory::Shader;
+						cd.description = "Spectral direct volume rendering shader.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "volume_pattern";    p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
+						{ auto& p = P(); p.name = "width";             p.kind = ValueKind::UInt;     p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "height";            p.kind = ValueKind::UInt;     p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "startz";            p.kind = ValueKind::UInt;     p.description = "Start slice"; }
+						{ auto& p = P(); p.name = "endz";              p.kind = ValueKind::UInt;     p.description = "End slice"; }
+						{ auto& p = P(); p.name = "accessor";          p.kind = ValueKind::Enum;     p.enumValues = {"n","t"}; p.description = "Voxel accessor"; p.defaultValueHint = "n"; }
+						{ auto& p = P(); p.name = "gradient";          p.kind = ValueKind::Enum;     p.enumValues = {"i","c","s"}; p.description = "Gradient estimator"; p.defaultValueHint = "i"; }
+						{ auto& p = P(); p.name = "composite";         p.kind = ValueKind::Enum;     p.enumValues = {"c","m","i"}; p.description = "Compositing op"; p.defaultValueHint = "c"; }
+						{ auto& p = P(); p.name = "threshold_start";   p.kind = ValueKind::Double;   p.description = "Low opacity cutoff"; p.defaultValueHint = "0.4"; }
+						{ auto& p = P(); p.name = "threshold_end";     p.kind = ValueKind::Double;   p.description = "High opacity cutoff"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "sampler";           p.kind = ValueKind::Enum;     p.enumValues = {"u","s"}; p.description = "Ray sampler"; p.defaultValueHint = "u"; }
+						{ auto& p = P(); p.name = "samples";           p.kind = ValueKind::UInt;     p.description = "Samples along ray"; p.defaultValueHint = "50"; }
+						{ auto& p = P(); p.name = "transfer_alpha";    p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Alpha transfer function"; }
+						{ auto& p = P(); p.name = "transfer_spectral"; p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Function}; p.description = "Spectral transfer function"; }
+						{ auto& p = P(); p.name = "iso_shader";        p.kind = ValueKind::Reference;p.referenceCategories = {ChunkCategory::Shader}; p.description = "Iso-surface shader"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			//////////////////////////////////////////
 			// Rasterizers
 			//////////////////////////////////////////
+
+			// (Helper templates AddStabilityConfigParams / AddPathGuidingParams
+			//  / AddAdaptiveSamplingParams / AddPixelFilterParams /
+			//  AddRadianceMapParams / AddProgressiveParams /
+			//  AddSpectralConfigParams / AddSMSConfigParams /
+			//  AddPhotonMapGenerate*/Gather* / AddCameraCommonParams /
+			//  AddNoisePainterCommonParams / AddBaseRasterizerParams /
+			//  AddOptimalMISParams are defined above the Painters section
+			//  so every chunk parser can reference them.)
 
 			struct PixelPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -5788,6 +7603,33 @@ namespace RISE
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilterConfig,
 						showLuminaires, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pixelpel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "RGB pel-based unidirectional path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "defaultshader";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = "global"; }
+						{ auto& p = P(); p.name = "max_recursion";         p.kind = ValueKind::UInt;      p.description = "Maximum ray recursion depth";   p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "samples";               p.kind = ValueKind::UInt;      p.description = "Samples per pixel";              p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "lum_samples";           p.kind = ValueKind::UInt;      p.description = "Luminaire samples per hit";      p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "luminary_sampler";      p.kind = ValueKind::String;    p.description = "Luminary sampling strategy";     p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = "TRUE"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						{ auto& p = P(); p.name = "filter_glossy";                    p.kind = ValueKind::Double; p.description = "Glossy roughness floor";                     p.defaultValueHint = "0 (disabled)"; }
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -6000,6 +7842,27 @@ namespace RISE
 						oidnDenoise, stabilityConfig
 						);
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pixelintegratingspectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Spectral pel-based path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "max_recursion";   p.kind = ValueKind::UInt; p.description = "Maximum ray recursion depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "lum_samples";     p.kind = ValueKind::UInt; p.description = "Luminaire samples per hit";   p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "luminary_sampler";p.kind = ValueKind::String; p.description = "Luminary sampling strategy"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "luminary_sampler_param"; p.kind = ValueKind::Double; p.description = "Luminary sampler parameter"; p.defaultValueHint = "1.0"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSpectralConfigParams( P );
+						AddStabilityConfigParams( P );
+						{ auto& p = P(); p.name = "filter_glossy"; p.kind = ValueKind::Double; p.description = "Glossy roughness floor"; p.defaultValueHint = "0 (disabled)"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct BDPTPelRasterizerAsciiChunkParser : public IAsciiChunkParser
@@ -6165,6 +8028,28 @@ namespace RISE
 						showLuminaires,
 						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bdpt_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "RGB bidirectional path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = "8"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSMSConfigParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct BDPTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
@@ -6329,6 +8214,37 @@ namespace RISE
 						spectralConfig,
 						smsConfig, oidnDenoise, guidingConfig, stabilityConfig, progressiveConfig );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "bdpt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Spectral bidirectional path-tracing integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = "8"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSpectralConfigParams( P );
+						AddSMSConfigParams( P );
+						// BDPTSpectral supports a subset of pathguiding params (no
+						// light-max-depth, no complete-path-strategy).
+						{ auto& p = P(); p.name = "pathguiding";                 p.kind = ValueKind::Bool;   p.description = "Enable path guiding";              p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "pathguiding_iterations";      p.kind = ValueKind::UInt;   p.description = "Training iterations";             p.defaultValueHint = "4"; }
+						{ auto& p = P(); p.name = "pathguiding_spp";             p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training"; p.defaultValueHint = "4"; }
+						{ auto& p = P(); p.name = "pathguiding_alpha";           p.kind = ValueKind::Double; p.description = "Mixing factor";                   p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "pathguiding_max_depth";       p.kind = ValueKind::UInt;   p.description = "Max guiding depth";               p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "pathguiding_sampling_type";   p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy"; p.defaultValueHint = "OneSampleMIS"; }
+						{ auto& p = P(); p.name = "pathguiding_ris_candidates";  p.kind = ValueKind::UInt;   p.description = "RIS candidate count";             p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "pathguiding_complete_paths";  p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding";    p.defaultValueHint = "FALSE"; }
+						AddStabilityConfigParams( P );
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct VCMPelRasterizerAsciiChunkParser : public IAsciiChunkParser
@@ -6454,6 +8370,28 @@ namespace RISE
 						showLuminaires,
 						mergeRadius, enableVC, enableVM, oidnDenoise,
 						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "vcm_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "RGB vertex-connection-and-merging integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = "TRUE"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -6585,6 +8523,28 @@ namespace RISE
 						spectralConfig,
 						mergeRadius, enableVC, enableVM, oidnDenoise,
 						guidingConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "vcm_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Spectral vertex-connection-and-merging integrator.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = "TRUE"; }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSpectralConfigParams( P );
+						AddStabilityConfigParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -6744,6 +8704,26 @@ namespace RISE
 						showLuminaires,
 						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pathtracing_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Pure unidirectional RGB path tracer (bypasses shader-op chain).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSMSConfigParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct PathTracingSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
@@ -6887,6 +8867,26 @@ namespace RISE
 						spectralConfig,
 						smsConfig, oidnDenoise, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pathtracing_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Pure unidirectional spectral path tracer (bypasses shader-op chain).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P );
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddSpectralConfigParams( P );
+						AddSMSConfigParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct MLTRasterizerAsciiChunkParser : public IAsciiChunkParser
@@ -6986,6 +8986,32 @@ namespace RISE
 						pixelFilterConfig,
 						stabilityConfig );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "mlt_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Metropolis Light Transport (RGB).  branching_threshold is forced to 1.0.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = "global"; }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = "100000"; }
+						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = "512"; }
+						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = "100"; }
+						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
+						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "TRUE"; }
+						AddPixelFilterParams( P );
+						// MLT accepts only light_bvh and branching_threshold from
+						// StabilityConfig (branching_threshold is forced to 1.0
+						// internally per CLAUDE.md).
+						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity with other rasterizers but forced to 1.0 (MLT requires a single-subpath proposal)"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct MLTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
@@ -7073,6 +9099,31 @@ namespace RISE
 						pixelFilterConfig,
 						stabilityConfig );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "mlt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Metropolis Light Transport (spectral).  branching_threshold is forced to 1.0.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = "global"; }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = "100000"; }
+						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = "512"; }
+						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = "100"; }
+						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
+						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "TRUE"; }
+						AddPixelFilterParams( P );
+						AddSpectralConfigParams( P );
+						// MLT accepts only light_bvh and branching_threshold.
+						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity but forced to 1.0"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct FileRasterizerOutputAsciiChunkParser : public IAsciiChunkParser
@@ -7158,6 +9209,22 @@ namespace RISE
 
 					return pJob.AddFileRasterizerOutput( pattern.c_str(), multiple, type, (unsigned char)bpp, color_space );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "file_rasterizeroutput"; cd.category = ChunkCategory::RasterizerOutput;
+						cd.description = "Writes rendered frames to disk.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "pattern";    p.kind = ValueKind::Filename; p.description = "Output path pattern (with optional frame placeholders)"; p.defaultValueHint = "out.exr"; }
+						{ auto& p = P(); p.name = "multiple";   p.kind = ValueKind::Bool;    p.description = "Emit one file per frame (for animation)";                p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "type";       p.kind = ValueKind::Enum;    p.enumValues = {"TGA","PPM","PNG","HDR","TIFF","RGBEA","EXR"};             p.description = "File format";                                                p.defaultValueHint = "EXR"; }
+						{ auto& p = P(); p.name = "bpp";        p.kind = ValueKind::Enum;    p.enumValues = {"8","16","32"};                                           p.description = "Bits per channel (format-dependent)";                        p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "color_space";p.kind = ValueKind::Enum;    p.enumValues = {"Rec709RGB_Linear","sRGB","ROMMRGB_Linear","ProPhotoRGB"};p.description = "Output colour space";                                        p.defaultValueHint = "sRGB"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 
@@ -7225,6 +9292,18 @@ namespace RISE
 
 					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Caustic photon map generation (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct CausticSpectralPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
@@ -7290,6 +9369,21 @@ namespace RISE
 
 					return pJob.ShootCausticSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, reflect, refract, temporal_samples, regenerate );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_spectral_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Caustic photon map generation (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						{ auto& p = P(); p.name = "nmbegin";         p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";           p.kind = ValueKind::Double; p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "num_wavelengths"; p.kind = ValueKind::UInt;   p.description = "Spectral sample count"; p.defaultValueHint = "16"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct GlobalSpectralPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
@@ -7348,6 +9442,21 @@ namespace RISE
 					std::cout << "Queued Global Spectral Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootGlobalSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, temporal_samples, regenerate );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_spectral_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Global photon map generation (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						{ auto& p = P(); p.name = "nmbegin";         p.kind = ValueKind::Double; p.description = "Start wavelength (nm)"; p.defaultValueHint = "400"; }
+						{ auto& p = P(); p.name = "nmend";           p.kind = ValueKind::Double; p.description = "End wavelength (nm)"; p.defaultValueHint = "700"; }
+						{ auto& p = P(); p.name = "num_wavelengths"; p.kind = ValueKind::UInt;   p.description = "Spectral sample count"; p.defaultValueHint = "16"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7411,6 +9520,19 @@ namespace RISE
 
 					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "translucent_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Translucent photon map generation (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						{ auto& p = P(); p.name = "direct_translucent"; p.kind = ValueKind::Bool; p.description = "Include direct translucency"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct ShadowPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
@@ -7448,6 +9570,20 @@ namespace RISE
 					std::cout << "Queued Shadow Photons (will shoot at render time)" << std::endl;
 
 					return pJob.ShootShadowPhotons( photons, temporal_samples, regenerate );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "shadow_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Shadow photon map (direct visibility-cache).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "num";              p.kind = ValueKind::UInt; p.description = "Photon count"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "temporal_samples"; p.kind = ValueKind::UInt; p.description = "Temporal samples"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "regenerate";       p.kind = ValueKind::Bool; p.description = "Regenerate per frame"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7505,6 +9641,18 @@ namespace RISE
 
 					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
+						cd.description = "Global photon map generation (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGenerateCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct CausticPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
@@ -7543,6 +9691,18 @@ namespace RISE
 					}
 
 					return pJob.SetCausticPelGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_pel_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Caustic photon gather (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7586,6 +9746,19 @@ namespace RISE
 
 					return pJob.SetCausticSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "caustic_spectral_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Caustic photon gather (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						{ auto& p = P(); p.name = "nm_range"; p.kind = ValueKind::Double; p.description = "Wavelength gather range (nm)"; p.defaultValueHint = "10"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct GlobalSpectralPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
@@ -7628,6 +9801,19 @@ namespace RISE
 
 					return pJob.SetGlobalSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_spectral_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Global photon gather (spectral).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						{ auto& p = P(); p.name = "nm_range"; p.kind = ValueKind::Double; p.description = "Wavelength gather range (nm)"; p.defaultValueHint = "10"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct TranslucentPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
@@ -7666,6 +9852,18 @@ namespace RISE
 					}
 
 					return pJob.SetTranslucentPelGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "translucent_pel_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Translucent photon gather (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7706,6 +9904,18 @@ namespace RISE
 
 					return pJob.SetShadowGatherParameters( radius, ellipse_ratio, min, max );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "shadow_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Shadow photon gather parameters.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct GlobalPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
@@ -7744,6 +9954,18 @@ namespace RISE
 					}
 
 					return pJob.SetGlobalPelGatherParameters( radius, ellipse_ratio, min, max );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "global_pel_gather"; cd.category = ChunkCategory::PhotonGather;
+						cd.description = "Global photon gather (RGB).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddPhotonMapGatherCommonParams( P );
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7789,6 +10011,23 @@ namespace RISE
 					}
 
 					return pJob.SetIrradianceCacheParameters( size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "irradiance_cache"; cd.category = ChunkCategory::IrradianceCache;
+						cd.description = "Global irradiance-cache parameters.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "size";                    p.kind = ValueKind::UInt;   p.description = "Cache capacity (entries)"; p.defaultValueHint = "100000"; }
+						{ auto& p = P(); p.name = "tolerance";               p.kind = ValueKind::Double; p.description = "Reuse tolerance"; p.defaultValueHint = "0.2"; }
+						{ auto& p = P(); p.name = "min_spacing";             p.kind = ValueKind::Double; p.description = "Min sample spacing"; p.defaultValueHint = "0.1"; }
+						{ auto& p = P(); p.name = "max_spacing";             p.kind = ValueKind::Double; p.description = "Max sample spacing"; p.defaultValueHint = "10.0"; }
+						{ auto& p = P(); p.name = "query_threshold_scale";   p.kind = ValueKind::Double; p.description = "Query-threshold scaling"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "neighbor_spacing_scale"; p.kind = ValueKind::Double; p.description = "Neighbor-spacing scaling"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7837,6 +10076,24 @@ namespace RISE
 					}
 
 					return pJob.AddKeyframe( element_type.c_str(), element_type.c_str(), param.c_str(), value.c_str(), time, interp=="none"?0:interp.c_str(), interp_params=="none"?0:interp_params.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "keyframe"; cd.category = ChunkCategory::Animation;
+						cd.description = "Single keyframe for an element's parameter over time.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
+						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name (e.g. position, orientation, scale)"; }
+						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.description = "Value at this keyframe (whitespace-separated tokens)"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.description = "Time (seconds) of the keyframe"; }
+						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.description = "Interpolator type"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "interpolator_params"; p.kind = ValueKind::String; p.description = "Interpolator parameters"; }
+						return cd;
+					}();
+					return d;
 				}
 			};
 
@@ -7888,6 +10145,24 @@ namespace RISE
 
 					return true;
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "timeline"; cd.category = ChunkCategory::Animation;
+						cd.description = "Sequence of keyframes for one element/parameter.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
+						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
+						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the current `time` (emits one keyframe per appearance)"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.description = "Time of next value insertion"; }
+						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.description = "Interpolator type"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "interpolator_params"; p.kind = ValueKind::String; p.description = "Interpolator parameters"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			struct AnimationOptionsAsciiChunkParser : public IAsciiChunkParser
@@ -7930,8 +10205,203 @@ namespace RISE
 
 					return pJob.SetAnimationOptions( time_start, time_end, num_frames, do_fields, invert_fields );
 				}
+
+				const ChunkDescriptor& Describe() const {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "animation_options"; cd.category = ChunkCategory::Animation;
+						cd.description = "Global animation time range, frame count, and field options.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "time_start";    p.kind = ValueKind::Double; p.description = "Animation start time"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "time_end";      p.kind = ValueKind::Double; p.description = "Animation end time"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "num_frames";    p.kind = ValueKind::UInt;   p.description = "Number of frames to render"; p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "do_fields";     p.kind = ValueKind::Bool;   p.description = "Emit interlaced fields"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "invert_fields"; p.kind = ValueKind::Bool;   p.description = "Invert field order"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 		}
+	}
+
+	// Factory that creates one instance of every chunk parser the scene
+	// grammar supports.  Ownership transfers to the caller; when the
+	// returned vector goes out of scope all parsers are destroyed.  The
+	// same list powers AsciiSceneParser's dispatch map and
+	// SceneEditorSuggestions' grammar enumeration.
+	std::vector<ChunkParserEntry> CreateAllChunkParsers()
+	{
+		using namespace Implementation::ChunkParsers;
+		std::vector<ChunkParserEntry> entries;
+		entries.reserve( 128 );
+
+		auto add = [&entries]( const char* keyword, IAsciiChunkParser* parser ) {
+			ChunkParserEntry e;
+			e.keyword = keyword;
+			e.parser.reset( parser );
+			entries.push_back( std::move(e) );
+		};
+
+		// Painters
+		add( "uniformcolor_painter",                  new UniformColorPainterAsciiChunkParser() );
+		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
+		add( "png_painter",                           new PngPainterAsciiChunkParser() );
+		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );
+		add( "exr_painter",                           new ExrPainterAsciiChunkParser() );
+		add( "tiff_painter",                          new TiffPainterAsciiChunkParser() );
+		add( "checker_painter",                       new CheckerPainterAsciiChunkParser() );
+		add( "lines_painter",                         new LinesPainterAsciiChunkParser() );
+		add( "mandelbrot_painter",                    new MandelbrotPainterAsciiChunkParser() );
+		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
+		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
+		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );
+		add( "turbulence3d_painter",                  new Turbulence3DPainterAsciiChunkParser() );
+		add( "wavelet3d_painter",                     new Wavelet3DPainterAsciiChunkParser() );
+		add( "reactiondiffusion3d_painter",           new ReactionDiffusion3DPainterAsciiChunkParser() );
+		add( "gabor3d_painter",                       new Gabor3DPainterAsciiChunkParser() );
+		add( "simplex3d_painter",                     new Simplex3DPainterAsciiChunkParser() );
+		add( "sdf3d_painter",                         new SDF3DPainterAsciiChunkParser() );
+		add( "curlnoise3d_painter",                   new CurlNoise3DPainterAsciiChunkParser() );
+		add( "domainwarp3d_painter",                  new DomainWarp3DPainterAsciiChunkParser() );
+		add( "perlinworley3d_painter",                new PerlinWorley3DPainterAsciiChunkParser() );
+		add( "worley3d_painter",                      new Worley3DPainterAsciiChunkParser() );
+		add( "voronoi2d_painter",                     new Voronoi2DPainterAsciiChunkParser() );
+		add( "voronoi3d_painter",                     new Voronoi3DPainterAsciiChunkParser() );
+		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
+		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
+		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
+
+		// Functions
+		add( "piecewise_linear_function",             new PiecewiseLinearFunctionChunkParser() );
+		add( "piecewise_linear_function2d",           new PiecewiseLinearFunction2DChunkParser() );
+
+		// Materials
+		add( "lambertian_material",                   new LambertianMaterialAsciiChunkParser() );
+		add( "perfectreflector_material",             new PerfectReflectorMaterialAsciiChunkParser() );
+		add( "perfectrefractor_material",             new PerfectRefractorMaterialAsciiChunkParser() );
+		add( "polished_material",                     new PolishedMaterialAsciiChunkParser() );
+		add( "dielectric_material",                   new DielectricMaterialAsciiChunkParser() );
+		add( "subsurfacescattering_material",         new SubSurfaceScatteringMaterialAsciiChunkParser() );
+		add( "randomwalk_sss_material",               new RandomWalkSSSMaterialAsciiChunkParser() );
+		add( "lambertian_luminaire_material",         new LambertianLuminaireMaterialAsciiChunkParser() );
+		add( "phong_luminaire_material",              new PhongLuminaireMaterialAsciiChunkParser() );
+		add( "ashikminshirley_anisotropicphong_material", new AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser() );
+		add( "isotropic_phong_material",              new IsotropicPhongMaterialAsciiChunkParser() );
+		add( "translucent_material",                  new TranslucentMaterialAsciiChunkParser() );
+		add( "biospec_skin_material",                 new BioSpecSkinMaterialAsciiChunkParser() );
+		add( "donner_jensen_skin_bssrdf_material",    new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser() );
+		add( "generic_human_tissue_material",         new GenericHumanTissueMaterialAsciiChunkParser() );
+		add( "composite_material",                    new CompositeMaterialAsciiChunkParser() );
+		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
+		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );
+		add( "ggx_material",                          new GGXMaterialAsciiChunkParser() );
+		add( "cooktorrance_material",                 new CookTorranceMaterialAsciiChunkParser() );
+		add( "orennayar_material",                    new OrenNayarMaterialAsciiChunkParser() );
+		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
+		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
+
+		// Cameras
+		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
+		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
+		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );
+		add( "realistic_camera",                      new RealisticCameraAsciiChunkParser() );
+		add( "fisheye_camera",                        new FisheyeCameraAsciiChunkParser() );
+		add( "orthographic_camera",                   new OrthographicCameraAsciiChunkParser() );
+
+		// Geometry
+		add( "sphere_geometry",                       new SphereGeometryAsciiChunkParser() );
+		add( "ellipsoid_geometry",                    new EllipsoidGeometryAsciiChunkParser() );
+		add( "cylinder_geometry",                     new CylinderGeometryAsciiChunkParser() );
+		add( "torus_geometry",                        new TorusGeometryAsciiChunkParser() );
+		add( "infiniteplane_geometry",                new InfinitePlaneGeometryAsciiChunkParser() );
+		add( "box_geometry",                          new BoxGeometryAsciiChunkParser() );
+		add( "clippedplane_geometry",                 new ClippedPlaneGeometryAsciiChunkParser() );
+		add( "3dsmesh_geometry",                      new Mesh3DSGeometryAsciiChunkParser() );
+		add( "rawmesh_geometry",                      new RAWMeshGeometryAsciiChunkParser() );
+		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );
+		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
+		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
+		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
+		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
+		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
+
+		// Modifiers
+		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
+
+		// Media
+		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );
+		add( "heterogeneous_medium",                  new HeterogeneousMediumAsciiChunkParser() );
+		add( "painter_heterogeneous_medium",          new PainterHeterogeneousMediumAsciiChunkParser() );
+
+		// Objects
+		add( "standard_object",                       new StandardObjectAsciiChunkParser() );
+		add( "csg_object",                            new CSGObjectAsciiChunkParser() );
+
+		// Shader ops
+		add( "ambientocclusion_shaderop",             new AmbientOcclusionShaderOpAsciiChunkParser() );
+		add( "directlighting_shaderop",               new DirectLightingShaderOpAsciiChunkParser() );
+		add( "pathtracing_shaderop",                  new PathTracingShaderOpAsciiChunkParser() );
+		add( "mis_pathtracing_shaderop",              new PathTracingShaderOpAsciiChunkParser() );  // Legacy alias
+		add( "sms_shaderop",                          new SMSShaderOpAsciiChunkParser() );
+		add( "distributiontracing_shaderop",          new DistributionTracingShaderOpAsciiChunkParser() );
+		add( "finalgather_shaderop",                  new FinalGatherShaderOpAsciiChunkParser() );
+		add( "simple_sss_shaderop",                   new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser() );
+		add( "diffusion_approximation_sss_shaderop",  new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser() );
+		add( "donner_jensen_skin_sss_shaderop",       new DonnerJensenSkinSSSShaderOpAsciiChunkParser() );
+		add( "arealight_shaderop",                    new AreaLightShaderOpAsciiChunkParser() );
+		add( "transparency_shaderop",                 new TransparencyShaderOpAsciiChunkParser() );
+
+		// Shaders
+		add( "standard_shader",                       new StandardShaderAsciiChunkParser() );
+		add( "advanced_shader",                       new AdvancedShaderAsciiChunkParser() );
+		add( "directvolumerendering_shader",          new DirectVolumeRenderingShaderAsciiChunkParser() );
+		add( "spectraldirectvolumerendering_shader",  new SpectralDirectVolumeRenderingShaderAsciiChunkParser() );
+
+		// Rasterizers
+		add( "pixelpel_rasterizer",                   new PixelPelRasterizerAsciiChunkParser() );
+		add( "pixelintegratingspectral_rasterizer",   new PixelIntegratingSpectralRasterizerAsciiChunkParser() );
+		add( "bdpt_pel_rasterizer",                   new BDPTPelRasterizerAsciiChunkParser() );
+		add( "bdpt_spectral_rasterizer",              new BDPTSpectralRasterizerAsciiChunkParser() );
+		add( "vcm_pel_rasterizer",                    new VCMPelRasterizerAsciiChunkParser() );
+		add( "vcm_spectral_rasterizer",               new VCMSpectralRasterizerAsciiChunkParser() );
+		add( "pathtracing_pel_rasterizer",            new PathTracingPelRasterizerAsciiChunkParser() );
+		add( "pathtracing_spectral_rasterizer",       new PathTracingSpectralRasterizerAsciiChunkParser() );
+		add( "mlt_rasterizer",                        new MLTRasterizerAsciiChunkParser() );
+		add( "mlt_spectral_rasterizer",               new MLTSpectralRasterizerAsciiChunkParser() );
+
+		// Rasterizer output
+		add( "file_rasterizeroutput",                 new FileRasterizerOutputAsciiChunkParser() );
+
+		// Lights
+		add( "ambient_light",                         new AmbientLightAsciiChunkParser() );
+		add( "omni_light",                            new OmniLightAsciiChunkParser() );
+		add( "spot_light",                            new SpotLightAsciiChunkParser() );
+		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
+
+		// Photon maps & gather
+		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );
+		add( "translucent_pel_photonmap",             new TranslucentPelPhotonMapGenerateAsciiChunkParser() );
+		add( "caustic_spectral_photonmap",            new CausticSpectralPhotonMapGenerateAsciiChunkParser() );
+		add( "global_pel_photonmap",                  new GlobalPelPhotonMapGenerateAsciiChunkParser() );
+		add( "global_spectral_photonmap",             new GlobalSpectralPhotonMapGenerateAsciiChunkParser() );
+		add( "shadow_photonmap",                      new ShadowPhotonMapGenerateAsciiChunkParser() );
+		add( "caustic_pel_gather",                    new CausticPelPhotonMapGatherAsciiChunkParser() );
+		add( "translucent_pel_gather",                new TranslucentPelPhotonMapGatherAsciiChunkParser() );
+		add( "caustic_spectral_gather",               new CausticSpectralPhotonMapGatherAsciiChunkParser() );
+		add( "global_pel_gather",                     new GlobalPelPhotonMapGatherAsciiChunkParser() );
+		add( "global_spectral_gather",                new GlobalSpectralPhotonMapGatherAsciiChunkParser() );
+		add( "shadow_gather",                         new ShadowPhotonMapGatherAsciiChunkParser() );
+
+		// Irradiance cache
+		add( "irradiance_cache",                      new IrradianceCacheAsciiChunkParser() );
+
+		// Animation
+		add( "keyframe",                              new KeyframeAsciiChunkParser() );
+		add( "timeline",                              new TimelineAsciiChunkParser() );
+		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
+
+		return entries;
 	}
 }
 
@@ -7959,148 +10429,15 @@ using namespace RISE::Implementation::ChunkParsers;
 
 bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 {
-	// Setup a map to map chunk names to their respective parsers
-	std::map<std::string,IAsciiChunkParser*> chunks;
-
-	chunks["uniformcolor_painter"] = new UniformColorPainterAsciiChunkParser();
-	chunks["spectral_painter"] = new SpectralPainterAsciiChunkParser();
-	chunks["png_painter"] = new PngPainterAsciiChunkParser();
-	chunks["hdr_painter"] = new HdrPainterAsciiChunkParser();
-	chunks["exr_painter"] = new ExrPainterAsciiChunkParser();
-	chunks["tiff_painter"] = new TiffPainterAsciiChunkParser();
-	chunks["checker_painter"] = new CheckerPainterAsciiChunkParser();
-	chunks["lines_painter"] = new LinesPainterAsciiChunkParser();
-	chunks["mandelbrot_painter"] = new MandelbrotPainterAsciiChunkParser();
-	chunks["perlin2d_painter"] = new Perlin2DPainterAsciiChunkParser();
-	chunks["gerstnerwave_painter"] = new GerstnerWavePainterAsciiChunkParser();
-	chunks["perlin3d_painter"] = new Perlin3DPainterAsciiChunkParser();
-	chunks["turbulence3d_painter"] = new Turbulence3DPainterAsciiChunkParser();
-	chunks["wavelet3d_painter"] = new Wavelet3DPainterAsciiChunkParser();
-	chunks["reactiondiffusion3d_painter"] = new ReactionDiffusion3DPainterAsciiChunkParser();
-	chunks["gabor3d_painter"] = new Gabor3DPainterAsciiChunkParser();
-	chunks["simplex3d_painter"] = new Simplex3DPainterAsciiChunkParser();
-	chunks["sdf3d_painter"] = new SDF3DPainterAsciiChunkParser();
-	chunks["curlnoise3d_painter"] = new CurlNoise3DPainterAsciiChunkParser();
-	chunks["domainwarp3d_painter"] = new DomainWarp3DPainterAsciiChunkParser();
-	chunks["perlinworley3d_painter"] = new PerlinWorley3DPainterAsciiChunkParser();
-	chunks["worley3d_painter"] = new Worley3DPainterAsciiChunkParser();
-	chunks["voronoi2d_painter"] = new Voronoi2DPainterAsciiChunkParser();
-	chunks["voronoi3d_painter"] = new Voronoi3DPainterAsciiChunkParser();
-	chunks["iridescent_painter"] = new IridescentPainterAsciiChunkParser();
-	chunks["blackbody_painter"] = new BlackBodyPainterAsciiChunkParser();
-	chunks["blend_painter"] = new BlendPainterAsciiChunkParser();
-
-	chunks["piecewise_linear_function"] = new PiecewiseLinearFunctionChunkParser();
-	chunks["piecewise_linear_function2d"] = new PiecewiseLinearFunction2DChunkParser();
-
-	chunks["lambertian_material"] = new LambertianMaterialAsciiChunkParser();
-	chunks["perfectreflector_material"] = new PerfectReflectorMaterialAsciiChunkParser();
-	chunks["perfectrefractor_material"] = new PerfectRefractorMaterialAsciiChunkParser();
-	chunks["polished_material"] = new PolishedMaterialAsciiChunkParser();
-	chunks["dielectric_material"] = new DielectricMaterialAsciiChunkParser();
-	chunks["subsurfacescattering_material"] = new SubSurfaceScatteringMaterialAsciiChunkParser();
-	chunks["randomwalk_sss_material"] = new RandomWalkSSSMaterialAsciiChunkParser();
-	chunks["lambertian_luminaire_material"] = new LambertianLuminaireMaterialAsciiChunkParser();
-	chunks["phong_luminaire_material"] = new PhongLuminaireMaterialAsciiChunkParser();
-	chunks["ashikminshirley_anisotropicphong_material"] = new AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser();
-	chunks["isotropic_phong_material"] = new IsotropicPhongMaterialAsciiChunkParser();
-	chunks["translucent_material"] = new TranslucentMaterialAsciiChunkParser();
-	chunks["biospec_skin_material"] = new BioSpecSkinMaterialAsciiChunkParser();
-	chunks["donner_jensen_skin_bssrdf_material"] = new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser();
-	chunks["generic_human_tissue_material"] = new GenericHumanTissueMaterialAsciiChunkParser();
-	chunks["composite_material"] = new CompositeMaterialAsciiChunkParser();
-	chunks["ward_isotropic_material"] = new WardIsotropicGaussianMaterialAsciiChunkParser();
-	chunks["ward_anisotropic_material"] = new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser();
-	chunks["ggx_material"] = new GGXMaterialAsciiChunkParser();
-	chunks["cooktorrance_material"] = new CookTorranceMaterialAsciiChunkParser();
-	chunks["orennayar_material"] = new OrenNayarMaterialAsciiChunkParser();
-	chunks["schlick_material"] = new SchlickMaterialAsciiChunkParser();
-	chunks["datadriven_material"] = new DataDrivenMaterialAsciiChunkParser();
-
-	chunks["pinhole_camera"] = new PinholeCameraAsciiChunkParser();
-	chunks["onb_pinhole_camera"] = new ONBPinholeCameraAsciiChunkParser();
-	chunks["thinlens_camera"] = new ThinlensCameraAsciiChunkParser();
-	chunks["realistic_camera"] = new RealisticCameraAsciiChunkParser();
-	chunks["fisheye_camera"] = new FisheyeCameraAsciiChunkParser();
-	chunks["orthographic_camera"] = new OrthographicCameraAsciiChunkParser();
-
-	chunks["sphere_geometry"] = new SphereGeometryAsciiChunkParser();
-	chunks["ellipsoid_geometry"] = new EllipsoidGeometryAsciiChunkParser();
-	chunks["cylinder_geometry"] = new CylinderGeometryAsciiChunkParser();
-	chunks["torus_geometry"] = new TorusGeometryAsciiChunkParser();
-	chunks["infiniteplane_geometry"] = new InfinitePlaneGeometryAsciiChunkParser();
-	chunks["box_geometry"] = new BoxGeometryAsciiChunkParser();
-	chunks["clippedplane_geometry"] = new ClippedPlaneGeometryAsciiChunkParser();
-	chunks["3dsmesh_geometry"] = new Mesh3DSGeometryAsciiChunkParser();
-	chunks["rawmesh_geometry"] = new RAWMeshGeometryAsciiChunkParser();
-	chunks["rawmesh2_geometry"] = new RAWMesh2GeometryAsciiChunkParser();
-	chunks["risemesh_geometry"] = new RISEMeshGeometryAsciiChunkParser();
-	chunks["circulardisk_geometry"] = new CircularDiskGeometryAsciiChunkParser();
-	chunks["bezierpatch_geometry"] = new BezierPatchGeometryAsciiChunkParser();
-	chunks["bilinearpatch_geometry"] = new BilinearPatchGeometryAsciiChunkParser();
-	chunks["displaced_geometry"] = new DisplacedGeometryAsciiChunkParser();
-
-	chunks["bumpmap_modifier"] = new BumpmapModifierAsciiChunkParser();
-
-	chunks["homogeneous_medium"] = new HomogeneousMediumAsciiChunkParser();
-	chunks["heterogeneous_medium"] = new HeterogeneousMediumAsciiChunkParser();
-	chunks["painter_heterogeneous_medium"] = new PainterHeterogeneousMediumAsciiChunkParser();
-
-	chunks["standard_object"] = new StandardObjectAsciiChunkParser();
-	chunks["csg_object"] = new CSGObjectAsciiChunkParser();
-
-	chunks["ambientocclusion_shaderop"] = new AmbientOcclusionShaderOpAsciiChunkParser();
-	chunks["directlighting_shaderop"] = new DirectLightingShaderOpAsciiChunkParser();
-	chunks["pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();
-	chunks["mis_pathtracing_shaderop"] = new PathTracingShaderOpAsciiChunkParser();  // Legacy alias
-	chunks["sms_shaderop"] = new SMSShaderOpAsciiChunkParser();
-	chunks["distributiontracing_shaderop"] = new DistributionTracingShaderOpAsciiChunkParser();
-	chunks["finalgather_shaderop"] = new FinalGatherShaderOpAsciiChunkParser();
-	chunks["simple_sss_shaderop"] = new SimpleSubSurfaceScatteringShaderOpAsciiChunkParser();
-	chunks["diffusion_approximation_sss_shaderop"] = new DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser();
-	chunks["donner_jensen_skin_sss_shaderop"] = new DonnerJensenSkinSSSShaderOpAsciiChunkParser();
-	chunks["arealight_shaderop"] = new AreaLightShaderOpAsciiChunkParser();
-	chunks["transparency_shaderop"] = new TransparencyShaderOpAsciiChunkParser();
-
-	chunks["standard_shader"] = new StandardShaderAsciiChunkParser();
-	chunks["advanced_shader"] = new AdvancedShaderAsciiChunkParser();
-	chunks["directvolumerendering_shader"] = new DirectVolumeRenderingShaderAsciiChunkParser();
-	chunks["spectraldirectvolumerendering_shader"] = new SpectralDirectVolumeRenderingShaderAsciiChunkParser();
-
-	chunks["pixelpel_rasterizer"] = new PixelPelRasterizerAsciiChunkParser();
-	chunks["pixelintegratingspectral_rasterizer"] = new PixelIntegratingSpectralRasterizerAsciiChunkParser();
-	chunks["bdpt_pel_rasterizer"] = new BDPTPelRasterizerAsciiChunkParser();
-	chunks["bdpt_spectral_rasterizer"] = new BDPTSpectralRasterizerAsciiChunkParser();
-	chunks["vcm_pel_rasterizer"] = new VCMPelRasterizerAsciiChunkParser();
-	chunks["vcm_spectral_rasterizer"] = new VCMSpectralRasterizerAsciiChunkParser();
-	chunks["pathtracing_pel_rasterizer"] = new PathTracingPelRasterizerAsciiChunkParser();
-	chunks["pathtracing_spectral_rasterizer"] = new PathTracingSpectralRasterizerAsciiChunkParser();
-	chunks["mlt_rasterizer"] = new MLTRasterizerAsciiChunkParser();
-	chunks["mlt_spectral_rasterizer"] = new MLTSpectralRasterizerAsciiChunkParser();
-	chunks["file_rasterizeroutput"] = new FileRasterizerOutputAsciiChunkParser();
-
-	chunks["ambient_light"] = new AmbientLightAsciiChunkParser();
-	chunks["omni_light"] = new OmniLightAsciiChunkParser();
-	chunks["spot_light"] = new SpotLightAsciiChunkParser();
-	chunks["directional_light"] = new DirectionalLightAsciiChunkParser();
-
-	chunks["caustic_pel_photonmap"] = new CausticPelPhotonMapGenerateAsciiChunkParser();
-	chunks["translucent_pel_photonmap"] = new TranslucentPelPhotonMapGenerateAsciiChunkParser();
-	chunks["caustic_spectral_photonmap"] = new CausticSpectralPhotonMapGenerateAsciiChunkParser();
-	chunks["global_pel_photonmap"] = new GlobalPelPhotonMapGenerateAsciiChunkParser();
-	chunks["global_spectral_photonmap"] = new GlobalSpectralPhotonMapGenerateAsciiChunkParser();
-	chunks["shadow_photonmap"] = new ShadowPhotonMapGenerateAsciiChunkParser();
-	chunks["caustic_pel_gather"] = new CausticPelPhotonMapGatherAsciiChunkParser();
-	chunks["translucent_pel_gather"] = new TranslucentPelPhotonMapGatherAsciiChunkParser();
-	chunks["caustic_spectral_gather"] = new CausticSpectralPhotonMapGatherAsciiChunkParser();
-	chunks["global_pel_gather"] = new GlobalPelPhotonMapGatherAsciiChunkParser();
-	chunks["global_spectral_gather"] = new GlobalSpectralPhotonMapGatherAsciiChunkParser();
-	chunks["shadow_gather"] = new ShadowPhotonMapGatherAsciiChunkParser();
-	chunks["irradiance_cache"] = new IrradianceCacheAsciiChunkParser();
-
-	chunks["keyframe"] = new KeyframeAsciiChunkParser();
-	chunks["timeline"] = new TimelineAsciiChunkParser();
-	chunks["animation_options"] = new AnimationOptionsAsciiChunkParser();
+	// Build the dispatch map from the canonical parser registry.  The
+	// parser_entries vector owns each chunk parser via unique_ptr for
+	// the duration of this call; when it goes out of scope every parser
+	// is destroyed automatically.  Same registry feeds SceneEditorSuggestions.
+	std::vector<ChunkParserEntry> parser_entries = CreateAllChunkParsers();
+	std::map<std::string, IAsciiChunkParser*> chunks;
+	for( std::vector<ChunkParserEntry>::iterator it = parser_entries.begin(); it != parser_entries.end(); ++it ) {
+		chunks[it->keyword] = it->parser.get();
+	}
 
 	// Open up the file and start parsing!
 	struct stat file_stats = {0};
@@ -8416,15 +10753,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	safe_release( parser );
 	GlobalLog()->PrintEx( eLog_Info, "AsciiSceneParser: Successfully loaded \'%s\'", szFilename );
 
-	// Free the chunks map
-	{
-		std::map<std::string,IAsciiChunkParser*>::iterator i=chunks.begin(), e=chunks.end();
-		for( ; i!=e; i++ ) {
-			delete i->second;
-		}
-		chunks.clear();
-	}
-
+	// parser_entries unique_ptrs destroy the parsers when they go out of scope
 	return true;
 }
 

@@ -4,3 +4,4 @@
 //
 
 #import "RISEBridge.h"
+#import "RISESceneEditorBridge.h"

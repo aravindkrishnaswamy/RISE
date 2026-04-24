@@ -101,6 +101,7 @@
     <ClCompile Include="ControlsWidget.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
+    <ClCompile Include="SceneTextEdit.cpp" />
     <ClCompile Include="RISESyntaxHighlighter.cpp" />
     <ClCompile Include="VideoEncoder.cpp" />
   </ItemGroup>
@@ -112,6 +113,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_ControlsWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RISESyntaxHighlighter.cpp" />
   </ItemGroup>
   <!-- Headers with Q_OBJECT — CustomBuild runs moc.exe on each -->
@@ -147,6 +149,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="SceneEditor.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="SceneTextEdit.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>

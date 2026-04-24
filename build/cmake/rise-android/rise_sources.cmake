@@ -317,6 +317,12 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Parsers/MathExpressionEvaluator.cpp"
     "${RISE_LIB}/Options.cpp"
 
+    # SRCLIBSCENEEDITORSUGGESTIONS
+    "${RISE_LIB}/SceneEditorSuggestions/SceneGrammar.cpp"
+    "${RISE_LIB}/SceneEditorSuggestions/CompletionContext.cpp"
+    "${RISE_LIB}/SceneEditorSuggestions/NameIndex.cpp"
+    "${RISE_LIB}/SceneEditorSuggestions/SuggestionEngine.cpp"
+
     # SRCLIBMISC
     "${RISE_LIB}/DetectorSpheres/DetectorSphere.cpp"
     "${RISE_LIB}/DetectorSpheres/IsotropicRGBDetectorSphere.cpp"
