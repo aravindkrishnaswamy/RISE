@@ -490,3 +490,66 @@ Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 	const Scalar dz = mx.z - mn.z;
 	return Scalar( 2 ) * ( dx * dy + dy * dz + dz * dx );
 }
+
+namespace
+{
+	// Rec. 709 luminance — matches RISEPelToNMProxy in VCMIntegrator.cpp
+	// so the clamp ranks photons consistently with the spectral merge
+	// path's projection.
+	inline Scalar LightVertexLuminance( const RISEPel& t )
+	{
+		return Scalar( 0.2126 ) * t[0]
+		     + Scalar( 0.7152 ) * t[1]
+		     + Scalar( 0.0722 ) * t[2];
+	}
+}
+
+void LightVertexStore::ClampOutlierThroughputs(
+	const Scalar percentile,
+	const Scalar multiplier
+	)
+{
+	if( mVertices.empty() ) {
+		return;
+	}
+	if( multiplier <= 0 || percentile <= 0 || percentile >= 1 ) {
+		return;
+	}
+
+	// Build a flat luminance array for std::nth_element.  Using the
+	// store's mVertices directly would let nth_element reorder photons,
+	// breaking later index-based access; the auxiliary copy is the
+	// only correct option.
+	const std::size_t n = mVertices.size();
+	std::vector<Scalar> lums;
+	lums.reserve( n );
+	for( std::size_t i = 0; i < n; i++ ) {
+		lums.push_back( LightVertexLuminance( mVertices[i].throughput ) );
+	}
+
+	// Find the percentile via nth_element (O(n) average).  Clamp the
+	// index to [0, n-1] so percentile=1.0 doesn't run off the end.
+	std::size_t k = static_cast<std::size_t>( percentile * static_cast<double>( n ) );
+	if( k >= n ) k = n - 1;
+	std::nth_element( lums.begin(), lums.begin() + k, lums.end() );
+	const Scalar pctValue = lums[k];
+
+	// All photons effectively dark — nothing to clamp.  Skip the
+	// rescale loop to avoid divide-by-near-zero amplification.
+	if( pctValue <= NEARZERO ) {
+		return;
+	}
+
+	const Scalar threshold = multiplier * pctValue;
+
+	// Single pass to rescale outliers.  Color is preserved (uniform
+	// scale) so chromaticity stays the same; only the magnitude is
+	// capped.  Vertices already at or below threshold are untouched.
+	for( std::size_t i = 0; i < n; i++ ) {
+		const Scalar lum = LightVertexLuminance( mVertices[i].throughput );
+		if( lum > threshold ) {
+			const Scalar scale = threshold / lum;
+			mVertices[i].throughput = mVertices[i].throughput * scale;
+		}
+	}
+}

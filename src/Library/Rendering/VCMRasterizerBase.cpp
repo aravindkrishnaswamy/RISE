@@ -81,7 +81,18 @@ VCMRasterizerBase::VCMRasterizerBase(
 	// RISE_OPTIONS_FILE) reverts to fixed-radius SmallVCM — used for
 	// benchmarking + regression comparison.
 	mProgressiveRadiusEnabled(
-		!GlobalOptions().ReadBool( "vcm_disable_progressive_radius", false ) )
+		!GlobalOptions().ReadBool( "vcm_disable_progressive_radius", false ) ),
+	// Throughput clamp tuning.  Defaults: 99th-percentile threshold,
+	// 20× multiplier — clamps only the brightest ~1% of photons and
+	// only when they exceed 20× the bulk distribution's tail.  Tuned
+	// to suppress SSS-induced fireflies without measurably biasing
+	// well-behaved scenes.  Override via global options
+	// `vcm_throughput_clamp_percentile` (0..1) and
+	// `vcm_throughput_clamp_multiplier` (>0; 0 disables).
+	mThroughputClampPercentile(
+		GlobalOptions().ReadDouble( "vcm_throughput_clamp_percentile", 0.99 ) ),
+	mThroughputClampMultiplier(
+		GlobalOptions().ReadDouble( "vcm_throughput_clamp_multiplier", 20.0 ) )
 {
 	pIntegrator = new VCMIntegrator(
 		maxEyeDepth,
@@ -763,6 +774,18 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 			pIntegrator->GetEnableVC(),
 			pIntegrator->GetEnableVM(),
 			static_cast<Scalar>( pathsShot ) );
+	}
+
+	// Cap outlier photon throughputs before tree balance.  The biased
+	// rescale targets the firefly tail produced by rare bright photons
+	// (notably BSSRDF emergences with small pdfSurface), which under
+	// progressive radius shrinkage become more pronounced as 1/r²
+	// amplifies their per-merge contribution.  Skipped when
+	// mThroughputClampMultiplier == 0 (set via global option).
+	if( pIntegrator->GetEnableVM() && mThroughputClampMultiplier > 0 ) {
+		pLightVertexStore->ClampOutlierThroughputs(
+			mThroughputClampPercentile,
+			mThroughputClampMultiplier );
 	}
 
 	pLightVertexStore->BuildKDTreeParallel();

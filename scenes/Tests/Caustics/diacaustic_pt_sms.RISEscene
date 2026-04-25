@@ -30,7 +30,7 @@ pathtracing_pel_rasterizer
 	pathguiding_alpha             0.5
 	pathguiding_max_depth         8
 
-	sms_enabled                   FALSE
+	sms_enabled                   TRUE
 	sms_max_iterations            20
 	sms_threshold                 1e-5
 	sms_max_chain_depth           10

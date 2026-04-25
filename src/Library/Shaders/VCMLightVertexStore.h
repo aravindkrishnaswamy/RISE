@@ -125,6 +125,29 @@ namespace RISE
 			/// (use area, underestimate density, keep larger radius).
 			Scalar ComputeBBoxSurfaceArea() const;
 
+			/// Clamp outlier throughputs to suppress photon-mapping
+			/// fireflies caused by rare bright photons (notably SSS
+			/// vertices where Rd/pdfSurface fluctuates).  Computes
+			/// the `percentile`-th percentile of per-vertex Rec.709
+			/// luminance, sets `threshold = multiplier * percentile`,
+			/// and rescales any vertex with luminance > threshold by
+			/// `threshold / luminance` (preserves color, caps power).
+			///
+			/// Biased: bias decreases with smaller merge radius and
+			/// more iterations, matching production photon-mapping
+			/// practice (PBRT, Mitsuba, SmallVCM stability mode).
+			/// No-op when the store is empty, when `multiplier <= 0`,
+			/// or when the percentile value is sub-numerical.
+			///
+			/// MUST be called after Concat and before BuildKDTree —
+			/// modifying throughputs after the tree balance does not
+			/// invalidate the spatial index, but doing it before is
+			/// simpler and avoids re-linearizing the array.
+			void ClampOutlierThroughputs(
+				const Scalar percentile,
+				const Scalar multiplier
+				);
+
 		private:
 			std::vector<LightVertex>	mVertices;
 			bool						mBuilt;

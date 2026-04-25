@@ -30,7 +30,6 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `SMS/`: specular manifold sampling comparisons and visibility checks
 - `Shaders/`: shader-op and rasterizer behavior checks
 - `Spectral/`: spectral-lighting and dispersive regression scenes
-- `StabilityControls/`: sample clamping, bounce limits, RR, and glossy filtering
 - `Samplers/`: Sobol, ZSobol, and sampler comparison scenes
 - `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes (includes `pathtracing_pel_rasterizer` variants)
 - `UnifiedLighting/`: direct-light sampling and many-light regression scenes

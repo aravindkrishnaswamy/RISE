@@ -416,9 +416,17 @@ void VCMSpectralRasterizer::IntegratePixel(
 					VCMIntegrator::ConvertEyeSubpath(
 						branchEyeVertsSp, mVCMNormalization, eyeMis );
 
-					if( mVCMNormalization.mEnableVC ) {
+					// EvaluateS0NM (eye ray hits emitter) is the s=0
+					// strategy and must run whenever VCM is operating
+					// — its internal MIS already accounts for VC/VM
+					// competition.  See matching comment in
+					// VCMPelRasterizer::IntegratePixel.
+					if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
 						heroValue += pIntegrator->EvaluateS0NM(
 							pScene, *pCaster, branchEyeVertsSp, eyeMis, mVCMNormalization, heroNM );
+					}
+
+					if( mVCMNormalization.mEnableVC ) {
 						heroValue += pIntegrator->EvaluateNEENM(
 							pScene, *pCaster, sampler, branchEyeVertsSp, eyeMis, mVCMNormalization, heroNM );
 
@@ -538,9 +546,14 @@ void VCMSpectralRasterizer::IntegratePixel(
 						VCMIntegrator::ConvertEyeSubpath(
 							compEye, mVCMNormalization, eyeMis );
 
-						if( mVCMNormalization.mEnableVC ) {
+						// S0 (eye→emitter) is independent of VC; see
+						// matching comment in the hero block above.
+						if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
 							compValue += pIntegrator->EvaluateS0NM(
 								pScene, *pCaster, compEye, eyeMis, mVCMNormalization, companionNM );
+						}
+
+						if( mVCMNormalization.mEnableVC ) {
 							compValue += pIntegrator->EvaluateNEENM(
 								pScene, *pCaster, sampler, compEye, eyeMis, mVCMNormalization, companionNM );
 

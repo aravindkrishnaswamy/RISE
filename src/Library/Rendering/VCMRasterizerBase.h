@@ -69,6 +69,17 @@ namespace RISE
 			Scalar mTargetPhotonsPerQuery;		///< Expected photons-per-query used to derive density floor
 			bool   mProgressiveRadiusEnabled;	///< Kill-switch: false => fixed radius (legacy behavior)
 
+			// Outlier light-vertex throughput clamp.  Each pass, photons
+			// whose Rec.709 luminance exceeds `multiplier × percentile`
+			// of the per-pass distribution are rescaled down (color
+			// preserved).  Mitigates fireflies from rare bright photons
+			// in high-variance paths (notably SSS where Rd/pdfSurface
+			// fluctuates).  Biased — the bias decreases with smaller
+			// merge radius and more iterations, matching production
+			// photon-mapping practice.  Set multiplier=0 to disable.
+			Scalar mThroughputClampPercentile;	///< 0..1; 0.99 = 99th percentile of luminance
+			Scalar mThroughputClampMultiplier;	///< threshold = multiplier × percentile_value; 0 disables
+
 			virtual ~VCMRasterizerBase();
 
 			/// Override called by PixelBasedRasterizerHelper::RasterizeScene

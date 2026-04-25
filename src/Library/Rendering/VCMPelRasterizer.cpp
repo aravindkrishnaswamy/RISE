@@ -415,10 +415,18 @@ void VCMPelRasterizer::IntegratePixel(
 				VCMIntegrator::ConvertEyeSubpath(
 					branchEyeVerts, mVCMNormalization, eyeMis );
 
-				if( mVCMNormalization.mEnableVC ) {
+				// EvaluateS0 (eye ray hits the emitter directly) is the
+				// s=0 strategy — independent of VC connections.  Its
+				// internal MIS weight already accounts for whether VC
+				// or VM are competing strategies, so it must run
+				// whenever VCM is operating.  Gating on VC alone made
+				// VM-only mode render emitters as black.
+				if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
 					sampleColor = sampleColor + pIntegrator->EvaluateS0(
 						pScene, *pCaster, branchEyeVerts, eyeMis, mVCMNormalization );
+				}
 
+				if( mVCMNormalization.mEnableVC ) {
 					sampleColor = sampleColor + pIntegrator->EvaluateNEE(
 						pScene, *pCaster, sampler, branchEyeVerts, eyeMis, mVCMNormalization );
 
