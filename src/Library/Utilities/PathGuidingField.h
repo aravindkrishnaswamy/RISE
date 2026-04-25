@@ -89,7 +89,18 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OPENPGL
 
+// openpgl ships headers that trip -Wdocumentation (empty @brief) and
+// -Wshorten-64-to-32 (size_t→int) under our project warning level.
+// Silence them at the include site so our build stays warning-clean.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdocumentation"
+#pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#endif
 #include <openpgl/openpgl.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 #include "../Interfaces/IReference.h"
 #include "../Utilities/Reference.h"
 

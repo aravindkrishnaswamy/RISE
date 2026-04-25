@@ -40,14 +40,7 @@ final class RISESceneSyntaxHighlighter: NSObject, NSTextStorageDelegate {
 
     static let blockKeywords: Set<String> = {
         let bridge = RISESceneEditorBridge()
-        let nsset = bridge.allChunkKeywords()
-        var s = Set<String>()
-        for obj in nsset {
-            if let str = obj as? String {
-                s.insert(str)
-            }
-        }
-        return s
+        return Set(bridge.allChunkKeywords())
     }()
 
     // MARK: - Pre-compiled Regex Patterns

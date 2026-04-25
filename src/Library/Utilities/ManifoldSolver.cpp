@@ -4339,8 +4339,6 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		? config.uniquenessThreshold : 1e-4;
 	const std::vector<ManifoldVertex> baseSeedChain = seedChain;
 
-	const IObject* pFirstCaster = baseSeedChain[0].pObject;
-
 	std::vector<SMSPhoton> photonSeeds;
 	if( pPhotonMap && pPhotonMap->IsBuilt() && N > 1 )
 	{
@@ -4586,85 +4584,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 namespace
 {
-	// Returns true if a non-specular (opaque) occluder lies along the
-	// segment [start, start + dir * maxDist].  SPECULAR surfaces are
-	// skipped — a photon can traverse them via Snell's law, so the
-	// straight-line shadow test must not treat them as opaque.  The
-	// walk terminates as soon as a non-specular hit is found or once
-	// the remaining distance budget is exhausted.
-	//
-	// Rationale: in multi-caster scenes (two intersecting toruses,
-	// glass-in-glass, displaced slabs) the "external segment" of an
-	// SMS chain frequently grazes another part of the SAME caster
-	// object that is NOT in the current Snell-traced chain — e.g. the
-	// shading→biased_v0 line for a path through the TOP tube of a
-	// torus may cross the bottom tube geometrically, even though the
-	// chain only contains top-tube vertices.  The naive shadow test
-	// drops that contribution; the filtered walk below keeps it.
-	//
-	// Only the surface-specular-info flag `isSpecular` is consulted
-	// — materials that are partly specular and partly diffuse (mixed
-	// BSDFs) are conservatively treated as opaque.  This matches the
-	// Snell-trace logic in BuildSeedChain.
-	bool SegmentOccludedIgnoringSpeculars(
-		const Point3& start,
-		const Vector3& dir,
-		const Scalar maxDist,
-		const IRayCaster& caster )
-	{
-		const IScene* pScene = caster.GetAttachedScene();
-		if( !pScene ) {
-			return caster.CastShadowRay( Ray( start, dir ), maxDist );
-		}
-		const IObjectManager* pObjMgr = pScene->GetObjects();
-		if( !pObjMgr ) {
-			return caster.CastShadowRay( Ray( start, dir ), maxDist );
-		}
-
-		// Walk forward, stepping past every specular hit we encounter.
-		// Hard iteration cap prevents pathological infinite loops when
-		// the ray keeps re-hitting an object it's inside (shouldn't
-		// happen with the 1e-4 advance, but be defensive).
-		const unsigned int kMaxSpecularTraversals = 8;
-		Point3 curOrigin = start;
-		Scalar distRemaining = maxDist;
-
-		for( unsigned int it = 0; it < kMaxSpecularTraversals; it++ )
-		{
-			Ray ray( curOrigin, dir );
-			RayIntersection ri( ray, nullRasterizerState );
-			pObjMgr->IntersectRay( ri, true, true, false );
-
-			if( !ri.geometric.bHit ) return false;
-			if( ri.geometric.range > distRemaining ) return false;
-
-			// Classify the hit material.  Anything without specular
-			// info (e.g. diffuse floor) OR with a mixed-non-specular
-			// contribution counts as opaque.
-			const IMaterial* pMat = ri.pMaterial;
-			bool isPureSpecular = false;
-			if( pMat ) {
-				IORStack dummyStack( 1.0 );
-				SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, dummyStack );
-				isPureSpecular = specInfo.isSpecular;
-			}
-			if( !isPureSpecular ) {
-				// Opaque or translucent-diffuse — really blocks.
-				return true;
-			}
-
-			// Specular hit: advance past it and continue.
-			const Scalar step = ri.geometric.range + 1e-4;
-			if( step >= distRemaining ) return false;
-			curOrigin = Point3Ops::mkPoint3( curOrigin, dir * step );
-			distRemaining -= step;
-		}
-		// Too many specular traversals — treat as unoccluded to avoid
-		// dropping contributions in deeply-nested glass topologies.
-		return false;
-	}
-
-	// Chain-aware variant: the segment is considered BLOCKED if the ray
+	// Chain-aware visibility: the segment is considered BLOCKED if the ray
 	// passes through a specular caster that is NOT in the allowed set
 	// (the chain's caster objects).  Specular hits on allowed casters
 	// are traversed like above (the chain already accounts for them);

@@ -2745,7 +2745,7 @@ namespace RISE
 					return pJob.SetPinholeCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "pinhole_camera"; cd.category = ChunkCategory::Camera;
@@ -2881,7 +2881,7 @@ namespace RISE
 					return pJob.SetThinlensCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focal, focus );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "thinlens_camera"; cd.category = ChunkCategory::Camera;
@@ -3019,7 +3019,7 @@ namespace RISE
 					return pJob.SetFisheyeCamera( loc, lookat, up, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "fisheye_camera"; cd.category = ChunkCategory::Camera;
@@ -3081,7 +3081,7 @@ namespace RISE
 					return pJob.SetOrthographicCamera( loc, lookat, up, xres, yres, vpscale, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "orthographic_camera"; cd.category = ChunkCategory::Camera;
@@ -4938,7 +4938,7 @@ namespace RISE
 						showLuminaires, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "pixelpel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5085,7 +5085,7 @@ namespace RISE
 						);
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "pixelintegratingspectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5202,7 +5202,7 @@ namespace RISE
 						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bdpt_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5320,7 +5320,7 @@ namespace RISE
 						smsConfig, oidnDenoise, guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bdpt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5427,7 +5427,7 @@ namespace RISE
 						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "vcm_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5525,7 +5525,7 @@ namespace RISE
 						guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "vcm_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5643,7 +5643,7 @@ namespace RISE
 						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "pathtracing_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5752,7 +5752,7 @@ namespace RISE
 						smsConfig, oidnDenoise, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "pathtracing_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -5837,7 +5837,7 @@ namespace RISE
 						stabilityConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "mlt_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -6046,7 +6046,7 @@ namespace RISE
 					return pJob.ShootCausticPelPhotons( photons, power_scale, maxRecur, minImportance, branch, reflect, refract, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "caustic_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
@@ -6081,7 +6081,7 @@ namespace RISE
 					return pJob.ShootCausticSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, reflect, refract, temporal_samples, regenerate );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "caustic_spectral_photonmap"; cd.category = ChunkCategory::PhotonMap;
@@ -6117,7 +6117,7 @@ namespace RISE
 					return pJob.ShootGlobalSpectralPhotons( photons, power_scale, maxRecur, minImportance, nmbegin, nmend, numWavelengths, branch, temporal_samples, regenerate );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "global_spectral_photonmap"; cd.category = ChunkCategory::PhotonMap;
@@ -6154,7 +6154,7 @@ namespace RISE
 					return pJob.ShootTranslucentPelPhotons( photons, power_scale, maxRecur, minImportance, reflect, refract, direct_translucent, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "translucent_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
@@ -6181,7 +6181,7 @@ namespace RISE
 					return pJob.ShootShadowPhotons( photons, temporal_samples, regenerate );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "shadow_photonmap"; cd.category = ChunkCategory::PhotonMap;
@@ -6215,7 +6215,7 @@ namespace RISE
 					return pJob.ShootGlobalPelPhotons( photons, power_scale, maxRecur, minImportance, branch, shootFromNonMeshLights, temporal_samples, regenerate, shootFromMeshLights );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "global_pel_photonmap"; cd.category = ChunkCategory::PhotonMap;
@@ -6240,7 +6240,7 @@ namespace RISE
 					return pJob.SetCausticPelGatherParameters( radius, ellipse_ratio, min, max );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "caustic_pel_gather"; cd.category = ChunkCategory::PhotonGather;
@@ -6266,7 +6266,7 @@ namespace RISE
 					return pJob.SetCausticSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "caustic_spectral_gather"; cd.category = ChunkCategory::PhotonGather;
@@ -6293,7 +6293,7 @@ namespace RISE
 					return pJob.SetGlobalSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "global_spectral_gather"; cd.category = ChunkCategory::PhotonGather;
@@ -6319,7 +6319,7 @@ namespace RISE
 					return pJob.SetTranslucentPelGatherParameters( radius, ellipse_ratio, min, max );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "translucent_pel_gather"; cd.category = ChunkCategory::PhotonGather;
@@ -6344,7 +6344,7 @@ namespace RISE
 					return pJob.SetShadowGatherParameters( radius, ellipse_ratio, min, max );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "shadow_gather"; cd.category = ChunkCategory::PhotonGather;
@@ -6369,7 +6369,7 @@ namespace RISE
 					return pJob.SetGlobalPelGatherParameters( radius, ellipse_ratio, min, max );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "global_pel_gather"; cd.category = ChunkCategory::PhotonGather;
@@ -6396,7 +6396,7 @@ namespace RISE
 					return pJob.SetIrradianceCacheParameters( size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "irradiance_cache"; cd.category = ChunkCategory::IrradianceCache;

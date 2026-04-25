@@ -18,9 +18,7 @@
 using namespace RISE;
 
 static const Scalar	EQN_EPS =    1e-19;
-static const Scalar EQN_CE =	 1e-15;
 
-#define		IsCloseEnoughToZero(x)		((x) > -EQN_CE && (x) < EQN_CE)
 #define	    IsZero(x)	((x) > -EQN_EPS && (x) < EQN_EPS)
 #define	    IsReallyZero(x)	(x==0)
 
@@ -253,8 +251,6 @@ namespace
 	static const double oqs_fact_d0 = 1.4901161193847656e-8;  // sqrt(macheps)
 	static const double oqs_cubic_rescal_fact = 3.488062113727083e102; // pow(DBL_MAX, 1/3) / phi
 	static const double oqs_quart_rescal_fact = 7.156344627944542e76;  // pow(DBL_MAX, 1/4) / phi
-
-	inline double oqs_sqr( double x ) { return x * x; }
 
 	// Dominant real root of depressed cubic x^3 + b x + c = 0, handles
 	// b or c near DBL_MAX without overflow.  Reference: eq. 85/86.
