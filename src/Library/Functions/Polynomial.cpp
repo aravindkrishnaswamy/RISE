@@ -248,7 +248,6 @@ namespace
 {
 	static const double oqs_pi = 3.14159265358979323846;
 	static const double oqs_macheps = 2.2204460492503131e-16; // DBL_EPSILON
-	static const double oqs_fact_d0 = 1.4901161193847656e-8;  // sqrt(macheps)
 	static const double oqs_cubic_rescal_fact = 3.488062113727083e102; // pow(DBL_MAX, 1/3) / phi
 	static const double oqs_quart_rescal_fact = 7.156344627944542e76;  // pow(DBL_MAX, 1/4) / phi
 

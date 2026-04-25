@@ -86,9 +86,13 @@ namespace RISE
 	// matched values in the bag.  Unknown parameters fail the parse.
 	// Finalize() then reads the values out using the typed accessors
 	// and emits the corresponding pJob.AddX call.
+	struct ChunkDescriptor;
+
 	class ParseStateBag : public IChunkParseState
 	{
 	public:
+		ParseStateBag(const ChunkDescriptor* desc = nullptr) : mDescriptor(desc) {}
+
 		bool Has( const std::string& key ) const
 		{
 			return mSingles.find( key ) != mSingles.end()
@@ -99,31 +103,38 @@ namespace RISE
 		// default supplied by the caller — Finalize() typically passes
 		// the same default the legacy ParseChunk used as its initial
 		// value, so behaviour matches the pre-migration parser.
+		void ValidateAccess(const std::string& key) const;
+
 		std::string GetString( const std::string& key, const std::string& def = std::string() ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			return it == mSingles.end() ? def : it->second;
 		}
 		double GetDouble( const std::string& key, double def = 0.0 ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
 			return RISE::String( it->second.c_str() ).toDouble();
 		}
 		unsigned int GetUInt( const std::string& key, unsigned int def = 0u ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
 			return RISE::String( it->second.c_str() ).toUInt();
 		}
 		int GetInt( const std::string& key, int def = 0 ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
 			return atoi( it->second.c_str() );
 		}
 		bool GetBool( const std::string& key, bool def = false ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return def;
 			return RISE::String( it->second.c_str() ).toBoolean();
@@ -133,6 +144,7 @@ namespace RISE
 		// conversions like DEG_TO_RAD only on explicit input).
 		bool GetVec3( const std::string& key, double out[3] ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
 			if( it == mSingles.end() ) return false;
 			out[0] = out[1] = out[2] = 0.0;
@@ -142,6 +154,7 @@ namespace RISE
 		// All values for a repeatable parameter, in input order.
 		const std::vector<std::string>& GetRepeatable( const std::string& key ) const
 		{
+			ValidateAccess(key);
 			std::map<std::string, std::vector<std::string> >::const_iterator it = mRepeatables.find( key );
 			static const std::vector<std::string> kEmpty;
 			return it == mRepeatables.end() ? kEmpty : it->second;
@@ -157,6 +170,7 @@ namespace RISE
 	private:
 		std::map<std::string, std::string>              mSingles;
 		std::map<std::string, std::vector<std::string> > mRepeatables;
+		const ChunkDescriptor*                          mDescriptor;
 	};
 
 	// Applies a parameter value to a custom IChunkParseState subclass.
@@ -185,6 +199,22 @@ namespace RISE
 		std::vector<ParameterDescriptor> parameters;
 		std::string                      description;
 	};
+
+	inline void ParseStateBag::ValidateAccess(const std::string& key) const
+	{
+		if( !mDescriptor ) return;
+		bool found = false;
+		for( size_t i=0; i<mDescriptor->parameters.size(); ++i ) {
+			if( mDescriptor->parameters[i].name == key ) {
+				found = true;
+				break;
+			}
+		}
+		if( !found ) {
+			fprintf(stderr, "ChunkParser Bug: Finalize() requested undeclared parameter `%s` in chunk `%s`\n", 
+				key.c_str(), mDescriptor->keyword.empty() ? "(unknown)" : mDescriptor->keyword.c_str());
+		}
+	}
 }
 
 #endif

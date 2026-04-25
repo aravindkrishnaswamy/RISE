@@ -232,9 +232,9 @@ inline char evaluate_first_function_in_expression( String& token )
 	}
 
 	// assemble together
-	static const unsigned int MAX_CHARS = 64;
+	static const unsigned int MAX_CHARS = 512;
 	char evaluated[MAX_CHARS] = {0};
-	snprintf( evaluated, MAX_CHARS, "%.12f", val );
+	snprintf( evaluated, MAX_CHARS, "%.17f", val );
 
 	processed.append( evaluated );
 	processed.append( str.substr( y+1, str.length()-1 ) );
@@ -295,9 +295,9 @@ inline bool evaluate_expression( String& token )
 		return false;
 	}
 
-	static const unsigned int MAX_CHARS = 64;
+	static const unsigned int MAX_CHARS = 512;
 	char evaluated[MAX_CHARS] = {0};
-	snprintf( evaluated, MAX_CHARS, "%.12f", expr.eval() );
+	snprintf( evaluated, MAX_CHARS, "%.17f", expr.eval() );
 
 	token = String(evaluated);
 	return true;
@@ -359,7 +359,11 @@ namespace RISE
 			// Tracks uniform color painter values so that material parsers
 			// can validate energy conservation at scene-definition time.
 			struct PainterColor { double c[3]; };
-			static std::map<std::string, PainterColor> s_painterColors;
+			static thread_local std::map<std::string, PainterColor> s_painterColors;
+
+			static void ClearParseState() {
+				s_painterColors.clear();
+			}
 
 			// Generic dispatch used by migrated chunk parsers to replace the
 			// Generic registry-driven dispatcher.  Walks the input
@@ -6739,7 +6743,7 @@ namespace RISE
 	// structurally impossible.
 	bool IAsciiChunkParser::ParseChunk( const ParamsList& in, IJob& pJob ) const
 	{
-		ParseStateBag bag;
+		ParseStateBag bag( &Describe() );
 		if( !Implementation::ChunkParsers::DispatchChunkParameters( Describe(), bag, in ) ) {
 			return false;
 		}
@@ -6771,6 +6775,8 @@ using namespace RISE::Implementation::ChunkParsers;
 
 bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 {
+	Implementation::ChunkParsers::ClearParseState();
+
 	// Build the dispatch map from the canonical parser registry.  The
 	// parser_entries vector owns each chunk parser via unique_ptr for
 	// the duration of this call; when it goes out of scope every parser
