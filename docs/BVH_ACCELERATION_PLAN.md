@@ -27,6 +27,8 @@ After Phase 4 we evaluate before deciding on Phase 5 (compressed nodes) or Phase
 3. Bit-equal first-hit results vs. octree on regression scenes (at BVH width 2); statistical equivalence at wider widths.
 4. SMS / BDPT / VCM caustic correctness preserved (firefly count within 5% of pre-BVH baseline at equal SPP).
 5. Apple Silicon and Android arm64 first-class (NEON BVH4).
+6. `.risemesh` binary format migrates cleanly: v1/v2 files auto-rebuild BVH on load, `meshconverter` produces v3 files with baked BVH, and the v3 format stays stable through Phase 4.
+7. Animation (keyframed-painter-driven `DisplacedGeometry` rebuilds) runs **faster** than the current octree path, not slower, by exploiting topology stability via BVH refit (~10× faster than full rebuild on a 100K-tri displaced mesh).
 
 **Non-goals (this initiative).**
 - ObjectManager (TLAS) acceleration. Stays octree/BSP for now; revisited as Phase 6 if Phase 4 evaluation says so.
@@ -144,6 +146,7 @@ The following are **deleted**, not deprecated:
 - `TriangleMeshGeometry::nMaxPerOctantNode`, `nMaxRecursionLevel`, `bUseBSP` fields.
 - `pPolygonsOctree` and `pPolygonsBSPtree` members from `TriangleMeshGeometry` and `TriangleMeshGeometryIndexed`.
 - The corresponding `Octree<const Triangle*>` and `BSPTreeSAH<const Triangle*>` instantiations (the templates remain; only these specializations are removed).
+- `DisplacedGeometry` constructor signature [DisplacedGeometry.h](../src/Library/Geometry/DisplacedGeometry.h): `max_polys_per_node`, `max_recursion_level`, `bUseBSP` parameters removed. The new constructor takes no acceleration-tuning args; it builds its internal mesh with a hardcoded animation-friendly `AccelerationConfig` (plain SAH, not SBVH — see §4.6 rationale). The `displaced_geometry` parser chunk drops `poly_bsp`, `maxpolygons`, `maxpolydepth` from its accepted-parameter set.
 
 ### 4.2 Added
 
@@ -189,6 +192,168 @@ The sweep ships in the same commit series as Phase 1 so master is never broken.
 
 ---
 
+### 4.5 `.risemesh` File Format Migration
+
+The `.risemesh` binary format ([src/Library/Geometry/TriangleMeshGeometryIndexed.cpp:438](../src/Library/Geometry/TriangleMeshGeometryIndexed.cpp), `cur_version = 2`) bakes a serialized octree or BSP tree alongside the polygon data. The whole reason `.risemesh` exists is to skip acceleration-structure build cost on scene load. With BVH replacing both octree and BSP, the format must evolve — and we **must** serialize the BVH (not rebuild on every load), because rebuilding a 1M-tri SBVH costs 5–60 s and would tank benchmark times.
+
+**Version bump.** `cur_version = 3`. Behavior on read:
+
+| Read version | Acceleration block in file | Action |
+|---|---|---|
+| 1 | not present (legacy) | Build BVH from polygons. Log: "Legacy v1 .risemesh, building BVH". |
+| 2 | octree or BSP serialized | **Discard** the serialized structure (skip the relevant bytes), build BVH from polygons. Log: "Legacy v2 .risemesh, rebuilding BVH". |
+| 3 | BVH2 serialized | Deserialize BVH2 directly. Collapse to BVH4/BVH8 at load time per `RISE_BVH_WIDTH`. |
+| ≥ 4 (future) | unknown | Reject with error message naming the required RISE version. User must re-bake via meshconverter. |
+
+**v3 layout** (in serialization order):
+
+| Block | Size | Notes |
+|---|---|---|
+| Signature `"RISE"` | 4 B | unchanged from v1/v2 |
+| Version | 4 B | `3` (`uint32_t`) |
+| Vertex / normal / texcoord arrays | unchanged from v2 | double precision (authoritative) |
+| `PointerTriangle` array | unchanged | indices into vertex/normal/texcoord arrays |
+| `bDoubleSided` flag | 1 B | unchanged |
+| BVH-present flag | 1 B | `0` = no BVH (rebuild on load), `1` = BVH follows |
+| BVH magic `"BVH2"` | 4 B | format identifier (only BVH2 is on disk; wider widths derived) |
+| BVH triangle reference count `M` | 4 B | `M ≥ N` due to SBVH duplication |
+| BVH triangle reference array | 4·M B | `uint32_t` indices into `ptr_polygons` |
+| BVH node count | 4 B | |
+| BVH node array | sizeof(BVHNode)·numNodes | float AABBs, child indices, leaf marker |
+| Overall BVH bbox (sanity) | 48 B | min/max as `Scalar` (double); validated on load — corrupt → trigger rebuild |
+
+**Forward compatibility within the BVH initiative.** The disk format stores **BVH2 only**. Phase 3 BVH4 and Phase 4 BVH8 collapse at load time — disk format unchanged. Phase 2 precomputed triangle data (Möller edges, optional Woop transform) is also **derived at load time** from the authoritative double vertices, not stored. This means **`.risemesh` files baked with Phase 1 stay readable through Phase 4** without further version bumps.
+
+If a future change does need a format bump (e.g., compressed nodes in deferred Phase 5), follow this convention: increment `cur_version`, add a legacy reader for the previous version that either migrates or rebuilds-from-polygons, and document the change here.
+
+**Cross-platform determinism.** Same input mesh + same `AccelerationConfig` must produce byte-identical `.risemesh` files on macOS, Windows, and Linux. Achieved by:
+- Explicit `uint32_t` / `uint64_t` field sizes (never `size_t`).
+- Little-endian on disk (project convention from existing `Serialize` calls).
+- Deterministic SAH binning: tie-break sort keys are `(centroid_axis_value, primitive_index)`, never centroid alone.
+- Deterministic spatial-split tie-breaking: `(sah_cost, axis, primitive_index)`.
+- Float-AABB rounding mode set explicitly (round-min-down, round-max-up via `nextafter`, never via FPU rounding mode which varies by OS).
+
+Verified by a CI test that builds `dragon_small.risemesh` on macOS / Windows i9 / Linux runners and compares SHA-256 hashes. Bit-equal mismatch fails the build.
+
+**`meshconverter` tool changes.** [src/RISE/meshconverter.cpp](../src/RISE/meshconverter.cpp) is rewritten:
+
+| Old CLI | New CLI |
+|---|---|
+| `meshconverter <in> <out> <use_bsp> <max_polys> <max_levels> <invert_faces> <face_normals>` | `meshconverter <in> <out> [--max-leaf N] [--sbvh-budget F] [--bins N] [--no-sbvh] [--invert-faces] [--face-normals] [--watertight]` |
+
+- Defaults: `--max-leaf=4`, `--sbvh-budget=0.30`, `--bins=32`, SBVH ON, watertight OFF.
+- Accepts `.3ds`, `.ply`, **and `.risemesh`** as input. Passing a v1 or v2 `.risemesh` triggers in-place re-bake to v3 with BVH.
+- Per the project rule on no header defaults, all flags must be passed explicitly *or* the CLI's argument-parsing layer applies the defaults at the entry point — the public API itself takes a fully-populated `AccelerationConfig`.
+
+**Re-baking existing models.** Models in `models/risemesh/` (`bunny.risemesh`, `creature.risemesh`, `dragon_small.risemesh`, `she_ears.risemesh`, `she_eyes_pupil.risemesh`, `she_eyes_white.risemesh`, `she_head.risemesh`, `she_lips.risemesh`, `torusknot.risemesh`, plus any others) get re-baked in Phase 1's PR series. Two paths considered:
+
+1. **Run `meshconverter` against each existing v1/v2 file** — chosen. Uses already-loaded triangle data (no need for source `.3ds` / `.ply`). Ship upgraded files in the same commit series.
+2. Rely on auto-rebuild on first load — rejected. Adds 5–60 s to every cold scene-load — bad for benchmarks and bad for the user experience.
+
+A small driver script `tools/rebake_risemesh.sh` enumerates `models/risemesh/*.risemesh`, runs the new `meshconverter` on each, and verifies the output deserializes cleanly. Lives in the same PR.
+
+---
+
+### 4.6 Animation Support — Keyframed `DisplacedGeometry` and BVH Refit
+
+RISE supports keyframe animation via [IKeyframable](../src/Library/Interfaces/IKeyframable.h). Most keyframable parameters (camera transform, light intensity, material colors) don't change geometry. **One parameter type does:** a Painter2D used as the displacement function of a [DisplacedGeometry](../src/Library/Geometry/DisplacedGeometry.h). When the painter's keyframed state advances, the painter notifies via its `Observable` mixin, and DisplacedGeometry's subscription fires `DestroyMesh(); BuildMesh()` — re-tessellating the base, re-applying displacement, and rebuilding the internal mesh's acceleration structure.
+
+This is **the only path in RISE where a triangle mesh's vertex positions change at runtime.** Static meshes from `.3ds`, `.ply`, `.risemesh`, etc., are never mutated post-load.
+
+#### 4.6.1 Topology stability — the key observation
+
+Reading `DisplacedGeometry::BuildMesh` ([DisplacedGeometry.cpp:98](../src/Library/Geometry/DisplacedGeometry.cpp)):
+
+- `m_pBase->TessellateToMesh(tris, vertices, normals, coords, m_detail)` — `m_detail` is a constructor argument, **not** keyframable.
+- `ApplyDisplacementMapToObject(...)` — mutates vertex positions and normals only; doesn't add or remove vertices, doesn't change triangle indices.
+- The new `TriangleMeshGeometryIndexed` is built from the same triangle list each time.
+
+Across every painter-notification rebuild for a given DisplacedGeometry instance:
+
+| Property | Behavior across rebuilds |
+|---|---|
+| Triangle count | Identical |
+| Triangle connectivity (vertex indices) | Identical |
+| Vertex array length | Identical |
+| **Vertex positions** | **Change** |
+| **Vertex normals (derived)** | **Change** |
+| Texture coordinates | Identical |
+
+This is a structural fact about how DisplacedGeometry is currently implemented. The plan relies on it. If a future change makes `m_detail` keyframable, that whole assumption collapses and a different code path is needed — flagged in §4.6.6.
+
+#### 4.6.2 Implication: refit, not rebuild
+
+When topology is stable, a BVH can be **refit** — walk the tree bottom-up and recompute every node's AABB from the current triangle vertices — instead of rebuilt from scratch. Refit is O(N), parallelizable, with no SAH binning, no spatial-split work, no allocation. Empirical estimates for a 100K-tri displaced mesh:
+
+| Operation | Cost | Relative |
+|---|---|---|
+| Octree rebuild (current animation behavior) | ~150 ms | baseline |
+| SBVH rebuild | ~500 ms | 3.3× slower |
+| Plain SAH BVH rebuild | ~200 ms | 1.3× slower |
+| **BVH refit** | **~5–15 ms** | **10–30× faster** |
+
+For a 30-frame animation that re-displaces every frame, refit converts BVH from "10–15 s of overhead" to "0.3 s of overhead." This is the difference between a regression vs. octree and a substantial speedup.
+
+#### 4.6.3 Phase 1 design
+
+1. **`BVH::Refit()`** — bottom-up walk. For each leaf, recompute AABB from the leaf's referenced triangles' current vertex positions, in `Scalar` then conservatively round to float (same padding rule as §3.3). For each internal node, take union of child AABBs in float (already conservative). Parallelizable per sub-tree at internal-node depth ~3–4 (gives 8–16 work units, matches typical core counts).
+
+2. **`TriangleMeshGeometryIndexed::UpdateVertices(const VerticesListType&, const NormalsListType&)`** — replaces the vertex and normal arrays in place (count must match), invalidates Phase 2's precomputed triangle data (re-derived on next traversal), and triggers `BVH::Refit()`. Triangle indices are unchanged. New public method on `ITriangleMeshGeometryIndexed`. Identical method on `TriangleMeshGeometry` (non-indexed) for symmetry, though DisplacedGeometry only uses the indexed form.
+
+3. **`DisplacedGeometry`'s observer subscription is rewritten:**
+   - **First call** (initial `DisplacedGeometry` construction): full `BuildMesh()` — tessellate, displace, create `m_pMesh`, build BVH.
+   - **Subsequent calls** (painter notification): re-tessellate base + re-apply displacement (same as today, cheap relative to BVH ops), then call `m_pMesh->UpdateVertices(vertices, normals)`. Mesh and BVH are kept alive across the rebuild — no `DestroyMesh()` / `new TriangleMeshGeometryIndexed`. The internal `m_displacementSubscription` lambda becomes:
+     ```cpp
+     [this]{
+         if( m_pMesh && TopologyStableSinceConstruction() ) {
+             RetessellateAndUpdateVertices();   // refit path
+         } else {
+             DestroyMesh();
+             BuildMesh();                        // full rebuild fallback
+         }
+     }
+     ```
+     `TopologyStableSinceConstruction()` returns true unless something we don't currently support has changed (placeholder for the future-proofing in §4.6.6).
+
+4. **SAH degradation safeguard.** Refit preserves topology, but if displacement amplitude varies heavily across frames, AABB overlap can grow and traversal cost can degrade. The BVH stores `originalSAHCost` at build time and recomputes `currentSAHCost` after each refit. If `currentSAHCost > 2.0 × originalSAHCost`, the next observer-notification triggers a full SBVH rebuild instead of refit. The threshold is a `static constexpr Scalar` in `BVH.h`, not exposed in `AccelerationConfig` — it's an implementation detail of the heuristic, not a user-facing tuning knob.
+
+5. **`DisplacedGeometry` uses plain SAH BVH, not SBVH.** Rationale: even with refit doing most of the work between frames, the *first* build and any *triggered rebuild* should be fast. SBVH is a 2–3× slower builder, and its spatial-split duplication doesn't carry forward to refit (refit just updates AABBs; duplicated leaves cost the same as non-duplicated). So SBVH's investment is wasted in the animation case. Internal `AccelerationConfig` for DisplacedGeometry is hardcoded:
+   ```cpp
+   AccelerationConfig animConfig{
+       .maxLeafSize             = 4,
+       .sbvhDuplicationBudget   = 0.0,    // disabled
+       .binCount                = 16,     // smaller than static (32) — faster build
+       .buildSBVH               = false,  // plain SAH
+       .doubleSided             = m_bDoubleSided,
+   };
+   ```
+   Static meshes still get full SBVH per the user's `AccelerationConfig` from the parser.
+
+6. **Refit thread-safety.** The refit walk runs on the scene-load / keyframe-evaluation thread (between frames), not concurrently with intersection. The render-pass entry [PixelBasedRasterizerHelper.cpp](../src/Library/Rendering/PixelBasedRasterizerHelper.cpp) already has a per-frame barrier where keyframe evaluation happens; refit fits in the same window. Phase 1 documents this contract in `BVH.h`.
+
+#### 4.6.4 Memory
+
+Refit needs each leaf to know which triangle vertex indices to read for its AABB recompute. For BVH2 stored as a triangle-pointer array, this is already implicit (the leaf's range of triangle indices). One additional cached field per node — `originalSAHCost` contribution — adds 4 B/node × ~3N nodes = ~12 B/triangle on a 1M-tri mesh. Negligible.
+
+#### 4.6.5 Cross-phase invariance
+
+Refit is part of Phase 1. It must continue to work through Phases 2/3/4:
+
+- **Phase 2** adds precomputed triangle data (Möller edges, Woop transform). These are derived from vertex positions, so they're invalidated by `UpdateVertices` and re-derived on next traversal (or eagerly recomputed at refit time — TBD by Phase 2 perf measurement).
+- **Phase 3** collapses BVH2 → BVH4 at load time, but the original BVH2 leaf-to-triangle mapping survives. Refit walks the BVH2 representation and re-collapses the affected sub-trees, OR refits the BVH4 representation directly (cheaper). The Phase 3 design doc will pick.
+- **Phase 4** same as Phase 3 but for BVH8.
+
+The animation regression test (§4.6.7 below, in §5.7 Tests) carries forward as a gate in every phase.
+
+#### 4.6.6 Out of scope for this initiative
+
+- **Keyframable `m_detail` on DisplacedGeometry.** Would change topology per frame. Currently not supported, won't be added. If demand arises later, that's its own design — likely "rebuild from scratch every frame" with the animation `AccelerationConfig`, no refit.
+- **Keyframable base geometry on DisplacedGeometry.** Same as above.
+- **Future animatable static meshes.** If RISE ever supports loading a mesh from a per-frame `.risemesh` (e.g., Alembic-style animated mesh sequences), that's also a topology-may-change case — out of scope.
+- **GPU-side refit.** RISE is CPU-only; no concern.
+
+---
+
 ## 5. Phase 1 — BVH2 + SBVH Builder
 
 **Goal.** Land a working SBVH-built BVH2 acceleration structure for both `TriangleMeshGeometry` and `TriangleMeshGeometryIndexed`, replacing octree and BSP. End the phase with all regression scenes rendering bit-equal first-hit to the pre-BVH baseline.
@@ -215,6 +380,14 @@ All added to **all five** build projects per [CLAUDE.md](../CLAUDE.md):
 | `tests/BVHBuilderTest.cpp` | Build correctness, hit equivalence vs. naive |
 | `tests/SBVHBuilderTest.cpp` | Spatial split engagement, SAH cost reduction |
 | `tests/BVHRegressionTest.cpp` | End-to-end mesh hit equivalence vs. octree |
+| `src/Library/Acceleration/BVHSerialization.h` | Serialize/deserialize routines for BVH; v3 `.risemesh` reader/writer; legacy v1/v2 detection |
+| `src/Library/Acceleration/BVHSerialization.cpp` | Serialization implementation (cross-platform endian, deterministic field ordering) |
+| `tests/BVHSerializationTest.cpp` | Build → write → read → render roundtrip; cross-platform byte-identical disk output |
+| `tests/RISEMeshLegacyLoadTest.cpp` | Load every existing v1/v2 `.risemesh` from `models/risemesh/`; verify auto-rebuild produces hit-equivalent results to a fresh-built BVH |
+| `tools/rebake_risemesh.sh` | Driver script to re-bake all `models/risemesh/*.risemesh` to v3 |
+| `src/Library/Acceleration/BVHRefit.h` | `BVH::Refit()` walk: bottom-up AABB recompute, conservative float padding, parallel at internal-node depth ~3–4 |
+| `tests/BVHRefitTest.cpp` | Refit correctness: build → mutate vertices → refit → render → compare to fresh-built BVH on same mutated geometry |
+| `tests/AnimatedDisplacedGeometryTest.cpp` | 30-frame animation, sphere displaced by keyframed noise painter; per-frame pixel-equivalent to pre-BVH octree path. **Carry-forward regression for Phases 2/3/4.** |
 
 ### 5.2 Files modified
 
@@ -229,6 +402,14 @@ All added to **all five** build projects per [CLAUDE.md](../CLAUDE.md):
 | [src/Library/Job.cpp](../src/Library/Job.cpp) | Update `Add*TriangleMesh*` implementations |
 | [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) | Replace mesh chunks (~lines 5018, 5081, 5146 for 3DS/RAW/RAW2; corresponding indexed and PLY/PSurf). Update schema reflection. Update reaction-diffusion / displaced / bezier sites that reference removed keys, only where they propagate |
 | `scenes/**/*.RISEscene` | Sweep for `bsp =`, `maxpolygons =`, `maxrecursion =` in mesh chunks; rewrite per §4.4 |
+| [src/RISE/meshconverter.cpp](../src/RISE/meshconverter.cpp) | Rewrite per §4.5: new CLI, accepts `.3ds`/`.ply`/`.risemesh` as input, uses `AccelerationConfig` |
+| [models/risemesh/*.risemesh](../models/risemesh/) | Re-bake from v1/v2 → v3 via `tools/rebake_risemesh.sh` (bunny, creature, dragon_small, she_*, torusknot, plus any others) |
+| [src/Library/Geometry/DisplacedGeometry.h](../src/Library/Geometry/DisplacedGeometry.h) and `.cpp` | Constructor signature change (drop `max_polys_per_node` / `max_recursion_level` / `bUseBSP`); rewrite observer lambda to use refit path with rebuild fallback; introduce `TopologyStableSinceConstruction()` predicate; hardcode internal animation `AccelerationConfig` (plain SAH, not SBVH) per §4.6 |
+| [src/Library/Interfaces/ITriangleMeshGeometryIndexed.h](../src/Library/Interfaces/ITriangleMeshGeometryIndexed.h) | Add `virtual void UpdateVertices(const VerticesListType&, const NormalsListType&) = 0;` per §4.6.3. Pure-virtual addition is an ABI break — acceptable per [no-back-compat decision D4]; check [skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) for reasoning still applicable to in-tree subclasses |
+| [src/Library/Interfaces/ITriangleMeshGeometry.h](../src/Library/Interfaces/ITriangleMeshGeometry.h) | Same `UpdateVertices` addition for non-indexed (symmetry; not used by DisplacedGeometry today, but kept consistent) |
+| [src/Library/Job.cpp](../src/Library/Job.cpp) | Update `AddDisplacedGeometry` to construct with new signature |
+| [src/Library/RISE_API.h](../src/Library/RISE_API.h) | `RISE_API_AddDisplacedGeometry` signature change |
+| [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) (`displaced_geometry` chunk, lines ~3441+) | Drop `poly_bsp`, `maxpolygons`, `maxpolydepth` from accepted-parameter set; update schema reflection |
 
 ### 5.3 SBVH builder details
 
@@ -248,17 +429,105 @@ Implementation follows Stich/Friedrich/Dietrich (2009).
 - At each leaf: iterate triangles, run float Möller-Trumbore filter, then double certify on hits.
 - Single-ray only. No packets, no streams.
 
-### 5.5 Tests
+### 5.5 `.risemesh` Serialization Pipeline
+
+This sub-section ties the format spec from §4.5 into Phase 1 implementation work, since both the writer (used by `meshconverter`) and the reader (used by every scene load that references a `.risemesh`) live in this phase.
+
+**Reader flow** (`TriangleMeshGeometryIndexed::Deserialize` and `TriangleMeshGeometry::Deserialize`):
+
+1. Verify signature `"RISE"`. Mismatch → fail.
+2. Read `version`. Dispatch:
+   - **v1**: read polygon data. No acceleration block. Build BVH from polygons via Phase 1's builder. Log info-level message.
+   - **v2**: read polygon data. Read `bUseBSP` flag. **Skip** the serialized octree/BSP bytes (use a counted-skip helper that knows the v2 layout, OR — simpler — fully deserialize into the legacy structures, then immediately drop them and build BVH from the polygons we just loaded). Log info-level message.
+   - **v3**: read polygon data. Read BVH-present flag. If `1`, read magic `"BVH2"`, deserialize BVH directly. Validate sanity bbox (finite, extents `< 1e10`); on failure, drop the deserialized BVH and rebuild from polygons. If BVH-present is `0`, build from polygons.
+   - **v ≥ 4**: error out, name the required RISE version.
+3. After load: regardless of source version, verify the BVH has `numNodes ≥ 1` and at least one leaf references each polygon at least once.
+
+**Writer flow** (`TriangleMeshGeometryIndexed::Serialize` and `TriangleMeshGeometry::Serialize`):
+
+1. Write signature, version `3`, polygon arrays, double-sided flag (unchanged from v2 layout).
+2. Write BVH-present flag = `1`.
+3. Write `"BVH2"` magic.
+4. Write triangle reference count, then references.
+5. Write node count, then nodes (deterministic field order, explicit `uint32_t`, little-endian).
+6. Write overall sanity bbox in `Scalar` (double).
+
+**Why "skip and rebuild" for v2 instead of "migrate".** v2's serialized octree/BSP encodes a *different* spatial partition than what SBVH would produce. There's no information-preserving migration — we'd just be guessing at SBVH parameters from octree leaf sizes. Rebuilding from polygons gets the right answer, costs 5–60 s on first load, and is a one-time cost (the file gets re-baked to v3 by `tools/rebake_risemesh.sh` and never paid again).
+
+**Backwards compatibility flag for the legacy reader.** v1 and v2 reading code stays in the codebase (one path each, well-isolated in `BVHSerialization.cpp`). Removed in a future version after we're confident every shipped `.risemesh` is v3.
+
+### 5.6 Animation: Refit & DisplacedGeometry Integration
+
+This sub-section ties the design from §4.6 into Phase 1 implementation work. Animation flow is the only runtime mesh-mutation path in RISE; refit is what keeps it from regressing under BVH.
+
+**Sequence of operations in the observer-notify path:**
+
+1. Painter (animator-driven) emits a notify event.
+2. DisplacedGeometry's subscription lambda fires.
+3. Lambda calls `TopologyStableSinceConstruction()` — true except for never-supported cases (see §4.6.6).
+4. **Stable path** (the always-taken path today):
+   1. Re-tessellate base geometry into local `vertices`, `normals`, `coords`, `tris` buffers.
+   2. Re-apply `ApplyDisplacementMapToObject` (mutates `vertices` and `normals`).
+   3. If `!m_bUseFaceNormals`, recompute vertex normals from topology.
+   4. Call `m_pMesh->UpdateVertices(vertices, normals)`. Internally:
+      - Replace `pPoints` and `pNormals` arrays (count assertions: must match prior call).
+      - Invalidate Phase 2's precomputed triangle cache (cleared lazily on next traversal, or eagerly here — Phase 2 decides).
+      - Compute `currentSAHCost` of the (still-topologically-correct) BVH against the new vertex positions.
+      - If `currentSAHCost > 2.0 × originalSAHCost`: full SBVH rebuild via animation `AccelerationConfig`, then update `originalSAHCost`.
+      - Otherwise: `BVH::Refit()` — bottom-up AABB recompute.
+5. **Fallback path** (full rebuild, equivalent to today's behavior): `DestroyMesh(); BuildMesh();` with the animation `AccelerationConfig`. Reachable only if `TopologyStableSinceConstruction()` returns false — currently impossible, kept for future-proofing.
+
+**Concurrency contract.** `UpdateVertices` and `Refit` MUST be called between frames, never during ray traversal. The render-pass entry already has a per-frame barrier where keyframes evaluate ([PixelBasedRasterizerHelper.cpp](../src/Library/Rendering/PixelBasedRasterizerHelper.cpp)); refit happens in that window. Documented in `BVH.h` and `ITriangleMeshGeometryIndexed.h`. Violation is a programming error — not currently checked at runtime, optionally guarded by a debug-mode `assert(!m_inTraversal)` flag.
+
+**Memory continuity.** `m_pMesh` is **not** destroyed across observer notifications in the stable path. Same `TriangleMeshGeometryIndexed*` lifetime. Same `BVH*` lifetime. Same `pPoints` storage backing (re-filled, not reallocated, when count matches). Reference counts on the `m_pMesh` from any IObjectPriv that holds it are preserved.
+
+**SAH-cost tracking.** Stored on the BVH:
+```cpp
+class BVH {
+    Scalar originalSAHCost;       // set at build time
+    Scalar currentSAHCost;        // recomputed after each Refit
+    static constexpr Scalar kRefitToRebuildThreshold = 2.0;
+    bool ShouldRebuild() const { return currentSAHCost > kRefitToRebuildThreshold * originalSAHCost; }
+};
+```
+
+`originalSAHCost` is computed during the initial SAH walk (free — already part of the build). `currentSAHCost` is computed during refit by accumulating per-node SAH contributions in the same walk that updates AABBs.
+
+**Future-proofing for Phases 2–4.**
+- Phase 2 precomputed triangle data: invalidate on `UpdateVertices`, re-derive lazily.
+- Phase 3 BVH4 collapse: refit operates on the BVH2 storage; collapse re-runs after refit if the tree is held in BVH4 form. Or: refit operates directly on BVH4 nodes (one design choice, deferred to Phase 3).
+- Phase 4 BVH8: same.
+
+The carry-forward regression test `AnimatedDisplacedGeometryTest` re-runs as a gate in every phase.
+
+### 5.7 Tests
 
 | Test | Mechanism | Pass criterion |
 |---|---|---|
 | `BVHBuilderTest` | Random triangle sets, build BVH, intersect 1000 random rays, compare hit `(triIndex, t)` to brute-force | Set equality up to 1 ULP `t` |
 | `SBVHBuilderTest` | Pathological non-uniform mesh (long thin triangles), verify SAH cost lower than non-SBVH BVH | SAH cost reduction ≥ 15% |
 | `BVHRegressionTest` | Build BVH and Octree on the same mesh, intersect identical rays, compare hits | Bit-equal first hit |
+| `BVHSerializationTest::Roundtrip` | Build mesh → serialize to memory → deserialize → render 1000 rays | Hit `(triIndex, t)` set-equal between in-memory original and roundtripped |
+| `BVHSerializationTest::CrossPlatform` | Build `dragon_small` BVH on macOS, Windows, Linux runners; SHA-256 the resulting `.risemesh` bytes | All three hashes equal |
+| `BVHSerializationTest::FormatStability` | Bake a v3 file with Phase 1 builder, load with subsequent Phase 2/3/4 readers | Hit-equivalent across phases (this test rolls forward; reused as a regression in Phases 2–4) |
+| `RISEMeshLegacyLoadTest::V1` | Load each v1 `.risemesh` (if any survive in the repo) → expect auto-rebuild log → render | Hit-equivalent to fresh-built BVH from the same polygon data |
+| `RISEMeshLegacyLoadTest::V2` | Load each v2 `.risemesh` from `models/risemesh/` *before* the rebake commit → expect auto-rebuild log → render | Hit-equivalent. **Important: this test must run against pre-rebake v2 files, so we keep one or two v2 fixtures in `tests/fixtures/risemesh_legacy/` permanently.** |
+| `RISEMeshLegacyLoadTest::V3` | Load each post-rebake v3 file → render | Hit-equivalent and **does not log "rebuilding"** (i.e., the BVH came from disk, not a build) |
+| `RISEMeshLegacyLoadTest::Corrupted` | Truncate, scramble bbox, flip BVH-present byte | Falls through to rebuild path; renders correctly |
+| `MeshConverterTest::CLI` | Run `meshconverter` against a `.3ds`, `.ply`, v2 `.risemesh`, v3 `.risemesh`; check output is v3 and renders correctly | All four input types produce valid v3 |
 | Render regressions | 5 scenes: implicit-only, low-tri (1K), medium-tri (50K), BioSpec face (200K), glass + SMS | Pixel-equal to octree baseline |
 | `RayTriangleIntersectionTest` (existing) | Add silhouette / edge-grazing / degenerate cases | All pass under both Möller and Woop |
+| `BVHRefitTest::Equivalence` | Build BVH on mesh M0 → mutate vertices to M1 → `Refit()` → intersect rays. Compare to fresh-built BVH on M1 directly. | Hit `(triIndex, t)` set-equal between refit BVH and fresh BVH |
+| `BVHRefitTest::SAHTracking` | Build BVH, mutate vertices with increasing displacement amplitude over many iterations, `Refit()` each time | `currentSAHCost / originalSAHCost` grows monotonically with amplitude; rebuild threshold (2.0×) trips when expected |
+| `BVHRefitTest::Determinism` | Same M0 → mutate to M1 → refit; do this twice from independent starting BVHs | Both refit results bit-equal |
+| `BVHRefitTest::Performance` | 100K-tri displaced sphere, time refit vs. fresh build | Refit ≥ 10× faster than fresh build (sanity guard, not a correctness gate) |
+| `AnimatedDisplacedGeometryTest::PerFrameEquivalence` | 30-frame animation of a sphere displaced by a noise painter with keyframed `time`. Render each frame on the BVH path and on the pre-BVH octree path. | Per-frame pixel-equivalent (deterministic scenes) or statistically equivalent (path-traced). **Carry-forward regression for Phases 2/3/4.** |
+| `AnimatedDisplacedGeometryTest::TopologyInvariant` | Across the 30 frames, query `m_pMesh` triangle count, vertex count, index buffer | All identical across all frames; confirms refit-eligibility holds |
+| `AnimatedDisplacedGeometryTest::ObserverIntegration` | Watch the GlobalLog during the animation; verify the "rebuilt from scratch" log line appears exactly once (initial build), and "refit" appears 29 times | Exact count match — guards against accidental fall-through to rebuild path |
 
-### 5.6 Validation gates (must pass to close Phase 1)
+The serialization and legacy-load tests are designated as **regression carry-forward tests** — they re-run as gates in Phases 2, 3, and 4. Any phase that breaks v3 read or breaks legacy v1/v2 auto-rebuild fails its gate.
+
+### 5.8 Validation gates (must pass to close Phase 1)
 
 - [ ] All new tests green.
 - [ ] All existing tests green (`./run_all_tests.sh`).
@@ -266,8 +535,19 @@ Implementation follows Stich/Friedrich/Dietrich (2009).
 - [ ] BioSpec face render ≥ 2× faster wall-clock than octree baseline.
 - [ ] No new fireflies in glass + SMS scene; firefly count within 5% of baseline.
 - [ ] All five build projects compile clean on macOS, Linux, Windows, Android, Xcode.
+- [ ] Every `.risemesh` file in `models/risemesh/` (v2) loads via the legacy auto-rebuild path and renders hit-equivalent to a fresh-built BVH.
+- [ ] `tools/rebake_risemesh.sh` runs to completion against `models/risemesh/`; every output file is v3, deserializes cleanly, and renders identically to its pre-rebake counterpart in scenes that reference it.
+- [ ] At least one v2 `.risemesh` is preserved in `tests/fixtures/risemesh_legacy/` and the `RISEMeshLegacyLoadTest::V2` regression continues to pass — guards that legacy load survives Phases 2–4.
+- [ ] Cross-platform determinism: `dragon_small.risemesh` baked on macOS / Windows i9 / Linux produces SHA-256-identical bytes.
+- [ ] `meshconverter` accepts `.3ds`, `.ply`, v2 `.risemesh`, and v3 `.risemesh` as input; all four produce valid v3 output (`MeshConverterTest::CLI` passes).
+- [ ] No scene file or test file in the repo references the old meshconverter CLI flags (`use_bsp` numeric, etc.) — the old CLI is fully removed.
+- [ ] Animated displaced-sphere scene (30 frames, keyframed noise painter) renders pixel-equivalent to the pre-BVH octree path on every frame.
+- [ ] BVH refit is invoked exactly 29 times in the 30-frame animation; full rebuild fires only at frame 0 (or on threshold trip, which the test scene doesn't trigger).
+- [ ] Refit on a 100K-tri displaced sphere is ≥ 10× faster than fresh BVH build.
+- [ ] SAH-degradation safeguard (rebuild trigger at `currentSAH > 2.0 × originalSAH`) fires correctly on a synthetic high-amplitude-noise scene.
+- [ ] `DisplacedGeometry::m_pMesh` lifetime is preserved across observer notifications in the stable-topology path (no `safe_release` / re-`new` in the inner loop).
 
-### 5.7 Phase 1 risks
+### 5.9 Phase 1 risks
 
 | Risk | Mitigation |
 |---|---|
@@ -703,7 +983,7 @@ These are working estimates; Phase 4 evaluation (§9) records actuals.
 
 | # | Item | Default if not decided |
 |---|---|---|
-| O1 | Should we serialize the built BVH to disk (faster scene reload) or always rebuild on load? | Always rebuild on load (simpler, build is fast offline). |
+| O1 | ~~Should we serialize the built BVH to disk (faster scene reload) or always rebuild on load?~~ | **Resolved: serialize.** See §4.5 — `.risemesh` exists specifically to avoid acceleration-structure build cost, and a 1M-tri SBVH rebuild on every scene load (5–60 s) is unacceptable for benchmarks. New v3 format is documented. |
 | O2 | Should `bvh_build_sbvh` be controllable per-scene, or compile-time-fixed to ON? | Per-scene, default ON. Some users may want plain SAH for build-time-sensitive workflows. |
 | O3 | Should triangle precomputed data live in BVH leaves or in a parallel array indexed by triangle? | BVH leaves (better cache). |
 | O4 | Should NEON BVH4 be the default Apple Silicon binary, or BVH2 with NEON ops? | NEON BVH4 (per D3). |

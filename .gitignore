@@ -1,10 +1,9 @@
 /rendered
 /bin
+/dbin
 .DS_Store
 *.o
 *.obj
-build_test.bat
-build_pssmlt_test.bat
 /.vscode
 RISELog.txt
 build_log.txt
@@ -14,30 +13,33 @@ RISE_Log.txt
 *.mov
 .claude/
 extlib/
+
+# Visual studio on Windows
+/build/VS2005
+/build/VS2022/Library/Debug
+/build/VS2022/RISE/Debug
+/build/VS2022/RISE-GUI/x64
+/build/VS2022/vcpkg_installed
+/build/VS2022/x64
+/build/VS2022/RISE-CLI/x64
 .vs/
 *.idb
 *.pdb
-/build/VS2022/Library/Debug
-/build/VS2022/RISE/Debug
 *.user
 *.lib
-build/VS2022/UpgradeLog.htm
 *.exe
-/scenes/Internal
-/models/risemesh/internal
-!build/cmake/**/*.md
-/build/VS2005/Library/Debug
-/build/VS2005
-/build/VS2022/RISE-GUI/x64
 *.tlog
 *.log
-/build/VS2022/vcpkg_installed
-/dbin
-/build/VS2022/x64
-/build/VS2022/RISE-CLI/x64
+
+# Internal scenes not meant for public consumption
+/scenes/Internal
+/models/risemesh/internal
+
 # CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out)
 /build/cmake/*/_out
 /build/cmake/*/build
+!build/cmake/**/*.md
+
 # ---- Android / Gradle / Android Studio ----
 # Gradle daemon + per-project caches (both root-level and per-module)
 /android/.gradle

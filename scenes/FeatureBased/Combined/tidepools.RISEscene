@@ -60,13 +60,13 @@ pathtracing_pel_rasterizer
 {
 	samples                       64
 	oidn_denoise                  TRUE
-	pathguiding                   true
+	pathguiding                   FALSE
 	pathguiding_sampling_type     RIS
 	pathguiding_iterations        6
 	pathguiding_spp               12
 	pathguiding_alpha             0.5
 	pathguiding_max_depth         8
-	adaptive_max_samples	512
+	adaptive_max_samples	128
 	adaptive_threshold		0.05
 	radiance_map		pnt_env
 	radiance_background	TRUE
