@@ -43,6 +43,11 @@ namespace RISE
 				info.isSpecular = true;
 				info.canRefract = false;
 				info.ior = 1.0;
+				// Populate the painter's reflectance so SMS chain throughput
+				// applies the mirror's actual colour.  Without this, the SMS
+				// reflective-caustic path multiplied by the default white
+				// (1,1,1) and lost the orange tint of e.g. a metallic ring.
+				info.attenuation = reflectivity.GetColor( ri );
 				info.valid = true;
 				return info;
 			}
