@@ -30,8 +30,19 @@ void TestPointOnDisk() {
     // Center of disk: uv=(0.5, 0.5) maps to center
     {
         Point2 p = GeometricUtilities::PointOnDisk(1.0, Point2(0.5, 0.5));
+        assert(std::isfinite(p.x));
+        assert(std::isfinite(p.y));
         assert(IsClose(p.x, 0.0, 1e-4));
         assert(IsClose(p.y, 0.0, 1e-4));
+    }
+
+    // Corner of canonical square: uv=(0, 0) should not hit a singularity
+    {
+        Point2 p = GeometricUtilities::PointOnDisk(1.0, Point2(0.0, 0.0));
+        assert(std::isfinite(p.x));
+        assert(std::isfinite(p.y));
+        Scalar dist = std::sqrt(p.x * p.x + p.y * p.y);
+        assert(dist <= 1.0 + 1e-6);
     }
 
     // All generated points should be within the disk radius

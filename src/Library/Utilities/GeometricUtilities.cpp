@@ -41,28 +41,39 @@ Point2 GeometricUtilities::PointOnDisk( Scalar R, const Point2& uv )
 	Scalar&		r1 = p.x;
 	Scalar&		r2 = p.y;
 
+	if( r1 == 0.0 && r2 == 0.0 )
+	{
+		return Point2( 0.0, 0.0 );
+	}
+
 	// This transformation comes from Peter Shirley, and is summarized
 	// nice in Philip Dutre's Global Illumination Compendium
 	// page 13
-	if( r1 > -r2 && r1 > r2 )
+	if( r1 > -r2 )
 	{
-		r = R * r1;
-		t = PI_OV_FOUR * r2 / r1;
-	}
-	else if( r1 > r2 && r1 > -r2 )
-	{
-		r = R * r2;
-		t = PI_OV_FOUR * (2 - r1/r2);
-	}
-	else if( r1 < -r2 && r1 < r2 )
-	{
-		r = R * -r1;
-		t = PI_OV_FOUR * (4 + r2/r1);
+		if( r1 > r2 )
+		{
+			r = R * r1;
+			t = PI_OV_FOUR * r2 / r1;
+		}
+		else
+		{
+			r = R * r2;
+			t = PI_OV_FOUR * (2 - r1/r2);
+		}
 	}
 	else
 	{
-		r = R * -r2;
-		t = PI_OV_FOUR * (6 - r1/r2);
+		if( r1 < r2 )
+		{
+			r = R * -r1;
+			t = PI_OV_FOUR * (4 + r2/r1);
+		}
+		else
+		{
+			r = R * -r2;
+			t = PI_OV_FOUR * (6 - r1/r2);
+		}
 	}
 
 	return Point2( r*cos(t), r*sin(t) );
