@@ -54,7 +54,7 @@ pathtracing_pel_rasterizer
 	pathguiding_iterations	6
 	pathguiding_spp			4
 	pathguiding_alpha		0.5
-	pathguiding_max_depth	3
+	pathguiding_max_depth	8
     pathguiding_light_max_depth 0
 	pathguiding_sampling_type	ris
 	sms_enabled                   FALSE
@@ -64,12 +64,8 @@ pathtracing_pel_rasterizer
 	sms_biased                    TRUE
 	sms_multi_trials              16
 	sms_photon_count              1000000
-	oidn_denoise 		TRUE
-	blue_noise_sampler	TRUE
 #	adaptive_max_samples	4096
 #	adaptive_threshold		0.01
-	progressive_rendering          TRUE
-	progressive_samples_per_pass   32
 }
 
 

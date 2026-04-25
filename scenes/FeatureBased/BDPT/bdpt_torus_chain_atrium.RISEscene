@@ -50,13 +50,6 @@ bdpt_pel_rasterizer
 	sms_biased                    TRUE
 	sms_multi_trials              16
 	sms_photon_count              1000000
-	oidn_denoise 		TRUE
-	blue_noise_sampler	TRUE
-#	adaptive_max_samples	4096
-#	adaptive_threshold		0.01
-#	show_adaptive_map		FALSE
-	progressive_rendering          TRUE
-	progressive_samples_per_pass   32
 }
 
 

@@ -176,16 +176,41 @@ const IMedium* Object::GetInteriorMedium() const
 
 const BoundingBox Object::getBoundingBox() const
 {
-	BoundingBox bbox = pGeometry->GenerateBoundingBox();
-	BoundingBox b( 
-		Point3Ops::Transform( m_mxFinalTrans, bbox.ll ), 
-		Point3Ops::Transform( m_mxFinalTrans, bbox.ur )
-		);
+	const BoundingBox bbox = pGeometry->GenerateBoundingBox();
 
-	// Rotations have been known to flip around the LL and the UR, so we must
-	// make sure that everything is sane before returning
-	b.SanityCheck();
-	return b;
+	// Transform all 8 corners of the local bbox and take the AABB of the
+	// rotated set.  Transforming only ll and ur produces an AABB that
+	// covers a single edge of the rotated cube — for a 50°/120° rotation
+	// the resulting world bbox covers ~25% of the actual extent in the
+	// rotated axes, so BSP / Octree placement based on this bbox excludes
+	// rays that pass through the geometry's true rotated extent.  The
+	// downstream symptom is whole strips of a rotated object rendering as
+	// background because acceleration-structure traversal never reaches
+	// the leaf that holds the object.
+	const Point3 corners[8] = {
+		Point3( bbox.ll.x, bbox.ll.y, bbox.ll.z ),
+		Point3( bbox.ur.x, bbox.ll.y, bbox.ll.z ),
+		Point3( bbox.ll.x, bbox.ur.y, bbox.ll.z ),
+		Point3( bbox.ur.x, bbox.ur.y, bbox.ll.z ),
+		Point3( bbox.ll.x, bbox.ll.y, bbox.ur.z ),
+		Point3( bbox.ur.x, bbox.ll.y, bbox.ur.z ),
+		Point3( bbox.ll.x, bbox.ur.y, bbox.ur.z ),
+		Point3( bbox.ur.x, bbox.ur.y, bbox.ur.z )
+	};
+
+	Point3 wll = Point3Ops::Transform( m_mxFinalTrans, corners[0] );
+	Point3 wur = wll;
+	for( int i = 1; i < 8; i++ ) {
+		const Point3 c = Point3Ops::Transform( m_mxFinalTrans, corners[i] );
+		if( c.x < wll.x ) wll.x = c.x;
+		if( c.y < wll.y ) wll.y = c.y;
+		if( c.z < wll.z ) wll.z = c.z;
+		if( c.x > wur.x ) wur.x = c.x;
+		if( c.y > wur.y ) wur.y = c.y;
+		if( c.z > wur.z ) wur.z = c.z;
+	}
+
+	return BoundingBox( wll, wur );
 }
 
 void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

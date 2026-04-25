@@ -312,18 +312,26 @@ namespace RISE
 			case Scope::InBlockParamName: {
 				const ChunkDescriptor* d = grammar.FindChunk( ctx.chunkKeyword );
 				if( d ) {
-					// Suppress already-present non-repeatable parameters so
-					// the editor does not offer a second `samples` / `name`
-					// / etc. line after one has been authored.  The collector
-					// deliberately includes the first-token of the caret's
-					// current line, so when the user is editing an existing
-					// `name foo` line from the start, the still-attached
-					// trailing "name" already-authored token prevents the
-					// same name being suggested twice.  Repeatable params
-					// (cp, shaderop, …) are unaffected.
-					const std::set<std::string> already = CollectAuthoredParamNamesInBlock( bufferText, cursorByteOffset );
+					// Suppress already-present non-repeatable parameters in
+					// ContextMenu mode only.  The right-click menu is meant
+					// to answer "what could I add here?", so hiding params
+					// that are already authored keeps the list relevant.
+					//
+					// In InlineCompletion mode the user is actively spelling
+					// out a parameter name, and the popup MUST surface every
+					// candidate that prefix-matches what they're typing —
+					// otherwise hiding `samples` while the user types `s`
+					// inside a block that already has `samples 4` makes it
+					// impossible to type `samples` at all (the popup keeps
+					// surfacing other `s*` params and obscures the
+					// completion the user actually wants).
+					const bool filterAuthored = ( mode == SuggestionMode::ContextMenu );
+					std::set<std::string> already;
+					if( filterAuthored ) {
+						already = CollectAuthoredParamNamesInBlock( bufferText, cursorByteOffset );
+					}
 					for( std::vector<ParameterDescriptor>::const_iterator it = d->parameters.begin(); it != d->parameters.end(); ++it ) {
-						if( !it->repeatable && already.find( it->name ) != already.end() ) {
+						if( filterAuthored && !it->repeatable && already.find( it->name ) != already.end() ) {
 							continue;
 						}
 						EmitParameterSuggestion( *it, d->category, filter, mode, ranked );

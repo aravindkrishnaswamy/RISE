@@ -609,26 +609,41 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 		}
 	}
 
-	// Case d2 ≈ 0: check whether a simpler (identical-alpha, split-beta)
-	// factorisation has lower forward error and, if so, use it.
+	// Real-case-II fallback: identical-alpha / split-beta factorisation.
+	//
+	// The published OQS algorithm only consults this fallback when d2 is
+	// "near zero" — the original gate compared |d2| against
+	// oqs_fact_d0 * (|2B/3| + |phi0| + l1²).  In practice that gate is
+	// too aggressive for the torus quartic: rotated tori produce ill-
+	// conditioned quartics where d2 is positive and well outside the
+	// "near zero" window (so realcase0 = 0 → algorithm gives up,
+	// returning 0 real roots) yet four real roots exist that the
+	// identical-alpha factorisation does recover.  The downstream symptom
+	// is black-pixel speckle on rotated tori — primary rays that should
+	// hit the surface returning no roots.
+	//
+	// Always evaluate the d3 ≤ 0 path; pick whichever forward-error is
+	// lower (or take it unconditionally if the primary path failed).
 	int whichcase = 0;
-	if( realcase0 == -1 || ( fabs( d2 ) <= oqs_fact_d0 * ( fabs( 2.0 * B / 3.0 ) + fabs( phi0 ) + l1 * l1 ) ) ) {
+	{
 		double d3 = D - l3 * l3;
-		double err0 = ( realcase0 == 1 ) ? oqs_calc_err_d( errmin, D, bq, dq ) : std::numeric_limits<double>::infinity();
 		if( d3 <= 0 ) {
-			// Real case II: both quadratic factors have real roots with shared alpha.
+			double err0 = ( realcase0 == 1 )
+				? oqs_calc_err_d( errmin, D, bq, dq )
+				: std::numeric_limits<double>::infinity();
 			double sqrtd3 = sqrt( -d3 );
 			double aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
 			if( fabs( dq1 ) < fabs( bq1 ) ) dq1 = D / bq1;
 			else if( fabs( dq1 ) > fabs( bq1 ) ) bq1 = D / dq1;
 			double err1 = oqs_calc_err_abcd( A, B, C, D, aq1, bq1, cq1, dq1 );
-			if( realcase0 == -1 || err1 < err0 ) {
+			if( realcase0 != 1 || err1 < err0 ) {
 				whichcase = 1;
 				aq = aq1; bq = bq1; cq = cq1; dq = dq1;
 				realcase0 = 1;  // swapped to the identical-alpha real case
 			}
 		}
-		// complex d3 branch produces complex roots — no real solutions; skip.
+		// d3 > 0: identical-alpha factorisation has complex β, no real
+		// roots from this branch.  Leave realcase0 as-is.
 	}
 
 	// Extract real roots.  If realcase0 != 1 at this point the quartic

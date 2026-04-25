@@ -43,6 +43,14 @@ Before launching reviewers, write down:
 - the files where a bug would most likely hide
 - the contracts that must not regress
 - the tests or scenes that would best expose a break
+- **if the change adds, widens, tightens, or scales a numerical
+  threshold (`NEARZERO`, an ε, a `1e-N` constant, a per-shape
+  tolerance):** ask yourself "is that really the principled fix?"
+  before spawning reviewers — and add it as a question they must
+  answer.  If you cannot write a one-sentence justification of what
+  numerical operation produces noise of that magnitude, the
+  principled fix has not been found.  See
+  [precision-fix-the-formulation](precision-fix-the-formulation.md).
 
 This is not a substitute for review.  It is how you choose better
 reviewer axes and better reviewer questions.  If you cannot name the
@@ -65,6 +73,17 @@ Typical axes for a rendering change:
   function signatures, derived-class overload resolution.
 - **Numerical stability** — NaN / Inf paths, divide-by-zero, grazing
   angles, clamps.
+- **Principled-fix audit** — Is the fix at the right layer?  Does
+  it address the formulation that produces a noisy / wrong value, or
+  does it paper over a downstream symptom with a threshold tweak, an
+  ε fudge, a per-shape exception, or a `1e-N` constant chosen
+  empirically?  Pair this axis with any change that adds or tightens
+  a numerical threshold, introduces a special-case rejection in one
+  caller of a multi-caller producer, or includes a magic constant
+  whose justification is "this made the speckle go away."  Reviewer
+  must explicitly answer "is that really the principled fix?" — see
+  [precision-fix-the-formulation](precision-fix-the-formulation.md)
+  for the decision tree they should apply.
 - **Memory / allocation** — Sizes, alignment, heap vs stack, cap
   behavior.
 
@@ -261,6 +280,19 @@ of the way.
 "I fixed the reported issues, so I’m done" ships follow-on bugs.
 Material fixes change the code enough to deserve another adversarial
 pass.
+
+### Accepting magic constants without challenge
+
+When the change adds or tightens a `< NEARZERO`, `< EPSILON`,
+`fabs(x) < 1e-N`, or per-shape tolerance and the reviewer does not
+explicitly ask **"is that really the principled fix?"**, the review
+has missed its job.  Every such constant must be justifiable in one
+sentence as a derivable noise bound on a specific numerical
+operation (e.g. "FP-noise bound on `u² − q·t` cancellation, scaled
+by the natural quartic scale `|u²| + |q·t|`").  If no one can write
+that sentence, the constant is empirical and the formulation needs
+to change.  See
+[precision-fix-the-formulation](precision-fix-the-formulation.md).
 
 ### Unbounded reports
 

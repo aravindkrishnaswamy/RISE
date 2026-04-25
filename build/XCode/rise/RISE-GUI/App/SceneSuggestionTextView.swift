@@ -130,4 +130,62 @@ final class SceneSuggestionTextView: NSTextView {
             mode: .inlineCompletion) as [RISESuggestion]
         return array
     }
+
+    /// UTF-16 character index where the partial word started when the
+    /// user dismissed the completion popup with Escape.  While set,
+    /// `isCurrentWordSuppressed()` returns true and the auto-trigger
+    /// in the coordinator should leave the popup hidden.  Cleared
+    /// automatically once the caret moves to a different word.
+    private var escapeSuppressedWordStart: Int?
+
+    /// AppKit invokes this when the completion popup is being
+    /// dismissed.  Escape produces `flag == true` with
+    /// `movement == NSTextMovement.cancel.rawValue`; record the
+    /// partial-word start so the auto-trigger does not immediately
+    /// re-show the popup for the same word.  Always forward to super
+    /// — the default implementation handles the dismissal (no
+    /// insertion on cancel, normal insertion on accept).
+    override func insertCompletion(_ word: String,
+                                   forPartialWordRange charRange: NSRange,
+                                   movement: Int,
+                                   isFinal flag: Bool)
+    {
+        if flag && movement == NSTextMovement.cancel.rawValue {
+            escapeSuppressedWordStart = charRange.location
+        }
+        super.insertCompletion(word,
+                               forPartialWordRange: charRange,
+                               movement: movement,
+                               isFinal: flag)
+    }
+
+    /// True while the caret is still inside the word for which the
+    /// user just pressed Escape.  Walks backward from the caret to the
+    /// previous whitespace to find the current word's start; if that
+    /// matches the recorded suppression offset we are still in the
+    /// same word.  Any mismatch (caret moved to a different word, or
+    /// the word boundary shifted past the recorded offset) clears the
+    /// flag so a fresh keystroke can re-arm the popup.
+    func isCurrentWordSuppressed() -> Bool {
+        guard let suppressedStart = escapeSuppressedWordStart else { return false }
+        let ns = string as NSString
+        let cursor = selectedRange().location
+        if cursor > ns.length {
+            escapeSuppressedWordStart = nil
+            return false
+        }
+        var wordStart = cursor
+        while wordStart > 0 {
+            let prev = ns.substring(with: NSRange(location: wordStart - 1, length: 1))
+            if prev == " " || prev == "\t" || prev == "\n" || prev == "\r" {
+                break
+            }
+            wordStart -= 1
+        }
+        if wordStart == suppressedStart {
+            return true
+        }
+        escapeSuppressedWordStart = nil
+        return false
+    }
 }

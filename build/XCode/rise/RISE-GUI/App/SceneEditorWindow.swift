@@ -152,6 +152,13 @@ struct SceneTextEditor: NSViewRepresentable {
                 let prevChar = ns.substring(with: NSRange(location: selected.location - 1, length: 1))
                 if prevChar == " " || prevChar == "\t" || prevChar == "\n" { return }
 
+                // If the user pressed Escape on the popup for this word,
+                // honor that dismissal until the caret moves out of it.
+                if let suggestionView = textView as? SceneSuggestionTextView,
+                   suggestionView.isCurrentWordSuppressed() {
+                    return
+                }
+
                 // Snapshot buffer state so we can detect whether complete(_:)
                 // actually inserted text.  If it did (auto-accept of a
                 // pre-selected candidate), suppress the resulting

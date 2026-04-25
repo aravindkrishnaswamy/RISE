@@ -211,6 +211,39 @@ void TestNonRepeatableParameterFilteredAfterUse()
 	EXPECT( !has_name );
 }
 
+void TestInlineCompletionShowsAuthoredNonRepeatable()
+{
+	std::cout << "InlineCompletionShowsAuthoredNonRepeatable\n";
+	SuggestionEngine engine;
+	// `samples` is already authored on a previous line of a
+	// pixelpel_rasterizer block.  ContextMenu mode hides it (the
+	// right-click menu is "what could I add here?", and a duplicate
+	// is not a useful insertion).  InlineCompletion mode MUST still
+	// surface it so the user can finish typing the parameter name —
+	// hiding the only `s*` ExactPrefix candidate while the user is
+	// spelling it out makes the parameter impossible to type.
+	const std::string buf =
+		"RISE ASCII SCENE 5\n"
+		"pixelpel_rasterizer\n"
+		"{\n"
+		"\tsamples\t4\n"
+		"\ts";
+
+	auto inline_sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::InlineCompletion );
+	bool inline_has_samples = false;
+	for( const Suggestion& s : inline_sugs ) {
+		if( s.displayText == "samples" ) { inline_has_samples = true; break; }
+	}
+	EXPECT( inline_has_samples );
+
+	auto menu_sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
+	bool menu_has_samples = false;
+	for( const Suggestion& s : menu_sugs ) {
+		if( s.displayText == "samples" ) { menu_has_samples = true; break; }
+	}
+	EXPECT( !menu_has_samples );
+}
+
 void TestNameIndexSkipsCommentedOutNames()
 {
 	std::cout << "NameIndexSkipsCommentedOutNames\n";
@@ -320,6 +353,7 @@ int main()
 	TestSuggestChunkKeywordsAtRoot();
 	TestSuggestParametersInAmbientLight();
 	TestNonRepeatableParameterFilteredAfterUse();
+	TestInlineCompletionShowsAuthoredNonRepeatable();
 	TestNameIndexSkipsCommentedOutNames();
 	TestAliasShowsAsItsOwnSuggestion();
 	TestParameterContextMenuIncludesValuePlaceholder();

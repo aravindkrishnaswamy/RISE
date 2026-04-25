@@ -20,8 +20,8 @@ namespace RISE
 	namespace SceneEditorSuggestions
 	{
 		SceneGrammar::SceneGrammar()
-			: mParsers( CreateAllChunkParsers() )
 		{
+            mParsers = CreateAllChunkParsers();
 			mKeywords.reserve( mParsers.size() );
 			mDescriptors.reserve( mParsers.size() );
 

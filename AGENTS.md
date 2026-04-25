@@ -113,6 +113,7 @@ precisely because ad-hoc judgment reliably misses them.
 | [performance-work-with-baselines](docs/skills/performance-work-with-baselines.md) | Optimize runtime or memory; any change framed as "make X faster." |
 | [abi-preserving-api-evolution](docs/skills/abi-preserving-api-evolution.md) | Change a public API — exported function, virtual interface, or abstract base class. |
 | [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — apply this decision tree first. |
+| [precision-fix-the-formulation](docs/skills/precision-fix-the-formulation.md) | Tempted to widen a `< NEARZERO` / `< EPSILON` check, add an ε fudge, or pick a magic `1e-N` to silence FP-noise speckle / firefly / near-zero misclassification.  Find the cancellation and reformulate. |
 | [sms-firefly-diagnosis](docs/skills/sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; user reports "fireflies" in an SMS scene. |
 | [write-highly-effective-tests](docs/skills/write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into strong regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
 
