@@ -2409,6 +2409,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		mv.eta = specInfo.ior;
 		mv.attenuation = specInfo.attenuation;
 		mv.isReflection = !specInfo.canRefract;
+		mv.canRefract = specInfo.canRefract;
 		mv.valid = false;  // Derivatives not yet computed; Solve will handle it
 
 		// Determine entering vs exiting:
@@ -2731,11 +2732,40 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 		// chain itself converged.
 		Scalar eta_i, eta_t;
 		GetEffectiveEtas( v, eta_i, eta_t );
-		const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 
+		// Three semantically distinct vertex kinds drive three different
+		// throughput laws.  The dispatch is on (canRefract, isReflection):
+		//
+		//   (false, true)   pure mirror — full reflectance from the painter,
+		//                   no Fresnel angle factor.  PerfectReflectorSPF
+		//                   models an idealized 100%-reflective surface;
+		//                   ComputeDielectricFresnel(cosI, 1, 1) would give
+		//                   the wrong answer (=0) here because the dielectric
+		//                   formula is meaningless on a non-refracting medium.
+		//   (true,  true)   dielectric reflection — Fresnel reflection on
+		//                   glass, OR total internal reflection (the latter
+		//                   falls out automatically: ComputeDielectricFresnel
+		//                   returns 1.0 when sin²θ_t ≥ 1).  Reflection at a
+		//                   dielectric interface is uncolored (the painter's
+		//                   refractance only enters via Beer's law during
+		//                   transmission) — matches PerfectRefractorSPF::
+		//                   Scatter, which sets the Fresnel-reflection ray's
+		//                   kray = (Fr, Fr, Fr) without a tau multiplier.
+		//   (true,  false)  refraction — Fresnel transmission (1 − Fr) with
+		//                   the tau (refractance) painter and the (η_i/η_t)²
+		//                   radiance rescale across the dielectric boundary.
 		if( v.isReflection )
 		{
-			throughput = throughput * v.attenuation * fr;
+			Scalar R;
+			if( v.canRefract )
+			{
+				R = ComputeDielectricFresnel( cosI, eta_i, eta_t );
+			}
+			else
+			{
+				R = 1.0;
+			}
+			throughput = throughput * v.attenuation * R;
 		}
 		else
 		{
@@ -2752,6 +2782,7 @@ RISEPel ManifoldSolver::EvaluateChainThroughput(
 			// eta_i is the index on the x-receiver side, eta_t on the
 			// y-source side, in the photon's FORWARD direction.  The
 			// forward rescale is (n_receiver / n_source)^2 = (eta_i / eta_t)^2.
+			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 			const Scalar eta_ratio = eta_i / eta_t;
 			const Scalar radiance_rescale = eta_ratio * eta_ratio;
 			throughput = throughput * v.attenuation * (1.0 - fr) * radiance_rescale;
@@ -2798,14 +2829,25 @@ Scalar ManifoldSolver::EvaluateChainThroughputNM(
 		const Scalar cosI = fabs( Vector3Ops::Dot( wi, v.normal ) );
 		Scalar eta_i, eta_t;
 		GetEffectiveEtas( v, eta_i, eta_t );
-		const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 
+		// Same three-case dispatch as the RGB variant: pure mirrors take
+		// full reflectance, dielectric reflection (incl. TIR) and
+		// refraction use Fresnel.  See EvaluateChainThroughput for the
+		// full discussion of why ComputeDielectricFresnel(cosI, 1, 1)
+		// would silently zero the throughput on a mirror.
 		if( v.isReflection )
 		{
-			throughput *= fr;
+			if( v.canRefract )
+			{
+				throughput *= ComputeDielectricFresnel( cosI, eta_i, eta_t );
+			}
+			// else: pure mirror — multiply by 1 (no-op).  Spectral
+			// reflectance painters aren't queried in this NM throughput
+			// path; surface colour is applied at the integrator level.
 		}
 		else
 		{
+			const Scalar fr = ComputeDielectricFresnel( cosI, eta_i, eta_t );
 			throughput *= (1.0 - fr);
 		}
 	}
@@ -3661,9 +3703,37 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// we go) so trial indices don't directly map to photon indices.
 	std::size_t photonCursor = 0;
 
+	// Surface-sampling fallback for purely-reflective single-vertex chains.
+	//
+	// For a k=1 chain on a perfect-reflector, BuildSeedChain shoots a ray
+	// from `pos` toward `lightSample.position` and records its first
+	// specular hit.  That hit lies on the straight line shade↔light by
+	// construction, so wi (mirror→shade) and wo (mirror→light) are exactly
+	// anti-parallel and the half-vector h = wi + wo is identically zero
+	// — the constraint is degenerate (||C|| = √2 from the hLen<NEARZERO
+	// fallback in EvaluateConstraint), and Newton has no descent direction.
+	//
+	// Refraction doesn't have this problem because Snell's law bends the
+	// ray inside the medium, so a typical refractive caustic chain is k=2
+	// (entry+exit) and the second vertex lies OFF the shade↔light line.
+	// Reflection produces no such bend, so k=1 reflection always degenerates.
+	//
+	// The principled remedy: seed each trial by sampling a uniform random
+	// point on the reflective caster's surface.  On a smooth curved mirror
+	// the basin of attraction around each reflection root is wide, so most
+	// surface samples Newton-converge to a valid root — for the diacaustic
+	// (a curved tube), the heart-shaped cardioid roots are reachable from
+	// generic surface samples.  Photon-aided seeding (trials with photons
+	// available) takes precedence; surface sampling fills the remainder.
+	const bool surfaceSampleReflectionFallback =
+		( baseSeedChain.size() == 1 ) &&
+		( !baseSeedChain[0].canRefract ) &&
+		( pFirstCaster != nullptr );
+
 	for( unsigned int trial = 0; trial < N; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
+		bool useSurfaceSample = false;
 
 		// Trial 0 uses the deterministic Snell-traced base seed; later
 		// trials consume one photon from the map per trial.  If we've
@@ -3682,11 +3752,23 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// the shading point toward that world position crosses the chain
 		// in the right direction regardless of which side of the chain
 		// the photon happened to enter from.
-		if( trial > 0 )
+		if( trial == 0 && surfaceSampleReflectionFallback )
+		{
+			// Trial 0's Snell-traced seed is degenerate for pure-reflection
+			// k=1; replace it with a uniform surface sample on the caster.
+			useSurfaceSample = true;
+		}
+		else if( trial > 0 )
 		{
 			if( photonCursor >= photonSeeds.size() ) {
-				continue;  // no more photon seeds this trial round
+				if( surfaceSampleReflectionFallback ) {
+					useSurfaceSample = true;
+				} else {
+					continue;  // no more photon seeds this trial round
+				}
 			}
+			else
+			{
 			const SMSPhoton& ph = photonSeeds[photonCursor];
 			photonCursor++;
 
@@ -3734,8 +3816,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 					rigLocal.vNormal = pv.normal;
 					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 					mv.attenuation = spec.attenuation;
+					mv.canRefract  = spec.canRefract;
 				} else {
 					mv.attenuation = RISEPel( 1, 1, 1 );
+					mv.canRefract  = true;   // safe default: dielectric Fresnel path
 				}
 				// Chain-vertex semantics recovered from the photon record:
 				//   flags bit 0 = photon-direction isExiting (refractions only)
@@ -3763,6 +3847,32 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				// (extend SMSPhotonChainVertex storage at emission).
 			}
 			trialSeed = newChain;
+			}  // end photon-aided branch (else of "no more photons")
+		}
+
+		// Build a single-vertex seed by uniform-sampling the reflective
+		// caster's surface.  Inherits material data from the original
+		// baseSeedChain[0]; only position/normal change.  Newton then
+		// walks from this random surface point to a true reflection root.
+		if( useSurfaceSample )
+		{
+			Point3 sp;
+			Vector3 sn;
+			Point2 sc;
+			pFirstCaster->UniformRandomPoint(
+				&sp, &sn, &sc,
+				Point3( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() ) );
+			ManifoldVertex mv = baseSeedChain[0];
+			mv.position = sp;
+			mv.normal   = sn;
+			mv.uv       = sc;
+			mv.dpdu = Vector3(0,0,0);  // Solve will compute via ComputeVertexDerivatives
+			mv.dpdv = Vector3(0,0,0);
+			mv.dndu = Vector3(0,0,0);
+			mv.dndv = Vector3(0,0,0);
+			mv.valid = false;
+			trialSeed.clear();
+			trialSeed.push_back( mv );
 		}
 
 		ManifoldResult mResult = Solve(
@@ -4306,9 +4416,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 						rigLocal, queryIor, nm );
 					mv.eta = specNM.ior;
 					mv.attenuation = specNM.attenuation;
+					mv.canRefract  = specNM.canRefract;
 				} else {
 					mv.eta = pv.eta;
 					mv.attenuation = RISEPel( 1, 1, 1 );
+					mv.canRefract  = true;
 				}
 				// Photon-aided seed reconstruction does not currently
 				// store the IOR-stack snapshot at each vertex — the
