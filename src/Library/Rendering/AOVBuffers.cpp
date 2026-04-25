@@ -36,9 +36,16 @@ void AOVBuffers::AccumulateAlbedo(
 {
 	bHasData = true;
 	const unsigned int idx = (y * width + x) * 3;
-	albedo[idx + 0] += static_cast<float>( c.r * weight );
-	albedo[idx + 1] += static_cast<float>( c.g * weight );
-	albedo[idx + 2] += static_cast<float>( c.b * weight );
+	// Saturate each channel to [0, 1]: OIDN expects albedo in that
+	// range.  IBSDF::albedo() should normally already be in range, but
+	// pathological painters (HDR colors > 1) can push it over — keep
+	// this as a safety net.
+	const Scalar r = r_min( Scalar(1.0), r_max( Scalar(0.0), c.r ) );
+	const Scalar g = r_min( Scalar(1.0), r_max( Scalar(0.0), c.g ) );
+	const Scalar b = r_min( Scalar(1.0), r_max( Scalar(0.0), c.b ) );
+	albedo[idx + 0] += static_cast<float>( r * weight );
+	albedo[idx + 1] += static_cast<float>( g * weight );
+	albedo[idx + 2] += static_cast<float>( b * weight );
 }
 
 void AOVBuffers::AccumulateNormal(

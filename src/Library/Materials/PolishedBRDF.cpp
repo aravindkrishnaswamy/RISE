@@ -69,3 +69,17 @@ Scalar PolishedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeom
 	Scalar		Rs = ComputeRs( -vLightIn, n, Nt.GetColorNM(ri,nm) );
 	return pReflectance.GetColorNM(ri,nm) * INV_PI * (1.0 - Rs);
 }
+
+RISEPel PolishedBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Diffuse base scaled by transmitted Fresnel (1 - Rs) plus the
+	// polished specular layer contributing Rs.  Compute Rs at the view
+	// direction with the camera ray.
+	const Vector3& n = ri.onb.w();
+	const RISEPel ior = Nt.GetColor( ri );
+	RISEPel Rs;
+	for( int i = 0; i < 3; ++i ) {
+		Rs[i] = ComputeRs( ri.ray.Dir(), n, ior[i] );
+	}
+	return pReflectance.GetColor( ri ) * ( RISEPel(1,1,1) - Rs ) + Rs;
+}

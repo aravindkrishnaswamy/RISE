@@ -82,6 +82,13 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 {
 	Scalar d=0, s=0;
 	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), alpha.GetColorNM(ri,nm) );
-	
+
 	return d*diffuse.GetColorNM(ri,nm) + s*specular.GetColorNM(ri,nm);
+}
+
+RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Ward's Gaussian normalization makes the spec lobe integrate to
+	// ≈ Rs over the hemisphere, so total reflectance ≈ Rd + Rs.
+	return diffuse.GetColor( ri ) + specular.GetColor( ri );
 }

@@ -209,3 +209,16 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 
 	return pDiffuse.GetColorNM(ri,nm) * INV_PI + specular;
 }
+
+RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Diffuse + Fresnel(cos θo) · spec, same conductor Fresnel that
+	// `value()` uses.  The D / G microfacet terms shape the lobe but
+	// don't change total integrated reflectance to first order.
+	const Vector3 n = ri.onb.w();
+	const RISEPel ior = pIOR.GetColor( ri );
+	const RISEPel ext = pExtinction.GetColor( ri );
+	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
+		ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
+	return pDiffuse.GetColor( ri ) + pSpecular.GetColor( ri ) * fresnel;
+}

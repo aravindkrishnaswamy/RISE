@@ -154,9 +154,17 @@ RenderEngine::~RenderEngine()
 
     if (m_job) {
         m_job->SetProgress(nullptr);
+        // Drop rasterizer outputs first so the dispatch wrapping
+        // m_imageOutput is destroyed before the adapter it references.
+        if (auto* rasterizer = m_job->GetRasterizer()) {
+            rasterizer->FreeRasterizerOutputs();
+        }
         m_job->release();
         m_job = nullptr;
     }
+
+    delete m_imageOutput;
+    m_imageOutput = nullptr;
 }
 
 QString RenderEngine::versionString() const
@@ -214,6 +222,16 @@ void RenderEngine::loadScene(const QString& filePath)
 
     setupMediaPaths(filePath);
 
+    // The previous scene's rasterizer state goes away inside
+    // LoadAsciiScene; the dispatch wrapping m_imageOutput goes with
+    // it, so the adapter must die before that happens (and a fresh
+    // one will be lazy-allocated on the next startRender).
+    if (auto* rasterizer = m_job->GetRasterizer()) {
+        rasterizer->FreeRasterizerOutputs();
+    }
+    delete m_imageOutput;
+    m_imageOutput = nullptr;
+
     // Run LoadAsciiScene on a worker thread
     QThread* thread = QThread::create([this, filePath]() {
         bool ok = m_job->LoadAsciiScene(filePath.toUtf8().constData());
@@ -246,9 +264,17 @@ void RenderEngine::startRender()
     auto* progressCb = new ProgressCallbackAdapter(this);
     m_job->SetProgress(progressCb);
 
-    // Install image output callback
-    auto* imageOutput = new ImageOutputAdapter(this);
-    m_job->AddCallbackRasterizerOutput(imageOutput);
+    // Install image output callback once per scene.  The dispatch the
+    // rasterizer wraps around this adapter holds it by reference, so
+    // we MUST keep the adapter alive for as long as the dispatch is
+    // in the rasterizer's output list (i.e. until the next scene load
+    // or until RenderEngine is destroyed).  Re-adding on every render
+    // would compound: the prior dispatch stays in the list with a
+    // dangling reference once we delete the adapter.
+    if (!m_imageOutput) {
+        m_imageOutput = new ImageOutputAdapter(this);
+        m_job->AddCallbackRasterizerOutput(m_imageOutput);
+    }
 
     // Start elapsed timer
     m_renderClock.start();
@@ -258,14 +284,13 @@ void RenderEngine::startRender()
     }
     m_elapsedTimer->start();
 
-    QThread* thread = QThread::create([this, progressCb, imageOutput]() {
+    QThread* thread = QThread::create([this, progressCb]() {
         bool ok = m_job->Rasterize();
 
-        QMetaObject::invokeMethod(this, [this, ok, progressCb, imageOutput]() {
+        QMetaObject::invokeMethod(this, [this, ok, progressCb]() {
             m_elapsedTimer->stop();
             m_job->SetProgress(nullptr);
             delete progressCb;
-            delete imageOutput;
 
             if (m_cancelFlag) {
                 setState(Cancelled);
@@ -293,16 +318,21 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     m_cancelFlag = false;
     m_sizeDetected = false;
 
-    // Clear outputs from previous renders
+    // Clear outputs from previous renders.  The dispatch wrapping any
+    // existing m_imageOutput is in this list, so it gets destroyed
+    // here — drop the bare pointer immediately so we don't reuse a
+    // dangling adapter (it'd be wrapped by no live dispatch).
     rasterizer->FreeRasterizerOutputs();
+    delete m_imageOutput;
+    m_imageOutput = nullptr;
 
     // Install progress callback
     auto* progressCb = new ProgressCallbackAdapter(this);
     m_job->SetProgress(progressCb);
 
-    // Install image output callback
-    auto* imageOutput = new ImageOutputAdapter(this);
-    m_job->AddCallbackRasterizerOutput(imageOutput);
+    // Install image output callback (recreated since we just freed it).
+    m_imageOutput = new ImageOutputAdapter(this);
+    m_job->AddCallbackRasterizerOutput(m_imageOutput);
 
     // TODO: Create and attach VideoEncoder for H.264 output
     // VideoEncoder* videoEncoder = new VideoEncoder(videoOutputPath.toStdString());
@@ -317,20 +347,23 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     }
     m_elapsedTimer->start();
 
-    QThread* thread = QThread::create([this, progressCb, imageOutput, rasterizer]() {
+    QThread* thread = QThread::create([this, progressCb, rasterizer]() {
         bool ok = m_job->RasterizeAnimationUsingOptions();
 
         // TODO: Finalize video encoder here
         // if (videoEncoder) videoEncoder->finalize();
 
-        // Free rasterizer outputs
+        // Free rasterizer outputs (this destroys the dispatch wrapping
+        // m_imageOutput, so the adapter must die in lockstep on the UI
+        // thread before any subsequent render tries to reuse it).
         rasterizer->FreeRasterizerOutputs();
 
-        QMetaObject::invokeMethod(this, [this, ok, progressCb, imageOutput]() {
+        QMetaObject::invokeMethod(this, [this, ok, progressCb]() {
             m_elapsedTimer->stop();
             m_job->SetProgress(nullptr);
             delete progressCb;
-            delete imageOutput;
+            delete m_imageOutput;
+            m_imageOutput = nullptr;
 
             if (m_cancelFlag) {
                 setState(Cancelled);
@@ -358,6 +391,13 @@ void RenderEngine::cancelRender()
 void RenderEngine::clearScene()
 {
     if (m_job) {
+        // Same lifecycle ordering as loadScene: drop the dispatch
+        // before the adapter, then ClearAll wipes the rasterizer.
+        if (auto* rasterizer = m_job->GetRasterizer()) {
+            rasterizer->FreeRasterizerOutputs();
+        }
+        delete m_imageOutput;
+        m_imageOutput = nullptr;
         m_job->ClearAll();
     }
 

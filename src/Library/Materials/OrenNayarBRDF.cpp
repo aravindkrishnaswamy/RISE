@@ -94,6 +94,14 @@ Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeo
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
 
+RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Oren-Nayar is energy-conserving: total reflectance ≈ Rd
+	// regardless of roughness.  The L1 / L2 terms only redistribute
+	// directional scattering shape.
+	return pReflectance.GetColor( ri );
+}
+
 // Explicit instantiation so other TUs (OrenNayarSPF.cpp) can link to the
 // scalar overload without seeing the template body.  The RISEPel flavour
 // is instantiated implicitly through OrenNayarBRDF::value above.

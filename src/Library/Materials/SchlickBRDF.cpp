@@ -107,6 +107,13 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 		const Scalar rho = pSpecular.GetColorNM(ri,nm);
 		return (pDiffuse.GetColorNM(ri,nm)*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;
 	}
-	
+
 	return 0;
+}
+
+RISEPel SchlickBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Schlick's spec lobe is already Fresnel-weighted at the BRDF
+	// level: integrated reflectance simplifies to Rd + Rs.
+	return pDiffuse.GetColor( ri ) + pSpecular.GetColor( ri );
 }

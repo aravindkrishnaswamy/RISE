@@ -351,12 +351,14 @@ void VCMPelRasterizer::IntegratePixel(
 					PixelAOV aov;
 					aov.normal = v.normal;
 					if( v.pMaterial->GetBSDF() ) {
-						Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
-						RayIntersectionGeometric rig( aovRay, nullRasterizerState );
+						const Vector3 viewDir = Vector3Ops::Normalize(
+							Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+						const Ray cameraRay( eyeVerts[0].position, viewDir );
+						RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
 						rig.ptIntersection = v.position;
 						rig.vNormal = v.normal;
 						rig.onb = v.onb;
-						aov.albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+						aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
 					} else {
 						aov.albedo = RISEPel( 1, 1, 1 );
 					}

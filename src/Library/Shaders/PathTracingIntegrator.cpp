@@ -2261,29 +2261,16 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
 
-	// Extract first-hit AOV data for the denoiser.
-	// For delta/transparent surfaces (GetBSDF()==NULL), use white
-	// albedo per OIDN documentation: transparent surfaces should
-	// report albedo 1 since the beauty signal is pure illumination.
+	// Extract first-hit AOV data for the denoiser.  For delta /
+	// transparent surfaces (GetBSDF()==NULL) use white albedo per OIDN
+	// documentation: those surfaces have no diffuse signature and the
+	// beauty pass is pure illumination.
 	if( pAOV && ri.geometric.bHit )
 	{
 		pAOV->normal = ri.geometric.vNormal;
-
-		if( ri.pMaterial && ri.pMaterial->GetBSDF() )
-		{
-			Ray aovRay( Point3Ops::mkPoint3(
-				ri.geometric.ptIntersection, ri.geometric.vNormal ),
-				-ri.geometric.vNormal );
-			RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-			rig.ptIntersection = ri.geometric.ptIntersection;
-			rig.vNormal = ri.geometric.vNormal;
-			rig.onb = ri.geometric.onb;
-			pAOV->albedo = ri.pMaterial->GetBSDF()->value(
-				ri.geometric.vNormal, rig ) * PI;
-		} else {
-			// Delta/transparent surface: white albedo per OIDN spec
-			pAOV->albedo = RISEPel( 1, 1, 1 );
-		}
+		pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+			: RISEPel( 1, 1, 1 );
 		pAOV->valid = true;
 	}
 

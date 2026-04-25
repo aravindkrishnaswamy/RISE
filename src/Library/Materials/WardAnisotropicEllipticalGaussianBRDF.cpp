@@ -92,6 +92,14 @@ Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, 
 {
 	Scalar d=0, s=0;
 	ComputeFactors<Scalar>( d, s, vLightIn, ri, alphax.GetColorNM(ri,nm), alphay.GetColorNM(ri,nm) );
-	
+
 	return d*diffuse.GetColorNM(ri,nm) + s*specular.GetColorNM(ri,nm);
+}
+
+RISEPel WardAnisotropicEllipticalGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Same energy argument as the isotropic variant: Ward's anisotropic
+	// elliptical Gaussian normalization makes the spec lobe integrate
+	// to ≈ Rs, so total reflectance ≈ Rd + Rs.
+	return diffuse.GetColor( ri ) + specular.GetColor( ri );
 }

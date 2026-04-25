@@ -175,3 +175,14 @@ Scalar DataDrivenBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionGe
 {
 	return 0;
 }
+
+RISEPel DataDrivenBSDF::albedo( const RayIntersectionGeometric& /*ri*/ ) const
+{
+	// No closed-form reflectance for tabulated BSDFs without
+	// integrating over the hemisphere.  A precomputed mean (a Fibonacci-
+	// sphere integration at construction time) would be the proper
+	// answer; until then return mid-gray so OIDN sees a neutral,
+	// non-chromatic albedo and doesn't pull the beauty pass toward any
+	// hue it shouldn't.
+	return RISEPel( 0.5, 0.5, 0.5 );
+}

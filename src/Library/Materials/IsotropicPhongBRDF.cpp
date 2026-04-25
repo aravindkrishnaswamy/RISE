@@ -91,3 +91,10 @@ Scalar IsotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersecti
 
 	return ((refdiffuse.GetColorNM(ri,nm) * diffuseFactor) + (refspecular.GetColorNM(ri,nm)*specularFactor));
 }
+
+RISEPel IsotropicPhongBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Conventional Phong reflectance: Rd + Rs (the normalized lobe
+	// integrates to ≈ Rs over the hemisphere).
+	return refdiffuse.GetColor( ri ) + refspecular.GetColor( ri );
+}

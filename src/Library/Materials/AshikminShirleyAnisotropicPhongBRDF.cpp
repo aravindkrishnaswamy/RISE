@@ -123,3 +123,12 @@ Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, co
 
 	return diffuse + specular;
 }
+
+RISEPel AshikminShirleyAnisotropicPhongBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// AS-2000 factors as `Rd·(1-Rs)·diffuse_factor + spec_factor` where
+	// the spec lobe carries Fresnel(F0=Rs) and integrates to ≈ Rs.
+	// Total: Rd·(1-Rs) + Rs — symmetric in the diffuse/spec coupling.
+	const RISEPel pRs = Rs.GetColor( ri );
+	return Rd.GetColor( ri ) * ( RISEPel(1,1,1) - pRs ) + pRs;
+}

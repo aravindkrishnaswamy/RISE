@@ -144,3 +144,13 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 	// Smooth surface: delta interaction, BSDF = 0 for non-specular directions
 	return 0;
 }
+
+RISEPel SubSurfaceScatteringBSDF::albedo( const RayIntersectionGeometric& /*ri*/ ) const
+{
+	// The visible "color" for SSS materials comes from BSSRDF transport,
+	// not from this BSDF's surface term (which is GGX reflection only).
+	// Closed-form total reflectance under SSS isn't available here, so
+	// return white — OIDN treats the surface as illumination-only,
+	// which is the correct assumption for skin / wax / marble.
+	return RISEPel( 1.0, 1.0, 1.0 );
+}

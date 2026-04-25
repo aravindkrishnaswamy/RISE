@@ -36,6 +36,7 @@ namespace RISE
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
 		};
 	}
 }

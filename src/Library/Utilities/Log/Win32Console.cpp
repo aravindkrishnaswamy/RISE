@@ -180,7 +180,7 @@ LRESULT WINAPI Win32Console::ConsoleProc( HWND hWndMain, UINT Msg, WPARAM wParam
 	static Win32Console *pConsole = NULL;
 	char szBuffer[MAXCOMMANDCHAR];
 	char*	szCommand;
-	int cLength;
+	LRESULT cLength;
 	HWND hWnd;
 
 	switch( Msg ) {

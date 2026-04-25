@@ -63,6 +63,22 @@ namespace RISE
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection information
 			const Scalar nm									///< [in] Wavelength of spectral packet we are processing
 			) const = 0;
+
+		/// Approximate directional-hemispherical reflectance at the
+		/// outgoing direction implied by `ri.ray` — i.e., the fraction
+		/// of incident energy reflected back toward the camera under
+		/// uniform white illumination.  Intended for the OIDN albedo
+		/// AOV: must be in [0, 1] per channel and noise-free per pixel
+		/// so OIDN can run with cleanAux=true.  Default returns white,
+		/// which is a safe conservative AOV (no chromatic info → OIDN
+		/// treats the surface as illumination-only).  Concrete BSDFs
+		/// override with closed-form reflectance estimates.
+		virtual RISEPel albedo(
+			const RayIntersectionGeometric& /*ri*/			///< [in] Geometric intersection information (provides view direction via ri.ray)
+			) const
+		{
+			return RISEPel( 1.0, 1.0, 1.0 );
+		}
 	};
 }
 

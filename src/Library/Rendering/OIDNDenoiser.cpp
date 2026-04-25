@@ -24,6 +24,8 @@
 #include "../Interfaces/IBSDF.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Utilities/RuntimeContext.h"
+#include "../Utilities/ThreadPool.h"
+#include "../Utilities/RandomNumbers.h"
 
 #ifdef RISE_ENABLE_OIDN
 #if defined(__clang__)
@@ -65,15 +67,22 @@ void OIDNDenoiser::FloatBufferToImage(
 	unsigned int h
 	)
 {
+	// Preserve the source pixel's alpha — OIDN runs on RGB only, so the
+	// coverage mask painted by the rasterizer (alpha = 0 for "no hit",
+	// alpha = 1 for fully covered, fractional at silhouettes) must come
+	// through untouched.  Overwriting it with 1.0 turns transparent
+	// background pixels into hard opaque black, visible as a sharp
+	// rectangle behind objects in scenes with no environment / sky.
 	for( unsigned int y = 0; y < h; y++ ) {
 		for( unsigned int x = 0; x < w; x++ ) {
 			const unsigned int idx = (y * w + x) * 3;
+			const Chel alpha = img.GetPEL( x, y ).a;
 			img.SetPEL( x, y, RISEColor(
 				RISEPel(
 					static_cast<Chel>( buf[idx + 0] ),
 					static_cast<Chel>( buf[idx + 1] ),
 					static_cast<Chel>( buf[idx + 2] ) ),
-				1.0 ) );
+				alpha ) );
 		}
 	}
 }
@@ -124,6 +133,11 @@ void OIDNDenoiser::Denoise(
 
 	filter.set( "hdr", true );
 	if( albedoBuffer || normalBuffer ) {
+		// IBSDF::albedo() returns a real directional-hemispherical
+		// reflectance estimate (per-pixel constant, no MC noise), and
+		// CollectFirstHitAOVs multi-samples for proper aperture / DOF
+		// coverage — so the aux buffers genuinely are clean and OIDN
+		// should use them directly without spatial pre-filtering.
 		filter.set( "cleanAux", true );
 	}
 	filter.commit();
@@ -157,56 +171,67 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 	const unsigned int width = pCamera->GetWidth();
 	const unsigned int height = pCamera->GetHeight();
 
-	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, false );
+	// Multi-sample per pixel so the AOVs match the beauty's effective
+	// projection.  Each call to GenerateRay() re-samples the aperture
+	// (thin-lens cameras), so accumulating N samples gives natural DOF
+	// blur in the AOV; subpixel jitter additionally smooths geometry
+	// edges.  Without this, OIDN sees a sharp AOV alongside a blurred
+	// beauty and "recovers" the sharp signal as if it were noise — DOF
+	// gets undone and silhouette edges sharpen unnaturally.  4 samples
+	// is the sweet spot: enough aperture coverage to track the beauty's
+	// blur, cheap enough that the retrace stays under a second on
+	// scenes with thin-lens cameras.
+	const unsigned int aovSamplesPerPixel = 4;
+	const Scalar invSamples = Scalar( 1.0 ) / Scalar( aovSamplesPerPixel );
 
-	for( unsigned int y = 0; y < height; y++ )
-	{
+	// Parallelize over rows.  Each row uses a thread-local RNG so the
+	// process-wide GlobalRNG isn't contended by N workers calling
+	// CanonicalRandom() concurrently.
+	GlobalThreadPool().ParallelFor( height, [&]( unsigned int y ) {
+		static thread_local RandomNumberGenerator tl_rng;
+		RuntimeContext rc( tl_rng, RuntimeContext::PASS_NORMAL, false );
+
 		for( unsigned int x = 0; x < width; x++ )
 		{
-			Point2 ptOnScreen( x, height - y );
-
-			Ray ray;
-			if( !pCamera->GenerateRay( rc, ray, ptOnScreen ) ) {
-				continue;
-			}
-
-			RasterizerState rast;
-			rast.x = x;
-			rast.y = y;
-
-			RayIntersection ri( ray, rast );
-			pObjects->IntersectRay( ri, true, true, false );
-
-			if( !ri.geometric.bHit ) {
-				continue;
-			}
-
-			// Normal AOV
-			aovBuffers.AccumulateNormal( x, y, ri.geometric.vNormal, 1.0 );
-
-			// Albedo AOV: evaluate BSDF at normal incidence × PI.
-			// For delta/transparent surfaces (GetBSDF()==NULL), use
-			// white albedo per OIDN documentation.
-			if( ri.pMaterial && ri.pMaterial->GetBSDF() )
+			for( unsigned int s = 0; s < aovSamplesPerPixel; ++s )
 			{
-				Ray aovRay( Point3Ops::mkPoint3( ri.geometric.ptIntersection, ri.geometric.vNormal ),
-					-ri.geometric.vNormal );
-				RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-				rig.ptIntersection = ri.geometric.ptIntersection;
-				rig.vNormal = ri.geometric.vNormal;
-				rig.onb = ri.geometric.onb;
+				const Scalar jx = tl_rng.CanonicalRandom();
+				const Scalar jy = tl_rng.CanonicalRandom();
+				Point2 ptOnScreen( x + jx, ( height - y ) - jy );
 
-				RISEPel albedo = ri.pMaterial->GetBSDF()->value( ri.geometric.vNormal, rig ) * PI;
-				aovBuffers.AccumulateAlbedo( x, y, albedo, 1.0 );
+				Ray ray;
+				// Per OIDN docs, sky / miss pixels should report
+				// albedo (1,1,1) and normal (0,0,0).  Accumulating
+				// those for missing samples — instead of silently
+				// dropping them — correctly blends the AOV across
+				// silhouette / DOF-soft edges to match the beauty's
+				// blend of surface + background.  Without this OIDN
+				// sees a sharp surface AOV behind a blurred beauty and
+				// "recovers" the sharp signal, undoing aperture
+				// defocus at those edges.
+				Vector3 sampleNormal( 0, 0, 0 );
+				RISEPel sampleAlbedo( 1, 1, 1 );
+				if( pCamera->GenerateRay( rc, ray, ptOnScreen ) ) {
+					RasterizerState rast;
+					rast.x = x;
+					rast.y = y;
+					RayIntersection ri( ray, rast );
+					pObjects->IntersectRay( ri, true, true, false );
+					if( ri.geometric.bHit ) {
+						sampleNormal = ri.geometric.vNormal;
+						// Delta / transparent surfaces (GetBSDF()==NULL)
+						// use white per OIDN documentation.
+						sampleAlbedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+							: RISEPel( 1, 1, 1 );
+					}
+				}
+				aovBuffers.AccumulateAlbedo( x, y, sampleAlbedo, 1.0 );
+				aovBuffers.AccumulateNormal( x, y, sampleNormal, 1.0 );
 			}
-			else
-			{
-				aovBuffers.AccumulateAlbedo( x, y, RISEPel( 1, 1, 1 ), 1.0 );
-			}
-
-			aovBuffers.Normalize( x, y, 1.0 );
+			aovBuffers.Normalize( x, y, invSamples );
 		}
-	}
+	} );
 }
 
 void OIDNDenoiser::ApplyDenoise(

@@ -116,6 +116,20 @@ private:
     friend class ProgressCallbackAdapter;
     friend class ImageOutputAdapter;
     friend class LogPrinterAdapter;
+
+    // Persistent image-output adapter, lazily attached to the job's
+    // rasterizer on the first render and reused for subsequent renders
+    // (new render → existing dispatch in the rasterizer's output list
+    // is still valid).  Without persistence, every startRender() would
+    // construct a fresh adapter, register a new dispatch, and then
+    // delete the adapter at render-completion time — leaving the
+    // dispatch in the rasterizer with a now-dangling reference.
+    // The next render iterates that stale dispatch and crashes inside
+    // OutputIntermediateImage when it calls back into the freed adapter.
+    // Owned by RenderEngine; freed in the destructor.  Reset to null
+    // on scene reload so loadScene() can re-attach (LoadAsciiScene
+    // re-creates the rasterizer along with its output list).
+    ImageOutputAdapter* m_imageOutput = nullptr;
 };
 
 #endif // RENDERENGINE_H

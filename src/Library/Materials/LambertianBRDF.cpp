@@ -62,6 +62,12 @@ Scalar LambertianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGe
 	if( ShouldReflect( vLightIn, ri, ri.onb.w() ) ) {
 		return pReflectance.GetColorNM(ri,nm) * INV_PI;
 	}
-	
+
 	return 0;
+}
+
+RISEPel LambertianBRDF::albedo( const RayIntersectionGeometric& ri ) const
+{
+	// Exact: ∫ f cos θ dω = Rd for a Lambertian.
+	return pReflectance.GetColor( ri );
 }
