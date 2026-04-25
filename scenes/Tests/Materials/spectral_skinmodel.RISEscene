@@ -61,7 +61,7 @@ pixelintegratingspectral_rasterizer
 	integrate_rgb		FALSE
 	show_luminaires		FALSE
 }
-
+/*
 mlt_spectral_rasterizer
 {
 
@@ -69,12 +69,10 @@ mlt_spectral_rasterizer
 	nmbegin				380
 	nmend				720
 	num_wavelengths		8
-	lum_samples			0
 #	radiance_map		speclum2
-	integrate_rgb		FALSE
 	show_luminaires		FALSE
 }
-
+*/
 file_rasterizeroutput
 {
 	pattern				rendered/skinmodel

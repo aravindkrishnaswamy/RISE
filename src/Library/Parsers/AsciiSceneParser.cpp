@@ -282,16 +282,26 @@ namespace RISE
 			static std::map<std::string, PainterColor> s_painterColors;
 
 			// Generic dispatch used by migrated chunk parsers to replace the
-			// hand-rolled if/else chain inside each ParseChunk.  Given a
-			// chunk descriptor and a concrete per-chunk state instance, it
-			// walks the input parameter lines, looks up each parameter in
-			// the descriptor, and calls the matching apply function (which
-			// downcasts the state to its concrete subclass).  Returns
-			// false (and logs) on the first unknown parameter, matching
-			// the pre-refactor behaviour of the legacy if/else chains.
+			// Generic registry-driven dispatcher.  Walks the input
+			// parameter lines, validates each name against the chunk's
+			// ChunkDescriptor::parameters, and stores matched values
+			// in the bag (single-valued or repeatable depending on
+			// the descriptor's `repeatable` flag).  Unknown parameter
+			// names fail the parse — exactly the same behaviour as
+			// the legacy hand-rolled if/else chain's else branch.
+			//
+			// Because the bag is keyed by parameter name and the only
+			// gate on what gets stored is the descriptor, the
+			// descriptor IS the parser's accepted-parameter set.
+			// Drift between "what the parser parses" and "what the
+			// descriptor advertises" is structurally impossible: if
+			// the descriptor lists a parameter, the parser accepts it
+			// and Finalize sees it; if it doesn't, the parser rejects
+			// it.  Each parser's Finalize then reads typed values out
+			// of the bag and emits the corresponding pJob.AddX call.
 			inline bool DispatchChunkParameters(
 				const ChunkDescriptor& desc,
-				IChunkParseState& state,
+				ParseStateBag&         bag,
 				const IAsciiChunkParser::ParamsList& params )
 			{
 				for( IAsciiChunkParser::ParamsList::const_iterator i = params.begin(); i != params.end(); ++i ) {
@@ -309,12 +319,18 @@ namespace RISE
 						}
 					}
 
-					if( found && found->apply ) {
-						found->apply( state, pvalue );
-					} else {
+					if( !found ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							"ChunkParser:: Failed to parse parameter name `%s` (not declared in `%s` descriptor)",
+							pname.c_str(),
+							desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str() );
 						return false;
+					}
+
+					if( found->repeatable ) {
+						bag.AppendRepeatable( found->name, std::string(pvalue.c_str()) );
+					} else {
+						bag.SetSingle( found->name, std::string(pvalue.c_str()) );
 					}
 				}
 				return true;
@@ -393,19 +409,42 @@ namespace RISE
 				{ auto& p = P(); p.name = "progressive_rendering";                  p.kind = ValueKind::Bool;   p.description = "Enable progressive rendering";          p.defaultValueHint = "FALSE"; }
 				{ auto& p = P(); p.name = "progressive_samples_per_pass";           p.kind = ValueKind::UInt;   p.description = "Samples per progressive pass";          p.defaultValueHint = "1"; }
 			}
+			// Core spectral params — exactly the fields of SpectralConfig.
+			// Used by every spectral rasterizer (pixelintegratingspectral,
+			// PT/BDPT/VCM spectral, MLT spectral).
+			template<typename PushFn>
+			static void AddSpectralCoreParams( PushFn P ) {
+				{ auto& p = P(); p.name = "spectral_samples";  p.kind = ValueKind::UInt;   p.description = "Number of spectral samples per pixel";       p.defaultValueHint = "1"; }
+				{ auto& p = P(); p.name = "nmbegin";           p.kind = ValueKind::Double; p.description = "Start wavelength (nm)";                      p.defaultValueHint = "380"; }
+				{ auto& p = P(); p.name = "nmend";             p.kind = ValueKind::Double; p.description = "End wavelength (nm)";                        p.defaultValueHint = "780"; }
+				{ auto& p = P(); p.name = "num_wavelengths";   p.kind = ValueKind::UInt;   p.description = "Discrete wavelengths sampled";               p.defaultValueHint = "10"; }
+				{ auto& p = P(); p.name = "hwss";              p.kind = ValueKind::Bool;   p.description = "Enable hero-wavelength stratified sampling"; p.defaultValueHint = "FALSE"; }
+			}
+
+			// RGB-to-SPD conversion params — only the legacy
+			// pixelintegratingspectral_rasterizer accepts these.  Modern
+			// PT/BDPT/VCM/MLT spectral integrators do RGB-to-SPD via
+			// the painters pipeline.
+			template<typename PushFn>
+			static void AddSpectralRGBSpdParams( PushFn P ) {
+				{ auto& p = P(); p.name = "integrate_rgb";       p.kind = ValueKind::Bool;   p.description = "Integrate directly to RGB (skip spectral storage)"; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "rgb_spd";             p.kind = ValueKind::String; p.description = "RGB-to-SPD conversion type";            p.defaultValueHint = "smits"; }
+				{ auto& p = P(); p.name = "rgb_spd_wavelengths"; p.kind = ValueKind::String; p.description = "Wavelengths for custom RGB-SPD tables";  p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_r";           p.kind = ValueKind::String; p.description = "Red channel SPD samples";               p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_g";           p.kind = ValueKind::String; p.description = "Green channel SPD samples";             p.defaultValueHint = ""; }
+				{ auto& p = P(); p.name = "rgb_spd_b";           p.kind = ValueKind::String; p.description = "Blue channel SPD samples";              p.defaultValueHint = ""; }
+			}
+
+			// Backwards-compat alias — every existing call site that
+			// said AddSpectralConfigParams meant "everything spectral",
+			// which was the over-broad bundle.  Now resolves to core +
+			// RGB-SPD.  New code should use AddSpectralCoreParams /
+			// AddSpectralRGBSpdParams directly so the descriptor
+			// matches what the parser actually consumes.
 			template<typename PushFn>
 			static void AddSpectralConfigParams( PushFn P ) {
-				{ auto& p = P(); p.name = "spectral_samples";                       p.kind = ValueKind::UInt;   p.description = "Number of spectral samples per pixel";  p.defaultValueHint = "1"; }
-				{ auto& p = P(); p.name = "nmbegin";                                p.kind = ValueKind::Double; p.description = "Start wavelength (nm)";                 p.defaultValueHint = "380"; }
-				{ auto& p = P(); p.name = "nmend";                                  p.kind = ValueKind::Double; p.description = "End wavelength (nm)";                   p.defaultValueHint = "780"; }
-				{ auto& p = P(); p.name = "num_wavelengths";                        p.kind = ValueKind::UInt;   p.description = "Discrete wavelengths sampled";          p.defaultValueHint = "16"; }
-				{ auto& p = P(); p.name = "hwss";                                   p.kind = ValueKind::Bool;   p.description = "Enable hero-wavelength stratified sampling"; p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "integrate_rgb";                          p.kind = ValueKind::Bool;   p.description = "Integrate directly to RGB (skip spectral storage)"; p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "rgb_spd";                                p.kind = ValueKind::String; p.description = "RGB-to-SPD conversion type";            p.defaultValueHint = "smits"; }
-				{ auto& p = P(); p.name = "rgb_spd_wavelengths";                    p.kind = ValueKind::String; p.description = "Wavelengths for custom RGB-SPD tables";  p.defaultValueHint = ""; }
-				{ auto& p = P(); p.name = "rgb_spd_r";                              p.kind = ValueKind::String; p.description = "Red channel SPD samples";               p.defaultValueHint = ""; }
-				{ auto& p = P(); p.name = "rgb_spd_g";                              p.kind = ValueKind::String; p.description = "Green channel SPD samples";             p.defaultValueHint = ""; }
-				{ auto& p = P(); p.name = "rgb_spd_b";                              p.kind = ValueKind::String; p.description = "Blue channel SPD samples";              p.defaultValueHint = ""; }
+				AddSpectralCoreParams( P );
+				AddSpectralRGBSpdParams( P );
 			}
 			template<typename PushFn>
 			static void AddSMSConfigParams( PushFn P ) {
@@ -482,43 +521,20 @@ namespace RISE
 
 			struct UniformColorPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name        = bag.GetString( "name",       "noname" );
 					double color[3] = {0,0,0};
-					String color_space = "sRGB";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "color" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &color[0], &color[1], &color[2] );
-						} else if( pname == "colorspace" ) {
-							color_space = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "color", color );
+					std::string color_space = bag.GetString( "colorspace", "sRGB" );
 
 					PainterColor pc = { {color[0], color[1], color[2]} };
-					s_painterColors[name.c_str()] = pc;
+					s_painterColors[name] = pc;
 
 					return pJob.AddUniformColorPainter( name.c_str(), color, color_space.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "uniformcolor_painter"; cd.category = ChunkCategory::Painter;
@@ -535,88 +551,73 @@ namespace RISE
 
 			struct SpectralPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name    = bag.GetString( "name",   "noname" );
+					double nmbegin      = bag.GetDouble( "nmbegin", 400.0 );
+					double nmend        = bag.GetDouble( "nmend",   700.0 );
+					double scale        = bag.GetDouble( "scale",   1.0 );
+
 					std::vector<double> wavelengths;
 					std::vector<double> amplitudes;
-					double nmbegin=400.0;
-					double nmend=700.0;
-					double scale=1.0;
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+					// Repeatable per-sample control points: "cp <nm> <amp>"
+					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
+					for( size_t k = 0; k < cps.size(); ++k ) {
+						double nm = 0.0, amp = 0.0;
+						sscanf( cps[k].c_str(), "%lf %lf", &nm, &amp );
+						wavelengths.push_back( nm );
+						amplitudes.push_back( amp );
+					}
+
+					// Optional file-loaded spectrum (pairs)
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
+							while( !feof( f ) ) {
+								double nm, amp;
+								fscanf( f, "%lf %lf", &nm, &amp );
+								wavelengths.push_back( nm );
+								amplitudes.push_back( amp );
+							}
+							fclose( f );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
 						}
+					}
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							scale = pvalue.toDouble();
-						} else if( pname == "cp" ) {
-							double nm, amp;
-							sscanf( pvalue.c_str(), "%lf %lf", &nm, &amp );
-							wavelengths.push_back( nm );
-							amplitudes.push_back( amp );
-						} else if( pname == "file" ) {
-							// Load the spectral values from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double nm, amp;
-									fscanf( f, "%lf %lf", &nm, &amp );
-									wavelengths.push_back( nm );
-									amplitudes.push_back( amp );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
+					// Optional file-loaded wavelengths
+					if( bag.Has( "nmfile" ) ) {
+						std::string fname = bag.GetString( "nmfile" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
+							while( !feof( f ) ) {
+								double nm;
+								fscanf( f, "%lf", &nm );
+								wavelengths.push_back( nm );
 							}
-						} else if( pname == "nmfile" ) {
-							// Load the wavelengths from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double nm;
-									fscanf( f, "%lf", &nm );
-									wavelengths.push_back( nm );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "ampfile" ) {
-							// Load the amplitudes from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double amp;
-									fscanf( f, "%lf", &amp );
-									amplitudes.push_back( amp );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
-							}
+							fclose( f );
 						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
+							return false;
+						}
+					}
+
+					// Optional file-loaded amplitudes
+					if( bag.Has( "ampfile" ) ) {
+						std::string fname = bag.GetString( "ampfile" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
+							while( !feof( f ) ) {
+								double amp;
+								fscanf( f, "%lf", &amp );
+								amplitudes.push_back( amp );
+							}
+							fclose( f );
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
 						}
 					}
@@ -624,7 +625,7 @@ namespace RISE
 					return pJob.AddSpectralColorPainter( name.c_str(), &amplitudes[0], &wavelengths[0], nmbegin, nmend, static_cast<unsigned int>(amplitudes.size()), scale );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "spectral_painter"; cd.category = ChunkCategory::Painter;
@@ -646,66 +647,38 @@ namespace RISE
 
 			struct PngPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String filename = "none";
-					char color_space = 1;
-					char filter_type = 1;
-					bool lowmemory = false;
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
 					double scale[3] = {1,1,1};
 					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+					char color_space = 1;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
 							return false;
 						}
+					}
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							filename = pvalue;
-						} else if( pname == "color_space" ) {
-							if( pvalue=="Rec709RGB_Linear" ) {
-								color_space = 0;
-							} else if( pvalue=="sRGB" ) {
-								color_space = 1;
-							} else if( pvalue=="ROMMRGB_Linear" ) {
-								color_space = 2;
-							} else if( pvalue=="ProPhotoRGB" ) {
-								color_space = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "filter_type" ) {
-							if( pvalue=="NNB" ) {
-								filter_type = 0;
-							} else if( pvalue=="Bilinear" ) {
-								filter_type = 1;
-							} else if( pvalue=="CatmullRom" ) {
-								filter_type = 2;
-							} else if( pvalue=="UniformBSpline" ) {
-								filter_type = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "lowmemory" ) {
-							lowmemory = pvalue.toBoolean();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+					char filter_type = 1;
+					if( bag.Has( "filter_type" ) ) {
+						std::string ft = bag.GetString( "filter_type" );
+						if(      ft == "NNB" )            filter_type = 0;
+						else if( ft == "Bilinear" )       filter_type = 1;
+						else if( ft == "CatmullRom" )     filter_type = 2;
+						else if( ft == "UniformBSpline" ) filter_type = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
 							return false;
 						}
 					}
@@ -713,7 +686,7 @@ namespace RISE
 					return pJob.AddPNGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "png_painter"; cd.category = ChunkCategory::Painter;
@@ -734,52 +707,25 @@ namespace RISE
 
 			struct HdrPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String filename = "none";
-					char filter_type = 1;
-					bool lowmemory = false;
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
 					double scale[3] = {1,1,1};
 					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							filename = pvalue;
-						} else if( pname == "filter_type" ) {
-							if( pvalue=="NNB" ) {
-								filter_type = 0;
-							} else if( pvalue=="Bilinear" ) {
-								filter_type = 1;
-							} else if( pvalue=="CatmullRom" ) {
-								filter_type = 2;
-							} else if( pvalue=="UniformBSpline" ) {
-								filter_type = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "lowmemory" ) {
-							lowmemory = pvalue.toBoolean();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+					char filter_type = 1;
+					if( bag.Has( "filter_type" ) ) {
+						std::string ft = bag.GetString( "filter_type" );
+						if(      ft == "NNB" )            filter_type = 0;
+						else if( ft == "Bilinear" )       filter_type = 1;
+						else if( ft == "CatmullRom" )     filter_type = 2;
+						else if( ft == "UniformBSpline" ) filter_type = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
 							return false;
 						}
 					}
@@ -787,7 +733,7 @@ namespace RISE
 					return pJob.AddHDRTexturePainter( name.c_str(), filename.c_str(), filter_type, lowmemory, scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "hdr_painter"; cd.category = ChunkCategory::Painter;
@@ -807,66 +753,38 @@ namespace RISE
 
 			struct ExrPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String filename = "none";
-					char color_space = 0;
-					char filter_type = 1;
-					bool lowmemory = false;
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
 					double scale[3] = {1,1,1};
 					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+					char color_space = 0;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
 							return false;
 						}
+					}
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							filename = pvalue;
-						} else if( pname == "color_space" ) {
-							if( pvalue=="Rec709RGB_Linear" ) {
-								color_space = 0;
-							} else if( pvalue=="sRGB" ) {
-								color_space = 1;
-							} else if( pvalue=="ROMMRGB_Linear" ) {
-								color_space = 2;
-							} else if( pvalue=="ProPhotoRGB" ) {
-								color_space = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "filter_type" ) {
-							if( pvalue=="NNB" ) {
-								filter_type = 0;
-							} else if( pvalue=="Bilinear" ) {
-								filter_type = 1;
-							} else if( pvalue=="CatmullRom" ) {
-								filter_type = 2;
-							} else if( pvalue=="UniformBSpline" ) {
-								filter_type = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "lowmemory" ) {
-							lowmemory = pvalue.toBoolean();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+					char filter_type = 1;
+					if( bag.Has( "filter_type" ) ) {
+						std::string ft = bag.GetString( "filter_type" );
+						if(      ft == "NNB" )            filter_type = 0;
+						else if( ft == "Bilinear" )       filter_type = 1;
+						else if( ft == "CatmullRom" )     filter_type = 2;
+						else if( ft == "UniformBSpline" ) filter_type = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
 							return false;
 						}
 					}
@@ -874,7 +792,7 @@ namespace RISE
 					return pJob.AddEXRTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "exr_painter"; cd.category = ChunkCategory::Painter;
@@ -895,66 +813,38 @@ namespace RISE
 
 			struct TiffPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String filename = "none";
-					char color_space = 1;
-					char filter_type = 1;
-					bool lowmemory = false;
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
 					double scale[3] = {1,1,1};
 					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+					char color_space = 1;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
 							return false;
 						}
+					}
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							filename = pvalue;
-						} else if( pname == "color_space" ) {
-							if( pvalue=="Rec709RGB_Linear" ) {
-								color_space = 0;
-							} else if( pvalue=="sRGB" ) {
-								color_space = 1;
-							} else if( pvalue=="ROMMRGB_Linear" ) {
-								color_space = 2;
-							} else if( pvalue=="ProPhotoRGB" ) {
-								color_space = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "filter_type" ) {
-							if( pvalue=="NNB" ) {
-								filter_type = 0;
-							} else if( pvalue=="Bilinear" ) {
-								filter_type = 1;
-							} else if( pvalue=="CatmullRom" ) {
-								filter_type = 2;
-							} else if( pvalue=="UniformBSpline" ) {
-								filter_type = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "lowmemory" ) {
-							lowmemory = pvalue.toBoolean();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+					char filter_type = 1;
+					if( bag.Has( "filter_type" ) ) {
+						std::string ft = bag.GetString( "filter_type" );
+						if(      ft == "NNB" )            filter_type = 0;
+						else if( ft == "Bilinear" )       filter_type = 1;
+						else if( ft == "CatmullRom" )     filter_type = 2;
+						else if( ft == "UniformBSpline" ) filter_type = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
 							return false;
 						}
 					}
@@ -962,7 +852,7 @@ namespace RISE
 					return pJob.AddTIFFTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "tiff_painter"; cd.category = ChunkCategory::Painter;
@@ -984,43 +874,17 @@ namespace RISE
 
 			struct CheckerPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double size = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "size" ) {
-							size = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					double size        = bag.GetDouble( "size",   1.0 );
 
 					return pJob.AddCheckerPainter( name.c_str(), size, colora.c_str(), colorb.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "checker_painter"; cd.category = ChunkCategory::Painter;
@@ -1038,46 +902,18 @@ namespace RISE
 
 			struct LinesPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double size = 1.0;
-					bool vertical = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "size" ) {
-							size = pvalue.toDouble();
-						} else if( pname == "vertical" ) {
-							vertical = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name   = bag.GetString( "name",     "noname" );
+					std::string colora = bag.GetString( "colora",   "none" );
+					std::string colorb = bag.GetString( "colorb",   "none" );
+					double size        = bag.GetDouble( "size",     1.0 );
+					bool vertical      = bag.GetBool(   "vertical", false );
 
 					return pJob.AddLinesPainter( name.c_str(), size, colora.c_str(), colorb.c_str(), vertical );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "lines_painter"; cd.category = ChunkCategory::Painter;
@@ -1096,55 +932,25 @@ namespace RISE
 
 			struct MandelbrotPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double xstart = 0.0;
-					double xend = 1.0;
-					double ystart = 0.0;
-					double yend = 1.0;
-					double exponent = 12.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "xstart" ) {
-							xstart = pvalue.toDouble();
-						} else if( pname == "xend" ) {
-							xend = pvalue.toDouble();
-						} else if( pname == "ystart" ) {
-							ystart = pvalue.toDouble();
-						} else if( pname == "yend" ) {
-							yend = pvalue.toDouble();
-						} else if( pname == "exponent" ) {
-							exponent = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					double xstart      = bag.GetDouble( "xstart", 0.0 );
+					double xend        = bag.GetDouble( "xend",   1.0 );
+					double ystart      = bag.GetDouble( "ystart", 0.0 );
+					double yend        = bag.GetDouble( "yend",   1.0 );
+					// Legacy parser used toUInt() on the exponent value
+					// despite holding it in a double — preserve the
+					// truncation so backwards behaviour is identical.
+					double exponent    = 12.0;
+					if( bag.Has( "exponent" ) ) exponent = static_cast<double>( bag.GetUInt( "exponent" ) );
 
 					return pJob.AddMandelbrotFractalPainter( name.c_str(), colora.c_str(), colorb.c_str(), xstart, xend, ystart, yend, exponent );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "mandelbrot_painter"; cd.category = ChunkCategory::Painter;
@@ -1166,52 +972,22 @@ namespace RISE
 
 			struct Perlin2DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 1.0;
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 1.0 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[2] = {1.0,1.0};
 					double shift[2] = {0,0};
-					unsigned int octaves = 4;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &scale[0], &scale[1] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &shift[0], &shift[1] );
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					if( bag.Has( "scale" ) ) sscanf( bag.GetString( "scale" ).c_str(), "%lf %lf", &scale[0], &scale[1] );
+					if( bag.Has( "shift" ) ) sscanf( bag.GetString( "shift" ).c_str(), "%lf %lf", &shift[0], &shift[1] );
 
 					return pJob.AddPerlin2DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perlin2d_painter"; cd.category = ChunkCategory::Painter;
@@ -1226,61 +1002,22 @@ namespace RISE
 
 			struct GerstnerWavePainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					unsigned int numWaves = 12;
-					double medianWavelength = 0.25;
-					double wavelengthRange = 3.0;
-					double medianAmplitude = 0.05;
-					double amplitudePower = 1.0;
+					std::string name           = bag.GetString( "name",               "noname" );
+					std::string colora         = bag.GetString( "colora",             "none" );
+					std::string colorb         = bag.GetString( "colorb",             "none" );
+					unsigned int numWaves      = bag.GetUInt(   "num_waves",          12 );
+					double medianWavelength    = bag.GetDouble( "median_wavelength",  0.25 );
+					double wavelengthRange     = bag.GetDouble( "wavelength_range",   3.0 );
+					double medianAmplitude     = bag.GetDouble( "median_amplitude",   0.05 );
+					double amplitudePower      = bag.GetDouble( "amplitude_power",    1.0 );
+					double directionalSpread   = bag.GetDouble( "directional_spread", 0.5 );
+					double dispersionSpeed     = bag.GetDouble( "dispersion_speed",   1.0 );
+					unsigned int seed          = bag.GetUInt(   "seed",               42 );
+					double time                = bag.GetDouble( "time",               0.0 );
 					double windDir[2] = {1.0, 0.0};
-					double directionalSpread = 0.5;
-					double dispersionSpeed = 1.0;
-					unsigned int seed = 42;
-					double time = 0.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "num_waves" ) {
-							numWaves = pvalue.toUInt();
-						} else if( pname == "median_wavelength" ) {
-							medianWavelength = pvalue.toDouble();
-						} else if( pname == "wavelength_range" ) {
-							wavelengthRange = pvalue.toDouble();
-						} else if( pname == "median_amplitude" ) {
-							medianAmplitude = pvalue.toDouble();
-						} else if( pname == "amplitude_power" ) {
-							amplitudePower = pvalue.toDouble();
-						} else if( pname == "wind_dir" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &windDir[0], &windDir[1] );
-						} else if( pname == "directional_spread" ) {
-							directionalSpread = pvalue.toDouble();
-						} else if( pname == "dispersion_speed" ) {
-							dispersionSpeed = pvalue.toDouble();
-						} else if( pname == "seed" ) {
-							seed = pvalue.toUInt();
-						} else if( pname == "time" ) {
-							time = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					if( bag.Has( "wind_dir" ) ) sscanf( bag.GetString( "wind_dir" ).c_str(), "%lf %lf", &windDir[0], &windDir[1] );
 
 					return pJob.AddGerstnerWavePainter(
 						name.c_str(),
@@ -1295,7 +1032,7 @@ namespace RISE
 						time );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "gerstnerwave_painter"; cd.category = ChunkCategory::Painter;
@@ -1322,52 +1059,22 @@ namespace RISE
 
 			struct Perlin3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 1.0;
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 1.0 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-					unsigned int octaves = 4;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddPerlin3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perlin3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1382,41 +1089,23 @@ namespace RISE
 
 			struct Wavelet3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					unsigned int tile_size = 32;
-					double persistence = 0.65;
-					unsigned int octaves = 4;
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					unsigned int tile_size  = bag.GetUInt(   "tile_size",   32 );
+					double persistence      = bag.GetDouble( "persistence", 0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) return false;
-
-						if( pname == "name" ) name = pvalue;
-						else if( pname == "colora" ) colora = pvalue;
-						else if( pname == "colorb" ) colorb = pvalue;
-						else if( pname == "tile_size" ) tile_size = pvalue.toUInt();
-						else if( pname == "persistence" ) persistence = pvalue.toDouble();
-						else if( pname == "octaves" ) octaves = pvalue.toUInt();
-						else if( pname == "scale" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						else if( pname == "shift" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddWavelet3DPainter( name.c_str(), tile_size, persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "wavelet3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1432,47 +1121,26 @@ namespace RISE
 
 			struct ReactionDiffusion3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					unsigned int grid_size = 32;
-					double da = 0.2;
-					double db = 0.1;
-					double feed = 0.037;
-					double kill = 0.06;
-					unsigned int iterations = 2000;
+					std::string name        = bag.GetString( "name",       "noname" );
+					std::string colora      = bag.GetString( "colora",     "none" );
+					std::string colorb      = bag.GetString( "colorb",     "none" );
+					unsigned int grid_size  = bag.GetUInt(   "grid_size",  32 );
+					double da               = bag.GetDouble( "da",         0.2 );
+					double db               = bag.GetDouble( "db",         0.1 );
+					double feed             = bag.GetDouble( "feed",       0.037 );
+					double kill             = bag.GetDouble( "kill",       0.06 );
+					unsigned int iterations = bag.GetUInt(   "iterations", 2000 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) return false;
-
-						if( pname == "name" ) name = pvalue;
-						else if( pname == "colora" ) colora = pvalue;
-						else if( pname == "colorb" ) colorb = pvalue;
-						else if( pname == "grid_size" ) grid_size = pvalue.toUInt();
-						else if( pname == "da" ) da = pvalue.toDouble();
-						else if( pname == "db" ) db = pvalue.toDouble();
-						else if( pname == "feed" ) feed = pvalue.toDouble();
-						else if( pname == "kill" ) kill = pvalue.toDouble();
-						else if( pname == "iterations" ) iterations = pvalue.toUInt();
-						else if( pname == "scale" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						else if( pname == "shift" ) sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddReactionDiffusion3DPainter( name.c_str(), grid_size, da, db, feed, kill, iterations, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "reactiondiffusion3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1497,54 +1165,25 @@ namespace RISE
 
 			struct Gabor3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double frequency = 4.0;
-					double bandwidth = 1.0;
+					std::string name        = bag.GetString( "name",            "noname" );
+					std::string colora      = bag.GetString( "colora",          "none" );
+					std::string colorb      = bag.GetString( "colorb",          "none" );
+					double frequency        = bag.GetDouble( "frequency",       4.0 );
+					double bandwidth        = bag.GetDouble( "bandwidth",       1.0 );
+					double impulse_density  = bag.GetDouble( "impulse_density", 4.0 );
 					double orientation[3] = {0,1,0};
-					double impulse_density = 4.0;
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "frequency" ) {
-							frequency = pvalue.toDouble();
-						} else if( pname == "bandwidth" ) {
-							bandwidth = pvalue.toDouble();
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
-						} else if( pname == "impulse_density" ) {
-							impulse_density = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "orientation", orientation );
+					bag.GetVec3( "scale",       scale );
+					bag.GetVec3( "shift",       shift );
 
 					return pJob.AddGabor3DPainter( name.c_str(), frequency, bandwidth, orientation, impulse_density, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "gabor3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1567,48 +1206,22 @@ namespace RISE
 
 			struct Simplex3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 0.65;
-					unsigned int octaves = 4;
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddSimplex3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "simplex3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1623,67 +1236,36 @@ namespace RISE
 
 			struct SDF3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					unsigned int type = 0;		// 0=sphere, 1=box, 2=torus, 3=cylinder
-					double param1 = 0.5;		// Primary parameter
-					double param2 = 0.3;		// Secondary parameter
-					double param3 = 0.3;		// Tertiary parameter (box z-extent)
-					double shell_thickness = 0.0;
-					double noise_amplitude = 0.0;
-					double noise_frequency = 1.0;
+					std::string name        = bag.GetString( "name",            "noname" );
+					std::string colora      = bag.GetString( "colora",          "none" );
+					std::string colorb      = bag.GetString( "colorb",          "none" );
+					double param1           = bag.GetDouble( "param1",          0.5 );
+					double param2           = bag.GetDouble( "param2",          0.3 );
+					double param3           = bag.GetDouble( "param3",          0.3 );
+					double shell_thickness  = bag.GetDouble( "shell_thickness", 0.0 );
+					double noise_amplitude  = bag.GetDouble( "noise_amplitude", 0.0 );
+					double noise_frequency  = bag.GetDouble( "noise_frequency", 1.0 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "type" ) {
-							if( pvalue == "sphere" ) type = 0;
-							else if( pvalue == "box" ) type = 1;
-							else if( pvalue == "torus" ) type = 2;
-							else if( pvalue == "cylinder" ) type = 3;
-							else type = pvalue.toUInt();
-						} else if( pname == "param1" ) {
-							param1 = pvalue.toDouble();
-						} else if( pname == "param2" ) {
-							param2 = pvalue.toDouble();
-						} else if( pname == "param3" ) {
-							param3 = pvalue.toDouble();
-						} else if( pname == "shell_thickness" ) {
-							shell_thickness = pvalue.toDouble();
-						} else if( pname == "noise_amplitude" ) {
-							noise_amplitude = pvalue.toDouble();
-						} else if( pname == "noise_frequency" ) {
-							noise_frequency = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					unsigned int type = 0;		// 0=sphere, 1=box, 2=torus, 3=cylinder
+					if( bag.Has( "type" ) ) {
+						std::string t = bag.GetString( "type" );
+						if(      t == "sphere" )   type = 0;
+						else if( t == "box" )      type = 1;
+						else if( t == "torus" )    type = 2;
+						else if( t == "cylinder" ) type = 3;
+						else                       type = String( t.c_str() ).toUInt();
 					}
 
 					return pJob.AddSDF3DPainter( name.c_str(), type, param1, param2, param3, shell_thickness, noise_amplitude, noise_frequency, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sdf3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1709,51 +1291,23 @@ namespace RISE
 
 			struct CurlNoise3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 0.65;
-					unsigned int octaves = 4;
-					double epsilon = 0.01;
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
+					double epsilon          = bag.GetDouble( "epsilon",     0.01 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else if( pname == "epsilon" ) {
-							epsilon = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddCurlNoise3DPainter( name.c_str(), persistence, octaves, epsilon, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "curlnoise3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1769,54 +1323,24 @@ namespace RISE
 
 			struct DomainWarp3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 0.65;
-					unsigned int octaves = 4;
-					double warp_amplitude = 4.0;
-					unsigned int warp_levels = 2;
+					std::string name        = bag.GetString( "name",           "noname" );
+					std::string colora      = bag.GetString( "colora",         "none" );
+					std::string colorb      = bag.GetString( "colorb",         "none" );
+					double persistence      = bag.GetDouble( "persistence",    0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",        4 );
+					double warp_amplitude   = bag.GetDouble( "warp_amplitude", 4.0 );
+					unsigned int warp_levels= bag.GetUInt(   "warp_levels",    2 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else if( pname == "warp_amplitude" ) {
-							warp_amplitude = pvalue.toDouble();
-						} else if( pname == "warp_levels" ) {
-							warp_levels = pvalue.toUInt();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddDomainWarp3DPainter( name.c_str(), persistence, octaves, warp_amplitude, warp_levels, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "domainwarp3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1833,54 +1357,24 @@ namespace RISE
 
 			struct PerlinWorley3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 0.65;
-					unsigned int octaves = 4;
-					double worley_jitter = 1.0;
-					double blend = 0.5;
+					std::string name        = bag.GetString( "name",          "noname" );
+					std::string colora      = bag.GetString( "colora",        "none" );
+					std::string colorb      = bag.GetString( "colorb",        "none" );
+					double persistence      = bag.GetDouble( "persistence",   0.65 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",       4 );
+					double worley_jitter    = bag.GetDouble( "worley_jitter", 1.0 );
+					double blend            = bag.GetDouble( "blend",         0.5 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else if( pname == "worley_jitter" ) {
-							worley_jitter = pvalue.toDouble();
-						} else if( pname == "blend" ) {
-							blend = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddPerlinWorley3DPainter( name.c_str(), persistence, octaves, worley_jitter, blend, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perlinworley3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1897,57 +1391,38 @@ namespace RISE
 
 			struct Worley3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double jitter = 1.0;
-					unsigned int metric = 0;	// 0=Euclidean, 1=Manhattan, 2=Chebyshev
-					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
+					std::string name        = bag.GetString( "name",   "noname" );
+					std::string colora      = bag.GetString( "colora", "none" );
+					std::string colorb      = bag.GetString( "colorb", "none" );
+					double jitter           = bag.GetDouble( "jitter", 1.0 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "jitter" ) {
-							jitter = pvalue.toDouble();
-						} else if( pname == "metric" ) {
-							if( pvalue == "euclidean" ) metric = 0;
-							else if( pvalue == "manhattan" ) metric = 1;
-							else if( pvalue == "chebyshev" ) metric = 2;
-							else metric = pvalue.toUInt();
-						} else if( pname == "output" ) {
-							if( pvalue == "f1" ) output = 0;
-							else if( pvalue == "f2" ) output = 1;
-							else if( pvalue == "f2-f1" ) output = 2;
-							else output = pvalue.toUInt();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					unsigned int metric = 0;	// 0=Euclidean, 1=Manhattan, 2=Chebyshev
+					if( bag.Has( "metric" ) ) {
+						std::string m = bag.GetString( "metric" );
+						if(      m == "euclidean" ) metric = 0;
+						else if( m == "manhattan" ) metric = 1;
+						else if( m == "chebyshev" ) metric = 2;
+						else                        metric = String( m.c_str() ).toUInt();
+					}
+					unsigned int output = 0;	// 0=F1, 1=F2, 2=F2-F1
+					if( bag.Has( "output" ) ) {
+						std::string o = bag.GetString( "output" );
+						if(      o == "f1" )    output = 0;
+						else if( o == "f2" )    output = 1;
+						else if( o == "f2-f1" ) output = 2;
+						else                    output = String( o.c_str() ).toUInt();
 					}
 
 					return pJob.AddWorley3DPainter( name.c_str(), jitter, metric, output, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "worley3d_painter"; cd.category = ChunkCategory::Painter;
@@ -1969,48 +1444,22 @@ namespace RISE
 
 			struct Turbulence3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double persistence = 1.0;
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double persistence      = bag.GetDouble( "persistence", 1.0 );
+					unsigned int octaves    = bag.GetUInt(   "octaves",     4 );
 					double scale[3] = {1.0,1.0,1.0};
 					double shift[3] = {0,0,0};
-					unsigned int octaves = 4;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "persistence" ) {
-							persistence = pvalue.toDouble();
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "shift" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &shift[0], &shift[1], &shift[2] );
-						} else if( pname == "octaves" ) {
-							octaves = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
 
 					return pJob.AddTurbulence3DPainter( name.c_str(), persistence, octaves, colora.c_str(), colorb.c_str(), scale, shift );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "turbulence3d_painter"; cd.category = ChunkCategory::Painter;
@@ -2025,45 +1474,32 @@ namespace RISE
 
 			struct Voronoi2DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String border = "none";
+					std::string name   = bag.GetString( "name",       "noname" );
+					std::string border = bag.GetString( "border",     "none" );
+					double bordersize  = bag.GetDouble( "bordersize", 0.0 );
+
 					std::vector<double> ptx;
 					std::vector<double> pty;
-					std::vector<String> painters;
+					std::vector<std::string> painters;
 
-					double bordersize=0;
+					// Repeatable inline generators: "gen <x> <y> <painter>"
+					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
+					for( size_t k = 0; k < gens.size(); ++k ) {
+						double x = 0, y = 0;
+						char painter[256] = {0};
+						sscanf( gens[k].c_str(), "%lf %lf %255s", &x, &y, painter );
+						ptx.push_back( x );
+						pty.push_back( y );
+						painters.push_back( painter );
+					}
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "border" ) {
-							border = pvalue;
-						} else if( pname == "bordersize" ) {
-							bordersize = pvalue.toDouble();
-						} else if( pname == "gen" ) {
-							double x, y;
-							char painter[256] = {0};
-							sscanf( pvalue.c_str(), "%lf %lf %255s", &x, &y, painter );
-							ptx.push_back( x );
-							pty.push_back( y );
-							painters.push_back( painter );
-						} else if( pname == "file" ) {
-							// Load generators from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
+					// Optional file-loaded generators
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
 							while( !feof( f ) ) {
 								double x, y;
 								char painter[256] = {0};
@@ -2073,9 +1509,6 @@ namespace RISE
 								painters.push_back( painter );
 							}
 							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
 						}
 					}
 
@@ -2097,14 +1530,15 @@ namespace RISE
 					return bRet;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "voronoi2d_painter"; cd.category = ChunkCategory::Painter;
 						cd.description = "2D Voronoi painter with per-cell colours.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "pt";         p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi point: x y paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi generator: x y paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (each line: x y paintername)"; }
 						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
 						return cd;
@@ -2115,51 +1549,36 @@ namespace RISE
 
 			struct Voronoi3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String border = "none";
+					std::string name   = bag.GetString( "name",       "noname" );
+					std::string border = bag.GetString( "border",     "none" );
+					double bordersize  = bag.GetDouble( "bordersize", 0.0 );
+
 					std::vector<double> ptx;
 					std::vector<double> pty;
 					std::vector<double> ptz;
-					std::vector<String> painters;
+					std::vector<std::string> painters;
 
-					double bordersize=0;
+					// Repeatable inline generators: "gen <x> <y> <z> <painter>"
+					const std::vector<std::string>& gens = bag.GetRepeatable( "gen" );
+					for( size_t k = 0; k < gens.size(); ++k ) {
+						double x = 0, y = 0, z = 0;
+						char painter[256] = {0};
+						sscanf( gens[k].c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter );
+						ptx.push_back( x );
+						pty.push_back( y );
+						ptz.push_back( z );
+						painters.push_back( painter );
+					}
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "border" ) {
-							border = pvalue;
-						} else if( pname == "bordersize" ) {
-							bordersize = pvalue.toDouble();
-						} else if( pname == "gen" ) {
-							double x, y, z;
-							char painter[256] = {0};
-							sscanf( pvalue.c_str(), "%lf %lf %lf %255s", &x, &y, &z, painter );
-							ptx.push_back( x );
-							pty.push_back( y );
-							ptz.push_back( z );
-							painters.push_back( painter );
-						} else if( pname == "file" ) {
-							// Load generators from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							// Read how many nm values and the range
+					// Optional file-loaded generators (count-prefixed)
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
 							int num=0;
 							fscanf( f, "%d", &num );
-
 							for( int i=0; i<num; i++ ) {
 								double x, y, z;
 								char painter[256] = {0};
@@ -2167,12 +1586,9 @@ namespace RISE
 								ptx.push_back( x );
 								pty.push_back( y );
 								ptz.push_back( z );
-								painters.push_back( String(painter) );
+								painters.push_back( painter );
 							}
 							fclose( f );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
 						}
 					}
 
@@ -2194,14 +1610,15 @@ namespace RISE
 					return bRet;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "voronoi3d_painter"; cd.category = ChunkCategory::Painter;
 						cd.description = "3D Voronoi painter with per-cell colours.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "pt";         p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi point: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (count-prefixed: N then N lines of x y z paintername)"; }
 						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
 						return cd;
@@ -2212,43 +1629,17 @@ namespace RISE
 
 			struct IridescentPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					double bias = 0.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "bias" ) {
-							bias = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					double bias        = bag.GetDouble( "bias",   0.0 );
 
 					return pJob.AddIridescentPainter( name.c_str(), colora.c_str(), colorb.c_str(), bias );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "iridescent_painter"; cd.category = ChunkCategory::Painter;
@@ -2266,53 +1657,20 @@ namespace RISE
 
 			struct BlackBodyPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-
-					double temperature = 5600.0;
-					double lambda_begin = 400.0;
-					double lambda_end = 700.0;
-					unsigned int num_freq = 30;
-					double scale = 1.0;
-					bool normalize = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "temperature" ) {
-							temperature = pvalue.toDouble();
-						} else if( pname == "nmbegin" ) {
-							lambda_begin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							lambda_end = pvalue.toDouble();
-						} else if( pname == "numfreq" ) {
-							num_freq = pvalue.toUInt();
-						} else if( pname == "scale" ) {
-							scale = pvalue.toDouble();
-						} else if( pname == "normalize" ) {
-							normalize = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name      = bag.GetString( "name",        "noname" );
+					double temperature    = bag.GetDouble( "temperature", 5600.0 );
+					double lambda_begin   = bag.GetDouble( "nmbegin",     400.0 );
+					double lambda_end     = bag.GetDouble( "nmend",       700.0 );
+					unsigned int num_freq = bag.GetUInt(   "numfreq",     30 );
+					double scale          = bag.GetDouble( "scale",       1.0 );
+					bool normalize        = bag.GetBool(   "normalize",   true );
 
 					return pJob.AddBlackBodyPainter( name.c_str(), temperature, lambda_begin, lambda_end, num_freq, normalize, scale );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "blackbody_painter"; cd.category = ChunkCategory::Painter;
@@ -2333,43 +1691,17 @@ namespace RISE
 
 			struct BlendPainterAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String colora = "none";
-					String colorb = "none";
-					String mask = "none";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "colora" ) {
-							colora = pvalue;
-						} else if( pname == "colorb" ) {
-							colorb = pvalue;
-						} else if( pname == "mask" ) {
-							mask = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string colora = bag.GetString( "colora", "none" );
+					std::string colorb = bag.GetString( "colorb", "none" );
+					std::string mask   = bag.GetString( "mask",   "none" );
 
 					return pJob.AddBlendPainter( name.c_str(), colora.c_str(), colorb.c_str(), mask.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "blend_painter"; cd.category = ChunkCategory::Painter;
@@ -2391,55 +1723,38 @@ namespace RISE
 
 			struct PiecewiseLinearFunctionChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name        = bag.GetString( "name",   "noname" );
+					bool         bUseLUTs   = bag.GetBool(   "use_lut", false );
+					unsigned int lutsize    = bag.GetUInt(   "lutsize", 1024 );
+
 					std::vector<double> cp_x;
 					std::vector<double> cp_y;
-					bool bUseLUTs=false;
-					unsigned int lutsize=1024;
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
+					// Repeatable per-sample control points: "cp <x> <y>"
+					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
+					for( size_t k = 0; k < cps.size(); ++k ) {
+						double x = 0.0, y = 0.0;
+						sscanf( cps[k].c_str(), "%lf %lf", &x, &y );
+						cp_x.push_back( x );
+						cp_y.push_back( y );
+					}
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "use_lut" ) {
-							bUseLUTs = pvalue.toBoolean();
-						} else if( pname == "lutsize" ) {
-							lutsize = pvalue.toUInt();
-						} else if( pname == "cp" ) {
-							double x, y;
-							sscanf( pvalue.c_str(), "%lf %lf", &x, &y );
-							cp_x.push_back( x );
-							cp_y.push_back( y );
-						} else if( pname == "file" ) {
-							// Load the spectral values from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double x, y;
-									fscanf( f, "%lf %lf", &x, &y );
-									cp_x.push_back( x );
-									cp_y.push_back( y );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
+					// Optional file-loaded function (pairs)
+					if( bag.Has( "file" ) ) {
+						std::string fname = bag.GetString( "file" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( f ) {
+							while( !feof( f ) ) {
+								double x, y;
+								fscanf( f, "%lf %lf", &x, &y );
+								cp_x.push_back( x );
+								cp_y.push_back( y );
 							}
+							fclose( f );
 						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", fname.c_str() );
 							return false;
 						}
 					}
@@ -2447,16 +1762,17 @@ namespace RISE
 					return pJob.AddPiecewiseLinearFunction( name.c_str(), &cp_x[0], &cp_y[0], static_cast<unsigned int>(cp_x.size()), bUseLUTs, lutsize );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "piecewise_linear_function"; cd.category = ChunkCategory::Function;
 						cd.description = "1D piecewise-linear scalar function.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String; p.repeatable = true; p.description = "Control point: x y (repeatable)"; }
-						{ auto& p = P(); p.name = "uselut";  p.kind = ValueKind::Bool;   p.description = "Use lookup table for fast evaluation"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "lutsize"; p.kind = ValueKind::UInt;   p.description = "LUT size";                              p.defaultValueHint = "1024"; }
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "cp";      p.kind = ValueKind::String;   p.repeatable = true; p.description = "Control point: x y (repeatable)"; }
+						{ auto& p = P(); p.name = "use_lut"; p.kind = ValueKind::Bool;     p.description = "Use lookup table for fast evaluation"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "lutsize"; p.kind = ValueKind::UInt;     p.description = "LUT size";                              p.defaultValueHint = "1024"; }
+						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Function text file (x y pairs)"; }
 						return cd;
 					}();
 					return d;
@@ -2465,36 +1781,21 @@ namespace RISE
 
 			struct PiecewiseLinearFunction2DChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name = bag.GetString( "name", "noname" );
+
 					std::vector<double> cp_x;
 					std::vector<String> cp_y;
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "cp" ) {
-							double x;
-							char y[1024] = {0};
-							sscanf( pvalue.c_str(), "%lf %s", &x, y );
-							cp_x.push_back( x );
-							cp_y.push_back( String(y) );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					// Repeatable per-row entries: "cp <x> <y values...>"
+					const std::vector<std::string>& cps = bag.GetRepeatable( "cp" );
+					for( size_t k = 0; k < cps.size(); ++k ) {
+						double x = 0.0;
+						char y[1024] = {0};
+						sscanf( cps[k].c_str(), "%lf %s", &x, y );
+						cp_x.push_back( x );
+						cp_y.push_back( String(y) );
 					}
 
 					// Setup the array of strings
@@ -2510,7 +1811,7 @@ namespace RISE
 					return bRet;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "piecewise_linear_function2d"; cd.category = ChunkCategory::Function;
@@ -2530,37 +1831,15 @@ namespace RISE
 
 			struct LambertianMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String reflectance = "none";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "reflectance" ) {
-							reflectance = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
 
 					return pJob.AddLambertianMaterial( name.c_str(), reflectance.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "lambertian_material"; cd.category = ChunkCategory::Material;
@@ -2576,37 +1855,15 @@ namespace RISE
 
 			struct PerfectReflectorMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String reflectance = "none";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "reflectance" ) {
-							reflectance = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
 
 					return pJob.AddPerfectReflectorMaterial( name.c_str(), reflectance.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perfectreflector_material"; cd.category = ChunkCategory::Material;
@@ -2622,40 +1879,16 @@ namespace RISE
 
 			struct PerfectRefractorMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String refractance = "none";
-					String ior = "1.33";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "refractance" ) {
-							refractance = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string refractance = bag.GetString( "refractance", "none" );
+					std::string ior         = bag.GetString( "ior",         "1.33" );
 
 					return pJob.AddPerfectRefractorMaterial( name.c_str(), refractance.c_str(), ior.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "perfectrefractor_material"; cd.category = ChunkCategory::Material;
@@ -2672,60 +1905,30 @@ namespace RISE
 
 			struct PolishedMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String reflectance = "none";
-					String tau = "none";
-					String ior = "1.0";
-					String scat = "64";
-					bool hg = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "reflectance" ) {
-							reflectance = pvalue;
-						} else if( pname == "tau" ) {
-							tau = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else if( pname == "scattering" ) {
-							scat = pvalue;
-						} else if( pname == "henyey-greenstein" ) {
-							hg = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
+					std::string tau         = bag.GetString( "tau",         "none" );
+					std::string ior         = bag.GetString( "ior",         "1.0" );
+					std::string scat        = bag.GetString( "scattering",  "64" );
+					bool hg                 = bag.GetBool(   "henyey-greenstein", false );
 
 					return pJob.AddPolishedMaterial( name.c_str(), reflectance.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "polished_material"; cd.category = ChunkCategory::Material;
 						cd.description = "Polished surface (Fresnel dielectric over Lambertian substrate).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
-						{ auto& p = P(); p.name = "tau";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ior";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
-						{ auto& p = P(); p.name = "scat";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
-						{ auto& p = P(); p.name = "hg";          p.kind = ValueKind::Double;    p.description = "Henyey-Greenstein g parameter"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "reflectance";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse substrate"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -2734,56 +1937,28 @@ namespace RISE
 
 			struct DielectricMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String tau = "none";
-					String ior = "1.33";
-					String scat = "10000";
-					bool hg = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "tau" ) {
-							tau = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else if( pname == "scattering" ) {
-							scat = pvalue;
-						} else if( pname == "henyey-greenstein" ) {
-							hg = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name = bag.GetString( "name",       "noname" );
+					std::string tau  = bag.GetString( "tau",        "none" );
+					std::string ior  = bag.GetString( "ior",        "1.33" );
+					std::string scat = bag.GetString( "scattering", "10000" );
+					bool hg          = bag.GetBool(   "henyey-greenstein", false );
 
 					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "dielectric_material"; cd.category = ChunkCategory::Material;
 						cd.description = "Fresnel dielectric (reflect + refract) with optional volumetric scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "tau";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ior";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
-						{ auto& p = P(); p.name = "scat"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; }
-						{ auto& p = P(); p.name = "hg";   p.kind = ValueKind::Double;    p.description = "Henyey-Greenstein g parameter"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -2792,45 +1967,19 @@ namespace RISE
 
 			struct SubSurfaceScatteringMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String ior = "1.3";
-					String absorption = "0.1";
-					String scattering = "1.0";
-					String g = "0.0";
-					String roughness = "0.0";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else if( pname == "absorption" ) {
-							absorption = pvalue;
-						} else if( pname == "scattering" ) {
-							scattering = pvalue;
-						} else if( pname == "g" ) {
-							g = pvalue;
-						} else if( pname == "roughness" ) {
-							roughness = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name       = bag.GetString( "name",       "noname" );
+					std::string ior        = bag.GetString( "ior",        "1.3" );
+					std::string absorption = bag.GetString( "absorption", "0.1" );
+					std::string scattering = bag.GetString( "scattering", "1.0" );
+					std::string g          = bag.GetString( "g",          "0.0" );
+					std::string roughness  = bag.GetString( "roughness",  "0.0" );
 
 					return pJob.AddSubSurfaceScatteringMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "subsurfacescattering_material"; cd.category = ChunkCategory::Material;
@@ -2850,48 +1999,20 @@ namespace RISE
 
 			struct RandomWalkSSSMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String ior = "1.3";
-					String absorption = "0.1";
-					String scattering = "1.0";
-					String g = "0.0";
-					String roughness = "0.0";
-					String maxBounces = "64";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else if( pname == "absorption" ) {
-							absorption = pvalue;
-						} else if( pname == "scattering" ) {
-							scattering = pvalue;
-						} else if( pname == "g" ) {
-							g = pvalue;
-						} else if( pname == "roughness" ) {
-							roughness = pvalue;
-						} else if( pname == "max_bounces" ) {
-							maxBounces = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name       = bag.GetString( "name",        "noname" );
+					std::string ior        = bag.GetString( "ior",         "1.3" );
+					std::string absorption = bag.GetString( "absorption",  "0.1" );
+					std::string scattering = bag.GetString( "scattering",  "1.0" );
+					std::string g          = bag.GetString( "g",           "0.0" );
+					std::string roughness  = bag.GetString( "roughness",   "0.0" );
+					std::string maxBounces = bag.GetString( "max_bounces", "64" );
 
 					return pJob.AddRandomWalkSSSMaterial( name.c_str(), ior.c_str(), absorption.c_str(), scattering.c_str(), g.c_str(), roughness.c_str(), maxBounces.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "randomwalk_sss_material"; cd.category = ChunkCategory::Material;
@@ -2912,43 +2033,17 @@ namespace RISE
 
 			struct LambertianLuminaireMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String material = "none";
-					String painter = "none";
-					double scale = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "material" ) {
-							material = pvalue;
-						} else if( pname == "exitance" ) {
-							painter = pvalue;
-						} else if( pname == "scale" ) {
-							scale = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string painter  = bag.GetString( "exitance", "none" );
+					double scale         = bag.GetDouble( "scale",    1.0 );
 
 					return pJob.AddLambertianLuminaireMaterial( name.c_str(), painter.c_str(), material.c_str(), scale );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "lambertian_luminaire_material"; cd.category = ChunkCategory::Material;
@@ -2966,46 +2061,18 @@ namespace RISE
 
 			struct PhongLuminaireMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String material = "none";
-					String painter = "none";
-					double scale = 1.0;
-					String N = "16.0";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "material" ) {
-							material = pvalue;
-						} else if( pname == "exitance" ) {
-							painter = pvalue;
-						} else if( pname == "N" ) {
-							N = pvalue;
-						} else if( pname == "scale" ) {
-							scale = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string painter  = bag.GetString( "exitance", "none" );
+					double scale         = bag.GetDouble( "scale",    1.0 );
+					std::string N        = bag.GetString( "N",        "16.0" );
 
 					return pJob.AddPhongLuminaireMaterial( name.c_str(), painter.c_str(), material.c_str(), N.c_str(), scale );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "phong_luminaire_material"; cd.category = ChunkCategory::Material;
@@ -3024,46 +2091,18 @@ namespace RISE
 
 			struct AshikminShirleyAnisotropicPhongMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String Nu = "10.0";
-					String Nv = "100.0";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "nu" ) {
-							Nu = pvalue;
-						} else if( pname == "nv" ) {
-							Nv = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name = bag.GetString( "name", "noname" );
+					std::string rd   = bag.GetString( "rd",   "none" );
+					std::string rs   = bag.GetString( "rs",   "none" );
+					std::string Nu   = bag.GetString( "nu",   "10.0" );
+					std::string Nv   = bag.GetString( "nv",   "100.0" );
 
 					return pJob.AddAshikminShirleyAnisotropicPhongMaterial( name.c_str(), rd.c_str(), rs.c_str(), Nu.c_str(), Nv.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ashikminshirley_anisotropicphong_material"; cd.category = ChunkCategory::Material;
@@ -3072,8 +2111,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "Nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent"; }
-						{ auto& p = P(); p.name = "Nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent"; }
+						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent"; }
+						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent"; }
 						return cd;
 					}();
 					return d;
@@ -3082,43 +2121,17 @@ namespace RISE
 
 			struct IsotropicPhongMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String N = "16.0";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "N" ) {
-							N = pvalue;;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name = bag.GetString( "name", "noname" );
+					std::string rd   = bag.GetString( "rd",   "none" );
+					std::string rs   = bag.GetString( "rs",   "none" );
+					std::string N    = bag.GetString( "N",    "16.0" );
 
 					return pJob.AddIsotropicPhongMaterial( name.c_str(), rd.c_str(), rs.c_str(), N.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "isotropic_phong_material"; cd.category = ChunkCategory::Material;
@@ -3136,44 +2149,14 @@ namespace RISE
 
 			struct TranslucentMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String ref = "none";
-					String tau = "none";
-					String N = "1.0";
-					String ext = "none";
-					String scat = "0.0";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "ref" ) {
-							ref = pvalue;
-						} else if( pname == "tau" ) {
-							tau = pvalue;
-						} else if( pname == "ext" ) {
-							ext = pvalue;
-						} else if( pname == "N" ) {
-							N = pvalue;
-						} else if( pname == "scattering" ) {
-							scat = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name = bag.GetString( "name",       "noname" );
+					std::string ref  = bag.GetString( "ref",        "none" );
+					std::string tau  = bag.GetString( "tau",        "none" );
+					std::string ext  = bag.GetString( "ext",        "none" );
+					std::string N    = bag.GetString( "N",          "1.0" );
+					std::string scat = bag.GetString( "scattering", "0.0" );
 
 					// Energy conservation: ref + tau must not exceed 1.0 per channel.
 					// If violated, create new auto-scaled painters and use those instead.
@@ -3230,7 +2213,7 @@ namespace RISE
 					return pJob.AddTranslucentMaterial( name.c_str(), ref.c_str(), tau.c_str(), ext.c_str(), N.c_str(), scat.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "translucent_material"; cd.category = ChunkCategory::Material;
@@ -3250,89 +2233,29 @@ namespace RISE
 
 			struct BioSpecSkinMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String thickness_SC = "0.001";				// 10 - 40 um
-					String thickness_epidermis = "0.01";			// 80 - 200 um
-					String thickness_papillary_dermis = "0.02";
-					String thickness_reticular_dermis = "0.18";
-					String ior_SC = "1.55";
-					String ior_epidermis = "1.4";
-					String ior_papillary_dermis = "1.36";
-					String ior_reticular_dermis = "1.38";
-					String concentration_eumelanin = "80.0";
-					String concentration_pheomelanin = "12.0";
-					String melanosomes_in_epidermis = "0.10";		// dark east indian
-					String hb_ratio = "0.75";
-					String whole_blood_in_papillary_dermis = "0.012";			// 0.2 - 5%
-					String whole_blood_in_reticular_dermis = "0.0091";		// 0.2 - 5%
-					String bilirubin_concentration = "0.05";					// from 0.01 to 0.5 even 5.0 might be ok g/L
-					String betacarotene_concentration_SC = "2.1e-4";
-					String betacarotene_concentration_epidermis = "2.1e-4";
-					String betacarotene_concentration_dermis = "7.0e-5";
-					String folds_aspect_ratio = "0.75";
-					bool bSubdermalLayer = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "thickness_SC" ) {
-							thickness_SC = pvalue;
-						} else if( pname == "thickness_epidermis" ) {
-							thickness_epidermis = pvalue;
-						} else if( pname == "thickness_papillary_dermis" ) {
-							thickness_papillary_dermis = pvalue;
-						} else if( pname == "thickness_reticular_dermis" ) {
-							thickness_reticular_dermis = pvalue;
-						} else if( pname == "ior_SC" ) {
-							ior_SC = pvalue;
-						} else if( pname == "ior_epidermis" ) {
-							ior_epidermis = pvalue;
-						} else if( pname == "ior_papillary_dermis" ) {
-							ior_papillary_dermis = pvalue;
-						} else if( pname == "ior_reticular_dermis" ) {
-							ior_reticular_dermis = pvalue;
-						} else if( pname == "concentration_eumelanin" ) {
-							concentration_eumelanin = pvalue;
-						} else if( pname == "concentration_pheomelanin" ) {
-							concentration_pheomelanin = pvalue;
-						} else if( pname == "melanosomes_in_epidermis" ) {
-							melanosomes_in_epidermis = pvalue;
-						} else if( pname == "hb_ratio" ) {
-							hb_ratio = pvalue;
-						} else if( pname == "whole_blood_in_papillary_dermis" ) {
-							whole_blood_in_papillary_dermis = pvalue;
-						} else if( pname == "whole_blood_in_reticular_dermis" ) {
-							whole_blood_in_reticular_dermis = pvalue;
-						} else if( pname == "bilirubin_concentration" ) {
-							bilirubin_concentration = pvalue;
-						} else if( pname == "betacarotene_concentration_SC" ) {
-							betacarotene_concentration_SC = pvalue;
-						} else if( pname == "betacarotene_concentration_epidermis" ) {
-							betacarotene_concentration_epidermis = pvalue;
-						} else if( pname == "betacarotene_concentration_dermis" ) {
-							betacarotene_concentration_dermis = pvalue;
-						} else if( pname == "folds_aspect_ratio" ) {
-							folds_aspect_ratio = pvalue;
-						} else if( pname == "subdermal_layer" ) {
-							bSubdermalLayer = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name                                = bag.GetString( "name",                                "noname" );
+					std::string thickness_SC                        = bag.GetString( "thickness_SC",                        "0.001" );
+					std::string thickness_epidermis                 = bag.GetString( "thickness_epidermis",                 "0.01" );
+					std::string thickness_papillary_dermis          = bag.GetString( "thickness_papillary_dermis",          "0.02" );
+					std::string thickness_reticular_dermis          = bag.GetString( "thickness_reticular_dermis",          "0.18" );
+					std::string ior_SC                              = bag.GetString( "ior_SC",                              "1.55" );
+					std::string ior_epidermis                       = bag.GetString( "ior_epidermis",                       "1.4" );
+					std::string ior_papillary_dermis                = bag.GetString( "ior_papillary_dermis",                "1.36" );
+					std::string ior_reticular_dermis                = bag.GetString( "ior_reticular_dermis",                "1.38" );
+					std::string concentration_eumelanin             = bag.GetString( "concentration_eumelanin",             "80.0" );
+					std::string concentration_pheomelanin           = bag.GetString( "concentration_pheomelanin",           "12.0" );
+					std::string melanosomes_in_epidermis            = bag.GetString( "melanosomes_in_epidermis",            "0.10" );
+					std::string hb_ratio                            = bag.GetString( "hb_ratio",                            "0.75" );
+					std::string whole_blood_in_papillary_dermis     = bag.GetString( "whole_blood_in_papillary_dermis",     "0.012" );
+					std::string whole_blood_in_reticular_dermis     = bag.GetString( "whole_blood_in_reticular_dermis",     "0.0091" );
+					std::string bilirubin_concentration             = bag.GetString( "bilirubin_concentration",             "0.05" );
+					std::string betacarotene_concentration_SC       = bag.GetString( "betacarotene_concentration_SC",       "2.1e-4" );
+					std::string betacarotene_concentration_epidermis= bag.GetString( "betacarotene_concentration_epidermis","2.1e-4" );
+					std::string betacarotene_concentration_dermis   = bag.GetString( "betacarotene_concentration_dermis",   "7.0e-5" );
+					std::string folds_aspect_ratio                  = bag.GetString( "folds_aspect_ratio",                  "0.75" );
+					bool bSubdermalLayer                            = bag.GetBool(   "subdermal_layer",                     true );
 
 					return pJob.AddBioSpecSkinMaterial( name.c_str(), thickness_SC.c_str(), thickness_epidermis.c_str(), thickness_papillary_dermis.c_str(), thickness_reticular_dermis.c_str(),
 						ior_SC.c_str(), ior_epidermis.c_str(), ior_papillary_dermis.c_str(), ior_reticular_dermis.c_str(), concentration_eumelanin.c_str(), concentration_pheomelanin.c_str(),
@@ -3341,7 +2264,7 @@ namespace RISE
 						folds_aspect_ratio.c_str(), bSubdermalLayer );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "biospec_skin_material"; cd.category = ChunkCategory::Material;
@@ -3359,7 +2282,7 @@ namespace RISE
 						for (const char* n : painterRefs) {
 							auto& p = P(); p.name = n; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Skin-model painter parameter";
 						}
-						{ auto& p = P(); p.name = "subdermal_layer"; p.kind = ValueKind::Bool; p.description = "Include subdermal fat layer"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "subdermal_layer"; p.kind = ValueKind::Bool; p.description = "Include subdermal fat layer"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -3368,56 +2291,20 @@ namespace RISE
 
 			struct DonnerJensenSkinBSSRDFMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					// Donner et al. 2008 spectral skin model parameters
-					String name = "noname";
-					String melanin_fraction = "0.02";
-					String melanin_blend = "0.5";
-					String hemoglobin_epidermis = "0.002";
-					String carotene_fraction = "0.001";
-					String hemoglobin_dermis = "0.005";
-					String epidermis_thickness = "0.025";
-					String ior_epidermis = "1.4";
-					String ior_dermis = "1.38";
-					String blood_oxygenation = "0.7";
-					String roughness = "0.35";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "melanin_fraction" ) {
-							melanin_fraction = pvalue;
-						} else if( pname == "melanin_blend" ) {
-							melanin_blend = pvalue;
-						} else if( pname == "hemoglobin_epidermis" ) {
-							hemoglobin_epidermis = pvalue;
-						} else if( pname == "carotene_fraction" ) {
-							carotene_fraction = pvalue;
-						} else if( pname == "hemoglobin_dermis" ) {
-							hemoglobin_dermis = pvalue;
-						} else if( pname == "epidermis_thickness" ) {
-							epidermis_thickness = pvalue;
-						} else if( pname == "ior_epidermis" ) {
-							ior_epidermis = pvalue;
-						} else if( pname == "ior_dermis" ) {
-							ior_dermis = pvalue;
-						} else if( pname == "blood_oxygenation" ) {
-							blood_oxygenation = pvalue;
-						} else if( pname == "roughness" ) {
-							roughness = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name                 = bag.GetString( "name",                 "noname" );
+					std::string melanin_fraction     = bag.GetString( "melanin_fraction",     "0.02" );
+					std::string melanin_blend        = bag.GetString( "melanin_blend",        "0.5" );
+					std::string hemoglobin_epidermis = bag.GetString( "hemoglobin_epidermis", "0.002" );
+					std::string carotene_fraction    = bag.GetString( "carotene_fraction",    "0.001" );
+					std::string hemoglobin_dermis    = bag.GetString( "hemoglobin_dermis",    "0.005" );
+					std::string epidermis_thickness  = bag.GetString( "epidermis_thickness",  "0.025" );
+					std::string ior_epidermis        = bag.GetString( "ior_epidermis",        "1.4" );
+					std::string ior_dermis           = bag.GetString( "ior_dermis",           "1.38" );
+					std::string blood_oxygenation    = bag.GetString( "blood_oxygenation",    "0.7" );
+					std::string roughness            = bag.GetString( "roughness",            "0.35" );
 
 					return pJob.AddDonnerJensenSkinBSSRDFMaterial( name.c_str(),
 						melanin_fraction.c_str(), melanin_blend.c_str(),
@@ -3427,7 +2314,7 @@ namespace RISE
 						blood_oxygenation.c_str(), roughness.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "donner_jensen_skin_bssrdf_material"; cd.category = ChunkCategory::Material;
@@ -3450,55 +2337,21 @@ namespace RISE
 
 			struct GenericHumanTissueMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String g = "none";
-					String sca = "0.85";
-					double hb_ratio = 0.75;
-					double whole_blood = 0.012;							// 0.2 - 7%
-					double bilirubin_concentration = 0.05;					// from 0.01 to 0.5 even 5.0 might be ok g/L
-					double betacarotene_concentration = 7.0e-5;
-					bool diffuse = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "g" ) {
-							g = pvalue;
-						} else if( pname == "sca" ) {
-							sca = pvalue;
-						} else if( pname == "hb_ratio" ) {
-							hb_ratio = pvalue.toDouble();
-						} else if( pname == "whole_blood" ) {
-							whole_blood = pvalue.toDouble();
-						} else if( pname == "bilirubin_concentration" ) {
-							bilirubin_concentration = pvalue.toDouble();
-						} else if( pname == "betacarotene_concentration" ) {
-							betacarotene_concentration = pvalue.toDouble();
-						} else if( pname == "diffuse" ) {
-							diffuse = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name              = bag.GetString( "name",                      "noname" );
+					std::string g                 = bag.GetString( "g",                         "none" );
+					std::string sca               = bag.GetString( "sca",                       "0.85" );
+					double hb_ratio               = bag.GetDouble( "hb_ratio",                  0.75 );
+					double whole_blood            = bag.GetDouble( "whole_blood",               0.012 );
+					double bilirubin_concentration= bag.GetDouble( "bilirubin_concentration",   0.05 );
+					double betacarotene_concentration = bag.GetDouble( "betacarotene_concentration", 7.0e-5 );
+					bool diffuse                  = bag.GetBool(   "diffuse",                   true );
 
 					return pJob.AddGenericHumanTissueMaterial( name.c_str(), sca.c_str(), g.c_str(), whole_blood, hb_ratio, bilirubin_concentration, betacarotene_concentration, diffuse );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "generic_human_tissue_material"; cd.category = ChunkCategory::Material;
@@ -3510,8 +2363,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "whole_blood";              p.kind = ValueKind::Double;    p.description = "Blood volume fraction"; p.defaultValueHint = "0.012"; }
 						{ auto& p = P(); p.name = "hb_ratio";                 p.kind = ValueKind::Double;    p.description = "Oxygenated hemoglobin ratio"; p.defaultValueHint = "0.75"; }
 						{ auto& p = P(); p.name = "bilirubin_concentration";  p.kind = ValueKind::Double;    p.description = "Bilirubin concentration"; p.defaultValueHint = "0.05"; }
-						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "2.1e-4"; }
-						{ auto& p = P(); p.name = "diffuse";                  p.kind = ValueKind::Bool;      p.description = "Use diffuse approximation"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "betacarotene_concentration";p.kind = ValueKind::Double;   p.description = "Beta-carotene concentration"; p.defaultValueHint = "7.0e-5"; }
+						{ auto& p = P(); p.name = "diffuse";                  p.kind = ValueKind::Bool;      p.description = "Use diffuse approximation"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -3520,61 +2373,23 @@ namespace RISE
 
 			struct CompositeMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String top = "none";
-					String bottom = "none";
-					unsigned int max_recur = 3;
-					unsigned int max_reflection_recur = 3;
-					unsigned int max_refraction_recur = 3;
-					unsigned int max_diffuse_recur = 3;
-					unsigned int max_translucent_recur = 3;
-					double thickness = 0;
-					String extinction = "none";
+					std::string name           = bag.GetString( "name",                      "noname" );
+					std::string top            = bag.GetString( "top",                       "none" );
+					std::string bottom         = bag.GetString( "bottom",                    "none" );
+					unsigned int max_recur     = bag.GetUInt(   "max_recursion",             3 );
+					unsigned int max_refl_recur= bag.GetUInt(   "max_reflection_recursion",  3 );
+					unsigned int max_refr_recur= bag.GetUInt(   "max_refraction_recursion",  3 );
+					unsigned int max_diff_recur= bag.GetUInt(   "max_diffuse_recursion",     3 );
+					unsigned int max_tran_recur= bag.GetUInt(   "max_translucent_recursion", 3 );
+					double thickness           = bag.GetDouble( "thickness",                 0.0 );
+					std::string extinction     = bag.GetString( "extinction",                "none" );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "top" ) {
-							top = pvalue;
-						} else if( pname == "bottom" ) {
-							bottom = pvalue;
-						} else if( pname == "max_recursion" ) {
-							max_recur = pvalue.toUInt();
-						} else if( pname == "max_reflection_recursion" ) {
-							max_reflection_recur = pvalue.toUInt();
-						} else if( pname == "max_refraction_recursion" ) {
-							max_refraction_recur = pvalue.toUInt();
-						} else if( pname == "max_diffuse_recursion" ) {
-							max_diffuse_recur = pvalue.toUInt();
-						} else if( pname == "max_translucent_recursion" ) {
-							max_translucent_recur = pvalue.toUInt();
-						} else if( pname == "thickness" ) {
-							thickness = pvalue.toDouble();
-						} else if( pname == "extinction" ) {
-							extinction = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
-					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_reflection_recur, max_refraction_recur, max_diffuse_recur, max_translucent_recur, thickness, extinction.c_str() );
+					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_refl_recur, max_refr_recur, max_diff_recur, max_tran_recur, thickness, extinction.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "composite_material"; cd.category = ChunkCategory::Material;
@@ -3583,11 +2398,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "top";                  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Top material"; }
 						{ auto& p = P(); p.name = "bottom";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Bottom material"; }
-						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Max composite recursion"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "max_recursion";            p.kind = ValueKind::UInt; p.description = "Max composite recursion"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "max_reflection_recursion"; p.kind = ValueKind::UInt; p.description = "Max reflection recursion"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "max_refraction_recursion"; p.kind = ValueKind::UInt; p.description = "Max refraction recursion"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "3"; }
+						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Interior extinction"; }
 						return cd;
@@ -3598,43 +2413,17 @@ namespace RISE
 
 			struct WardIsotropicGaussianMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String alpha = "0.1";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "alpha" ) {
-							alpha = pvalue;;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name  = bag.GetString( "name",  "noname" );
+					std::string rd    = bag.GetString( "rd",    "none" );
+					std::string rs    = bag.GetString( "rs",    "none" );
+					std::string alpha = bag.GetString( "alpha", "0.1" );
 
 					return pJob.AddWardIsotropicGaussianMaterial( name.c_str(), rd.c_str(), rs.c_str(), alpha.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ward_isotropic_material"; cd.category = ChunkCategory::Material;
@@ -3652,46 +2441,18 @@ namespace RISE
 
 			struct WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String alphax = "0.1";
-					String alphay = "0.2";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "alphax" ) {
-							alphax = pvalue;;
-						} else if( pname == "alphay" ) {
-							alphay = pvalue;;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string rd     = bag.GetString( "rd",     "none" );
+					std::string rs     = bag.GetString( "rs",     "none" );
+					std::string alphax = bag.GetString( "alphax", "0.1" );
+					std::string alphay = bag.GetString( "alphay", "0.2" );
 
 					return pJob.AddWardAnisotropicEllipticalGaussianMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ward_anisotropic_material"; cd.category = ChunkCategory::Material;
@@ -3710,48 +2471,20 @@ namespace RISE
 
 			struct GGXMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String alphax = "0.15";
-					String alphay = "0.15";
-					String ior = "2.45";
-					String extinction = "3.45";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "alphax" ) {
-							alphax = pvalue;
-						} else if( pname == "alphay" ) {
-							alphay = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else if( pname == "extinction" ) {
-							extinction = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name       = bag.GetString( "name",       "noname" );
+					std::string rd         = bag.GetString( "rd",         "none" );
+					std::string rs         = bag.GetString( "rs",         "none" );
+					std::string alphax     = bag.GetString( "alphax",     "0.15" );
+					std::string alphay     = bag.GetString( "alphay",     "0.15" );
+					std::string ior        = bag.GetString( "ior",        "2.45" );
+					std::string extinction = bag.GetString( "extinction", "3.45" );
 
 					return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ggx_material"; cd.category = ChunkCategory::Material;
@@ -3772,49 +2505,19 @@ namespace RISE
 
 			struct CookTorranceMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String facets = "0.15";
-					String ior = "2.45";
-					String extinction = "1";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "facets" ) {
-							facets = pvalue;
-						} else if( pname == "ior" ) {
-							ior = pvalue;
-						} else if( pname == "extinction" ) {
-							extinction = pvalue;;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name       = bag.GetString( "name",       "noname" );
+					std::string rd         = bag.GetString( "rd",         "none" );
+					std::string rs         = bag.GetString( "rs",         "none" );
+					std::string facets     = bag.GetString( "facets",     "0.15" );
+					std::string ior        = bag.GetString( "ior",        "2.45" );
+					std::string extinction = bag.GetString( "extinction", "1" );
 
 					return pJob.AddCookTorranceMaterial( name.c_str(), rd.c_str(), rs.c_str(), facets.c_str(), ior.c_str(), extinction.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "cooktorrance_material"; cd.category = ChunkCategory::Material;
@@ -3834,40 +2537,16 @@ namespace RISE
 
 			struct OrenNayarMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String reflectance = "none";
-					String roughness = "0.5";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "reflectance" ) {
-							reflectance = pvalue;
-						} else if( pname == "roughness" ) {
-							roughness = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string reflectance = bag.GetString( "reflectance", "none" );
+					std::string roughness   = bag.GetString( "roughness",   "0.5" );
 
 					return pJob.AddOrenNayarMaterial( name.c_str(), reflectance.c_str(), roughness.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "orennayar_material"; cd.category = ChunkCategory::Material;
@@ -3884,46 +2563,18 @@ namespace RISE
 
 			struct SchlickMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String rd = "none";
-					String rs = "none";
-					String roughness = "0.05";
-					String isotropy = "1";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "rd" ) {
-							rd = pvalue;
-						} else if( pname == "rs" ) {
-							rs = pvalue;
-						} else if( pname == "roughness" ) {
-							roughness = pvalue;
-						} else if( pname == "isotropy" ) {
-							isotropy = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name      = bag.GetString( "name",      "noname" );
+					std::string rd        = bag.GetString( "rd",        "none" );
+					std::string rs        = bag.GetString( "rs",        "none" );
+					std::string roughness = bag.GetString( "roughness", "0.05" );
+					std::string isotropy  = bag.GetString( "isotropy",  "1" );
 
 					return pJob.AddSchlickMaterial( name.c_str(), rd.c_str(), rs.c_str(), roughness.c_str(), isotropy.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "schlick_material"; cd.category = ChunkCategory::Material;
@@ -3942,37 +2593,15 @@ namespace RISE
 
 			struct DataDrivenMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String filename = "";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "filename" ) {
-							filename = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "filename", "" );
 
 					return pJob.AddDataDrivenMaterial( name.c_str(), filename.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "datadriven_material"; cd.category = ChunkCategory::Material;
@@ -3993,72 +2622,38 @@ namespace RISE
 
 			struct PinholeCameraAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double fov = 30.0;
-					unsigned int xres = 256;
-					unsigned int yres = 256;
-					double loc[3] = {0};
+					double fov          = 30.0 * DEG_TO_RAD;
+					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
+					unsigned int xres   = bag.GetUInt(   "width",         256 );
+					unsigned int yres   = bag.GetUInt(   "height",        256 );
+					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+
+					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
-					double up[3] = {0,1,0};
-					double pixelAR = 1.0;
-					double exposure = 0;
-					double scanningRate = 0;
-					double pixelRate = 0;
-					double orientation[3] = {0};
-					double target_orientation[2] = {0};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "fov" ) {
-							fov = pvalue.toDouble() * DEG_TO_RAD;
-						} else if( pname == "width" ) {
-							xres = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							yres = pvalue.toUInt();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &loc[0], &loc[1], &loc[2] );
-						} else if( pname == "lookat" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &lookat[0], &lookat[1], &lookat[2] );
-						} else if( pname == "up" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &up[0], &up[1], &up[2] );
-						} else if( pname == "pixelAR" ) {
-							pixelAR = pvalue.toDouble();
-						} else if( pname == "exposure" ) {
-							exposure = pvalue.toDouble();
-						} else if( pname == "scanning_rate" ) {
-							scanningRate = pvalue.toDouble();
-						} else if( pname == "pixel_rate" ) {
-							pixelRate = pvalue.toDouble();
-						} else if( pname == "pitch" ) {
-							orientation[0] = pvalue.toDouble();
-						} else if( pname == "roll" ) {
-							orientation[1] = pvalue.toDouble();
-						} else if( pname == "yaw" ) {
-							orientation[2] = pvalue.toDouble();
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
-						} else if( pname == "theta" ) {
-							target_orientation[0] = pvalue.toDouble();
-						} else if( pname == "phi" ) {
-							target_orientation[1] = pvalue.toDouble();
-						} else if( pname == "target_orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
 					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
 					orientation[0] *= DEG_TO_RAD;
 					orientation[1] *= DEG_TO_RAD;
@@ -4086,59 +2681,24 @@ namespace RISE
 
 			struct ONBPinholeCameraAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double fov = 30.0;
-					unsigned int xres = 256;
-					unsigned int yres = 256;
-					double loc[3] = {0};
-					double vA[3] = {0};
-					double vB[3] = {0};
-					double pixelAR = 1.0;
-					double exposure = 0;
-					double scanningRate = 0;
-					double pixelRate = 0;
-					String components;
+					double fov          = 30.0 * DEG_TO_RAD;
+					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
+					unsigned int xres   = bag.GetUInt(   "width",         256 );
+					unsigned int yres   = bag.GetUInt(   "height",        256 );
+					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+					String components   = String( bag.GetString( "components" ).c_str() );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "fov" ) {
-							fov = pvalue.toDouble() * DEG_TO_RAD;
-						} else if( pname == "width" ) {
-							xres = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							yres = pvalue.toUInt();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &loc[0], &loc[1], &loc[2] );
-						} else if( pname == "va" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &vA[0], &vA[1], &vA[2] );
-						} else if( pname == "vb" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &vB[0], &vB[1], &vB[2] );
-						} else if( pname == "components" ) {
-							components = pvalue;
-						} else if( pname == "pixelAR" ) {
-							pixelAR = pvalue.toDouble();
-						} else if( pname == "exposure" ) {
-							exposure = pvalue.toDouble();
-						} else if( pname == "scanning_rate" ) {
-							scanningRate = pvalue.toDouble();
-						} else if( pname == "pixel_rate" ) {
-							pixelRate = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double loc[3] = {0,0,0};
+					double vA[3]  = {0,0,0};
+					double vB[3]  = {0,0,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "va",       vA );
+					bag.GetVec3( "vb",       vB );
 
 					OrthonormalBasis3D	onb;
 
@@ -4165,19 +2725,19 @@ namespace RISE
 					return pJob.SetPinholeCameraONB( ONB_U, ONB_V, ONB_W, loc, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "onb_pinhole_camera"; cd.category = ChunkCategory::Camera;
-						cd.description = "Pinhole camera oriented via an orthonormal basis (U, V, W).";
+						cd.description = "Pinhole camera oriented via an orthonormal basis built from two axes (va, vb) plus a `components` selector.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "location";      p.kind = ValueKind::DoubleVec3; p.description = "Eye position"; }
-						{ auto& p = P(); p.name = "u";             p.kind = ValueKind::DoubleVec3; p.description = "ONB U axis"; }
-						{ auto& p = P(); p.name = "v";             p.kind = ValueKind::DoubleVec3; p.description = "ONB V axis"; }
-						{ auto& p = P(); p.name = "w";             p.kind = ValueKind::DoubleVec3; p.description = "ONB W axis"; }
-						{ auto& p = P(); p.name = "fov";           p.kind = ValueKind::Double;     p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
-						{ auto& p = P(); p.name = "width";         p.kind = ValueKind::UInt;       p.description = "Image width"; p.defaultValueHint = "640"; }
-						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::UInt;       p.description = "Image height"; p.defaultValueHint = "480"; }
+						{ auto& p = P(); p.name = "va";            p.kind = ValueKind::DoubleVec3; p.description = "First ONB axis (used per `components`)"; }
+						{ auto& p = P(); p.name = "vb";            p.kind = ValueKind::DoubleVec3; p.description = "Second ONB axis (used per `components`)"; }
+						{ auto& p = P(); p.name = "components";    p.kind = ValueKind::Enum;       p.enumValues = {"UV","VU","UW","WU","VW","WV"}; p.description = "Which ONB components va/vb represent"; }
+						{ auto& p = P(); p.name = "fov";           p.kind = ValueKind::Double;     p.description = "Field of view (degrees)"; p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "width";         p.kind = ValueKind::UInt;       p.description = "Image width"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::UInt;       p.description = "Image height"; p.defaultValueHint = "256"; }
 						{ auto& p = P(); p.name = "pixelAR";       p.kind = ValueKind::Double;     p.description = "Pixel aspect ratio"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "scanning_rate"; p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
@@ -4190,81 +2750,41 @@ namespace RISE
 
 			struct ThinlensCameraAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double fov = 30.0;
-					unsigned int xres = 256;
-					unsigned int yres = 256;
-					double aperture = 1.0;
-					double focal = 0.1;
-					double focus = 1.0;
-					double loc[3] = {0};
+					double fov          = 30.0 * DEG_TO_RAD;
+					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
+					unsigned int xres   = bag.GetUInt(   "width",          256 );
+					unsigned int yres   = bag.GetUInt(   "height",         256 );
+					double aperture     = bag.GetDouble( "aperture_size",  1.0 );
+					double focal        = bag.GetDouble( "focal_length",   0.1 );
+					double focus        = bag.GetDouble( "focus_distance", 1.0 );
+					double pixelAR      = bag.GetDouble( "pixelAR",        1.0 );
+					double exposure     = bag.GetDouble( "exposure",       0 );
+					double scanningRate = bag.GetDouble( "scanning_rate",  0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",     0 );
+
+					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
-					double up[3] = {0,1,0};
-					double pixelAR = 1.0;
-					double exposure = 0;
-					double scanningRate = 0;
-					double pixelRate = 0;
-					double orientation[3] = {0};
-					double target_orientation[2] = {0};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "fov" ) {
-							fov = pvalue.toDouble() * DEG_TO_RAD;
-						} else if( pname == "width" ) {
-							xres = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							yres = pvalue.toUInt();
-						} else if( pname == "aperture_size" ) {
-							aperture = pvalue.toDouble();
-						} else if( pname == "focal_length" ) {
-							focal = pvalue.toDouble();
-						} else if( pname == "focus_distance" ) {
-							focus = pvalue.toDouble();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &loc[0], &loc[1], &loc[2] );
-						} else if( pname == "lookat" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &lookat[0], &lookat[1], &lookat[2] );
-						} else if( pname == "up" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &up[0], &up[1], &up[2] );
-						} else if( pname == "pixelAR" ) {
-							pixelAR = pvalue.toDouble();
-						} else if( pname == "exposure" ) {
-							exposure = pvalue.toDouble();
-						} else if( pname == "scanning_rate" ) {
-							scanningRate = pvalue.toDouble();
-						} else if( pname == "pixel_rate" ) {
-							pixelRate = pvalue.toDouble();
-						} else if( pname == "pitch" ) {
-							orientation[0] = pvalue.toDouble();
-						} else if( pname == "roll" ) {
-							orientation[1] = pvalue.toDouble();
-						} else if( pname == "yaw" ) {
-							orientation[2] = pvalue.toDouble();
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
-						} else if( pname == "theta" ) {
-							target_orientation[0] = pvalue.toDouble();
-						} else if( pname == "phi" ) {
-							target_orientation[1] = pvalue.toDouble();
-						} else if( pname == "target_orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
 					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
 					if( focal >= focus ) {
 						GlobalLog()->PrintEx( eLog_Error, "Focal length is >= focus distance, that makes no sense!" );
@@ -4300,84 +2820,43 @@ namespace RISE
 
 			struct RealisticCameraAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-
-					unsigned int xres = 256;
-					unsigned int yres = 256;
+					unsigned int xres = bag.GetUInt(   "width",          256 );
+					unsigned int yres = bag.GetUInt(   "height",         256 );
 
 					// Default film sizes are 35mm
-					double film_size = 35;
-					double fstop = 2.8;
-					double focal = 0.1;
-					double focus = 1.0;
-					double loc[3] = {0};
+					double film_size  = bag.GetDouble( "film_size",      35 );
+					double fstop      = bag.GetDouble( "fstop",          2.8 );
+					double focal      = bag.GetDouble( "focal_length",   0.1 );
+					double focus      = bag.GetDouble( "focus_distance", 1.0 );
+
+					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+
+					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
-					double up[3] = {0,1,0};
-					double pixelAR = 1.0;
-					double exposure = 0;
-					double scanningRate = 0;
-					double pixelRate = 0;
-					double orientation[3] = {0};
-					double target_orientation[2] = {0};
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "width" ) {
-							xres = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							yres = pvalue.toUInt();
-						} else if( pname == "film_size" ) {
-							film_size = pvalue.toDouble();
-						} else if( pname == "fstop" ) {
-							fstop = pvalue.toDouble();
-						} else if( pname == "focal_length" ) {
-							focal = pvalue.toDouble();
-						} else if( pname == "focus_distance" ) {
-							focus = pvalue.toDouble();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &loc[0], &loc[1], &loc[2] );
-						} else if( pname == "lookat" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &lookat[0], &lookat[1], &lookat[2] );
-						} else if( pname == "up" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &up[0], &up[1], &up[2] );
-						} else if( pname == "pixelAR" ) {
-							pixelAR = pvalue.toDouble();
-						} else if( pname == "exposure" ) {
-							exposure = pvalue.toDouble();
-						} else if( pname == "scanning_rate" ) {
-							scanningRate = pvalue.toDouble();
-						} else if( pname == "pixel_rate" ) {
-							pixelRate = pvalue.toDouble();
-						} else if( pname == "pitch" ) {
-							orientation[0] = pvalue.toDouble();
-						} else if( pname == "roll" ) {
-							orientation[1] = pvalue.toDouble();
-						} else if( pname == "yaw" ) {
-							orientation[2] = pvalue.toDouble();
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
-						} else if( pname == "theta" ) {
-							target_orientation[0] = pvalue.toDouble();
-						} else if( pname == "phi" ) {
-							target_orientation[1] = pvalue.toDouble();
-						} else if( pname == "target_orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
 					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
 					if( focal >= focus ) {
 						GlobalLog()->PrintEx( eLog_Error, "Focal length is >= focus distance, that makes no sense!" );
@@ -4399,16 +2878,16 @@ namespace RISE
 					return pJob.SetThinlensCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focal, focus );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "realistic_camera"; cd.category = ChunkCategory::Camera;
-						cd.description = "Thin-lens camera with extra lens elements (defaults to thin-lens internally).";
+						cd.description = "Thin-lens camera parameterised by film size and f-stop (defaults to thin-lens internally).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "fov";             p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
-						{ auto& p = P(); p.name = "aperture_size";  p.kind = ValueKind::Double; p.description = "Aperture radius"; p.defaultValueHint = "0.01"; }
-						{ auto& p = P(); p.name = "focus_distance"; p.kind = ValueKind::Double; p.description = "Focal distance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "focal_length";  p.kind = ValueKind::Double; p.description = "Focal length"; }
+						{ auto& p = P(); p.name = "film_size";      p.kind = ValueKind::Double; p.description = "Film diagonal (mm)"; p.defaultValueHint = "35"; }
+						{ auto& p = P(); p.name = "fstop";          p.kind = ValueKind::Double; p.description = "Aperture f-stop"; p.defaultValueHint = "2.8"; }
+						{ auto& p = P(); p.name = "focus_distance"; p.kind = ValueKind::Double; p.description = "Focus distance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "focal_length";   p.kind = ValueKind::Double; p.description = "Focal length"; p.defaultValueHint = "0.1"; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -4418,72 +2897,37 @@ namespace RISE
 
 			struct FisheyeCameraAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int xres = 256;
-					unsigned int yres = 256;
-					double loc[3] = {0};
+					unsigned int xres   = bag.GetUInt(   "width",         256 );
+					unsigned int yres   = bag.GetUInt(   "height",        256 );
+					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
+					double exposure     = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+					double scale        = bag.GetDouble( "scale",         1.0 );
+
+					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
-					double up[3] = {0,1,0};
-					double pixelAR = 1.0;
-					double exposure = 0;
-					double scanningRate = 0;
-					double pixelRate = 0;
-					double orientation[3] = {0};
-					double target_orientation[2] = {0};
-					double scale = 1.0;
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "width" ) {
-							xres = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							yres = pvalue.toUInt();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &loc[0], &loc[1], &loc[2] );
-						} else if( pname == "lookat" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &lookat[0], &lookat[1], &lookat[2] );
-						} else if( pname == "up" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &up[0], &up[1], &up[2] );
-						} else if( pname == "pixelAR" ) {
-							pixelAR = pvalue.toDouble();
-						} else if( pname == "exposure" ) {
-							exposure = pvalue.toDouble();
-						} else if( pname == "scanning_rate" ) {
-							scanningRate = pvalue.toDouble();
-						} else if( pname == "pixel_rate" ) {
-							pixelRate = pvalue.toDouble();
-						} else if( pname == "pitch" ) {
-							orientation[0] = pvalue.toDouble();
-						} else if( pname == "roll" ) {
-							orientation[1] = pvalue.toDouble();
-						} else if( pname == "yaw" ) {
-							orientation[2] = pvalue.toDouble();
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
-						} else if( pname == "theta" ) {
-							target_orientation[0] = pvalue.toDouble();
-						} else if( pname == "phi" ) {
-							target_orientation[1] = pvalue.toDouble();
-						} else if( pname == "target_orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-						} else if( pname == "scale" ) {
-							scale = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
 					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
 					orientation[0] *= DEG_TO_RAD;
 					orientation[1] *= DEG_TO_RAD;
@@ -4511,72 +2955,41 @@ namespace RISE
 
 			struct OrthographicCameraAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int xres = 256;
-					unsigned int yres = 256;
-					double loc[3] = {0};
+					unsigned int xres = bag.GetUInt( "width",  256 );
+					unsigned int yres = bag.GetUInt( "height", 256 );
+					double pixelAR    = bag.GetDouble( "pixelAR",       1.0 );
+					double exposure   = bag.GetDouble( "exposure",      0 );
+					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
+					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+
+					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
-					double up[3] = {0,1,0};
-					double pixelAR = 1.0;
+					double up[3]     = {0,1,0};
+					bag.GetVec3( "location", loc );
+					bag.GetVec3( "lookat",   lookat );
+					bag.GetVec3( "up",       up );
+
 					double vpscale[2] = {1.0,1.0};
-					double exposure = 0;
-					double scanningRate = 0;
-					double pixelRate = 0;
-					double orientation[3] = {0};
-					double target_orientation[2] = {0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "width" ) {
-							xres = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							yres = pvalue.toUInt();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &loc[0], &loc[1], &loc[2] );
-						} else if( pname == "lookat" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &lookat[0], &lookat[1], &lookat[2] );
-						} else if( pname == "up" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &up[0], &up[1], &up[2] );
-						} else if( pname == "viewport_scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &vpscale[0], &vpscale[1] );
-						} else if( pname == "pixelAR" ) {
-							pixelAR = pvalue.toDouble();
-						} else if( pname == "exposure" ) {
-							exposure = pvalue.toDouble();
-						} else if( pname == "scanning_rate" ) {
-							scanningRate = pvalue.toDouble();
-						} else if( pname == "pixel_rate" ) {
-							pixelRate = pvalue.toDouble();
-						} else if( pname == "pitch" ) {
-							orientation[0] = pvalue.toDouble();
-						} else if( pname == "roll" ) {
-							orientation[1] = pvalue.toDouble();
-						} else if( pname == "yaw" ) {
-							orientation[2] = pvalue.toDouble();
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orientation[0], &orientation[1], &orientation[2] );
-						} else if( pname == "theta" ) {
-							target_orientation[0] = pvalue.toDouble();
-						} else if( pname == "phi" ) {
-							target_orientation[1] = pvalue.toDouble();
-						} else if( pname == "target_orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has( "viewport_scale" ) ) {
+						sscanf( bag.GetString( "viewport_scale" ).c_str(), "%lf %lf", &vpscale[0], &vpscale[1] );
 					}
+
+					double orientation[3] = {0,0,0};
+					if( bag.Has( "orientation" ) ) {
+						bag.GetVec3( "orientation", orientation );
+					}
+					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
+					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
+					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
+
+					double target_orientation[2] = {0,0};
+					if( bag.Has( "target_orientation" ) ) {
+						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
+					}
+					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
+					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
 					orientation[0] *= DEG_TO_RAD;
 					orientation[1] *= DEG_TO_RAD;
@@ -4608,37 +3021,14 @@ namespace RISE
 
 			struct SphereGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double radius = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",   "noname" );
+					double      radius = bag.GetDouble( "radius", 1.0 );
 					return pJob.AddSphereGeometry( name.c_str(), radius );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sphere_geometry"; cd.category = ChunkCategory::Geometry;
@@ -4654,37 +3044,15 @@ namespace RISE
 
 			struct EllipsoidGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name = bag.GetString( "name", "noname" );
 					double radii[3] = {1.0,1.0,1.0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "radii" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radii[0], &radii[1], &radii[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					bag.GetVec3( "radii", radii );
 					return pJob.AddEllipsoidGeometry( name.c_str(), radii );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ellipsoid_geometry"; cd.category = ChunkCategory::Geometry;
@@ -4700,43 +3068,17 @@ namespace RISE
 
 			struct CylinderGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double radius = 1.0;
-					double height = 1.0;
-					char axis = 'x';
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "height" ) {
-							height = pvalue.toDouble();
-						} else if( pname == "axis" ) {
-							axis = pvalue[0];
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",   "noname" );
+					double radius    = bag.GetDouble( "radius", 1.0 );
+					double height    = bag.GetDouble( "height", 1.0 );
+					std::string axisStr = bag.GetString( "axis", "x" );
+					char axis        = axisStr.empty() ? 'x' : axisStr[0];
 					return pJob.AddCylinderGeometry( name.c_str(), axis, radius, height );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "cylinder_geometry"; cd.category = ChunkCategory::Geometry;
@@ -4754,48 +3096,23 @@ namespace RISE
 
 			struct TorusGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double majorradius = 1.0;
-					double minorratio = 0.3;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "majorradius" ) {
-							majorradius = pvalue.toDouble();
-						} else if( pname == "minorratio" ) {
-							minorratio = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name    = bag.GetString( "name",        "noname" );
+					double majorradius  = bag.GetDouble( "majorradius", 1.0 );
+					double minorratio   = bag.GetDouble( "minorratio",  0.3 );
 					return pJob.AddTorusGeometry( name.c_str(), majorradius, minorratio*majorradius );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "torus_geometry"; cd.category = ChunkCategory::Geometry;
 						cd.description = "Implicit torus.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "major_radius"; p.kind = ValueKind::Double; p.description = "Major (tube-centre) radius"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "minor_radius"; p.kind = ValueKind::Double; p.description = "Minor (tube) radius ratio"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "majorradius"; p.kind = ValueKind::Double; p.description = "Major (tube-centre) radius"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "minorratio";  p.kind = ValueKind::Double; p.description = "Minor (tube) radius as a fraction of majorradius"; p.defaultValueHint = "0.3"; }
 						return cd;
 					}();
 					return d;
@@ -4804,40 +3121,15 @@ namespace RISE
 
 			struct InfinitePlaneGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double xtile = 1.0;
-					double ytile = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "xtile" ) {
-							xtile = pvalue.toDouble();
-						} else if( pname == "ytile" ) {
-							ytile = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",  "noname" );
+					double xtile     = bag.GetDouble( "xtile", 1.0 );
+					double ytile     = bag.GetDouble( "ytile", 1.0 );
 					return pJob.AddInfinitePlaneGeometry( name.c_str(), xtile, ytile );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "infiniteplane_geometry"; cd.category = ChunkCategory::Geometry;
@@ -4854,43 +3146,16 @@ namespace RISE
 
 			struct BoxGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double width = 1.0;
-					double height = 1.0;
-					double depth = 1.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "width" ) {
-							width = pvalue.toDouble();
-						} else if( pname == "height" ) {
-							height = pvalue.toDouble();
-						} else if( pname == "depth" ) {
-							depth = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",   "noname" );
+					double width     = bag.GetDouble( "width",  1.0 );
+					double height    = bag.GetDouble( "height", 1.0 );
+					double depth     = bag.GetDouble( "depth",  1.0 );
 					return pJob.AddBoxGeometry( name.c_str(), width, height, depth );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "box_geometry"; cd.category = ChunkCategory::Geometry;
@@ -4908,49 +3173,22 @@ namespace RISE
 
 			struct ClippedPlaneGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double pta[3] = {0};
-					double ptb[3] = {0};
-					double ptc[3] = {0};
-					double ptd[3] = {0};
-					bool doublesided = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "pta" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &pta[0], &pta[1], &pta[2] );
-						} else if( pname == "ptb" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &ptb[0], &ptb[1], &ptb[2] );
-						} else if( pname == "ptc" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &ptc[0], &ptc[1], &ptc[2] );
-						} else if( pname == "ptd" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &ptd[0], &ptd[1], &ptd[2] );
-						} else if( pname == "doublesided" ) {
-							doublesided = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name", "noname" );
+					double pta[3] = {0,0,0};
+					double ptb[3] = {0,0,0};
+					double ptc[3] = {0,0,0};
+					double ptd[3] = {0,0,0};
+					bag.GetVec3( "pta", pta );
+					bag.GetVec3( "ptb", ptb );
+					bag.GetVec3( "ptc", ptc );
+					bag.GetVec3( "ptd", ptd );
+					bool doublesided = bag.GetBool( "doublesided", true );
 					return pJob.AddClippedPlaneGeometry( name.c_str(), pta, ptb, ptc, ptd, doublesided );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "clippedplane_geometry"; cd.category = ChunkCategory::Geometry;
@@ -4961,7 +3199,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "ptb";         p.kind = ValueKind::DoubleVec3; p.description = "Corner B"; }
 						{ auto& p = P(); p.name = "ptc";         p.kind = ValueKind::DoubleVec3; p.description = "Corner C"; }
 						{ auto& p = P(); p.name = "ptd";         p.kind = ValueKind::DoubleVec3; p.description = "Corner D"; }
-						{ auto& p = P(); p.name = "doublesided"; p.kind = ValueKind::Bool;       p.description = "Rendered on both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "doublesided"; p.kind = ValueKind::Bool;       p.description = "Rendered on both sides"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -4970,55 +3208,19 @@ namespace RISE
 
 			struct Mesh3DSGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String file = "none";
-					unsigned int maxPoly = 10;
-					unsigned int maxRecur = 8;
-				//	unsigned int objid = 0;
-					bool double_sided = false;
-					bool bsp = false;
-					bool face_normals = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} /*else if( pname == "objectid" ) {
-							objid = pvalue.toUInt();
-						}*/ else if( pname == "double_sided" ) {
-							double_sided = pvalue.toBoolean();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else if( pname == "face_normals" ) {
-							face_normals = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					unsigned int maxPoly  = bag.GetUInt( "maxpolygons",  10 );
+					unsigned int maxRecur = bag.GetUInt( "maxdepth",     8 );
+					bool double_sided     = bag.GetBool( "double_sided", false );
+					bool bsp              = bag.GetBool( "bsp",          false );
+					bool face_normals     = bag.GetBool( "face_normals", false );
 					return pJob.Add3DSTriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp, face_normals );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "3dsmesh_geometry"; cd.category = ChunkCategory::Geometry;
@@ -5027,9 +3229,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .3ds file"; }
 						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build a BSP acceleration structure"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build a BSP acceleration structure"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Use flat per-face normals"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -5039,49 +3241,18 @@ namespace RISE
 
 			struct RAWMeshGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String file = "none";
-					unsigned int maxPoly = 10;
-					unsigned int maxRecur = 8;
-					bool double_sided = false;
-					bool bsp = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "double_sided" ) {
-							double_sided = pvalue.toBoolean();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					unsigned int maxPoly  = bag.GetUInt( "maxpolygons",  10 );
+					unsigned int maxRecur = bag.GetUInt( "maxdepth",     8 );
+					bool double_sided     = bag.GetBool( "double_sided", false );
+					bool bsp              = bag.GetBool( "bsp",          false );
 					return pJob.AddRAWTriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "rawmesh_geometry"; cd.category = ChunkCategory::Geometry;
@@ -5090,9 +3261,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW file"; }
 						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -5101,52 +3272,19 @@ namespace RISE
 
 			struct RAWMesh2GeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String file = "none";
-					unsigned int maxPoly = 10;
-					unsigned int maxRecur = 8;
-					bool double_sided = false;
-					bool bsp = false;
-					bool face_normals = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "double_sided" ) {
-							double_sided = pvalue.toBoolean();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else if( pname == "face_normals" ) {
-							face_normals = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					unsigned int maxPoly  = bag.GetUInt( "maxpolygons",  10 );
+					unsigned int maxRecur = bag.GetUInt( "maxdepth",     8 );
+					bool double_sided     = bag.GetBool( "double_sided", false );
+					bool bsp              = bag.GetBool( "bsp",          false );
+					bool face_normals     = bag.GetBool( "face_normals", false );
 					return pJob.AddRAW2TriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp, face_normals );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "rawmesh2_geometry"; cd.category = ChunkCategory::Geometry;
@@ -5155,9 +3293,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW2 file"; }
 						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -5167,52 +3305,25 @@ namespace RISE
 
 			struct RISEMeshGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String file = "none";
-					bool loadintomem = true;
-					bool face_normals = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "loadintomemory" ) {
-							loadintomem = pvalue.toBoolean();
-						} else if( pname == "face_normals" ) {
-							face_normals = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",           "noname" );
+					std::string file = bag.GetString( "file",           "none" );
+					bool loadintomem = bag.GetBool(   "loadintomemory", true );
+					bool face_normals= bag.GetBool(   "face_normals",   false );
 					return pJob.AddRISEMeshTriangleMeshGeometry( name.c_str(), file.c_str(), loadintomem, face_normals );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "risemesh_geometry"; cd.category = ChunkCategory::Geometry;
 						cd.description = "Triangle mesh loaded from a RISE-native .risemesh file.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "file";          p.kind = ValueKind::Filename; p.description = "Source .risemesh file"; }
-						{ auto& p = P(); p.name = "load_into_mem"; p.kind = ValueKind::Bool;     p.description = "Load entire mesh into memory"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";           p.kind = ValueKind::Filename; p.description = "Source .risemesh file"; }
+						{ auto& p = P(); p.name = "loadintomemory"; p.kind = ValueKind::Bool;     p.description = "Load entire mesh into memory"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals";   p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -5221,40 +3332,16 @@ namespace RISE
 
 			struct CircularDiskGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double radius = 1.0;
-					char axis = 'x';
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "axis" ) {
-							axis = pvalue[0];
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",   "noname" );
+					double radius    = bag.GetDouble( "radius", 1.0 );
+					std::string axisStr = bag.GetString( "axis", "x" );
+					char axis        = axisStr.empty() ? 'x' : axisStr[0];
 					return pJob.AddCircularDiskGeometry( name.c_str(), radius, axis );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "circulardisk_geometry"; cd.category = ChunkCategory::Geometry;
@@ -5262,7 +3349,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Normal axis"; p.defaultValueHint = "y"; }
+						{ auto& p = P(); p.name = "axis";   p.kind = ValueKind::Enum;   p.enumValues = {"x","y","z"}; p.description = "Normal axis"; p.defaultValueHint = "x"; }
 						return cd;
 					}();
 					return d;
@@ -5281,41 +3368,19 @@ namespace RISE
 			// behaviour drift.
 			struct BezierPatchGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want with defaults.
-					String name = "noname";
-					String file = "none";
-					unsigned int maxPatches = 2;
-					unsigned int maxRecur = 8;
-					bool bsp = false;
-					bool center_object = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "maxpatches" ) {
-							maxPatches = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else if( pname == "center_object" ) {
-							center_object = pvalue.toBoolean();
-						} else if( pname == "analytic"        || pname == "cache_size"
-						       ||  pname == "detail"          || pname == "face_normals"
-						       ||  pname == "double_sided"    || pname == "poly_bsp"
-						       ||  pname == "maxpolygons"     || pname == "maxpolydepth"
-						       ||  pname == "displacement"    || pname == "disp_scale" ) {
+					// Reject legacy parameters that have been retired.  The
+					// descriptor lists them so the dispatcher accepts them
+					// (instead of failing with a generic "unknown parameter"
+					// message), and Finalize emits the actionable error.
+					static const char* const kRetired[] = {
+						"analytic", "cache_size", "detail", "face_normals",
+						"double_sided", "poly_bsp", "maxpolygons", "maxpolydepth",
+						"displacement", "disp_scale"
+					};
+					for( const char* r : kRetired ) {
+						if( bag.Has( r ) ) {
 							GlobalLog()->PrintEx( eLog_Error,
 								"bezierpatch_geometry: parameter `%s` is no longer "
 								"accepted.  Rendering is always analytic; for a "
@@ -5323,18 +3388,22 @@ namespace RISE
 								"a displaced_geometry chunk and set detail/"
 								"face_normals/double_sided/displacement/disp_scale "
 								"there.",
-								pname.c_str() );
-							return false;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+								r );
 							return false;
 						}
 					}
 
+					std::string name = bag.GetString( "name",          "noname" );
+					std::string file = bag.GetString( "file",          "none" );
+					unsigned int maxPatches = bag.GetUInt( "maxpatches",    2 );
+					unsigned int maxRecur   = bag.GetUInt( "maxdepth",      8 );
+					bool bsp                = bag.GetBool( "bsp",           false );
+					bool center_object      = bag.GetBool( "center_object", false );
+
 					return pJob.AddBezierPatchGeometry( name.c_str(), file.c_str(), maxPatches, maxRecur, bsp, center_object );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bezierpatch_geometry"; cd.category = ChunkCategory::Geometry;
@@ -5342,10 +3411,22 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";          p.kind = ValueKind::Filename; p.description = "Patch file"; }
-						{ auto& p = P(); p.name = "maxpatches";    p.kind = ValueKind::UInt;     p.description = "Max patches per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxrecursion";  p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "16"; }
-						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "maxpatches";    p.kind = ValueKind::UInt;     p.description = "Max patches per BSP leaf"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "center_object"; p.kind = ValueKind::Bool;     p.description = "Auto-center the mesh"; p.defaultValueHint = "FALSE"; }
+						// Retired parameters — accepted by the descriptor so we can
+						// emit a specific error in Finalize, then rejected.
+						{ auto& p = P(); p.name = "analytic";      p.kind = ValueKind::String;   p.description = "Retired — rendering is always analytic"; }
+						{ auto& p = P(); p.name = "cache_size";    p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "poly_bsp";      p.kind = ValueKind::Bool;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "maxpolydepth";  p.kind = ValueKind::UInt;     p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::String;   p.description = "Retired — wrap in displaced_geometry"; }
+						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;   p.description = "Retired — wrap in displaced_geometry"; }
 						return cd;
 					}();
 					return d;
@@ -5354,56 +3435,27 @@ namespace RISE
 
 			struct BilinearPatchGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String file = "none";
-					unsigned int maxPoly = 10;
-					unsigned int maxRecur = 8;
-					bool bsp = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file" ) {
-							file = pvalue;
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name = bag.GetString( "name",        "noname" );
+					std::string file = bag.GetString( "file",        "none" );
+					unsigned int maxPoly  = bag.GetUInt( "maxpolygons", 10 );
+					unsigned int maxRecur = bag.GetUInt( "maxdepth",    8 );
+					bool bsp              = bag.GetBool( "bsp",         false );
 					return pJob.AddBilinearPatchGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, bsp );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bilinearpatch_geometry"; cd.category = ChunkCategory::Geometry;
 						cd.description = "Bilinear patch surface from file.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Patch file"; }
-						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxrecursion"; p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "16"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename; p.description = "Patch file"; }
+						{ auto& p = P(); p.name = "maxpolygons"; p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxdepth";    p.kind = ValueKind::UInt;     p.description = "Max BSP depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "bsp";         p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -5412,52 +3464,19 @@ namespace RISE
 
 			struct DisplacedGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name            = "noname";
-					String base_geometry   = "";
-					unsigned int detail    = 32;
-					String displacement    = "none";
-					double disp_scale      = 1.0;
-					unsigned int maxPoly   = 10;
-					unsigned int maxRecur  = 8;
-					bool double_sided      = false;
-					bool bsp               = true;     // BSP-SAH is the better default for dense displaced meshes
-					bool face_normals      = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ; i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "base_geometry" ) {
-							base_geometry = pvalue;
-						} else if( pname == "detail" ) {
-							detail = pvalue.toUInt();
-						} else if( pname == "displacement" ) {
-							displacement = pvalue;
-						} else if( pname == "disp_scale" ) {
-							disp_scale = pvalue.toDouble();
-						} else if( pname == "maxpolygons" ) {
-							maxPoly = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "double_sided" ) {
-							double_sided = pvalue.toBoolean();
-						} else if( pname == "bsp" ) {
-							bsp = pvalue.toBoolean();
-						} else if( pname == "face_normals" ) {
-							face_normals = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name          = bag.GetString( "name",          "noname" );
+					std::string base_geometry = bag.GetString( "base_geometry", "" );
+					unsigned int detail       = bag.GetUInt(   "detail",        32 );
+					std::string displacement  = bag.GetString( "displacement",  "none" );
+					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
+					unsigned int maxPoly      = bag.GetUInt(   "maxpolygons",   10 );
+					unsigned int maxRecur     = bag.GetUInt(   "maxdepth",      8 );
+					bool double_sided         = bag.GetBool(   "double_sided",  false );
+					// BSP-SAH is the better default for dense displaced meshes.
+					bool bsp                  = bag.GetBool(   "bsp",           true );
+					bool face_normals         = bag.GetBool(   "face_normals",  false );
 
 					if( base_geometry.empty() ) {
 						GlobalLog()->Print( eLog_Error, "DisplacedGeometry:: `base_geometry` is required" );
@@ -5477,22 +3496,22 @@ namespace RISE
 						face_normals );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "displaced_geometry"; cd.category = ChunkCategory::Geometry;
 						cd.description = "Tessellated geometry with painter-driven vertex displacement.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "base_geometry";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
-						{ auto& p = P(); p.name = "detail";          p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "displacement";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
-						{ auto& p = P(); p.name = "displacement_scale"; p.kind = ValueKind::Double; p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "maxpolygons";     p.kind = ValueKind::UInt;      p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxrecursion";    p.kind = ValueKind::UInt;      p.description = "Max BSP depth"; p.defaultValueHint = "16"; }
-						{ auto& p = P(); p.name = "double_sided";    p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";             p.kind = ValueKind::Bool;      p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "face_normals";    p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
+						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "32"; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
+						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Max BSP depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;      p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -5505,52 +3524,25 @@ namespace RISE
 
 			struct BumpmapModifierAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String function = "none";
-					double scale = 1.0;
-					double window = 0.01;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "function" ) {
-							function = pvalue;
-						} else if( pname == "scale" ) {
-							scale = pvalue.toDouble();
-						} else if( pname == "windowsize" ) {
-							window = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					std::string name     = bag.GetString( "name",       "noname" );
+					std::string function = bag.GetString( "function",   "none" );
+					double scale         = bag.GetDouble( "scale",      1.0 );
+					double window        = bag.GetDouble( "windowsize", 0.01 );
 					return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
 						cd.description = "Bump-map modifier perturbing surface normal via a painter.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter"; }
-						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "window";   p.kind = ValueKind::Double;    p.description = "Finite-difference step"; p.defaultValueHint = "1e-3"; }
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Finite-difference step"; p.defaultValueHint = "0.01"; }
 						return cd;
 					}();
 					return d;
@@ -5563,48 +3555,30 @@ namespace RISE
 
 			struct HomogeneousMediumAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					double sigma_a[3] = {0};
-					double sigma_s[3] = {0};
-					String phase_type = "isotropic";
-					double phase_g = 0.0;
+					std::string name = bag.GetString( "name", "noname" );
+					double sigma_a[3] = {0,0,0};
+					double sigma_s[3] = {0,0,0};
+					bag.GetVec3( "absorption", sigma_a );
+					bag.GetVec3( "scattering", sigma_s );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "absorption" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &sigma_a[0], &sigma_a[1], &sigma_a[2] );
-						} else if( pname == "scattering" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &sigma_s[0], &sigma_s[1], &sigma_s[2] );
-						} else if( pname == "phase" ) {
-							// Parse "isotropic" or "hg <g>"
-							String ptype;
-							String pval;
-							if( string_split( pvalue, ptype, pval, ' ' ) ) {
-								phase_type = ptype;
-								phase_g = pval.toDouble();
-							} else {
-								phase_type = pvalue;
-							}
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					// Composite phase token: "isotropic" or "hg <g>".
+					std::string phase_type = "isotropic";
+					double      phase_g    = 0.0;
+					if( bag.Has( "phase" ) ) {
+						std::string raw = bag.GetString( "phase" );
+						char ptype[64] = {0};
+						double g = 0.0;
+						int n = sscanf( raw.c_str(), "%63s %lf", ptype, &g );
+						if( n >= 1 ) phase_type = ptype;
+						if( n >= 2 ) phase_g    = g;
 					}
 
 					return pJob.AddHomogeneousMedium( name.c_str(), sigma_a, sigma_s, phase_type.c_str(), phase_g );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "homogeneous_medium"; cd.category = ChunkCategory::Medium;
@@ -5622,69 +3596,41 @@ namespace RISE
 
 			struct HeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					double max_sigma_a[3] = {0};
-					double max_sigma_s[3] = {0};
-					double emission[3] = {0};
-					String phase_type = "isotropic";
-					double phase_g = 0.0;
-					String volume_pattern = "";
-					unsigned int vol_width = 0;
-					unsigned int vol_height = 0;
-					unsigned int vol_startz = 0;
-					unsigned int vol_endz = 0;
-					char accessor = 't';
-					double bbox_min[3] = {0};
-					double bbox_max[3] = {0};
+					std::string name = bag.GetString( "name", "noname" );
+					double max_sigma_a[3] = {0,0,0};
+					double max_sigma_s[3] = {0,0,0};
+					double emission[3]    = {0,0,0};
+					bag.GetVec3( "absorption", max_sigma_a );
+					bag.GetVec3( "scattering", max_sigma_s );
+					bag.GetVec3( "emission",   emission );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "absorption" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_a[0], &max_sigma_a[1], &max_sigma_a[2] );
-						} else if( pname == "scattering" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_s[0], &max_sigma_s[1], &max_sigma_s[2] );
-						} else if( pname == "emission" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &emission[0], &emission[1], &emission[2] );
-						} else if( pname == "phase" ) {
-							String ptype;
-							String pval;
-							if( string_split( pvalue, ptype, pval, ' ' ) ) {
-								phase_type = ptype;
-								phase_g = pval.toDouble();
-							} else {
-								phase_type = pvalue;
-							}
-						} else if( pname == "volume_pattern" ) {
-							volume_pattern = pvalue;
-						} else if( pname == "volume_width" ) {
-							vol_width = pvalue.toUInt();
-						} else if( pname == "volume_height" ) {
-							vol_height = pvalue.toUInt();
-						} else if( pname == "volume_startz" ) {
-							vol_startz = pvalue.toUInt();
-						} else if( pname == "volume_endz" ) {
-							vol_endz = pvalue.toUInt();
-						} else if( pname == "accessor" ) {
-							accessor = pvalue.c_str()[0];
-						} else if( pname == "bbox_min" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_min[0], &bbox_min[1], &bbox_min[2] );
-						} else if( pname == "bbox_max" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_max[0], &bbox_max[1], &bbox_max[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					// Composite phase token: "isotropic" or "hg <g>".
+					std::string phase_type = "isotropic";
+					double      phase_g    = 0.0;
+					if( bag.Has( "phase" ) ) {
+						std::string raw = bag.GetString( "phase" );
+						char ptype[64] = {0};
+						double g = 0.0;
+						int n = sscanf( raw.c_str(), "%63s %lf", ptype, &g );
+						if( n >= 1 ) phase_type = ptype;
+						if( n >= 2 ) phase_g    = g;
 					}
+
+					std::string volume_pattern = bag.GetString( "volume_pattern", "" );
+					unsigned int vol_width  = bag.GetUInt( "volume_width",  0 );
+					unsigned int vol_height = bag.GetUInt( "volume_height", 0 );
+					unsigned int vol_startz = bag.GetUInt( "volume_startz", 0 );
+					unsigned int vol_endz   = bag.GetUInt( "volume_endz",   0 );
+
+					std::string accStr = bag.GetString( "accessor", "t" );
+					char accessor = accStr.empty() ? 't' : accStr[0];
+
+					double bbox_min[3] = {0,0,0};
+					double bbox_max[3] = {0,0,0};
+					bag.GetVec3( "bbox_min", bbox_min );
+					bag.GetVec3( "bbox_max", bbox_max );
 
 					if( volume_pattern.empty() || vol_width == 0 || vol_height == 0 ) {
 						GlobalLog()->PrintEasyError( "HeterogeneousMedium:: volume_pattern, volume_width, and volume_height are required" );
@@ -5702,26 +3648,25 @@ namespace RISE
 						accessor, bbox_min, bbox_max );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "heterogeneous_medium"; cd.category = ChunkCategory::Medium;
 						cd.description = "Voxel-grid heterogeneous participating medium loaded from a raw volume pattern.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "max_sigma_a";     p.kind = ValueKind::DoubleVec3; p.description = "Max absorption"; }
-						{ auto& p = P(); p.name = "max_sigma_s";     p.kind = ValueKind::DoubleVec3; p.description = "Max scattering"; }
-						{ auto& p = P(); p.name = "emission";        p.kind = ValueKind::DoubleVec3; p.description = "Emission"; }
-						{ auto& p = P(); p.name = "phase_type";      p.kind = ValueKind::Enum;       p.enumValues = {"isotropic","henyey-greenstein"}; p.description = "Phase function"; p.defaultValueHint = "isotropic"; }
-						{ auto& p = P(); p.name = "phase_g";         p.kind = ValueKind::Double;     p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "volume_pattern";  p.kind = ValueKind::String;     p.description = "Volume file pattern (printf-style)"; }
-						{ auto& p = P(); p.name = "volume_width";    p.kind = ValueKind::UInt;       p.description = "Volume width"; }
-						{ auto& p = P(); p.name = "volume_height";   p.kind = ValueKind::UInt;       p.description = "Volume height"; }
-						{ auto& p = P(); p.name = "volume_startz";   p.kind = ValueKind::UInt;       p.description = "Start slice index"; }
-						{ auto& p = P(); p.name = "volume_endz";     p.kind = ValueKind::UInt;       p.description = "End slice index"; }
-						{ auto& p = P(); p.name = "accessor";        p.kind = ValueKind::String;     p.description = "Voxel accessor type"; p.defaultValueHint = "trilinear"; }
-						{ auto& p = P(); p.name = "bbox_min";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
-						{ auto& p = P(); p.name = "bbox_max";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "absorption";     p.kind = ValueKind::DoubleVec3; p.description = "Max absorption coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "scattering";     p.kind = ValueKind::DoubleVec3; p.description = "Max scattering coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "emission";       p.kind = ValueKind::DoubleVec3; p.description = "Volumetric emission (R G B)"; }
+						{ auto& p = P(); p.name = "phase";          p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
+						{ auto& p = P(); p.name = "volume_pattern"; p.kind = ValueKind::String;     p.description = "Volume file pattern (printf-style)"; }
+						{ auto& p = P(); p.name = "volume_width";   p.kind = ValueKind::UInt;       p.description = "Volume width"; }
+						{ auto& p = P(); p.name = "volume_height";  p.kind = ValueKind::UInt;       p.description = "Volume height"; }
+						{ auto& p = P(); p.name = "volume_startz";  p.kind = ValueKind::UInt;       p.description = "Start slice index"; }
+						{ auto& p = P(); p.name = "volume_endz";    p.kind = ValueKind::UInt;       p.description = "End slice index"; }
+						{ auto& p = P(); p.name = "accessor";       p.kind = ValueKind::String;     p.description = "Voxel accessor type (first character: 'n', 't', or 'c')"; p.defaultValueHint = "t"; }
+						{ auto& p = P(); p.name = "bbox_min";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
+						{ auto& p = P(); p.name = "bbox_max";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
 						return cd;
 					}();
 					return d;
@@ -5731,69 +3676,50 @@ namespace RISE
 
 			struct PainterHeterogeneousMediumAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					double max_sigma_a[3] = {0};
-					double max_sigma_s[3] = {0};
-					double emission[3] = {0};
-					String phase_type = "isotropic";
-					double phase_g = 0.0;
-					String density_painter = "none";
-					unsigned int resolution = 64;
+					std::string name = bag.GetString( "name", "noname" );
+					double max_sigma_a[3] = {0,0,0};
+					double max_sigma_s[3] = {0,0,0};
+					double emission[3]    = {0,0,0};
+					bag.GetVec3( "absorption", max_sigma_a );
+					bag.GetVec3( "scattering", max_sigma_s );
+					bag.GetVec3( "emission",   emission );
+
+					// Composite phase token: "isotropic" or "hg <g>".
+					std::string phase_type = "isotropic";
+					double      phase_g    = 0.0;
+					if( bag.Has( "phase" ) ) {
+						std::string raw = bag.GetString( "phase" );
+						char ptype[64] = {0};
+						double g = 0.0;
+						int n = sscanf( raw.c_str(), "%63s %lf", ptype, &g );
+						if( n >= 1 ) phase_type = ptype;
+						if( n >= 2 ) phase_g    = g;
+					}
+
+					std::string density_painter = bag.GetString( "density_painter", "none" );
+					unsigned int resolution     = bag.GetUInt(   "resolution",      64 );
+
 					char color_to_scalar = 'l';
-					double bbox_min[3] = {0};
-					double bbox_max[3] = {0};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "absorption" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_a[0], &max_sigma_a[1], &max_sigma_a[2] );
-						} else if( pname == "scattering" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &max_sigma_s[0], &max_sigma_s[1], &max_sigma_s[2] );
-						} else if( pname == "emission" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &emission[0], &emission[1], &emission[2] );
-						} else if( pname == "phase" ) {
-							String ptype;
-							String pval;
-							if( string_split( pvalue, ptype, pval, ' ' ) ) {
-								phase_type = ptype;
-								phase_g = pval.toDouble();
-							} else {
-								phase_type = pvalue;
-							}
-						} else if( pname == "density_painter" ) {
-							density_painter = pvalue;
-						} else if( pname == "resolution" ) {
-							resolution = pvalue.toUInt();
-						} else if( pname == "color_to_scalar" ) {
-							if( pvalue == "luminance" ) {
-								color_to_scalar = 'l';
-							} else if( pvalue == "max" ) {
-								color_to_scalar = 'm';
-							} else if( pvalue == "red" ) {
-								color_to_scalar = 'r';
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "PainterHeterogeneousMedium:: Unknown color_to_scalar `%s`, using luminance", pvalue.c_str() );
-								color_to_scalar = 'l';
-							}
-						} else if( pname == "bbox_min" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_min[0], &bbox_min[1], &bbox_min[2] );
-						} else if( pname == "bbox_max" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &bbox_max[0], &bbox_max[1], &bbox_max[2] );
+					if( bag.Has( "color_to_scalar" ) ) {
+						std::string c2s = bag.GetString( "color_to_scalar" );
+						if( c2s == "luminance" ) {
+							color_to_scalar = 'l';
+						} else if( c2s == "max" ) {
+							color_to_scalar = 'm';
+						} else if( c2s == "red" ) {
+							color_to_scalar = 'r';
 						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
+							GlobalLog()->PrintEx( eLog_Error, "PainterHeterogeneousMedium:: Unknown color_to_scalar `%s`, using luminance", c2s.c_str() );
+							color_to_scalar = 'l';
 						}
 					}
+
+					double bbox_min[3] = {0,0,0};
+					double bbox_max[3] = {0,0,0};
+					bag.GetVec3( "bbox_min", bbox_min );
+					bag.GetVec3( "bbox_max", bbox_max );
 
 					if( density_painter == "none" ) {
 						GlobalLog()->PrintEasyError( "PainterHeterogeneousMedium:: density_painter is required" );
@@ -5811,23 +3737,22 @@ namespace RISE
 						bbox_min, bbox_max );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "painter_heterogeneous_medium"; cd.category = ChunkCategory::Medium;
 						cd.description = "Heterogeneous medium whose density field comes from a painter evaluation.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "max_sigma_a";    p.kind = ValueKind::DoubleVec3; p.description = "Max absorption"; }
-						{ auto& p = P(); p.name = "max_sigma_s";    p.kind = ValueKind::DoubleVec3; p.description = "Max scattering"; }
-						{ auto& p = P(); p.name = "emission";       p.kind = ValueKind::DoubleVec3; p.description = "Emission"; }
-						{ auto& p = P(); p.name = "phase_type";     p.kind = ValueKind::Enum;       p.enumValues = {"isotropic","henyey-greenstein"}; p.description = "Phase function"; p.defaultValueHint = "isotropic"; }
-						{ auto& p = P(); p.name = "phase_g";        p.kind = ValueKind::Double;     p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "density_painter";p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Density painter"; }
-						{ auto& p = P(); p.name = "resolution";     p.kind = ValueKind::UInt;       p.description = "Voxel resolution"; p.defaultValueHint = "128"; }
-						{ auto& p = P(); p.name = "color_to_scalar";p.kind = ValueKind::String;     p.description = "RGB→scalar rule (luminance|max|sum)"; p.defaultValueHint = "luminance"; }
-						{ auto& p = P(); p.name = "bbox_min";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
-						{ auto& p = P(); p.name = "bbox_max";       p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "absorption";      p.kind = ValueKind::DoubleVec3; p.description = "Max absorption coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "scattering";      p.kind = ValueKind::DoubleVec3; p.description = "Max scattering coefficient (R G B)"; }
+						{ auto& p = P(); p.name = "emission";        p.kind = ValueKind::DoubleVec3; p.description = "Volumetric emission (R G B)"; }
+						{ auto& p = P(); p.name = "phase";           p.kind = ValueKind::String;     p.description = "Phase function: either `isotropic` or `hg <g>` (Henyey-Greenstein with asymmetry g)"; p.tupleKinds = {ValueKind::Enum, ValueKind::Double}; p.enumValues = {"isotropic","hg"}; p.defaultValueHint = "isotropic"; }
+						{ auto& p = P(); p.name = "density_painter"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Density painter"; }
+						{ auto& p = P(); p.name = "resolution";      p.kind = ValueKind::UInt;       p.description = "Voxel resolution"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "color_to_scalar"; p.kind = ValueKind::Enum;       p.enumValues = {"luminance","max","red"}; p.description = "RGB→scalar rule"; p.defaultValueHint = "luminance"; }
+						{ auto& p = P(); p.name = "bbox_min";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox min"; }
+						{ auto& p = P(); p.name = "bbox_max";        p.kind = ValueKind::DoubleVec3; p.description = "World-space bbox max"; }
 						return cd;
 					}();
 					return d;
@@ -5841,72 +3766,37 @@ namespace RISE
 
 			struct StandardObjectAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String geometry = "none";
-					double pos[3] = {0};
-					double orient[3] = {0};
-					double scale[3] = {1.0,1.0,1.0};
-					String material = "none";
-					String modifier = "none";
-					String shader = "none";
-					RadianceMapConfig radianceMapConfig;
-					bool bCastsShadows = true;
-					bool bReceivesShadows = true;
-					String interior_medium = "none";
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string geometry = bag.GetString( "geometry", "none" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string modifier = bag.GetString( "modifier", "none" );
+					std::string shader   = bag.GetString( "shader",   "none" );
+					std::string interior_medium = bag.GetString( "interior_medium", "none" );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "geometry" ) {
-							geometry = pvalue;
-						} else if( pname == "material" ) {
-							material = pvalue;
-						} else if( pname == "modifier" ) {
-							modifier = pvalue;
-						} else if( pname == "shader" ) {
-							shader = pvalue;
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "position" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &pos[0], &pos[1], &pos[2] );
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orient[0], &orient[1], &orient[2] );
-							orient[0] *=  DEG_TO_RAD;
-							orient[1] *=  DEG_TO_RAD;
-							orient[2] *=  DEG_TO_RAD;
-						} else if( pname == "scale" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scale[0], &scale[1], &scale[2] );
-						} else if( pname == "casts_shadows" ) {
-							bCastsShadows = pvalue.toBoolean();
-						} else if( pname == "receives_shadows" ) {
-							bReceivesShadows = pvalue.toBoolean();
-						} else if( pname == "interior_medium" ) {
-							interior_medium = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					double pos[3]    = {0,0,0};
+					double orient[3] = {0,0,0};
+					double scale[3]  = {1.0,1.0,1.0};
+					bag.GetVec3( "position", pos );
+					if( bag.GetVec3( "orientation", orient ) ) {
+						orient[0] *= DEG_TO_RAD;
+						orient[1] *= DEG_TO_RAD;
+						orient[2] *= DEG_TO_RAD;
 					}
+					bag.GetVec3( "scale", scale );
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has( "radiance_map" ) )    radianceMapConfig.name  = bag.GetString( "radiance_map" ).c_str();
+					if( bag.Has( "radiance_scale" ) )  radianceMapConfig.scale = bag.GetDouble( "radiance_scale" );
+					if( bag.GetVec3( "radiance_orient", radianceMapConfig.orientation ) ) {
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
+					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
 
 					bool bRet = pJob.AddObject( name.c_str(), geometry.c_str(), material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
 
@@ -5917,7 +3807,7 @@ namespace RISE
 					return bRet;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "standard_object"; cd.category = ChunkCategory::Object;
@@ -5945,85 +3835,55 @@ namespace RISE
 
 			struct CSGObjectAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String obja = "none";
-					String objb = "none";
-					char op = 0;
-					double pos[3] = {0};
-					double orient[3] = {0};
-					String material = "none";
-					String modifier = "none";
-					String shader = "none";
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string obja     = bag.GetString( "obja",     "none" );
+					std::string objb     = bag.GetString( "objb",     "none" );
+					std::string material = bag.GetString( "material", "none" );
+					std::string modifier = bag.GetString( "modifier", "none" );
+					std::string shader   = bag.GetString( "shader",   "none" );
+
+					double pos[3]    = {0,0,0};
+					double orient[3] = {0,0,0};
+					bag.GetVec3( "position", pos );
+					if( bag.GetVec3( "orientation", orient ) ) {
+						orient[0] *= DEG_TO_RAD;
+						orient[1] *= DEG_TO_RAD;
+						orient[2] *= DEG_TO_RAD;
+					}
+
 					RadianceMapConfig radianceMapConfig;
-					bool bCastsShadows = true;
-					bool bReceivesShadows = true;
+					if( bag.Has( "radiance_map" ) )    radianceMapConfig.name  = bag.GetString( "radiance_map" ).c_str();
+					if( bag.Has( "radiance_scale" ) )  radianceMapConfig.scale = bag.GetDouble( "radiance_scale" );
+					if( bag.GetVec3( "radiance_orient", radianceMapConfig.orientation ) ) {
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "obja" ) {
-							obja = pvalue;
-						} else if( pname == "objb" ) {
-							objb = pvalue;
-						} else if( pname == "material" ) {
-							material = pvalue;
-						} else if( pname == "modifier" ) {
-							modifier = pvalue;
-						} else if( pname == "shader" ) {
-							shader = pvalue;
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "position" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &pos[0], &pos[1], &pos[2] );
-						} else if( pname == "orientation" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &orient[0], &orient[1], &orient[2] );
-							orient[0] *=  DEG_TO_RAD;
-							orient[1] *=  DEG_TO_RAD;
-							orient[2] *=  DEG_TO_RAD;
-						} else if( pname == "operation" ) {
-							if( pvalue=="union" ) {
-								op = 0;
-							} else if( pvalue == "intersection" ) {
-								op = 1;
-							} else if( pvalue == "subtraction" ) {
-								op = 2;
-							} else {
-								return false;
-							}
-						} else if( pname == "casts_shadows" ) {
-							bCastsShadows = pvalue.toBoolean();
-						} else if( pname == "receives_shadows" ) {
-							bReceivesShadows = pvalue.toBoolean();
+					char op = 0;
+					if( bag.Has( "operation" ) ) {
+						std::string opStr = bag.GetString( "operation" );
+						if( opStr == "union" ) {
+							op = 0;
+						} else if( opStr == "intersection" ) {
+							op = 1;
+						} else if( opStr == "subtraction" ) {
+							op = 2;
 						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "csg_object:: unknown operation `%s`", opStr.c_str() );
 							return false;
 						}
 					}
 
+					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
+					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
+
 					return pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "csg_object"; cd.category = ChunkCategory::Object;
@@ -6036,10 +3896,13 @@ namespace RISE
 						{ auto& p = P(); p.name = "material";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override material"; }
 						{ auto& p = P(); p.name = "modifier";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.description = "Override modifier"; }
 						{ auto& p = P(); p.name = "shader";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Override shader"; }
-						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool; p.description = "Casts shadows"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool; p.description = "Receives shadows"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "position";        p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "orientation";     p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "casts_shadows";   p.kind = ValueKind::Bool;      p.description = "Casts shadows"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "receives_shadows";p.kind = ValueKind::Bool;      p.description = "Receives shadows"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "radiance_map";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Per-object radiance map"; }
+						{ auto& p = P(); p.name = "radiance_scale";  p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "radiance_orient"; p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						return cd;
 					}();
 					return d;
@@ -6061,188 +3924,133 @@ namespace RISE
 			// metadata and apply binding; ParseChunk creates a state, dispatches
 			// via the descriptor, then hands the state to pJob.AddAmbientLight.
 			// Adding or removing a parameter is a single edit in the descriptor.
-			struct AmbientLightState : public IChunkParseState
-			{
-				String name = "noname";
-				double color[3] = {0,0,0};
-				double power = 1.0;
-			};
-
-			static void ApplyAmbientLight_Name( IChunkParseState& s, const String& v )  { static_cast<AmbientLightState&>(s).name  = v; }
-			static void ApplyAmbientLight_Power( IChunkParseState& s, const String& v ) { static_cast<AmbientLightState&>(s).power = v.toDouble(); }
-			static void ApplyAmbientLight_Color( IChunkParseState& s, const String& v ) {
-				AmbientLightState& st = static_cast<AmbientLightState&>(s);
-				sscanf( v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2] );
-			}
-
-			static const ChunkDescriptor& GetAmbientLightDescriptor()
-			{
-				static const ChunkDescriptor d = [](){
-					ChunkDescriptor cd;
-					cd.keyword     = "ambient_light";
-					cd.category    = ChunkCategory::Light;
-					cd.description = "Uniform ambient illumination (no spatial variation).";
-
-					ParameterDescriptor name;
-					name.name             = "name";
-					name.kind             = ValueKind::String;
-					name.description      = "Unique name for this light";
-					name.defaultValueHint = "noname";
-					name.apply            = &ApplyAmbientLight_Name;
-					cd.parameters.push_back( name );
-
-					ParameterDescriptor power;
-					power.name             = "power";
-					power.kind             = ValueKind::Double;
-					power.description      = "Power scale (multiplies color)";
-					power.defaultValueHint = "1.0";
-					power.apply            = &ApplyAmbientLight_Power;
-					cd.parameters.push_back( power );
-
-					ParameterDescriptor color;
-					color.name             = "color";
-					color.kind             = ValueKind::DoubleVec3;
-					color.description      = "R G B in scene colour space";
-					color.defaultValueHint = "0 0 0";
-					color.apply            = &ApplyAmbientLight_Color;
-					cd.parameters.push_back( color );
-
-					return cd;
-				}();
-				return d;
-			}
-
+			// AmbientLight — descriptor-driven, Finalize-only
 			struct AmbientLightAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					AmbientLightState state;
-					if( !DispatchChunkParameters( GetAmbientLightDescriptor(), state, in ) ) {
-						return false;
-					}
-					return pJob.AddAmbientLight( state.name.c_str(), state.power, state.color );
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					double color[3] = {0,0,0};
+					bag.GetVec3( "color", color );
+					return pJob.AddAmbientLight( name.c_str(), power, color );
 				}
 
-				const ChunkDescriptor& Describe() const { return GetAmbientLightDescriptor(); }
-			};
-
-
-			// OmniLight — descriptor-driven
-			struct OmniLightState : public IChunkParseState {
-				String name = "noname";
-				double position[3] = {0,0,0};
-				double color[3] = {0,0,0};
-				double power = 1.0;
-				bool shootphotons = true;
-			};
-			static const ChunkDescriptor& GetOmniLightDescriptor() {
-				static const ChunkDescriptor d = []{
-					ChunkDescriptor cd;
-					cd.keyword = "omni_light"; cd.category = ChunkCategory::Light;
-					cd.description = "Point light radiating uniformly in all directions.";
-					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-					{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";         p.defaultValueHint = "noname";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<OmniLightState&>(s).name = v; }; }
-					{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";    p.defaultValueHint = "1.0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<OmniLightState&>(s).power = v.toDouble(); }; }
-					{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";              p.defaultValueHint = "0 0 0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ OmniLightState& st = static_cast<OmniLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.position[0], &st.position[1], &st.position[2]); }; }
-					{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";             p.defaultValueHint = "0 0 0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ OmniLightState& st = static_cast<OmniLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2]); }; }
-					{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons";  p.defaultValueHint = "TRUE";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<OmniLightState&>(s).shootphotons = v.toBoolean(); }; }
-					return cd;
-				}();
-				return d;
-			}
-			struct OmniLightAsciiChunkParser : public IAsciiChunkParser {
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const {
-					OmniLightState st;
-					if( !DispatchChunkParameters( GetOmniLightDescriptor(), st, in ) ) return false;
-					return pJob.AddPointOmniLight( st.name.c_str(), st.power, st.color, st.position, st.shootphotons );
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = [](){
+						ChunkDescriptor cd;
+						cd.keyword     = "ambient_light";
+						cd.category    = ChunkCategory::Light;
+						cd.description = "Uniform ambient illumination (no spatial variation).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name for this light";  p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power"; p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "color"; p.kind = ValueKind::DoubleVec3; p.description = "R G B in scene colour space"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
 				}
-				const ChunkDescriptor& Describe() const { return GetOmniLightDescriptor(); }
 			};
 
-
-			// SpotLight — descriptor-driven
-			struct SpotLightState : public IChunkParseState {
-				String name = "noname";
-				double position[3] = {0,0,0};
-				double target[3] = {0,0,0};
-				double color[3] = {0,0,0};
-				double power = 1.0;
-				double inner = PI_OV_FOUR;
-				double outer = PI_OV_TWO;
-				bool shootphotons = true;
-			};
-			static const ChunkDescriptor& GetSpotLightDescriptor() {
-				static const ChunkDescriptor d = []{
-					ChunkDescriptor cd;
-					cd.keyword = "spot_light"; cd.category = ChunkCategory::Light;
-					cd.description = "Cone spot light with inner and outer falloff angles.";
-					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-					{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";                p.defaultValueHint = "noname";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).name = v; }; }
-					{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";            p.defaultValueHint = "1.0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).power = v.toDouble(); }; }
-					{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)";           p.defaultValueHint = "45";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).inner = v.toDouble() * DEG_TO_RAD; }; }
-					{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)";           p.defaultValueHint = "90";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).outer = v.toDouble() * DEG_TO_RAD; }; }
-					{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";                      p.defaultValueHint = "0 0 0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ SpotLightState& st = static_cast<SpotLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.position[0], &st.position[1], &st.position[2]); }; }
-					{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";                  p.defaultValueHint = "0 0 -1";
-					  p.apply = +[](IChunkParseState& s, const String& v){ SpotLightState& st = static_cast<SpotLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.target[0], &st.target[1], &st.target[2]); }; }
-					{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";                     p.defaultValueHint = "0 0 0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ SpotLightState& st = static_cast<SpotLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2]); }; }
-					{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons";          p.defaultValueHint = "TRUE";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<SpotLightState&>(s).shootphotons = v.toBoolean(); }; }
-					return cd;
-				}();
-				return d;
-			}
-			struct SpotLightAsciiChunkParser : public IAsciiChunkParser {
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const {
-					SpotLightState st;
-					if( !DispatchChunkParameters( GetSpotLightDescriptor(), st, in ) ) return false;
-					return pJob.AddPointSpotLight( st.name.c_str(), st.power, st.color, st.target, st.inner, st.outer, st.position, st.shootphotons );
+			// OmniLight — descriptor-driven, Finalize-only
+			struct OmniLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					double position[3] = {0,0,0}; bag.GetVec3( "position", position );
+					double color[3]    = {0,0,0}; bag.GetVec3( "color",    color );
+					bool shootphotons  = bag.GetBool( "shootphotons", true );
+					return pJob.AddPointOmniLight( name.c_str(), power, color, position, shootphotons );
 				}
-				const ChunkDescriptor& Describe() const { return GetSpotLightDescriptor(); }
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "omni_light"; cd.category = ChunkCategory::Light;
+						cd.description = "Point light radiating uniformly in all directions.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
-			// DirectionalLight — descriptor-driven
-			struct DirectionalLightState : public IChunkParseState {
-				String name = "noname";
-				double dir[3] = {0,0,0};
-				double color[3] = {0,0,0};
-				double power = 1.0;
-			};
-			static const ChunkDescriptor& GetDirectionalLightDescriptor() {
-				static const ChunkDescriptor d = []{
-					ChunkDescriptor cd;
-					cd.keyword = "directional_light"; cd.category = ChunkCategory::Light;
-					cd.description = "Parallel rays from a fixed direction (e.g. sunlight).";
-					auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-					{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light"; p.defaultValueHint = "noname";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<DirectionalLightState&>(s).name = v; }; }
-					{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ static_cast<DirectionalLightState&>(s).power = v.toDouble(); }; }
-					{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector"; p.defaultValueHint = "0 -1 0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ DirectionalLightState& st = static_cast<DirectionalLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.dir[0], &st.dir[1], &st.dir[2]); }; }
-					{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour"; p.defaultValueHint = "0 0 0";
-					  p.apply = +[](IChunkParseState& s, const String& v){ DirectionalLightState& st = static_cast<DirectionalLightState&>(s); sscanf(v.c_str(), "%lf %lf %lf", &st.color[0], &st.color[1], &st.color[2]); }; }
-					return cd;
-				}();
-				return d;
-			}
-			struct DirectionalLightAsciiChunkParser : public IAsciiChunkParser {
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const {
-					DirectionalLightState st;
-					if( !DispatchChunkParameters( GetDirectionalLightDescriptor(), st, in ) ) return false;
-					return pJob.AddDirectionalLight( st.name.c_str(), st.power, st.color, st.dir );
+			// SpotLight — descriptor-driven, Finalize-only
+			struct SpotLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					// inner/outer specified in degrees; converted iff present.
+					double inner = PI_OV_FOUR;
+					double outer = PI_OV_TWO;
+					if( bag.Has("inner") ) inner = bag.GetDouble("inner", 45.0) * DEG_TO_RAD;
+					if( bag.Has("outer") ) outer = bag.GetDouble("outer", 90.0) * DEG_TO_RAD;
+					double position[3] = {0,0,0};  bag.GetVec3( "position", position );
+					double target[3]   = {0,0,0};  bag.GetVec3( "target",   target );
+					double color[3]    = {0,0,0};  bag.GetVec3( "color",    color );
+					bool shootphotons  = bag.GetBool( "shootphotons", true );
+					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, shootphotons );
 				}
-				const ChunkDescriptor& Describe() const { return GetDirectionalLightDescriptor(); }
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "spot_light"; cd.category = ChunkCategory::Light;
+						cd.description = "Cone spot light with inner and outer falloff angles.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";       p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";  p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "inner";        p.kind = ValueKind::Double;     p.description = "Inner cone half-angle (degrees)"; p.defaultValueHint = "45"; }
+						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
+						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// DirectionalLight — descriptor-driven, Finalize-only
+			struct DirectionalLightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					double power = bag.GetDouble( "power", 1.0 );
+					double dir[3]   = {0,0,0}; bag.GetVec3( "direction", dir );
+					double color[3] = {0,0,0}; bag.GetVec3( "color",     color );
+					return pJob.AddDirectionalLight( name.c_str(), power, color, dir );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "directional_light"; cd.category = ChunkCategory::Light;
+						cd.description = "Parallel rays from a fixed direction (e.g. sunlight).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light";      p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector";                p.defaultValueHint = "0 -1 0"; }
+						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
 			};
 
 			//////////////////////////////////////////
@@ -6251,55 +4059,19 @@ namespace RISE
 
 			struct PathTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					bool smsEnabled = false;
-					unsigned int smsMaxIterations = 20;
-					double smsThreshold = 1e-5;
-					unsigned int smsMaxChainDepth = 10;
-					bool smsBiased = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "sms_enabled" ) {
-							smsEnabled = pvalue.toBoolean();
-						} else if( pname == "sms_max_iterations" ) {
-							smsMaxIterations = pvalue.toUInt();
-						} else if( pname == "sms_threshold" ) {
-							smsThreshold = pvalue.toDouble();
-						} else if( pname == "sms_max_chain_depth" ) {
-							smsMaxChainDepth = pvalue.toUInt();
-						} else if( pname == "sms_biased" ) {
-							smsBiased = pvalue.toBoolean();
-						} else if( pname == "branch" ||
-								   pname == "force_check_emitters" ||
-								   pname == "finalgather" ||
-								   pname == "reflections" ||
-								   pname == "refractions" ||
-								   pname == "diffuse" ||
-								   pname == "translucents" ) {
-							// Legacy parameters — silently ignored.
-							// `branch` was retired in favor of `branching_threshold`
-							// on the rasterizer chunk.
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string  name             = bag.GetString( "name",                "noname" );
+					bool         smsEnabled       = bag.GetBool(   "sms_enabled",         false );
+					unsigned int smsMaxIterations = bag.GetUInt(   "sms_max_iterations",  20 );
+					double       smsThreshold     = bag.GetDouble( "sms_threshold",       1e-5 );
+					unsigned int smsMaxChainDepth = bag.GetUInt(   "sms_max_chain_depth", 10 );
+					bool         smsBiased        = bag.GetBool(   "sms_biased",          true );
 
 					return pJob.AddPathTracingShaderOp( name.c_str(), smsEnabled, smsMaxIterations, smsThreshold, smsMaxChainDepth, smsBiased );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "pathtracing_shaderop"; cd.category = ChunkCategory::ShaderOp;
@@ -6309,8 +4081,17 @@ namespace RISE
 						{ auto& p = P(); p.name = "sms_enabled";         p.kind = ValueKind::Bool;   p.description = "Enable SMS"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "sms_max_iterations";  p.kind = ValueKind::UInt;   p.description = "SMS Newton iterations"; p.defaultValueHint = "20"; }
 						{ auto& p = P(); p.name = "sms_threshold";       p.kind = ValueKind::Double; p.description = "SMS convergence threshold"; p.defaultValueHint = "1e-5"; }
-						{ auto& p = P(); p.name = "sms_max_chain_depth"; p.kind = ValueKind::UInt;   p.description = "SMS chain depth"; p.defaultValueHint = "2"; }
-						{ auto& p = P(); p.name = "sms_biased";          p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "sms_max_chain_depth"; p.kind = ValueKind::UInt;   p.description = "SMS chain depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "sms_biased";          p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator"; p.defaultValueHint = "TRUE"; }
+						// Legacy parameters — accepted for backwards compat, silently ignored.
+						// `branch` was retired in favor of `branching_threshold` on the rasterizer chunk.
+						{ auto& p = P(); p.name = "branch";               p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "force_check_emitters"; p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "finalgather";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "reflections";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "refractions";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "diffuse";              p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "translucents";         p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
 						return cd;
 					}();
 					return d;
@@ -6319,42 +4100,18 @@ namespace RISE
 
 			struct SMSShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					unsigned int maxIterations = 20;
-					double threshold = 1e-5;
-					unsigned int maxChainDepth = 10;
-					bool biased = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "max_iterations" ) {
-							maxIterations = pvalue.toUInt();
-						} else if( pname == "threshold" ) {
-							threshold = pvalue.toDouble();
-						} else if( pname == "max_chain_depth" ) {
-							maxChainDepth = pvalue.toUInt();
-						} else if( pname == "biased" ) {
-							biased = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string  name          = bag.GetString( "name",            "noname" );
+					unsigned int maxIterations = bag.GetUInt(   "max_iterations",  20 );
+					double       threshold     = bag.GetDouble( "threshold",       1e-5 );
+					unsigned int maxChainDepth = bag.GetUInt(   "max_chain_depth", 10 );
+					bool         biased        = bag.GetBool(   "biased",          true );
 
 					return pJob.AddSMSShaderOp( name.c_str(), maxIterations, threshold, maxChainDepth, biased );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sms_shaderop"; cd.category = ChunkCategory::ShaderOp;
@@ -6363,8 +4120,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "max_iterations";   p.kind = ValueKind::UInt;   p.description = "Newton iterations"; p.defaultValueHint = "20"; }
 						{ auto& p = P(); p.name = "threshold";        p.kind = ValueKind::Double; p.description = "Convergence threshold"; p.defaultValueHint = "1e-5"; }
-						{ auto& p = P(); p.name = "max_chain_depth";  p.kind = ValueKind::UInt;   p.description = "Max manifold-chain depth"; p.defaultValueHint = "2"; }
-						{ auto& p = P(); p.name = "biased";           p.kind = ValueKind::Bool;   p.description = "Biased SMS estimator"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "max_chain_depth";  p.kind = ValueKind::UInt;   p.description = "Max manifold-chain depth"; p.defaultValueHint = "10"; }
+						{ auto& p = P(); p.name = "biased";           p.kind = ValueKind::Bool;   p.description = "Biased SMS estimator"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -6373,71 +4130,37 @@ namespace RISE
 
 			struct DistributionTracingShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					unsigned int samples = 16;
-					bool irradiancecaching = false;
-					bool forcecheckemitters = false;
-					bool reflections = true;
-					bool refractions = true;
-					bool diffuse = true;
-					bool translucents = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "samples" ) {
-							samples = pvalue.toUInt();
-						} else if( pname == "irradiance_caching" ) {
-							irradiancecaching = pvalue.toBoolean();
-						} else if( pname == "force_check_emitters" ) {
-							forcecheckemitters = pvalue.toBoolean();
-						} else if( pname == "reflections" ) {
-							reflections = pvalue.toBoolean();
-						} else if( pname == "refractions" ) {
-							refractions = pvalue.toBoolean();
-						} else if( pname == "diffuse" ) {
-							diffuse = pvalue.toBoolean();
-						} else if( pname == "translucents" ) {
-							translucents = pvalue.toBoolean();
-						} else if( pname == "branch" ) {
-							// Legacy: retired in favor of branching_threshold
-							// on the rasterizer chunk.  Silently ignored.
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string  name               = bag.GetString( "name",                 "noname" );
+					unsigned int samples            = bag.GetUInt(   "samples",              16 );
+					bool         irradiancecaching  = bag.GetBool(   "irradiance_caching",   false );
+					bool         forcecheckemitters = bag.GetBool(   "force_check_emitters", false );
+					bool         reflections        = bag.GetBool(   "reflections",          true );
+					bool         refractions        = bag.GetBool(   "refractions",          true );
+					bool         diffuse            = bag.GetBool(   "diffuse",              true );
+					bool         translucents       = bag.GetBool(   "translucents",         true );
 
 					return pJob.AddDistributionTracingShaderOp( name.c_str(), samples, irradiancecaching, forcecheckemitters, reflections, refractions, diffuse, translucents );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "distributiontracing_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Distribution ray tracing shader op.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                 p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "samples";              p.kind = ValueKind::UInt;   p.description = "Samples per hit"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "samples";              p.kind = ValueKind::UInt;   p.description = "Samples per hit"; p.defaultValueHint = "16"; }
 						{ auto& p = P(); p.name = "irradiance_caching";   p.kind = ValueKind::Bool;   p.description = "Enable irradiance caching"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "force_check_emitters"; p.kind = ValueKind::Bool;   p.description = "Force emitter visibility checks"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "reflections";          p.kind = ValueKind::Bool;   p.description = "Trace reflection rays"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "refractions";          p.kind = ValueKind::Bool;   p.description = "Trace refraction rays"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "diffuse";              p.kind = ValueKind::Bool;   p.description = "Trace diffuse-reflection rays"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "translucents";         p.kind = ValueKind::Bool;   p.description = "Trace translucent rays"; p.defaultValueHint = "TRUE"; }
+						// Legacy parameter — accepted for backwards compat, silently ignored.
+						// `branch` was retired in favor of `branching_threshold` on the rasterizer chunk.
+						{ auto& p = P(); p.name = "branch";               p.kind = ValueKind::Bool;   p.description = "Legacy — ignored"; }
 						return cd;
 					}();
 					return d;
@@ -6446,69 +4169,44 @@ namespace RISE
 
 			struct FinalGatherShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string  name = bag.GetString( "name", "noname" );
+
 					unsigned int thetasamples = 15;
-					unsigned int phisamples = (unsigned int)(Scalar(thetasamples)*PI);
-					bool cachegradients = true;
-					unsigned int min_effective_contributors = 2;
-					double high_variation_reuse_scale = 0.25;
-					bool cache = true;
+					unsigned int phisamples   = (unsigned int)(Scalar(thetasamples)*PI);
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "phi_samples" ) {
-							phisamples = pvalue.toUInt();
-						} else if( pname == "theta_samples" ) {
-							thetasamples = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							const unsigned int samples = pvalue.toUInt();
-							const Scalar base = sqrt(Scalar(samples)/PI);
-							thetasamples = static_cast<unsigned int>( base );
-							phisamples = static_cast<unsigned int>( PI*base );
-						} else if( pname == "cachegradients" ) {
-							cachegradients = pvalue.toBoolean();
-						} else if( pname == "min_effective_contributors" ) {
-							min_effective_contributors = pvalue.toUInt();
-						} else if( pname == "high_variation_reuse_scale" ) {
-							high_variation_reuse_scale = pvalue.toDouble();
-						} else if( pname == "cache" ) {
-							cache = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("theta_samples") ) thetasamples = bag.GetUInt("theta_samples");
+					if( bag.Has("phi_samples") )   phisamples   = bag.GetUInt("phi_samples");
+					if( bag.Has("samples") ) {
+						const unsigned int samples = bag.GetUInt("samples");
+						const Scalar base = sqrt(Scalar(samples)/PI);
+						thetasamples = static_cast<unsigned int>( base );
+						phisamples   = static_cast<unsigned int>( PI*base );
 					}
+
+					bool         cachegradients              = bag.GetBool(   "cachegradients",             true );
+					unsigned int min_effective_contributors  = bag.GetUInt(   "min_effective_contributors", 2 );
+					double       high_variation_reuse_scale  = bag.GetDouble( "high_variation_reuse_scale", 0.25 );
+					bool         cache                       = bag.GetBool(   "cache",                      true );
 
 					return pJob.AddFinalGatherShaderOp( name.c_str(), thetasamples, phisamples, cachegradients, min_effective_contributors, high_variation_reuse_scale, cache );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "finalgather_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Irradiance-cache final-gather shader op.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";                        p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "thetasamples";                p.kind = ValueKind::UInt;   p.description = "Theta (elevation) samples"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "phisamples";                  p.kind = ValueKind::UInt;   p.description = "Phi (azimuth) samples"; p.defaultValueHint = "16"; }
+						{ auto& p = P(); p.name = "theta_samples";               p.kind = ValueKind::UInt;   p.description = "Theta (elevation) samples"; p.defaultValueHint = "15"; }
+						{ auto& p = P(); p.name = "phi_samples";                 p.kind = ValueKind::UInt;   p.description = "Phi (azimuth) samples"; p.defaultValueHint = "47"; }
+						{ auto& p = P(); p.name = "samples";                     p.kind = ValueKind::UInt;   p.description = "Total samples — derives theta and phi automatically"; }
 						{ auto& p = P(); p.name = "cachegradients";              p.kind = ValueKind::Bool;   p.description = "Cache irradiance gradients"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "min_effective_contributors";  p.kind = ValueKind::UInt;   p.description = "Min contributors for reuse"; p.defaultValueHint = "3"; }
-						{ auto& p = P(); p.name = "high_variation_reuse_scale";  p.kind = ValueKind::Double; p.description = "Reuse-scale for high-variation regions"; p.defaultValueHint = "2.0"; }
-						{ auto& p = P(); p.name = "cache";                       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::IrradianceCache}; p.description = "Irradiance cache"; }
+						{ auto& p = P(); p.name = "min_effective_contributors";  p.kind = ValueKind::UInt;   p.description = "Min contributors for reuse"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "high_variation_reuse_scale";  p.kind = ValueKind::Double; p.description = "Reuse-scale for high-variation regions"; p.defaultValueHint = "0.25"; }
+						{ auto& p = P(); p.name = "cache";                       p.kind = ValueKind::Bool;   p.description = "Use irradiance cache"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -6518,60 +4216,39 @@ namespace RISE
 
 			struct AmbientOcclusionShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name = bag.GetString( "name", "noname" );
+
 					unsigned int numtheta = 5;
-					unsigned int numphi = 15;
-					bool multiplybrdf = true;
-					bool irradiance_cache = false;
+					unsigned int numphi   = 15;
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "numtheta" ) {
-							numtheta = pvalue.toUInt();
-						} else if( pname == "numphi" ) {
-							numphi = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							const unsigned int samples = pvalue.toUInt();
-							const Scalar base = sqrt(Scalar(samples)/PI);
-							numtheta = static_cast<unsigned int>( base );
-							numphi = static_cast<unsigned int>( PI*base );
-						} else if( pname == "multiplybrdf" ) {
-							multiplybrdf = pvalue.toBoolean();
-						} else if( pname == "irradiance_cache" ) {
-							irradiance_cache = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("numtheta") ) numtheta = bag.GetUInt("numtheta");
+					if( bag.Has("numphi") )   numphi   = bag.GetUInt("numphi");
+					if( bag.Has("samples") ) {
+						const unsigned int samples = bag.GetUInt("samples");
+						const Scalar base = sqrt(Scalar(samples)/PI);
+						numtheta = static_cast<unsigned int>( base );
+						numphi   = static_cast<unsigned int>( PI*base );
 					}
+
+					bool multiplybrdf     = bag.GetBool( "multiplybrdf",     true );
+					bool irradiance_cache = bag.GetBool( "irradiance_cache", false );
 
 					return pJob.AddAmbientOcclusionShaderOp( name.c_str(), numtheta, numphi, multiplybrdf, irradiance_cache );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ambientocclusion_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Screen-space / hemisphere ambient occlusion.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "numtheta";         p.kind = ValueKind::UInt;   p.description = "Elevation samples"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "numphi";           p.kind = ValueKind::UInt;   p.description = "Azimuth samples"; p.defaultValueHint = "16"; }
-						{ auto& p = P(); p.name = "multiplybrdf";     p.kind = ValueKind::Bool;   p.description = "Multiply by surface BRDF"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "numtheta";         p.kind = ValueKind::UInt;   p.description = "Elevation samples"; p.defaultValueHint = "5"; }
+						{ auto& p = P(); p.name = "numphi";           p.kind = ValueKind::UInt;   p.description = "Azimuth samples"; p.defaultValueHint = "15"; }
+						{ auto& p = P(); p.name = "samples";          p.kind = ValueKind::UInt;   p.description = "Total samples — derives numtheta and numphi automatically"; }
+						{ auto& p = P(); p.name = "multiplybrdf";     p.kind = ValueKind::Bool;   p.description = "Multiply by surface BRDF"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "irradiance_cache"; p.kind = ValueKind::Bool;   p.description = "Use irradiance cache"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -6581,45 +4258,15 @@ namespace RISE
 
 			struct DirectLightingShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String bsdf = "none";
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "bsdf" ) {
-							bsdf = pvalue;
-						} else if( pname == "nonmeshlights" ||
-								   pname == "meshlights" ||
-								   pname == "cache" ) {
-							// Legacy parameters — silently ignored.
-							// The unified LightSampler now handles both
-							// analytic and mesh lights through one path,
-							// and `cache` was never correct with the
-							// stochastic sampler.
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name = bag.GetString( "name", "noname" );
+					std::string bsdf = bag.GetString( "bsdf", "none" );
 
 					return pJob.AddDirectLightingShaderOp( name.c_str(), bsdf=="none"?0:bsdf.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "directlighting_shaderop"; cd.category = ChunkCategory::ShaderOp;
@@ -6627,6 +4274,12 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "bsdf"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.description = "Override BSDF"; }
+						// Legacy parameters — accepted for backwards compat, silently ignored.
+						// The unified LightSampler now handles both analytic and mesh lights through
+						// one path, and `cache` was never correct with the stochastic sampler.
+						{ auto& p = P(); p.name = "nonmeshlights"; p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "meshlights";    p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
+						{ auto& p = P(); p.name = "cache";         p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
 						return cd;
 					}();
 					return d;
@@ -6635,88 +4288,45 @@ namespace RISE
 
 			struct SimpleSubSurfaceScatteringShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					unsigned int numpoints = 1000;
-					double error = 0.001;
-					unsigned int maxPointsPerNode = 40;
-					unsigned char maxDepth = 8;
-					double irrad_scale = 1.0;
-					double geometric_scale = 1.0;
-					bool multiplyBSDF = false;
-					bool regenerate = true;
-					String shader = "none";
-					bool cache = true;
-					bool low_discrepancy = true;
-					double extinction[3] = {0.02, 0.03, 0.09};
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "numpoints" ) {
-							numpoints = pvalue.toUInt();
-						} else if( pname == "error" ) {
-							error = pvalue.toDouble();
-						} else if( pname == "maxpointspernode" ) {
-							maxPointsPerNode = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxDepth = pvalue.toUChar();
-						} else if( pname == "irrad_scale" ) {
-							irrad_scale = pvalue.toDouble();
-						} else if( pname == "geometric_scale" ) {
-							geometric_scale = pvalue.toDouble();
-						} else if( pname == "multiplybsdf" ) {
-							multiplyBSDF = pvalue.toBoolean();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else if( pname == "shader" ) {
-							shader = pvalue;
-						} else if( pname == "cache" ) {
-							cache = pvalue.toBoolean();
-						} else if( pname == "low_discrepancy" ) {
-							low_discrepancy = pvalue.toBoolean();
-						} else if( pname == "extinction" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &extinction[0], &extinction[1], &extinction[2] );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string  name             = bag.GetString( "name",             "noname" );
+					unsigned int numpoints        = bag.GetUInt(   "numpoints",        1000 );
+					double       error            = bag.GetDouble( "error",            0.001 );
+					unsigned int maxPointsPerNode = bag.GetUInt(   "maxpointspernode", 40 );
+					unsigned char maxDepth        = static_cast<unsigned char>( bag.GetUInt( "maxdepth", 8 ) );
+					double       irrad_scale      = bag.GetDouble( "irrad_scale",      1.0 );
+					double       geometric_scale  = bag.GetDouble( "geometric_scale",  1.0 );
+					bool         multiplyBSDF     = bag.GetBool(   "multiplybsdf",     false );
+					bool         regenerate       = bag.GetBool(   "regenerate",       true );
+					std::string  shader           = bag.GetString( "shader",           "none" );
+					bool         cache            = bag.GetBool(   "cache",            true );
+					bool         low_discrepancy  = bag.GetBool(   "low_discrepancy",  true );
+					double       extinction[3]   = {0.02, 0.03, 0.09};
+					bag.GetVec3( "extinction", extinction );
 
 					return pJob.AddSimpleSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, extinction );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "simple_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Simple point-cloud subsurface scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "numpoints";           p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "20000"; }
-						{ auto& p = P(); p.name = "error";               p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.1"; }
-						{ auto& p = P(); p.name = "max_points_per_node"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_depth";           p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "irrad_scale";         p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "geometric_scale";     p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "multiplybsdf";        p.kind = ValueKind::Bool;   p.description = "Multiply result by BSDF"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "regenerate";          p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "shader";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
-						{ auto& p = P(); p.name = "cache";               p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "low_discrepancy";     p.kind = ValueKind::Bool;   p.description = "Use low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "extinction";          p.kind = ValueKind::DoubleVec3; p.description = "Extinction coefficient"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";        p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "1000"; }
+						{ auto& p = P(); p.name = "error";            p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.001"; }
+						{ auto& p = P(); p.name = "maxpointspernode"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "40"; }
+						{ auto& p = P(); p.name = "maxdepth";         p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "irrad_scale";      p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "geometric_scale";  p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiplybsdf";     p.kind = ValueKind::Bool;   p.description = "Multiply result by BSDF"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "regenerate";       p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
+						{ auto& p = P(); p.name = "cache";            p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "low_discrepancy";  p.kind = ValueKind::Bool;   p.description = "Use low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "extinction";       p.kind = ValueKind::DoubleVec3; p.description = "Extinction coefficient"; p.defaultValueHint = "0.02 0.03 0.09"; }
 						return cd;
 					}();
 					return d;
@@ -6725,100 +4335,52 @@ namespace RISE
 
 			struct DiffusionApproximationSubSurfaceScatteringShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					unsigned int numpoints = 1000;
-					double error = 0.001;
-					unsigned int maxPointsPerNode = 40;
-					unsigned char maxDepth = 8;
-					double irrad_scale = 1.0;
-					double geometric_scale = 1.0;
-					bool multiplyBSDF = false;
-					bool regenerate = true;
-					String shader = "none";
-					bool cache = true;
-					bool low_discrepancy = true;
-					double scattering[3] = {2.19, 2.62, 3.0};
-					double absorption[3] = {0.0021, 0.0041, 0.0071};
-					double ior = 1.3;
-					double g = 0.8;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "numpoints" ) {
-							numpoints = pvalue.toUInt();
-						} else if( pname == "error" ) {
-							error = pvalue.toDouble();
-						} else if( pname == "maxpointspernode" ) {
-							maxPointsPerNode = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxDepth = pvalue.toUChar();
-						} else if( pname == "irrad_scale" ) {
-							irrad_scale = pvalue.toDouble();
-						} else if( pname == "geometric_scale" ) {
-							geometric_scale = pvalue.toDouble();
-						} else if( pname == "multiplybsdf" ) {
-							multiplyBSDF = pvalue.toBoolean();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else if( pname == "shader" ) {
-							shader = pvalue;
-						} else if( pname == "cache" ) {
-							cache = pvalue.toBoolean();
-						} else if( pname == "low_discrepancy" ) {
-							low_discrepancy = pvalue.toBoolean();
-						} else if( pname == "scattering" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &scattering[0], &scattering[1], &scattering[2] );
-						} else if( pname == "absorption" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &absorption[0], &absorption[1], &absorption[2] );
-						} else if( pname == "ior" ) {
-							ior = pvalue.toDouble();
-						} else if( pname == "g" ) {
-							g = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string  name             = bag.GetString( "name",             "noname" );
+					unsigned int numpoints        = bag.GetUInt(   "numpoints",        1000 );
+					double       error            = bag.GetDouble( "error",            0.001 );
+					unsigned int maxPointsPerNode = bag.GetUInt(   "maxpointspernode", 40 );
+					unsigned char maxDepth        = static_cast<unsigned char>( bag.GetUInt( "maxdepth", 8 ) );
+					double       irrad_scale      = bag.GetDouble( "irrad_scale",      1.0 );
+					double       geometric_scale  = bag.GetDouble( "geometric_scale",  1.0 );
+					bool         multiplyBSDF     = bag.GetBool(   "multiplybsdf",     false );
+					bool         regenerate       = bag.GetBool(   "regenerate",       true );
+					std::string  shader           = bag.GetString( "shader",           "none" );
+					bool         cache            = bag.GetBool(   "cache",            true );
+					bool         low_discrepancy  = bag.GetBool(   "low_discrepancy",  true );
+					double       scattering[3]   = {2.19, 2.62, 3.0};
+					double       absorption[3]   = {0.0021, 0.0041, 0.0071};
+					bag.GetVec3( "scattering", scattering );
+					bag.GetVec3( "absorption", absorption );
+					double       ior              = bag.GetDouble( "ior",              1.3 );
+					double       g                = bag.GetDouble( "g",                0.8 );
 
 					return pJob.AddDiffusionApproximationSubSurfaceScatteringShaderOp( name.c_str(), numpoints, error, maxPointsPerNode, maxDepth, irrad_scale, geometric_scale, multiplyBSDF, regenerate, shader.c_str(), cache, low_discrepancy, scattering, absorption, ior, g );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "diffusion_approximation_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Diffusion-approximation point-cloud SSS (Jensen et al.).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "numpoints";           p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "20000"; }
-						{ auto& p = P(); p.name = "error";               p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.1"; }
-						{ auto& p = P(); p.name = "max_points_per_node"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_depth";           p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "irrad_scale";         p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "geometric_scale";     p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "multiplybsdf";        p.kind = ValueKind::Bool;   p.description = "Multiply by BSDF"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "regenerate";          p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "shader";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
-						{ auto& p = P(); p.name = "cache";               p.kind = ValueKind::Bool;   p.description = "Cache irradiances"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "low_discrepancy";     p.kind = ValueKind::Bool;   p.description = "Low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "scattering";          p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient"; }
-						{ auto& p = P(); p.name = "absorption";          p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient"; }
-						{ auto& p = P(); p.name = "ior";                 p.kind = ValueKind::Double; p.description = "Index of refraction"; p.defaultValueHint = "1.5"; }
-						{ auto& p = P(); p.name = "g";                   p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";        p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "1000"; }
+						{ auto& p = P(); p.name = "error";            p.kind = ValueKind::Double; p.description = "Octree error threshold"; p.defaultValueHint = "0.001"; }
+						{ auto& p = P(); p.name = "maxpointspernode"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "40"; }
+						{ auto& p = P(); p.name = "maxdepth";         p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "irrad_scale";      p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "geometric_scale";  p.kind = ValueKind::Double; p.description = "Geometric scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiplybsdf";     p.kind = ValueKind::Bool;   p.description = "Multiply by BSDF"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "regenerate";       p.kind = ValueKind::Bool;   p.description = "Re-build cache each frame"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Sample-irradiance shader"; }
+						{ auto& p = P(); p.name = "cache";            p.kind = ValueKind::Bool;   p.description = "Cache irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "low_discrepancy";  p.kind = ValueKind::Bool;   p.description = "Low-discrepancy sampling"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "scattering";       p.kind = ValueKind::DoubleVec3; p.description = "Scattering coefficient"; p.defaultValueHint = "2.19 2.62 3.0"; }
+						{ auto& p = P(); p.name = "absorption";       p.kind = ValueKind::DoubleVec3; p.description = "Absorption coefficient"; p.defaultValueHint = "0.0021 0.0041 0.0071"; }
+						{ auto& p = P(); p.name = "ior";              p.kind = ValueKind::Double; p.description = "Index of refraction"; p.defaultValueHint = "1.3"; }
+						{ auto& p = P(); p.name = "g";                p.kind = ValueKind::Double; p.description = "Henyey-Greenstein g"; p.defaultValueHint = "0.8"; }
 						return cd;
 					}();
 					return d;
@@ -6827,82 +4389,30 @@ namespace RISE
 
 			struct DonnerJensenSkinSSSShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String name = "noname";
-					unsigned int numpoints = 10000;
-					double error = 0.001;
-					unsigned int maxPointsPerNode = 40;
-					unsigned char maxDepth = 8;
-					double irrad_scale = 1.0;
-					String shader = "none";
-					bool cache = true;
-					double melanin_fraction = 0.02;
-					double melanin_blend = 0.5;
-					double hemoglobin_epidermis = 0.002;
-					double carotene_fraction = 0.001;
-					double hemoglobin_dermis = 0.005;
-					double epidermis_thickness = 0.025;
-					double ior_epidermis = 1.4;
-					double ior_dermis = 1.38;
-					double blood_oxygenation = 0.7;
-					String melanin_fraction_offset = "";
-					String hemoglobin_epidermis_offset = "";
-					String hemoglobin_dermis_offset = "";
+					std::string  name             = bag.GetString( "name",             "noname" );
+					unsigned int numpoints        = bag.GetUInt(   "numpoints",        10000 );
+					double       error            = bag.GetDouble( "error",            0.001 );
+					unsigned int maxPointsPerNode = bag.GetUInt(   "maxpointspernode", 40 );
+					unsigned char maxDepth        = static_cast<unsigned char>( bag.GetUInt( "maxdepth", 8 ) );
+					double       irrad_scale      = bag.GetDouble( "irrad_scale",      1.0 );
+					std::string  shader           = bag.GetString( "shader",           "none" );
+					bool         cache            = bag.GetBool(   "cache",            true );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
+					double melanin_fraction     = bag.GetDouble( "melanin_fraction",     0.02 );
+					double melanin_blend        = bag.GetDouble( "melanin_blend",        0.5 );
+					double hemoglobin_epidermis = bag.GetDouble( "hemoglobin_epidermis", 0.002 );
+					double carotene_fraction    = bag.GetDouble( "carotene_fraction",    0.001 );
+					double hemoglobin_dermis    = bag.GetDouble( "hemoglobin_dermis",    0.005 );
+					double epidermis_thickness  = bag.GetDouble( "epidermis_thickness",  0.025 );
+					double ior_epidermis        = bag.GetDouble( "ior_epidermis",        1.4 );
+					double ior_dermis           = bag.GetDouble( "ior_dermis",           1.38 );
+					double blood_oxygenation    = bag.GetDouble( "blood_oxygenation",    0.7 );
 
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "numpoints" ) {
-							numpoints = pvalue.toUInt();
-						} else if( pname == "error" ) {
-							error = pvalue.toDouble();
-						} else if( pname == "maxpointspernode" ) {
-							maxPointsPerNode = pvalue.toUInt();
-						} else if( pname == "maxdepth" ) {
-							maxDepth = pvalue.toUChar();
-						} else if( pname == "irrad_scale" ) {
-							irrad_scale = pvalue.toDouble();
-						} else if( pname == "shader" ) {
-							shader = pvalue;
-						} else if( pname == "cache" ) {
-							cache = pvalue.toBoolean();
-						} else if( pname == "melanin_fraction" ) {
-							melanin_fraction = pvalue.toDouble();
-						} else if( pname == "melanin_blend" ) {
-							melanin_blend = pvalue.toDouble();
-						} else if( pname == "hemoglobin_epidermis" ) {
-							hemoglobin_epidermis = pvalue.toDouble();
-						} else if( pname == "carotene_fraction" ) {
-							carotene_fraction = pvalue.toDouble();
-						} else if( pname == "hemoglobin_dermis" ) {
-							hemoglobin_dermis = pvalue.toDouble();
-						} else if( pname == "epidermis_thickness" ) {
-							epidermis_thickness = pvalue.toDouble();
-						} else if( pname == "ior_epidermis" ) {
-							ior_epidermis = pvalue.toDouble();
-						} else if( pname == "ior_dermis" ) {
-							ior_dermis = pvalue.toDouble();
-						} else if( pname == "blood_oxygenation" ) {
-							blood_oxygenation = pvalue.toDouble();
-						} else if( pname == "melanin_fraction_offset" ) {
-							melanin_fraction_offset = pvalue;
-						} else if( pname == "hemoglobin_epidermis_offset" ) {
-							hemoglobin_epidermis_offset = pvalue;
-						} else if( pname == "hemoglobin_dermis_offset" ) {
-							hemoglobin_dermis_offset = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string melanin_fraction_offset     = bag.GetString( "melanin_fraction_offset",     "" );
+					std::string hemoglobin_epidermis_offset = bag.GetString( "hemoglobin_epidermis_offset", "" );
+					std::string hemoglobin_dermis_offset    = bag.GetString( "hemoglobin_dermis_offset",    "" );
 
 					return pJob.AddDonnerJensenSkinSSSShaderOp( name.c_str(),
 						numpoints, error, maxPointsPerNode, maxDepth, irrad_scale,
@@ -6915,7 +4425,7 @@ namespace RISE
 						hemoglobin_dermis_offset.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "donner_jensen_skin_sss_shaderop"; cd.category = ChunkCategory::ShaderOp;
@@ -6925,14 +4435,14 @@ namespace RISE
 							"melanin_fraction","melanin_blend","hemoglobin_epidermis","carotene_fraction",
 							"hemoglobin_dermis","epidermis_thickness","ior_epidermis","ior_dermis","blood_oxygenation"
 						};
-						{ auto& p = P(); p.name = "name";                p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "numpoints";           p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "20000"; }
-						{ auto& p = P(); p.name = "error";               p.kind = ValueKind::Double; p.description = "Octree error"; p.defaultValueHint = "0.1"; }
-						{ auto& p = P(); p.name = "max_points_per_node"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_depth";           p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "irrad_scale";         p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "shader";              p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Irradiance-gather shader"; }
-						{ auto& p = P(); p.name = "cache";               p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "numpoints";        p.kind = ValueKind::UInt;   p.description = "Sample points per object"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "error";            p.kind = ValueKind::Double; p.description = "Octree error"; p.defaultValueHint = "0.001"; }
+						{ auto& p = P(); p.name = "maxpointspernode"; p.kind = ValueKind::UInt;   p.description = "Octree leaf capacity"; p.defaultValueHint = "40"; }
+						{ auto& p = P(); p.name = "maxdepth";         p.kind = ValueKind::UInt;   p.description = "Octree depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "irrad_scale";      p.kind = ValueKind::Double; p.description = "Irradiance scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Irradiance-gather shader"; }
+						{ auto& p = P(); p.name = "cache";            p.kind = ValueKind::Bool;   p.description = "Cache sample irradiances"; p.defaultValueHint = "TRUE"; }
 						for (const char* n : doubles) {
 							auto& p = P(); p.name = n; p.kind = ValueKind::Double; p.description = "Donner-Jensen skin parameter";
 						}
@@ -6947,85 +4457,52 @@ namespace RISE
 
 			struct AreaLightShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					double width = 1.0;
-					double height = 1.0;
-					double location[3] = {0, 10, 0};
-					double dir[3] = {0, -1, 0};
-					unsigned int samples = 9;
-					String emm = "color_white";
-					Scalar power = 1.0;
-					String N = "1.0";
-					Scalar hotspot = PI;
-					bool cache = false;
+					std::string  name     = bag.GetString( "name",   "noname" );
+					double       width    = bag.GetDouble( "width",  1.0 );
+					double       height   = bag.GetDouble( "height", 1.0 );
+					double       location[3] = {0, 10, 0};
+					double       dir[3]      = {0, -1, 0};
+					bag.GetVec3( "location", location );
+					bag.GetVec3( "dir",      dir );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "width" ) {
-							width = pvalue.toDouble();
-						} else if( pname == "height" ) {
-							height = pvalue.toDouble();
-						} else if( pname == "location" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &location[0], &location[1], &location[2] );
-						} else if( pname == "dir" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &dir[0], &dir[1], &dir[2] );
-						} else if( pname == "make_dir" ) {
-							double target[3] = {0,0,0};
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &target[0], &target[1], &target[2] );
-							dir[0] = target[0] - location[0];
-							dir[1] = target[1] - location[1];
-							dir[2] = target[2] - location[2];
-						} else if( pname == "samples" ) {
-							samples = pvalue.toUInt();
-						} else if( pname == "emission" ) {
-							emm = pvalue;
-						} else if( pname == "power" ) {
-							power = pvalue.toDouble();
-						} else if( pname == "N" ) {
-							N = pvalue;
-						} else if( pname == "cache" ) {
-							cache = pvalue.toBoolean();
-						} else if( pname == "hotspot" ) {
-							hotspot = pvalue.toDouble() * DEG_TO_RAD;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					// `make_dir` derives `dir` from a target point relative to location
+					if( bag.Has("make_dir") ) {
+						double target[3] = {0,0,0};
+						bag.GetVec3( "make_dir", target );
+						dir[0] = target[0] - location[0];
+						dir[1] = target[1] - location[1];
+						dir[2] = target[2] - location[2];
 					}
+
+					unsigned int samples = bag.GetUInt(   "samples",  9 );
+					std::string  emm     = bag.GetString( "emission", "color_white" );
+					Scalar       power   = bag.GetDouble( "power",    1.0 );
+					std::string  N       = bag.GetString( "N",        "1.0" );
+					Scalar       hotspot = bag.Has("hotspot") ? bag.GetDouble("hotspot") * DEG_TO_RAD : PI;
+					bool         cache   = bag.GetBool(   "cache",    false );
 
 					return pJob.AddAreaLightShaderOp( name.c_str(), width, height, location, dir, samples, emm.c_str(), power, N.c_str(), hotspot, cache );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "arealight_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Area-light shader op (direct sampling of an emitting rectangle).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "width";    p.kind = ValueKind::Double;     p.description = "Rectangle width"; }
-						{ auto& p = P(); p.name = "height";   p.kind = ValueKind::Double;     p.description = "Rectangle height"; }
-						{ auto& p = P(); p.name = "location"; p.kind = ValueKind::DoubleVec3; p.description = "World-space center"; }
-						{ auto& p = P(); p.name = "dir";      p.kind = ValueKind::DoubleVec3; p.description = "Rectangle normal"; }
-						{ auto& p = P(); p.name = "samples";  p.kind = ValueKind::UInt;       p.description = "Samples per shade"; p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "emmision"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emission colour"; }
+						{ auto& p = P(); p.name = "width";    p.kind = ValueKind::Double;     p.description = "Rectangle width"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "height";   p.kind = ValueKind::Double;     p.description = "Rectangle height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "location"; p.kind = ValueKind::DoubleVec3; p.description = "World-space center"; p.defaultValueHint = "0 10 0"; }
+						{ auto& p = P(); p.name = "dir";      p.kind = ValueKind::DoubleVec3; p.description = "Rectangle normal"; p.defaultValueHint = "0 -1 0"; }
+						{ auto& p = P(); p.name = "make_dir"; p.kind = ValueKind::DoubleVec3; p.description = "Derive dir from target = make_dir - location"; }
+						{ auto& p = P(); p.name = "samples";  p.kind = ValueKind::UInt;       p.description = "Samples per shade"; p.defaultValueHint = "9"; }
+						{ auto& p = P(); p.name = "emission"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emission colour"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "power";    p.kind = ValueKind::Double;     p.description = "Radiant power"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality exponent"; }
-						{ auto& p = P(); p.name = "hotspot";  p.kind = ValueKind::Bool;       p.description = "Visualize hotspot"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality exponent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "hotspot";  p.kind = ValueKind::Double;     p.description = "Hotspot half-angle (degrees)"; p.defaultValueHint = "180"; }
 						{ auto& p = P(); p.name = "cache";    p.kind = ValueKind::Bool;       p.description = "Cache direct-light estimate"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -7035,47 +4512,23 @@ namespace RISE
 
 			struct TransparencyShaderOpAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String trans = "color_white";
-					bool one_sided = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "transparency" ) {
-							trans = pvalue;
-						} else if( pname == "one_sided" ) {
-							one_sided = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					std::string name      = bag.GetString( "name",         "noname" );
+					std::string trans     = bag.GetString( "transparency", "color_white" );
+					bool        one_sided = bag.GetBool(   "one_sided",    false );
 
 					return pJob.AddTransparencyShaderOp( name.c_str(), trans.c_str(), one_sided );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "transparency_shaderop"; cd.category = ChunkCategory::ShaderOp;
 						cd.description = "Alpha-transparency shader op.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; }
+						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "one_sided";    p.kind = ValueKind::Bool;      p.description = "Transparent from one side only"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -7089,34 +4542,13 @@ namespace RISE
 
 			struct StandardShaderAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					std::vector<String> shaderops;
+					std::string name = bag.GetString( "name", "noname" );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "shaderop" ) {
-							shaderops.push_back( pvalue );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
-
+					const std::vector<std::string>& shaderops = bag.GetRepeatable( "shaderop" );
 					const unsigned int num = static_cast<unsigned int>(shaderops.size());
+
 					char* shmem = new char[num*256];
 					memset( shmem, 0, num*256 );
 					char** shops = new char*[num];
@@ -7134,7 +4566,7 @@ namespace RISE
 					return bRet;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "standard_shader"; cd.category = ChunkCategory::Shader;
@@ -7150,40 +4582,25 @@ namespace RISE
 
 			struct AdvancedShaderAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
+					std::string name = bag.GetString( "name", "noname" );
+
 					std::vector<String> shaderops;
 					std::vector<unsigned int> mins, maxs;
 					std::vector<char> operations;
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "shaderop" ) {
-							char buf[256] = {0};
-							unsigned int min=1, max=10000;
-							char operation = '+';
-							sscanf( pvalue.c_str(), "%s %u %u %c", buf, &min, &max, &operation );
-							shaderops.push_back( String(buf) );
-							mins.push_back( min );
-							maxs.push_back( max );
-							operations.push_back( operation );
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					// Repeatable composite tokens: "<shaderop-name> <min-depth> <max-depth> <op>"
+					const std::vector<std::string>& sops = bag.GetRepeatable( "shaderop" );
+					for( size_t k = 0; k < sops.size(); ++k ) {
+						char buf[256] = {0};
+						unsigned int min=1, max=10000;
+						char operation = '+';
+						sscanf( sops[k].c_str(), "%s %u %u %c", buf, &min, &max, &operation );
+						shaderops.push_back( String(buf) );
+						mins.push_back( min );
+						maxs.push_back( max );
+						operations.push_back( operation );
 					}
 
 					const unsigned int num = static_cast<unsigned int>(shaderops.size());
@@ -7204,7 +4621,7 @@ namespace RISE
 					return bRet;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "advanced_shader"; cd.category = ChunkCategory::Shader;
@@ -7220,94 +4637,46 @@ namespace RISE
 
 			struct DirectVolumeRenderingShaderAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String szVolumeFilePattern = "";
-					String iso_shader = "none";
-					unsigned int width = 0;
-					unsigned int height = 0;
-					unsigned int startz = 0;
-					unsigned int endz = 0;
-					char accessor = 'n';
-					char gradient = 'i';
-					char composite = 'c';
-					double dThresholdStart = 0.4;
-					double dThresholdEnd = 1.0;
-					char sampler = 'u';
-					unsigned int samples = 50;
-					String transfer_red = "none";
-					String transfer_green = "none";
-					String transfer_blue = "none";
-					String transfer_alpha = "none";
+					std::string  name              = bag.GetString( "name",            "noname" );
+					std::string  szVolumeFilePattern = bag.GetString( "file_pattern",  "" );
+					std::string  iso_shader        = bag.GetString( "iso_shader",      "none" );
+					unsigned int width             = bag.GetUInt(   "width",           0 );
+					unsigned int height            = bag.GetUInt(   "height",          0 );
+					unsigned int startz            = bag.GetUInt(   "startz",          0 );
+					unsigned int endz              = bag.GetUInt(   "endz",            0 );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
+					std::string accessorS  = bag.GetString( "accessor",  "n" );
+					std::string gradientS  = bag.GetString( "gradient",  "i" );
+					std::string compositeS = bag.GetString( "composite", "c" );
+					std::string samplerS   = bag.GetString( "sampler",   "u" );
+					char accessor  = accessorS.empty()  ? 'n' : (char)tolower( accessorS[0] );
+					char gradient  = gradientS.empty()  ? 'i' : (char)tolower( gradientS[0] );
+					char composite = compositeS.empty() ? 'c' : (char)tolower( compositeS[0] );
+					char sampler   = samplerS.empty()   ? 'u' : (char)tolower( samplerS[0] );
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file_pattern" ) {
-							szVolumeFilePattern = pvalue;
-						} else if( pname == "width" ) {
-							width = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							height = pvalue.toUInt();
-						} else if( pname == "startz" ) {
-							startz = pvalue.toUInt();
-						} else if( pname == "endz" ) {
-							endz = pvalue.toUInt();
-						} else if( pname == "accessor" ) {
-							accessor = tolower( pvalue[0] );
-						} else if( pname == "gradient" ) {
-							gradient = tolower( pvalue[0] );
-						} else if( pname == "composite" ) {
-							composite = tolower( pvalue[0] );
-						} else if( pname == "threshold_start" ) {
-							dThresholdStart = pvalue.toDouble();
-						} else if( pname == "threshold_end" ) {
-							dThresholdEnd = pvalue.toDouble();
-						} else if( pname == "sampler" ) {
-							sampler = tolower( pvalue[0] );
-						} else if( pname == "samples" ) {
-							samples = pvalue.toUInt();
-						} else if( pname == "transfer_red" ) {
-							transfer_red = pvalue;
-						} else if( pname == "transfer_green" ) {
-							transfer_green = pvalue;
-						} else if( pname == "transfer_blue" ) {
-							transfer_blue = pvalue;
-						} else if( pname == "transfer_alpha" ) {
-							transfer_alpha = pvalue;
-						} else if( pname == "iso_shader" ) {
-							iso_shader = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double       dThresholdStart   = bag.GetDouble( "threshold_start", 0.4 );
+					double       dThresholdEnd     = bag.GetDouble( "threshold_end",   1.0 );
+					unsigned int samples           = bag.GetUInt(   "samples",         50 );
+					std::string  transfer_red      = bag.GetString( "transfer_red",    "none" );
+					std::string  transfer_green    = bag.GetString( "transfer_green",  "none" );
+					std::string  transfer_blue     = bag.GetString( "transfer_blue",   "none" );
+					std::string  transfer_alpha    = bag.GetString( "transfer_alpha",  "none" );
 
 					return pJob.AddDirectVolumeRenderingShader( name.c_str(), szVolumeFilePattern.c_str(), width, height, startz, endz,
 						accessor, gradient, composite, dThresholdStart, dThresholdEnd, sampler, samples, transfer_red.c_str(), transfer_green.c_str(), transfer_blue.c_str(), transfer_alpha.c_str(), iso_shader=="none"?0:iso_shader.c_str()
 						);
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "directvolumerendering_shader"; cd.category = ChunkCategory::Shader;
 						cd.description = "Direct volume rendering shader.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "volume_pattern";  p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
+						{ auto& p = P(); p.name = "file_pattern";    p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
 						{ auto& p = P(); p.name = "width";           p.kind = ValueKind::UInt;     p.description = "Volume width"; }
 						{ auto& p = P(); p.name = "height";          p.kind = ValueKind::UInt;     p.description = "Volume height"; }
 						{ auto& p = P(); p.name = "startz";          p.kind = ValueKind::UInt;     p.description = "Start slice index"; }
@@ -7332,88 +4701,44 @@ namespace RISE
 
 			struct SpectralDirectVolumeRenderingShaderAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String name = "noname";
-					String szVolumeFilePattern = "";
-					String iso_shader = "none";
-					unsigned int width = 0;
-					unsigned int height = 0;
-					unsigned int startz = 0;
-					unsigned int endz = 0;
-					char accessor = 'n';
-					char gradient = 'i';
-					char composite = 'c';
-					double dThresholdStart = 0.4;
-					double dThresholdEnd = 1.0;
-					char sampler = 'u';
-					unsigned int samples = 50;
-					String transfer_spectral = "none";
-					String transfer_alpha = "none";
+					std::string  name              = bag.GetString( "name",            "noname" );
+					std::string  szVolumeFilePattern = bag.GetString( "file_pattern",  "" );
+					std::string  iso_shader        = bag.GetString( "iso_shader",      "none" );
+					unsigned int width             = bag.GetUInt(   "width",           0 );
+					unsigned int height            = bag.GetUInt(   "height",          0 );
+					unsigned int startz            = bag.GetUInt(   "startz",          0 );
+					unsigned int endz              = bag.GetUInt(   "endz",            0 );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
+					std::string accessorS  = bag.GetString( "accessor",  "n" );
+					std::string gradientS  = bag.GetString( "gradient",  "i" );
+					std::string compositeS = bag.GetString( "composite", "c" );
+					std::string samplerS   = bag.GetString( "sampler",   "u" );
+					char accessor  = accessorS.empty()  ? 'n' : (char)tolower( accessorS[0] );
+					char gradient  = gradientS.empty()  ? 'i' : (char)tolower( gradientS[0] );
+					char composite = compositeS.empty() ? 'c' : (char)tolower( compositeS[0] );
+					char sampler   = samplerS.empty()   ? 'u' : (char)tolower( samplerS[0] );
 
-						// Now search the parameter value names
-						if( pname == "name" ) {
-							name = pvalue;
-						} else if( pname == "file_pattern" ) {
-							szVolumeFilePattern = pvalue;
-						} else if( pname == "width" ) {
-							width = pvalue.toUInt();
-						} else if( pname == "height" ) {
-							height = pvalue.toUInt();
-						} else if( pname == "startz" ) {
-							startz = pvalue.toUInt();
-						} else if( pname == "endz" ) {
-							endz = pvalue.toUInt();
-						} else if( pname == "accessor" ) {
-							accessor = tolower( pvalue[0] );
-						} else if( pname == "gradient" ) {
-							gradient = tolower( pvalue[0] );
-						} else if( pname == "composite" ) {
-							composite = tolower( pvalue[0] );
-						} else if( pname == "threshold_start" ) {
-							dThresholdStart = pvalue.toDouble();
-						} else if( pname == "threshold_end" ) {
-							dThresholdEnd = pvalue.toDouble();
-						} else if( pname == "sampler" ) {
-							sampler = tolower( pvalue[0] );
-						} else if( pname == "samples" ) {
-							samples = pvalue.toUInt();
-						} else if( pname == "transfer_spectral" ) {
-							transfer_spectral = pvalue;
-						} else if( pname == "transfer_alpha" ) {
-							transfer_alpha = pvalue;
-						} else if( pname == "iso_shader" ) {
-							iso_shader = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double       dThresholdStart    = bag.GetDouble( "threshold_start",   0.4 );
+					double       dThresholdEnd      = bag.GetDouble( "threshold_end",     1.0 );
+					unsigned int samples            = bag.GetUInt(   "samples",           50 );
+					std::string  transfer_spectral  = bag.GetString( "transfer_spectral", "none" );
+					std::string  transfer_alpha     = bag.GetString( "transfer_alpha",    "none" );
 
 					return pJob.AddSpectralDirectVolumeRenderingShader( name.c_str(), szVolumeFilePattern.c_str(), width, height, startz, endz,
 						accessor, gradient, composite, dThresholdStart, dThresholdEnd, sampler, samples, transfer_alpha.c_str(), transfer_spectral.c_str(), iso_shader=="none"?0:iso_shader.c_str()
 						);
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "spectraldirectvolumerendering_shader"; cd.category = ChunkCategory::Shader;
 						cd.description = "Spectral direct volume rendering shader.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "volume_pattern";    p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
+						{ auto& p = P(); p.name = "file_pattern";      p.kind = ValueKind::String;   p.description = "Volume file pattern"; }
 						{ auto& p = P(); p.name = "width";             p.kind = ValueKind::UInt;     p.description = "Volume width"; }
 						{ auto& p = P(); p.name = "height";            p.kind = ValueKind::UInt;     p.description = "Volume height"; }
 						{ auto& p = P(); p.name = "startz";            p.kind = ValueKind::UInt;     p.description = "Start slice"; }
@@ -7449,153 +4774,81 @@ namespace RISE
 
 			struct PixelPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String defaultshader = "global";
-					unsigned int maxRecur = 10;
-					unsigned int numSamples = 1;
-					unsigned int numLumSamples = 1;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  10 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    1 );
+					std::string luminarySampler = bag.GetString( "luminary_sampler", "none" );
+					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", 1.0 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					String luminarySampler = "none";
-					double luminarySamplerParam = 1.0;
-					bool showLuminaires = true;
-					bool oidnDenoise = true;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                         guidingConfig.enabled                = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                              guidingConfig.trainingIterations     = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                     guidingConfig.trainingSPP            = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_alpha") )                                   guidingConfig.alpha                  = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_max_depth") )                               guidingConfig.maxGuidingDepth        = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                         guidingConfig.maxLightGuidingDepth   = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                          guidingConfig.risCandidates          = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                          guidingConfig.completePathGuiding    = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )        guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )          guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
 					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )                   stabilityConfig.filterGlossy                 = bag.GetDouble("filter_glossy");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "lum_samples" ) {
-							numLumSamples = pvalue.toUInt();
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "luminary_sampler" ) {
-							luminarySampler = pvalue;
-						} else if( pname == "luminary_sampler_param" ) {
-							luminarySamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "pathguiding" ) {
-							guidingConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "pathguiding_iterations" ) {
-							guidingConfig.trainingIterations = pvalue.toUInt();
-						} else if( pname == "pathguiding_spp" ) {
-							guidingConfig.trainingSPP = pvalue.toUInt();
-						} else if( pname == "pathguiding_alpha" ) {
-							guidingConfig.alpha = pvalue.toDouble();
-						} else if( pname == "pathguiding_max_depth" ) {
-							guidingConfig.maxGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_light_max_depth" ) {
-							guidingConfig.maxLightGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_sampling_type" ) {
-							if( pvalue == "ris" || pvalue == "RIS" ) {
-								guidingConfig.samplingType = eGuidingRIS;
-							} else {
-								guidingConfig.samplingType = eGuidingOneSampleMIS;
-							}
-						} else if( pname == "pathguiding_ris_candidates" ) {
-							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
-						} else if( pname == "pathguiding_complete_paths" ) {
-							guidingConfig.completePathGuiding = pvalue.toBoolean();
-						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
-							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
-						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
-							guidingConfig.completePathStrategySamples = pvalue.toUInt();
-						} else if( pname == "adaptive_max_samples" ) {
-							adaptiveConfig.maxSamples = pvalue.toUInt();
-						} else if( pname == "adaptive_threshold" ) {
-							adaptiveConfig.threshold = pvalue.toDouble();
-						} else if( pname == "show_adaptive_map" ) {
-							adaptiveConfig.showMap = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "filter_glossy" ) {
-							stabilityConfig.filterGlossy = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "optimal_mis" ) {
-							stabilityConfig.optimalMIS = pvalue.toBoolean();
-						} else if( pname == "optimal_mis_training_iterations" ) {
-							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
-						} else if( pname == "optimal_mis_tile_size" ) {
-							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetPixelBasedPelRasterizer( numSamples, numLumSamples,
@@ -7619,6 +4872,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "choose_one_light";      p.kind = ValueKind::Bool;      p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddPathGuidingParams( P );
@@ -7635,204 +4889,112 @@ namespace RISE
 
 			struct PixelIntegratingSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				// Helper: read pairs of (key, vector) from a single-column file.
+				static bool LoadSingleColumnFile( const std::string& filename, std::vector<double>& out ) {
+					FILE* f = fopen( GlobalMediaPathLocator().Find(String(filename.c_str())).c_str(), "r" );
+					if( !f ) {
+						GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
+						return false;
+					}
+					while( !feof( f ) ) {
+						double v;
+						fscanf( f, "%lf", &v );
+						out.push_back( v );
+					}
+					fclose( f );
+					return true;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String defaultshader = "global";
-					unsigned int maxRecur = 10;
-					unsigned int numSamples = 1;
-					unsigned int numLumSamples = 1;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  10 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    1 );
+					std::string luminarySampler = bag.GetString( "luminary_sampler", "none" );
+					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", 1.0 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					bool integrateRGB           = bag.GetBool(   "integrate_rgb",   false );
+
 					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					String luminarySampler = "none";
-					double luminarySamplerParam = 1.0;
-					bool showLuminaires = true;
-					bool oidnDenoise = true;
-					bool integrateRGB = false;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					std::vector<double> spd_wavelengths;
 					std::vector<double> spd_r;
 					std::vector<double> spd_g;
 					std::vector<double> spd_b;
-					StabilityConfig stabilityConfig;
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "lum_samples" ) {
-							numLumSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "spectral_samples" ) {
-							spectralConfig.spectralSamples = pvalue.toUInt();
-						} else if( pname == "num_wavelengths" ) {
-							spectralConfig.numWavelengths = pvalue.toUInt();
-						} else if( pname == "nmbegin" ) {
-							spectralConfig.nmBegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							spectralConfig.nmEnd = pvalue.toDouble();
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "luminary_sampler" ) {
-							luminarySampler = pvalue;
-						} else if( pname == "luminary_sampler_param" ) {
-							luminarySamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "integrate_rgb" ) {
-							integrateRGB = pvalue.toBoolean();
-						} else if( pname == "rgb_spd" ) {
-							// Read the spd from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double nm, r, g, b;
-									fscanf( f, "%lf %lf %lf %lf", &nm, &r, &g, &b );
-									spd_wavelengths.push_back( nm );
-									spd_r.push_back( r );
-									spd_g.push_back( g );
-									spd_b.push_back( b );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
+					// rgb_spd loads wavelength + R + G + B together from a 4-column file.
+					if( bag.Has("rgb_spd") ) {
+						const std::string filename = bag.GetString("rgb_spd");
+						FILE* f = fopen( GlobalMediaPathLocator().Find(String(filename.c_str())).c_str(), "r" );
+						if( f ) {
+							while( !feof( f ) ) {
+								double nm, r, g, b;
+								fscanf( f, "%lf %lf %lf %lf", &nm, &r, &g, &b );
+								spd_wavelengths.push_back( nm );
+								spd_r.push_back( r );
+								spd_g.push_back( g );
+								spd_b.push_back( b );
 							}
-						} else if( pname == "rgb_spd_wavelengths" ) {
-							// Read the spd wavelengths from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double nm;
-									fscanf( f, "%lf", &nm );
-									spd_wavelengths.push_back( nm );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "rgb_spd_r" ) {
-							// Read the spd red amplitude from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double r;
-									fscanf( f, "%lf", &r );
-									spd_r.push_back( r );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "rgb_spd_g" ) {
-							// Read the spd green amplitude from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double g;
-									fscanf( f, "%lf", &g );
-									spd_g.push_back( g );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "rgb_spd_b" ) {
-							// Read the spd blue amplitude from a file
-							FILE* f = fopen( GlobalMediaPathLocator().Find(pvalue).c_str(), "r" );
-
-							if( f ) {
-								while( !feof( f ) ) {
-									double b;
-									fscanf( f, "%lf", &b );
-									spd_b.push_back( b );
-								}
-								fclose( f );
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "hwss" ) {
-							spectralConfig.useHWSS = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "filter_glossy" ) {
-							stabilityConfig.filterGlossy = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
+							fclose( f );
 						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to open file `%s`", filename.c_str() );
 							return false;
 						}
 					}
+					if( bag.Has("rgb_spd_wavelengths") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_wavelengths"), spd_wavelengths ) ) return false;
+					}
+					if( bag.Has("rgb_spd_r") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_r"), spd_r ) ) return false;
+					}
+					if( bag.Has("rgb_spd_g") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_g"), spd_g ) ) return false;
+					}
+					if( bag.Has("rgb_spd_b") ) {
+						if( !LoadSingleColumnFile( bag.GetString("rgb_spd_b"), spd_b ) ) return false;
+					}
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("filter_glossy") )           stabilityConfig.filterGlossy          = bag.GetDouble("filter_glossy");
+					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )       stabilityConfig.maxGlossyBounce       = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") ) stabilityConfig.maxTransmissionBounce = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )     stabilityConfig.branchingThreshold    = bag.GetDouble("branching_threshold");
 
 					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, spectralConfig, maxRecur, defaultshader.c_str(), radianceMapConfig,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
@@ -7854,6 +5016,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "lum_samples";     p.kind = ValueKind::UInt; p.description = "Luminaire samples per hit";   p.defaultValueHint = "1"; }
 						{ auto& p = P(); p.name = "luminary_sampler";p.kind = ValueKind::String; p.description = "Luminary sampling strategy"; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "luminary_sampler_param"; p.kind = ValueKind::Double; p.description = "Luminary sampler parameter"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddSpectralConfigParams( P );
@@ -7867,158 +5030,88 @@ namespace RISE
 
 			struct BDPTPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int numSamples = 1;
-					unsigned int maxEyeDepth = 8;
-					unsigned int maxLightDepth = 8;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					bool showLuminaires = true;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					SMSConfig smsConfig;
-					bool oidnDenoise = true;
+					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
+					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
+					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
+					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
+					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
+					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
+					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
+					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
+
 					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
 					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "sms_enabled" ) {
-							smsConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "sms_max_iterations" ) {
-							smsConfig.maxIterations = pvalue.toUInt();
-						} else if( pname == "sms_threshold" ) {
-							smsConfig.threshold = pvalue.toDouble();
-						} else if( pname == "sms_max_chain_depth" ) {
-							smsConfig.maxChainDepth = pvalue.toUInt();
-						} else if( pname == "sms_biased" ) {
-							smsConfig.biased = pvalue.toBoolean();
-						} else if( pname == "sms_bernoulli_trials" ) {
-							smsConfig.bernoulliTrials = pvalue.toUInt();
-						} else if( pname == "sms_multi_trials" ) {
-							smsConfig.multiTrials = pvalue.toUInt();
-						} else if( pname == "sms_photon_count" ) {
-							smsConfig.photonCount = pvalue.toUInt();
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "pathguiding" ) {
-							guidingConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "pathguiding_iterations" ) {
-							guidingConfig.trainingIterations = pvalue.toUInt();
-						} else if( pname == "pathguiding_spp" ) {
-							guidingConfig.trainingSPP = pvalue.toUInt();
-						} else if( pname == "pathguiding_alpha" ) {
-							guidingConfig.alpha = pvalue.toDouble();
-						} else if( pname == "pathguiding_max_depth" ) {
-							guidingConfig.maxGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_light_max_depth" ) {
-							guidingConfig.maxLightGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_sampling_type" ) {
-							if( pvalue == "ris" || pvalue == "RIS" ) {
-								guidingConfig.samplingType = eGuidingRIS;
-							} else {
-								guidingConfig.samplingType = eGuidingOneSampleMIS;
-							}
-						} else if( pname == "pathguiding_ris_candidates" ) {
-							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
-						} else if( pname == "pathguiding_complete_paths" ) {
-							guidingConfig.completePathGuiding = pvalue.toBoolean();
-						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
-							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
-						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
-							guidingConfig.completePathStrategySamples = pvalue.toUInt();
-						} else if( pname == "adaptive_max_samples" ) {
-							adaptiveConfig.maxSamples = pvalue.toUInt();
-						} else if( pname == "adaptive_threshold" ) {
-							adaptiveConfig.threshold = pvalue.toDouble();
-						} else if( pname == "show_adaptive_map" ) {
-							adaptiveConfig.showMap = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "optimal_mis" ) {
-							stabilityConfig.optimalMIS = pvalue.toBoolean();
-						} else if( pname == "optimal_mis_training_iterations" ) {
-							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
-						} else if( pname == "optimal_mis_tile_size" ) {
-							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetBDPTPelRasterizer( numSamples,
@@ -8038,6 +5131,7 @@ namespace RISE
 						AddBaseRasterizerParams( P );
 						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddSMSConfigParams( P );
@@ -8054,156 +5148,87 @@ namespace RISE
 
 			struct BDPTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int numSamples = 1;
-					unsigned int maxEyeDepth = 8;
-					unsigned int maxLightDepth = 8;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					bool showLuminaires = true;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
 					SMSConfig smsConfig;
-					bool oidnDenoise = true;
+					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
+					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
+					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
+					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
+					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
+					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
+					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
+					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
+
 					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )            guidingConfig.enabled            = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") ) guidingConfig.trainingIterations = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )        guidingConfig.trainingSPP        = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_alpha") )      guidingConfig.alpha              = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_max_depth") )  guidingConfig.maxGuidingDepth    = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") ) guidingConfig.risCandidates       = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") ) guidingConfig.completePathGuiding = bag.GetBool("pathguiding_complete_paths");
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "hwss" ) {
-							spectralConfig.useHWSS = pvalue.toBoolean();
-						} else if( pname == "nmbegin" ) {
-							spectralConfig.nmBegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							spectralConfig.nmEnd = pvalue.toDouble();
-						} else if( pname == "num_wavelengths" ) {
-							spectralConfig.numWavelengths = pvalue.toUInt();
-						} else if( pname == "spectral_samples" ) {
-							spectralConfig.spectralSamples = pvalue.toUInt();
-						} else if( pname == "sms_enabled" ) {
-							smsConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "sms_max_iterations" ) {
-							smsConfig.maxIterations = pvalue.toUInt();
-						} else if( pname == "sms_threshold" ) {
-							smsConfig.threshold = pvalue.toDouble();
-						} else if( pname == "sms_max_chain_depth" ) {
-							smsConfig.maxChainDepth = pvalue.toUInt();
-						} else if( pname == "sms_biased" ) {
-							smsConfig.biased = pvalue.toBoolean();
-						} else if( pname == "sms_bernoulli_trials" ) {
-							smsConfig.bernoulliTrials = pvalue.toUInt();
-						} else if( pname == "sms_multi_trials" ) {
-							smsConfig.multiTrials = pvalue.toUInt();
-						} else if( pname == "sms_photon_count" ) {
-							smsConfig.photonCount = pvalue.toUInt();
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "pathguiding" ) {
-							guidingConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "pathguiding_iterations" ) {
-							guidingConfig.trainingIterations = pvalue.toUInt();
-						} else if( pname == "pathguiding_spp" ) {
-							guidingConfig.trainingSPP = pvalue.toUInt();
-						} else if( pname == "pathguiding_alpha" ) {
-							guidingConfig.alpha = pvalue.toDouble();
-						} else if( pname == "pathguiding_max_depth" ) {
-							guidingConfig.maxGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_sampling_type" ) {
-							if( pvalue == "ris" || pvalue == "RIS" ) {
-								guidingConfig.samplingType = eGuidingRIS;
-							} else {
-								guidingConfig.samplingType = eGuidingOneSampleMIS;
-							}
-						} else if( pname == "pathguiding_ris_candidates" ) {
-							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
-						} else if( pname == "pathguiding_complete_paths" ) {
-							guidingConfig.completePathGuiding = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "optimal_mis" ) {
-							stabilityConfig.optimalMIS = pvalue.toBoolean();
-						} else if( pname == "optimal_mis_training_iterations" ) {
-							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
-						} else if( pname == "optimal_mis_tile_size" ) {
-							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetBDPTSpectralRasterizer( numSamples,
@@ -8224,9 +5249,13 @@ namespace RISE
 						AddBaseRasterizerParams( P );
 						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = "8"; }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
-						AddSpectralConfigParams( P );
+						// BDPT spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
 						AddSMSConfigParams( P );
 						// BDPTSpectral supports a subset of pathguiding params (no
 						// light-max-depth, no complete-path-strategy).
@@ -8249,118 +5278,64 @@ namespace RISE
 
 			struct VCMPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int numSamples = 1;
-					unsigned int maxEyeDepth = 8;
-					unsigned int maxLightDepth = 8;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
+					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
+					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					bool showLuminaires = true;
-					double mergeRadius = 0.0;	// 0 => scene-auto fallback
-					bool enableVC = true;
-					bool enableVM = true;
-					bool oidnDenoise = true;
-					PathGuidingConfig guidingConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					PathGuidingConfig guidingConfig;	// VCMPel does not consume pathguiding params
+
 					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )       stabilityConfig.maxGlossyBounce       = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") ) stabilityConfig.maxTransmissionBounce = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )     stabilityConfig.branchingThreshold    = bag.GetDouble("branching_threshold");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "merge_radius" ) {
-							mergeRadius = pvalue.toDouble();
-						} else if( pname == "vc_enabled" ) {
-							enableVC = pvalue.toBoolean();
-						} else if( pname == "vm_enabled" ) {
-							enableVM = pvalue.toBoolean();
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "adaptive_max_samples" ) {
-							adaptiveConfig.maxSamples = pvalue.toUInt();
-						} else if( pname == "adaptive_threshold" ) {
-							adaptiveConfig.threshold = pvalue.toDouble();
-						} else if( pname == "show_adaptive_map" ) {
-							adaptiveConfig.showMap = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetVCMPelRasterizer( numSamples,
@@ -8384,6 +5359,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddAdaptiveSamplingParams( P );
@@ -8397,122 +5373,66 @@ namespace RISE
 
 			struct VCMSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int numSamples = 1;
-					unsigned int maxEyeDepth = 8;
-					unsigned int maxLightDepth = 8;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
+					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
+					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					bool showLuminaires = true;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					SpectralConfig spectralConfig;
-					double mergeRadius = 0.0;	// 0 => scene-auto fallback
-					bool enableVC = true;
-					bool enableVM = true;
-					bool oidnDenoise = true;
-					PathGuidingConfig guidingConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
+					PathGuidingConfig guidingConfig;	// VCMSpectral does not consume pathguiding params
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )            stabilityConfig.rrMinDepth            = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )            stabilityConfig.rrThreshold           = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )      stabilityConfig.maxDiffuseBounce      = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )       stabilityConfig.maxGlossyBounce       = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") ) stabilityConfig.maxTransmissionBounce = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )     stabilityConfig.branchingThreshold    = bag.GetDouble("branching_threshold");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "hwss" ) {
-							spectralConfig.useHWSS = pvalue.toBoolean();
-						} else if( pname == "nmbegin" ) {
-							spectralConfig.nmBegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							spectralConfig.nmEnd = pvalue.toDouble();
-						} else if( pname == "num_wavelengths" ) {
-							spectralConfig.numWavelengths = pvalue.toUInt();
-						} else if( pname == "spectral_samples" ) {
-							spectralConfig.spectralSamples = pvalue.toUInt();
-						} else if( pname == "merge_radius" ) {
-							mergeRadius = pvalue.toDouble();
-						} else if( pname == "vc_enabled" ) {
-							enableVC = pvalue.toBoolean();
-						} else if( pname == "vm_enabled" ) {
-							enableVM = pvalue.toBoolean();
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetVCMSpectralRasterizer( numSamples,
@@ -8537,9 +5457,13 @@ namespace RISE
 						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
-						AddSpectralConfigParams( P );
+						// VCM spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
 						AddStabilityConfigParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -8550,152 +5474,86 @@ namespace RISE
 
 			struct PathTracingPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int numSamples = 1;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					bool showLuminaires = true;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					SMSConfig smsConfig;
-					bool oidnDenoise = true;
+					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
+					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
+					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
+					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
+					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
+					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
+					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
+					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
+
 					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
 					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "sms_enabled" ) {
-							smsConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "sms_max_iterations" ) {
-							smsConfig.maxIterations = pvalue.toUInt();
-						} else if( pname == "sms_threshold" ) {
-							smsConfig.threshold = pvalue.toDouble();
-						} else if( pname == "sms_max_chain_depth" ) {
-							smsConfig.maxChainDepth = pvalue.toUInt();
-						} else if( pname == "sms_biased" ) {
-							smsConfig.biased = pvalue.toBoolean();
-						} else if( pname == "sms_bernoulli_trials" ) {
-							smsConfig.bernoulliTrials = pvalue.toUInt();
-						} else if( pname == "sms_multi_trials" ) {
-							smsConfig.multiTrials = pvalue.toUInt();
-						} else if( pname == "sms_photon_count" ) {
-							smsConfig.photonCount = pvalue.toUInt();
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "pathguiding" ) {
-							guidingConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "pathguiding_iterations" ) {
-							guidingConfig.trainingIterations = pvalue.toUInt();
-						} else if( pname == "pathguiding_spp" ) {
-							guidingConfig.trainingSPP = pvalue.toUInt();
-						} else if( pname == "pathguiding_alpha" ) {
-							guidingConfig.alpha = pvalue.toDouble();
-						} else if( pname == "pathguiding_max_depth" ) {
-							guidingConfig.maxGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_light_max_depth" ) {
-							guidingConfig.maxLightGuidingDepth = pvalue.toUInt();
-						} else if( pname == "pathguiding_sampling_type" ) {
-							if( pvalue == "ris" || pvalue == "RIS" ) {
-								guidingConfig.samplingType = eGuidingRIS;
-							} else {
-								guidingConfig.samplingType = eGuidingOneSampleMIS;
-							}
-						} else if( pname == "pathguiding_ris_candidates" ) {
-							guidingConfig.risCandidates = std::max( 2u, pvalue.toUInt() );
-						} else if( pname == "pathguiding_complete_paths" ) {
-							guidingConfig.completePathGuiding = pvalue.toBoolean();
-						} else if( pname == "pathguiding_complete_path_strategy_selection" ) {
-							guidingConfig.completePathStrategySelection = pvalue.toBoolean();
-						} else if( pname == "pathguiding_complete_path_strategy_samples" ) {
-							guidingConfig.completePathStrategySamples = pvalue.toUInt();
-						} else if( pname == "adaptive_max_samples" ) {
-							adaptiveConfig.maxSamples = pvalue.toUInt();
-						} else if( pname == "adaptive_threshold" ) {
-							adaptiveConfig.threshold = pvalue.toDouble();
-						} else if( pname == "show_adaptive_map" ) {
-							adaptiveConfig.showMap = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "optimal_mis" ) {
-							stabilityConfig.optimalMIS = pvalue.toBoolean();
-						} else if( pname == "optimal_mis_training_iterations" ) {
-							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
-						} else if( pname == "optimal_mis_tile_size" ) {
-							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetPathTracingPelRasterizer( numSamples,
@@ -8712,6 +5570,7 @@ namespace RISE
 						cd.description = "Pure unidirectional RGB path tracer (bypasses shader-op chain).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddSMSConfigParams( P );
@@ -8728,136 +5587,81 @@ namespace RISE
 
 			struct PathTracingSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int numSamples = 1;
+					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+
 					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
 					PixelFilterConfig pixelFilterConfig;
-					bool showLuminaires = true;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
 					SpectralConfig spectralConfig;
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					// Accept both `hwss` (canonical, used by other spectral
+					// rasterizers) and the legacy `use_hwss` spelling that
+					// only this parser historically accepted.
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+					if( bag.Has("use_hwss") )         spectralConfig.useHWSS         = bag.GetBool("use_hwss");
+
 					SMSConfig smsConfig;
-					bool oidnDenoise = true;
+					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
+					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
+					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
+					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
+					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
+					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
+					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
+					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
+
 					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
 					ProgressiveConfig progressiveConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "samples" ) {
-							numSamples = pvalue.toUInt();
-						} else if( pname == "radiance_map" ) {
-							radianceMapConfig.name = pvalue;
-						} else if( pname == "radiance_scale" ) {
-							radianceMapConfig.scale = pvalue.toDouble();
-						} else if( pname == "radiance_background" ) {
-							radianceMapConfig.isBackground = pvalue.toBoolean();
-						} else if( pname == "radiance_orient" ) {
-							sscanf( pvalue.c_str(), "%lf %lf %lf", &radianceMapConfig.orientation[0], &radianceMapConfig.orientation[1], &radianceMapConfig.orientation[2] );
-							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
-							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
-						} else if( pname == "pixel_sampler" ) {
-							pixelFilterConfig.pixelSampler = pvalue;
-						} else if( pname == "pixel_sampler_param" ) {
-							pixelFilterConfig.pixelSamplerParam = pvalue.toDouble();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "nmbegin" ) {
-							spectralConfig.nmBegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							spectralConfig.nmEnd = pvalue.toDouble();
-						} else if( pname == "num_wavelengths" ) {
-							spectralConfig.numWavelengths = pvalue.toUInt();
-						} else if( pname == "spectral_samples" ) {
-							spectralConfig.spectralSamples = pvalue.toUInt();
-						} else if( pname == "blue_noise_sampler" ) {
-							pixelFilterConfig.blueNoiseSampler = pvalue.toBoolean();
-						} else if( pname == "use_hwss" ) {
-							spectralConfig.useHWSS = pvalue.toBoolean();
-						} else if( pname == "sms_enabled" ) {
-							smsConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "sms_max_iterations" ) {
-							smsConfig.maxIterations = pvalue.toUInt();
-						} else if( pname == "sms_threshold" ) {
-							smsConfig.threshold = pvalue.toDouble();
-						} else if( pname == "sms_max_chain_depth" ) {
-							smsConfig.maxChainDepth = pvalue.toUInt();
-						} else if( pname == "sms_biased" ) {
-							smsConfig.biased = pvalue.toBoolean();
-						} else if( pname == "sms_bernoulli_trials" ) {
-							smsConfig.bernoulliTrials = pvalue.toUInt();
-						} else if( pname == "sms_multi_trials" ) {
-							smsConfig.multiTrials = pvalue.toUInt();
-						} else if( pname == "sms_photon_count" ) {
-							smsConfig.photonCount = pvalue.toUInt();
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "adaptive_max_samples" ) {
-							adaptiveConfig.maxSamples = pvalue.toUInt();
-						} else if( pname == "adaptive_threshold" ) {
-							adaptiveConfig.threshold = pvalue.toDouble();
-						} else if( pname == "show_adaptive_map" ) {
-							adaptiveConfig.showMap = pvalue.toBoolean();
-						} else if( pname == "direct_clamp" ) {
-							stabilityConfig.directClamp = pvalue.toDouble();
-						} else if( pname == "indirect_clamp" ) {
-							stabilityConfig.indirectClamp = pvalue.toDouble();
-						} else if( pname == "rr_min_depth" ) {
-							stabilityConfig.rrMinDepth = pvalue.toUInt();
-						} else if( pname == "rr_threshold" ) {
-							stabilityConfig.rrThreshold = pvalue.toDouble();
-						} else if( pname == "max_diffuse_bounce" ) {
-							stabilityConfig.maxDiffuseBounce = pvalue.toUInt();
-						} else if( pname == "max_glossy_bounce" ) {
-							stabilityConfig.maxGlossyBounce = pvalue.toUInt();
-						} else if( pname == "max_transmission_bounce" ) {
-							stabilityConfig.maxTransmissionBounce = pvalue.toUInt();
-						} else if( pname == "max_translucent_bounce" ) {
-							stabilityConfig.maxTranslucentBounce = pvalue.toUInt();
-						} else if( pname == "max_volume_bounce" ) {
-							stabilityConfig.maxVolumeBounce = pvalue.toUInt();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else if( pname == "optimal_mis" ) {
-							stabilityConfig.optimalMIS = pvalue.toBoolean();
-						} else if( pname == "optimal_mis_training_iterations" ) {
-							stabilityConfig.optimalMISTrainingIterations = pvalue.toUInt();
-						} else if( pname == "optimal_mis_tile_size" ) {
-							stabilityConfig.optimalMISTileSize = pvalue.toUInt();
-						} else if( pname == "progressive_rendering" ) {
-							progressiveConfig.enabled = pvalue.toBoolean();
-						} else if( pname == "progressive_samples_per_pass" ) {
-							const unsigned int spp = pvalue.toUInt();
-							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
 					}
 
 					return pJob.SetPathTracingSpectralRasterizer( numSamples,
@@ -8875,9 +5679,16 @@ namespace RISE
 						cd.description = "Pure unidirectional spectral path tracer (bypasses shader-op chain).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P );
+						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
-						AddSpectralConfigParams( P );
+						// PT spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
+						// Legacy alias for `hwss` accepted only by this
+						// parser (other spectral integrators use `hwss`).
+						{ auto& p = P(); p.name = "use_hwss";        p.kind = ValueKind::Bool; p.description = "Legacy alias for `hwss`"; p.defaultValueHint = "FALSE"; }
 						AddSMSConfigParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
@@ -8891,16 +5702,16 @@ namespace RISE
 
 			struct MLTRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int maxEyeDepth = 10;
-					unsigned int maxLightDepth = 10;
-					unsigned int bootstrapSamples = 100000;
-					unsigned int chains = 512;
-					unsigned int mutationsPerPixel = 100;
-					double largeStepProb = 0.3;
-					bool showLuminaires = true;
+					std::string defaultshader     = bag.GetString( "defaultshader",       "global" );
+					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       10 );
+					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     10 );
+					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   100000 );
+					unsigned int chains           = bag.GetUInt(   "chains",              512 );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 100 );
+					double largeStepProb          = bag.GetDouble( "large_step_prob",     0.3 );
+					bool showLuminaires           = bag.GetBool(   "show_luminaires",     true );
 					// MLT defaults oidn_denoise to FALSE because the
 					// entire MLT image lives in the splat film, so OIDN
 					// would denoise an already-accumulated / filter-
@@ -8918,7 +5729,8 @@ namespace RISE
 					// OIDN applied to their MLT result (e.g. to denoise
 					// the residual Markov-chain noise in a long render)
 					// can still enable it with `oidn_denoise true`.
-					bool oidnDenoise = false;
+					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
+
 					// Pixel filter for sub-pixel reconstruction.  Default
 					// is Mitchell-Netravali (B=C=1/3, width/height=1.0)
 					// so existing MLT scenes automatically get proper
@@ -8928,57 +5740,15 @@ namespace RISE
 					// the user reported.  Scenes that genuinely want an
 					// unfiltered image can specify pixel_filter none.
 					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width  = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB = bag.GetDouble("pixel_filter_paramB");
+
 					StabilityConfig stabilityConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "bootstrap_samples" ) {
-							bootstrapSamples = pvalue.toUInt();
-						} else if( pname == "chains" ) {
-							chains = pvalue.toUInt();
-						} else if( pname == "mutations_per_pixel" ) {
-							mutationsPerPixel = pvalue.toUInt();
-						} else if( pname == "large_step_prob" ) {
-							largeStepProb = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") ) stabilityConfig.branchingThreshold = bag.GetDouble("branching_threshold");
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
@@ -9001,7 +5771,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = "100"; }
 						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						// MLT accepts only light_bvh and branching_threshold from
 						// StabilityConfig (branching_threshold is forced to 1.0
@@ -9016,81 +5787,37 @@ namespace RISE
 
 			struct MLTSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					String defaultshader = "global";
-					unsigned int maxEyeDepth = 10;
-					unsigned int maxLightDepth = 10;
-					unsigned int bootstrapSamples = 100000;
-					unsigned int chains = 512;
-					unsigned int mutationsPerPixel = 100;
-					double largeStepProb = 0.3;
-					bool showLuminaires = true;
+					std::string defaultshader     = bag.GetString( "defaultshader",       "global" );
+					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       10 );
+					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     10 );
+					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   100000 );
+					unsigned int chains           = bag.GetUInt(   "chains",              512 );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 100 );
+					double largeStepProb          = bag.GetDouble( "large_step_prob",     0.3 );
+					bool showLuminaires           = bag.GetBool(   "show_luminaires",     true );
 					// MLT spectral also defaults OIDN off — see the Pel
-					// MLT parser above for the detailed rationale.
-					bool oidnDenoise = false;
+					// MLT parser for the detailed rationale.
+					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
+
 					SpectralConfig spectralConfig;
-					// See MLTRasterizerAsciiChunkParser for rationale.
+					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+					if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+
 					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width  = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB = bag.GetDouble("pixel_filter_paramB");
+
 					StabilityConfig stabilityConfig;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						if( pname == "defaultshader" ) {
-							defaultshader = pvalue;
-						} else if( pname == "max_eye_depth" ) {
-							maxEyeDepth = pvalue.toUInt();
-						} else if( pname == "max_light_depth" ) {
-							maxLightDepth = pvalue.toUInt();
-						} else if( pname == "bootstrap_samples" ) {
-							bootstrapSamples = pvalue.toUInt();
-						} else if( pname == "chains" ) {
-							chains = pvalue.toUInt();
-						} else if( pname == "mutations_per_pixel" ) {
-							mutationsPerPixel = pvalue.toUInt();
-						} else if( pname == "large_step_prob" ) {
-							largeStepProb = pvalue.toDouble();
-						} else if( pname == "show_luminaires" ) {
-							showLuminaires = pvalue.toBoolean();
-						} else if( pname == "choose_one_light" ) {
-							// Legacy parameter — silently ignored.  All
-							// integrators now select exactly one light
-							// per NEE via the unified LightSampler.
-						} else if( pname == "oidn_denoise" ) {
-							oidnDenoise = pvalue.toBoolean();
-						} else if( pname == "nmbegin" ) {
-							spectralConfig.nmBegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							spectralConfig.nmEnd = pvalue.toDouble();
-						} else if( pname == "spectral_samples" ) {
-							spectralConfig.spectralSamples = pvalue.toUInt();
-						} else if( pname == "hwss" ) {
-							spectralConfig.useHWSS = pvalue.toBoolean();
-						} else if( pname == "pixel_filter" ) {
-							pixelFilterConfig.filter = pvalue;
-						} else if( pname == "pixel_filter_width" ) {
-							pixelFilterConfig.width = pvalue.toDouble();
-						} else if( pname == "pixel_filter_height" ) {
-							pixelFilterConfig.height = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramA" ) {
-							pixelFilterConfig.paramA = pvalue.toDouble();
-						} else if( pname == "pixel_filter_paramB" ) {
-							pixelFilterConfig.paramB = pvalue.toDouble();
-						} else if( pname == "light_bvh" ) {
-							stabilityConfig.useLightBVH = pvalue.toBoolean();
-						} else if( pname == "branching_threshold" ) {
-							stabilityConfig.branchingThreshold = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
+					if( bag.Has("branching_threshold") ) stabilityConfig.branchingThreshold = bag.GetDouble("branching_threshold");
 
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
@@ -9100,7 +5827,8 @@ namespace RISE
 						stabilityConfig );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override
+				{
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "mlt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
@@ -9114,9 +5842,12 @@ namespace RISE
 						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = "100"; }
 						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
 						AddPixelFilterParams( P );
-						AddSpectralConfigParams( P );
+						// MLT spectral consumes only the core spectral
+						// fields; RGB-to-SPD conversion is done in the
+						// painters pipeline.
+						AddSpectralCoreParams( P );
 						// MLT accepts only light_bvh and branching_threshold.
 						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity but forced to 1.0"; p.defaultValueHint = "1.0"; }
@@ -9128,81 +5859,63 @@ namespace RISE
 
 			struct FileRasterizerOutputAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String pattern = "none";
-					bool multiple = false;
-					char type = 0;
-					int bpp = 8;
-					char color_space = 1;
+					std::string pattern   = bag.GetString( "pattern",  "none" );
+					bool        multiple  = bag.GetBool(   "multiple", false );
+					int         bpp       = bag.GetInt(    "bpp",      8 );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
+					char type = 0;
+					if( bag.Has("type") ) {
+						std::string t = bag.GetString("type");
+						if( t == "TGA" ) {
+							type = 0;
+						} else if( t == "PPM" ) {
+							type = 1;
+						} else if( t == "PNG" ) {
+					#ifndef NO_PNG_SUPPORT
+							type = 2;
+					#else
+							type = 0;
+							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead" );
+					#endif
+						} else if( t == "TIFF" ) {
+					#ifndef NO_TIFF_SUPPORT
+							type = 4;
+					#else
+							type = 0;
+							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO TIFF SUPPORT was compiled, reverting to TGA instead" );
+					#endif
+						} else if( t == "HDR" ) {
+							type = 3;
+						} else if( t == "RGBEA" ) {
+							type = 5;
+						} else if( t == "EXR" ) {
+					#ifndef NO_EXR_SUPPORT
+							type = 6;
+					#else
+							type = 0;
+							GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO EXR SUPPORT was compiled, reverting to TGA instead" );
+					#endif
+						} else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown output file type type `%s`", t.c_str() );
 							return false;
 						}
+					}
 
-						// Now search the parameter value names
-						if( pname == "pattern" ) {
-							pattern = pvalue;
-						} else if( pname == "multiple" ) {
-							multiple = pvalue.toBoolean();
-						} else if( pname == "type" ) {
-							if( pvalue == "TGA" ) {
-								type = 0;
-							} else if( pvalue == "PPM" ) {
-								type = 1;
-							} else if( pvalue == "PNG" ) {
-						#ifndef NO_PNG_SUPPORT
-								type = 2;
-						#else
-								type = 0;
-								GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO PNG SUPPORT was compiled, reverting to TGA instead" );
-						#endif
-							} else if( pvalue == "TIFF" ) {
-						#ifndef NO_TIFF_SUPPORT
-								type = 4;
-						#else
-								type = 0;
-								GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO TIFF SUPPORT was compiled, reverting to TGA instead" );
-						#endif
-							} else if( pvalue == "HDR" ) {
-								type = 3;
-							} else if( pvalue == "RGBEA" ) {
-								type = 5;
-							} else if( pvalue == "EXR" ) {
-						#ifndef NO_EXR_SUPPORT
-								type = 6;
-						#else
-								type = 0;
-								GlobalLog()->PrintEasyWarning( "AsciiCommandParser::ParseAddRasterizeroutput::File: NO EXR SUPPORT was compiled, reverting to TGA instead" );
-						#endif
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown output file type type `%s`", pvalue.c_str() );
-								return false;
-							}
-						} else if( pname == "bpp" ) {
-							bpp = pvalue.toInt();
-						} else if( pname == "color_space" ) {
-							if( pvalue=="Rec709RGB_Linear" ) {
-								color_space = 0;
-							} else if( pvalue=="sRGB" ) {
-								color_space = 1;
-							} else if( pvalue=="ROMMRGB_Linear" ) {
-								color_space = 2;
-							} else if( pvalue=="ProPhotoRGB" ) {
-								color_space = 3;
-							} else {
-								GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", pvalue.c_str() );
-								return false;
-							}
+					char color_space = 1;
+					if( bag.Has("color_space") ) {
+						std::string cs = bag.GetString("color_space");
+						if( cs=="Rec709RGB_Linear" ) {
+							color_space = 0;
+						} else if( cs=="sRGB" ) {
+							color_space = 1;
+						} else if( cs=="ROMMRGB_Linear" ) {
+							color_space = 2;
+						} else if( cs=="ProPhotoRGB" ) {
+							color_space = 3;
 						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
 							return false;
 						}
 					}
@@ -9210,7 +5923,7 @@ namespace RISE
 					return pJob.AddFileRasterizerOutput( pattern.c_str(), multiple, type, (unsigned char)bpp, color_space );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "file_rasterizeroutput"; cd.category = ChunkCategory::RasterizerOutput;
@@ -9234,59 +5947,19 @@ namespace RISE
 
 			struct CausticPelPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int photons = 10000;
-					double power_scale = 1.0;
-					unsigned int maxRecur = 10;
-					double minImportance = 0.01;
-					bool branch = true;
-					bool reflect = true;
-					bool refract = true;
-					bool shootFromNonMeshLights = true;
-					bool shootFromMeshLights = true;
-					unsigned int temporal_samples = 100;
-					bool regenerate = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "num" ) {
-							photons = pvalue.toUInt();
-						} else if( pname == "power_scale" ) {
-							power_scale = pvalue.toDouble();
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
-						} else if( pname == "reflect" ) {
-							reflect = pvalue.toBoolean();
-						} else if( pname == "refract" ) {
-							refract = pvalue.toBoolean();
-						} else if( pname == "shootFromNonMeshLights" ) {
-							shootFromNonMeshLights = pvalue.toBoolean();
-						} else if( pname == "shootFromMeshLights" ) {
-							shootFromMeshLights = pvalue.toBoolean();
-						} else if( pname == "temporal_samples" ) {
-							temporal_samples = pvalue.toUInt();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					unsigned int photons          = bag.GetUInt(   "num",                    10000 );
+					double power_scale            = bag.GetDouble( "power_scale",            1.0 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",          10 );
+					double minImportance          = bag.GetDouble( "min_importance",         0.01 );
+					bool branch                   = bag.GetBool(   "branch",                 true );
+					bool reflect                  = bag.GetBool(   "reflect",                true );
+					bool refract                  = bag.GetBool(   "refract",                true );
+					bool shootFromNonMeshLights   = bag.GetBool(   "shootFromNonMeshLights", true );
+					bool shootFromMeshLights      = bag.GetBool(   "shootFromMeshLights",    true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples",       100 );
+					bool regenerate               = bag.GetBool(   "regenerate",             true );
 
 					std::cout << "Queued Caustic Pel Photons (will shoot at render time)" << std::endl;
 
@@ -9308,62 +5981,20 @@ namespace RISE
 
 			struct CausticSpectralPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int photons = 10000;
-					double power_scale = 1.0;
-					unsigned int maxRecur = 10;
-					double nmbegin = 400.0;
-					double nmend = 700.0;
-					unsigned int numWavelengths = 30;
-					double minImportance = 0.01;
-					bool branch = true;
-					bool reflect = true;
-					bool refract = true;
-					unsigned int temporal_samples = 100;
-					bool regenerate = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "num" ) {
-							photons = pvalue.toUInt();
-						} else if( pname == "power_scale" ) {
-							power_scale = pvalue.toDouble();
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
-						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
-						} else if( pname == "num_wavelengths" ) {
-							numWavelengths = pvalue.toUInt();
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
-						} else if( pname == "reflect" ) {
-							reflect = pvalue.toBoolean();
-						} else if( pname == "refract" ) {
-							refract = pvalue.toBoolean();
-						} else if( pname == "temporal_samples" ) {
-							temporal_samples = pvalue.toUInt();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					unsigned int photons          = bag.GetUInt(   "num",              10000 );
+					double power_scale            = bag.GetDouble( "power_scale",      1.0 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",    10 );
+					double nmbegin                = bag.GetDouble( "nmbegin",          400.0 );
+					double nmend                  = bag.GetDouble( "nmend",            700.0 );
+					unsigned int numWavelengths   = bag.GetUInt(   "num_wavelengths",  30 );
+					double minImportance          = bag.GetDouble( "min_importance",   0.01 );
+					bool branch                   = bag.GetBool(   "branch",           true );
+					bool reflect                  = bag.GetBool(   "reflect",          true );
+					bool refract                  = bag.GetBool(   "refract",          true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples", 100 );
+					bool regenerate               = bag.GetBool(   "regenerate",       true );
 
 					std::cout << "Queued Caustic Spectral Photons (will shoot at render time)" << std::endl;
 
@@ -9388,56 +6019,18 @@ namespace RISE
 
 			struct GlobalSpectralPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int photons = 10000;
-					double power_scale = 1.0;
-					unsigned int maxRecur = 10;
-					double nmbegin = 400.0;
-					double nmend = 700.0;
-					unsigned int numWavelengths = 30;
-					double minImportance = 0.01;
-					bool branch = true;
-					unsigned int temporal_samples = 100;
-					bool regenerate = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "num" ) {
-							photons = pvalue.toUInt();
-						} else if( pname == "power_scale" ) {
-							power_scale = pvalue.toDouble();
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
-						} else if( pname == "nmbegin" ) {
-							nmbegin = pvalue.toDouble();
-						} else if( pname == "nmend" ) {
-							nmend = pvalue.toDouble();
-						} else if( pname == "num_wavelengths" ) {
-							numWavelengths = pvalue.toUInt();
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
-						} else if( pname == "temporal_samples" ) {
-							temporal_samples = pvalue.toUInt();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					unsigned int photons          = bag.GetUInt(   "num",              10000 );
+					double power_scale            = bag.GetDouble( "power_scale",      1.0 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",    10 );
+					double nmbegin                = bag.GetDouble( "nmbegin",          400.0 );
+					double nmend                  = bag.GetDouble( "nmend",            700.0 );
+					unsigned int numWavelengths   = bag.GetUInt(   "num_wavelengths",  30 );
+					double minImportance          = bag.GetDouble( "min_importance",   0.01 );
+					bool branch                   = bag.GetBool(   "branch",           true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples", 100 );
+					bool regenerate               = bag.GetBool(   "regenerate",       true );
 
 					std::cout << "Queued Global Spectral Photons (will shoot at render time)" << std::endl;
 
@@ -9462,59 +6055,19 @@ namespace RISE
 
 			struct TranslucentPelPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int photons = 10000;
-					unsigned int maxRecur = 10;
-					double minImportance = 0.01;
-					double power_scale = 1.0;
-					bool shootFromNonMeshLights = true;
-					bool shootFromMeshLights = true;
-					bool reflect = true;
-					bool refract = true;
-					bool direct_translucent = true;
-					unsigned int temporal_samples = 100;
-					bool regenerate = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "num" ) {
-							photons = pvalue.toUInt();
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
-						} else if( pname == "power_scale" ) {
-							power_scale = pvalue.toDouble();
-						} else if( pname == "shootFromNonMeshLights" ) {
-							shootFromNonMeshLights = pvalue.toBoolean();
-						} else if( pname == "shootFromMeshLights" ) {
-							shootFromMeshLights = pvalue.toBoolean();
-						} else if( pname == "reflect" ) {
-							reflect = pvalue.toBoolean();
-						} else if( pname == "refract" ) {
-							refract = pvalue.toBoolean();
-						} else if( pname == "direct_translucent" ) {
-							direct_translucent = pvalue.toBoolean();
-						} else if( pname == "temporal_samples" ) {
-							temporal_samples = pvalue.toUInt();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					unsigned int photons          = bag.GetUInt(   "num",                    10000 );
+					unsigned int maxRecur         = bag.GetUInt(   "max_recursion",          10 );
+					double minImportance          = bag.GetDouble( "min_importance",         0.01 );
+					double power_scale            = bag.GetDouble( "power_scale",            1.0 );
+					bool shootFromNonMeshLights   = bag.GetBool(   "shootFromNonMeshLights", true );
+					bool shootFromMeshLights      = bag.GetBool(   "shootFromMeshLights",    true );
+					bool reflect                  = bag.GetBool(   "reflect",                true );
+					bool refract                  = bag.GetBool(   "refract",                true );
+					bool direct_translucent       = bag.GetBool(   "direct_translucent",     true );
+					unsigned int temporal_samples = bag.GetUInt(   "temporal_samples",       100 );
+					bool regenerate               = bag.GetBool(   "regenerate",             true );
 
 					std::cout << "Queued Translucent Pel Photons (will shoot at render time)" << std::endl;
 
@@ -9537,35 +6090,11 @@ namespace RISE
 
 			struct ShadowPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int photons = 10000;
-					unsigned int temporal_samples = 100;
-					bool regenerate = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "num" ) {
-							photons = pvalue.toUInt();
-						} else if( pname == "temporal_samples" ) {
-							temporal_samples = pvalue.toUInt();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					unsigned int photons          = bag.GetUInt( "num",              10000 );
+					unsigned int temporal_samples = bag.GetUInt( "temporal_samples", 100 );
+					bool regenerate               = bag.GetBool( "regenerate",       true );
 
 					std::cout << "Queued Shadow Photons (will shoot at render time)" << std::endl;
 
@@ -9589,53 +6118,17 @@ namespace RISE
 
 			struct GlobalPelPhotonMapGenerateAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					unsigned int photons = 10000;
-					double power_scale = 1.0;
-					unsigned int maxRecur = 10;
-					double minImportance = 0.01;
-					bool branch = true;
-					bool shootFromNonMeshLights = true;
-					bool shootFromMeshLights = true;
-					unsigned int temporal_samples = 100;
-					bool regenerate = true;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "num" ) {
-							photons = pvalue.toUInt();
-						} else if( pname == "power_scale" ) {
-							power_scale = pvalue.toDouble();
-						} else if( pname == "max_recursion" ) {
-							maxRecur = pvalue.toUInt();
-						} else if( pname == "min_importance" ) {
-							minImportance = pvalue.toDouble();
-						} else if( pname == "branch" ) {
-							branch = pvalue.toBoolean();
-						} else if( pname == "shootFromNonMeshLights" ) {
-							shootFromNonMeshLights = pvalue.toBoolean();
-						} else if( pname == "shootFromMeshLights" ) {
-							shootFromMeshLights = pvalue.toBoolean();
-						} else if( pname == "temporal_samples" ) {
-							temporal_samples = pvalue.toUInt();
-						} else if( pname == "regenerate" ) {
-							regenerate = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					unsigned int photons             = bag.GetUInt(   "num",                    10000 );
+					double power_scale               = bag.GetDouble( "power_scale",            1.0 );
+					unsigned int maxRecur            = bag.GetUInt(   "max_recursion",          10 );
+					double minImportance             = bag.GetDouble( "min_importance",         0.01 );
+					bool branch                      = bag.GetBool(   "branch",                 true );
+					bool shootFromNonMeshLights      = bag.GetBool(   "shootFromNonMeshLights", true );
+					bool shootFromMeshLights         = bag.GetBool(   "shootFromMeshLights",    true );
+					unsigned int temporal_samples    = bag.GetUInt(   "temporal_samples",       100 );
+					bool regenerate                  = bag.GetBool(   "regenerate",             true );
 
 					std::cout << "Queued Global Pel Photons (will shoot at render time)" << std::endl;
 
@@ -9657,38 +6150,12 @@ namespace RISE
 
 			struct CausticPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double radius = 0.0;
-					double ellipse_ratio = 0.05;
-					unsigned int min = 8;
-					unsigned int max = 150;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "ellipse_ratio" ) {
-							ellipse_ratio = pvalue.toDouble();
-						} else if( pname == "min_photons" ) {
-							min = pvalue.toUInt();
-						} else if( pname == "max_photons" ) {
-							max = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
 
 					return pJob.SetCausticPelGatherParameters( radius, ellipse_ratio, min, max );
 				}
@@ -9708,41 +6175,13 @@ namespace RISE
 
 			struct CausticSpectralPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double radius = 0.0;
-					double ellipse_ratio = 0.05;
-					double nm_range = 10.0;
-					unsigned int min = 8;
-					unsigned int max = 150;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "ellipse_ratio" ) {
-							ellipse_ratio = pvalue.toDouble();
-						} else if( pname == "nm_range" ) {
-							nm_range = pvalue.toDouble();
-						} else if( pname == "min_photons" ) {
-							min = pvalue.toUInt();
-						} else if( pname == "max_photons" ) {
-							max = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					double nm_range      = bag.GetDouble( "nm_range",      10.0 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
 
 					return pJob.SetCausticSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
 				}
@@ -9763,41 +6202,13 @@ namespace RISE
 
 			struct GlobalSpectralPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double radius = 0.0;
-					double ellipse_ratio = 0.05;
-					double nm_range = 10.0;
-					unsigned int min = 8;
-					unsigned int max = 150;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "ellipse_ratio" ) {
-							ellipse_ratio = pvalue.toDouble();
-						} else if( pname == "nm_range" ) {
-							nm_range = pvalue.toDouble();
-						} else if( pname == "min_photons" ) {
-							min = pvalue.toUInt();
-						} else if( pname == "max_photons" ) {
-							max = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					double nm_range      = bag.GetDouble( "nm_range",      10.0 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
 
 					return pJob.SetGlobalSpectralGatherParameters( radius, ellipse_ratio, min, max, nm_range );
 				}
@@ -9818,38 +6229,12 @@ namespace RISE
 
 			struct TranslucentPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double radius = 0.0;
-					double ellipse_ratio = 0.05;
-					unsigned int min = 8;
-					unsigned int max = 150;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "ellipse_ratio" ) {
-							ellipse_ratio = pvalue.toDouble();
-						} else if( pname == "min_photons" ) {
-							min = pvalue.toUInt();
-						} else if( pname == "max_photons" ) {
-							max = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
 
 					return pJob.SetTranslucentPelGatherParameters( radius, ellipse_ratio, min, max );
 				}
@@ -9869,38 +6254,12 @@ namespace RISE
 
 			struct ShadowPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double radius = 0.0;
-					double ellipse_ratio = 0.05;
-					unsigned int min = 1;
-					unsigned int max = 100;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "ellipse_ratio" ) {
-							ellipse_ratio = pvalue.toDouble();
-						} else if( pname == "min_photons" ) {
-							min = pvalue.toUInt();
-						} else if( pname == "max_photons" ) {
-							max = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   1 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   100 );
 
 					return pJob.SetShadowGatherParameters( radius, ellipse_ratio, min, max );
 				}
@@ -9920,38 +6279,12 @@ namespace RISE
 
 			struct GlobalPelPhotonMapGatherAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double radius = 0.0;
-					double ellipse_ratio = 0.05;
-					unsigned int min = 8;
-					unsigned int max = 150;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "radius" ) {
-							radius = pvalue.toDouble();
-						} else if( pname == "ellipse_ratio" ) {
-							ellipse_ratio = pvalue.toDouble();
-						} else if( pname == "min_photons" ) {
-							min = pvalue.toUInt();
-						} else if( pname == "max_photons" ) {
-							max = pvalue.toUInt();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double radius        = bag.GetDouble( "radius",        0.0 );
+					double ellipse_ratio = bag.GetDouble( "ellipse_ratio", 0.05 );
+					unsigned int min     = bag.GetUInt(   "min_photons",   8 );
+					unsigned int max     = bag.GetUInt(   "max_photons",   150 );
 
 					return pJob.SetGlobalPelGatherParameters( radius, ellipse_ratio, min, max );
 				}
@@ -9971,44 +6304,14 @@ namespace RISE
 
 			struct IrradianceCacheAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double tolerance = 0.1;
-					unsigned int size = 100000;
-					double min_spacing = 0.05;
-					double max_spacing = min_spacing * 100;
-					double query_threshold_scale = 0.5;
-					double neighbor_spacing_scale = 2.0;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "tolerance" ) {
-							tolerance = pvalue.toDouble();
-						} else if( pname == "size" ) {
-							size = pvalue.toUInt();
-						} else if( pname == "min_spacing" ) {
-							min_spacing = pvalue.toDouble();
-						} else if( pname == "max_spacing" ) {
-							max_spacing = pvalue.toDouble();
-						} else if( pname == "query_threshold_scale" ) {
-							query_threshold_scale = pvalue.toDouble();
-						} else if( pname == "neighbor_spacing_scale" ) {
-							neighbor_spacing_scale = pvalue.toDouble();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double tolerance              = bag.GetDouble( "tolerance",              0.1 );
+					unsigned int size             = bag.GetUInt(   "size",                   100000 );
+					double min_spacing            = bag.GetDouble( "min_spacing",            0.05 );
+					double max_spacing            = bag.GetDouble( "max_spacing",            min_spacing * 100 );
+					double query_threshold_scale  = bag.GetDouble( "query_threshold_scale",  0.5 );
+					double neighbor_spacing_scale = bag.GetDouble( "neighbor_spacing_scale", 2.0 );
 
 					return pJob.SetIrradianceCacheParameters( size, tolerance, min_spacing, max_spacing, query_threshold_scale, neighbor_spacing_scale );
 				}
@@ -10033,52 +6336,29 @@ namespace RISE
 
 			struct KeyframeAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String element_type = "object";
-					String element = "none";
-					String param = "none";
-					String value = "none";
-					String interp = "none";
-					String interp_params = "none";
-					double time = 0;
+					// NOTE: legacy ParseChunk had two bugs preserved here for
+					// backwards-compat: `element_type` set `param = element_type`
+					// (never updating element_type), and AddKeyframe was called
+					// with `element_type` for both element_type and element
+					// arguments, so the `element` parameter is effectively ignored.
+					std::string element_type   = "object";
+					std::string param          = bag.GetString( "param", "none" );
+					std::string value          = bag.GetString( "value", "none" );
+					std::string interp         = bag.GetString( "interpolator", "none" );
+					std::string interp_params  = bag.GetString( "interpolator_params", "none" );
+					double      time           = bag.GetDouble( "time", 0 );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "element" ) {
-							element = pvalue;
-						} else if( pname == "element_type" ) {
-							param = element_type;
-						} else if( pname == "param" ) {
-							param = pvalue;
-						} else if( pname == "value" ) {
-							value = pvalue;
-						} else if( pname == "time" ) {
-							time = pvalue.toDouble();
-						} else if( pname == "interpolator" ) {
-							interp = pvalue;
-						} else if( pname == "interpolator_params" ) {
-							interp_params = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
+					// Legacy behavior: when element_type is provided, override `param` to "object".
+					if( bag.Has("element_type") ) {
+						param = element_type;
 					}
 
 					return pJob.AddKeyframe( element_type.c_str(), element_type.c_str(), param.c_str(), value.c_str(), time, interp=="none"?0:interp.c_str(), interp_params=="none"?0:interp_params.c_str() );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "keyframe"; cd.category = ChunkCategory::Animation;
@@ -10099,46 +6379,32 @@ namespace RISE
 
 			struct TimelineAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					String element_type = "object";
-					String element = "none";
-					String param = "none";
-					String value = "none";
-					String interp = "none";
-					String interp_params = "none";
-					double time = 0;
+					std::string element_type = bag.GetString( "element_type", "object" );
+					std::string element      = bag.GetString( "element",      "none" );
+					std::string param        = bag.GetString( "param",        "none" );
 
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
+					// `time`, `value`, `interpolator`, `interpolator_params` are
+					// declared repeatable and zipped here.  Each `value`
+					// appearance emits one keyframe.  `time` is read positionally
+					// (time[i] applies to value[i]); `interpolator` and
+					// `interpolator_params` are sticky — the last seen up to
+					// position i applies to value[i], matching the legacy
+					// in-order parser's update-then-emit behavior.
+					const std::vector<std::string>& values  = bag.GetRepeatable( "value" );
+					const std::vector<std::string>& times   = bag.GetRepeatable( "time" );
+					const std::vector<std::string>& interps = bag.GetRepeatable( "interpolator" );
+					const std::vector<std::string>& iparams = bag.GetRepeatable( "interpolator_params" );
 
-						// Now search the parameter value names
-						if( pname == "element" ) {
-							element = pvalue;
-						} else if( pname == "element_type" ) {
-							element_type = pvalue;
-						} else if( pname == "param" ) {
-							param = pvalue;
-						} else if( pname == "value" ) {
-							if( !pJob.AddKeyframe( element_type.c_str(), element.c_str(), param.c_str(), pvalue.c_str(), time, interp=="none"?0:interp.c_str(), interp_params=="none"?0:interp_params.c_str() ) ) {
-								return false;
-							}
-						} else if( pname == "time" ) {
-							time = pvalue.toDouble();
-						} else if( pname == "interpolator" ) {
-							interp = pvalue;
-						} else if( pname == "interpolator_params" ) {
-							interp_params = pvalue;
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
+					for( size_t i = 0; i < values.size(); ++i ) {
+						double time = (i < times.size()) ? RISE::String(times[i].c_str()).toDouble() : 0.0;
+						const char* interp_c  = interps.empty() ? 0 :
+							(interps[std::min(i, interps.size()-1)] == "none" ? 0 : interps[std::min(i, interps.size()-1)].c_str());
+						const char* iparams_c = iparams.empty() ? 0 :
+							(iparams[std::min(i, iparams.size()-1)] == "none" ? 0 : iparams[std::min(i, iparams.size()-1)].c_str());
+
+						if( !pJob.AddKeyframe( element_type.c_str(), element.c_str(), param.c_str(), values[i].c_str(), time, interp_c, iparams_c ) ) {
 							return false;
 						}
 					}
@@ -10146,7 +6412,7 @@ namespace RISE
 					return true;
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "timeline"; cd.category = ChunkCategory::Animation;
@@ -10155,10 +6421,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
 						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
-						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the current `time` (emits one keyframe per appearance)"; }
-						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.description = "Time of next value insertion"; }
-						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.description = "Interpolator type"; p.defaultValueHint = "linear"; }
-						{ auto& p = P(); p.name = "interpolator_params"; p.kind = ValueKind::String; p.description = "Interpolator parameters"; }
+						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the corresponding `time` (emits one keyframe per appearance)"; }
+						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.repeatable = true; p.description = "Time of the matching value (positional, paired 1:1 with `value`)"; }
+						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.repeatable = true; p.description = "Interpolator type (sticky — last-seen up to a given `value` applies)"; p.defaultValueHint = "linear"; }
+						{ auto& p = P(); p.name = "interpolator_params"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Interpolator parameters (sticky)"; }
 						return cd;
 					}();
 					return d;
@@ -10167,46 +6433,18 @@ namespace RISE
 
 			struct AnimationOptionsAsciiChunkParser : public IAsciiChunkParser
 			{
-				bool ParseChunk( const ParamsList& in, IJob& pJob ) const
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					// Set up the set of parameters we want
-					// with defaults for each
-					double time_start = 0;
-					double time_end = 1.0;
-					unsigned int num_frames = 30;
-					bool do_fields = false;
-					bool invert_fields = false;
-
-					ParamsList::const_iterator i=in.begin(), e=in.end();
-					for( ;i!=e; i++ ) {
-						// Split the param
-						String pname;
-						String pvalue;
-						if( !string_split( *i, pname, pvalue, ' ' ) ) {
-							return false;
-						}
-
-						// Now search the parameter value names
-						if( pname == "time_start" ) {
-							time_start = pvalue.toDouble();
-						} else if( pname == "time_end" ) {
-							time_end = pvalue.toDouble();
-						} else if( pname == "num_frames" ) {
-							num_frames = pvalue.toUInt();
-						} else if( pname == "do_fields" ) {
-							do_fields = pvalue.toBoolean();
-						} else if( pname == "invert_fields" ) {
-							invert_fields = pvalue.toBoolean();
-						} else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Failed to parse parameter name `%s`", pname.c_str() );
-							return false;
-						}
-					}
+					double       time_start    = bag.GetDouble( "time_start",    0 );
+					double       time_end      = bag.GetDouble( "time_end",      1.0 );
+					unsigned int num_frames    = bag.GetUInt(   "num_frames",    30 );
+					bool         do_fields     = bag.GetBool(   "do_fields",     false );
+					bool         invert_fields = bag.GetBool(   "invert_fields", false );
 
 					return pJob.SetAnimationOptions( time_start, time_end, num_frames, do_fields, invert_fields );
 				}
 
-				const ChunkDescriptor& Describe() const {
+				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "animation_options"; cd.category = ChunkCategory::Animation;
@@ -10402,6 +6640,30 @@ namespace RISE
 		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
 
 		return entries;
+	}
+
+	//////////////////////////////////////////////////
+	// IAsciiChunkParser default implementations
+	//////////////////////////////////////////////////
+
+	// Default ParseChunk dispatches via the chunk's descriptor: every
+	// input line is validated against Describe().parameters, matched
+	// values are stored in a ParseStateBag, and Finalize() is invoked
+	// to emit the pJob.AddX call.  This is the single source of truth
+	// — a parameter that is not in the descriptor cannot be parsed,
+	// and a parameter that is in the descriptor flows automatically
+	// to Finalize().  Every chunk parser overrides only Finalize;
+	// none overrides ParseChunk.  This means the descriptor IS the
+	// parser's accepted-parameter set — drift between "what the
+	// parser parses" and "what the descriptor advertises" is
+	// structurally impossible.
+	bool IAsciiChunkParser::ParseChunk( const ParamsList& in, IJob& pJob ) const
+	{
+		ParseStateBag bag;
+		if( !Implementation::ChunkParsers::DispatchChunkParameters( Describe(), bag, in ) ) {
+			return false;
+		}
+		return Finalize( bag, pJob );
 	}
 }
 
