@@ -25,14 +25,12 @@
 #include <cstdlib>
 
 #include "../src/Library/Noise/WorleyNoise.h"
+#include "ProceduralTestHelpers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
 
 /// Test 1: Output is always in [0, 1]
 bool TestOutputRange()
@@ -45,7 +43,7 @@ bool TestOutputRange()
 	for( int i = -50; i < 50; i++ ) {
 		for( int j = -50; j < 50; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, i * 0.13 + j * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range value " << val << std::endl;
 				passed = false;
 				break;
@@ -148,24 +146,63 @@ bool TestZeroJitter()
 	WorleyNoise3D* noise = new WorleyNoise3D( 0.0, eWorley_Euclidean, eWorley_F1 );
 
 	// With zero jitter, all feature points are at cell centers (0.5, 0.5, 0.5)
-	// So at integer+0.5 coordinates, F1 should be zero (or near zero after normalization)
+	// So at integer+0.5 coordinates, F1 is exactly 0, and at cell corners
+	// it is sqrt(3)/2 before normalization (Euclidean F1 uses normScale=1).
 	Scalar atCenter = noise->Evaluate( 0.5, 0.5, 0.5 );
 	Scalar atEdge = noise->Evaluate( 0.0, 0.0, 0.0 );
+	const Scalar expectedEdge = sqrt( 3.0 ) * 0.5;
 
-	bool passed = atCenter < atEdge;
+	bool passed = IsClose( atCenter, 0.0, 1e-8 ) &&
+		IsClose( atEdge, expectedEdge, 1e-6 ) &&
+		atCenter < atEdge;
 	noise->release();
 	if( !passed ) {
-		std::cout << "    FAIL: center=" << atCenter << " should be < edge=" << atEdge << std::endl;
+		std::cout << "    FAIL: center=" << atCenter
+			<< " edge=" << atEdge
+			<< " expectedEdge=" << expectedEdge << std::endl;
 	} else {
 		std::cout << "    PASSED (center=" << atCenter << " edge=" << atEdge << ")" << std::endl;
 	}
 	return passed;
 }
 
-/// Test 6: Different metrics produce different outputs
+/// Test 6: With zero jitter, some Euclidean mode values are analytically known
+bool TestZeroJitterExactOutputModes()
+{
+	std::cout << "  Test 6: Zero jitter exact output modes..." << std::endl;
+
+	WorleyNoise3D* noiseF2 = new WorleyNoise3D( 0.0, eWorley_Euclidean, eWorley_F2 );
+	WorleyNoise3D* noiseF2F1 = new WorleyNoise3D( 0.0, eWorley_Euclidean, eWorley_F2minusF1 );
+
+	// At a cell center, nearest feature point is distance 0 and the second
+	// nearest is one cell away, so raw F2 = 1.0. Euclidean F2 normalizes by 1.5.
+	const Scalar f2AtCenter = noiseF2->Evaluate( 0.5, 0.5, 0.5 );
+	const Scalar expectedF2AtCenter = 1.0 / 1.5;
+
+	// At a cell corner, eight neighboring cell centers are tied at the same
+	// distance, so raw F1 == F2 and F2-F1 = 0 exactly.
+	const Scalar f2MinusF1AtCorner = noiseF2F1->Evaluate( 0.0, 0.0, 0.0 );
+
+	const bool passed =
+		IsClose( f2AtCenter, expectedF2AtCenter, 1e-6 ) &&
+		IsClose( f2MinusF1AtCorner, 0.0, 1e-8 );
+
+	noiseF2->release();
+	noiseF2F1->release();
+	if( !passed ) {
+		std::cout << "    FAIL: f2Center=" << f2AtCenter
+			<< " expectedF2Center=" << expectedF2AtCenter
+			<< " f2MinusF1Corner=" << f2MinusF1AtCorner << std::endl;
+	} else {
+		std::cout << "    PASSED" << std::endl;
+	}
+	return passed;
+}
+
+/// Test 7: Different metrics produce different outputs
 bool TestDifferentMetrics()
 {
-	std::cout << "  Test 6: Different metrics produce different outputs..." << std::endl;
+	std::cout << "  Test 7: Different metrics produce different outputs..." << std::endl;
 
 	WorleyNoise3D* noiseEuc = new WorleyNoise3D( 1.0, eWorley_Euclidean, eWorley_F1 );
 	WorleyNoise3D* noiseMht = new WorleyNoise3D( 1.0, eWorley_Manhattan, eWorley_F1 );
@@ -194,10 +231,10 @@ bool TestDifferentMetrics()
 	return passed;
 }
 
-/// Test 7: Different output modes produce different outputs
+/// Test 8: Different output modes produce different outputs
 bool TestDifferentOutputModes()
 {
-	std::cout << "  Test 7: Different output modes..." << std::endl;
+	std::cout << "  Test 8: Different output modes..." << std::endl;
 
 	WorleyNoise3D* noiseF1 = new WorleyNoise3D( 1.0, eWorley_Euclidean, eWorley_F1 );
 	WorleyNoise3D* noiseF2 = new WorleyNoise3D( 1.0, eWorley_Euclidean, eWorley_F2 );
@@ -226,16 +263,16 @@ bool TestDifferentOutputModes()
 	return passed;
 }
 
-/// Test 8: Negative coordinates work
+/// Test 9: Negative coordinates work
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 8: Negative coordinates..." << std::endl;
+	std::cout << "  Test 9: Negative coordinates..." << std::endl;
 
 	WorleyNoise3D* noise = new WorleyNoise3D( 1.0, eWorley_Euclidean, eWorley_F1 );
 
 	bool passed = true;
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+	if( !IsInUnitInterval( val ) ) {
 		std::cout << "    FAIL: out of range at negative coords: " << val << std::endl;
 		passed = false;
 	}
@@ -256,6 +293,7 @@ int main()
 	allPassed &= TestDeterministic();
 	allPassed &= TestF2MinusF1NonNeg();
 	allPassed &= TestZeroJitter();
+	allPassed &= TestZeroJitterExactOutputModes();
 	allPassed &= TestDifferentMetrics();
 	allPassed &= TestDifferentOutputModes();
 	allPassed &= TestNegativeCoordinates();

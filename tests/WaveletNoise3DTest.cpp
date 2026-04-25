@@ -15,14 +15,14 @@
 #include <cstdlib>
 
 #include "../src/Library/Noise/WaveletNoise.h"
+#include "ProceduralGridTestHelpers.h"
+#include "ProceduralTestHelpers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralGridTestHelpers::AllCloseOnGrid3D;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
 
 bool TestOutputRange()
 {
@@ -32,7 +32,7 @@ bool TestOutputRange()
 	for( int i = -30; i < 30; i++ ) {
 		for( int j = -5; j < 5; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false; break;
 			}
@@ -82,32 +82,63 @@ bool TestTiling()
 {
 	std::cout << "  Test 4: Tiling periodicity..." << std::endl;
 	WaveletNoise3D* noise = new WaveletNoise3D( 32, 0.65, 1 );  // 1 octave to test raw tile
-	bool passed = true;
-	for( int i = 0; i < 10; i++ ) {
-		Scalar x = i * 2.7 + 0.5;
-		Scalar y = i * 1.3 + 0.3;
-		Scalar z = i * 0.9 + 0.7;
-		Scalar v1 = noise->Evaluate( x, y, z );
-		Scalar v2 = noise->Evaluate( x + 32, y + 32, z + 32 );
-		if( !IsClose( v1, v2, 1e-4 ) ) {
-			std::cout << "    FAIL: not periodic at shift 32" << std::endl;
-			passed = false; break;
-		}
-	}
+	const bool passed = AllCloseOnGrid3D( 5, 2, 1, 2.7, 1.3, 0.9,
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 0.5, y + 0.3, z + 0.7 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 32.5, y + 32.3, z + 32.7 ); },
+		1e-4 );
 	noise->release();
 	if( passed ) std::cout << "    PASSED" << std::endl;
+	else std::cout << "    FAIL: not periodic at shift 32" << std::endl;
 	return passed;
 }
 
-bool TestNegativeCoordinates()
+bool TestAxisWrappedPeriodicity()
 {
-	std::cout << "  Test 5: Negative coordinates..." << std::endl;
+	std::cout << "  Test 5: Per-axis wrapped periodicity..." << std::endl;
 	WaveletNoise3D* noise = new WaveletNoise3D( 32, 0.65, 4 );
-	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+
+	const bool passedX = AllCloseOnGrid3D( 4, 3, 1, 1.9, 0.8, 1.1,
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 0.35, y + 0.15, z + 0.65 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 32.35, y + 0.15, z + 0.65 ); },
+		1e-4 );
+	const bool passedY = AllCloseOnGrid3D( 4, 3, 1, 1.9, 0.8, 1.1,
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 0.35, y + 0.15, z + 0.65 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 0.35, y + 32.15, z + 0.65 ); },
+		1e-4 );
+	const bool passedZ = AllCloseOnGrid3D( 4, 3, 1, 1.9, 0.8, 1.1,
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 0.35, y + 0.15, z + 0.65 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return noise->Evaluate( x + 0.35, y + 0.15, z + 32.65 ); },
+		1e-4 );
+	const bool passed = passedX && passedY && passedZ;
+
 	noise->release();
-	if( passed ) std::cout << "    PASSED (val=" << val << ")" << std::endl;
-	else std::cout << "    FAIL: val=" << val << std::endl;
+	if( passed ) std::cout << "    PASSED" << std::endl;
+	else std::cout << "    FAIL: per-axis wrapped periodicity mismatch" << std::endl;
+	return passed;
+}
+
+bool TestNegativeCoordinatesWrapConsistently()
+{
+	std::cout << "  Test 6: Negative coordinates wrap consistently..." << std::endl;
+	WaveletNoise3D* noise = new WaveletNoise3D( 32, 0.65, 4 );
+
+	const Scalar x = -10.5;
+	const Scalar y = -20.3;
+	const Scalar z = -5.7;
+	const Scalar wrappedX = x + 32.0;
+	const Scalar wrappedY = y + 32.0;
+	const Scalar wrappedZ = z + 32.0;
+
+	const Scalar val = noise->Evaluate( x, y, z );
+	const Scalar wrapped = noise->Evaluate( wrappedX, wrappedY, wrappedZ );
+	bool passed = IsInUnitInterval( val ) && IsClose( val, wrapped, 1e-4 );
+
+	noise->release();
+	if( passed ) {
+		std::cout << "    PASSED (val=" << val << ", wrapped=" << wrapped << ")" << std::endl;
+	} else {
+		std::cout << "    FAIL: val=" << val << " wrapped=" << wrapped << std::endl;
+	}
 	return passed;
 }
 
@@ -119,7 +150,8 @@ int main()
 	allPassed &= TestSpatialVariation();
 	allPassed &= TestDeterministic();
 	allPassed &= TestTiling();
-	allPassed &= TestNegativeCoordinates();
+	allPassed &= TestAxisWrappedPeriodicity();
+	allPassed &= TestNegativeCoordinatesWrapConsistently();
 	std::cout << std::endl;
 	if( allPassed ) std::cout << "ALL TESTS PASSED" << std::endl;
 	else std::cout << "SOME TESTS FAILED" << std::endl;

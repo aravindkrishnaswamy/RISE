@@ -6,7 +6,10 @@ description: |
   correctness-sensitive code, crosses a public API boundary, touches
   threading or concurrency, or the user asks for "adversarial review",
   "multiple reviewers", or a second opinion.  Also use proactively
-  after shipping a change the user flagged as risky.
+  after shipping a change the user flagged as risky.  Forces concrete
+  findings with severity and failure scenarios, a fix-and-rereview
+  loop, and at least one post-fix review round before moving on from
+  material issues.
 ---
 
 # Adversarial Code Review
@@ -32,7 +35,20 @@ description: |
 
 ## Procedure
 
-### 1. Pick orthogonal reviewer axes
+### 1. Do a brief self-audit before spawning reviewers
+
+Before launching reviewers, write down:
+
+- the 3-5 ways the change is most likely to be wrong
+- the files where a bug would most likely hide
+- the contracts that must not regress
+- the tests or scenes that would best expose a break
+
+This is not a substitute for review.  It is how you choose better
+reviewer axes and better reviewer questions.  If you cannot name the
+likely bug classes, your review prompts will be vague.
+
+### 2. Pick orthogonal reviewer axes
 
 Two reviewers with overlapping remits produce correlated findings and
 a shared blind spot.  Before launching, write down the axes on which
@@ -56,7 +72,12 @@ Pick axes that do not overlap.  "Math correctness" and "numerical
 stability" overlap; do not pair them.  "Math correctness" and "thread
 safety" do not overlap; pair them.
 
-### 2. Write self-contained prompts
+Also reserve one axis for **blast radius / missing tests** when the
+change is broad: ask one reviewer to look specifically for affected
+callers, variant implementations, parser/API plumbing, and missing
+regression coverage.
+
+### 3. Write self-contained prompts
 
 Each reviewer starts from zero context — it has not seen the
 conversation.  Every prompt must include:
@@ -71,13 +92,33 @@ conversation.  Every prompt must include:
 - **Pointed questions** — explicit, lettered questions ("A) Does the
   discrete footprint sum to unity?  B) Are the loop bounds inclusive
   on both ends?") not "find bugs."
+- **A reporting format** — require `severity`, `confidence`,
+  `file:line`, and a concrete user-visible or correctness-visible
+  failure scenario for each finding.
+- **A requirement to call out missing tests** — reviewers should name
+  the test or scene they wish existed, not just the bug.
 - **A word cap** — "Report in under 400 words" or similar.  Without a
   cap, reviewers produce prose the user will not read.
 - **An instruction to report concretely** — "file:line + a concrete
   failure scenario for each finding."  Without it, you get "this
   could be cleaner."
+- **An explicit bias toward findings** — "prioritize correctness,
+  regressions, and missing coverage; ignore style unless it hides a
+  correctness risk."
 
-### 3. Launch in parallel
+Recommended finding format:
+
+```text
+[P1|confidence 0.84] /abs/path/file.cpp:123
+Problem: <one sentence>
+Why it can fail: <concrete scenario>
+What should cover it: <test or scene>
+```
+
+If the reviewer finds nothing material, require an explicit "no P1/P2
+findings" statement rather than silence.
+
+### 4. Launch in parallel
 
 Send a single tool-call batch with all reviewers in one message.
 They run concurrently, cut wall time, and — crucially — cannot
@@ -86,7 +127,26 @@ influence each other because they never see each other's output.
 Serial dispatch (one after another) wastes wall time AND tempts the
 reviewer to defer to earlier findings.
 
-### 4. Verify each finding before fixing
+### 5. Normalize the findings into a ledger
+
+Before fixing anything, make a small ledger:
+
+- `new`
+- `confirmed`
+- `rejected`
+- `fixed`
+- `rereviewed`
+
+Each finding gets one row with severity, file, one-line issue summary,
+and current status.  This prevents the common failure mode where round
+1 findings are half-addressed, forgotten, or not revisited after a
+large follow-up patch.
+
+If multiple reviewers reported the same issue, deduplicate into one
+ledger row and keep the strongest phrasing / clearest failure
+scenario.
+
+### 6. Verify each finding before fixing
 
 Reviewers are capable but not infallible.  A false-positive finding
 acted on is worse than no review: you spent time "fixing" something
@@ -101,7 +161,10 @@ For every non-trivial finding, spend 30 seconds confirming:
 
 Cheap to do, invaluable when it catches a false positive.
 
-### 5. Fix the real findings, then iterate
+Reject a finding only if you can state why the cited failure mode is
+not reachable.  Record that reason in the ledger.
+
+### 7. Fix the confirmed findings, then ask for more review
 
 After fixing, run a second round with narrower scope — "the issues
 from round 1 have been addressed per the summary below; please
@@ -111,14 +174,48 @@ reviewer on a different axis that round 1 did not cover.
 Rounds 2-5 reliably find bugs that round 1 missed.  Do not stop after
 round 1 unless the change is small.
 
-### 6. Stop
+For any material issue (`P1` / `P2`) or any fix that changed logic in a
+meaningful way, a post-fix rereview round is mandatory.  Do not move
+on just because the code now "looks right."
 
-Stop when one of:
+When asking for rereview:
 
-- A round returns no new P1 or P2 findings.
-- The user says "good" or equivalent.
-- You have reached the reasonable limit of review depth for the
-  change size (typically 2-5 rounds).
+- summarize only the fixes, not the expected answer
+- point reviewers at the changed files again
+- ask whether the fix fully closes the failure mode
+- ask what the next most likely hidden bug is now that the noisy ones
+  are gone
+
+### 8. Require at least one "what's left?" review round
+
+After addressing the currently known findings, run one more review
+round whose job is not to confirm old fixes but to search for the next
+most plausible miss.
+
+Prompt shape:
+
+- "Assume at least one meaningful issue may still remain."
+- "Ignore already-fixed findings unless the fix is incomplete."
+- "Look for the next most likely correctness regression, ABI hazard,
+  threading bug, or missing test."
+
+This catches the common failure mode where round 2 merely rubber-stamps
+round 1 fixes and nobody asks what was still missed.
+
+### 9. Stop
+
+Stop only when both are true:
+
+- every material finding in the ledger is either `rejected` with a
+  concrete reason or `fixed`
+- at least one post-fix review round returns no new `P1` / `P2`
+  findings
+
+The user saying "good" can still stop the process, but absent that,
+do not exit after the first fix pass.
+
+Typical depth remains 2-5 rounds, but broad or correctness-sensitive
+changes should bias toward the high end.
 
 ## Anti-patterns
 
@@ -135,6 +232,17 @@ with a genuinely different lens.
 essays, not findings.  Force the reviewer into specifics with a
 numbered question list.
 
+### No severity / confidence / failure scenario
+
+Without structure, reviewers drift into opinion.  Severity and a
+concrete failure scenario force prioritization and make validation
+faster.
+
+### Fixing findings without a ledger
+
+If findings live only in chat scrollback, some will be forgotten, some
+will be partially fixed, and some will never get rereviewed.
+
 ### Acting without verification
 
 Reviewers have confidently flagged things that turned out to already
@@ -147,6 +255,12 @@ The first round catches the loudest bugs.  The quieter ones — ABI
 layout, name hiding, stream aliasing, per-pixel vs per-sample
 normalization — emerge in later rounds once the noisy bugs are out
 of the way.
+
+### Stopping after the first fix pass
+
+"I fixed the reported issues, so I’m done" ships follow-on bugs.
+Material fixes change the code enough to deserve another adversarial
+pass.
 
 ### Unbounded reports
 
@@ -187,6 +301,11 @@ the total work the fixes represented.
 
 ## Stop Rule
 
-A round that returns no P1 or P2 findings — OR the user signaling
-satisfaction — means this skill's work is done.  Record the number of
-rounds in the final summary so the user can judge the thoroughness.
+This skill's work is done when:
+
+- all material findings have explicit ledger status,
+- confirmed findings are fixed,
+- at least one post-fix adversarial review round returns no new P1/P2
+  findings,
+- and the final summary states the number of rounds, reviewer axes
+  used, and any findings intentionally rejected with rationale.

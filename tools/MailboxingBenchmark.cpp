@@ -1,7 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  MailboxingPerformanceTest.cpp - Performance micro-benchmark for
-//  thread_local mailboxing to verify no regression vs old approach.
+//  MailboxingBenchmark.cpp - Performance micro-benchmark for
+//  thread_local mailboxing. This is an informational benchmark,
+//  not an assertion-style correctness test.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -55,8 +56,8 @@ static TriangleMeshGeometryIndexed* BuildDenseMesh(int gridN)
 
 int main()
 {
-	std::cout << "Mailboxing Performance Benchmark" << std::endl;
-	std::cout << "================================" << std::endl;
+	std::cout << "Mailboxing Benchmark" << std::endl;
+	std::cout << "====================" << std::endl;
 
 	const int gridN = 50;  // 50x50 grid = 5000 triangles
 	TriangleMeshGeometryIndexed* pMesh = BuildDenseMesh(gridN);
@@ -111,15 +112,14 @@ int main()
 	std::cout << "Median: " << median_ns << " ns/ray" << std::endl;
 	std::cout << "Hits: " << totalHits << " / " << numRays << std::endl;
 
-	// Correctness check: most rays aimed at the grid should hit
+	// Keep the basic intersection sanity check so benchmark runs still catch obvious breakage.
 	assert(totalHits > numRays / 2);
 
 	safe_release(pMesh);
 
 	std::cout << std::endl;
-	std::cout << "Mailboxing performance benchmark complete." << std::endl;
-	std::cout << "NOTE: Compare median ns/ray before and after changes." << std::endl;
-	std::cout << "      Regression threshold: < 1% increase." << std::endl;
+	std::cout << "Mailboxing benchmark complete." << std::endl;
+	std::cout << "Use the median ns/ray for before/after comparison." << std::endl;
 
 	return 0;
 }

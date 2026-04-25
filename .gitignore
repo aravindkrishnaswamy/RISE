@@ -35,6 +35,9 @@ build/VS2022/UpgradeLog.htm
 /dbin
 /build/VS2022/x64
 /build/VS2022/RISE-CLI/x64
+# CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out)
+/build/cmake/*/_out
+/build/cmake/*/build
 # ---- Android / Gradle / Android Studio ----
 # Gradle daemon + per-project caches (both root-level and per-module)
 /android/.gradle

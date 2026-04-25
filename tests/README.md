@@ -6,6 +6,8 @@ Scene-based validation taxonomy now lives in [../scenes/README.md](../scenes/REA
 
 ## Build And Run
 
+### Linux / macOS
+
 ```sh
 make -C build/make/rise tests
 ./run_all_tests.sh
@@ -13,7 +15,23 @@ make -C build/make/rise tests
 
 Build behavior comes from [../build/make/rise/Makefile](../build/make/rise/Makefile). The makefile glob picks up every `tests/*.cpp` file automatically and links it against the core library.
 
-Built binaries land in `bin/tests/`.
+### Windows
+
+```powershell
+# One-time configure:
+cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
+
+# Prereq: build the Library + CLI from build/VS2022/RISE.sln in both Debug
+# and Release once so bin/RISE.lib and dbin/RISE.lib exist.
+.\run_all_tests.ps1                              # Release
+.\run_all_tests.ps1 -Config Debug                # Debug
+.\run_all_tests.ps1 -Filter Math3DTest,*Noise3D* # Subset by wildcard
+.\run_all_tests.ps1 -TimeoutSeconds 60           # Kill any test exceeding 60s
+```
+
+Build behavior comes from [../build/cmake/rise-tests/CMakeLists.txt](../build/cmake/rise-tests/CMakeLists.txt). CMake globs every `tests/*.cpp` into its own per-test executable, links against the existing `RISE.lib` produced by the VS2022 Library project, and stages the OpenEXR + OIDN runtime DLLs alongside each test exe.
+
+Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
 
 ## Current Test Inventory
 
@@ -40,11 +58,9 @@ Built binaries land in `bin/tests/`.
 - Image comparison, diagnostics, and instrumentation:
   `RasterSanityScanTest.cpp`, `RenderETAEstimatorTest.cpp`
   (CLI diagnostic utilities like `ImageDiffTest`, `FindFireflyTest`,
-  `ExrRegionCompareTest`, and `ExrFireflyInspect` live in `tools/`,
+  `ExrRegionCompareTest`, `ExrFireflyInspect`, and `MailboxingBenchmark` live in `tools/`,
   not here, because they require file arguments and are not
   assertion-based tests.)
-- Performance-oriented coverage:
-  `MailboxingPerformanceTest.cpp`
 
 ## Style Of Test Used Here
 
@@ -52,6 +68,8 @@ Built binaries land in `bin/tests/`.
 - Assertions are usually plain `assert(...)`.
 - Helpful progress text is printed with `std::cout`.
 - The best targets are deterministic helpers, math utilities, cache logic, and other focused behavior that does not require comparing full rendered images.
+- For procedural / noise tests, separate **exact contract checks** from **sampled-difference heuristics**. Put exact identities first in `main()` and label the weaker sampled-difference checks clearly so future readers do not mistake them for strong oracles.
+- Prefer exact identities such as periodicity, parameter collapse (`blend=0`, `warpAmplitude=0`, `persistence=0`), symmetry, sign behavior, and simple analytic reference points before adding "different settings produce different outputs" checks.
 - Ignored `*.o` files or `* 2.o` files under `tests/` are local build artifacts, not source-of-truth tests.
 
 ## Adding A New Test
@@ -60,10 +78,10 @@ Built binaries land in `bin/tests/`.
 2. Include the minimal headers you need from `src/Library`.
 3. Keep the test deterministic and fast.
 4. Use `assert` for pass/fail checks.
-5. Build with `make -C build/make/rise tests`.
-6. Run with `./run_all_tests.sh`.
+5. Build with `make -C build/make/rise tests` on Linux/macOS, or `cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel` on Windows.
+6. Run with `./run_all_tests.sh` on Linux/macOS, or `.\run_all_tests.ps1` on Windows.
 
-No makefile edit is needed for a new `tests/*.cpp` file because the existing wildcard-based rule discovers it automatically.
+No makefile edit is needed for a new `tests/*.cpp` file because the existing wildcard-based rule discovers it automatically. The Windows CMake test project also auto-discovers new `tests/*.cpp` files via `file(GLOB ... CONFIGURE_DEPENDS ...)`.
 
 ## Transport Correctness Scenes (Roadmap Step 2)
 

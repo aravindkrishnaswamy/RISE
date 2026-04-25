@@ -16,14 +16,13 @@
 
 #include "../src/Library/Noise/GaborNoise.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
+#include "ProceduralTestHelpers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
 
 bool TestOutputRange()
 {
@@ -35,7 +34,7 @@ bool TestOutputRange()
 	for( int i = -30; i < 30; i++ ) {
 		for( int j = -5; j < 5; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
 				break;
@@ -99,12 +98,10 @@ bool TestDifferentOrientations()
 	GaborNoise3D* noiseA = new GaborNoise3D( 4.0, 1.0, Vector3(1,0,0), 4.0, 42 );
 	GaborNoise3D* noiseB = new GaborNoise3D( 4.0, 1.0, Vector3(0,1,0), 4.0, 42 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 0.5 + 0.1, y = i * 0.3, z = i * 0.7;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 0.5 + 0.1, i * 0.3, i * 0.7 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 0.5 + 0.1, i * 0.3, i * 0.7 ); },
+		1e-4 );
 
 	bool passed = differCount > 10;
 	noiseA->release();
@@ -123,12 +120,10 @@ bool TestDifferentFrequencies()
 	GaborNoise3D* noiseA = new GaborNoise3D( 2.0, 1.0, Vector3(0,1,0), 4.0, 42 );
 	GaborNoise3D* noiseB = new GaborNoise3D( 8.0, 1.0, Vector3(0,1,0), 4.0, 42 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 0.5, y = i * 0.3, z = i * 0.7;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 0.5, i * 0.3, i * 0.7 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 0.5, i * 0.3, i * 0.7 ); },
+		1e-4 );
 
 	bool passed = differCount > 10;
 	noiseA->release();
@@ -140,14 +135,42 @@ bool TestDifferentFrequencies()
 	return passed;
 }
 
+bool TestZeroOrientationFallsBackToXAxis()
+{
+	std::cout << "  Test 6: Zero orientation falls back to X axis..." << std::endl;
+
+	GaborNoise3D* fallback = new GaborNoise3D( 4.0, 1.0, Vector3(0,0,0), 4.0, 42 );
+	GaborNoise3D* xAxis = new GaborNoise3D( 4.0, 1.0, Vector3(1,0,0), 4.0, 42 );
+
+	bool passed = true;
+	for( int i = 0; i < 20; i++ ) {
+		Scalar x = i * 0.4 + 0.15;
+		Scalar y = i * 0.6 + 0.25;
+		Scalar z = i * 0.8 + 0.35;
+
+		const Scalar vFallback = fallback->Evaluate( x, y, z );
+		const Scalar vXAxis = xAxis->Evaluate( x, y, z );
+		if( !IsClose( vFallback, vXAxis, 1e-6 ) ) {
+			std::cout << "    FAIL: fallback=" << vFallback << " xAxis=" << vXAxis << std::endl;
+			passed = false;
+			break;
+		}
+	}
+
+	fallback->release();
+	xAxis->release();
+	if( passed ) std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 6: Negative coordinates..." << std::endl;
+	std::cout << "  Test 7: Negative coordinates..." << std::endl;
 
 	GaborNoise3D* noise = new GaborNoise3D( 4.0, 1.0, Vector3(0,1,0), 4.0, 42 );
 
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+	bool passed = IsInUnitInterval( val );
 	noise->release();
 	if( !passed )
 		std::cout << "    FAIL: val=" << val << std::endl;
@@ -166,6 +189,7 @@ int main()
 	allPassed &= TestDeterministic();
 	allPassed &= TestDifferentOrientations();
 	allPassed &= TestDifferentFrequencies();
+	allPassed &= TestZeroOrientationFallsBackToXAxis();
 	allPassed &= TestNegativeCoordinates();
 
 	std::cout << std::endl;

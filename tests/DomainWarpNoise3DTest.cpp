@@ -26,14 +26,18 @@
 #include "../src/Library/Noise/DomainWarpNoise.h"
 #include "../src/Library/Noise/PerlinNoise.h"
 #include "../src/Library/Utilities/SimpleInterpolators.h"
+#include "ProceduralTestHelpers.h"
+#include "StandaloneTestReporting.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
+using ProceduralTestHelpers::NormalizedPerlinValue;
+using StandaloneTestReporting::PrintFailed;
+using StandaloneTestReporting::PrintPassed;
+using StandaloneTestReporting::PrintSection;
 
 bool TestOutputRange()
 {
@@ -46,7 +50,7 @@ bool TestOutputRange()
 	for( int i = -50; i < 50; i++ ) {
 		for( int j = -10; j < 10; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
 				break;
@@ -79,9 +83,9 @@ bool TestSpatialVariation()
 	noise->release();
 	interp->release();
 	if( !passed )
-		std::cout << "    FAIL: range=" << (maxVal-minVal) << std::endl;
+		PrintFailed( "range=" + std::to_string( maxVal-minVal ) );
 	else
-		std::cout << "    PASSED (range=" << (maxVal-minVal) << ")" << std::endl;
+		PrintPassed( "range=" + std::to_string( maxVal-minVal ) );
 	return passed;
 }
 
@@ -120,9 +124,34 @@ bool TestZeroLevelsMatchesPerlin()
 	for( int i = 0; i < 30; i++ ) {
 		Scalar x = i * 1.7 + 0.5, y = i * 2.3 - 1.0, z = i * 0.9 + 2.0;
 		Scalar wVal = warp->Evaluate( x, y, z );
-		Scalar pVal = (perlin->Evaluate( x, y, z ) + 1.0) / 2.0;
-		if( pVal < 0.0 ) pVal = 0.0;
-		if( pVal > 1.0 ) pVal = 1.0;
+		Scalar pVal = NormalizedPerlinValue( *perlin, x, y, z );
+		if( !IsClose( wVal, pVal, 1e-4 ) ) {
+			std::cout << "    FAIL: warp=" << wVal << " perlin=" << pVal << std::endl;
+			passed = false;
+			break;
+		}
+	}
+
+	warp->release();
+	perlin->release();
+	interp->release();
+	if( passed ) PrintPassed();
+	return passed;
+}
+
+bool TestZeroAmplitudeMatchesPerlin()
+{
+	std::cout << "  Test 5: Warp amplitude=0 matches Perlin..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	DomainWarpNoise3D* warp = new DomainWarpNoise3D( *interp, 0.65, 4, 0.0, 3 );
+	PerlinNoise3D* perlin = new PerlinNoise3D( *interp, 0.65, 4 );
+
+	bool passed = true;
+	for( int i = 0; i < 30; i++ ) {
+		Scalar x = i * 1.1 + 0.2, y = i * 0.9 - 0.7, z = i * 1.4 + 0.6;
+		Scalar wVal = warp->Evaluate( x, y, z );
+		Scalar pVal = NormalizedPerlinValue( *perlin, x, y, z );
 		if( !IsClose( wVal, pVal, 1e-4 ) ) {
 			std::cout << "    FAIL: warp=" << wVal << " perlin=" << pVal << std::endl;
 			passed = false;
@@ -139,18 +168,16 @@ bool TestZeroLevelsMatchesPerlin()
 
 bool TestDifferentAmplitudes()
 {
-	std::cout << "  Test 5: Different amplitudes..." << std::endl;
+	std::cout << "  Test 6: Different amplitudes..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	DomainWarpNoise3D* noiseA = new DomainWarpNoise3D( *interp, 0.65, 4, 1.0, 2 );
 	DomainWarpNoise3D* noiseB = new DomainWarpNoise3D( *interp, 0.65, 4, 8.0, 2 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 15;
 	noiseA->release();
@@ -165,18 +192,16 @@ bool TestDifferentAmplitudes()
 
 bool TestDifferentLevels()
 {
-	std::cout << "  Test 6: Different warp levels..." << std::endl;
+	std::cout << "  Test 7: Different warp levels..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	DomainWarpNoise3D* noise1 = new DomainWarpNoise3D( *interp, 0.65, 4, 4.0, 1 );
 	DomainWarpNoise3D* noise3 = new DomainWarpNoise3D( *interp, 0.65, 4, 4.0, 3 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noise1->Evaluate(x,y,z), noise3->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noise1->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noise3->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 15;
 	noise1->release();
@@ -191,13 +216,13 @@ bool TestDifferentLevels()
 
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 7: Negative coordinates..." << std::endl;
+	std::cout << "  Test 8: Negative coordinates..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	DomainWarpNoise3D* noise = new DomainWarpNoise3D( *interp, 0.65, 4, 4.0, 2 );
 
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+	bool passed = IsInUnitInterval( val );
 	noise->release();
 	interp->release();
 	if( !passed )
@@ -212,13 +237,17 @@ int main()
 	std::cout << "=== DomainWarpNoise3D Tests ===" << std::endl;
 	bool allPassed = true;
 
-	allPassed &= TestOutputRange();
-	allPassed &= TestSpatialVariation();
-	allPassed &= TestDeterministic();
+	PrintSection( "Exact Contract Checks" );
 	allPassed &= TestZeroLevelsMatchesPerlin();
+	allPassed &= TestZeroAmplitudeMatchesPerlin();
+	allPassed &= TestOutputRange();
+	allPassed &= TestDeterministic();
+	allPassed &= TestNegativeCoordinates();
+
+	PrintSection( "Sampled-Difference Heuristics" );
+	allPassed &= TestSpatialVariation();
 	allPassed &= TestDifferentAmplitudes();
 	allPassed &= TestDifferentLevels();
-	allPassed &= TestNegativeCoordinates();
 
 	std::cout << std::endl;
 	if( allPassed )

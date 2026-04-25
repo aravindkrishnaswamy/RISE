@@ -57,6 +57,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 ## Change Checklist
 
 - New render feature: implement the class, expose it through `RISE_API` if externally constructible, add a `Job` wrapper if needed, register a scene chunk if user-authored, add a sample scene, add a focused test, and update **every** build project for new `.cpp` / `.h` files (see next item).
+- **Adding a scene chunk OR a parameter to an existing chunk**: chunk parsers are descriptor-driven (since 2026-04). Each `IAsciiChunkParser` overrides `Describe()` (returns a `ChunkDescriptor` that enumerates every accepted parameter) and `Finalize(const ParseStateBag&, IJob&)` (reads typed values out of the bag and emits the `pJob.AddX` call) — no chunk parser overrides `ParseChunk` directly; the default impl dispatches via the descriptor. The descriptor IS the parser's accepted-parameter set, so drift between "what gets parsed" and "what the syntax highlighter / suggestion engine advertise" is structurally impossible. To add a new chunk: define a new `IAsciiChunkParser` subclass (`Describe` + `Finalize`) and register it in `CreateAllChunkParsers()`; both syntax highlighters and the scene-editor suggestion engine pick it up automatically. To add a parameter: append one entry to the chunk's `Describe()` parameter list and read it via `bag.GetX(...)` in `Finalize`. Full how-to (with skeleton, helper-template catalog, and `ParseStateBag` accessor reference) lives in [src/Library/Parsers/README.md](src/Library/Parsers/README.md). The architecture overview is also documented in the header of [src/Library/Parsers/AsciiSceneParser.cpp](src/Library/Parsers/AsciiSceneParser.cpp).
 - **Adding OR removing a source file anywhere under `src/Library/`**: the same five build projects must be updated in lock-step, whether you are adding new files or deleting existing ones. Missing any one leaves at least one platform broken. All five are authoritative — none auto-discovers files:
   - `build/make/rise/Filelist` — SRCLIB sub-list for `.cpp` (the canonical Unix/Linux build).
   - `build/cmake/rise-android/rise_sources.cmake` — `RISE_LIB_SOURCES` list for `.cpp` (Android NDK build, mirrors `Filelist` SRCLIB by hand). The Android Gradle build reads this via `build/cmake/rise-android/CMakeLists.txt`; no other file in `android/` references the library source list.
@@ -71,9 +72,13 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 
 ## Build And Test
 
-- Make build: `make -C build/make/rise -j8 all`
-- Tests build: `make -C build/make/rise tests`
-- Tests run: `./run_all_tests.sh`
+- Linux/macOS build: `make -C build/make/rise -j8 all`
+- Linux/macOS tests build: `make -C build/make/rise tests`
+- Linux/macOS tests run: `./run_all_tests.sh`
+- Windows tests configure: `cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64`
+- Windows tests build: `cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel`
+- Windows tests run: `.\run_all_tests.ps1`
+- Windows tests run (Debug): `.\run_all_tests.ps1 -Config Debug`
 - Batch scene render: `./run_scenes.sh`
 - Sample scene render:
 
@@ -109,6 +114,7 @@ precisely because ad-hoc judgment reliably misses them.
 | [abi-preserving-api-evolution](docs/skills/abi-preserving-api-evolution.md) | Change a public API — exported function, virtual interface, or abstract base class. |
 | [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — apply this decision tree first. |
 | [sms-firefly-diagnosis](docs/skills/sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; user reports "fireflies" in an SMS scene. |
+| [write-highly-effective-tests](docs/skills/write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into strong regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
 
 Claude Code auto-discovers these via thin shims under
 `.claude/skills/<name>/SKILL.md`.  Other LLM tools should read the

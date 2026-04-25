@@ -15,14 +15,15 @@
 #include <cstdlib>
 
 #include "../src/Library/Noise/ReactionDiffusion.h"
+#include "ProceduralGridTestHelpers.h"
+#include "ProceduralTestHelpers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralGridTestHelpers::AllCloseOnGrid3D;
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
 
 bool TestOutputRange()
 {
@@ -33,7 +34,7 @@ bool TestOutputRange()
 	for( int i = 0; i < 20; i++ ) {
 		for( int j = 0; j < 5; j++ ) {
 			Scalar val = rd->Evaluate( i * 0.05, j * 0.05, 0.5 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false; break;
 			}
@@ -85,12 +86,10 @@ bool TestDifferentParameters()
 	// Spots pattern (f=0.037, k=0.06) vs stripes pattern (f=0.04, k=0.06)
 	ReactionDiffusion3D* rdA = new ReactionDiffusion3D( 16, 0.2, 0.1, 0.037, 0.06, 500 );
 	ReactionDiffusion3D* rdB = new ReactionDiffusion3D( 16, 0.2, 0.1, 0.04, 0.065, 500 );
-	int differCount = 0;
-	for( int i = 0; i < 20; i++ ) {
-		Scalar x = i * 0.05, y = 0.5, z = 0.5;
-		if( !IsClose( rdA->Evaluate(x,y,z), rdB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = ProceduralGridTestHelpers::CountDifferentOnGrid3D( 5, 2, 2, 0.05, 0.2, 0.2,
+		[&]( Scalar x, Scalar y, Scalar z ) { return rdA->Evaluate( x, y + 0.3, z + 0.3 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return rdB->Evaluate( x, y + 0.3, z + 0.3 ); },
+		1e-4 );
 	bool passed = differCount > 5;
 	rdA->release();
 	rdB->release();
@@ -103,11 +102,42 @@ bool TestNegativeCoordinates()
 {
 	std::cout << "  Test 5: Negative coordinates (wrapping)..." << std::endl;
 	ReactionDiffusion3D* rd = new ReactionDiffusion3D( 16, 0.2, 0.1, 0.037, 0.06, 500 );
-	Scalar val = rd->Evaluate( -0.3, -0.5, -0.1 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+
+	const Scalar x = -0.3;
+	const Scalar y = -0.5;
+	const Scalar z = -0.1;
+	const Scalar val = rd->Evaluate( x, y, z );
+	const Scalar wrapped = rd->Evaluate( x + 1.0, y + 1.0, z + 1.0 );
+	bool passed = IsInUnitInterval( val ) && IsClose( val, wrapped, 1e-6 );
+
 	rd->release();
-	if( passed ) std::cout << "    PASSED (val=" << val << ")" << std::endl;
-	else std::cout << "    FAIL: val=" << val << std::endl;
+	if( passed ) std::cout << "    PASSED (val=" << val << ", wrapped=" << wrapped << ")" << std::endl;
+	else std::cout << "    FAIL: val=" << val << " wrapped=" << wrapped << std::endl;
+	return passed;
+}
+
+bool TestUnitPeriodicityPerAxis()
+{
+	std::cout << "  Test 6: Unit periodicity per axis..." << std::endl;
+	ReactionDiffusion3D* rd = new ReactionDiffusion3D( 16, 0.2, 0.1, 0.037, 0.06, 500 );
+
+	const bool passedX = AllCloseOnGrid3D( 4, 3, 3, 0.07, 0.05, 0.09,
+		[&]( Scalar x, Scalar y, Scalar z ) { return rd->Evaluate( x + 0.03, y + 0.11, z + 0.19 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return rd->Evaluate( x + 1.03, y + 0.11, z + 0.19 ); },
+		1e-6 );
+	const bool passedY = AllCloseOnGrid3D( 4, 3, 3, 0.07, 0.05, 0.09,
+		[&]( Scalar x, Scalar y, Scalar z ) { return rd->Evaluate( x + 0.03, y + 0.11, z + 0.19 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return rd->Evaluate( x + 0.03, y + 1.11, z + 0.19 ); },
+		1e-6 );
+	const bool passedZ = AllCloseOnGrid3D( 4, 3, 3, 0.07, 0.05, 0.09,
+		[&]( Scalar x, Scalar y, Scalar z ) { return rd->Evaluate( x + 0.03, y + 0.11, z + 0.19 ); },
+		[&]( Scalar x, Scalar y, Scalar z ) { return rd->Evaluate( x + 0.03, y + 0.11, z + 1.19 ); },
+		1e-6 );
+	const bool passed = passedX && passedY && passedZ;
+
+	rd->release();
+	if( passed ) std::cout << "    PASSED" << std::endl;
+	else std::cout << "    FAIL: unit-period grid comparison mismatch" << std::endl;
 	return passed;
 }
 
@@ -120,6 +150,7 @@ int main()
 	allPassed &= TestDeterministic();
 	allPassed &= TestDifferentParameters();
 	allPassed &= TestNegativeCoordinates();
+	allPassed &= TestUnitPeriodicityPerAxis();
 	std::cout << std::endl;
 	if( allPassed ) std::cout << "ALL TESTS PASSED" << std::endl;
 	else std::cout << "SOME TESTS FAILED" << std::endl;

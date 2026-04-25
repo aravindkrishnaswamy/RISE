@@ -25,14 +25,13 @@
 
 #include "../src/Library/Noise/CurlNoise.h"
 #include "../src/Library/Utilities/SimpleInterpolators.h"
+#include "ProceduralTestHelpers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
 
 bool TestOutputRange()
 {
@@ -45,7 +44,7 @@ bool TestOutputRange()
 	for( int i = -30; i < 30; i++ ) {
 		for( int j = -5; j < 5; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
 				break;
@@ -138,12 +137,10 @@ bool TestDifferentPersistence()
 	CurlNoise3D* noiseA = new CurlNoise3D( *interp, 0.3, 4, 0.01 );
 	CurlNoise3D* noiseB = new CurlNoise3D( *interp, 0.9, 4, 0.01 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 15;
 	noiseA->release();
@@ -164,12 +161,10 @@ bool TestDifferentEpsilon()
 	CurlNoise3D* noiseA = new CurlNoise3D( *interp, 0.65, 4, 0.001 );
 	CurlNoise3D* noiseB = new CurlNoise3D( *interp, 0.65, 4, 0.1 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 10;
 	noiseA->release();
@@ -182,15 +177,51 @@ bool TestDifferentEpsilon()
 	return passed;
 }
 
+bool TestInvalidEpsilonFallsBackToDefault()
+{
+	std::cout << "  Test 7: Non-positive epsilon falls back to default..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	CurlNoise3D* noiseDefault = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
+	CurlNoise3D* noiseZero = new CurlNoise3D( *interp, 0.65, 4, 0.0 );
+	CurlNoise3D* noiseNegative = new CurlNoise3D( *interp, 0.65, 4, -0.5 );
+
+	bool passed = true;
+	for( int i = 0; i < 20; i++ ) {
+		Scalar x = i * 0.9 + 0.1;
+		Scalar y = i * 1.1 + 0.2;
+		Scalar z = i * 0.7 + 0.3;
+
+		const Scalar vDefault = noiseDefault->Evaluate( x, y, z );
+		const Scalar vZero = noiseZero->Evaluate( x, y, z );
+		const Scalar vNegative = noiseNegative->Evaluate( x, y, z );
+
+		if( !IsClose( vDefault, vZero, 1e-6 ) || !IsClose( vDefault, vNegative, 1e-6 ) ) {
+			std::cout << "    FAIL: default=" << vDefault
+				<< " zero=" << vZero
+				<< " negative=" << vNegative << std::endl;
+			passed = false;
+			break;
+		}
+	}
+
+	noiseDefault->release();
+	noiseZero->release();
+	noiseNegative->release();
+	interp->release();
+	if( passed ) std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 7: Negative coordinates..." << std::endl;
+	std::cout << "  Test 8: Negative coordinates..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	CurlNoise3D* noise = new CurlNoise3D( *interp, 0.65, 4, 0.01 );
 
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+	bool passed = IsInUnitInterval( val );
 	noise->release();
 	interp->release();
 	if( !passed )
@@ -211,6 +242,7 @@ int main()
 	allPassed &= TestNonNegative();
 	allPassed &= TestDifferentPersistence();
 	allPassed &= TestDifferentEpsilon();
+	allPassed &= TestInvalidEpsilonFallsBackToDefault();
 	allPassed &= TestNegativeCoordinates();
 
 	std::cout << std::endl;

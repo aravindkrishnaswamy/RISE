@@ -4,8 +4,10 @@ This file intentionally stays thin so it does not drift from the shared docs. St
 
 ## Quickstart
 
-- Main build: `make -C build/make/rise -j8 all`
-- Tests: `make -C build/make/rise tests` then `./run_all_tests.sh`
+- Linux/macOS main build: `make -C build/make/rise -j8 all`
+- Linux/macOS tests: `make -C build/make/rise tests` then `./run_all_tests.sh`
+- Windows tests: `.\run_all_tests.ps1`
+- Windows tests (Debug): `.\run_all_tests.ps1 -Config Debug`
 - Header-only changes: run `make -C build/make/rise clean` before rebuilding because header dependencies are not tracked reliably
 - Sample render:
 
@@ -29,6 +31,7 @@ Full rules, exclusions, and related update surfaces (API, parser chunks, tests, 
 ## High-Value Facts
 
 - `branching_threshold` (StabilityConfig, default 0.5): normalized throughput gate for subpath splitting at multi-lobe delta vertices (Fresnel dielectric etc.). Parameter on all rasterizer chunks (PT/BDPT/VCM pel & spectral, MLT). `0` = always branch at first encounter, `1` = never branch. Live on RGB + spectral NM for both eye and light subpaths across PT/BDPT/VCM — the photon-store build also branches and renormalizes `mLightSubPathCount` with actual `pathsShot`. MLT forces `1.0` (Markov-chain proposal assumes single-subpath). The retired `branch` param on PathTracing/DistributionTracing shader-ops is silently ignored by the parser; photon tracers keep their own `bBranch` (out of scope).
+- **Chunk parsers are descriptor-driven** (since 2026-04). Every `IAsciiChunkParser` overrides only `Describe()` and `Finalize(const ParseStateBag&, IJob&)`; the default `ParseChunk` impl validates input lines against `Describe().parameters` and dispatches to `Finalize`. The descriptor IS the accepted-parameter set, so syntax-highlighter / suggestion-engine drift is structurally impossible. Adding a new chunk = new `IAsciiChunkParser` subclass + register in `CreateAllChunkParsers()`. Adding a parameter = one entry in `Describe()` + one `bag.GetX(...)` call in `Finalize`. Full how-to in [src/Library/Parsers/README.md](src/Library/Parsers/README.md); architecture overview in the header of [src/Library/Parsers/AsciiSceneParser.cpp](src/Library/Parsers/AsciiSceneParser.cpp).
 - Public construction API: [src/Library/RISE_API.h](src/Library/RISE_API.h)
 - High-level construction interface: [src/Library/Interfaces/IJob.h](src/Library/Interfaces/IJob.h)
 - Main assembly implementation: [src/Library/Job.cpp](src/Library/Job.cpp)

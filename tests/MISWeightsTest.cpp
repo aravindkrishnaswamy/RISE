@@ -203,7 +203,7 @@ static void TestExtremeRatios()
 
 	// Verify no NaN or Inf
 	w = MISWeights::BalanceHeuristic( 1e300, 1e-300 );
-	Check( w == w && w != 1.0 / 0.0, "extreme values: no NaN/Inf" );
+	Check( std::isfinite( w ), "extreme values: no NaN/Inf" );
 }
 
 //////////////////////////////////////////////////////////////////////

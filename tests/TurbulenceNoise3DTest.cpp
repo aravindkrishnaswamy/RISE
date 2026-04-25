@@ -28,14 +28,15 @@
 #include "../src/Library/Noise/TurbulenceNoise.h"
 #include "../src/Library/Noise/PerlinNoise.h"
 #include "../src/Library/Utilities/SimpleInterpolators.h"
+#include "ProceduralTestHelpers.h"
+#include "StandaloneTestReporting.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
+using StandaloneTestReporting::PrintSection;
 
 /// Test 1: Turbulence output is always non-negative
 bool TestNonNegative()
@@ -169,17 +170,10 @@ bool TestPersistenceEffect()
 	TurbulenceNoise3D* noiseLow = new TurbulenceNoise3D( *interp, 0.3, 6 );
 	TurbulenceNoise3D* noiseHigh = new TurbulenceNoise3D( *interp, 0.9, 6 );
 
-	int differCount = 0;
-	int count = 0;
-	for( int i = 0; i < 50; i++ ) {
-		Scalar x = i * 1.3 + 0.7;
-		Scalar y = i * 0.9 - 2.1;
-		Scalar z = i * 2.1 + 0.3;
-		Scalar vLow = noiseLow->Evaluate( x, y, z );
-		Scalar vHigh = noiseHigh->Evaluate( x, y, z );
-		if( !IsClose( vLow, vHigh, 1e-6 ) ) differCount++;
-		count++;
-	}
+	const int differCount = CountDifferentSamples( 50,
+		[&]( int i ) { return noiseLow->Evaluate( i * 1.3 + 0.7, i * 0.9 - 2.1, i * 2.1 + 0.3 ); },
+		[&]( int i ) { return noiseHigh->Evaluate( i * 1.3 + 0.7, i * 0.9 - 2.1, i * 2.1 + 0.3 ); },
+		1e-6 );
 
 	// Different persistence values should produce different outputs
 	bool passed = differCount > 25;
@@ -194,10 +188,41 @@ bool TestPersistenceEffect()
 	return passed;
 }
 
-/// Test 6: More octaves generally increases energy
+/// Test 6: Zero persistence collapses to the single-octave result
+bool TestZeroPersistenceMatchesSingleOctave()
+{
+	std::cout << "  Test 6: Zero persistence matches single octave..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	TurbulenceNoise3D* zeroPersistence = new TurbulenceNoise3D( *interp, 0.0, 6 );
+	TurbulenceNoise3D* singleOctave = new TurbulenceNoise3D( *interp, 0.5, 2 );
+
+	bool passed = true;
+	for( int i = 0; i < 30; i++ ) {
+		Scalar x = i * 1.2 + 0.1;
+		Scalar y = i * 0.8 + 0.2;
+		Scalar z = i * 1.5 + 0.3;
+		const Scalar a = zeroPersistence->Evaluate( x, y, z );
+		const Scalar b = singleOctave->Evaluate( x, y, z );
+		if( !IsClose( a, b, 1e-6 ) ) {
+			std::cout << "    FAIL: zeroPersistence=" << a << " singleOctave=" << b << std::endl;
+			passed = false;
+			break;
+		}
+	}
+
+	zeroPersistence->release();
+	singleOctave->release();
+	interp->release();
+	if( passed )
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
+/// Test 7: More octaves generally increases energy
 bool TestOctaveEffect()
 {
-	std::cout << "  Test 6: Octave count effect..." << std::endl;
+	std::cout << "  Test 7: Octave count effect..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	TurbulenceNoise3D* noise1 = new TurbulenceNoise3D( *interp, 0.5, 2 );   // n=1 (one octave)
@@ -206,17 +231,10 @@ bool TestOctaveEffect()
 	// With normalization, more octaves doesn't necessarily mean more total energy
 	// (since we divide by the sum of amplitudes). However, with more octaves the
 	// noise is more "filled in" -- we test that the two produce different outputs.
-	Scalar diffCount = 0;
-	int count = 0;
-	for( int i = 0; i < 50; i++ ) {
-		Scalar x = i * 1.1 + 0.3;
-		Scalar y = i * 0.7 - 1.5;
-		Scalar z = i * 1.9 + 0.8;
-		Scalar v1 = noise1->Evaluate( x, y, z );
-		Scalar v6 = noise6->Evaluate( x, y, z );
-		if( !IsClose( v1, v6, 1e-6 ) ) diffCount++;
-		count++;
-	}
+	const int diffCount = CountDifferentSamples( 50,
+		[&]( int i ) { return noise1->Evaluate( i * 1.1 + 0.3, i * 0.7 - 1.5, i * 1.9 + 0.8 ); },
+		[&]( int i ) { return noise6->Evaluate( i * 1.1 + 0.3, i * 0.7 - 1.5, i * 1.9 + 0.8 ); },
+		1e-6 );
 
 	// Most points should differ when octave counts differ
 	bool passed = diffCount > 25;
@@ -231,17 +249,17 @@ bool TestOctaveEffect()
 	return passed;
 }
 
-/// Test 7: Negative coordinates work correctly
+/// Test 8: Negative coordinates work correctly
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 7: Negative coordinates..." << std::endl;
+	std::cout << "  Test 8: Negative coordinates..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	TurbulenceNoise3D* noise = new TurbulenceNoise3D( *interp, 0.5, 4 );
 
 	bool passed = true;
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	if( val < -1e-10 ) {
+	if( !IsInUnitInterval( val ) ) {
 		std::cout << "    FAIL: negative value " << val << " at negative coords" << std::endl;
 		passed = false;
 	}
@@ -260,26 +278,19 @@ bool TestNegativeCoordinates()
 	return passed;
 }
 
-/// Test 8: Turbulence differs from Perlin at same coordinates
+/// Test 9: Turbulence differs from Perlin at same coordinates
 bool TestDiffersFromPerlin()
 {
-	std::cout << "  Test 8: Differs from Perlin noise..." << std::endl;
+	std::cout << "  Test 9: Differs from Perlin noise..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	TurbulenceNoise3D* turbulence = new TurbulenceNoise3D( *interp, 0.5, 4 );
 	PerlinNoise3D* perlin = new PerlinNoise3D( *interp, 0.5, 4 );
 
-	int differCount = 0;
-	for( int i = 0; i < 50; i++ ) {
-		Scalar x = i * 1.7 + 0.5;
-		Scalar y = i * 2.3 - 1.0;
-		Scalar z = i * 0.9 + 2.0;
-		Scalar tVal = turbulence->Evaluate( x, y, z );
-		Scalar pVal = perlin->Evaluate( x, y, z );
-		if( !IsClose( tVal, pVal, 1e-6 ) ) {
-			differCount++;
-		}
-	}
+	const int differCount = CountDifferentSamples( 50,
+		[&]( int i ) { return turbulence->Evaluate( i * 1.7 + 0.5, i * 2.3 - 1.0, i * 0.9 + 2.0 ); },
+		[&]( int i ) { return perlin->Evaluate( i * 1.7 + 0.5, i * 2.3 - 1.0, i * 0.9 + 2.0 ); },
+		1e-6 );
 
 	// Most points should differ (turbulence takes abs of each octave)
 	bool passed = differCount > 25;
@@ -294,10 +305,10 @@ bool TestDiffersFromPerlin()
 	return passed;
 }
 
-/// Test 9: Output range is within [0, 1] after normalization
+/// Test 10: Output range is within [0, 1] after normalization
 bool TestOutputRange()
 {
-	std::cout << "  Test 9: Output range [0,1]..." << std::endl;
+	std::cout << "  Test 10: Output range [0,1]..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// Test with aggressive parameters that would exceed 1.0 without normalization
@@ -312,7 +323,7 @@ bool TestOutputRange()
 			Scalar val = noise->Evaluate( i * 0.5, j * 0.7, (i+j) * 0.3 );
 			if( val > maxVal ) maxVal = val;
 			if( val < minVal ) minVal = val;
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range value " << val << std::endl;
 				passed = false;
 				break;
@@ -333,15 +344,19 @@ int main()
 	std::cout << "=== TurbulenceNoise3D Tests ===" << std::endl;
 	bool allPassed = true;
 
+	PrintSection( "Exact Contract Checks" );
 	allPassed &= TestNonNegative();
-	allPassed &= TestSpatialVariation();
-	allPassed &= TestDeterministic();
 	allPassed &= TestSingleOctaveMatchesAbsNoise();
+	allPassed &= TestZeroPersistenceMatchesSingleOctave();
+	allPassed &= TestOutputRange();
+	allPassed &= TestDeterministic();
+	allPassed &= TestNegativeCoordinates();
+
+	PrintSection( "Sampled-Difference Heuristics" );
+	allPassed &= TestSpatialVariation();
 	allPassed &= TestPersistenceEffect();
 	allPassed &= TestOctaveEffect();
-	allPassed &= TestNegativeCoordinates();
 	allPassed &= TestDiffersFromPerlin();
-	allPassed &= TestOutputRange();
 
 	std::cout << std::endl;
 	if( allPassed )

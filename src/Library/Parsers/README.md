@@ -40,36 +40,173 @@ Chunk syntax rules:
 
 If syntax changes in any of those areas, document them here and inspect scene compatibility carefully.
 
+## Chunk-Parser Architecture (descriptor-driven)
+
+Every chunk parser derives from `IAsciiChunkParser` ([IAsciiChunkParser.h](IAsciiChunkParser.h)) and overrides exactly two virtual methods:
+
+| Method | Purpose |
+|--------|---------|
+| `Describe()` | Returns a `ChunkDescriptor` enumerating every parameter the chunk accepts (name, kind, enum values, reference categories, defaults, descriptions). The descriptor IS the parser's accepted-parameter set. |
+| `Finalize(const ParseStateBag&, IJob&)` | Reads typed values out of the bag and emits the corresponding `pJob.AddX(...)` / `pJob.SetX(...)` call. |
+
+No chunk parser overrides `ParseChunk` directly. The default `ParseChunk` impl (in [AsciiSceneParser.cpp](AsciiSceneParser.cpp), just after `CreateAllChunkParsers`) walks the input lines, validates each name against `Describe().parameters`, stores matched values in a `ParseStateBag`, then invokes `Finalize` to emit the AddX call. An input parameter whose name is not in the descriptor fails the parse.
+
+**The invariant:** drift between "what the parser parses" and "what the descriptor advertises" is structurally impossible. Both are read from the same `ChunkDescriptor`. The same descriptor feeds:
+
+- the parser (via `DispatchChunkParameters` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp))
+- the syntax highlighters (Qt + AppKit, via `SceneGrammar` in [SceneEditorSuggestions/](../SceneEditorSuggestions/))
+- the scene-editor suggestion engine (right-click context menu and inline autocomplete in both GUI apps)
+- any future grammar consumer (linters, doc generators, …)
+
+`Describe()` and `Finalize()` are both `[[nodiscard]] = 0` pure virtual on `IAsciiChunkParser`, so a chunk parser cannot ship without both — the build fails until they're implemented.
+
+### `ParseStateBag` accessor reference
+
+Defined in [ChunkDescriptor.h](ChunkDescriptor.h). Read parameter values inside `Finalize` via:
+
+| Method | Returns |
+|--------|---------|
+| `GetString(key, def)` | `std::string` |
+| `GetDouble(key, def)` | `double` |
+| `GetUInt(key, def)` | `unsigned int` |
+| `GetInt(key, def)` | `int` |
+| `GetBool(key, def)` | `bool` |
+| `GetVec3(key, double[3])` | `bool` (true if present, fills the array) |
+| `Has(key)` | `bool` (was the param explicitly set?) |
+| `GetRepeatable(key)` | `const std::vector<std::string>&` (for `p.repeatable = true` params) |
+| `Singles()` | `const std::map<std::string,std::string>&` (raw access; useful for composite tokens) |
+
+The default in each `GetX` accessor matches the legacy local-variable initial value used by the pre-migration parser. Use `bag.Has(key)` when you need to distinguish "parameter was explicitly set" from "parameter is absent" (e.g. for unit conversions like `DEG_TO_RAD` that should only apply on explicit input).
+
 ## Registered Chunk Families
 
-The registry in `AsciiSceneParser.cpp` is the authoritative map from scene syntax to implementation. Current families include:
+The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiSceneParser.cpp)) is the authoritative map from scene syntax to implementation. Current families:
 
-- Painters
-- 1D and 2D functions
-- Materials
-- Cameras
-- Geometry
-- Modifiers
-- Objects
-- Shader ops
-- Shaders
-- Rasterizers
-- Rasterizer outputs
-- Lights
-- Photon map generation and gather settings
-- Animation keyframes and timeline options
+| Family | Count | Examples |
+|--------|-------|----------|
+| Painters | 27 | `uniformcolor_painter`, `image_painter`, `voronoi3d_painter`, `iridescent_painter` |
+| Functions | 2 | `piecewise_linear_function`, `piecewise_linear_function2D` |
+| Materials | 23 | `lambertian_material`, `dielectric_material`, `ggx_material`, `composite_material` |
+| Cameras | 6 | `pinhole_camera`, `thinlens_camera`, `realistic_camera`, `fisheye_camera` |
+| Geometry | 15 | `sphere_geometry`, `mesh3DS_geometry`, `displaced_geometry`, `bezier_patch_geometry` |
+| Modifiers | 1 | `bumpmap_modifier` |
+| Media | 3 | `homogeneous_medium`, `heterogeneous_medium`, `painterheterogeneous_medium` |
+| Objects | 2 | `standard_object`, `csg_object` |
+| Shader ops | 12 | `pathtracing_shaderop`, `final_gather`, `direct_lighting`, `area_light_shaderop` |
+| Shaders | 4 | `standard_shader`, `advanced_shader`, `direct_volume_rendering_shader` |
+| Rasterizers | 10 | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `mlt_spectral_rasterizer` |
+| Rasterizer outputs | 1 | `file_rasterizer_output` |
+| Lights | 4 | `ambient_light`, `omni_light`, `spot_light`, `directional_light` |
+| Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
+| Irradiance cache | 1 | `irradiance_cache` |
+| Animation | 3 | `keyframe`, `timeline`, `animation_options` |
 
-When in doubt, read the registration block in [AsciiSceneParser.cpp](AsciiSceneParser.cpp).
+**Total: 125 chunk parsers, 126 chunk keywords** (`mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop`). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list.
 
-## Adding A New Scene Chunk
+## Adding A New Chunk Parser
 
-1. Implement the chunk parser class.
-2. Register it in the chunk map in `AsciiSceneParser.cpp`.
-3. Make sure the feature is constructible through `Job` and or `RISE_API`.
-4. Add a representative `.RISEscene` sample.
-   Put isolated parser checks in `scenes/Tests`, and reserve `scenes/FeatureBased` for richer showcase scenes.
-5. Add a deterministic test if parsing logic or supporting math can be exercised without a full render.
-6. Decide whether the scene version marker should change.
+1. **Implement the parser class** in the `RISE::Implementation::ChunkParsers` namespace inside [AsciiSceneParser.cpp](AsciiSceneParser.cpp). Convention: place it next to other parsers in the same family. Skeleton:
+
+   ```cpp
+   struct MyAsciiChunkParser : public IAsciiChunkParser
+   {
+       bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+       {
+           std::string name = bag.GetString( "name", "noname" );
+           double      x    = bag.GetDouble( "x",    0.0 );
+           // ... read every parameter from the bag with the
+           //     default the user expects when omitted.
+           return pJob.AddMyThing( name.c_str(), x, ... );
+       }
+
+       const ChunkDescriptor& Describe() const override
+       {
+           static const ChunkDescriptor d = []{
+               ChunkDescriptor cd;
+               cd.keyword     = "my_chunk";
+               cd.category    = ChunkCategory::Painter; // or whichever
+               cd.description = "What this chunk does.";
+               auto P = [&cd]() -> ParameterDescriptor& {
+                   cd.parameters.emplace_back();
+                   return cd.parameters.back();
+               };
+               { auto& p = P(); p.name = "name"; p.kind = ValueKind::String;
+                 p.description = "Unique name"; p.defaultValueHint = "noname"; }
+               { auto& p = P(); p.name = "x";    p.kind = ValueKind::Double;
+                 p.description = "What x means"; p.defaultValueHint = "0"; }
+               return cd;
+           }();
+           return d;
+       }
+   };
+   ```
+
+2. **Register it** in `CreateAllChunkParsers()` (in the same file): `add("my_chunk", new MyAsciiChunkParser());`
+
+3. **Make the feature constructible** through `Job` and/or `RISE_API` if it isn't already. The `pJob.AddMyThing(...)` call must exist.
+
+4. **Add a representative `.RISEscene` sample.** Use `scenes/Tests/` for isolated parser checks and `scenes/FeatureBased/` for richer showcase scenes.
+
+5. **Add a deterministic test** if the parsing or supporting math can be exercised without a full render.
+
+6. **Decide whether `CURRENT_SCENE_VERSION` should change** if the new chunk introduces a backwards-incompatible scene change.
+
+The chunk now appears automatically in:
+- syntax highlighting on Windows + macOS
+- the right-click context menu and inline autocomplete in both GUI scene editors
+- any future grammar consumer
+
+No second site to update.
+
+## Adding A Parameter To An Existing Chunk
+
+1. **Add one descriptor entry** in that parser's `Describe()`:
+
+   ```cpp
+   { auto& p = P(); p.name = "new_param"; p.kind = ValueKind::Double;
+     p.description = "What it does"; p.defaultValueHint = "0.5"; }
+   ```
+
+   - Set `p.repeatable = true` for parameters that accept multiple values (e.g. `cp` control points, `shaderop` entries).
+   - Populate `p.enumValues = {"a","b","c"}` for `ValueKind::Enum`.
+   - Populate `p.referenceCategories = {ChunkCategory::Material, ChunkCategory::Painter}` for `ValueKind::Reference` so the suggestion engine can offer completions of the right type.
+
+2. **Read it in `Finalize`**: `double y = bag.GetDouble("new_param", 0.5);` (default must match the descriptor's hint — and match what the user expects when the param is omitted).
+
+3. **Pass it through** to the appropriate `pJob.AddX(...)` / `pJob.SetX(...)` call.
+
+That's it. The new parameter automatically appears in:
+- the right-click context menu when the cursor is inside a `my_chunk` block
+- inline autocomplete after typing a partial param name
+- syntax-highlighter tooltips (when implemented)
+
+## Removing A Parameter
+
+1. Delete the descriptor entry. Every consumer updates in lock-step.
+
+2. **Backwards compatibility**: if existing scene files might still set the parameter, keep the descriptor entry and set its description to `"Legacy — ignored"`; skip reading it in `Finalize`. The dispatcher will accept the parameter; `Finalize` ignores it.
+
+## Helper Templates
+
+Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) just after `DispatchChunkParameters` and just before the painter parsers. Reuse them rather than copy-pasting:
+
+| Helper | Used by | Adds |
+|--------|---------|------|
+| `AddCameraCommonParams` | All 6 cameras | `location`, `lookat`, `up`, `width`, `height`, `pixelAR`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … |
+| `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
+| `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
+| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
+| `AddStabilityConfigParams` | All non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh`, `branching_threshold` |
+| `AddPathGuidingParams` | PT/BDPT pel + PT spectral | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
+| `AddAdaptiveSamplingParams` | PT/BDPT pel + PT spectral | `adaptive_sampling`, `adaptive_threshold`, `adaptive_min_samples`, `adaptive_max_samples` |
+| `AddRadianceMapParams` | `pixelpel_rasterizer` | `radiance_map`, `radiance_scale`, `radiance_orient` |
+| `AddProgressiveParams` | All progressive rasterizers | `progressive_samples_per_pass` |
+| `AddSMSConfigParams` | PT pel + PT spectral + BDPT spectral | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count` |
+| `AddOptimalMISParams` | PT pel + BDPT pel | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
+| `AddBaseRasterizerParams` | All rasterizers | `defaultshader`, `oidn_denoise`, `show_luminaires`, … |
+| `AddNoisePainterCommonParams` | All Perlin/Worley/Simplex/Gabor 3D painters | `frequency`, `octaves`, `persistence`, `lacunarity`, `seed`, … |
+| `AddPhotonMapGenerateCommonParams` | All 6 photon-map generate parsers | `num`, `power_scale`, `max_recursion`, `min_importance`, `branch`, `reflect`, `refract`, … |
+| `AddPhotonMapGatherCommonParams` | All 6 photon-map gather parsers | `radius`, `ellipse_ratio`, `min_photons`, `max_photons` |
 
 ## Where Agent Authors Usually Get Tripped Up
 

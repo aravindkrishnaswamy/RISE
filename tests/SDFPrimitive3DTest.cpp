@@ -79,9 +79,30 @@ bool TestSphereCenter()
 	return passed;
 }
 
+bool TestSphereAxisSymmetry()
+{
+	std::cout << "  Test 3: Sphere axis symmetry..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
+
+	const Scalar vx = sdf->Evaluate( 0.25, 0.0, 0.0 );
+	const Scalar vy = sdf->Evaluate( 0.0, 0.25, 0.0 );
+	const Scalar vz = sdf->Evaluate( 0.0, 0.0, 0.25 );
+	bool passed = IsClose( vx, vy, 1e-6 ) && IsClose( vx, vz, 1e-6 );
+
+	sdf->release();
+	interp->release();
+	if( !passed )
+		std::cout << "    FAIL: vx=" << vx << " vy=" << vy << " vz=" << vz << std::endl;
+	else
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
 bool TestSphereFarAway()
 {
-	std::cout << "  Test 3: Sphere far away density=0..." << std::endl;
+	std::cout << "  Test 4: Sphere far away density=0..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
@@ -99,7 +120,7 @@ bool TestSphereFarAway()
 
 bool TestBoxCenter()
 {
-	std::cout << "  Test 4: Box center dense, outside sparse..." << std::endl;
+	std::cout << "  Test 5: Box center dense, outside sparse..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Box, 0.5, 0.5, 0.5, 0, 0, 0, *interp );
@@ -116,9 +137,29 @@ bool TestBoxCenter()
 	return passed;
 }
 
+bool TestBoxSignSymmetry()
+{
+	std::cout << "  Test 6: Box sign symmetry..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Box, 0.5, 0.25, 0.75, 0, 0, 0, *interp );
+
+	const Scalar a = sdf->Evaluate( 0.2, -0.1, 0.3 );
+	const Scalar b = sdf->Evaluate( -0.2, 0.1, -0.3 );
+	bool passed = IsClose( a, b, 1e-6 );
+
+	sdf->release();
+	interp->release();
+	if( !passed )
+		std::cout << "    FAIL: a=" << a << " b=" << b << std::endl;
+	else
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
 bool TestTorusRing()
 {
-	std::cout << "  Test 5: Torus on ring density high..." << std::endl;
+	std::cout << "  Test 7: Torus on ring density high..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// Major radius 1.0, minor radius 0.3, torus in XZ plane
@@ -138,9 +179,32 @@ bool TestTorusRing()
 	return passed;
 }
 
+bool TestCylinderBasic()
+{
+	std::cout << "  Test 8: Cylinder center dense, outside sparse..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	SDFPrimitive3D* sdf = new SDFPrimitive3D( eSDF_Cylinder, 0.5, 1.0, 0, 0, 0, 0, *interp );
+
+	const Scalar center = sdf->Evaluate( 0, 0, 0 );
+	const Scalar outsideRadial = sdf->Evaluate( 2, 0, 0 );
+	const Scalar outsideHeight = sdf->Evaluate( 0, 2, 0 );
+	bool passed = center > 0.9 && outsideRadial < 0.05 && outsideHeight < 0.05;
+
+	sdf->release();
+	interp->release();
+	if( !passed )
+		std::cout << "    FAIL: center=" << center
+			<< " outsideRadial=" << outsideRadial
+			<< " outsideHeight=" << outsideHeight << std::endl;
+	else
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
 bool TestShellMode()
 {
-	std::cout << "  Test 6: Shell mode - center is hollow..." << std::endl;
+	std::cout << "  Test 9: Shell mode - center is hollow..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	// Sphere with shell thickness 0.1
@@ -161,7 +225,7 @@ bool TestShellMode()
 
 bool TestNoiseDisplacement()
 {
-	std::cout << "  Test 7: Noise displacement changes output..." << std::endl;
+	std::cout << "  Test 10: Noise displacement changes output..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	SDFPrimitive3D* sdfNoNoise = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0, 0, 0, 0, 0, *interp );
@@ -187,7 +251,7 @@ bool TestNoiseDisplacement()
 
 bool TestDifferentTypes()
 {
-	std::cout << "  Test 8: Different types produce different outputs..." << std::endl;
+	std::cout << "  Test 11: Different types produce different outputs..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	SDFPrimitive3D* sphere = new SDFPrimitive3D( eSDF_Sphere, 0.5, 0.5, 0.5, 0, 0, 0, *interp );
@@ -223,9 +287,12 @@ int main()
 
 	allPassed &= TestOutputRange();
 	allPassed &= TestSphereCenter();
+	allPassed &= TestSphereAxisSymmetry();
 	allPassed &= TestSphereFarAway();
 	allPassed &= TestBoxCenter();
+	allPassed &= TestBoxSignSymmetry();
 	allPassed &= TestTorusRing();
+	allPassed &= TestCylinderBasic();
 	allPassed &= TestShellMode();
 	allPassed &= TestNoiseDisplacement();
 	allPassed &= TestDifferentTypes();

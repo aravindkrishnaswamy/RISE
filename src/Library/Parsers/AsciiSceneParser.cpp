@@ -1,14 +1,94 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  AsciiSceneParser.cpp - Implementation of the really simple
-//  AsciiSceneParser class
+//  AsciiSceneParser.cpp - Implementation of the AsciiSceneParser
+//    class plus every concrete IAsciiChunkParser subclass.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: December 22, 2003
 //  Tabs: 4
-//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+//
+//  ARCHITECTURE — descriptor-driven chunk parsing (April 2026)
+//
+//  Every chunk parser in this file derives from `IAsciiChunkParser`
+//  and overrides exactly TWO virtual methods:
+//
+//    1. `Describe()` returns a `ChunkDescriptor` enumerating every
+//       parameter the chunk accepts (name, kind, enum values,
+//       reference categories, defaults, descriptions).  This
+//       descriptor IS the parser's accepted-parameter set.
+//
+//    2. `Finalize(const ParseStateBag& bag, IJob& pJob)` reads
+//       typed values out of the bag and emits the corresponding
+//       `pJob.AddX(...)` / `pJob.SetX(...)` call.
+//
+//  No chunk parser overrides `ParseChunk` directly.  The default
+//  `ParseChunk` impl (defined below, just after `CreateAllChunkParsers`)
+//  walks the input lines, validates each name against
+//  `Describe().parameters`, stores matched values in a `ParseStateBag`,
+//  then invokes `Finalize` to emit the AddX call.  An input parameter
+//  whose name is not in the descriptor fails the parse — exactly the
+//  same behaviour as the legacy hand-rolled `if/else` chain's else
+//  branch, but driven from a single source of truth.
+//
+//  THE INVARIANT this enforces:  drift between "what the parser
+//  parses" and "what the descriptor advertises" is structurally
+//  impossible.  The same descriptor feeds:
+//    - the parser (via `DispatchChunkParameters` below)
+//    - the syntax highlighters (Qt + AppKit, via `SceneGrammar`)
+//    - the scene-editor suggestion engine (right-click menu and
+//      inline autocomplete in both GUI apps)
+//    - any future grammar consumer (linters, doc generators, …).
+//
+//  Adding a new chunk parser:
+//
+//    1. Define `struct YourAsciiChunkParser : public IAsciiChunkParser`
+//       inside the `RISE::Implementation::ChunkParsers` namespace,
+//       with `Describe()` (static `ChunkDescriptor` constructed via the
+//       `auto P = [&cd]() -> ParameterDescriptor& { ... }` lambda
+//       idiom) and `Finalize(const ParseStateBag&, IJob&) const override`.
+//    2. Register it in `CreateAllChunkParsers()` further down in this
+//       file — `add("your_chunk_keyword", new YourAsciiChunkParser());`.
+//    3. The Library build will fail until both `Describe()` AND
+//       `Finalize()` are implemented (both are pure-virtual on
+//       `IAsciiChunkParser`).
+//    4. The chunk now appears automatically in:
+//          - syntax highlighting on Windows + macOS
+//          - the right-click context menu and inline autocomplete
+//          - any future grammar consumer.
+//       No second site to update.
+//
+//  Adding a parameter to an existing chunk:
+//
+//    1. Add one entry to that chunk's `Describe()` parameter list:
+//          { auto& p = P(); p.name = "..."; p.kind = ValueKind::...;
+//            p.description = "..."; p.defaultValueHint = "..."; }
+//       (set `p.repeatable = true` for repeatable params, populate
+//       `p.enumValues` for `ValueKind::Enum`, populate
+//       `p.referenceCategories` for `ValueKind::Reference`).
+//    2. Read the new value in `Finalize`:
+//          double x = bag.GetDouble("...", default_value);
+//       (or `GetString` / `GetUInt` / `GetBool` / `GetVec3` /
+//       `GetRepeatable` as appropriate.)  Pass the same default the
+//       legacy code used as the local-variable initial value.
+//    3. Pass it to the appropriate `pJob.AddX(...)` / `pJob.SetX(...)`
+//       overload.  No third site to update.
+//
+//  Removing a parameter from an existing chunk:
+//
+//    1. Delete the descriptor entry.  Done.  Every consumer updates
+//       in lock-step.  If scene-file backwards compatibility is
+//       required, leave the entry but mark it "Legacy — ignored" in
+//       the description and skip reading it in `Finalize`.
+//
+//  Helper templates that bundle parameter sets shared across many
+//  chunks (`AddCameraCommonParams`, `AddSpectralCoreParams`,
+//  `AddPhotonMapGenerateCommonParams`, …) live in this file just
+//  after `DispatchChunkParameters` and just before the painter
+//  parsers; reuse them rather than copy-pasting parameter lists.
 //
 //////////////////////////////////////////////////////////////////////
 

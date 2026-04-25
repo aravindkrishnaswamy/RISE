@@ -15,14 +15,13 @@
 #include <cstdlib>
 
 #include "../src/Library/Noise/SimplexNoise.h"
+#include "ProceduralTestHelpers.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
 
 bool TestOutputRange()
 {
@@ -34,7 +33,7 @@ bool TestOutputRange()
 	for( int i = -50; i < 50; i++ ) {
 		for( int j = -10; j < 10; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
 				break;
@@ -98,12 +97,10 @@ bool TestDifferentPersistence()
 	SimplexNoise3D* noiseA = new SimplexNoise3D( 0.3, 4 );
 	SimplexNoise3D* noiseB = new SimplexNoise3D( 0.9, 4 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 15;
 	noiseA->release();
@@ -112,22 +109,48 @@ bool TestDifferentPersistence()
 		std::cout << "    FAIL: only " << differCount << "/30 differ" << std::endl;
 	else
 		std::cout << "    PASSED (" << differCount << "/30 differ)" << std::endl;
+	return passed;
+}
+
+bool TestZeroPersistenceMatchesSingleOctave()
+{
+	std::cout << "  Test 5: Zero persistence matches single octave..." << std::endl;
+
+	SimplexNoise3D* noiseZeroPersistence = new SimplexNoise3D( 0.0, 6 );
+	SimplexNoise3D* noiseSingleOctave = new SimplexNoise3D( 0.5, 1 );
+
+	bool passed = true;
+	for( int i = 0; i < 25; i++ ) {
+		Scalar x = i * 0.8 + 0.1;
+		Scalar y = i * 1.1 + 0.2;
+		Scalar z = i * 0.6 + 0.3;
+		const Scalar a = noiseZeroPersistence->Evaluate( x, y, z );
+		const Scalar b = noiseSingleOctave->Evaluate( x, y, z );
+		if( !IsClose( a, b, 1e-6 ) ) {
+			std::cout << "    FAIL: zeroPersistence=" << a << " singleOctave=" << b << std::endl;
+			passed = false;
+			break;
+		}
+	}
+
+	noiseZeroPersistence->release();
+	noiseSingleOctave->release();
+	if( passed )
+		std::cout << "    PASSED" << std::endl;
 	return passed;
 }
 
 bool TestDifferentOctaves()
 {
-	std::cout << "  Test 5: Different octave counts differ..." << std::endl;
+	std::cout << "  Test 6: Different octave counts differ..." << std::endl;
 
 	SimplexNoise3D* noiseA = new SimplexNoise3D( 0.5, 1 );
 	SimplexNoise3D* noiseB = new SimplexNoise3D( 0.5, 6 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 15;
 	noiseA->release();
@@ -139,14 +162,31 @@ bool TestDifferentOctaves()
 	return passed;
 }
 
+bool TestOriginIsNeutralMidpoint()
+{
+	std::cout << "  Test 7: Origin evaluates to neutral midpoint..." << std::endl;
+
+	SimplexNoise3D* noise = new SimplexNoise3D( 0.65, 4 );
+
+	const Scalar val = noise->Evaluate( 0.0, 0.0, 0.0 );
+	bool passed = IsClose( val, 0.5, 1e-8 );
+
+	noise->release();
+	if( !passed )
+		std::cout << "    FAIL: val=" << val << " expected=0.5" << std::endl;
+	else
+		std::cout << "    PASSED (val=" << val << ")" << std::endl;
+	return passed;
+}
+
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 6: Negative coordinates..." << std::endl;
+	std::cout << "  Test 8: Negative coordinates..." << std::endl;
 
 	SimplexNoise3D* noise = new SimplexNoise3D( 0.65, 4 );
 
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+	bool passed = IsInUnitInterval( val );
 	noise->release();
 	if( !passed )
 		std::cout << "    FAIL: val=" << val << std::endl;
@@ -157,18 +197,15 @@ bool TestNegativeCoordinates()
 
 bool TestSymmetry()
 {
-	std::cout << "  Test 7: No axis-aligned symmetry..." << std::endl;
+	std::cout << "  Test 9: No axis-aligned symmetry..." << std::endl;
 
 	SimplexNoise3D* noise = new SimplexNoise3D( 0.65, 4 );
 
 	// Simplex noise should NOT be symmetric along axes
-	int differCount = 0;
-	for( int i = 1; i < 20; i++ ) {
-		Scalar x = i * 1.7;
-		Scalar vPos = noise->Evaluate( x, 0.5, 0.5 );
-		Scalar vSwap = noise->Evaluate( 0.5, x, 0.5 );
-		if( !IsClose( vPos, vSwap, 1e-4 ) ) differCount++;
-	}
+	const int differCount = CountDifferentSamples( 19,
+		[&]( int i ) { const Scalar x = (i + 1) * 1.7; return noise->Evaluate( x, 0.5, 0.5 ); },
+		[&]( int i ) { const Scalar x = (i + 1) * 1.7; return noise->Evaluate( 0.5, x, 0.5 ); },
+		1e-4 );
 
 	bool passed = differCount > 10;
 	noise->release();
@@ -188,7 +225,9 @@ int main()
 	allPassed &= TestSpatialVariation();
 	allPassed &= TestDeterministic();
 	allPassed &= TestDifferentPersistence();
+	allPassed &= TestZeroPersistenceMatchesSingleOctave();
 	allPassed &= TestDifferentOctaves();
+	allPassed &= TestOriginIsNeutralMidpoint();
 	allPassed &= TestNegativeCoordinates();
 	allPassed &= TestSymmetry();
 

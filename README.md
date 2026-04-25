@@ -48,6 +48,8 @@ The historical user manual remains in [README.txt](README.txt). This file is the
 
 ## Common Commands
 
+### Linux / macOS
+
 ```sh
 make -C build/make/rise -j8 all
 make -C build/make/rise tests
@@ -56,5 +58,20 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ./run_scenes.sh
 ```
+
+### Windows
+
+```powershell
+cmake -S build/cmake/rise-tests -B build/cmake/rise-tests/_out -A x64
+cmake --build build/cmake/rise-tests/_out --config Release --target rise_all_tests --parallel
+.\run_all_tests.ps1
+.\run_all_tests.ps1 -Config Debug
+```
+
+The Windows test flow builds every `tests/*.cpp` via
+[build/cmake/rise-tests/CMakeLists.txt](build/cmake/rise-tests/CMakeLists.txt)
+and runs them through [run_all_tests.ps1](run_all_tests.ps1). The CMake test
+project links against the prebuilt `RISE.lib` from the VS2022 Library project,
+so build the Windows library/CLI once first.
 
 If you changed only header files, run a clean rebuild first. The makefile does not track header dependencies reliably.

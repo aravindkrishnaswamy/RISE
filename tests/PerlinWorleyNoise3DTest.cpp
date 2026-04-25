@@ -27,14 +27,17 @@
 #include "../src/Library/Noise/PerlinNoise.h"
 #include "../src/Library/Noise/WorleyNoise.h"
 #include "../src/Library/Utilities/SimpleInterpolators.h"
+#include "ProceduralTestHelpers.h"
+#include "StandaloneTestReporting.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-static bool IsClose( double a, double b, double tol = 1e-6 )
-{
-	return fabs( a - b ) < tol;
-}
+using ProceduralTestHelpers::Clamp01;
+using ProceduralTestHelpers::CountDifferentSamples;
+using ProceduralTestHelpers::IsClose;
+using ProceduralTestHelpers::IsInUnitInterval;
+using ProceduralTestHelpers::NormalizedPerlinValue;
+using StandaloneTestReporting::PrintSection;
 
 bool TestOutputRange()
 {
@@ -47,7 +50,7 @@ bool TestOutputRange()
 	for( int i = -50; i < 50; i++ ) {
 		for( int j = -10; j < 10; j++ ) {
 			Scalar val = noise->Evaluate( i * 0.37, j * 0.41, (i+j) * 0.29 );
-			if( val < -1e-10 || val > 1.0 + 1e-6 ) {
+			if( !IsInUnitInterval( val ) ) {
 				std::cout << "    FAIL: out of range " << val << std::endl;
 				passed = false;
 				break;
@@ -125,9 +128,7 @@ bool TestBlendZeroMatchesPerlin()
 	for( int i = 0; i < 30; i++ ) {
 		Scalar x = i * 1.7 + 0.5, y = i * 2.3 - 1.0, z = i * 0.9 + 2.0;
 		Scalar hVal = hybrid->Evaluate( x, y, z );
-		Scalar pVal = (perlin->Evaluate( x, y, z ) + 1.0) / 2.0;
-		if( pVal < 0.0 ) pVal = 0.0;
-		if( pVal > 1.0 ) pVal = 1.0;
+		Scalar pVal = NormalizedPerlinValue( *perlin, x, y, z );
 		if( !IsClose( hVal, pVal, 1e-4 ) ) {
 			std::cout << "    FAIL: hybrid=" << hVal << " perlin=" << pVal << std::endl;
 			passed = false;
@@ -171,20 +172,51 @@ bool TestBlendOneMatchesWorley()
 	return passed;
 }
 
+bool TestBlendMatchesExplicitLerp()
+{
+	std::cout << "  Test 6: Blend matches explicit lerp..." << std::endl;
+
+	RealLinearInterpolator* interp = new RealLinearInterpolator();
+	const Scalar blend = 0.35;
+	PerlinWorleyNoise3D* hybrid = new PerlinWorleyNoise3D( *interp, 0.65, 4, 1.0, blend );
+	PerlinNoise3D* perlin = new PerlinNoise3D( *interp, 0.65, 4 );
+	WorleyNoise3D* worley = new WorleyNoise3D( 1.0, eWorley_Euclidean, eWorley_F1 );
+
+	bool passed = true;
+	for( int i = 0; i < 30; i++ ) {
+		Scalar x = i * 1.3 + 0.2, y = i * 0.9 - 0.4, z = i * 2.1 + 0.1;
+		Scalar hybridVal = hybrid->Evaluate( x, y, z );
+		Scalar perlinVal = NormalizedPerlinValue( *perlin, x, y, z );
+		Scalar worleyVal = 1.0 - worley->Evaluate( x, y, z );
+		Scalar expected = Clamp01( perlinVal * (1.0 - blend) + worleyVal * blend );
+		if( !IsClose( hybridVal, expected, 1e-4 ) ) {
+			std::cout << "    FAIL: hybrid=" << hybridVal << " expected=" << expected << std::endl;
+			passed = false;
+			break;
+		}
+	}
+
+	hybrid->release();
+	perlin->release();
+	worley->release();
+	interp->release();
+	if( passed )
+		std::cout << "    PASSED" << std::endl;
+	return passed;
+}
+
 bool TestDifferentBlends()
 {
-	std::cout << "  Test 6: Different blends produce different outputs..." << std::endl;
+	std::cout << "  Test 7: Different blends produce different outputs..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	PerlinWorleyNoise3D* noiseA = new PerlinWorleyNoise3D( *interp, 0.65, 4, 1.0, 0.2 );
 	PerlinWorleyNoise3D* noiseB = new PerlinWorleyNoise3D( *interp, 0.65, 4, 1.0, 0.8 );
 
-	int differCount = 0;
-	for( int i = 0; i < 30; i++ ) {
-		Scalar x = i * 1.3, y = i * 0.9, z = i * 2.1;
-		if( !IsClose( noiseA->Evaluate(x,y,z), noiseB->Evaluate(x,y,z), 1e-4 ) )
-			differCount++;
-	}
+	const int differCount = CountDifferentSamples( 30,
+		[&]( int i ) { return noiseA->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		[&]( int i ) { return noiseB->Evaluate( i * 1.3, i * 0.9, i * 2.1 ); },
+		1e-4 );
 
 	bool passed = differCount > 15;
 	noiseA->release();
@@ -199,13 +231,13 @@ bool TestDifferentBlends()
 
 bool TestNegativeCoordinates()
 {
-	std::cout << "  Test 7: Negative coordinates..." << std::endl;
+	std::cout << "  Test 8: Negative coordinates..." << std::endl;
 
 	RealLinearInterpolator* interp = new RealLinearInterpolator();
 	PerlinWorleyNoise3D* noise = new PerlinWorleyNoise3D( *interp, 0.65, 4, 1.0, 0.5 );
 
 	Scalar val = noise->Evaluate( -10.5, -20.3, -5.7 );
-	bool passed = val >= -1e-10 && val <= 1.0 + 1e-6;
+	bool passed = IsInUnitInterval( val );
 	noise->release();
 	interp->release();
 	if( !passed )
@@ -220,13 +252,17 @@ int main()
 	std::cout << "=== PerlinWorleyNoise3D Tests ===" << std::endl;
 	bool allPassed = true;
 
-	allPassed &= TestOutputRange();
-	allPassed &= TestSpatialVariation();
-	allPassed &= TestDeterministic();
+	PrintSection( "Exact Contract Checks" );
 	allPassed &= TestBlendZeroMatchesPerlin();
 	allPassed &= TestBlendOneMatchesWorley();
-	allPassed &= TestDifferentBlends();
+	allPassed &= TestBlendMatchesExplicitLerp();
+	allPassed &= TestOutputRange();
+	allPassed &= TestDeterministic();
 	allPassed &= TestNegativeCoordinates();
+
+	PrintSection( "Sampled-Difference Heuristics" );
+	allPassed &= TestSpatialVariation();
+	allPassed &= TestDifferentBlends();
 
 	std::cout << std::endl;
 	if( allPassed )
