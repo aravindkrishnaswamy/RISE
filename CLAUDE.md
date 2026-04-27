@@ -8,7 +8,6 @@ This file intentionally stays thin so it does not drift from the shared docs. St
 - Linux/macOS tests: `make -C build/make/rise tests` then `./run_all_tests.sh`
 - Windows tests: `.\run_all_tests.ps1`
 - Windows tests (Debug): `.\run_all_tests.ps1 -Config Debug`
-- Header-only changes: run `make -C build/make/rise clean` before rebuilding because header dependencies are not tracked reliably
 - Sample render:
 
 ```sh
