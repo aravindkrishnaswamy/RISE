@@ -181,6 +181,9 @@
     <Filter Include="Scene Editor Suggestions">
       <UniqueIdentifier>{9e1d8a4f-5b6c-47a2-83c1-4f2e9b1d5a3c}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Scene Editor (3D Viewport)">
+      <UniqueIdentifier>{1b3d7c2e-4f8a-4d9c-9b6a-7e5d3f2a1c8b}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Shaders">
       <UniqueIdentifier>{475ddab5-6e37-423b-a6c0-40308e931b0c}</UniqueIdentifier>
     </Filter>
@@ -662,6 +665,24 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.cpp">
       <Filter>Scene Editor Suggestions</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\EditHistory.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\CancellableProgressCallback.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditor.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditController.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp">
+      <Filter>Rendering</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Lights\DirectionalLight.cpp">
       <Filter>Non Mesh Lights</Filter>
@@ -1675,6 +1696,27 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.h">
       <Filter>Scene Editor Suggestions</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEdit.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\EditHistory.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\CancellableProgressCallback.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditor.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditController.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h">
+      <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Lights\AmbientLight.h">
       <Filter>Non Mesh Lights</Filter>

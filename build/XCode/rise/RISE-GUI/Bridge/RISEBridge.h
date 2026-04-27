@@ -74,6 +74,18 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// Returns the height of the loaded scene's camera, or 0 if no scene is loaded.
 - (uint32_t)cameraHeight;
 
+/// Sets the scene time the next `rasterize` call should render at.
+/// Internally invokes `IScene::SetSceneTime(t)` immediately, which:
+///   - Advances the animator (camera, transforms, materials at time t).
+///   - Regenerates every populated photon map at time t — the
+///     expensive step the interactive scrub deliberately skips.
+/// Call this AFTER stopping the viewport bridge's interactive thread
+/// (the viewport's preview path uses `SetSceneTimeForPreview` which
+/// skips photon regen — without an explicit full SetSceneTime here,
+/// hitting Render after scrubbing produces the right transforms but
+/// caustics from the pre-scrub time).
+- (void)setSceneTime:(double)t;
+
 /// Rasterizes the entire scene. This is BLOCKING -- call from a background thread.
 - (BOOL)rasterize;
 
@@ -107,6 +119,14 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 
 /// Formats a duration as "M:SS" below one hour, "HH:MM:SS" at or above.
 + (NSString *)formatDuration:(double)seconds;
+
+#pragma mark - Internal handles for sibling bridges
+
+/// Returns an opaque pointer to the underlying C++ IJobPriv*.  Used by
+/// RISEViewportBridge so the interactive editor and the loader bridge
+/// share the same in-memory scene.  The handle is owned by this
+/// RISEBridge — callers must not retain or release it.
+- (void *)opaqueJobHandle;
 
 @end
 

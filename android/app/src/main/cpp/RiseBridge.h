@@ -32,6 +32,10 @@ namespace RISE {
     class IProgressCallback;
     class IJobRasterizerOutput;
     class ILogPrinter;
+    class SceneEditController;
+    class IRayCaster;
+    class IRasterizer;
+    class IRasterizerOutput;
 }
 
 namespace rise_jni {
@@ -69,6 +73,25 @@ public:
     // RasterizerOutputImpl callback fires from those workers and writes
     // into m_framebuffer while calling back into Kotlin.
     bool rasterize();
+
+    // Advance the in-memory scene to time `t` AND regenerate every
+    // populated photon map.  Called by RenderViewModel before
+    // nativeRasterize so post-scrub renders pick up caustics
+    // consistent with the scrubbed scene state.  The interactive
+    // viewport's scrub path uses SetSceneTimeForPreview (animator-only,
+    // no photon regen) for responsiveness; that's why we need a
+    // distinct full-fidelity entry point at production-render time.
+    // Photon-heavy scenes may pause many seconds inside this call;
+    // the caller should already be in a "rendering" UI state.
+    void setSceneTime(double t);
+
+    // True if the loaded scene declares any keyframed objects (so
+    // the Compose UI should surface the timeline scrubber).  Mirrors
+    // the macOS bridge's hasAnimatedObjects.  Queried right after
+    // loadScene; doesn't require the viewport controller to be
+    // running, so it works for the first-render-then-restart-viewport
+    // ordering on Android.
+    bool hasAnimatedObjects() const;
 
     // Cooperative cancel. The next IProgressCallback::Progress tick will
     // return false, the library will wind down its workers on tile
@@ -110,6 +133,98 @@ public:
     // estimator is still warming up.
     int64_t etaRemainingMs() const;
 
+    // -------------------------------------------------------------
+    // Interactive viewport (descriptor-driven 3D editor).
+    //
+    // The viewport reuses the bridge's framebuffer and onRegionInvalidated
+    // callback path: the live-preview sink writes RGBA8 into m_framebuffer
+    // and fires onRegionInvalidated for the full image, identical to the
+    // production path.  Compose displays whichever frame arrived most
+    // recently — production or viewport-preview.
+    // -------------------------------------------------------------
+
+    // Build the live-preview rasterizer + sink, create the controller,
+    // and start its render thread.  When `suppressFirstFrame` is true
+    // (typical post-production-render path), the suppression flag is
+    // latched on the sink BEFORE the render thread starts, closing
+    // the race where a fast preview pass could blit through to the
+    // sink between the controller's Start and a follow-up
+    // SuppressNextFrame call from the UI layer.  On Android the sink
+    // is reconstructed by every stop/start (unlike macOS / Windows
+    // where it's persistent), so the suppress intent has to be
+    // threaded into the start call itself.
+    bool startViewport(bool suppressFirstFrame);
+    void stopViewport();
+    bool isViewportRunning() const { return m_viewportRunning; }
+    bool hasLivePreview() const    { return m_viewportRasterizer != nullptr; }
+
+    // Drop exactly one upcoming preview frame.  Race-prone if called
+    // *after* startViewport's render thread has already fired —
+    // prefer the suppressFirstFrame argument on startViewport for
+    // the post-production-render restart path.  Still useful for
+    // late-arriving suppress intents (e.g. inside an unrelated
+    // event after the viewport's been running for a while).
+    void viewportSuppressNextFrame();
+
+    void viewportSetTool(int tool);
+    void viewportPointerDown(double x, double y);
+    void viewportPointerMove(double x, double y);
+    void viewportPointerUp(double x, double y);
+
+    /// Stable full-resolution camera dimensions for pointer-event
+    /// coord conversion in the Compose viewport pane.  The rendered
+    /// framebuffer's size shrinks during a fast drag (preview-scale
+    /// subsampling); using framebuffer dims as the conversion target
+    /// makes mLastPx (captured at one scale level) and the next
+    /// pointer event (in another) live in mismatched coord spaces,
+    /// producing 4×–32× pan/orbit jumps when the scale state machine
+    /// steps.  Returns (0, 0) when no camera is attached.
+    void viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH) const;
+
+    /// Scene's animation options for sizing the timeline scrubber.
+    /// Returns false on null controller; the Compose UI treats that
+    /// as "no animation" and hides the slider.
+    bool viewportGetAnimationOptions(double& outTimeStart, double& outTimeEnd,
+                                     unsigned int& outNumFrames) const;
+    void viewportScrubBegin();
+    void viewportScrub(double t);
+    void viewportScrubEnd();
+
+    /// Bracket a property-panel chevron scrub.  See
+    /// SceneEditController::BeginPropertyScrub for the rationale.
+    void viewportBeginPropertyScrub();
+    void viewportEndPropertyScrub();
+    void viewportUndo();
+    void viewportRedo();
+
+    /// Canonical scene time owned by the underlying SceneEditController.
+    /// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
+    /// edit; that's why RenderViewModel queries this just before
+    /// nativeRasterize / nativeSetSceneTime instead of trusting its
+    /// own _sceneTime StateFlow, which goes stale when undo/redo
+    /// changes scene time without going through the slider.  Returns
+    /// 0 when no controller is attached.
+    double viewportLastSceneTime() const;
+
+    bool viewportProductionRender();
+
+    // Properties panel accessors — descriptor-driven snapshot.
+    void         viewportRefreshProperties();
+    int          viewportPanelMode() const;       // 0=None, 1=Camera, 2=Object
+    std::string  viewportPanelHeader() const;     // "Camera" / "Object: <name>" / ""
+    unsigned int viewportPropertyCount() const;
+    std::string  viewportPropertyName(unsigned int idx) const;
+    std::string  viewportPropertyValue(unsigned int idx) const;
+    std::string  viewportPropertyDescription(unsigned int idx) const;
+    int          viewportPropertyKind(unsigned int idx) const;
+    bool         viewportPropertyEditable(unsigned int idx) const;
+    bool         viewportSetProperty(const std::string& name, const std::string& value);
+
+    // Internal: invoked by the viewport preview sink after blitting
+    // the final-frame pixels into m_framebuffer.  Fires onRegionInvalidated
+    // covering the whole image so Compose redraws.
+    void onViewportFramePainted();
+
 private:
     void teardownJob();
     void writeGlobalOptionsFile(const std::string& path, int threadCount);
@@ -146,6 +261,18 @@ private:
     std::string m_optionsFile;
     int         m_threadCount = 4;
     bool        m_initialized = false;
+
+    // Interactive viewport state.  Created lazily by startViewport(),
+    // torn down by stopViewport() and on scene reload.
+    RISE::SceneEditController* m_viewportController = nullptr;
+    RISE::IRayCaster*          m_viewportCaster = nullptr;        // preview caster, max-recursion 1
+    RISE::IRayCaster*          m_viewportPolishCaster = nullptr;  // polish caster, max-recursion 2 (one bounce of glossy / refl / refr)
+    RISE::IRasterizer*         m_viewportRasterizer = nullptr;
+    RISE::IRasterizerOutput*   m_viewportSink = nullptr;
+    bool                       m_viewportRunning = false;
+
+    void buildViewportLivePreview();
+    void releaseViewportLivePreview();
 };
 
 // Process-wide singleton accessor. The bridge is created lazily on first

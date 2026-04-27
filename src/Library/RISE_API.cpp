@@ -5372,4 +5372,279 @@ namespace RISE
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter heterogeneous medium with emission" );
 		return true;
 	}
+
+	//////////////////////////////////////////////////////////
+	// Interactive scene editor — C-API entry points
+	//////////////////////////////////////////////////////////
+}
+
+#include "RISE_API.h"
+#include "SceneEditor/SceneEditController.h"
+
+namespace RISE
+{
+	bool RISE_API_CreateSceneEditController(
+		IJobPriv* pJob,
+		IRasterizer* pInteractiveRasterizer,
+		SceneEditController** ppOut )
+	{
+		if( !pJob || !ppOut ) return false;
+		(*ppOut) = new SceneEditController( *pJob, pInteractiveRasterizer );
+		return (*ppOut) != 0;
+	}
+
+	void RISE_API_DestroySceneEditController( SceneEditController* p )
+	{
+		delete p;
+	}
+
+	bool RISE_API_SceneEditController_Start( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Start();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_Stop( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Stop();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPreviewSink(
+		SceneEditController* p, IRasterizerOutput* sink )
+	{
+		if( !p ) return false;
+		p->SetPreviewSink( sink );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetProgressSink(
+		SceneEditController* p, IProgressCallback* sink )
+	{
+		if( !p ) return false;
+		p->SetProgressSink( sink );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetLogSink(
+		SceneEditController* p, ILogPrinter* sink )
+	{
+		if( !p ) return false;
+		p->SetLogSink( sink );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetTool( SceneEditController* p, int tool )
+	{
+		if( !p ) return false;
+		// Upper bound is RollCamera (=8), the highest enum value.  An
+		// earlier version used ScrubTimeline (=7) as the upper bound,
+		// which silently rejected RollCamera selections at the C-API
+		// boundary — the bridge would call SetTool(8), the call would
+		// return false, and the controller's mTool stayed at whatever
+		// the previous selection was.  Visually, clicking the Roll
+		// button looked like the previous tool was still active —
+		// e.g., dragging behaved like Zoom (move camera) instead of
+		// Roll (rotate around camera→lookat axis).
+		if( tool < SceneEditTool_Select || tool > SceneEditTool_RollCamera ) return false;
+		p->SetTool( static_cast<SceneEditController::Tool>( tool ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPointerDown(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		p->OnPointerDown( Point2( x, y ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPointerMove(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		p->OnPointerMove( Point2( x, y ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnPointerUp(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return false;
+		p->OnPointerUp( Point2( x, y ) );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->OnTimeScrubBegin();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t )
+	{
+		if( !p ) return false;
+		p->OnTimeScrub( t );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->OnTimeScrubEnd();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_BeginPropertyScrub( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->BeginPropertyScrub();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_EndPropertyScrub( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->EndPropertyScrub();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_Undo( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Undo();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_Redo( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->Redo();
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_LastSceneTime( SceneEditController* p, double* out )
+	{
+		if( !p || !out ) return false;
+		*out = static_cast<double>( p->LastSceneTime() );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_RequestProductionRender( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->RequestProductionRender();
+	}
+
+	// Properties panel ------------------------------------------------
+
+	static void CopyToBuf( const String& s, char* buf, unsigned int bufLen )
+	{
+		if( !buf || bufLen == 0 ) return;
+		const char* src = s.c_str();
+		unsigned int i = 0;
+		while( src && src[i] && i + 1 < bufLen ) { buf[i] = src[i]; ++i; }
+		buf[i] = 0;
+	}
+
+	bool RISE_API_SceneEditController_RefreshProperties( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->RefreshProperties();
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PanelMode( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return static_cast<int>( p->CurrentPanelMode() );
+	}
+
+	bool RISE_API_SceneEditController_PanelHeader(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->CurrentPanelHeader(), buf, bufLen );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyCount( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->PropertyCount();
+	}
+
+	bool RISE_API_SceneEditController_PropertyName(
+		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyName( idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyValue(
+		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyValue( idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyDescription(
+		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyDescription( idx ), buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PropertyKind(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return -1;
+		return p->PropertyKind( idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyEditable(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->PropertyEditable( idx );
+	}
+
+	bool RISE_API_SceneEditController_SetProperty(
+		SceneEditController* p, const char* name, const char* valueStr )
+	{
+		if( !p || !name || !valueStr ) return false;
+		return p->SetProperty( String( name ), String( valueStr ) );
+	}
+
+	bool RISE_API_SceneEditController_GetAnimationOptions(
+		SceneEditController* p,
+		double* outTimeStart, double* outTimeEnd,
+		unsigned int* outNumFrames )
+	{
+		if( !p || !outTimeStart || !outTimeEnd || !outNumFrames ) return false;
+		double t0 = 0, t1 = 0;
+		unsigned int nf = 0;
+		if( !p->GetAnimationOptions( t0, t1, nf ) ) return false;
+		*outTimeStart = t0;
+		*outTimeEnd   = t1;
+		*outNumFrames = nf;
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_GetCameraDimensions(
+		SceneEditController* p, unsigned int* outW, unsigned int* outH )
+	{
+		if( !p || !outW || !outH ) return false;
+		unsigned int w = 0, h = 0;
+		if( !p->GetCameraDimensions( w, h ) ) return false;
+		*outW = w;
+		*outH = h;
+		return true;
+	}
 }

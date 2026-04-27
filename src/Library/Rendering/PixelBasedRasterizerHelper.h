@@ -100,6 +100,27 @@ namespace RISE
 			mutable IRasterImage*	pFilteredScratch;	///< Scratch image for progressive display with film
 			ProgressiveConfig		progressiveConfig;	///< Multi-pass progressive rendering configuration
 
+			//! Persistent IRasterImage held across RasterizeScene calls.
+			//! Allocated lazily in AcquireRenderImage on first use, kept
+			//! alive until the rasterizer is destroyed or the camera
+			//! dimensions change.  Two consumers benefit:
+			//!
+			//!   1. Interactive viewport — the cancel-restart loop
+			//!      reuses the previous frame's pixels so cancelled
+			//!      passes degrade gracefully (no buffer-clear flash
+			//!      between motion frames).
+			//!
+			//!   2. Production "save image" — once a render completes,
+			//!      the final pixel data is queryable via
+			//!      GetLastRenderedImage() so the host UI can write it
+			//!      to disk in any format without re-rendering.
+			//!
+			//! `mutable` because Acquire is `const` (called from the
+			//! const RasterizeScene path).
+			mutable IRasterImage*	mPersistentImage;
+			mutable unsigned int	mPersistentW;
+			mutable unsigned int	mPersistentH;
+
 			mutable ProgressiveFilm*	mProgressiveFilm;	///< Per-pixel state for progressive multi-pass rendering
 			mutable unsigned int		mTotalProgressiveSPP;	///< Total SPP budget across all progressive passes
 
@@ -237,6 +258,23 @@ namespace RISE
 			/// adaptive sampling override this to use their adaptive max.
 			virtual unsigned int GetProgressiveTotalSPP() const;
 
+		/// Pointer to the IRasterImage produced by the most recent
+		/// RasterizeScene call (or nullptr if no render has run yet).
+		/// Refcount is held by this rasterizer; callers must NOT
+		/// release.  The buffer is invalidated when:
+		///   - the rasterizer is destroyed
+		///   - a subsequent RasterizeScene at different dimensions
+		///     reallocates it (interactive viewport scale step)
+		///   - PrepareImageForNewRender clears it for the next pass
+		///     (default impl; interactive subclass skips the clear)
+		///
+		/// Intended use: production rasterizers expose this so the
+		/// host UI can save the final image to disk in any format
+		/// after a completed render, without re-running the render.
+		/// Thread-safe to read AFTER RasterizeScene returns; not safe
+		/// to read concurrently with RasterizeScene.
+		const IRasterImage* GetLastRenderedImage() const { return mPersistentImage; }
+
 		/// Called at the beginning of RasterizeScene, before the main
 		/// render pass.  Subclasses can override to perform setup such
 		/// as path guiding training.  Default does nothing.
@@ -262,6 +300,48 @@ namespace RISE
 		/// pass and output flush.  Subclasses can override to perform
 		/// cleanup.  Default does nothing.
 		virtual void PostRenderCleanup() const {}
+
+		/// Acquire the IRasterImage that this RasterizeScene call will
+		/// fill.  Default impl allocates a fresh zero-initialized image
+		/// per call (production behaviour).  Subclasses can override
+		/// (e.g. InteractivePelRasterizer) to return a persistent
+		/// buffer whose pixel content survives across calls — this
+		/// lets the interactive viewport's cancel-restart loop start
+		/// each new render on top of the previous frame's pixels
+		/// instead of a freshly cleared buffer, eliminating black /
+		/// debug-color flashes between cancelled passes.
+		///
+		/// The returned pointer must have its refcount incremented for
+		/// the caller (RasterizeScene pairs this with ReleaseRenderImage).
+		virtual IRasterImage* AcquireRenderImage( unsigned int width, unsigned int height ) const;
+
+		/// Release the IRasterImage acquired by AcquireRenderImage.
+		/// Default impl calls safe_release.  Subclasses caching the
+		/// image (interactive viewport) decrement the caller's
+		/// reference but keep the persistent reference alive.
+		virtual void ReleaseRenderImage( IRasterImage* pImage ) const;
+
+		/// Per-pass entry hook called once at the top of RasterizeScene
+		/// after the image is acquired.  Default: clear the image to a
+		/// random pastel and fire OutputIntermediateImage on every
+		/// rasterizer output (the random clear is a debug visualization
+		/// — un-rendered tiles end up in a distinctive colour that
+		/// makes incomplete coverage easy to spot).  Interactive
+		/// subclasses override to skip the clear entirely so the
+		/// previous frame's pixels remain visible while new tiles
+		/// render in place.
+		virtual void PrepareImageForNewRender( IRasterImage& img, const Rect* pRect ) const;
+
+		/// Factory for the default tile-dispatch sequence used when
+		/// RasterizeScene is invoked with pRasterSequence == nullptr.
+		/// Default returns a Morton (Z-curve) sequence — production
+		/// rasterizers don't care about tile order because they
+		/// always render to completion.  Interactive subclasses
+		/// override to return a centre-out sequence so partial
+		/// buffers from cancelled passes show useful image content
+		/// in the middle of the frame rather than upper-left corner
+		/// noise.  Returned object has refcount 1; caller releases.
+		virtual IRasterizeSequence* CreateDefaultRasterSequence( unsigned int tileEdge ) const;
 
 			// Rasterizer interface implementations
 			virtual void AttachToScene( const IScene* ){};		// We don't need to do anything to attach

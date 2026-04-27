@@ -354,6 +354,12 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\NameIndex.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SceneGrammar.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\EditHistory.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\CancellableProgressCallback.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditor.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditController.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AreaLightShaderOp.cpp" />
@@ -771,6 +777,13 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\NameIndex.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SceneGrammar.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditorSuggestions\SuggestionEngine.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEdit.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\EditHistory.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\CancellableProgressCallback.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditor.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditController.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AreaLightShaderOp.h" />

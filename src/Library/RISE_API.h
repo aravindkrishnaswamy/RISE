@@ -51,6 +51,8 @@
 #include "Interfaces/ISampling1D.h"
 #include "Interfaces/ISampling2D.h"
 #include "Interfaces/IScenePriv.h"
+#include "Interfaces/IJobPriv.h"
+#include "Interfaces/ILogPrinter.h"
 #include "Interfaces/ISceneParser.h"
 #include "Interfaces/IShader.h"
 #include "Interfaces/IShaderManager.h"
@@ -2522,6 +2524,191 @@ bool RISE_API_CreateFinalGatherShaderOp(
 																	///<      1 - Equal Areas (equal solid angle)
 																	///<      2 - Equal Projected solid angles
 								);
+
+	//////////////////////////////////////////////////////////
+	// Interactive scene editor (cross-platform 3D viewport)
+	//
+	// See docs/INTERACTIVE_EDITOR_PLAN.md.  These are the C-API
+	// entry points that platform bridges (RISEViewportBridge.mm
+	// on macOS, the Qt RenderEngine on Windows, the JNI bridge on
+	// Android) consume.  The controller owns the render thread,
+	// the cancel-restart loop, and the toolbar state machine; the
+	// platform code just forwards events here.
+	//////////////////////////////////////////////////////////
+
+	class SceneEditController;
+
+	//! Tool enum mirroring SceneEditController::Tool.  Kept as a
+	//! plain int in the C-API surface for ABI stability across
+	//! language bridges (Swift, Kotlin/JNI, Qt).
+	enum SceneEditTool
+	{
+		SceneEditTool_Select           = 0,
+		SceneEditTool_TranslateObject  = 1,
+		SceneEditTool_RotateObject     = 2,
+		SceneEditTool_ScaleObject      = 3,
+		SceneEditTool_OrbitCamera      = 4,
+		SceneEditTool_PanCamera        = 5,
+		SceneEditTool_ZoomCamera       = 6,
+		SceneEditTool_ScrubTimeline    = 7,
+		SceneEditTool_RollCamera       = 8
+	};
+
+	//! Construct a SceneEditController over an existing job.
+	/// @param pJob                   Borrowed.  Must outlive the controller.
+	///                               In practice this is the same object
+	///                               returned by Job::GetScene's owner —
+	///                               IJobPriv inherits IJob and Job
+	///                               concretely implements IJobPriv.
+	/// @param pInteractiveRasterizer Borrowed.  May be NULL for skeleton
+	///                               mode.  Must outlive the controller.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSceneEditController(
+		IJobPriv* pJob,
+		IRasterizer* pInteractiveRasterizer,
+		SceneEditController** ppOut
+		);
+
+	//! Destroy a controller.  Stops the render thread first.
+	void RISE_API_DestroySceneEditController( SceneEditController* p );
+
+	//! Start the controller's render thread.
+	bool RISE_API_SceneEditController_Start( SceneEditController* p );
+
+	//! Stop the controller's render thread.  Joins the thread.
+	bool RISE_API_SceneEditController_Stop( SceneEditController* p );
+
+	//! Install the preview image sink (typically a platform-specific
+	//! IRasterizerOutput that marshals the framebuffer to the UI
+	//! thread).  Set BEFORE Start().
+	bool RISE_API_SceneEditController_SetPreviewSink(
+		SceneEditController* p, IRasterizerOutput* sink );
+
+	bool RISE_API_SceneEditController_SetProgressSink(
+		SceneEditController* p, IProgressCallback* sink );
+
+	bool RISE_API_SceneEditController_SetLogSink(
+		SceneEditController* p, ILogPrinter* sink );
+
+	//! Set the active toolbar mode.  Use SceneEditTool_* constants.
+	bool RISE_API_SceneEditController_SetTool( SceneEditController* p, int tool );
+
+	//! Pointer events from the platform UI.  Coordinates are in the
+	//! preview surface's pixel space.
+	bool RISE_API_SceneEditController_OnPointerDown(
+		SceneEditController* p, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPointerMove(
+		SceneEditController* p, Scalar x, Scalar y );
+	bool RISE_API_SceneEditController_OnPointerUp(
+		SceneEditController* p, Scalar x, Scalar y );
+
+	//! Time scrubber.
+	bool RISE_API_SceneEditController_OnTimeScrubBegin( SceneEditController* p );
+	bool RISE_API_SceneEditController_OnTimeScrub( SceneEditController* p, Scalar t );
+	bool RISE_API_SceneEditController_OnTimeScrubEnd( SceneEditController* p );
+
+	//! Bracket a property-panel scrub gesture (chevron drag on a
+	//! numeric row).  Same scale-bump machinery as the camera tools
+	//! use during a drag, exposed so the panel can drive it.  Begin
+	//! arms the adaptive preview-scale loop and bumps the divisor
+	//! to kPreviewScaleMotionStart; End restores full resolution.
+	//! Without these brackets the rapid-fire SetProperty stream
+	//! cancels every in-flight render before the outer tiles get a
+	//! chance, so only the center of the image updates.
+	bool RISE_API_SceneEditController_BeginPropertyScrub( SceneEditController* p );
+	bool RISE_API_SceneEditController_EndPropertyScrub( SceneEditController* p );
+
+	bool RISE_API_SceneEditController_Undo( SceneEditController* p );
+	bool RISE_API_SceneEditController_Redo( SceneEditController* p );
+
+	//! Canonical scene time tracked by the controller's edit history.
+	//! Updated by OnTimeScrub AND by Undo/Redo of a SetSceneTime edit
+	//! — i.e. the scrubber widget's local copy goes stale after an
+	//! undo/redo, but this getter returns the truth.  Platform UIs
+	//! should query this just before the production-render handoff
+	//! (instead of trusting their timeline-widget state) so a Render
+	//! click after Undo doesn't roll the scene back to the pre-undo
+	//! time.  Returns true on success; on null controller, returns
+	//! false and leaves *out unchanged.
+	bool RISE_API_SceneEditController_LastSceneTime(
+		SceneEditController* p, double* out );
+
+	//! Run the production rasterizer (whatever the scene declared)
+	//! on the in-memory mutated scene.  Blocks until complete.
+	bool RISE_API_SceneEditController_RequestProductionRender( SceneEditController* p );
+
+	// Properties panel — descriptor-driven introspection of the
+	// currently active editable entity.  The platform UI calls
+	// RefreshProperties() before reading the rest, then iterates by
+	// index.  Returns 0/empty on null controller.
+
+	bool RISE_API_SceneEditController_RefreshProperties( SceneEditController* p );
+
+	//! Returns the panel-mode discriminator the platform UI uses to
+	//! decide whether the right-side panel renders a header / list:
+	//!   0 = None    (Select tool with no pick → empty panel)
+	//!   1 = Camera  (one of the camera-manipulator tools is active)
+	//!   2 = Object  (Select tool with a picked object)
+	//! Maps onto SceneEditController::PanelMode.  -1 on null controller.
+	int RISE_API_SceneEditController_PanelMode( SceneEditController* p );
+
+	//! Copies up to bufLen-1 bytes of the panel header into buf and
+	//! null-terminates.  "Camera", "Object: <name>", or empty.  Returns
+	//! true on success.
+	bool RISE_API_SceneEditController_PanelHeader(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	unsigned int RISE_API_SceneEditController_PropertyCount( SceneEditController* p );
+
+	//! Copies up to bufLen-1 bytes of the parameter name into buf
+	//! and null-terminates.  Returns true if idx is in range.
+	bool RISE_API_SceneEditController_PropertyName(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	bool RISE_API_SceneEditController_PropertyValue(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	bool RISE_API_SceneEditController_PropertyDescription(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! Returns the parameter's ValueKind enum cast to int, or -1 on
+	//! out-of-range idx.  Map at the call site to an enum the bridge
+	//! can interpret.
+	int RISE_API_SceneEditController_PropertyKind(
+		SceneEditController* p, unsigned int idx );
+
+	bool RISE_API_SceneEditController_PropertyEditable(
+		SceneEditController* p, unsigned int idx );
+
+	//! Apply an edited value.  Triggers a re-render via the
+	//! cancel-restart loop.  Returns false on parse failure or
+	//! read-only property.
+	bool RISE_API_SceneEditController_SetProperty(
+		SceneEditController* p, const char* name, const char* valueStr );
+
+	//! Read the scene's animation options (start time, end time,
+	//! number of frames) for sizing the interactive timeline
+	//! scrubber.  Defaults are (0, 1, 30) when the .RISEscene file
+	//! declared no `animation_options` chunk.  Returns false on null
+	//! controller / no job attached.
+	bool RISE_API_SceneEditController_GetAnimationOptions(
+		SceneEditController* p,
+		double* outTimeStart, double* outTimeEnd,
+		unsigned int* outNumFrames );
+
+	//! Read the scene camera's stable full-resolution dimensions.
+	//! Bridges call this from their pointer-event handlers to convert
+	//! window-space mouse coords to a coord space that doesn't drift
+	//! with the preview-scale state machine.  See
+	//! SceneEditController::GetCameraDimensions for the full
+	//! rationale — short version: ICamera::GetWidth/Height flicker
+	//! during subsampling, this getter doesn't.  Returns false on
+	//! null controller / no camera attached / cache uninitialised.
+	bool RISE_API_SceneEditController_GetCameraDimensions(
+		SceneEditController* p, unsigned int* outW, unsigned int* outH );
 }
 
 #endif

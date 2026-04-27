@@ -68,6 +68,10 @@ namespace RISE
 				const Scalar scale_					///< [in] Scale factor to exagerrate the effects
 				);
 
+			// Properties-panel getter / setter for the scale parameter.
+			inline Scalar GetScaleStored()         const { return scale; }
+			inline void   SetScaleStored( Scalar v )     { scale = v; }
+
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
 
 			// For keyframing the scale

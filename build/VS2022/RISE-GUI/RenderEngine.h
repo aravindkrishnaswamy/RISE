@@ -53,6 +53,12 @@ public:
     bool hasAnimation() const { return m_hasAnimation; }
     QString versionString() const;
 
+    /// Opaque handle to the underlying IJobPriv* — consumed by
+    /// ViewportBridge so the interactive editor and the loader bridge
+    /// share the same in-memory scene.  The handle is owned by this
+    /// engine; callers must not retain or release.
+    void* opaqueJobHandle() const;
+
 signals:
     void stateChanged(RenderEngine::State newState);
     void progressUpdated(double fraction, const QString& title);
@@ -72,6 +78,17 @@ public slots:
     void startAnimationRender(const QString& videoOutputPath);
     void cancelRender();
     void clearScene();
+
+    /// Advance the in-memory scene to time `t` AND regenerate every
+    /// populated photon map.  Called by MainWindow before kicking the
+    /// production rasterizer so post-scrub renders pick up caustics
+    /// consistent with the scrubbed scene state.  The interactive
+    /// viewport's scrub path uses SetSceneTimeForPreview (animator-only,
+    /// no photon regen) for responsiveness; that's why we need a
+    /// distinct full-fidelity entry point at production-render time.
+    /// Photon-heavy scenes may pause many seconds inside this call;
+    /// the caller should already be in a "rendering" UI state.
+    void setSceneTime(double t);
 
 private:
     void setState(State newState);

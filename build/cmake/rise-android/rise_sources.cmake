@@ -223,6 +223,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBRENDERING
     "${RISE_LIB}/Rendering/FileRasterizerOutput.cpp"
     "${RISE_LIB}/Rendering/PixelBasedPelRasterizer.cpp"
+    "${RISE_LIB}/Rendering/InteractivePelRasterizer.cpp"
     "${RISE_LIB}/Rendering/PixelBasedRasterizerHelper.cpp"
     "${RISE_LIB}/Rendering/PixelBasedSpectralIntegratingRasterizer.cpp"
     "${RISE_LIB}/Rendering/Rasterizer.cpp"
@@ -322,6 +323,13 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditorSuggestions/CompletionContext.cpp"
     "${RISE_LIB}/SceneEditorSuggestions/NameIndex.cpp"
     "${RISE_LIB}/SceneEditorSuggestions/SuggestionEngine.cpp"
+
+    # SRCLIBSCENEEDITOR (interactive 3D scene editor backend)
+    "${RISE_LIB}/SceneEditor/EditHistory.cpp"
+    "${RISE_LIB}/SceneEditor/CancellableProgressCallback.cpp"
+    "${RISE_LIB}/SceneEditor/SceneEditor.cpp"
+    "${RISE_LIB}/SceneEditor/SceneEditController.cpp"
+    "${RISE_LIB}/SceneEditor/CameraIntrospection.cpp"
 
     # SRCLIBMISC
     "${RISE_LIB}/DetectorSpheres/DetectorSphere.cpp"

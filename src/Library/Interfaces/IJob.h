@@ -2082,6 +2082,19 @@ namespace RISE
 			const bool invert_fields						///< [in] Should the fields be temporally inverted?
 			) = 0;
 
+		//! Reads back the animation options previously set via
+		//! SetAnimationOptions, or the defaults (0, 1, 30) for jobs
+		//! whose .RISEscene file declared no `animation_options`
+		//! chunk.  The interactive editor's timeline scrubber reads
+		//! these to size the slider's range and report the duration.
+		virtual bool GetAnimationOptions(
+			double& time_start,
+			double& time_end,
+			unsigned int& num_frames,
+			bool& do_fields,
+			bool& invert_fields
+			) const = 0;
+
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function

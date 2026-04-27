@@ -59,6 +59,36 @@ namespace RISE
 		/// Lifetime is managed by the rasterizer; not ref-counted here.
 		mutable ISampler*										pSampler;
 
+		/// Interactive-preview mode signal.
+		///
+		/// When true, the current render is the interactive viewport
+		/// preview path; expensive shader ops should swap to a coarse
+		/// fallback that completes in milliseconds instead of seconds
+		/// so the cancel-restart loop stays responsive.  This is the
+		/// principled hook for "render less correct pixels fast" —
+		/// each shader op decides what fast-preview means for its
+		/// computation:
+		///
+		///   • SSS shader ops (SubSurfaceScattering, DonnerJensenSkin,
+		///     diffusion-approximation): skip the irradiance point-set
+		///     build (which can be 200K shade calls per object) and
+		///     the per-pixel octree evaluation.  Delegate to the
+		///     embedded irradiance-capture shader for a fast direct-
+		///     lighting fallback.
+		///
+		///   • Future heavy shader ops (path-guiding lookups, photon-
+		///     map gathers in shaders, irradiance-cache fills) can
+		///     check the same flag.
+		///
+		/// Set by the rasterizer's PrepareRuntimeContext override —
+		/// InteractivePelRasterizer flips it true; production
+		/// rasterizers leave the default false for full-fidelity
+		/// rendering.  Mutable for the same reason as pSampler — the
+		/// PrepareRuntimeContext path takes a non-const reference but
+		/// the flag is read through const refs in the shader-op call
+		/// chain.
+		mutable bool											bFastPreview;
+
 		/// Production stability controls (clamps, RR tuning, bounce
 		/// limits, glossy filtering).  Set by the rasterizer before
 		/// rendering.  NULL when no stability config is provided.
@@ -121,6 +151,7 @@ namespace RISE
 		  pass( pass_ ),
 		  bThreaded( bThreaded_ ),
 		  pSampler( 0 ),
+		  bFastPreview( false ),
 		  pStabilityConfig( 0 ),
 		  pOptimalMIS( 0 ),
 		  pProgressiveFilm( 0 ),

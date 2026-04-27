@@ -65,6 +65,10 @@ namespace RISE
 				const Scalar pixelRate				///< [in] Pixel rate of the camera
 				);
 
+			// Properties-panel getter / setter for the viewport scale.
+			inline Vector2 GetViewportScaleStored()         const { return viewportScale; }
+			inline void    SetViewportScaleStored( const Vector2& v ) { viewportScale = v; }
+
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
 		};
 	}

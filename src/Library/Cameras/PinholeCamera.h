@@ -66,6 +66,11 @@ namespace RISE
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
 
+			// Mutation surface used by the descriptor-driven properties
+			// panel.  Caller invokes RegenerateData() after edits.
+			inline Scalar GetFovStored() const         { return fov; }
+			inline void   SetFovStored( Scalar v )     { fov = v; }
+
 			// For keyframing the FOV
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );

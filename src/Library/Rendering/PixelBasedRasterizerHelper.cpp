@@ -48,6 +48,9 @@ PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
   useZSobol( false ),
   pFilteredFilm( 0 ),
   pFilteredScratch( 0 ),
+  mPersistentImage( 0 ),
+  mPersistentW( 0 ),
+  mPersistentH( 0 ),
   mProgressiveFilm( 0 ),
   mTotalProgressiveSPP( 0 ),
   mProgressBase( 0 ),
@@ -71,6 +74,7 @@ PixelBasedRasterizerHelper::~PixelBasedRasterizerHelper( )
 	safe_release( pCaster );
 	safe_release( pFilteredFilm );
 	safe_release( pFilteredScratch );
+	safe_release( mPersistentImage );
 #ifdef RISE_ENABLE_OIDN
 	delete pAOVBuffers;
 #endif
@@ -478,8 +482,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	const unsigned int width = pScene.GetCamera()->GetWidth();
 	const unsigned int height = pScene.GetCamera()->GetHeight();
 
-	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
-	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
+	IRasterImage* pImage = AcquireRenderImage( width, height );
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
@@ -489,16 +492,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		pFilteredScratch = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
 	}
 
-	{
-		// GlobalRNG is ok here since this part will always be single threaded
-		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
-
-		// Empty the intermediate output image
-		RasterizerOutputListType::const_iterator	r, s;
-		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-			(*r)->OutputIntermediateImage( *pImage, pRect );
-		}
-	}
+	PrepareImageForNewRender( *pImage, pRect );
 
 	pCaster->AttachScene( &pScene );
 
@@ -525,9 +519,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		8, 8, 64 );
 
 	// If there is no raster sequence, create a default one
-	MortonRasterizeSequence* blocks = 0;
+	IRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		blocks = new MortonRasterizeSequence( tileEdge );
+		blocks = CreateDefaultRasterSequence( tileEdge );
 		pRasterSequence = blocks;
 	}
 
@@ -1226,7 +1220,77 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	pFilteredFilm = 0;
 	safe_release( pFilteredScratch );
 	pFilteredScratch = 0;
+	ReleaseRenderImage( pImage );
+}
+
+// Default IRasterImage acquisition: persistent buffer reused across
+// RasterizeScene calls.  All rasterizers benefit:
+//   - Interactive viewport: cancel-restart loop reuses previous
+//     pixels so cancelled passes degrade gracefully.
+//   - Production: GetLastRenderedImage() can serve the buffer to a
+//     "save image" feature without re-rendering.
+//
+// On dimension change (rare for production, common for interactive
+// preview-scale stepping) the buffer is reallocated at the new size;
+// the previous content is discarded.  On first call the buffer is
+// allocated fresh, zero-initialized.
+//
+// PrepareImageForNewRender (production) clears the buffer to a
+// random pastel before each pass so the persistent state is wiped
+// before the new render fills it.  Interactive subclasses override
+// to skip the clear so previous content shows through.
+IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width, unsigned int height ) const
+{
+	if( !mPersistentImage || mPersistentW != width || mPersistentH != height ) {
+		safe_release( mPersistentImage );
+		mPersistentImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
+		GlobalLog()->PrintNew( mPersistentImage, __FILE__, __LINE__, "persistent-image" );
+		mPersistentW = width;
+		mPersistentH = height;
+	}
+	// Hand a counted reference to the caller; the matching
+	// ReleaseRenderImage drops it.  Our own persistent reference
+	// (refcount 1 from `new`) keeps the image alive for the full
+	// rasterizer lifetime.
+	mPersistentImage->addref();
+	return mPersistentImage;
+}
+
+void PixelBasedRasterizerHelper::ReleaseRenderImage( IRasterImage* pImage ) const
+{
+	// Drop the addref AcquireRenderImage handed to the caller; the
+	// persistent reference keeps the image alive across calls.
 	safe_release( pImage );
+}
+
+// Default per-render entry: clear to a random pastel (debug visual —
+// uncovered tiles stand out) and fire OutputIntermediateImage so any
+// observer sees the "render started" signal.  Interactive subclasses
+// override to skip both: the previous frame's pixels remain visible
+// while new tiles render in place, eliminating cancel-restart flashes.
+void PixelBasedRasterizerHelper::PrepareImageForNewRender( IRasterImage& img, const Rect* pRect ) const
+{
+	// GlobalRNG is fine here — single-threaded prelude.
+	img.Clear( RISEColor(
+		GlobalRNG().CanonicalRandom()*0.6+0.3,
+		GlobalRNG().CanonicalRandom()*0.6+0.3,
+		GlobalRNG().CanonicalRandom()*0.6+0.3,
+		1.0 ), pRect );
+
+	for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
+		(*r)->OutputIntermediateImage( img, pRect );
+	}
+}
+
+// Default tile-dispatch order: Morton (Z-curve), starting upper-left.
+// Production rasterizers don't care because they always render to
+// completion — the order only affects which tiles populate the
+// framebuffer first.  Interactive subclasses override to return
+// centre-out so partial buffers from cancelled passes have useful
+// content in the middle of the frame.
+IRasterizeSequence* PixelBasedRasterizerHelper::CreateDefaultRasterSequence( unsigned int tileEdge ) const
+{
+	return new MortonRasterizeSequence( tileEdge );
 }
 
 void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const

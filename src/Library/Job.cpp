@@ -5243,7 +5243,11 @@ namespace RISE {
 			{
 				if( pBuffer ) {
 					GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
-					delete pBuffer;
+					// Array allocation (`new RGBA16[...]`) requires
+					// matching `delete[]`; the historical `delete pBuffer`
+					// was undefined behaviour that happened to work on
+					// trivial element types under most allocators.
+					delete[] pBuffer;
 					pBuffer = 0;
 				}
 			}
@@ -5266,9 +5270,34 @@ namespace RISE {
 				const Rect* pRegion							///< [in] Rasterized region, if its NULL then the entire image should be output
 				)
 			{
-				if( !pBuffer ) {
-					width = pImage.GetWidth();
-					height = pImage.GetHeight();
+				// Reallocate the dispatch buffer whenever the image
+				// dimensions change, not only on first call.  Without
+				// this, an output dispatcher reused across renders with
+				// different image dims would either:
+				//   - underflow pBuffer (if cached dims < current dims):
+				//     the y*width+x indexing uses cached width and the
+				//     loop iterates current dims, so writes overrun
+				//     pBuffer.
+				//   - read-OOB on GetPEL (if cached dims > current dims):
+				//     the loop iterates cached dims, but pImage is only
+				//     `current dims` big — GetPEL(x>=current_w, y>=current_h)
+				//     reads garbage, GetPEL's virtual call may dispatch
+				//     through a corrupted vtable on freed pages, and the
+				//     downstream Integerize crashes with a PAC fault on
+				//     a wild far-address (matching the production-render
+				//     crash report).
+				// The cheap path (dims match) is unchanged: no realloc,
+				// no work.
+				const unsigned int curW = pImage.GetWidth();
+				const unsigned int curH = pImage.GetHeight();
+				if( !pBuffer || curW != width || curH != height ) {
+					if( pBuffer ) {
+						GlobalLog()->PrintDelete( pBuffer, __FILE__, __LINE__ );
+						delete[] pBuffer;
+						pBuffer = 0;
+					}
+					width = curW;
+					height = curH;
 					pBuffer = new RGBA16[ width*height ];
 					GlobalLog()->PrintNew( pBuffer, __FILE__, __LINE__, "buffer" );
 					bPremultipliedAlpha = pObj.PremultipliedAlpha();
@@ -6469,6 +6498,22 @@ bool Job::SetAnimationOptions(
 	animOptions.do_fields = do_fields;
 	animOptions.invert_fields = invert_fields;
 
+	return true;
+}
+
+bool Job::GetAnimationOptions(
+	double& time_start,
+	double& time_end,
+	unsigned int& num_frames,
+	bool& do_fields,
+	bool& invert_fields
+	) const
+{
+	time_start    = animOptions.time_start;
+	time_end      = animOptions.time_end;
+	num_frames    = animOptions.num_frames;
+	do_fields     = animOptions.do_fields;
+	invert_fields = animOptions.invert_fields;
 	return true;
 }
 

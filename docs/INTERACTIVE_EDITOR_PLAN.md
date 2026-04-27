@@ -1,8 +1,45 @@
 # RISE Interactive Scene Editor Plan
 
-**Status**: Draft for review. No code changes made yet.
+**Status**: Phases 1-5 shipped (Library + macOS + Windows + Android viewports, production-render integration, descriptor-driven properties panel, multi-level adaptive scaling with idle refinement). Phase 6 (round-trip save) not yet started.
 **Owner**: Aravind Krishnaswamy
 **Scope**: Add a true interactive 3D viewport on top of the existing Mac, Windows, and Android RISE apps. Toolbar-driven object/camera/timeline mutation, live preview rendering as the user drags, undo/redo, and round-trip save back to `.RISEscene` (transform-only in this initiative; full re-serialize deferred).
+
+**Progress at a glance** (see §19 for the full log):
+
+| Phase | Status | Key delivery |
+|---|---|---|
+| 1 | shipped | `SceneEditor` + `EditHistory` + `InteractivePelRasterizer` + `SceneEditorBasicsTest` |
+| 2 | shipped | `SceneEditController` + `CancellableProgressCallback` + cancel-restart `SceneEditorCancelRestartTest` |
+| 3 | shipped | macOS viewport: `RISEViewportBridge`, SwiftUI `ViewportView`, toolbar with cursor binding, picking, drag-to-move/orbit/scrub, properties panel |
+| 4 | shipped | Windows (`ViewportBridge`/`ViewportWidget`/Qt) + Android (`RiseBridge` viewport methods + JNI + Compose `ViewportPane`) parity |
+| 5 | shipped | "Render" button stops viewport, runs scene-declared rasterizer on mutated state, restarts viewport. Always-on viewport (no toggle). |
+| 6 | not started | Round-trip save (in-place transform rewrite) |
+
+**Cross-cutting requirements added during implementation** (these were not in the original plan):
+
+- **Always-on viewport** instead of an "Interact" toggle. The viewport is the default editing surface as soon as a scene loads. Production render disables interaction; clicking Render stops the viewport, runs the rasterizer, and restarts it. (See §19.5.)
+- **No-throttle preview dispatch.** Every frame the rasterizer produces reaches the screen, including partial buffers from cancelled passes — during fast manipulation the cancel flag trips on every pointer move, and dropping cancelled frames makes the viewport feel throttled (only post-pause refinement frames would land). Center-out tile order keeps partial buffers visually usable. *(Reversal of an earlier "cancel-aware sink drop" requirement that proved to be too aggressive — see §19.6.)*
+- **Persistent IRasterImage on every rasterizer.** `PixelBasedRasterizerHelper` holds the rasterizer's framebuffer across `RasterizeScene` calls instead of allocating fresh per call. Two consumers benefit: (1) the interactive viewport's cancel-restart loop reuses the previous frame's pixels so cancelled passes degrade gracefully, and (2) production rasterizers can serve the final image to a future "save image to any format" UI feature via `GetLastRenderedImage()` without re-rendering. (§19.8)
+- **Skip random-pastel clear for interactive renders.** The default `PrepareImageForNewRender` clears to a random pastel (a debug visual that highlights uncovered tiles); during interactive cancel-restart this produces visible flashes of colour. `InteractivePelRasterizer` overrides the hook to no-op so previous content stays under the in-progress tiles. (§19.8)
+- **Center-out tile order for interactive renders.** The interactive rasterizer's `Config.tileOrder = TileOrder_CenterOut` was originally documented but not wired up — the base helper unconditionally created a Morton (Z-curve) sequence that filled tiles starting from the upper-left. Added a virtual `CreateDefaultRasterSequence(tileEdge)` factory; the interactive override returns a `BlockRasterizeSequence` honouring `Config.tileOrder` (defaults to centre-out). Partial buffers from cancelled passes now show useful image content from the middle out. (§19.9)
+- **Post-release 4-SPP polish pass with elevated max-recursion.** After `OnPointerUp`, the controller runs the regular 1-SPP scale=1 final pass, then chains a single 4-SPP scale=1 polish pass that swaps in a max-recursion-2 ray caster (one bounce of glossy / reflected / refracted rays) for higher-quality reflections, refractions, and glossy highlights in the at-rest image. Any user edit during the polish cancels the chain via `KickRender`. (§19.10)
+- **Toolbar pared down to camera-only manipulation.** Object Translate / Rotate / Scale tools and the standalone Scrub-Timeline tool are dropped from the toolbar — object editing carries too much complexity for the current state of the app, and timeline scrubbing is driven directly by the bottom timeline bar. Only Select, Orbit-Camera, Pan-Camera, Zoom-Camera surface in the UI. The C++ `SceneEditController::Tool` enum keeps all values so the controller is forward-compatible if the object tools come back later. (§19.14)
+- **Tool cursor restricted to the rendered-image area.** The platform viewports compute the aspect-fit draw rect for the current image; the tool cursor (orbit hand, etc.) only takes effect inside that rect, and the system arrow returns whenever the pointer crosses out into the dark surround or leaves the widget. macOS uses `addCursorRect(drawRect, …)`; Windows uses `setCursor` / `unsetCursor` on `mouseMoveEvent` + `leaveEvent`; Android (touch UI) is a no-op. (§19.14)
+- **Right-side panel becomes selection-driven.** The properties panel only shows real content when there's something to inspect: empty by default; camera properties when Orbit / Pan / Zoom is active; basic object info (name + world position) when the Select tool has picked an object. Picking is added to `OnPointerDown` for the Select tool — `IObjectManager::IntersectRay` finds the hit, then a name lookup via `EnumerateItemNames` recovers the registered name (no GetName on `IObject`). New API: `SceneEditController::CurrentPanelMode()` returning `None / Camera / Object`, plus `CurrentPanelHeader()` for the panel title. (§19.15)
+- **Pointer events mapped to image-pixel space.** Each platform's bridge converts viewport-relative click coordinates into the rasterizer's image-pixel coordinate system before passing them to the controller. Two adjustments per platform: aspect-fit offset (subtract draw-rect origin) and pixel-density rescale (divide by draw-rect points, multiply by image pixels). HiDPI is handled implicitly. Picking and orbit / pan / zoom now operate in the same coord space the camera's `GenerateRay` expects. (§19.16)
+- **Camera-projection Y-flip in picker.** `PickAt` flips the click-y to `cam->GetHeight() - py` before calling `GenerateRay`. Rasterizer image space and the camera's projection-matrix screen space differ by a Y inversion (a property of the camera projection matrix); without the flip, clicking visually low picks objects rendered visually high. (§19.16)
+- **Tool selection re-applied to controller after viewport restart.** When a new scene loads (or the controller is otherwise rebuilt) the freshly-constructed `SceneEditController` defaults to `Tool::Select`, but the platform UI's persisted toolbar selection survives. Each platform now re-pushes the toolbar's selection to the controller on viewport restart so they stay in sync (macOS via `.task(id: ObjectIdentifier(bridge))`, Windows in `MainWindow::onStateChanged`'s `SceneLoaded` branch, Android via a `viewportEpoch` `StateFlow` observed by `ViewportPane`). (§19.17)
+- **Camera-control rates scaled by scene size.** `SceneEditor` now caches `SceneScale()` — the diagonal of the union of every object's bounding box — and uses it to scale pan / zoom rates instead of the camera-to-look-at distance. Small scenes get small absolute changes per pixel; large scenes get large ones, independent of where the camera is positioned. Orbit stays angular (rotation rates aren't a function of scene extent). (§19.17)
+- **Camera angles are first-class, keyframable, and round-trippable.** Orbit and roll now mutate the camera's already-existing `target_orientation` (theta, phi) and `orientation.z` (roll) parameters rather than baking the result into `vPosition`. Both are declared in the parser descriptor (so they appear in the properties panel and round-trip through `.RISEscene`) and are keyframable through `CameraCommon`'s existing `TARGET_ORIENTATION_ID` / `ORIENTATION_ID` animator IDs (so animations interpolate angles, not derived positions). The toolbar gains a Roll tool (drag horizontally → roll around the camera→look-at axis); orbit is unchanged in feel but parameter-stored under the hood. Pan and Zoom continue to mutate `vPosition` / `vLookAt` since they're translations, not rotations. (§19.18)
+- **Properties panel "location" shows REST position; pan/zoom math operates in rest space.** `CameraCommon::GetRestLocation()` returns `vPosition` (the value the user sets in `.RISEscene`, what pan/zoom mutate), distinct from `GetLocation()` which returns the post-orbit `frame.GetOrigin()` the rasterizer renders from. The properties-panel "location" row switched to the rest accessor so orbit no longer appears to "change the camera location" even though it moves the rendered eye. Pan now translates BOTH `vPosition` and `vLookAt` (commutes with orbit); Zoom translates `vPosition` along the rest-space forward `(lookAt - vPosition)` so after Recompute applies orbit, the post-orbit eye moves toward look-at as expected. Pre-fix both ops applied screen-space deltas to the post-orbit eye and wrote the result into vPosition — Recompute then re-applied orbit, double-rotating and breaking Undo. (§19.19)
+- **Pointer events use stable full-resolution camera dims, not the rendered frame size.** `SceneEditController::GetCameraDimensions()` (and matching C-API `RISE_API_SceneEditController_GetCameraDimensions`) returns the canonical full-res dims captured BEFORE the preview-scale dim swap, refreshed at the start of every render pass. Each platform's bridge exposes a `cameraSurfaceDimensions` accessor; the viewport widget's `surfacePoint` uses these stable dims as the conversion target instead of the rendered image's dims. Pre-fix, `mLastPx` (captured at one scale level) and the next pointer event (in another scale level) lived in mismatched coord spaces, so the controller's `(px - mLastPx)` delta jumped 4×–32× whenever the preview-scale state machine stepped — manifesting as huge pan/orbit jumps during fast moves that "settled down" once the renders caught up to scale=1. (§19.19)
+- **Pan X-axis flipped to "grab the world" feel.** Pre-fix, dragging right made the scene appear to slide LEFT (camera moved right). Y was already grab-the-world (drag-down made the scene drag down with the pointer). The X axis now matches: drag right → scene slides right → camera moves left. One-line fix to negate the dx sign in PanCamera. (§19.20)
+- **Roll tool C-API bound check raised from ScrubTimeline (=7) to RollCamera (=8).** `RISE_API_SceneEditController_SetTool` validated the incoming tool against `tool > SceneEditTool_ScrubTimeline` — silently rejecting RollCamera (=8) at the API boundary. The bridge would call SetTool(8), the call would return false, and the controller's mTool stayed at whatever was selected before. Visually, clicking the Roll button looked like the previous tool (typically Zoom) was still active — drags moved the camera position instead of rolling. (§19.20)
+- **Orbit theta clamped to ±89° to prevent gimbal lock and NaN propagation.** `AdjustCameraForThetaPhi` only clamps theta at +π/2 max and leaves the −π/2 side unbounded. Past the pole, the post-orbit forward becomes parallel to vUp and `ONB::CreateFromWV`'s `cross(vUp, forward)` collapses to the zero vector — the camera basis becomes degenerate. Subsequent pan/zoom edits computed `right`/`forward` from this degenerate basis and propagated NaN through vPosition, manifesting as the panel's "location" field reading "nan nan nan" after the user kept orbiting in one direction. SceneEditor now clamps target_orientation.x to ±1.553 rad (~±89°) inside the Orbit op so the basis stays well-conditioned. Pan/Zoom additionally have a `HasNaN` guard before writing back to vPosition as a defensive belt-and-braces. (§19.20)
+- **Suppress-next-frame after production.** Each platform bridge exposes `suppressNextFrame()`; the host calls it before restarting the viewport after a production render so the production image stays visible until the user actually starts dragging. (§19.6)
+- **Multi-level adaptive scaling with idle refinement.** Six preview-scale levels (1, 2, 4, 8, 16, 32), three feedback loops: during-motion adaptation (×2 step, ×4 jump on >100ms), resume-after-pause snap on `OnPointerMove`, idle refinement that walks the scale toward 1 over ~half a second after the user stops moving. (§19.7)
+- **Descriptor-driven properties panel.** Camera property table built by reusing the existing `IAsciiChunkParser` descriptor metadata; reflected via `RISE_API_SceneEditController_Property*` C-API surface. (§19.4)
+- **State-driven UI enablement.** Viewport controls disabled (greyed) during `Loading` / `Rendering` / `Cancelling` so edits cannot race the production rasterizer. Mirrored across all three platforms. (§19.5)
 
 ---
 
@@ -50,6 +87,15 @@ These are locked. Changing any of them ripples across multiple phases.
 | macOS bridge name | `RISEViewportBridge` (existing `RISESceneEditorBridge` is the **text-editor** suggestion bridge — distinct concern). |
 | Round-trip scope | Phase A only (in-place transform rewrite). B and C deferred. |
 | Timeline scrubbing without photon regen | New `IScene::SetSceneTimeForPreview()` skips photon-map regeneration. Full `SetSceneTime` runs once on production-render dispatch. |
+| Viewport activation | **Always-on once a scene is loaded** (no "Interact" toggle). Production render disables viewport interaction and tears off frame dispatch; on completion, viewport restarts with `suppressNextFrame()` so the production image is the visible frame until the user drags. (Decision made post-Phase-3, replaces an earlier "Interact mode toggle" design.) |
+| Preview-frame dispatch contract | Sink dispatches **every** `OutputImage` call to the UI, including partial buffers from cancelled passes. The only exception is `SuppressNextFrame()`, a one-shot used right after production-render to keep the production image up until the user starts dragging. (Earlier design dropped cancelled passes; that proved to throttle the viewport during motion — see §19.6.) |
+| IRasterImage lifetime | `PixelBasedRasterizerHelper` holds a persistent buffer across `RasterizeScene` calls. Acquire/Release are virtual hooks but the default impl is now persistent (was: allocate-fresh per call). Reallocates only on dimension change. Released in the rasterizer destructor. Public `GetLastRenderedImage()` accessor exposes the buffer for "save image" UI flows. |
+| Interactive-render polish | `InteractivePelRasterizer` exposes `SetSampleCount(unsigned int)` (1 = single-ray, n>1 = MultiJittered kernel + non-progressive single-pass) and `SetPolishRayCaster(IRayCaster*)` (optional secondary caster swapped in for `SetSampleCount(>1)`). The macOS bridge constructs both casters at scene-load (preview maxR=1, polish maxR=2); the controller swaps via `SetSampleCount` for one final 4-SPP polish pass after pointer-up. |
+| Toolbar surface | Only Select + the three camera tools (Orbit / Pan / Zoom) are surfaced in the toolbar UI. Object Translate / Rotate / Scale and the standalone Scrub-Timeline tool exist in the C++ `Tool` enum but are not exposed — too much UX complexity for the current app state, and timeline scrubbing is the bottom-bar's job anyway. |
+| Cursor scoping | Tool cursor (orbit hand, etc.) applies only inside the aspect-fit rectangle of the rendered image. Outside that rect (the dark letterbox / pillarbox surround), the system arrow returns. macOS via `addCursorRect`, Windows via per-`mouseMoveEvent` swap + `leaveEvent` reset. |
+| Right-panel content | Driven by `SceneEditController::CurrentPanelMode()` ∈ {`None`, `Camera`, `Object`}: `Camera` when one of the camera-manipulator tools is active; `Object` when the Select tool picked an object (via `IntersectRay`); `None` otherwise. The platform UIs render an empty placeholder in `None` mode rather than hiding the panel — keeps the layout stable. |
+| Adaptive preview resolution | Six levels (1, 2, 4, 8, 16, 32). Three feedback loops: (1) during-motion adaptation ×2 step / ×4 jump above `kSlowMs` / /2 step below `kFastMs`; (2) `OnPointerMove` resume-after-pause snap; (3) `wait_for(kRefineWakeMs)` idle refinement that walks toward scale=1 over ~500ms after the user stops moving. Refinement passes skip the during-motion adaptation to prevent yo-yo. |
+| Properties panel | Descriptor-driven, reusing `ChunkParserRegistry`'s `IAsciiChunkParser::Describe()` metadata. Edits route through `SetCameraProperty` op so they participate in undo/redo. Surfaced over C-API as `RISE_API_SceneEditController_PropertyN` family. |
 
 ---
 
@@ -1380,6 +1426,13 @@ Per-phase axis assignments are listed in §9.6, §10.6, §11.7, §12.8, §13.4, 
 
 ## 17. Risks and Out-of-Scope Items (cross-cutting)
 
+### Known issues deferred from adversarial review
+
+- **Edit-while-rendering scene-state race.** `OnPointerMove → SceneEditor::Apply` mutates camera/object fields on the UI thread without locking against the render thread, which is reading those same fields through the ray caster. The cancel signal arrives at the next tile boundary, so a small window exists where a tile reads a torn write (e.g. `Point3` partially updated, basis vectors mid-recompute → `NaN` after `Vector3Ops::Normalize`). Current symptom: rare firefly pixels on fast drags, transient (cancel-restart fires a clean render right after with the correct state). Proper fix is a scene-state RW lock or double-buffered camera; both are invasive. TSAN flags the race today.
+- **Per-property `RegenerateData` inside composite undo.** Each restored property edit in `SceneEditor::Undo`'s composite branch calls `cam->RegenerateData()` mid-loop instead of deferring to the trailing call. Wasteful (multiple basis recomputes per composite) and a minor exposure to the race above. Acceptable today — composite property undo only fires for property-panel composites, which are rare.
+
+### Other risks
+
 - **Pre-existing animator race.** [docs/ARCHITECTURE.md](ARCHITECTURE.md) flags `IAnimator::EvaluateAtTime` as a known race during multi-threaded temporal sampling. Unrelated to interactive scrubbing correctness for the `pixelpel` case — the interactive rasterizer is single-thread per render anyway from the editor's standpoint, and timeline scrub never spawns a multi-threaded animation render. Adding `SetSceneTimeForPreview` does not introduce a new race.
 - **Production rasterizer + photon regen pause.** Unavoidable for correctness in photon-mapped scenes. UI must show a clear "Preparing photons…" indicator. Document in user-facing docs.
 - **macOS `RISESceneEditorBridge` naming clash**: existing bridge is for the **text editor**. New 3D bridge is `RISEViewportBridge`. Per-platform analogues: `ViewportEngine` (Windows), `ViewportJni` (Android).
@@ -1395,3 +1448,271 @@ Per-phase axis assignments are listed in §9.6, §10.6, §11.7, §12.8, §13.4, 
 - [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md) — apply when extending `IScene` and `RISE_API.h`.
 - [src/Library/README.md](../src/Library/README.md) — Library map.
 - [CLAUDE.md](../CLAUDE.md) — five-build-file checklist, thread-priority policy, source-file add/remove discipline.
+
+---
+
+## 19. Implementation Progress Log
+
+This section records what shipped (vs. the original plan) and any requirement changes that were made along the way. The original §9-§14 phase plans are unmodified; this log is the source of truth for *current* state and reasoning behind deviations.
+
+### 19.1 Phase 1 — Library skeleton (shipped)
+
+Delivered as planned. New files under [src/Library/SceneEditor/](../src/Library/SceneEditor/):
+
+- `SceneEdit.h` — value-typed mutation record with prev-state fields for undo (`prevTransform`, `prevTime`, `prevCameraPos/LookAt/Up`, `prevPropertyValue`).
+- `EditHistory.{h,cpp}` — bounded ring buffer with composite markers; `TrimToMax` pops whole composites atomically (round-3 review fix).
+- `SceneEditor.{h,cpp}` — friend-class mutator. Apply/Undo/Redo branches for object/camera/time/property ops. Composite undo/redo loops with scope tracking (`sawObjectOp`, `sawCameraOp`, `sawTimeOp`, `sawPropertyOp`) so the dirty scope is the maximum-significance op in the composite (round-4 review fix).
+- `CancellableProgressCallback.{h,cpp}` — wraps an `IProgressCallback` and ANDs its `Progress()` return with an atomic cancel flag. `mInner` is `std::atomic<IProgressCallback*>` so `SetInner` from the UI thread is safe against concurrent `Progress()` calls from worker threads (round-1 review fix).
+- `CameraIntrospection.{h,cpp}` — descriptor-driven property snapshot for the active camera. `Inspect()` returns `vector<CameraProperty>`; `SetProperty()` parses string values back via the same `IAsciiChunkParser` formatters. Filters duplicate scalar params (pitch/roll/yaw) keeping vec3 versions; logs a warning on unknown / read-only properties.
+- `InteractivePelRasterizer.{h,cpp}` (under `src/Library/Rendering/`) — subclass of `PixelBasedPelRasterizer` with a `Config` struct (`previewScale`, `idleMaxPasses`, `tileOrder`, `progressiveOnIdle=false`).
+
+`tests/SceneEditorBasicsTest.cpp` exercises the full invariant chain via API and verifies undo round-trips transforms within 1e-9.
+
+### 19.2 Phase 2 — Cancel-restart controller (shipped)
+
+`SceneEditController.{h,cpp}` — render thread, condvar, atomics. Owns the `SceneEditor`, the interactive rasterizer, the toolbar state machine, the cancel-restart loop, and the descriptor-driven property snapshot.
+
+Round-1 review fixed a condvar lost-wakeup: `KickRender` and `Stop` now hold `mMutex` around the store-then-notify so the render thread cannot park between its predicate check and `cv.wait`.
+
+`tests/SceneEditorCancelRestartTest.cpp` validates that rapid edits cancel in-flight renders. **Test fix** (during multi-level scaling work): the test was creating `new Job()` without a camera, so `SceneEditor::Apply` for `OrbitCamera` returned false at the `if (!baseCam) return false;` check and the test's pointer-driven cancel path never fired. Added `AttachDefaultCamera` helper that constructs a 64×64 pinhole camera and calls `IScenePriv::SetCamera` before the controller starts. Test now reports `cancels=30 aborts=30 completed=1` (30 motion edits each cancel the prior in-flight render; final pass after `OnPointerUp` runs to completion).
+
+### 19.3 Phase 3 — macOS viewport (shipped)
+
+Bridge: `build/XCode/rise/RISE-GUI/Bridge/RISEViewportBridge.{h,mm}`. SwiftUI: `App/ViewportView.swift`, `App/ViewportToolbar.swift`. Toolbar binding to the C-API `SetTool` enum.
+
+Tooltips on each toolbar button (per user feedback during implementation). Selected toolbar button shows accent-color background + tinted icon.
+
+Cursor binding: when a tool is selected, the viewport canvas's cursor switches to that tool's `NSCursor` (e.g., `closedHand` for orbit, `crosshair` for select). The cursor reverts to `.arrow` when interaction is disabled.
+
+**Picking** uses `IObjectManager::IntersectRay` against a camera-generated primary ray. Implementation skipped the half-resolution coordinate conversion path because the platform UI never sees the lower-resolution preview surface — the preview sink upscales server-side via the camera dimension swap (see §19.7).
+
+### 19.4 Properties panel (added during Phase 3, not in original plan)
+
+Right-side panel reflecting the active camera's parameters via the `IAsciiChunkParser` descriptor. Built from `CameraIntrospection::Inspect`. Edits round-trip back through `SetCameraProperty` SceneEdit op so they participate in undo/redo. Surfaced over C-API as the `RISE_API_SceneEditController_Property*` family (Count / Name / Value / Description / Kind / Editable / RefreshProperties / SetProperty).
+
+The panel re-snapshots every frame the bridge dispatches an image (so drag-driven edits show up in the panel) but suppresses the snapshot while the panel's text field is being actively edited (so the user's in-progress text is not overwritten).
+
+The panel is mirrored on Windows (`ViewportProperties` Qt widget) and Android (`ViewportPropertiesPanel` Compose). Platform UIs disable the panel when `interactionEnabled=false` (see §19.5).
+
+### 19.5 Always-on viewport — replaced "Interact mode" toggle
+
+**Original plan** (pinned design): the viewport was an explicit mode the user toggled into via an "Interact" button. Production render and viewport were mutually exclusive.
+
+**Decision change** (post-Phase-3): "Let's ditch having a separate interact mode. Always in that mode. Render button stops viewport, runs production, restarts viewport. While rendering all interaction disabled."
+
+Resulting requirements:
+- Viewport is the default editing surface as soon as a scene loads. No separate Interact button.
+- Render flow: UI thread calls `bridge.stop()` → engine runs production rasterizer (synchronous) → on completion, UI thread calls `bridge.suppressNextFrame()` then `bridge.start()`.
+- During `Loading` / `Rendering` / `Cancelling`, all viewport widgets (toolbar, canvas pointer events, timeline slider, properties panel) are visually disabled (greyed) so edits cannot race the production rasterizer.
+- State-driven enablement is computed in each platform's view-model and threaded as `interactionEnabled: Bool` (Swift) / `setEnabled(bool)` (Qt) / `interactionEnabled: Boolean` (Compose) into all child widgets.
+
+Files touched: macOS `ContentView.swift` / `RenderViewModel.swift` / `ViewportView.swift`; Windows `MainWindow.cpp` / `ControlsWidget.cpp` (removed `m_interactBtn`); Android `RenderScreen.kt` / `RenderViewModel.kt` (removed `_interactiveMode`/`setInteractiveMode`) / `ViewportPane.kt` (added `interactionEnabled` parameter and disabled inner widgets).
+
+### 19.6 Sink dispatch policy (cancel-guard added then reversed; suppress-next-frame kept)
+
+Two end-of-pass guards were originally added to each platform's `ViewportPreviewSink` after Phase 4:
+
+1. **Cancel guard** *(added then removed)*. The rasterizer's `FlushToOutputs` fires unconditionally even when the dispatcher returned early for a cancel. The initial concern: post-production, the bridge restart would dispatch a half-rendered preview buffer that flashed over the just-completed production image. The first fix consulted `SceneEditController::IsCancelRequested()` (promoted from `protected` to `public`) and dropped the dispatch when true.
+
+   **Reversal**: in practice, during a fast drag every pointer move trips the cancel flag, so almost every in-flight render is cancelled mid-pass. With the guard active the sink dropped all of them, and the user only ever saw the post-pause refinement passes (§19.7) — visually indistinguishable from a throttled viewport. The user feedback was direct: *"For interactive there should be no throttling updates to the screen."*
+
+   Final policy: the sink dispatches **every** `OutputImage` call. Center-out tile order makes partial buffers visually usable (the centre of the image fills first, edges later). The post-production-flash concern that motivated the cancel guard is fully covered by the `SuppressNextFrame()` mechanism below — there is no remaining case where dropping cancelled frames was load-bearing.
+
+   The promoted `SceneEditController::IsCancelRequested()` accessor stays public — it's a small surface and may be useful for instrumentation later. The `m_controller` / `mController` field on each sink is now unused dead code; left in place because removing it touches the bridge wiring on three platforms for no functional gain.
+
+2. **Suppress-next** *(kept)*. Drops exactly one upcoming dispatch. Used right after a production render returns so the production image stays visible until the user actually starts dragging — otherwise the bridge's first preview render after restart would overwrite the production result. Each platform exposes the trigger:
+   - macOS: `[RISEViewportBridge suppressNextFrame]`
+   - Windows: `ViewportBridge::suppressNextFrame()`
+   - Android: `RiseBridge::viewportSuppressNextFrame()` + JNI `nativeViewportSuppressNextFrame`
+
+   The flag is atomic so the UI thread can flip it safely while the render thread fires `OutputImage` from a worker.
+
+### 19.7 Multi-level adaptive scaling with idle refinement (added post-Phase-5)
+
+**Original plan**: half-resolution (scale=2) preview during drag.
+
+**Evolved requirement**: multi-level subsampling deep enough to keep the viewport responsive on heavy scenes, plus progressive upsampling as the user slows and stops. Final state delivers 6 scale levels (1, 2, 4, 8, 16, 32) and three feedback loops in `SceneEditController`:
+
+1. **During-motion adaptation** in `DoOneRenderPass` — measures wall-clock per pass and steps the scale toward a 30Hz budget. ×2 step on `>kTargetMs` (33ms), **×4 jump on `>kSlowMs`** (100ms) so heavy scenes ramp from scale=4 to scale=16 in two slow frames instead of three, /2 step on `<kFastMs` (16ms).
+
+2. **Resume-after-pause snap** in `OnPointerMove` — if the time since the last `KickRender` exceeds `kRefineIdleMs` (150ms) and the current tool is a motion tool, snap `mPreviewScale` back up to `kPreviewScaleMotionStart` (4). Without this, the first frame after a long pause would render at scale=1 (refined down by loop 3 below) and stall the viewport.
+
+3. **Idle refinement loop** in `RenderLoop` — when `mPointerDown && mPreviewScale > 1`, the wait uses `cv.wait_for(kRefineWakeMs)` (100ms) instead of an indefinite wait. On timeout (no edit landed within the wake interval), if `sinceEdit > kRefineIdleMs`, the loop sets `mInRefinementPass=true`, halves the scale, and runs a refinement pass at the finer resolution. Refinement passes skip the during-motion adaptation (otherwise a heavy pass at scale=2 would yo-yo back to 4 only to be walked back down by the next refinement tick). Result: after the user stops moving, the image refines from coarse to full-resolution over ~500ms.
+
+State added to `SceneEditController`:
+- `std::atomic<bool> mPointerDown` (was plain bool — promoted because the render thread reads it)
+- `std::atomic<long long> mLastEditTimeMs` — stamped by `KickRender` and `OnPointerDown`
+- `bool mInRefinementPass` — set inside `RenderLoop` before each pass
+
+Constants in `SceneEditController.h`:
+```
+kPreviewScaleMin = 1, kPreviewScaleMax = 32, kPreviewScaleMotionStart = 4
+kTargetMs = 33, kSlowMs = 100, kFastMs = 16
+kRefineIdleMs = 150, kRefineWakeMs = 100
+```
+
+The platform sinks see the scaled preview surface via `CameraCommon::SetDimensions(w, h)` swap before/after `RasterizeScene`. The platform UI nearest-neighbor-upscales for display. Production renders use the original camera dimensions untouched.
+
+### 19.8 Persistent IRasterImage + skip-clear for interactive (added late in iteration)
+
+**Trigger**: user reported colour flashes during fast manipulation: *"I am still seeing flashes of color, like the buffer is being cleared before every render, we don't want that for the interactive renders, we want the renderer to start as fast as it can on the existing buffer."*
+
+**Root cause**: `PixelBasedRasterizerHelper::RasterizeScene` (1) allocated a fresh `RISERasterImage` on every call, then (2) cleared it to a random pastel colour as a debug visualization. Both behaviours are fine for production renders (always run to completion, fresh per call) but produce visible flashes during the interactive cancel-restart loop where partial buffers are dispatched mid-render.
+
+**Solution**: factored the image lifecycle and per-pass clear into virtual hooks:
+
+- `IRasterImage* AcquireRenderImage(unsigned int w, unsigned int h) const` — default impl returns a persistent buffer that survives across `RasterizeScene` calls. Reallocates only on dimension change (e.g., camera resize for preview-scale stepping). State (`mPersistentImage`, `mPersistentW/H`) lives on the base helper as `mutable` fields. Production rasterizers get the same persistence — desired side-effect: `GetLastRenderedImage()` lets the host UI grab the final pixel data for a "save image" feature without re-rendering.
+- `void ReleaseRenderImage(IRasterImage*) const` — paired counterpart. Default decrements the borrowed reference; the persistent reference holds the image alive for the rasterizer's lifetime.
+- `void PrepareImageForNewRender(IRasterImage&, const Rect*) const` — default impl runs the existing clear-to-random-pastel + `OutputIntermediateImage` notification. Interactive override is empty (no clear, no notify).
+
+`InteractivePelRasterizer` overrides only `PrepareImageForNewRender` (skip clear); it inherits the persistent-buffer behaviour from the base, so the previous frame's pixels stay under the in-progress tiles during cancel-restart.
+
+The destructor of `PixelBasedRasterizerHelper` was extended to `safe_release(mPersistentImage)` — was previously not needed since the buffer was released at end of every `RasterizeScene`.
+
+### 19.9 Center-out tile order for interactive renders (added late in iteration)
+
+**Trigger**: user reported subsampled renders appearing in the upper-left corner: *"when we do subsampled renders, does the result get upscaled to the entire buffer properly? I feel like its not and so the render happens at half, quarter or whatever resolution into the upper left of the screen."*
+
+**Root cause**: the upscaling was correct — `ViewportNSView.draw` aspect-fit scales the small `NSImage` to fill the bounds. But `Config.tileOrder = TileOrder_CenterOut` (the documented default for interactive rendering) was never wired up — `RasterizeScene` line 520 unconditionally created a `MortonRasterizeSequence` (Z-curve, fills tiles starting upper-left). Combined with the persistent buffer (§19.8), partial buffers showed new content materializing from the upper-left while the rest of the frame held previous state.
+
+**Solution**: added a virtual factory `CreateDefaultRasterSequence(unsigned int tileEdge) const` to `PixelBasedRasterizerHelper`. Default returns Morton (production behaviour unchanged). `InteractivePelRasterizer` overrides to honour `Config.tileOrder`, returning `BlockRasterizeSequence(tileEdge, tileEdge, type)` where `type=0` (centre-out) is the default. Partial buffers now fill from the centre outward — the most useful tiles for an interactive viewport.
+
+### 19.10 Post-release 4-SPP polish pass with elevated max-recursion (added late in iteration)
+
+**Trigger**: user request to add quality polish at rest: *"On mouse up, after we are done rendering the full image at 1spp, let's do one last one of the full image at 4spp"*, plus *"for that final 4 sample render bump the number of glossy, reflected and refracted bounces to 1."*
+
+**Solution**: chained polish pass with elevated-recursion ray caster swap.
+
+- `InteractivePelRasterizer::SetSampleCount(unsigned int n)` — `n=1` (default) clears the rasterizer's `pSampling`; `n>1` lazy-installs a MultiJittered 2D kernel sized to `n` samples and disables progressive mode so the next render is a single multi-sampled pass.
+- `InteractivePelRasterizer::SetPolishRayCaster(IRayCaster*)` — installs an optional secondary caster. When `SetSampleCount(>1)` is called and a polish caster is installed, `pCaster` is swapped to it for the duration of the polish pass; `SetSampleCount(1)` swaps back. The bridge constructs both casters at scene-load (preview maxR=1, polish maxR=2 → one bounce of refl/refr/glossy) and passes the polish one via this setter.
+- **Controller polish state machine**:
+
+  | State | Meaning |
+  |---|---|
+  | `None` | No polish in flight. Default. |
+  | `FinalRegularRunning` | `OnPointerUp` set this after kicking the regular 1-SPP scale=1 final pass. Post-pass logic transitions to `PolishQueued` and re-kicks. |
+  | `PolishQueued` | Upcoming pass is the polish. `RenderLoop` calls `SetSampleCount(4)` before the pass, `SetSampleCount(1)` after. |
+
+  Any user-driven `KickRender` (pointer move, scrub, undo, etc.) resets state to `None`, cancelling the chain. `OnPointerUp` works around this by setting `FinalRegularRunning` *after* its own `KickRender` call. CAS guards in the post-pass transitions prevent races where a concurrent edit invalidates the chain mid-transition.
+
+- **Bridge wiring**: macOS `RISEViewportBridge.tryBuildLivePreviewForJob` constructs both casters; both are released in `releaseLivePreview`. The polish caster is best-effort — if construction fails, polish falls back to the preview caster (no bounces) and the polish pass still gives a 4-SPP anti-aliased image.
+
+### 19.14 Toolbar pared to camera-only + cursor scoped to image area (added late in iteration)
+
+**Trigger**: user requests, *"Let's drop the object move, rotate and translate controls. This is too much complexity for this state of the app. So remove those from the tool bar."* and *"The pointer icon should revert back to default system icon whenever the pointer moves outside of the manipulation area (i.e. the screen area) and should become the pointer for that type of manipulation when it enters the screen area."* and *"Remove the timeline scrubber, it doesn't make sense since on animated scenes we have a timeline bar that shows up in the bottom."*
+
+**Toolbar**: each platform now filters the displayed tools through a `visibleInToolbar` list containing only `Select`, `OrbitCamera`, `PanCamera`, `ZoomCamera`. The C++ `SceneEditController::Tool` enum keeps all eight values so the controller is forward-compatible if the dropped tools come back later — the dropped values just aren't reachable from the UI.
+
+- macOS: `ViewportTool.visibleInToolbar` (Swift) — toolbar `ForEach` iterates that list.
+- Windows: `ViewportToolbar::ViewportToolbar` constructor adds only the four buttons.
+- Android: the Kotlin `ViewportTool` enum was reduced to just the four values; controller-side rawValues (1/2/3/7) are unreachable from the Compose UI.
+
+**Cursor**: tool cursor only takes effect over the aspect-fit rendered-image area; outside it (and outside the widget), the parent / window's system arrow takes over.
+
+- macOS `ViewportNSView`: `resetCursorRects` adds a cursor rect for `currentImageDrawRect()` (the aspect-fit draw rect), not full bounds. Image setter and `resize` invalidate the cursor rects so they recompute as the image / view size changes.
+- Windows `ViewportWidget`: `setActiveTool` stores the desired `Qt::CursorShape` but no longer calls `setCursor` directly. `mouseMoveEvent` calls `updateCursorForPosition`, which calls `setCursor` over `imageDrawRect()` and `unsetCursor` outside. `leaveEvent` calls `unsetCursor` so leaving the widget restores the system arrow.
+- Android: no-op (touch UI).
+
+**Timeline scrubber tool**: removed from the toolbar (per-platform filter above). The bottom timeline bar at the foot of the viewport keeps its existing behaviour (scrub → `OnTimeScrub` → preview re-renders at the new time). Production-render time-handling was verified: `RISEBridge.rasterize` doesn't reset scene time, so clicking Render after a scrub renders at the scrubbed time; `RISEBridge.rasterizeAnimation` calls `RasterizeAnimationUsingOptions` which uses the scene-declared start/end, so Render Animation always covers the full animation regardless of current scrub position.
+
+### 19.15 Right-side panel becomes selection-driven (added late in iteration)
+
+**Trigger**: user request, *"The camera panel on the right should only show up when one of the camera manipulators are selected, otherwise it should be empty. If the user picks an object then it should show the information for that object."*
+
+**Mechanism**: new `SceneEditController::PanelMode` enum (`None / Camera / Object`) with `CurrentPanelMode()` and `CurrentPanelHeader()` accessors. Mode is derived from the active tool plus current selection — Camera mode for any camera-manipulator tool, Object mode for the Select tool with non-empty `mSelected`, None otherwise. `RefreshProperties()` switches its source-of-truth based on mode:
+
+- `Camera`: existing `CameraIntrospection::Inspect` (descriptor-driven, editable).
+- `Object`: basic read-only inspector — Name + Position (world translation extracted from `IObject::GetFinalTransformMatrix` row 3, since `IObject` has no `GetName` / `GetPosition`). Object-side editing is future work that would require object-level `ChunkDescriptor`s and a `SetObjectProperty` `SceneEdit` op.
+- `None`: empty list; the platform UIs show a placeholder hint message ("Pick an object or select a camera tool to inspect properties.") instead.
+
+**Picking** is added to `OnPointerDown` for the Select tool: a primary camera ray is generated via `ICamera::GenerateRay(rc, r, px)`, `IObjectManager::IntersectRay` finds the hit, and a `FindObjectNameCallback` walks `EnumerateItemNames` to recover the registered name (one O(n) traversal per click — fine for typical scene sizes). On a hit, `mSelected` is updated; on a miss, it's cleared and the panel falls back to `None`.
+
+**C-API additions** in [RISE_API.h](../src/Library/RISE_API.h):
+
+- `int RISE_API_SceneEditController_PanelMode(SceneEditController*)` — returns 0/1/2 for None/Camera/Object.
+- `bool RISE_API_SceneEditController_PanelHeader(SceneEditController*, char* buf, unsigned int bufLen)` — copies "Camera" / "Object: <name>" / "" into the caller's buffer.
+
+**Bridge wiring** (all three platforms): bridges expose `panelMode` / `panelHeader` accessors that thunk through to the C-API; the panel UI calls them on every refresh trigger and renders empty / camera / object content accordingly. The macOS panel additionally wires `onSelectionMayHaveChanged` through `ViewportView` so toolbar tool changes and pointer-down events bump the property-panel refresh trigger; Windows wires the equivalent via a `toolChanged` → `refresh` lambda; Android refreshes whenever `selectedTool` or `frame` changes.
+
+### 19.16 Pointer-event coordinate normalization (added late in iteration)
+
+**Trigger**: user observation, *"hmmm something is still off, are you sure the click co-ordinates are normalized to within in the rendered image area?"* — picking was hitting wrong objects because click coordinates were in the platform widget's backing-pixel space, not the camera's image-pixel space. With aspect-fit drawing and HiDPI, those two coordinate systems can differ by both an offset (letterbox / pillarbox margins) and a scale (HiDPI multiplier × image-vs-widget aspect).
+
+**Fix**: each platform's pointer-event handler now maps view-local click coordinates to image-pixel space before handing them to the controller. Two adjustments per platform:
+
+1. **Aspect-fit offset** — subtract the draw-rect origin so widget-relative coords become image-relative.
+2. **Pixel-density rescale** — divide by the draw-rect's size in widget points and multiply by the image's size in rasterizer pixels. The ratio handles HiDPI implicitly because the draw rect is in points and the image dims are in pixels.
+
+Coordinates may fall outside `[0, image.size]` if the user drags past the image edge — the controller treats that as a miss for picking and as a normal delta for orbit / pan / zoom (deltas remain pixel-accurate even past the edge).
+
+Per-platform implementation:
+
+- macOS — [ViewportView.swift](../build/XCode/rise/RISE-GUI/App/ViewportView.swift): `surfacePoint(from:)` returns `Optional<CGPoint>` derived from `currentImageDrawRect()` and `image.size`. Mouse-down/dragged/up handlers guard on `nil`.
+- Windows — [ViewportWidget.cpp](../build/VS2022/RISE-GUI/ViewportWidget.cpp): `surfacePoint` does the same transform via `imageDrawRect()` and `m_image.width()/height()`.
+- Android — [ViewportPane.kt](../android/app/src/main/java/com/risegfx/android/ui/ViewportPane.kt): new `mapToImagePixel(p, boxSize, frame)` helper called from each `detectDragGestures` callback. Tracks the Box size via `onSizeChanged`.
+
+**Camera-projection Y-flip in picker** *(separate but related)*: user pointed out *"The camera projection matrix for most cameras results in inverted Y, this is a well known thing"*. `PickAt` flips `px.y` to `cam->GetHeight() - px.y` before calling `GenerateRay`. The rasterizer's image-pixel y-axis (top-down, row 0 at the visual top) is inverted relative to the camera's projection-space y-axis (down corresponds to +world-up after the projection). Without the flip, clicking visually low picked objects rendered visually high.
+
+### 19.17 Tool re-sync + scene-scale-relative camera rates (added late in iteration)
+
+**Trigger**: user reported two issues — *"If I am editing a scene and I have one of the camera controllers selected and then load a new scene, the camera toggle stays selected but under the hood its been reset to the picker tool"* and *"The camera controls need to change the rate at which they apply the mouse movements to the overall scale of the scene. So that small scenes result in smaller absolute value changes vs. larger ones."*
+
+**Tool re-sync**: when a new scene loads, the host platform tears down the old `SceneEditController` and constructs a new one. The new controller's `mTool` defaults to `Tool::Select`; the platform UI's toolbar `@State` / `m_current` / `rememberSaveable` persists. The disconnect produced a UI that highlighted (e.g.) the Orbit button while pointer events went through the Select-tool path. Each platform now re-pushes the toolbar selection to the controller after viewport restart:
+
+- macOS: `.task(id: ObjectIdentifier(bridge))` on the `ViewportView`'s root — fires on appear and on bridge-identity change.
+- Windows: in `MainWindow::onStateChanged`'s `SceneLoaded` branch, after the new `m_viewportBridge->start()`, also call `m_viewportBridge->setTool(m_viewportToolbar->currentTool())`.
+- Android: new `viewportEpoch: StateFlow<Int>` on `RenderViewModel` that increments after each `nativeViewportStart()`. `ViewportPane` observes the epoch and re-applies `selectedTool` via `LaunchedEffect(viewportEpoch)`.
+
+**Scene-scale-relative camera rates**: `SceneEditor` now caches `SceneScale()` — the diagonal of the axis-aligned union of every object's bounding box (computed lazily on first call by enumerating `IObjectManager::EnumerateObjects` and unioning each `IObject::getBoundingBox()`, floored at 1.0). The pan and zoom rate formulas in `ApplyCameraOpForward` switched from `dist * factor` (where `dist` was the camera-to-look-at distance) to `sceneScale * factor`:
+
+- Pan: `speed = sceneScale * 0.0015` (was `dist * 0.0015`).
+- Zoom: `speed = sceneScale * 0.005` (was `dist * 0.005`).
+
+The user benefit: a small scene gets small absolute changes per pixel; a large scene gets large ones; the rate no longer depends on where the camera is positioned, only on the scene's intrinsic size. Orbit stays angular — rotation angles are a function of pixel deltas, not scene extent, so there's no sensible "scene scale" to scale by. The `dist` local was removed (no longer needed; `Vector3Ops::Normalize` handles the zero-vector edge case for the `forward / right / trueUp` basis derivation).
+
+### 19.18 Angle-driven camera ops + Roll tool (added late in iteration)
+
+**Trigger**: user request — *"For the camera I want to add the following functionality: [roll, orbit (phi/theta), zoom, pan] … Make sure that all cameras also support keyframing for these parameters for animations."*
+
+**Key insight that shaped the design**: every camera that derives from `CameraCommon` already has the parameters the user wants. They're declared in the parser descriptor, applied by `Recompute` via `CameraTransforms::AdjustCameraForThetaPhi` and `CameraTransforms::AdjustCameraForOrientation`, and keyframable through the existing `TARGET_ORIENTATION_ID` / `ORIENTATION_ID` animator IDs:
+
+| User-facing concept | RISE parameter | What it drives |
+|---|---|---|
+| Roll | `orientation.z` | rotation around the forward axis (camera→look-at) |
+| Orbit phi (azimuth) | `target_orientation.y` | rotation around world up |
+| Orbit theta (elevation) | `target_orientation.x` | rotation around camera-right; clamped to ±π/2 by `AdjustCameraForThetaPhi` |
+| Zoom | `vPosition` along forward | unchanged from before |
+| Pan | `vPosition` + `vLookAt` translation | unchanged from before |
+
+**The shift** is from "bake orbit into `vPosition`" (the previous `OrbitCamera` op rotated the camera's world position around `vLookAt`) to "increment `target_orientation`" (the new `OrbitCamera` op deltas the angle parameters; `Recompute` derives the post-orbit position). Geometrically the rendered camera ends up in the same place — rotation preserves radius — but the parameter representation is now keyframe-clean and round-trippable.
+
+**Concrete changes**:
+
+- [SceneEdit.h](../src/Library/SceneEditor/SceneEdit.h) — added `RollCamera` op (uses `s` for the pixel delta), added `prevCameraTargetOrient` (Vector2) and `prevCameraOrient` (Vector3) to the prev-state fields. `IsCameraOp(RollCamera)` returns true; the existing `OrbitCamera` op classifier carries through.
+- [SceneEditor.cpp](../src/Library/SceneEditor/SceneEditor.cpp) — `ApplyCameraOpForward`: `OrbitCamera` now reads `cam.GetTargetOrientation()`, applies `±0.0087 rad/px` deltas, calls `cam.SetTargetOrientation()`. `RollCamera` reads `GetEulerOrientation()`, deltas `.z` by `s × 0.0087`, calls `SetEulerOrientation()`. The Apply path captures both prev fields in addition to the existing pos/lookAt/up. `RestoreCameraTransform` on Undo restores all five (no-op for fields the forward op didn't touch — keeps Undo monomorphic).
+- [SceneEditController](../src/Library/SceneEditor/SceneEditController.h) — `Tool::RollCamera = 8` enum value; `OnPointerDown` / `OnPointerMove` / `OnPointerUp` handle it like the other camera-motion tools (`BeginComposite("Camera")`, motion-scale bump, `EndComposite` on release). `OnPointerMove` packs the X delta into `edit.s` (single degree of freedom — Y ignored).
+- C-API: `SceneEditTool_RollCamera = 8` added to [RISE_API.h](../src/Library/RISE_API.h).
+- Per-platform toolbar UIs gain a Roll button — macOS `ViewportTool.rollCamera` (SF symbol `arrow.clockwise.circle`, cursor `.resizeLeftRight`), Windows `ViewportTool::RollCamera` (Qt icon `object-rotate-right`, cursor `Qt::SizeHorCursor`), Android `ViewportTool.RollCamera`.
+- Properties-panel exposure — already there. `CameraIntrospection::Inspect` filters out the redundant scalar shadows (pitch / yaw / roll / theta / phi) and keeps the canonical Vec3 / Vec2 forms (`orientation` / `target_orientation`); descriptions updated to mention the Roll and Orbit tools and that they delta these parameters in radians.
+- Keyframing — already wired. `CameraCommon::KeyframeFromParameters` accepts both `orientation` and `target_orientation` names; `SetIntermediateValue` interpolates them on every per-frame animation tick. No new infrastructure.
+
+**Test coverage**: new [tests/SceneEditorCameraAnglesTest.cpp](../tests/SceneEditorCameraAnglesTest.cpp) covers four cases (28 assertions): RollCamera classification, OrbitCamera mutates target_orientation only, RollCamera mutates `orientation.z` only, Pan/Zoom leave both angle parameters alone. Includes a roundtrip check that zeroing `target_orientation` after an orbit returns `GetLocation()` to its pre-orbit value — confirming the orbit is genuinely stored in angles, not baked into `vPosition`.
+
+### 19.11 Adversarial review summary
+
+Four rounds of parallel adversarial reviews ran across Phase 1-3 work, finding 13 P1 bugs total. All fixed before Phase 4 began. Notable findings:
+
+- **Round 1**: condvar lost-wakeup in `KickRender`/`Stop`; `mInner` raw pointer in `CancellableProgressCallback`; Windows queued-lambda UAF (fixed with `QPointer`); caster leak on partial construction; zoom sign inverted; `SetSceneTime` undo no-ops; `SetProperty` bypassed undo.
+- **Round 2**: composite-undo branch missing `SetSceneTime` and `SetCameraProperty` cases.
+- **Round 3**: `EditHistory::TrimToMax` could split composites; `EndComposite` at depth 0 pushed an orphan marker.
+- **Round 4**: composite undo scope was hardcoded; replaced with max-significant-op tracking via `sawObjectOp` / `sawCameraOp` / `sawTimeOp` / `sawPropertyOp` flags.
+
+### 19.12 Open work — Phase 6 (round-trip save)
+
+Not started. Plan unchanged: in-place rewrite of `position` / `orientation` / `scale` / `stretch` lines on dirty objects, preserving comments and surrounding whitespace, via a `Span` index of `object { … }` chunks built during scene load.
+
+### 19.13 Deferred / known issues
+
+- **Edit-while-rendering scene-state race** (§17). Unchanged from original plan. TSAN flags it; symptom is rare transient firefly pixels on fast drags; cancel-restart cleans up on the next render. Proper fix (RW lock or double-buffered camera) deferred.
+- **Per-property `RegenerateData` inside composite undo** (§17). Unchanged. Wasteful but rare.
+- **Time-scrub idle refinement** — the refinement loop currently keys on `mPointerDown`, which is not set during `OnTimeScrub`. Pausing on a frame mid-scrub does not currently trigger refinement. Fix would be either a `mInteracting` rename or a separate `mScrubbing` atomic; deferred (low priority).

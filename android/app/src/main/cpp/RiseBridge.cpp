@@ -17,8 +17,17 @@
 #include "Interfaces/IJobPriv.h"
 #include "Interfaces/IJob.h"
 #include "Interfaces/IRasterizer.h"
+#include "Interfaces/IRasterizerOutput.h"
+#include "Interfaces/IRasterImage.h"
+#include "Interfaces/IScene.h"
+#include "Interfaces/IShaderManager.h"
+#include "Interfaces/IShader.h"
+#include "Interfaces/IEnumCallback.h"
 #include "Interfaces/ILogPriv.h"
 #include "Utilities/MediaPathLocator.h"
+#include "Utilities/Reference.h"
+#include "SceneEditor/SceneEditController.h"
+#include "Rendering/InteractivePelRasterizer.h"
 
 #define LOG_TAG "RISE-Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -134,6 +143,10 @@ void RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
 }
 
 void RiseBridge::teardownJob() {
+    // Tear down viewport (which holds rasterizer/caster references back into
+    // the job) BEFORE releasing the job itself.  Otherwise we'd leak.
+    stopViewport();
+
     if (m_job) {
         // RISE_CreateJobPriv returns a refcounted pointer; the safe cleanup
         // is to release the reference we hold. The library's Reference
@@ -203,6 +216,24 @@ bool RiseBridge::rasterize() {
 
 void RiseBridge::requestCancel() {
     m_cancel.store(true);
+}
+
+bool RiseBridge::hasAnimatedObjects() const {
+    if (!m_job) return false;
+    return m_job->AreThereAnyKeyframedObjects();
+}
+
+void RiseBridge::setSceneTime(double t) {
+    if (!m_job) return;
+    RISE::IScenePriv* scene = m_job->GetScene();
+    if (!scene) return;
+    // Full SetSceneTime: advances the animator AND regenerates every
+    // populated photon map at time `t`.  The interactive viewport's
+    // scrub path calls SetSceneTimeForPreview (animator-only, no
+    // photon regen) for responsiveness; this method runs the
+    // expensive photon regen so the next production render gets
+    // caustics consistent with the scrubbed scene state.
+    scene->SetSceneTime(static_cast<RISE::Scalar>(t));
 }
 
 void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
@@ -341,6 +372,336 @@ jobject RiseBridge::getFramebufferByteBuffer(JNIEnv* env) const {
     }
     const jlong size = static_cast<jlong>(m_fbWidth) * m_fbHeight * 4;
     return env->NewDirectByteBuffer(m_framebuffer, size);
+}
+
+// ===========================================================================
+// Interactive viewport
+// ===========================================================================
+
+namespace {
+
+// IRasterizerOutput that, on end-of-frame, blits the rendered image into
+// RiseBridge's RGBA8 framebuffer and signals onRegionInvalidated for the
+// whole image.  Reuses the existing Compose redraw path — production
+// renders and viewport-preview renders both flow through the same
+// framebuffer, so the UI doesn't need to know which one it's seeing.
+//
+// Two end-of-pass guards keep stale or undesirable buffers off the
+// screen (mirroring the macOS / Windows sinks):
+//   * Cancel guard: the rasterizer's FlushToOutputs fires
+//     unconditionally even when the dispatcher returned early for a
+//     cancel.  Without this check, every cancel-restart would flash a
+//     partially-rendered (mostly-black) buffer before the next pass.
+//   * Suppress-next: drops exactly one upcoming dispatch.  Used right
+//     after a production render returns so the production image stays
+//     on screen until the user actually starts interacting.
+class ViewportPreviewSink : public RISE::IRasterizerOutput,
+                            public RISE::Implementation::Reference {
+public:
+    explicit ViewportPreviewSink(RiseBridge* b) : m_bridge(b) {}
+    ~ViewportPreviewSink() override = default;
+
+    // Borrowed; the bridge keeps the controller alive for the sink's
+    // lifetime.  Used to query IsCancelRequested at end-of-pass.
+    void SetController(RISE::SceneEditController* c) { m_controller = c; }
+
+    // Drop the very next OutputImage call.  Auto-clears after one drop.
+    void SuppressNextFrame() { m_suppressNext.store(true); }
+
+    // Per-tile callback fires many times per render — explicitly ignore
+    // (matches the macOS / Windows policy: avoid distracting tile fills).
+    void OutputIntermediateImage(const RISE::IRasterImage& /*pImage*/,
+                                 const RISE::Rect* /*pRegion*/) override {}
+
+    // Every dispatch reaches the screen.  We do NOT drop cancelled-
+    // mid-pass frames: during fast manipulation the cancel flag trips
+    // on every pointer move, and dropping the resulting partial
+    // buffers makes the viewport feel throttled (the user only sees
+    // post-pause refinement frames).  Center-out tile order keeps
+    // partial buffers visually usable.  The one-shot suppress is kept
+    // for the post-production case.
+    void OutputImage(const RISE::IRasterImage& pImage,
+                     const RISE::Rect* /*pRegion*/,
+                     const unsigned int /*frame*/) override {
+        if (!m_bridge) return;
+        if (m_suppressNext.exchange(false)) {
+            // One-shot suppression (post-production) — skip exactly
+            // this dispatch.  The next render's frame goes through.
+            return;
+        }
+        const unsigned int W = pImage.GetWidth();
+        const unsigned int H = pImage.GetHeight();
+        if (W == 0 || H == 0) return;
+
+        // Reuse the bridge's framebuffer: ensure it's allocated for these
+        // dimensions, then blit pixel by pixel.
+        m_bridge->ensureFramebuffer(W, H);
+
+        // Read into a temporary RGBA16 then call writeDirtyRegion which
+        // already handles RGBA16 → RGBA8 conversion + Kotlin notification.
+        // This keeps a single conversion + notification path for both
+        // production and viewport renders.
+        std::vector<unsigned short> rgba16;
+        rgba16.resize(static_cast<size_t>(W) * H * 4);
+        for (unsigned int y = 0; y < H; ++y) {
+            unsigned short* row = &rgba16[static_cast<size_t>(y) * W * 4];
+            for (unsigned int x = 0; x < W; ++x) {
+                RISE::RISEColor c = pImage.GetPEL(x, y);
+                auto clamp16 = [](double v) -> unsigned short {
+                    if (v <= 0.0) return 0;
+                    if (v >= 1.0) return 65535;
+                    return static_cast<unsigned short>(v * 65535.0 + 0.5);
+                };
+                *row++ = clamp16(c.base.r);
+                *row++ = clamp16(c.base.g);
+                *row++ = clamp16(c.base.b);
+                *row++ = 65535;
+            }
+        }
+        m_bridge->writeDirtyRegion(rgba16.data(), W, H, 0, 0, H - 1, W - 1);
+    }
+
+private:
+    RiseBridge*                m_bridge = nullptr;
+    RISE::SceneEditController* m_controller = nullptr;   // borrowed
+    std::atomic<bool>          m_suppressNext{false};
+};
+
+class FirstShaderNameCallback : public RISE::IEnumCallback<const char*> {
+public:
+    RISE::String firstName;
+    bool operator()(const char* const& name) override {
+        if (firstName.size() <= 1 && name && name[0] != 0) firstName = name;
+        return true;
+    }
+};
+
+}  // anonymous namespace
+
+void RiseBridge::buildViewportLivePreview() {
+    if (!m_job) return;
+    RISE::IShaderManager* shaders = m_job->GetShaders();
+    if (!shaders) return;
+
+    FirstShaderNameCallback scb;
+    shaders->EnumerateItemNames(scb);
+    if (scb.firstName.size() <= 1) return;
+
+    RISE::IShader* pShader = shaders->GetItem(scb.firstName.c_str());
+    if (!pShader) return;
+
+    // Cheap caster for live drag (max-recursion 1, primary visibility
+    // only).  See macOS bridge for full rationale.
+    RISE::IRayCaster* pCaster = nullptr;
+    if (!RISE::RISE_API_CreateRayCaster(&pCaster, /*seeRadianceMap*/false,
+                                        /*maxR*/1, *pShader, /*showLuminaires*/false)) {
+        return;
+    }
+
+    // Higher-quality caster for the post-release 4-SPP polish pass
+    // (max-recursion 2 → one bounce of glossy / refl / refr).
+    RISE::IRayCaster* pPolishCaster = nullptr;
+    RISE::RISE_API_CreateRayCaster(&pPolishCaster, /*seeRadianceMap*/false,
+                                   /*maxR*/2, *pShader, /*showLuminaires*/false);
+
+    RISE::Implementation::InteractivePelRasterizer::Config cfg;
+    cfg.progressiveOnIdle = false;
+
+    // Member-assign before each subsequent allocation so bad_alloc
+    // during the rasterizer or sink ctor still leaves prior resources
+    // owned by the bridge — releaseViewportLivePreview will clean
+    // them up.  Without this, an exception leaks pCaster.
+    m_viewportCaster = pCaster;
+    m_viewportPolishCaster = pPolishCaster;
+
+    auto* interactive = new RISE::Implementation::InteractivePelRasterizer(pCaster, cfg);
+    if (pPolishCaster) {
+        interactive->SetPolishRayCaster(pPolishCaster);
+    }
+    m_viewportRasterizer = interactive;
+
+    auto* sink = new ViewportPreviewSink(this);
+    sink->addref();
+    m_viewportSink = sink;
+}
+
+void RiseBridge::releaseViewportLivePreview() {
+    if (m_viewportSink)         { m_viewportSink->release();      m_viewportSink = nullptr; }
+    if (m_viewportRasterizer)   { m_viewportRasterizer->release(); m_viewportRasterizer = nullptr; }
+    if (m_viewportPolishCaster) { m_viewportPolishCaster->release(); m_viewportPolishCaster = nullptr; }
+    if (m_viewportCaster)       { m_viewportCaster->release();     m_viewportCaster = nullptr; }
+}
+
+bool RiseBridge::startViewport(bool suppressFirstFrame) {
+    if (m_viewportController) return true;
+    if (!m_job) return false;
+
+    buildViewportLivePreview();
+
+    if (!RISE::RISE_API_CreateSceneEditController(m_job, m_viewportRasterizer, &m_viewportController)) {
+        m_viewportController = nullptr;
+        releaseViewportLivePreview();
+        return false;
+    }
+    if (m_viewportSink) {
+        // The sink queries the controller's cancel state at end-of-pass
+        // so it can drop a stale dispatch.  Wire the pointer before
+        // installing the sink as a rasterizer output.  The downcast is
+        // safe — m_viewportSink is only ever populated with a freshly
+        // constructed ViewportPreviewSink in buildViewportLivePreview().
+        auto* previewSink = static_cast<ViewportPreviewSink*>(m_viewportSink);
+        previewSink->SetController(m_viewportController);
+
+        // Latch the first-frame suppression BEFORE Start kicks the
+        // render thread.  The Android sink is freshly constructed on
+        // every start, so a follow-up SuppressNextFrame() from the UI
+        // layer races the freshly-spawned worker pool — on a cheap
+        // preview scene the first OutputImage call can fire before
+        // the JNI hop returns.  Setting the flag inline here closes
+        // that window: by the time Start signals the render thread,
+        // the sink already knows to drop pass #1.
+        if (suppressFirstFrame) {
+            previewSink->SuppressNextFrame();
+        }
+        RISE::RISE_API_SceneEditController_SetPreviewSink(m_viewportController, m_viewportSink);
+    }
+    RISE::RISE_API_SceneEditController_Start(m_viewportController);
+    m_viewportRunning = true;
+    return true;
+}
+
+void RiseBridge::viewportSuppressNextFrame() {
+    if (m_viewportSink) {
+        static_cast<ViewportPreviewSink*>(m_viewportSink)->SuppressNextFrame();
+    }
+}
+
+void RiseBridge::stopViewport() {
+    if (!m_viewportController) return;
+    RISE::RISE_API_SceneEditController_Stop(m_viewportController);
+    m_viewportRunning = false;
+    RISE::RISE_API_DestroySceneEditController(m_viewportController);
+    m_viewportController = nullptr;
+    releaseViewportLivePreview();
+}
+
+void RiseBridge::viewportSetTool(int t) {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_SetTool(m_viewportController, t);
+}
+void RiseBridge::viewportPointerDown(double x, double y) {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerDown(m_viewportController, x, y);
+}
+void RiseBridge::viewportPointerMove(double x, double y) {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerMove(m_viewportController, x, y);
+}
+void RiseBridge::viewportPointerUp(double x, double y) {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerUp(m_viewportController, x, y);
+}
+void RiseBridge::viewportGetCameraDimensions(unsigned int& outW, unsigned int& outH) const {
+    outW = 0;
+    outH = 0;
+    if (!m_viewportController) return;
+    unsigned int w = 0, h = 0;
+    if (RISE::RISE_API_SceneEditController_GetCameraDimensions(m_viewportController, &w, &h)) {
+        outW = w;
+        outH = h;
+    }
+}
+
+bool RiseBridge::viewportGetAnimationOptions(double& outTimeStart, double& outTimeEnd,
+                                             unsigned int& outNumFrames) const {
+    outTimeStart = 0;
+    outTimeEnd = 0;
+    outNumFrames = 0;
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_GetAnimationOptions(
+        m_viewportController, &outTimeStart, &outTimeEnd, &outNumFrames);
+}
+void RiseBridge::viewportScrubBegin() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_OnTimeScrubBegin(m_viewportController);
+}
+void RiseBridge::viewportScrub(double t) {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_OnTimeScrub(m_viewportController, t);
+}
+void RiseBridge::viewportScrubEnd() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_OnTimeScrubEnd(m_viewportController);
+}
+void RiseBridge::viewportBeginPropertyScrub() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_BeginPropertyScrub(m_viewportController);
+}
+void RiseBridge::viewportEndPropertyScrub() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_EndPropertyScrub(m_viewportController);
+}
+void RiseBridge::viewportUndo() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_Undo(m_viewportController);
+}
+void RiseBridge::viewportRedo() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_Redo(m_viewportController);
+}
+double RiseBridge::viewportLastSceneTime() const {
+    if (!m_viewportController) return 0.0;
+    double t = 0.0;
+    RISE::RISE_API_SceneEditController_LastSceneTime(m_viewportController, &t);
+    return t;
+}
+bool RiseBridge::viewportProductionRender() {
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_RequestProductionRender(m_viewportController);
+}
+
+void RiseBridge::viewportRefreshProperties() {
+    if (m_viewportController) RISE::RISE_API_SceneEditController_RefreshProperties(m_viewportController);
+}
+int RiseBridge::viewportPanelMode() const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_PanelMode(m_viewportController);
+}
+std::string RiseBridge::viewportPanelHeader() const {
+    if (!m_viewportController) return {};
+    char buf[256] = {0};
+    RISE::RISE_API_SceneEditController_PanelHeader(m_viewportController, buf, sizeof(buf));
+    return std::string(buf);
+}
+unsigned int RiseBridge::viewportPropertyCount() const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_PropertyCount(m_viewportController);
+}
+std::string RiseBridge::viewportPropertyName(unsigned int idx) const {
+    if (!m_viewportController) return {};
+    char buf[128] = {0};
+    RISE::RISE_API_SceneEditController_PropertyName(m_viewportController, idx, buf, sizeof(buf));
+    return std::string(buf);
+}
+std::string RiseBridge::viewportPropertyValue(unsigned int idx) const {
+    if (!m_viewportController) return {};
+    char buf[256] = {0};
+    RISE::RISE_API_SceneEditController_PropertyValue(m_viewportController, idx, buf, sizeof(buf));
+    return std::string(buf);
+}
+std::string RiseBridge::viewportPropertyDescription(unsigned int idx) const {
+    if (!m_viewportController) return {};
+    char buf[512] = {0};
+    RISE::RISE_API_SceneEditController_PropertyDescription(m_viewportController, idx, buf, sizeof(buf));
+    return std::string(buf);
+}
+int RiseBridge::viewportPropertyKind(unsigned int idx) const {
+    if (!m_viewportController) return -1;
+    return RISE::RISE_API_SceneEditController_PropertyKind(m_viewportController, idx);
+}
+bool RiseBridge::viewportPropertyEditable(unsigned int idx) const {
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_PropertyEditable(m_viewportController, idx);
+}
+bool RiseBridge::viewportSetProperty(const std::string& name, const std::string& value) {
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_SetProperty(m_viewportController,
+        name.c_str(), value.c_str());
+}
+
+void RiseBridge::onViewportFramePainted() {
+    // Not used in the current implementation — the sink already calls
+    // writeDirtyRegion which fires onRegionInvalidated.  Reserved for
+    // future use if we want a single bulk-invalidate signal.
 }
 
 } // namespace rise_jni

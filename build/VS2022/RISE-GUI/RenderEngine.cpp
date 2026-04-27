@@ -14,6 +14,7 @@
 #include "Interfaces/IProgressCallback.h"
 #include "Interfaces/IJobRasterizerOutput.h"
 #include "Interfaces/IRasterizer.h"
+#include "Interfaces/IScene.h"
 #include "Interfaces/ILogPriv.h"
 #include "Interfaces/ILogPrinter.h"
 #include "Utilities/RTime.h"
@@ -175,6 +176,14 @@ QString RenderEngine::versionString() const
     return QString("%1.%2.%3 build %4%5")
         .arg(major).arg(minor).arg(revision).arg(build)
         .arg(debug ? " (DEBUG)" : "");
+}
+
+void* RenderEngine::opaqueJobHandle() const
+{
+    // The ViewportBridge takes IJobPriv* via a void* to avoid leaking
+    // C++ types through the Qt-level header.  Lifetime is tied to
+    // this RenderEngine — the ViewportBridge must not outlive us.
+    return static_cast<void*>(m_job);
 }
 
 void RenderEngine::setState(State newState)
@@ -386,6 +395,20 @@ void RenderEngine::cancelRender()
         setState(Cancelling);
         m_cancelFlag = true;
     }
+}
+
+void RenderEngine::setSceneTime(double t)
+{
+    if (!m_job) return;
+    IScenePriv* scene = m_job->GetScene();
+    if (!scene) return;
+    // Full SetSceneTime: advances the animator AND regenerates every
+    // populated photon map at time `t`.  The interactive viewport's
+    // scrub path calls SetSceneTimeForPreview (animator-only, no
+    // photon regen) for responsiveness; this method runs the
+    // expensive photon regen so the next production render gets
+    // caustics consistent with the scrubbed scene state.
+    scene->SetSceneTime(static_cast<Scalar>(t));
 }
 
 void RenderEngine::clearScene()

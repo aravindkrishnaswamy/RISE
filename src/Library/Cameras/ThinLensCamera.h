@@ -64,6 +64,21 @@ namespace RISE
 				const Scalar focusDistance_
 				);
 
+			// Getters/setters for the descriptor-driven properties
+			// panel.  fov is stored in radians (parser converts from
+			// degrees on load); aperture / focalLength / focusDistance
+			// are in scene units.  halfAperture is a derived cache and
+			// is recomputed from aperture in Recompute, so the setter
+			// here only writes the source-of-truth field.
+			inline Scalar GetFovStored()           const { return fov; }
+			inline Scalar GetApertureStored()      const { return aperture; }
+			inline Scalar GetFocalLengthStored()   const { return focalLength; }
+			inline Scalar GetFocusDistanceStored() const { return focusDistance; }
+			inline void   SetFovStored( Scalar v )           { fov = v; }
+			inline void   SetApertureStored( Scalar v )      { aperture = v; }
+			inline void   SetFocalLengthStored( Scalar v )   { focalLength = v; }
+			inline void   SetFocusDistanceStored( Scalar v ) { focusDistance = v; }
+
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
 
 			// Non-virtual, class-specific.  Not part of ICamera and

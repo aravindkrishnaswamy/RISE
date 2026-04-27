@@ -104,6 +104,11 @@
     <ClCompile Include="SceneTextEdit.cpp" />
     <ClCompile Include="RISESyntaxHighlighter.cpp" />
     <ClCompile Include="VideoEncoder.cpp" />
+    <ClCompile Include="ViewportBridge.cpp" />
+    <ClCompile Include="ViewportWidget.cpp" />
+    <ClCompile Include="ViewportToolbar.cpp" />
+    <ClCompile Include="ViewportTimeline.cpp" />
+    <ClCompile Include="ViewportProperties.cpp" />
   </ItemGroup>
   <!-- MOC-generated source files (compiled like regular .cpp) -->
   <ItemGroup>
@@ -115,6 +120,11 @@
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneTextEdit.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RISESyntaxHighlighter.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ViewportBridge.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ViewportWidget.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ViewportToolbar.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ViewportTimeline.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_ViewportProperties.cpp" />
   </ItemGroup>
   <!-- Headers with Q_OBJECT — CustomBuild runs moc.exe on each -->
   <ItemGroup>
@@ -161,6 +171,36 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="RISESyntaxHighlighter.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="ViewportBridge.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="ViewportWidget.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="ViewportToolbar.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="ViewportTimeline.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="ViewportProperties.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>

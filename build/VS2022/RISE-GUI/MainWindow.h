@@ -15,11 +15,17 @@
 #include <QStringList>
 
 class QMenu;
+class QStackedWidget;
 class RenderEngine;
 class RenderWidget;
 class ControlsWidget;
 class LogWidget;
 class SceneEditor;
+class ViewportBridge;
+class ViewportWidget;
+class ViewportToolbar;
+class ViewportTimeline;
+class ViewportProperties;
 
 class MainWindow : public QMainWindow
 {
@@ -62,11 +68,26 @@ private:
     LogWidget* m_logWidget = nullptr;
     SceneEditor* m_sceneEditor = nullptr;
 
+    // Interactive viewport — created lazily on scene load.  No more
+    // toggle: viewport is always present once a scene is loaded.
+    // Render stops the viewport's render thread first, runs the
+    // production rasterizer, then restarts the viewport.
+    ViewportBridge*     m_viewportBridge = nullptr;
+    QWidget*            m_viewportPane = nullptr;
+    ViewportWidget*     m_viewportWidget = nullptr;
+    ViewportToolbar*    m_viewportToolbar = nullptr;
+    ViewportTimeline*   m_viewportTimeline = nullptr;
+    ViewportProperties* m_viewportProps = nullptr;
+    QStackedWidget*     m_viewStack = nullptr;
+
     QSplitter* m_mainSplitter = nullptr;     // horizontal: editor | right
-    QSplitter* m_rightSplitter = nullptr;    // vertical: render | bottom
+    QSplitter* m_rightSplitter = nullptr;    // vertical: render-or-viewport | bottom
     QSplitter* m_bottomSplitter = nullptr;   // horizontal: controls | log
 
     bool m_editorVisible = false;
+
+    void rebuildViewportForLoadedScene();
+    void teardownViewport();
 };
 
 #endif // MAINWINDOW_H

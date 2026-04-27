@@ -723,6 +723,21 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 	// Only on normal pass for view rays
 	if( !rc.IsNormalShadingPass() && rs.type == rs.eRayView ) return;
 
+	// Fast-preview fallback for the interactive viewport.  See the
+	// matching branch in SubSurfaceScatteringShaderOp::PerformOperation
+	// for the full rationale; in short, the irradiance point-set
+	// build below holds `create_mutex` while it does numPoints ×
+	// full Shade calls, blocking the cancel-restart loop entirely
+	// on first hit.  In interactive preview, delegate to the
+	// embedded irradiance-capture shader for a fast direct-lit
+	// fallback.  Production rasterizers leave bFastPreview false
+	// and get the full multi-layer skin BSSRDF.
+	if( rc.bFastPreview )
+	{
+		shader.Shade( rc, ri, caster, rs, c, ior_stack );
+		return;
+	}
+
 	// State cache check
 	if( cache )
 	{

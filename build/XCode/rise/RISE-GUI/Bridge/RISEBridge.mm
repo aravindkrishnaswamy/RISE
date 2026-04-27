@@ -276,8 +276,38 @@ public:
     return camera->GetHeight();
 }
 
+- (void)setSceneTime:(double)t {
+    if (!_job) return;
+    IScenePriv* scene = _job->GetScene();
+    if (!scene) return;
+    // Full SetSceneTime: advances the animator AND regenerates every
+    // populated photon map at time `t`.  The interactive scrub path
+    // calls SetSceneTimeForPreview (animator-only, no photon regen)
+    // for responsiveness; this method runs the expensive photon
+    // regen so the next production render gets caustics consistent
+    // with the scrubbed scene state.  Production rasterizers may
+    // wait minutes here on photon-heavy scenes — the caller should
+    // already be in a "rendering" UI state.
+    scene->SetSceneTime(t);
+}
+
 - (BOOL)rasterize {
     if (!_job) return NO;
+
+    // Clear previous rasterizer outputs before adding a fresh
+    // dispatcher.  Without this, every Render click stacked another
+    // CallbackRasterizerOutputDispatch onto the production rasterizer's
+    // outs list (each wrapping the same `_rasterizerOutput`).  Multiple
+    // dispatchers per pass would each blit their own pBuffer, fire
+    // the user's image-callback N times per frame, and (because each
+    // dispatcher caches the first-seen image dims) get out of sync
+    // with the actual image whenever dims change between renders —
+    // producing the OOB GetPEL read documented in the OutputIntermediate
+    // crash report.  rasterizeAnimation already does this dance; we
+    // mirror the pattern here.
+    if (IRasterizer* rasterizer = _job->GetRasterizer()) {
+        rasterizer->FreeRasterizerOutputs();
+    }
 
     // Register callback rasterizer output right before rendering.
     // The rasterizer must exist (set up by LoadAsciiScene).
@@ -340,6 +370,13 @@ public:
                      bottom:(uint32_t)bottom {
     if (!_job) return NO;
 
+    // Same accumulation hygiene as `rasterize:` — clear outputs so
+    // the rasterizer's outs list doesn't grow unbounded across
+    // repeat renders.
+    if (IRasterizer* rasterizer = _job->GetRasterizer()) {
+        rasterizer->FreeRasterizerOutputs();
+    }
+
     if (_rasterizerOutput) {
         _job->AddCallbackRasterizerOutput(_rasterizerOutput);
     }
@@ -374,6 +411,13 @@ public:
 + (NSString *)formatDuration:(double)seconds {
     const std::string s = RenderETAEstimator::FormatDuration(seconds);
     return [NSString stringWithUTF8String:s.c_str()];
+}
+
+- (void *)opaqueJobHandle {
+    // Returns the IJobPriv* as an opaque pointer.  The viewport bridge
+    // casts this back to IJobPriv* in its .mm.  Lifetime is tied to
+    // this RISEBridge — the viewport must not outlive us.
+    return static_cast<void *>(_job);
 }
 
 @end

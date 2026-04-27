@@ -35,8 +35,9 @@ extlib/
 /scenes/Internal
 /models/risemesh/internal
 
-# CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out)
-/build/cmake/*/_out
+# CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out,
+# rise-android/_out_jni for the cross-compiled JNI .so).
+/build/cmake/*/_out*
 /build/cmake/*/build
 !build/cmake/**/*.md
 
@@ -52,6 +53,7 @@ extlib/
 /android/.idea
 /android/app/.idea
 /android/.kotlin
+/.idea
 
 # local.properties contains sdk.dir which is a per-machine absolute path;
 # the file itself says "MUST NOT be checked into Version Control Systems".

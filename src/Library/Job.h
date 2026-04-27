@@ -2065,6 +2065,17 @@ namespace RISE
 			const bool invert_fields						///< [in] Should the fields be temporally inverted?
 			);
 
+		//! Read back the animation options previously set via
+		//! SetAnimationOptions or the defaults if no animation_options
+		//! chunk was parsed.
+		bool GetAnimationOptions(
+			double& time_start,
+			double& time_end,
+			unsigned int& num_frames,
+			bool& do_fields,
+			bool& invert_fields
+			) const;
+
 		//! Sets progress class to report progress for anything we do
 		void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function

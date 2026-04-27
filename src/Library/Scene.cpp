@@ -331,6 +331,48 @@ void Scene::SetSceneTime( const Scalar time ) const
 	}
 }
 
+void Scene::SetSceneTimeForPreview( const Scalar time ) const
+{
+	// Advance all animators to `time` — without this, scrubbing the
+	// timeline slider had no visible effect because the keyframed
+	// transforms / camera / parameters never updated.  The animator
+	// drives every keyframe-bound parameter (object positions,
+	// orientations, camera pose, material values, etc.) by walking
+	// each timeline and calling SetIntermediateValue on the bound
+	// parameter.  Production rendering does this from the rasterizer
+	// loop (e.g. PixelBasedRasterizerHelper.cpp:1180), but the
+	// preview path bypasses that loop and must drive the animator
+	// directly.
+	if( pAnimator ) {
+		pAnimator->EvaluateAtTime( time );
+	}
+
+	// Animated transforms move objects between BSP nodes, so the
+	// spatial structure must be rebuilt for the next render.  This
+	// matches what the production animation loop does at line 1148
+	// of PixelBasedRasterizerHelper.cpp.  We invalidate
+	// unconditionally rather than gating on bHasKeyframedObjects —
+	// the rasterizer's PrepareForRendering already short-circuits
+	// when the structure is up-to-date, so the cost is bounded.
+	pObjectManager->InvalidateSpatialStructure();
+
+	// Reset per-object runtime state (intersection caches etc.) so
+	// freshly-mutated transforms are honored on the next render.
+	pObjectManager->ResetRuntimeData();
+
+	// Photon-map regeneration is intentionally SKIPPED: it is the
+	// expensive part of SetSceneTime (often seconds), and the
+	// interactive preview rasterizer (InteractivePelRasterizer,
+	// pixelpel-class) does not consult photon maps.  See the
+	// IScene contract — production renders that DO consult them
+	// must invoke the full SetSceneTime() before dispatch.
+	//
+	// The irradiance-cache clear that SetSceneTime performs as a
+	// side-effect of pGlobalMap->Regenerate is also skipped; the
+	// preview rasterizer does not consult the irradiance cache,
+	// and the next production-mode SetSceneTime() will clear it.
+}
+
 //
 // Deferred photon-shoot queueing
 //

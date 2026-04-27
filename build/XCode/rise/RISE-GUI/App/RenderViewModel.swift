@@ -142,7 +142,15 @@ final class RenderViewModel: ObservableObject {
     @Published var hasAnimation: Bool = false
     @Published var recentFiles: [String] = []
 
+    /// Live time-scrubber state, displayed on the viewport's bottom slider.
+    @Published var sceneTime: Double = 0
+
     private let bridge = RISEBridge()
+
+    /// Lazily constructed when a scene successfully loads; torn down on
+    /// clearScene().  The viewport bridge borrows `bridge`'s job — its
+    /// lifetime must not exceed `bridge`'s.
+    private(set) var viewportBridge: RISEViewportBridge? = nil
     private let cancelFlag = AtomicBool(false)
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
@@ -229,23 +237,98 @@ final class RenderViewModel: ObservableObject {
             let response = alert.runModal()
             switch response {
             case .alertFirstButtonReturn:
-                // Clear the current scene, then load the new one
-                bridge.clearAll()
-                renderedImage = nil
-                progress = 0.0
-                progressTitle = ""
-                elapsedTime = 0
-                remainingTime = nil
-                sceneSize = nil
-                imageBuffer.reset()
-                logMessages.removeAll()
+                // Clear & Load.  We must:
+                //   1. Cancel any in-flight production render and await
+                //      its task — workers spawned by the rasterizer hold
+                //      pointers into Scene state that bridge.clearAll
+                //      is about to destroy.
+                //   2. Stop and shutdown the interactive viewport bridge
+                //      — its render thread also reads Scene state.
+                //   3. THEN call clearAll, which is now safe to destroy
+                //      managers because no thread can still be reading
+                //      them.
+                // saveAndReloadScene already implements this dance via
+                // finishSaveAndReload; we mirror it here.  Pre-fix, the
+                // production-render Tasks parked in workerLoop after
+                // rasterize() returned would still be reachable through
+                // the controller's interactive render thread (and
+                // through the production rasterizer's persisted thread
+                // pool), and clearAll would race them, manifesting as a
+                // crash deep in IntegratePixel / DestroyContainers.
+                if renderState == .rendering || renderState == .cancelling {
+                    cancelFlag.value = true
+                    renderState = .cancelling
+                    let task = renderTask
+                    Task { @MainActor [weak self] in
+                        await task?.value
+                        self?.continueClearAndLoad(at: path)
+                    }
+                    return
+                }
+                continueClearAndLoad(at: path)
+                return
             case .alertSecondButtonReturn:
-                // Merge — just proceed with loading
-                break
+                // Merge — the parser will add chunks to the existing
+                // job.  This mutates manager state that the viewport's
+                // interactive render thread (and any in-flight
+                // production render) reads concurrently.  Same teardown
+                // dance as Clear & Load, minus the clearAll: stop the
+                // workers first so the merge can mutate state without a
+                // race.
+                if renderState == .rendering || renderState == .cancelling {
+                    cancelFlag.value = true
+                    renderState = .cancelling
+                    let task = renderTask
+                    Task { @MainActor [weak self] in
+                        await task?.value
+                        self?.continueMergeLoad(at: path)
+                    }
+                    return
+                }
+                continueMergeLoad(at: path)
+                return
             default:
                 return
             }
         }
+
+        loadScene(at: path)
+    }
+
+    /// Merge-load: stop the viewport bridge so the parser's chunk
+    /// additions don't race with the interactive render thread, then
+    /// load the new file (which appends into the existing job).  The
+    /// fresh viewport bridge is recreated inside loadScene's success
+    /// path.
+    private func continueMergeLoad(at path: String) {
+        viewportBridge?.shutdown()
+        viewportBridge = nil
+
+        loadScene(at: path)
+    }
+
+    /// Clear the current scene's state with the right teardown
+    /// ordering, then load the new file.  Called from
+    /// prepareAndLoadScene's "Clear & Load" branch — extracted so the
+    /// render-still-in-flight path (which has to await the cancelled
+    /// task before continuing) and the idle path can share the body.
+    private func continueClearAndLoad(at path: String) {
+        // Stop and tear down the interactive viewport bridge BEFORE
+        // bridge.clearAll().  shutdown() joins the controller's render
+        // thread; once it returns, no other thread holds pointers into
+        // Scene state that clearAll is about to destroy.
+        viewportBridge?.shutdown()
+        viewportBridge = nil
+
+        bridge.clearAll()
+        renderedImage = nil
+        progress = 0.0
+        progressTitle = ""
+        elapsedTime = 0
+        remainingTime = nil
+        sceneSize = nil
+        imageBuffer.reset()
+        logMessages.removeAll()
 
         loadScene(at: path)
     }
@@ -318,6 +401,26 @@ final class RenderViewModel: ObservableObject {
                         self.sceneSize = CGSize(width: CGFloat(camWidth),
                                                 height: CGFloat(camHeight))
                     }
+                    // Tear down any previous viewport bridge (e.g. from
+                    // a prior scene) and stand up a fresh one over the
+                    // newly-loaded job.
+                    self.viewportBridge?.shutdown()
+                    let vb = RISEViewportBridge(hostBridge: bridgeRef)
+                    self.viewportBridge = vb
+                    self.sceneTime = 0
+                    // Wire the live-preview image callback.  The block
+                    // is invoked on the main thread by the bridge.
+                    vb?.setImageBlock { [weak self] (image: NSImage) in
+                        guard let self = self else { return }
+                        self.renderedImage = image
+                    }
+                    // The viewport is always on once a scene is loaded —
+                    // there is no separate "interact mode" toggle.  Start
+                    // the bridge's render thread now so the user can drag,
+                    // orbit, scrub, and edit immediately.  Render and
+                    // Render-Animation stop the bridge before kicking the
+                    // production rasterizer; both restart it on completion.
+                    vb?.start()
                 } else {
                     self.renderState = .error("Failed to load scene")
                 }
@@ -331,6 +434,32 @@ final class RenderViewModel: ObservableObject {
     func startRender() {
         guard renderState == .sceneLoaded || renderState == .completed
               || renderState == .cancelled else { return }
+
+        // Stop the interactive viewport's render thread BEFORE the
+        // production rasterizer runs.  Both rasterizers read the same
+        // scene state; running them concurrently is a data race.
+        // The viewport is restarted in finishRender() once production
+        // completes (or is cancelled).  Stop is synchronous — it
+        // joins the viewport's render thread before returning.
+        viewportBridge?.stop()
+
+        // Advance scene state to the canonical scrubbed time AND
+        // regenerate photon maps before the production rasterizer
+        // fires.  The viewport's scrub path calls
+        // SetSceneTimeForPreview, which advances the animator but
+        // skips photon regen for responsiveness; without this full
+        // SetSceneTime, hitting Render after scrubbing renders the
+        // right object positions but caustics frozen at the
+        // pre-scrub time.
+        //
+        // We prefer the controller's LastSceneTime over the SwiftUI
+        // `sceneTime` because Undo / Redo can change scene time
+        // without going through the slider — passing the slider's
+        // local value in that window would roll the scene back to
+        // a stale time.  Fall back to `sceneTime` when no viewport
+        // bridge is attached (no controller, no scrubs possible).
+        let canonical = viewportBridge?.lastSceneTime() ?? sceneTime
+        bridge.setSceneTime(canonical)
 
         renderState = .rendering
         progress = 0.0
@@ -416,6 +545,17 @@ final class RenderViewModel: ObservableObject {
                 } else {
                     self.renderState = .error("Rasterization failed")
                 }
+
+                // Production render is done (success / cancel / error).
+                // Restart the interactive viewport so the user can keep
+                // editing on the freshly-updated scene state.  Suppress
+                // the very next preview frame at the sink layer so the
+                // production image stays on screen until the user
+                // actually starts dragging — otherwise the bridge's
+                // initial render would flash a half-rendered preview
+                // image right after a clean production result.
+                self.viewportBridge?.suppressNextFrame()
+                self.viewportBridge?.start()
             }
         }
     }
@@ -424,6 +564,9 @@ final class RenderViewModel: ObservableObject {
         guard hasAnimation else { return }
         guard renderState == .sceneLoaded || renderState == .completed
               || renderState == .cancelled else { return }
+
+        // Stop the viewport before production renders (see startRender).
+        viewportBridge?.stop()
 
         renderState = .rendering
         progress = 0.0
@@ -515,6 +658,9 @@ final class RenderViewModel: ObservableObject {
                 } else {
                     self.renderState = .error("Animation rasterization failed")
                 }
+                // Restart the interactive viewport (see startRender).
+                self.viewportBridge?.suppressNextFrame()
+                self.viewportBridge?.start()
             }
         }
     }
@@ -585,7 +731,11 @@ final class RenderViewModel: ObservableObject {
     }
 
     private func finishSaveAndReload(path: String) {
-        // Clear the current scene
+        // Clear the current scene.  Tear the viewport bridge down
+        // first so its render thread is joined before clearAll
+        // destroys the scene it's referencing.
+        viewportBridge?.shutdown()
+        viewportBridge = nil
         bridge.clearAll()
         renderedImage = nil
         progress = 0.0
@@ -622,6 +772,12 @@ final class RenderViewModel: ObservableObject {
     }
 
     func clearScene() {
+        // Viewport bridge borrows the underlying job — tear it down
+        // BEFORE bridge.clearAll() so the controller's render thread
+        // is joined before the scene is destroyed.
+        viewportBridge?.shutdown()
+        viewportBridge = nil
+        sceneTime = 0
         bridge.clearAll()
         renderState = .idle
         renderedImage = nil

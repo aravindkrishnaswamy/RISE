@@ -58,17 +58,39 @@ namespace RISE
 				}
 			}
 
-			static void AdjustCameraForThetaPhi( 
-				const Vector2& target_orientation, 
-				const Point3& position, 
+			static void AdjustCameraForThetaPhi(
+				const Vector2& target_orientation,
+				const Point3& position,
 				const Point3& lookat,
 				const Vector3& up,
 				Point3& ptNewPosition,
 				Vector3& vNewUp
 				)
 			{
+				// Symmetric ±gimbal-margin clamp on theta.
+				//
+				// At theta = ±π/2 the post-orbit forward becomes
+				// parallel to `up`; the cross(vForward, up) below
+				// collapses to the zero vector and Normalize returns
+				// zero, so the basis used by callers degenerates and
+				// downstream pan/zoom math propagates NaN.
+				//
+				// The 1° margin (1.553343 ≈ 89°) reflects the
+				// nonlinear conditioning of `Cross` near collinearity
+				// — loss of significance starts before exactly π/2,
+				// not at it.  Conservative-but-cheap.
+				//
+				// Historically only the +π/2 side was clamped; the
+				// negative side was unbounded and a long
+				// drag-up-orbit would push past the south pole and
+				// produce NaN.  Clamping symmetrically here means
+				// every caller — interactive Orbit, panel theta scrub,
+				// keyframe interpolation, future entry points — is
+				// protected without each one having to remember.
+				static const Scalar kThetaLimit = Scalar( 1.553343 );  // ~89° in rad
 				Scalar theta = target_orientation.x;
-				theta = theta > PI_OV_TWO ? PI_OV_TWO : theta;
+				if( theta >  kThetaLimit ) theta =  kThetaLimit;
+				if( theta < -kThetaLimit ) theta = -kThetaLimit;
 
 				const Scalar phi = target_orientation.y;
 

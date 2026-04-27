@@ -80,8 +80,20 @@ namespace RISE
 		/// \return The global participating medium (NULL if vacuum)
 		virtual const IMedium*				GetGlobalMedium() const = 0;
 
-		/// Tells the scene a new time is set 
+		/// Tells the scene a new time is set
 		virtual void						SetSceneTime( const Scalar time ) const = 0;
+
+		/// Like SetSceneTime, but skips photon-map regeneration
+		/// (and the irradiance-cache clear that's tied to global-map
+		/// regen).  Valid only for interactive preview rendering with
+		/// non-photon rasterizers (typically the InteractivePelRasterizer).
+		///
+		/// The caller MUST invoke the full SetSceneTime() exactly once
+		/// before any production render of a scene that uses photon
+		/// maps, otherwise photons will be stale at the scrubbed time.
+		///
+		/// See docs/INTERACTIVE_EDITOR_PLAN.md §7 (Timeline Scrubbing).
+		virtual void						SetSceneTimeForPreview( const Scalar time ) const = 0;
 	};
 }
 

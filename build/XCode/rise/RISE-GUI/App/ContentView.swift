@@ -48,6 +48,11 @@ struct ContentView: View {
     @GestureState private var dragStartWidth: CGFloat? = nil
     @State private var suppressEditorAdjust = false
 
+    /// Bumped on every frame update so the right-side properties panel
+    /// re-snapshots from the live camera (which may have just been
+    /// mutated by a drag).
+    @State private var propertyRefresh: Int = 0
+
     var body: some View {
         HStack(spacing: 0) {
             // Editor sidebar (slides in from left)
@@ -85,9 +90,62 @@ struct ContentView: View {
 
             // Main content
             VStack(spacing: 0) {
-                // Top area: rendered output
-                RenderImageView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Top area: viewport (toolbar + canvas + timeline +
+                // properties panel) when a scene is loaded.  Until then,
+                // the passive RenderImageView shows the no-scene
+                // placeholder.  There's no separate "interact mode" —
+                // viewport is always on once a scene exists; clicking
+                // Render stops the viewport, runs the production
+                // rasterizer, then restarts the viewport.
+                if let vb = viewModel.viewportBridge {
+                    let interacting = (viewModel.renderState != .rendering
+                                       && viewModel.renderState != .cancelling
+                                       && viewModel.renderState != .loading)
+                    HStack(spacing: 0) {
+                        ViewportView(
+                            bridge: vb,
+                            image: $viewModel.renderedImage,
+                            timelineVisible: viewModel.hasAnimation,
+                            sceneTime: $viewModel.sceneTime,
+                            // Pull the timeline range from the scene's
+                            // animation_options chunk via the bridge.
+                            // Falls back to 5.0 only if the scene
+                            // declares no animation options at all
+                            // (animationTimeEnd == 0), so we avoid a
+                            // 0-length slider that would clamp every
+                            // scrub to t=0.
+                            timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
+                            interactionEnabled: interacting,
+                            onSelectionMayHaveChanged: { propertyRefresh += 1 }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        // Right panel — visibility / contents are
+                        // controlled by the bridge's panelMode.  None →
+                        // empty placeholder; Camera → camera property
+                        // table; Object → name + position read-out.  The
+                        // panel itself reads bridge.panelMode each refresh.
+                        Divider()
+
+                        PropertiesPanel(
+                            bridge: vb,
+                            refreshTrigger: $propertyRefresh
+                        )
+                        .frame(width: 280)
+                        .disabled(!interacting)
+                    }
+                    .onChange(of: viewModel.renderedImage) { _, _ in
+                        // Each rendered frame implies the camera may
+                        // have moved; bump the refresh counter so the
+                        // panel re-snapshots.  The panel itself
+                        // protects against overwriting an in-flight
+                        // text edit (focused field is left alone).
+                        propertyRefresh &+= 1
+                    }
+                } else {
+                    RenderImageView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
 
                 Divider()
 

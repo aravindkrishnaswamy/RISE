@@ -254,6 +254,7 @@ SRCLIBCAMERA =\
 SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/FileRasterizerOutput.cpp						\
 	$(PATHLIBRARY)Rendering/PixelBasedPelRasterizer.cpp						\
+	$(PATHLIBRARY)Rendering/InteractivePelRasterizer.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedRasterizerHelper.cpp					\
 	$(PATHLIBRARY)Rendering/PixelBasedSpectralIntegratingRasterizer.cpp		\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
@@ -371,6 +372,14 @@ SRCLIBSCENEEDITORSUGGESTIONS =\
 	$(PATHLIBRARY)SceneEditorSuggestions/NameIndex.cpp				\
 	$(PATHLIBRARY)SceneEditorSuggestions/SuggestionEngine.cpp
 
+# Interactive 3D scene editor (cross-platform GUI viewport backend)
+SRCLIBSCENEEDITOR =\
+	$(PATHLIBRARY)SceneEditor/EditHistory.cpp						\
+	$(PATHLIBRARY)SceneEditor/CancellableProgressCallback.cpp		\
+	$(PATHLIBRARY)SceneEditor/SceneEditor.cpp						\
+	$(PATHLIBRARY)SceneEditor/SceneEditController.cpp				\
+	$(PATHLIBRARY)SceneEditor/CameraIntrospection.cpp
+
 # Miscellaneous stuff
 SRCLIBMISC =\
 	$(PATHLIBRARY)DetectorSpheres/DetectorSphere.cpp				\
@@ -401,6 +410,7 @@ SRCLIB =\
 	$(SRCLIBANIMATION)				\
 	$(SRCLIBPARSERS)				\
 	$(SRCLIBSCENEEDITORSUGGESTIONS)	\
+	$(SRCLIBSCENEEDITOR)			\
 	$(SRCLIBMISC)					\
 	$(SRCLIBSCENEMANAGEMENT)
 

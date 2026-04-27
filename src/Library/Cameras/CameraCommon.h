@@ -69,8 +69,61 @@ namespace RISE
 
 		public:
 
+			//
+			// Mutation surface for the interactive scene editor.
+			// Setters update the stored member; the caller is
+			// responsible for invoking RegenerateData() afterwards
+			// (typically by calling all the setters then a single
+			// Regenerate) so the basis matrix is rebuilt exactly
+			// once per logical edit.
+			//
+			inline void SetLocation( const Point3& p )    { vPosition = p; }
+			inline Point3 GetStoredLookAt() const         { return vLookAt; }
+			inline Vector3 GetStoredUp() const            { return vUp; }
+			inline void SetLookAt( const Point3& p )      { vLookAt = p; }
+			inline void SetUp( const Vector3& u )         { vUp = u; }
+
+			//! Rest position — `vPosition` as stored, BEFORE the
+			//! orbit-around-look-at rotation that Recompute applies via
+			//! `target_orientation`.  This is the value the user sets
+			//! in the .RISEscene file's `location` field.  Distinct
+			//! from `GetLocation()` which returns the post-orbit
+			//! `frame.GetOrigin()` — useful for the rasterizer (it
+			//! wants the actual eye position) but misleading in the
+			//! editor properties panel (an orbit shouldn't appear to
+			//! mutate a parameter the user didn't touch).
+			inline Point3 GetRestLocation() const         { return vPosition; }
+
+			// Additional getters/setters used by the descriptor-driven
+			// properties panel.  pixelAR is intentionally read-only —
+			// it's stored as `const` and changing it would require
+			// recreating the camera.
+			inline Scalar  GetPixelAR()                   const { return pixelAR; }
+			inline Scalar  GetExposureTimeStored()        const { return exposureTime; }
+			inline Scalar  GetScanningRateStored()        const { return scanningRate; }
+			inline Scalar  GetPixelRateStored()           const { return pixelRate; }
+			inline Vector3 GetEulerOrientation()          const { return orientation; }
+			inline Vector2 GetTargetOrientation()         const { return target_orientation; }
+			inline void    SetExposureTimeStored( Scalar v )    { exposureTime = v; }
+			inline void    SetScanningRateStored( Scalar v )    { scanningRate = v; }
+			inline void    SetPixelRateStored( Scalar v )       { pixelRate = v; }
+			inline void    SetEulerOrientation( const Vector3& v )  { orientation = v; }
+			inline void    SetTargetOrientation( const Vector2& v ) { target_orientation = v; }
+
+			//! Update the camera's frame dimensions and rebuild the
+			//! basis matrix.  Used by the interactive editor to render
+			//! at a downsampled resolution during fast drags so each
+			//! render pass completes within the 30Hz budget.
+			//! Caller is responsible for restoring the original
+			//! dimensions when the drag ends.
+			inline void SetDimensions( unsigned int w, unsigned int h )
+			{
+				frame.SetDimensions( w, h );
+				RegenerateData();
+			}
+
 			inline Point3 GetLocation( ) const
-			{ 
+			{
 				return frame.GetOrigin();
 			}
 

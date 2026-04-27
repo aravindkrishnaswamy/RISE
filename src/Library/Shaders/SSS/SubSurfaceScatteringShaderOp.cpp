@@ -89,6 +89,36 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		return;
 	}
 
+	// Fast-preview fallback for the interactive viewport.
+	//
+	// The full SSS path below builds a per-object irradiance point
+	// set on first hit (numPoints surface samples × full Shade per
+	// sample, each shade casts shadow rays to all lights) and then
+	// evaluates a hierarchical octree per pixel.  At numPoints =
+	// 200K (typical for production-quality SSS) the build alone is
+	// many seconds while holding `create_mutex`, blocking the
+	// rasterizer's cancel-restart loop entirely — the user sees a
+	// frozen viewport with no preview rendering.
+	//
+	// In interactive preview, we delegate to the embedded
+	// irradiance-capture shader instead.  That shader is the one
+	// configured for capturing irradiance at point samples
+	// (typically a directlighting_shaderop on a Lambertian BSDF);
+	// running it on the camera-ray hit gives a fast direct-lit
+	// fallback — visible objects, correct positions, useful for
+	// scene navigation.  The production rasterizer leaves
+	// bFastPreview false and gets the full SSS contribution.
+	//
+	// Bypassing the StateCache deliberately: a fast-preview value
+	// is NOT a valid cache entry for the production render, and a
+	// cached production value isn't valid for fast preview either.
+	// Both paths re-compute on demand; the production path is
+	// already heavy enough that the cache hit pays off.
+	if( rc.bFastPreview ) {
+		shader.Shade( rc, ri, caster, rs, c, ior_stack );
+		return;
+	}
+
 	// Lets check our rasterizer state to see if we even need to do work!
 	if( cache ) {
 		if( !rc.StateCache_HasStateChanged( this, c, ri.pObject, ri.geometric.rast ) ) {

@@ -12,6 +12,11 @@
 #include "ControlsWidget.h"
 #include "LogWidget.h"
 #include "SceneEditor.h"
+#include "ViewportBridge.h"
+#include "ViewportWidget.h"
+#include "ViewportToolbar.h"
+#include "ViewportTimeline.h"
+#include "ViewportProperties.h"
 
 #include <QMenuBar>
 #include <QStatusBar>
@@ -22,6 +27,9 @@
 #include <QScreen>
 #include <QSettings>
 #include <QFileInfo>
+#include <QStackedWidget>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -51,9 +59,15 @@ MainWindow::MainWindow(QWidget* parent)
     m_bottomSplitter->setStretchFactor(0, 0);
     m_bottomSplitter->setStretchFactor(1, 1);
 
-    // Right splitter: render view | bottom panel (280px fixed height)
+    // Stacked widget toggles between the passive render view and the
+    // interactive viewport pane.  The viewport pane is built lazily
+    // when a scene loads (see rebuildViewportForLoadedScene).
+    m_viewStack = new QStackedWidget();
+    m_viewStack->addWidget(m_renderWidget);   // index 0
+
+    // Right splitter: stack | bottom panel (280px fixed height)
     m_rightSplitter = new QSplitter(Qt::Vertical);
-    m_rightSplitter->addWidget(m_renderWidget);
+    m_rightSplitter->addWidget(m_viewStack);
     m_rightSplitter->addWidget(m_bottomSplitter);
     m_rightSplitter->setSizes({500, 280});
     m_rightSplitter->setStretchFactor(0, 1);
@@ -316,6 +330,7 @@ void MainWindow::onEditToggle()
 
 void MainWindow::onClear()
 {
+    teardownViewport();
     m_engine->clearScene();
     m_controlsWidget->setHasScene(false);
     updateWindowTitle();
@@ -324,6 +339,30 @@ void MainWindow::onClear()
 
 void MainWindow::onRender()
 {
+    // Stop the viewport's render thread BEFORE the production
+    // rasterizer runs — they'd race against the same scene state
+    // otherwise.  The viewport restarts in onStateChanged when
+    // production transitions back to Completed/Cancelled/Error.
+    if (m_viewportBridge) m_viewportBridge->stop();
+
+    // Advance scene state to the canonical scrubbed time AND
+    // regenerate photon maps before the production rasterizer fires.
+    // The viewport's scrub path calls SetSceneTimeForPreview, which
+    // advances the animator but skips photon regen for
+    // responsiveness; without this full SetSceneTime, hitting Render
+    // after scrubbing renders the right object positions but
+    // caustics frozen at the pre-scrub time.
+    //
+    // We prefer the controller's lastSceneTime over
+    // m_viewportTimeline->currentTime because Undo / Redo can change
+    // scene time without touching the slider — passing the slider's
+    // local value in that window would roll the scene back to a
+    // stale time.  Fall back to the slider when the viewport bridge
+    // is absent (no scene loaded, no scrubs possible).
+    double sceneTime = m_viewportTimeline ? m_viewportTimeline->currentTime() : 0.0;
+    if (m_viewportBridge) sceneTime = m_viewportBridge->lastSceneTime();
+    m_engine->setSceneTime(sceneTime);
+
     m_engine->startRender();
 }
 
@@ -334,6 +373,7 @@ void MainWindow::onRenderAnimation()
     QString videoPath = scenePath;
     videoPath.replace(".RISEscene", ".mp4");
 
+    if (m_viewportBridge) m_viewportBridge->stop();
     m_engine->startAnimationRender(videoPath);
 }
 
@@ -356,11 +396,55 @@ void MainWindow::onStateChanged(int newState)
     bool hasScene = (state != RenderEngine::Idle);
     m_controlsWidget->setHasScene(hasScene);
 
+    // When the engine has just finished loading a scene, build the
+    // viewport bridge over it and switch to the viewport pane.  When
+    // the scene is cleared, tear it down.  No "interact mode" toggle:
+    // the viewport is always visible once a scene is loaded.
+    if (state == RenderEngine::SceneLoaded && !m_viewportBridge) {
+        rebuildViewportForLoadedScene();
+        if (m_viewportPane) m_viewStack->setCurrentWidget(m_viewportPane);
+        if (m_viewportBridge) {
+            m_viewportBridge->start();
+            // The new controller defaults to Select internally; if the
+            // user had a camera tool selected on the previous scene,
+            // re-push the toolbar's persisted selection so the toolbar
+            // and the controller agree.
+            if (m_viewportToolbar) {
+                m_viewportBridge->setTool(m_viewportToolbar->currentTool());
+            }
+        }
+        if (m_viewportProps)  m_viewportProps->refresh();
+    } else if (state == RenderEngine::Idle && m_viewportBridge) {
+        teardownViewport();
+    }
+
+    // Restart the viewport when production rendering ends so the user
+    // can keep editing on the freshly-rendered scene state.  Suppress
+    // the very next preview frame at the sink layer so the production
+    // image stays on screen until the user actually starts dragging —
+    // otherwise the bridge's initial render would flash a half-rendered
+    // preview right after a clean production result.
+    const bool renderEnded = (state == RenderEngine::Completed
+                          || state == RenderEngine::Cancelled
+                          || state == RenderEngine::Error);
+    if (renderEnded && m_viewportBridge && !m_viewportBridge->isRunning()) {
+        m_viewportBridge->suppressNextFrame();
+        m_viewportBridge->start();
+    }
+
+    // While production is in flight, disable viewport interaction so
+    // edits don't race the rasterizer.  The greyed-out widgets make
+    // it visually obvious that the user must Cancel to interact.
+    const bool interacting = (state != RenderEngine::Rendering
+                          && state != RenderEngine::Cancelling
+                          && state != RenderEngine::Loading);
+    if (m_viewportToolbar)  m_viewportToolbar->setEnabled(interacting);
+    if (m_viewportWidget)   m_viewportWidget->setEnabled(interacting);
+    if (m_viewportTimeline) m_viewportTimeline->setEnabled(interacting);
+    if (m_viewportProps)    m_viewportProps->setEnabled(interacting);
+
     // Disable Open Recent during active operations
-    bool canOpen = (state != RenderEngine::Rendering &&
-                    state != RenderEngine::Cancelling &&
-                    state != RenderEngine::Loading);
-    m_recentFilesMenu->setEnabled(canOpen);
+    m_recentFilesMenu->setEnabled(interacting);
 
     updateStatusBar();
     updateWindowTitle();
@@ -436,3 +520,111 @@ void MainWindow::updateStatusBar()
     statusBar()->showMessage(QString("RISE %1 \u2014 %2")
         .arg(m_engine->versionString(), stateText));
 }
+
+// ============================================================
+// Interactive viewport
+// ============================================================
+
+void MainWindow::rebuildViewportForLoadedScene()
+{
+    teardownViewport();
+
+    m_viewportBridge = new ViewportBridge(m_engine, this);
+
+    m_viewportToolbar  = new ViewportToolbar();
+    m_viewportWidget   = new ViewportWidget(m_viewportBridge);
+    m_viewportTimeline = new ViewportTimeline();
+    m_viewportProps    = new ViewportProperties(m_viewportBridge);
+    m_viewportTimeline->setVisible(m_engine->hasAnimation());
+
+    // Pull the timeline range from the scene's animation_options
+    // chunk via the bridge.  Defaults are (0, 1) when the scene
+    // declares no animation_options; we keep the slider's max above
+    // 0 so a 0-length scene still produces a visible (if useless)
+    // slider — the user sees that no animation is wired up rather
+    // than a clamped slider that always reads t=0.
+    {
+        double t0 = 0, t1 = 0;
+        unsigned int nf = 0;
+        if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
+            m_viewportTimeline->setRange(t0, t1);
+        }
+    }
+
+    // Compose the pane: VBox{ toolbar, viewport, timeline } | properties
+    auto* col = new QVBoxLayout;
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(0);
+    col->addWidget(m_viewportToolbar);
+    col->addWidget(m_viewportWidget, 1);
+    col->addWidget(m_viewportTimeline);
+    auto* leftSide = new QWidget;
+    leftSide->setLayout(col);
+
+    auto* row = new QHBoxLayout;
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(0);
+    row->addWidget(leftSide, 1);
+    row->addWidget(m_viewportProps);
+    m_viewportPane = new QWidget;
+    m_viewportPane->setLayout(row);
+    m_viewStack->addWidget(m_viewportPane);   // index 1
+
+    // Wire signals.
+    connect(m_viewportToolbar,  &ViewportToolbar::toolChanged,
+            m_viewportBridge,   &ViewportBridge::setTool);
+    connect(m_viewportToolbar,  &ViewportToolbar::toolChanged,
+            m_viewportWidget,   &ViewportWidget::setActiveTool);
+    // Tool change may have flipped the panel mode (Camera vs None vs
+    // Object) — refresh the props panel so it switches contents /
+    // header accordingly.
+    connect(m_viewportToolbar,  &ViewportToolbar::toolChanged,
+            m_viewportProps,    [this](ViewportTool) {
+                if (m_viewportProps) m_viewportProps->refresh();
+            });
+    connect(m_viewportToolbar,  &ViewportToolbar::undoClicked,
+            m_viewportBridge,   &ViewportBridge::undo);
+    connect(m_viewportToolbar,  &ViewportToolbar::redoClicked,
+            m_viewportBridge,   &ViewportBridge::redo);
+
+    connect(m_viewportTimeline, &ViewportTimeline::scrubBegin,
+            m_viewportBridge,   &ViewportBridge::scrubTimeBegin);
+    connect(m_viewportTimeline, &ViewportTimeline::scrubEnd,
+            m_viewportBridge,   &ViewportBridge::scrubTimeEnd);
+    connect(m_viewportTimeline, &ViewportTimeline::timeChanged,
+            m_viewportBridge,   &ViewportBridge::scrubTime);
+
+    // Live-preview frames from the bridge \u2192 viewport widget + props refresh.
+    connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+            m_viewportWidget, &ViewportWidget::setImage);
+    connect(m_viewportBridge, &ViewportBridge::imageUpdated,
+            m_viewportProps,  &ViewportProperties::refresh);
+
+    // Production-render frames from the engine \u2192 also flow to the
+    // viewport widget so clicking "Render" updates the live view.
+    connect(m_engine, &RenderEngine::imageUpdated,
+            m_viewportWidget, &ViewportWidget::setImage);
+}
+
+void MainWindow::teardownViewport()
+{
+    if (!m_viewportBridge) return;
+
+    // Stop the render thread BEFORE the bridge dies.
+    m_viewportBridge->stop();
+
+    if (m_viewportPane) {
+        m_viewStack->removeWidget(m_viewportPane);
+        delete m_viewportPane;
+        m_viewportPane = nullptr;
+        m_viewportToolbar = nullptr;
+        m_viewportWidget = nullptr;
+        m_viewportTimeline = nullptr;
+        m_viewportProps = nullptr;
+    }
+    delete m_viewportBridge;
+    m_viewportBridge = nullptr;
+    // Fall back to the passive RenderWidget when no scene is loaded.
+    m_viewStack->setCurrentIndex(0);
+}
+

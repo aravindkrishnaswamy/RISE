@@ -112,6 +112,7 @@ namespace RISE
 			void		SetGlobalMedium( const IMedium* pMedium );
 
 			void		SetSceneTime( const Scalar time ) const ;
+			void		SetSceneTimeForPreview( const Scalar time ) const ;
 
 			// Deferred photon-shoot queueing (called by Job during scene parse).
 			void		QueueCausticPelPhotonShoot(		const PendingCausticPelShoot& req );

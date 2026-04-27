@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
+		5EDAF71C14454D71AD5365FC /* BezierClipping.h in Headers */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		6DBFAA5509C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA2E09C4D2A20048A09D /* AmbientOcclusionShaderOp.cpp */; };
 		6DBFAA5609C4D2A20048A09D /* AmbientOcclusionShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA2F09C4D2A20048A09D /* AmbientOcclusionShaderOp.h */; };
 		6DBFAA5709C4D2A20048A09D /* AreaLightShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA3009C4D2A20048A09D /* AreaLightShaderOp.cpp */; };
@@ -52,6 +54,16 @@
 		6DFD32F70A0FBBAA00E99FBE /* EXRReader.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F30A0FBBAA00E99FBE /* EXRReader.h */; };
 		6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */; };
 		6DFD32F90A0FBBAA00E99FBE /* EXRWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */; };
+		DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
+		DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
+		DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
+		DDDD00000000000000000004 /* DisplacedGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
+		DDDD00000000000000000007 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
+		DDDD00000000000000000008 /* GerstnerWavePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000C /* GerstnerWavePainter.h */; };
+		DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
+		DDDD0000000000000000000A /* GerstnerWavePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000C /* GerstnerWavePainter.h */; };
+		DDDD0000000000000000000E /* Observable.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000D /* Observable.h */; };
+		DDDD0000000000000000000F /* Observable.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000D /* Observable.h */; };
 		F24B71E02F52A632008304C4 /* AdaptiveDetectorSphere.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342607ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp */; };
 		F24B71E12F52A632008304C4 /* AdaptiveDetectorSphere.h in Sources */ = {isa = PBXBuildFile; fileRef = F277342707ECCC2F00C0B600 /* AdaptiveDetectorSphere.h */; };
 		F24B71E22F52A632008304C4 /* CircularDiskDetector.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277342807ECCC2F00C0B600 /* CircularDiskDetector.cpp */; };
@@ -119,8 +131,6 @@
 		F24B72212F52A632008304C4 /* ClippedPlaneGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */; };
 		F24B72222F52A632008304C4 /* CylinderGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */; };
 		F24B72232F52A632008304C4 /* CylinderGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F082E069C428F0069C9E5 /* CylinderGeometry.h */; };
-		DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
-		DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		F24B72242F52A632008304C4 /* CylindricalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */; };
 		F24B72252F52A632008304C4 /* CylindricalUVGenerator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */; };
 		F24B72262F52A632008304C4 /* EllipsoidGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */; };
@@ -235,7 +245,6 @@
 		F24B72962F52A632008304C4 /* IVolumeAccessor.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */; };
 		F24B72972F52A632008304C4 /* IVolumeOperation.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */; };
 		F24B72982F52A632008304C4 /* IWriteBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */; };
-		2461E0C4D33B4FADA8B22624 /* BezierClipping.h in Sources */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		F24B72992F52A632008304C4 /* RayBezierPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */; };
 		F24B729A2F52A632008304C4 /* RayBilinearPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */; };
 		F24B729B2F52A632008304C4 /* RayBoxIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */; };
@@ -388,8 +397,6 @@
 		F24B732E2F52A632008304C4 /* Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0941069C42900069C9E5 /* Painter.h */; };
 		F24B732F2F52A632008304C4 /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
 		F24B73302F52A632008304C4 /* Perlin2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0943069C42900069C9E5 /* Perlin2DPainter.h */; };
-		DDDD00000000000000000007 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
-		DDDD00000000000000000008 /* GerstnerWavePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000C /* GerstnerWavePainter.h */; };
 		F24B73312F52A632008304C4 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
 		F24B73322F52A632008304C4 /* Perlin3DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0945069C42900069C9E5 /* Perlin3DPainter.h */; };
 		F24B73332F52A632008304C4 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
@@ -409,17 +416,6 @@
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
 		F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
-		F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000100000000000000A1 /* ChunkDescriptor.h */; };
-		F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
-		F2CD000300000000000000B1 /* IAsciiChunkParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
-		F2E0000100000000000000B1 /* SceneGrammar.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000100000000000000A1 /* SceneGrammar.h */; };
-		F2E0000200000000000000B1 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
-		F2E0000300000000000000B1 /* CompletionContext.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000300000000000000A1 /* CompletionContext.h */; };
-		F2E0000400000000000000B1 /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
-		F2E0000500000000000000B1 /* NameIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000500000000000000A1 /* NameIndex.h */; };
-		F2E0000600000000000000B1 /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
-		F2E0000700000000000000B1 /* SuggestionEngine.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000700000000000000A1 /* SuggestionEngine.h */; };
-		F2E0000800000000000000B1 /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
 		F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F24B73452F52A632008304C4 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F24B73462F52A632008304C4 /* pch.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -444,7 +440,6 @@
 		F24B73592F52A632008304C4 /* Photon.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F096E069C42900069C9E5 /* Photon.h */; };
 		F24B735A2F52A632008304C4 /* PhotonMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F096F069C42900069C9E5 /* PhotonMap.h */; };
 		F24B735B2F52A632008304C4 /* PhotonTracer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0970069C42900069C9E5 /* PhotonTracer.h */; };
-		F24B80032F52A632008304C4 /* PendingPhotonShoots.h in Sources */ = {isa = PBXBuildFile; fileRef = F24B80012F52A632008304C4 /* PendingPhotonShoots.h */; };
 		F24B735C2F52A632008304C4 /* ShadowPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */; };
 		F24B735D2F52A632008304C4 /* ShadowPhotonMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */; };
 		F24B735E2F52A632008304C4 /* ShadowPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */; };
@@ -675,7 +670,6 @@
 		F24B74432F52A632008304C4 /* Ray.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F24B74442F52A632008304C4 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
 		F24B74452F52A632008304C4 /* Reference.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3A069C42900069C9E5 /* Reference.h */; };
-		DDDD0000000000000000000E /* Observable.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000D /* Observable.h */; };
 		F24B74462F52A632008304C4 /* RString.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3B069C42900069C9E5 /* RString.h */; };
 		F24B74472F52A632008304C4 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
 		F24B74482F52A632008304C4 /* RTime.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3D069C42900069C9E5 /* RTime.h */; };
@@ -704,6 +698,8 @@
 		F24B745F2F52A632008304C4 /* VolumeOp_LMIP.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A57069C42900069C9E5 /* VolumeOp_LMIP.h */; };
 		F24B74602F52A632008304C4 /* VolumeOp_MIP.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A58069C42900069C9E5 /* VolumeOp_MIP.h */; };
 		F24B74612F52A632008304C4 /* ZuckerHummelOperator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */; };
+		F24B80022F52A632008304C4 /* PendingPhotonShoots.h in Headers */ = {isa = PBXBuildFile; fileRef = F24B80012F52A632008304C4 /* PendingPhotonShoots.h */; };
+		F24B80032F52A632008304C4 /* PendingPhotonShoots.h in Sources */ = {isa = PBXBuildFile; fileRef = F24B80012F52A632008304C4 /* PendingPhotonShoots.h */; };
 		F24C3E042F54FB57005DA46B /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E032F54FB56005DA46B /* AVFoundation.framework */; };
 		F24C3E062F54FB5E005DA46B /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E052F54FB5E005DA46B /* CoreMedia.framework */; };
 		F24C3E082F54FB65005DA46B /* CoreVideo.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F24C3E072F54FB64005DA46B /* CoreVideo.framework */; };
@@ -726,7 +722,6 @@
 		F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */; };
 		F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */; };
 		F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544B2F7CAB67009AF16D /* MediumTracking.h */; };
-		F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */ = {isa = PBXBuildFile; fileRef = F24D00002F7CAB67009AF16D /* IORStackSeeding.h */; };
 		F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544C2F7CAB67009AF16D /* MediumTransport.h */; };
 		F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
 		F24C54582F7CC591009AF16D /* HeterogeneousMedium.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */; };
@@ -754,6 +749,10 @@
 		F24C549B2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
 		F24C549C2F893D75009AF16D /* MLTSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */; };
 		F24C549D2F893D75009AF16D /* MLTSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */; };
+		F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */ = {isa = PBXBuildFile; fileRef = F24D00002F7CAB67009AF16D /* IORStackSeeding.h */; };
+		F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F26E7A002F9244920009D9AE /* RenderETAEstimator.h */; };
+		F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
+		F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
 		F277340707ECCB5B00C0B600 /* Primes.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340607ECCB5B00C0B600 /* Primes.cpp */; };
 		F277340B07ECCB7300C0B600 /* HaltonPoints.h in Headers */ = {isa = PBXBuildFile; fileRef = F277340807ECCB7300C0B600 /* HaltonPoints.h */; };
 		F277340C07ECCB7300C0B600 /* HaltonPointsSampling2D.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */; };
@@ -835,8 +834,6 @@
 		F27F0A99069C42910069C9E5 /* ClippedPlaneGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */; };
 		F27F0A9A069C42910069C9E5 /* CylinderGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */; };
 		F27F0A9B069C42910069C9E5 /* CylinderGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F082E069C428F0069C9E5 /* CylinderGeometry.h */; };
-		DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
-		DDDD00000000000000000004 /* DisplacedGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		F27F0A9C069C42910069C9E5 /* CylindricalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */; };
 		F27F0A9D069C42910069C9E5 /* CylindricalUVGenerator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */; };
 		F27F0A9E069C42910069C9E5 /* EllipsoidGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */; };
@@ -951,7 +948,6 @@
 		F27F0B0E069C42910069C9E5 /* IVolumeAccessor.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */; };
 		F27F0B0F069C42910069C9E5 /* IVolumeOperation.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */; };
 		F27F0B10069C42910069C9E5 /* IWriteBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */; };
-		5EDAF71C14454D71AD5365FC /* BezierClipping.h in Headers */ = {isa = PBXBuildFile; fileRef = 876B3710A0D34ED183373077 /* BezierClipping.h */; };
 		F27F0B11069C42910069C9E5 /* RayBezierPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */; };
 		F27F0B12069C42910069C9E5 /* RayBilinearPatchIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */; };
 		F27F0B13069C42910069C9E5 /* RayBoxIntersection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */; };
@@ -1099,8 +1095,6 @@
 		F27F0BA5069C42910069C9E5 /* Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0941069C42900069C9E5 /* Painter.h */; };
 		F27F0BA6069C42910069C9E5 /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
 		F27F0BA7069C42910069C9E5 /* Perlin2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0943069C42900069C9E5 /* Perlin2DPainter.h */; };
-		DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000B /* GerstnerWavePainter.cpp */; };
-		DDDD0000000000000000000A /* GerstnerWavePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000C /* GerstnerWavePainter.h */; };
 		F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
 		F27F0BA9069C42910069C9E5 /* Perlin3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0945069C42900069C9E5 /* Perlin3DPainter.h */; };
 		F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
@@ -1120,17 +1114,6 @@
 		F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
 		F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
-		F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000100000000000000A1 /* ChunkDescriptor.h */; };
-		F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
-		F2CD000300000000000000C1 /* IAsciiChunkParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
-		F2E0000100000000000000C1 /* SceneGrammar.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000100000000000000A1 /* SceneGrammar.h */; };
-		F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
-		F2E0000300000000000000C1 /* CompletionContext.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000300000000000000A1 /* CompletionContext.h */; };
-		F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
-		F2E0000500000000000000C1 /* NameIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000500000000000000A1 /* NameIndex.h */; };
-		F2E0000600000000000000C1 /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
-		F2E0000700000000000000C1 /* SuggestionEngine.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000700000000000000A1 /* SuggestionEngine.h */; };
-		F2E0000800000000000000C1 /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
 		F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F27F0BBD069C42910069C9E5 /* pch.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -1155,7 +1138,6 @@
 		F27F0BD0069C42910069C9E5 /* Photon.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F096E069C42900069C9E5 /* Photon.h */; };
 		F27F0BD1069C42910069C9E5 /* PhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F096F069C42900069C9E5 /* PhotonMap.h */; };
 		F27F0BD2069C42910069C9E5 /* PhotonTracer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0970069C42900069C9E5 /* PhotonTracer.h */; };
-		F24B80022F52A632008304C4 /* PendingPhotonShoots.h in Headers */ = {isa = PBXBuildFile; fileRef = F24B80012F52A632008304C4 /* PendingPhotonShoots.h */; };
 		F27F0BD3069C42910069C9E5 /* ShadowPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */; };
 		F27F0BD4069C42910069C9E5 /* ShadowPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */; };
 		F27F0BD5069C42910069C9E5 /* ShadowPhotonTracer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */; };
@@ -1331,7 +1313,6 @@
 		F27F0C91069C42910069C9E5 /* Ray.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A38069C42900069C9E5 /* Ray.h */; };
 		F27F0C92069C42910069C9E5 /* Reference.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A39069C42900069C9E5 /* Reference.cpp */; };
 		F27F0C93069C42910069C9E5 /* Reference.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3A069C42900069C9E5 /* Reference.h */; };
-		DDDD0000000000000000000F /* Observable.h in Headers */ = {isa = PBXBuildFile; fileRef = DDDD0000000000000000000D /* Observable.h */; };
 		F27F0C94069C42910069C9E5 /* RString.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3B069C42900069C9E5 /* RString.h */; };
 		F27F0C95069C42910069C9E5 /* RTime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A3C069C42900069C9E5 /* RTime.cpp */; };
 		F27F0C96069C42910069C9E5 /* RTime.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A3D069C42900069C9E5 /* RTime.h */; };
@@ -1363,12 +1344,6 @@
 		F28639542F9244920009D9AE /* ThreadPool.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639532F9244920009D9AE /* ThreadPool.cpp */; };
 		F28639552F9244920009D9AE /* ThreadPool.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639522F9244920009D9AE /* ThreadPool.h */; };
 		F28639562F9244920009D9AE /* ThreadPool.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639532F9244920009D9AE /* ThreadPool.cpp */; };
-		F2863A032F9244920009D9AE /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
-		F2863A022F9244920009D9AE /* CPUTopology.h in Headers */ = {isa = PBXBuildFile; fileRef = F2863A002F9244920009D9AE /* CPUTopology.h */; };
-		F2863A042F9244920009D9AE /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
-		F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
-		F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F26E7A002F9244920009D9AE /* RenderETAEstimator.h */; };
-		F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
 		F286395B2F9244AC0009D9AE /* ThreadLocalSplatBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */; };
 		F286395C2F9244AC0009D9AE /* AdaptiveTileSizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */; };
 		F286395D2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */; };
@@ -1378,8 +1353,18 @@
 		F28639632F9245040009D9AE /* PreviewScheduler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639622F9245040009D9AE /* PreviewScheduler.cpp */; };
 		F28639642F9245040009D9AE /* PreviewScheduler.h in Headers */ = {isa = PBXBuildFile; fileRef = F28639612F9245040009D9AE /* PreviewScheduler.h */; };
 		F28639652F9245040009D9AE /* PreviewScheduler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F28639622F9245040009D9AE /* PreviewScheduler.cpp */; };
+		F2863A022F9244920009D9AE /* CPUTopology.h in Headers */ = {isa = PBXBuildFile; fileRef = F2863A002F9244920009D9AE /* CPUTopology.h */; };
+		F2863A032F9244920009D9AE /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
+		F2863A042F9244920009D9AE /* CPUTopology.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2863A012F9244920009D9AE /* CPUTopology.cpp */; };
 		F298C65307B14247007CDF08 /* StandardShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F298C65107B14247007CDF08 /* StandardShader.cpp */; };
 		F298C65407B14247007CDF08 /* StandardShader.h in Headers */ = {isa = PBXBuildFile; fileRef = F298C65207B14247007CDF08 /* StandardShader.h */; };
+		F2A00000000000000000001A /* SMSPhoton.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001B /* SMSPhoton.h */; };
+		F2A00000000000000000001C /* SMSPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001D /* SMSPhotonMap.h */; };
+		F2A00000000000000000001E /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
+		F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
+		F2B10A000000000000BA5E02 /* BidirectionalRasterizerBase.h in Headers */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */; };
+		F2B10A000000000000BA5E03 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
+		F2B10A000000000000BA5E04 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
 		F2C5D5272F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 		F2C5D5282F6C725300546C97 /* CompositeEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5252F6C725300546C97 /* CompositeEmitter.h */; };
 		F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
@@ -1439,10 +1424,6 @@
 		F2C5D5FC2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
 		F2C5D5FD2F74237500546C97 /* ManifoldSolver.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */; };
 		F2C5D5FE2F74237500546C97 /* ManifoldSolver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */; };
-		F2A00000000000000000001A /* SMSPhoton.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001B /* SMSPhoton.h */; };
-		F2A00000000000000000001C /* SMSPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001D /* SMSPhotonMap.h */; };
-		F2A00000000000000000001E /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
-		F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
 		F2C7C8D92F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
 		F2C7C8DA2F75DF1C0030CB78 /* SMSShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */; };
 		F2C7C8DB2F75DF1C0030CB78 /* SMSShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */; };
@@ -1460,6 +1441,12 @@
 		F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */; };
+		F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000100000000000000A1 /* ChunkDescriptor.h */; };
+		F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000100000000000000A1 /* ChunkDescriptor.h */; };
+		F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
+		F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
+		F2CD000300000000000000B1 /* IAsciiChunkParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
+		F2CD000300000000000000C1 /* IAsciiChunkParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
 		F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */; };
 		F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
 		F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
@@ -1547,9 +1534,6 @@
 		F2D9B13E2F8FA5C40077A171 /* VCMPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */; };
 		F2D9B13F2F8FA5C40077A171 /* VCMRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */; };
 		F2D9B1402F8FA5C40077A171 /* VCMSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */; };
-		F2B10A000000000000BA5E02 /* BidirectionalRasterizerBase.h in Headers */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */; };
-		F2B10A000000000000BA5E03 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
-		F2B10A000000000000BA5E04 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
 		F2D9B14A2F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1422F8FA60F0077A171 /* VCMIntegrator.cpp */; };
 		F2D9B14B2F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */; };
 		F2D9B14C2F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */; };
@@ -1563,6 +1547,48 @@
 		F2D9B1542F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */; };
 		F2D9B1552F8FA60F0077A171 /* VCMLightVertexStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1452F8FA60F0077A171 /* VCMLightVertexStore.cpp */; };
 		F2D9B1562F8FA60F0077A171 /* VCMPathOps.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */; };
+		F2E0000100000000000000B1 /* SceneGrammar.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000100000000000000A1 /* SceneGrammar.h */; };
+		F2E0000100000000000000C1 /* SceneGrammar.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000100000000000000A1 /* SceneGrammar.h */; };
+		F2E0000200000000000000B1 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
+		F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000200000000000000A1 /* SceneGrammar.cpp */; };
+		F2E0000300000000000000B1 /* CompletionContext.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000300000000000000A1 /* CompletionContext.h */; };
+		F2E0000300000000000000C1 /* CompletionContext.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000300000000000000A1 /* CompletionContext.h */; };
+		F2E0000400000000000000B1 /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
+		F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000400000000000000A1 /* CompletionContext.cpp */; };
+		F2E0000500000000000000B1 /* NameIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000500000000000000A1 /* NameIndex.h */; };
+		F2E0000500000000000000C1 /* NameIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000500000000000000A1 /* NameIndex.h */; };
+		F2E0000600000000000000B1 /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
+		F2E0000600000000000000C1 /* NameIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000600000000000000A1 /* NameIndex.cpp */; };
+		F2E0000700000000000000B1 /* SuggestionEngine.h in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000700000000000000A1 /* SuggestionEngine.h */; };
+		F2E0000700000000000000C1 /* SuggestionEngine.h in Headers */ = {isa = PBXBuildFile; fileRef = F2E0000700000000000000A1 /* SuggestionEngine.h */; };
+		F2E0000800000000000000B1 /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
+		F2E0000800000000000000C1 /* SuggestionEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2E0000800000000000000A1 /* SuggestionEngine.cpp */; };
+		F2EE000100000000000000B1 /* SceneEdit.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000100000000000000A1 /* SceneEdit.h */; };
+		F2EE000100000000000000C1 /* SceneEdit.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE000100000000000000A1 /* SceneEdit.h */; };
+		F2EE000200000000000000B1 /* EditHistory.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000200000000000000A1 /* EditHistory.h */; };
+		F2EE000200000000000000C1 /* EditHistory.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE000200000000000000A1 /* EditHistory.h */; };
+		F2EE000300000000000000B1 /* EditHistory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000300000000000000A1 /* EditHistory.cpp */; };
+		F2EE000300000000000000C1 /* EditHistory.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000300000000000000A1 /* EditHistory.cpp */; };
+		F2EE000400000000000000B1 /* CancellableProgressCallback.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000400000000000000A1 /* CancellableProgressCallback.h */; };
+		F2EE000400000000000000C1 /* CancellableProgressCallback.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE000400000000000000A1 /* CancellableProgressCallback.h */; };
+		F2EE000500000000000000B1 /* CancellableProgressCallback.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000500000000000000A1 /* CancellableProgressCallback.cpp */; };
+		F2EE000500000000000000C1 /* CancellableProgressCallback.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000500000000000000A1 /* CancellableProgressCallback.cpp */; };
+		F2EE000600000000000000B1 /* SceneEditor.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000600000000000000A1 /* SceneEditor.h */; };
+		F2EE000600000000000000C1 /* SceneEditor.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE000600000000000000A1 /* SceneEditor.h */; };
+		F2EE000700000000000000B1 /* SceneEditor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000700000000000000A1 /* SceneEditor.cpp */; };
+		F2EE000700000000000000C1 /* SceneEditor.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000700000000000000A1 /* SceneEditor.cpp */; };
+		F2EE000800000000000000B1 /* SceneEditController.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000800000000000000A1 /* SceneEditController.h */; };
+		F2EE000800000000000000C1 /* SceneEditController.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE000800000000000000A1 /* SceneEditController.h */; };
+		F2EE000900000000000000B1 /* SceneEditController.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000900000000000000A1 /* SceneEditController.cpp */; };
+		F2EE000900000000000000C1 /* SceneEditController.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE000900000000000000A1 /* SceneEditController.cpp */; };
+		F2EE001000000000000000B1 /* InteractivePelRasterizer.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001000000000000000A1 /* InteractivePelRasterizer.h */; };
+		F2EE001000000000000000C1 /* InteractivePelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE001000000000000000A1 /* InteractivePelRasterizer.h */; };
+		F2EE001100000000000000B1 /* InteractivePelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */; };
+		F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */; };
+		F2EE001200000000000000B1 /* CameraIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001200000000000000A1 /* CameraIntrospection.h */; };
+		F2EE001200000000000000C1 /* CameraIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE001200000000000000A1 /* CameraIntrospection.h */; };
+		F2EE001300000000000000B1 /* CameraIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001300000000000000A1 /* CameraIntrospection.cpp */; };
+		F2EE001300000000000000C1 /* CameraIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001300000000000000A1 /* CameraIntrospection.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1623,8 +1649,15 @@
 		6DFD32F30A0FBBAA00E99FBE /* EXRReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRReader.h; sourceTree = "<group>"; };
 		6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EXRWriter.cpp; sourceTree = "<group>"; };
 		6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRWriter.h; sourceTree = "<group>"; };
+		876B3710A0D34ED183373077 /* BezierClipping.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierClipping.h; sourceTree = "<group>"; };
 		8DD76F6C0486A84900D96B5E /* rise */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rise; sourceTree = BUILT_PRODUCTS_DIR; };
+		DDDD00000000000000000005 /* DisplacedGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplacedGeometry.cpp; sourceTree = "<group>"; };
+		DDDD00000000000000000006 /* DisplacedGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplacedGeometry.h; sourceTree = "<group>"; };
+		DDDD0000000000000000000B /* GerstnerWavePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GerstnerWavePainter.cpp; sourceTree = "<group>"; };
+		DDDD0000000000000000000C /* GerstnerWavePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GerstnerWavePainter.h; sourceTree = "<group>"; };
+		DDDD0000000000000000000D /* Observable.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Observable.h; sourceTree = "<group>"; };
 		F24B71C62F52A211008304C4 /* RISE-GUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RISE-GUI.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		F24B80012F52A632008304C4 /* PendingPhotonShoots.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PendingPhotonShoots.h; sourceTree = "<group>"; };
 		F24C3E032F54FB56005DA46B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		F24C3E052F54FB5E005DA46B /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		F24C3E072F54FB64005DA46B /* CoreVideo.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreVideo.framework; path = System/Library/Frameworks/CoreVideo.framework; sourceTree = SDKROOT; };
@@ -1639,7 +1672,6 @@
 		F24C54432F7CAB4F009AF16D /* HomogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HomogeneousMedium.h; sourceTree = "<group>"; };
 		F24C54442F7CAB4F009AF16D /* HomogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HomogeneousMedium.cpp; sourceTree = "<group>"; };
 		F24C544B2F7CAB67009AF16D /* MediumTracking.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTracking.h; sourceTree = "<group>"; };
-		F24D00002F7CAB67009AF16D /* IORStackSeeding.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IORStackSeeding.h; sourceTree = "<group>"; };
 		F24C544C2F7CAB67009AF16D /* MediumTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTransport.h; sourceTree = "<group>"; };
 		F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MediumTransport.cpp; sourceTree = "<group>"; };
 		F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetEnergyLUT.h; sourceTree = "<group>"; };
@@ -1661,6 +1693,9 @@
 		F24C54952F88556A009AF16D /* OptimalMISAccumulator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OptimalMISAccumulator.cpp; sourceTree = "<group>"; };
 		F24C54992F893D75009AF16D /* MLTSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MLTSpectralRasterizer.h; sourceTree = "<group>"; };
 		F24C549A2F893D75009AF16D /* MLTSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MLTSpectralRasterizer.cpp; sourceTree = "<group>"; };
+		F24D00002F7CAB67009AF16D /* IORStackSeeding.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IORStackSeeding.h; sourceTree = "<group>"; };
+		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
+		F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RenderETAEstimator.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
 		F277340807ECCB7300C0B600 /* HaltonPoints.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HaltonPoints.h; sourceTree = "<group>"; };
 		F277340907ECCB7300C0B600 /* HaltonPointsSampling2D.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HaltonPointsSampling2D.cpp; sourceTree = "<group>"; };
@@ -1742,8 +1777,6 @@
 		F27F082C069C428F0069C9E5 /* ClippedPlaneGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ClippedPlaneGeometry.h; sourceTree = "<group>"; };
 		F27F082D069C428F0069C9E5 /* CylinderGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CylinderGeometry.cpp; sourceTree = "<group>"; };
 		F27F082E069C428F0069C9E5 /* CylinderGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CylinderGeometry.h; sourceTree = "<group>"; };
-		DDDD00000000000000000005 /* DisplacedGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplacedGeometry.cpp; sourceTree = "<group>"; };
-		DDDD00000000000000000006 /* DisplacedGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplacedGeometry.h; sourceTree = "<group>"; };
 		F27F082F069C428F0069C9E5 /* CylindricalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CylindricalUVGenerator.cpp; sourceTree = "<group>"; };
 		F27F0830069C428F0069C9E5 /* CylindricalUVGenerator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CylindricalUVGenerator.h; sourceTree = "<group>"; };
 		F27F0831069C428F0069C9E5 /* EllipsoidGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EllipsoidGeometry.cpp; sourceTree = "<group>"; };
@@ -1858,7 +1891,6 @@
 		F27F08A2069C428F0069C9E5 /* IVolumeAccessor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IVolumeAccessor.h; sourceTree = "<group>"; };
 		F27F08A3069C428F0069C9E5 /* IVolumeOperation.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IVolumeOperation.h; sourceTree = "<group>"; };
 		F27F08A4069C428F0069C9E5 /* IWriteBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IWriteBuffer.h; sourceTree = "<group>"; };
-		876B3710A0D34ED183373077 /* BezierClipping.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierClipping.h; sourceTree = "<group>"; };
 		F27F08A6069C428F0069C9E5 /* RayBezierPatchIntersection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RayBezierPatchIntersection.cpp; sourceTree = "<group>"; };
 		F27F08A7069C428F0069C9E5 /* RayBilinearPatchIntersection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RayBilinearPatchIntersection.cpp; sourceTree = "<group>"; };
 		F27F08A8069C428F0069C9E5 /* RayBoxIntersection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RayBoxIntersection.cpp; sourceTree = "<group>"; };
@@ -2006,8 +2038,6 @@
 		F27F0941069C42900069C9E5 /* Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Painter.h; sourceTree = "<group>"; };
 		F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Perlin2DPainter.cpp; sourceTree = "<group>"; };
 		F27F0943069C42900069C9E5 /* Perlin2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Perlin2DPainter.h; sourceTree = "<group>"; };
-		DDDD0000000000000000000B /* GerstnerWavePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GerstnerWavePainter.cpp; sourceTree = "<group>"; };
-		DDDD0000000000000000000C /* GerstnerWavePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GerstnerWavePainter.h; sourceTree = "<group>"; };
 		F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Perlin3DPainter.cpp; sourceTree = "<group>"; };
 		F27F0945069C42900069C9E5 /* Perlin3DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Perlin3DPainter.h; sourceTree = "<group>"; };
 		F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SpectralColorPainter.cpp; sourceTree = "<group>"; };
@@ -2028,27 +2058,6 @@
 		F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MathExpressionEvaluator.cpp; sourceTree = "<group>"; };
 		F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MathExpressionEvaluator.h; sourceTree = "<group>"; };
 		F27F0958069C42900069C9E5 /* StdOutProgress.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StdOutProgress.h; sourceTree = "<group>"; };
-		F2CD000100000000000000A1 /* ChunkDescriptor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptor.h; sourceTree = "<group>"; };
-		F2CD000200000000000000A1 /* ChunkParserRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkParserRegistry.h; sourceTree = "<group>"; };
-		F2CD000300000000000000A1 /* IAsciiChunkParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IAsciiChunkParser.h; sourceTree = "<group>"; };
-		F2E0000100000000000000A1 /* SceneGrammar.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneGrammar.h; sourceTree = "<group>"; };
-		F2E0000200000000000000A1 /* SceneGrammar.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneGrammar.cpp; sourceTree = "<group>"; };
-		F2E0000300000000000000A1 /* CompletionContext.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompletionContext.h; sourceTree = "<group>"; };
-		F2E0000400000000000000A1 /* CompletionContext.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CompletionContext.cpp; sourceTree = "<group>"; };
-		F2E0000500000000000000A1 /* NameIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NameIndex.h; sourceTree = "<group>"; };
-		F2E0000600000000000000A1 /* NameIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = NameIndex.cpp; sourceTree = "<group>"; };
-		F2E0000700000000000000A1 /* SuggestionEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SuggestionEngine.h; sourceTree = "<group>"; };
-		F2E0000800000000000000A1 /* SuggestionEngine.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SuggestionEngine.cpp; sourceTree = "<group>"; };
-		F2E0FF0000000000000000G1 /* SceneEditorSuggestions */ = {isa = PBXGroup; children = (
-			F2E0000100000000000000A1 /* SceneGrammar.h */,
-			F2E0000200000000000000A1 /* SceneGrammar.cpp */,
-			F2E0000300000000000000A1 /* CompletionContext.h */,
-			F2E0000400000000000000A1 /* CompletionContext.cpp */,
-			F2E0000500000000000000A1 /* NameIndex.h */,
-			F2E0000600000000000000A1 /* NameIndex.cpp */,
-			F2E0000700000000000000A1 /* SuggestionEngine.h */,
-			F2E0000800000000000000A1 /* SuggestionEngine.cpp */,
-		); path = SceneEditorSuggestions; sourceTree = "<group>"; };
 		F27F0959069C42900069C9E5 /* pch.cpp */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.cpp; fileEncoding = 30; path = pch.cpp; sourceTree = "<group>"; };
 		F27F095A069C42900069C9E5 /* pch.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = pch.h; sourceTree = "<group>"; };
 		F27F095C069C42900069C9E5 /* CausticPelPhotonMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CausticPelPhotonMap.cpp; sourceTree = "<group>"; };
@@ -2072,7 +2081,6 @@
 		F27F096E069C42900069C9E5 /* Photon.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Photon.h; sourceTree = "<group>"; };
 		F27F096F069C42900069C9E5 /* PhotonMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhotonMap.h; sourceTree = "<group>"; };
 		F27F0970069C42900069C9E5 /* PhotonTracer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PhotonTracer.h; sourceTree = "<group>"; };
-		F24B80012F52A632008304C4 /* PendingPhotonShoots.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PendingPhotonShoots.h; sourceTree = "<group>"; };
 		F27F0971069C42900069C9E5 /* ShadowPhotonMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ShadowPhotonMap.cpp; sourceTree = "<group>"; };
 		F27F0972069C42900069C9E5 /* ShadowPhotonMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ShadowPhotonMap.h; sourceTree = "<group>"; };
 		F27F0973069C42900069C9E5 /* ShadowPhotonTracer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ShadowPhotonTracer.cpp; sourceTree = "<group>"; };
@@ -2248,7 +2256,6 @@
 		F27F0A38069C42900069C9E5 /* Ray.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Ray.h; sourceTree = "<group>"; };
 		F27F0A39069C42900069C9E5 /* Reference.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Reference.cpp; sourceTree = "<group>"; };
 		F27F0A3A069C42900069C9E5 /* Reference.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Reference.h; sourceTree = "<group>"; };
-		DDDD0000000000000000000D /* Observable.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Observable.h; sourceTree = "<group>"; };
 		F27F0A3B069C42900069C9E5 /* RString.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RString.h; sourceTree = "<group>"; };
 		F27F0A3C069C42900069C9E5 /* RTime.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RTime.cpp; sourceTree = "<group>"; };
 		F27F0A3D069C42900069C9E5 /* RTime.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RTime.h; sourceTree = "<group>"; };
@@ -2279,18 +2286,21 @@
 		F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ZuckerHummelOperator.h; sourceTree = "<group>"; };
 		F28639522F9244920009D9AE /* ThreadPool.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThreadPool.h; sourceTree = "<group>"; };
 		F28639532F9244920009D9AE /* ThreadPool.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ThreadPool.cpp; sourceTree = "<group>"; };
-		F2863A002F9244920009D9AE /* CPUTopology.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CPUTopology.h; sourceTree = "<group>"; };
-		F2863A012F9244920009D9AE /* CPUTopology.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CPUTopology.cpp; sourceTree = "<group>"; };
-		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
-		F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RenderETAEstimator.cpp; sourceTree = "<group>"; };
 		F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveTileSizer.h; sourceTree = "<group>"; };
 		F28639582F9244AC0009D9AE /* AdaptiveTileSizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AdaptiveTileSizer.cpp; sourceTree = "<group>"; };
 		F28639592F9244AC0009D9AE /* ThreadLocalSplatBuffer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThreadLocalSplatBuffer.h; sourceTree = "<group>"; };
 		F286395A2F9244AC0009D9AE /* ThreadLocalSplatBuffer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ThreadLocalSplatBuffer.cpp; sourceTree = "<group>"; };
 		F28639612F9245040009D9AE /* PreviewScheduler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PreviewScheduler.h; sourceTree = "<group>"; };
 		F28639622F9245040009D9AE /* PreviewScheduler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PreviewScheduler.cpp; sourceTree = "<group>"; };
+		F2863A002F9244920009D9AE /* CPUTopology.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CPUTopology.h; sourceTree = "<group>"; };
+		F2863A012F9244920009D9AE /* CPUTopology.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CPUTopology.cpp; sourceTree = "<group>"; };
 		F298C65107B14247007CDF08 /* StandardShader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = StandardShader.cpp; sourceTree = "<group>"; };
 		F298C65207B14247007CDF08 /* StandardShader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StandardShader.h; sourceTree = "<group>"; };
+		F2A00000000000000000001B /* SMSPhoton.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhoton.h; sourceTree = "<group>"; };
+		F2A00000000000000000001D /* SMSPhotonMap.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhotonMap.h; sourceTree = "<group>"; };
+		F2A00000000000000000001F /* SMSPhotonMap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSPhotonMap.cpp; sourceTree = "<group>"; };
+		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
+		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
 		F2C5D5252F6C725300546C97 /* CompositeEmitter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompositeEmitter.h; sourceTree = "<group>"; };
 		F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeEmitter.cpp; sourceTree = "<group>"; };
 		F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAH.h; sourceTree = "<group>"; };
@@ -2333,9 +2343,6 @@
 		F2C5D5F12F72E72B00546C97 /* DonnerJensenSkinSSSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = DonnerJensenSkinSSSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C5D5FA2F74237500546C97 /* ManifoldSolver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ManifoldSolver.h; sourceTree = "<group>"; };
 		F2C5D5FB2F74237500546C97 /* ManifoldSolver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ManifoldSolver.cpp; sourceTree = "<group>"; };
-		F2A00000000000000000001B /* SMSPhoton.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhoton.h; sourceTree = "<group>"; };
-		F2A00000000000000000001D /* SMSPhotonMap.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhotonMap.h; sourceTree = "<group>"; };
-		F2A00000000000000000001F /* SMSPhotonMap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSPhotonMap.cpp; sourceTree = "<group>"; };
 		F2C7C8D72F75DF1C0030CB78 /* SMSShaderOp.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSShaderOp.h; sourceTree = "<group>"; };
 		F2C7C8D82F75DF1C0030CB78 /* SMSShaderOp.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSShaderOp.cpp; sourceTree = "<group>"; };
 		F2C7C8DC2F760A6D0030CB78 /* IMaterial.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = IMaterial.cpp; sourceTree = "<group>"; };
@@ -2347,6 +2354,9 @@
 		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
 		F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathGuidingField.h; sourceTree = "<group>"; };
 		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
+		F2CD000100000000000000A1 /* ChunkDescriptor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptor.h; sourceTree = "<group>"; };
+		F2CD000200000000000000A1 /* ChunkParserRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkParserRegistry.h; sourceTree = "<group>"; };
+		F2CD000300000000000000A1 /* IAsciiChunkParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IAsciiChunkParser.h; sourceTree = "<group>"; };
 		F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FilteredFilm.h; sourceTree = "<group>"; };
 		F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FilteredFilm.cpp; sourceTree = "<group>"; };
 		F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingPelRasterizer.h; sourceTree = "<group>"; };
@@ -2405,8 +2415,6 @@
 		F2D9B1332F8FA5C40077A171 /* VCMPelRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMPelRasterizer.cpp; sourceTree = "<group>"; };
 		F2D9B1342F8FA5C40077A171 /* VCMRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMRasterizerBase.h; sourceTree = "<group>"; };
 		F2D9B1352F8FA5C40077A171 /* VCMRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMRasterizerBase.cpp; sourceTree = "<group>"; };
-		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
-		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
 		F2D9B1362F8FA5C40077A171 /* VCMSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMSpectralRasterizer.h; sourceTree = "<group>"; };
 		F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F2D9B1412F8FA60F0077A171 /* VCMIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMIntegrator.h; sourceTree = "<group>"; };
@@ -2418,6 +2426,27 @@
 		F2D9B1472F8FA60F0077A171 /* VCMPathOps.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMPathOps.cpp; sourceTree = "<group>"; };
 		F2D9B1482F8FA60F0077A171 /* VCMRecurrence.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VCMRecurrence.h; sourceTree = "<group>"; };
 		F2D9B1492F8FA60F0077A171 /* VCMRecurrence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCMRecurrence.cpp; sourceTree = "<group>"; };
+		F2E0000100000000000000A1 /* SceneGrammar.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneGrammar.h; sourceTree = "<group>"; };
+		F2E0000200000000000000A1 /* SceneGrammar.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneGrammar.cpp; sourceTree = "<group>"; };
+		F2E0000300000000000000A1 /* CompletionContext.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompletionContext.h; sourceTree = "<group>"; };
+		F2E0000400000000000000A1 /* CompletionContext.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CompletionContext.cpp; sourceTree = "<group>"; };
+		F2E0000500000000000000A1 /* NameIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NameIndex.h; sourceTree = "<group>"; };
+		F2E0000600000000000000A1 /* NameIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = NameIndex.cpp; sourceTree = "<group>"; };
+		F2E0000700000000000000A1 /* SuggestionEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SuggestionEngine.h; sourceTree = "<group>"; };
+		F2E0000800000000000000A1 /* SuggestionEngine.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SuggestionEngine.cpp; sourceTree = "<group>"; };
+		F2EE000100000000000000A1 /* SceneEdit.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneEdit.h; sourceTree = "<group>"; };
+		F2EE000200000000000000A1 /* EditHistory.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EditHistory.h; sourceTree = "<group>"; };
+		F2EE000300000000000000A1 /* EditHistory.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = EditHistory.cpp; sourceTree = "<group>"; };
+		F2EE000400000000000000A1 /* CancellableProgressCallback.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CancellableProgressCallback.h; sourceTree = "<group>"; };
+		F2EE000500000000000000A1 /* CancellableProgressCallback.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CancellableProgressCallback.cpp; sourceTree = "<group>"; };
+		F2EE000600000000000000A1 /* SceneEditor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneEditor.h; sourceTree = "<group>"; };
+		F2EE000700000000000000A1 /* SceneEditor.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneEditor.cpp; sourceTree = "<group>"; };
+		F2EE000800000000000000A1 /* SceneEditController.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SceneEditController.h; sourceTree = "<group>"; };
+		F2EE000900000000000000A1 /* SceneEditController.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SceneEditController.cpp; sourceTree = "<group>"; };
+		F2EE001000000000000000A1 /* InteractivePelRasterizer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InteractivePelRasterizer.h; sourceTree = "<group>"; };
+		F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InteractivePelRasterizer.cpp; sourceTree = "<group>"; };
+		F2EE001200000000000000A1 /* CameraIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraIntrospection.h; sourceTree = "<group>"; };
+		F2EE001300000000000000A1 /* CameraIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CameraIntrospection.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2562,6 +2591,7 @@
 				F27F09D3069C42900069C9E5 /* Scene.cpp */,
 				F27F09D4069C42900069C9E5 /* Scene.h */,
 				F2E0FF0000000000000000G1 /* SceneEditorSuggestions */,
+				F2EEFF0000000000000000G1 /* SceneEditor */,
 				F27F09D5069C42900069C9E5 /* Shaders */,
 				F27F09E2069C42900069C9E5 /* TreeElementProcessor.h */,
 				F27F09E3069C42900069C9E5 /* Utilities */,
@@ -3213,6 +3243,8 @@
 				F27F099D069C42900069C9E5 /* LuminaryManager.h */,
 				F27F099E069C42900069C9E5 /* PixelBasedPelRasterizer.cpp */,
 				F27F099F069C42900069C9E5 /* PixelBasedPelRasterizer.h */,
+				F2EE001000000000000000A1 /* InteractivePelRasterizer.h */,
+				F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */,
 				F27F09A2069C42900069C9E5 /* PixelBasedRasterizerHelper.cpp */,
 				F27F09A3069C42900069C9E5 /* PixelBasedRasterizerHelper.h */,
 				F27F09A4069C42900069C9E5 /* PixelBasedSpectralIntegratingRasterizer.cpp */,
@@ -3541,6 +3573,39 @@
 			path = Volume;
 			sourceTree = "<group>";
 		};
+		F2E0FF0000000000000000G1 /* SceneEditorSuggestions */ = {
+			isa = PBXGroup;
+			children = (
+				F2E0000100000000000000A1 /* SceneGrammar.h */,
+				F2E0000200000000000000A1 /* SceneGrammar.cpp */,
+				F2E0000300000000000000A1 /* CompletionContext.h */,
+				F2E0000400000000000000A1 /* CompletionContext.cpp */,
+				F2E0000500000000000000A1 /* NameIndex.h */,
+				F2E0000600000000000000A1 /* NameIndex.cpp */,
+				F2E0000700000000000000A1 /* SuggestionEngine.h */,
+				F2E0000800000000000000A1 /* SuggestionEngine.cpp */,
+			);
+			path = SceneEditorSuggestions;
+			sourceTree = "<group>";
+		};
+		F2EEFF0000000000000000G1 /* SceneEditor */ = {
+			isa = PBXGroup;
+			children = (
+				F2EE000100000000000000A1 /* SceneEdit.h */,
+				F2EE000200000000000000A1 /* EditHistory.h */,
+				F2EE000300000000000000A1 /* EditHistory.cpp */,
+				F2EE000400000000000000A1 /* CancellableProgressCallback.h */,
+				F2EE000500000000000000A1 /* CancellableProgressCallback.cpp */,
+				F2EE000600000000000000A1 /* SceneEditor.h */,
+				F2EE000700000000000000A1 /* SceneEditor.cpp */,
+				F2EE000800000000000000A1 /* SceneEditController.h */,
+				F2EE000900000000000000A1 /* SceneEditController.cpp */,
+				F2EE001200000000000000A1 /* CameraIntrospection.h */,
+				F2EE001300000000000000A1 /* CameraIntrospection.cpp */,
+			);
+			path = SceneEditor;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -3846,6 +3911,13 @@
 				F2E0000300000000000000C1 /* CompletionContext.h in Headers */,
 				F2E0000500000000000000C1 /* NameIndex.h in Headers */,
 				F2E0000700000000000000C1 /* SuggestionEngine.h in Headers */,
+				F2EE000100000000000000C1 /* SceneEdit.h in Headers */,
+				F2EE000200000000000000C1 /* EditHistory.h in Headers */,
+				F2EE000400000000000000C1 /* CancellableProgressCallback.h in Headers */,
+				F2EE000600000000000000C1 /* SceneEditor.h in Headers */,
+				F2EE000800000000000000C1 /* SceneEditController.h in Headers */,
+				F2EE001200000000000000C1 /* CameraIntrospection.h in Headers */,
+				F2EE001000000000000000C1 /* InteractivePelRasterizer.h in Headers */,
 				F27F0BBD069C42910069C9E5 /* pch.h in Headers */,
 				F27F0BBF069C42910069C9E5 /* CausticPelPhotonMap.h in Headers */,
 				F27F0BC1069C42910069C9E5 /* CausticPelPhotonTracer.h in Headers */,
@@ -4323,6 +4395,12 @@
 				F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */,
 				F2E0000600000000000000C1 /* NameIndex.cpp in Sources */,
 				F2E0000800000000000000C1 /* SuggestionEngine.cpp in Sources */,
+				F2EE000300000000000000C1 /* EditHistory.cpp in Sources */,
+				F2EE000500000000000000C1 /* CancellableProgressCallback.cpp in Sources */,
+				F2EE000700000000000000C1 /* SceneEditor.cpp in Sources */,
+				F2EE000900000000000000C1 /* SceneEditController.cpp in Sources */,
+				F2EE001300000000000000C1 /* CameraIntrospection.cpp in Sources */,
+				F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */,
 				F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
 				F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */,
 				F27F0BBE069C42910069C9E5 /* CausticPelPhotonMap.cpp in Sources */,
@@ -4881,6 +4959,19 @@
 				F2E0000600000000000000B1 /* NameIndex.cpp in Sources */,
 				F2E0000700000000000000B1 /* SuggestionEngine.h in Sources */,
 				F2E0000800000000000000B1 /* SuggestionEngine.cpp in Sources */,
+				F2EE000100000000000000B1 /* SceneEdit.h in Sources */,
+				F2EE000200000000000000B1 /* EditHistory.h in Sources */,
+				F2EE000300000000000000B1 /* EditHistory.cpp in Sources */,
+				F2EE000400000000000000B1 /* CancellableProgressCallback.h in Sources */,
+				F2EE000500000000000000B1 /* CancellableProgressCallback.cpp in Sources */,
+				F2EE000600000000000000B1 /* SceneEditor.h in Sources */,
+				F2EE000700000000000000B1 /* SceneEditor.cpp in Sources */,
+				F2EE000800000000000000B1 /* SceneEditController.h in Sources */,
+				F2EE000900000000000000B1 /* SceneEditController.cpp in Sources */,
+				F2EE001200000000000000B1 /* CameraIntrospection.h in Sources */,
+				F2EE001300000000000000B1 /* CameraIntrospection.cpp in Sources */,
+				F2EE001000000000000000B1 /* InteractivePelRasterizer.h in Sources */,
+				F2EE001100000000000000B1 /* InteractivePelRasterizer.cpp in Sources */,
 				F24B73452F52A632008304C4 /* pch.cpp in Sources */,
 				F24B73462F52A632008304C4 /* pch.h in Sources */,
 				F24B73472F52A632008304C4 /* CausticPelPhotonMap.cpp in Sources */,

@@ -59,6 +59,37 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     private val _remainingMs = MutableStateFlow<Long?>(null)
     val remainingMs: StateFlow<Long?> = _remainingMs.asStateFlow()
 
+    private val _hasAnimation = MutableStateFlow(false)
+    val hasAnimation: StateFlow<Boolean> = _hasAnimation.asStateFlow()
+
+    // Live scrubber position, hoisted from ViewportPane so the VM can
+    // pass the value to nativeSetSceneTime before kicking the
+    // production rasterizer.  Without this, hitting Render after a
+    // timeline scrub would render geometry at the scrubbed time but
+    // caustics frozen at the pre-scrub time (the viewport's scrub
+    // path skips photon regen for responsiveness).
+    private val _sceneTime = MutableStateFlow(0.0)
+    val sceneTime: StateFlow<Double> = _sceneTime.asStateFlow()
+
+    // True once nativeLoadScene has succeeded for the current scene.
+    // Drives the UI's "show ViewportPane vs SceneList" branching.
+    private val _sceneLoaded = MutableStateFlow(false)
+    val sceneLoaded: StateFlow<Boolean> = _sceneLoaded.asStateFlow()
+
+    // Counter that increments each time the underlying viewport
+    // bridge / SceneEditController is restarted (after scene load,
+    // after a production render, etc).  ViewportPane observes this
+    // to re-apply persisted UI state — most importantly the
+    // selected tool — to the freshly-constructed controller, which
+    // defaults to Select internally.
+    private val _viewportEpoch = MutableStateFlow(0)
+    val viewportEpoch: StateFlow<Int> = _viewportEpoch.asStateFlow()
+
+    // Path of the currently-loaded scene, used by [startRender] to retrigger
+    // a production render after the user has been interacting in the
+    // viewport.  Null until a scene loads successfully.
+    private var currentScenePath: String? = null
+
     // Polling job that samples elapsed/remaining from the native estimator
     // while a render is in flight. Cancelled when the render ends.
     private var etaPollJob: Job? = null
@@ -93,12 +124,21 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     }
 
     /**
-     * Load and render [scenePath]. Cancels any in-flight render first.
-     * Blocks on [Dispatchers.IO] for the parse and the entire raytrace.
+     * Load [scenePath] and run an initial production render, then transition
+     * to interactive viewport mode.  Stops any active viewport before
+     * loading; restarts it on completion so the user can immediately drag.
      */
     fun loadAndRender(scenePath: String) {
         renderJob?.cancel()
         etaPollJob?.cancel()
+        // Tear down the previous viewport (if any) before swapping scenes —
+        // the controller borrows pointers into the IJob that nativeLoadScene
+        // is about to replace.
+        if (RiseNative.nativeViewportIsRunning()) {
+            RiseNative.nativeViewportStop()
+        }
+        _sceneLoaded.value = false
+        currentScenePath = scenePath
         renderJob = viewModelScope.launch {
             try {
                 (getApplication<RiseApplication>()).ensureInitialized()
@@ -115,32 +155,21 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                     return@launch
                 }
 
-                // Start the ETA session just before rasterize so elapsed
-                // time tracks the render phase, not the parse phase.
-                RiseNative.nativeEtaBegin()
-                etaPollJob = viewModelScope.launch {
-                    while (isActive) {
-                        _elapsedMs.value = RiseNative.nativeEtaElapsedMs()
-                        val r = RiseNative.nativeEtaRemainingMs()
-                        _remainingMs.value = if (r >= 0L) r else null
-                        delay(ETA_POLL_INTERVAL_MS)
-                    }
-                }
+                _sceneLoaded.value = true
 
-                // Transition to Rendering as soon as the first callback fires
-                // (via onSceneReady). Until then we stay in Loading.
-                val ok = withContext(Dispatchers.IO) { RiseNative.nativeRasterize() }
+                // New scene resets the scrub position.  hasAnimation
+                // has to flip after each load (and clear back to
+                // false on scenes that don't declare animation,
+                // otherwise a static-scene load right after an
+                // animated one would leave the slider stuck visible).
+                // We use nativeHasAnimatedObjects (direct IJob query)
+                // rather than the controller-scoped nativeViewport*
+                // getters, because the controller isn't started until
+                // the end of runProductionRenderInternal.
+                _sceneTime.value = 0.0
+                _hasAnimation.value = RiseNative.nativeHasAnimatedObjects()
 
-                // Final drain — pick up any tiles emitted after the last
-                // invalidate signal tick.
-                drainDirtyAndRepublish()
-
-                etaPollJob?.cancel()
-                etaPollJob = null
-                _elapsedMs.value = RiseNative.nativeEtaElapsedMs()
-                _remainingMs.value = null
-
-                _state.value = if (ok) RenderState.Done else RenderState.Cancelled
+                runProductionRenderInternal()
             } catch (c: CancellationException) {
                 etaPollJob?.cancel()
                 etaPollJob = null
@@ -153,6 +182,128 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
                 _state.value = RenderState.Error(t.message ?: t::class.simpleName.orEmpty())
             }
         }
+    }
+
+    /**
+     * Re-run the production rasterizer on the currently-loaded scene
+     * (typically after the user has been interacting in the viewport and
+     * wants to bake the current state into a high-quality image).  No-op
+     * if no scene is loaded.
+     */
+    fun startRender() {
+        if (currentScenePath == null) return
+        if (renderJob?.isActive == true) return
+        renderJob = viewModelScope.launch {
+            try {
+                runProductionRenderInternal()
+            } catch (c: CancellationException) {
+                etaPollJob?.cancel()
+                etaPollJob = null
+                _state.value = RenderState.Cancelled
+                throw c
+            } catch (t: Throwable) {
+                etaPollJob?.cancel()
+                etaPollJob = null
+                Log.e(TAG, "startRender failed", t)
+                _state.value = RenderState.Error(t.message ?: t::class.simpleName.orEmpty())
+            }
+        }
+    }
+
+    private suspend fun runProductionRenderInternal() {
+        // Capture the canonical scrubbed time from the viewport
+        // controller BEFORE stopping the viewport.  On Android,
+        // nativeViewportStop destroys the controller (unlike macOS /
+        // Windows where stop only halts the render thread); querying
+        // afterwards returns 0 regardless of where the user scrubbed.
+        // Falls back to `_sceneTime.value` when no viewport is
+        // running (initial load, no scrubs possible).
+        val canonical = if (RiseNative.nativeViewportIsRunning()) {
+            RiseNative.nativeViewportLastSceneTime()
+        } else {
+            _sceneTime.value
+        }
+
+        // Stop the viewport before kicking the production rasterizer —
+        // the production renderer takes the same scene + framebuffer the
+        // viewport's interactive renderer is writing to.
+        if (RiseNative.nativeViewportIsRunning()) {
+            RiseNative.nativeViewportStop()
+        }
+
+        // Advance scene state to the canonical scrubbed time AND
+        // regenerate photon maps before the production rasterizer
+        // fires.  The viewport's scrub path calls
+        // SetSceneTimeForPreview (animator-only, no photon regen) for
+        // responsiveness; without this full SetSceneTime, hitting
+        // Render after scrubbing renders the right object positions
+        // but caustics frozen at the pre-scrub time.  We use the
+        // controller's tracked time (captured above) rather than the
+        // slider's local copy because Undo / Redo can change scene
+        // time without going through the slider.
+        RiseNative.nativeSetSceneTime(canonical)
+
+        // Engage Rendering state HERE, not from the worker-thread
+        // onSceneReady callback.  onSceneReady fires from BOTH the
+        // production rasterizer and the viewport preview sink (each
+        // time the framebuffer is resized) — letting it transition
+        // state from Done back to Rendering would falsely engage the
+        // production progress UI on a pan or scrub, and nothing on
+        // the interactive path ever transitions it back to Done.
+        // We use the last known bitmap dims (or 0×0 on the very
+        // first render) — onSceneReady will refine the dims once
+        // the rasterizer actually starts emitting tiles.
+        _progress.value = 0f
+        _state.value = RenderState.Rendering(bitmapW, bitmapH)
+
+        // Start the ETA session just before rasterize so elapsed
+        // time tracks the render phase, not the parse phase.
+        RiseNative.nativeEtaBegin()
+        etaPollJob = viewModelScope.launch {
+            while (isActive) {
+                _elapsedMs.value = RiseNative.nativeEtaElapsedMs()
+                val r = RiseNative.nativeEtaRemainingMs()
+                _remainingMs.value = if (r >= 0L) r else null
+                delay(ETA_POLL_INTERVAL_MS)
+            }
+        }
+
+        val ok = withContext(Dispatchers.IO) { RiseNative.nativeRasterize() }
+
+        drainDirtyAndRepublish()
+
+        etaPollJob?.cancel()
+        etaPollJob = null
+        _elapsedMs.value = RiseNative.nativeEtaElapsedMs()
+        _remainingMs.value = null
+
+        _state.value = if (ok) RenderState.Done else RenderState.Cancelled
+
+        // Restart the viewport so the user can interact with the scene.
+        // The post-production restart needs the first preview frame
+        // dropped — otherwise a fast preview pass would flash a
+        // half-rendered image right over the just-finished production
+        // result.  We thread the suppression intent INTO start (rather
+        // than setting it after) so the flag is latched on the sink
+        // before Start spawns the render thread.  Doing it after is
+        // a race: on a cheap scene the first OutputImage can fire
+        // before the follow-up JNI hop sets the flag.
+        RiseNative.nativeViewportStart(suppressFirstFrame = true)
+        // Bump the epoch so ViewportPane re-applies the persisted
+        // tool selection to the freshly-constructed controller.
+        _viewportEpoch.value = _viewportEpoch.value + 1
+    }
+
+    /**
+     * Update the scrubbed time.  Called by ViewportPane on every
+     * timeline-slider tick alongside the live nativeViewportScrub
+     * call — keeps the VM's view of "where the timeline is" in sync
+     * so the next [startRender] passes the right time to
+     * [RiseNative.nativeSetSceneTime] before kicking the production
+     * rasterizer.
+     */
+    fun updateSceneTime(t: Double) {
+        _sceneTime.value = t
     }
 
     /** Cooperatively cancel any active render. */
@@ -170,6 +321,9 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     override fun onCleared() {
         super.onCleared()
         cancel()
+        if (RiseNative.nativeViewportIsRunning()) {
+            RiseNative.nativeViewportStop()
+        }
         RiseNative.nativeSetCallback(null)
     }
 
@@ -182,10 +336,28 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     }
 
     override fun onSceneReady(width: Int, height: Int) {
-        // Called from a worker thread. Build the Bitmap here (cheap) and
-        // transition state. Compose will recompose on the next dirty drain.
+        // Worker-thread "framebuffer was (re)allocated at WxH" signal.
+        // Fires from BOTH the production rasterizer's first tile AND
+        // the viewport preview sink whenever its adaptive scale
+        // changes the camera dims (the framebuffer size tracks the
+        // rasterizer's output dims).  Job here:
+        //   1. Resize the Compose Bitmap so subsequent
+        //      copyPixelsFromBuffer doesn't underrun.
+        //   2. Refine the Rendering state's reported dims IF we're
+        //      already in production-render mode — don't transition
+        //      from Done/Idle/Cancelled into Rendering.  That used to
+        //      happen here, but the viewport preview path also fires
+        //      onSceneReady, so a drag that bounced preview-scale
+        //      between 1×, 2×, 4× would falsely engage the production
+        //      progress UI and leave the user "Rendering 200×150 ·
+        //      87%" with no way to ever transition back to Done —
+        //      since the interactive renderer never reports through
+        //      the production progress callback.
         ensureBitmap(width, height)
-        _state.value = RenderState.Rendering(width, height)
+        val cur = _state.value
+        if (cur is RenderState.Rendering) {
+            _state.value = RenderState.Rendering(width, height)
+        }
     }
 
     override fun onRegionInvalidated(packedRect: Long) {
