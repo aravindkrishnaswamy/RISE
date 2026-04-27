@@ -87,8 +87,6 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
-If you changed only header files, run `make -C build/make/rise clean` before rebuilding.
-
 ## Noise To Ignore
 
 - `.claude/` is local agent workspace state, not project source.

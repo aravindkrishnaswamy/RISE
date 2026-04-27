@@ -19,6 +19,10 @@ CPPFLAGS = -I$(PATHLIBRARY)
 # This set of flags works on Irix 6.5 g++ 2.95.4
 CXXFLAGS = -O3 -ffast-math -fcse-skip-blocks -frerun-loop-opt -fgcse -fschedule-insns -funroll-loops
 
+# g++ 2.95.4 predates -MP (added in gcc 3.0). Disable automatic header
+# dependency tracking on this platform; run `make clean` after header edits.
+CXXFLAGS_DEPS =
+
 # Turn this on, if you don't have a proper libpng library installed
 DEF_PNG = -DNO_PNG_SUPPORT
 

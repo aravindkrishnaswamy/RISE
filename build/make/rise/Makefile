@@ -49,6 +49,37 @@ OBJTOOLS = $(SRCTOOLS:.cpp=.o)
 # Source trees owned by this makefile. Sweep these for stale object files during clean.
 CLEAN_OBJECT_DIRS = $(PATHLIBRARY) $(PATHSRCS) $(PATHSRCSDRISE) $(PATHTESTS) $(PATHTOOLS)
 
+# Standalone entry points -- each .cpp is a one-off main() picked up by the
+# default .cpp.o rule, so they don't appear in any SRC list above. They still
+# need .d snippets emitted so header edits invalidate them.
+OBJSTANDALONE = \
+	$(PATHSRCS)commandconsole.o \
+	$(PATHSRCS)risempi.o \
+	$(PATHSRCS)meshconverter.o \
+	$(PATHSRCS)imageconverter.o \
+	$(PATHSRCS)biospecbsdfmaker.o \
+	$(PATHSRCSDRISE)drise_server.o \
+	$(PATHSRCSDRISE)drise_client.o \
+	$(PATHSRCSDRISE)drise_submitter.o
+
+# Every translation unit this Makefile builds. Header-dependency snippets are
+# auto-emitted alongside each .o by -MMD (see CXXFLAGS_DEPS below) and pulled
+# back in via the `-include $(ALL_DEPS)` near the bottom of this file. Result:
+# editing a header invalidates exactly the .o files that included it -- no
+# more `make clean` after touching IJob.h or any other interface header.
+ALL_OBJS = $(OBJLIB) $(OBJDRISE) $(OBJTESTS) $(OBJTOOLS) $(OBJSTANDALONE)
+ALL_DEPS = $(ALL_OBJS:.o=.d)
+
+# -MMD: emit a Make-format header-dependency snippet alongside each .o,
+#       excluding system headers (which never change).
+# -MP : also emit phantom targets for each header so a deleted / renamed
+#       header doesn't break the next build with a "no rule to make X" error.
+#
+# Default targets GCC / Clang. Config.specific can override with `=` (set to
+# empty for compilers that don't recognise the flags, e.g. legacy MIPSPro CC
+# or pre-3.0 g++ where -MP doesn't exist).
+CXXFLAGS_DEPS ?= -MMD -MP
+
 # Rules section
 # Normally you would define target upstairs and build it here, but 
 # in our case we're going to explicitly build the test programs
@@ -103,7 +134,7 @@ tests : $(OBJLIB)
 	for test_src in $(SRCTESTS); do \
 		test_name=`basename $$test_src .cpp`; \
 		echo Compiling: $$test_src; \
-		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $$test_src -o $(PATHTESTS)$$test_name.o; then \
+		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $$test_src -o $(PATHTESTS)$$test_name.o; then \
 			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$test_name(compile)"; \
 			continue; \
 		fi; \
@@ -131,7 +162,7 @@ build-test/% : $(PATHTESTDEST)%
 
 $(PATHTESTDEST)% : $(PATHTESTS)%.cpp $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $< -o $(PATHTESTS)$*.o
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $(PATHTESTS)$*.o
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(OBJLIB) $(LDLIBS)
 
 # Build all tools. Mirrors the `tests` target — same loop-and-continue
@@ -142,7 +173,7 @@ tools : $(OBJLIB)
 	for tool_src in $(SRCTOOLS); do \
 		tool_name=`basename $$tool_src .cpp`; \
 		echo Compiling: $$tool_src; \
-		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $$tool_src -o $(PATHTOOLS)$$tool_name.o; then \
+		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $$tool_src -o $(PATHTOOLS)$$tool_name.o; then \
 			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$tool_name(compile)"; \
 			continue; \
 		fi; \
@@ -173,7 +204,7 @@ test : tests
 
 .cpp.o:
 	@echo Compiling: $<
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) -c $< -o $@
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
 
 # automatically generate source file dependencies
 
@@ -198,7 +229,7 @@ clean:
 	@rm -rf $(PATHSRCS)commandconsole.o $(PATHSRCS)meshconverter.o $(PATHSRCS)imageconverter.o $(PATHSRCS)biospecbsdfmaker.o
 	@rm -rf $(OBJTESTS) $(PATHTESTDEST)
 	@rm -rf $(OBJTOOLS) $(PATHTOOLDEST)
-	@find $(CLEAN_OBJECT_DIRS) -type f -name '*.o' -exec rm -f {} \;
+	@find $(CLEAN_OBJECT_DIRS) -type f \( -name '*.o' -o -name '*.d' \) -exec rm -f {} \;
 	@rm -rf $(PATHSRCS)ii_files
 	@rm -rf $(PATHLIBRARY)Animation/ii_files
 	@rm -rf $(PATHLIBRARY)Cameras/ii_files
@@ -229,3 +260,10 @@ clean:
 
 # include the automatically generated source file dependencies
 #include deps
+
+# Pull in the per-translation-unit header dependency snippets emitted by
+# -MMD. The leading dash silences the include for missing files, which is
+# the normal state on a fresh tree (no .d files exist yet) -- after the
+# first compile the snippets land next to their .o files and subsequent
+# builds see exactly which TUs each header touches.
+-include $(ALL_DEPS)

@@ -4,6 +4,7 @@
 .DS_Store
 *.o
 *.obj
+*.d
 /.vscode
 RISELog.txt
 build_log.txt
