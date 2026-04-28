@@ -269,6 +269,64 @@ in some path subset — likely the light-subpath
 recorded at vertex 1 of the reversed light walk.  Fix is correctness-
 sound but doesn't yield a measurable speed win at this configuration.
 
+## Worked example: SPP-scaling matters more than you think
+
+Same scene, same algorithm, comparing **fixed α (Cycles-style)** vs
+**Adam-learned per-cell α (Müller 2017 v2)** on `pt_jewel_vault` with
+one-sample-MIS guiding.  Tom94's reference says learned α should beat
+fixed α — but only when each spatial cell sees enough samples for
+Adam to converge from its 0.5 prior.
+
+K=16 at 32 SPP per pixel (final-render budget; cells get ~few×10²
+updates each):
+
+| Metric          | Fixed α | Learned α | Δ        |
+|-----------------|---------|-----------|----------|
+| mean σ²         | 4.495   | 4.511     | +0.36%   |
+| 99th-pct σ²     | 3.133   | 3.039     | −3.0%    |
+| RMSE vs ref     | 6.372   | 6.381     | +0.14%   |
+
+K=16 at 256 SPP per pixel (cells get ~few×10³ updates each):
+
+| Metric             | Fixed α | Learned α | Δ        |
+|--------------------|---------|-----------|----------|
+| **mean σ²**        | 1.950   | 1.910     | **−2.0%** |
+| 95th-pct σ²        | 0.0240  | 0.0238    | −0.6%    |
+| 99th-pct σ²        | 0.2415  | 0.2400    | −0.6%    |
+| max σ²             | 2.75e4  | 2.69e4    | −2.2%    |
+| relative noise σ/μ | 18.22%  | 18.04%    | **−1.0%** |
+
+**The change goes from neutral → measurable win between 32 and 256
+SPP.**  Don't conclude "feature X doesn't help" from a 32-SPP
+measurement — re-test at 256+ SPP before reverting an
+algorithmically-justified change.  Conversely: don't deploy a feature
+that wins at 32 SPP without checking that it also wins at 256+ — some
+features (immediate-update online learning with weak gradients) do
+the opposite of this.
+
+The mechanics that gave the 256-SPP win:
+
+1. **Adam optimizer** (β₁=0.9, β₂=0.999, lr=0.01) instead of vanilla
+   SGD — smooths the per-sample gradient noise that's the dominant
+   problem at low SPP.
+2. **Deferred f estimate** from path-completion `deltaResult ·
+   combinedPdf / throughputBefore` — uses actual radiance flowing
+   through the chosen direction, not a BSDF-only proxy that's
+   uncorrelated with which directions are bright.
+3. **Persistent cell state** across training iterations and into the
+   final render — OpenPGL's kdtree only ever subdivides leaves
+   (orphaned IDs are bounded memory leak, never reused), so the safe
+   thing is to never clear the per-cell map until the field is
+   destroyed.
+4. **2× scaling** so initial learned=0.5 reproduces the fixed-α
+   behaviour exactly, letting the variance-measurement experiment be
+   a fair head-to-head.
+
+An MVP without these — immediate updates with `f = BSDF·cos`, vanilla
+SGD, map cleared on every iteration — is *worse* than fixed α at all
+SPPs we tested.  Bad gradient estimators don't get rescued by more
+samples; they get noisier.
+
 ## Going forward — for any rendering change
 
 1. Add a comparison entry to `var_test/<change-name>/master|fix/` so

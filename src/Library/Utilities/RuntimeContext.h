@@ -119,6 +119,7 @@ namespace RISE
 		/// is disabled or not yet initialized.
 		mutable Implementation::PathGuidingField*				pGuidingField;
 		Scalar													guidingAlpha;
+		bool													guidingLearnedAlpha;
 		unsigned int											maxGuidingDepth;
 		GuidingSamplingType										guidingSamplingType;
 		unsigned int											guidingRISCandidates;
@@ -159,6 +160,7 @@ namespace RISE
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )
+		  ,guidingLearnedAlpha( true )
 		  ,maxGuidingDepth( 0 )
 		  ,guidingSamplingType( eGuidingOneSampleMIS )
 		  ,guidingRISCandidates( 2 )

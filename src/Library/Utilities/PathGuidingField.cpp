@@ -266,6 +266,15 @@ void PathGuidingField::EndTrainingIteration()
 	// double-train the volume distribution.
 	pglFieldUpdate( field, sampleStorage );
 
+	// Per-cell adaptive-α map is intentionally NOT cleared here.
+	// OpenPGL's kdtree only subdivides leaves — old leaf ids become
+	// orphaned interior-node ids and are never reused.  Stale
+	// entries in cellState therefore just bloat memory by O(field-
+	// cells) without causing wrong queries, while keeping them lets
+	// α learning compound across training iterations and freeze
+	// into the final render — exactly Müller 2017 v2's prescribed
+	// schedule.
+
 	// Query volume sample counts for diagnostics only.
 	const size_t numVolumeSamples = pglSampleStorageGetSizeVolume( sampleStorage );
 	const size_t numZeroValueVolumeSamples =
@@ -406,6 +415,105 @@ Scalar PathGuidingField::IncomingRadiancePdf(
 
 	return static_cast<Scalar>(
 		pglSurfaceSamplingDistributionIncomingRadiancePDF( handle.dist, dir ) );
+}
+
+
+//
+// Per-cell adaptive alpha (Müller 2017 v2 / practical-path-guiding)
+//
+// Online learning of the guide-vs-BSDF mixing weight, with:
+//   • Adam optimizer (β₁=0.9, β₂=0.999) — far more stable at low
+//     SPP than vanilla SGD because the per-sample gradient is
+//     extremely noisy (most paths see f≈0; rare ones see f much
+//     larger than the mean).
+//   • Deferred f estimate.  At sample time we don't know Li yet;
+//     callers snapshot resultBefore + throughputBefore and compute
+//     f after the path completes via:
+//        f = lum(deltaResult) · combinedPdf / lum(throughputBefore)
+//     This is the per-sample integrand value at the chosen
+//     direction — the same quantity Tom94's reference uses.
+//   • Per-cell state persists across training iterations and into
+//     the final render (no clear in EndTrainingIteration; see
+//     comment there).
+
+uint32_t PathGuidingField::GetCellId(
+	const GuidingDistributionHandle& handle
+	) const
+{
+	return handle.dist ? pglSurfaceSamplingDistributionGetId( handle.dist ) : 0;
+}
+
+Scalar PathGuidingField::GetCellAlpha(
+	const GuidingDistributionHandle& handle
+	) const
+{
+	if( !handle.dist ) {
+		return 0.5;
+	}
+	const uint32_t cellId = pglSurfaceSamplingDistributionGetId( handle.dist );
+
+	std::shared_lock<std::shared_mutex> lock( cellAlphaMutex );
+	auto it = cellState.find( cellId );
+	if( it == cellState.end() ) {
+		return 0.5;
+	}
+	const float theta = it->second.theta;
+	return static_cast<Scalar>( 1.0f / (1.0f + std::exp( -theta )) );
+}
+
+void PathGuidingField::UpdateCellAlpha(
+	uint32_t cellId,
+	Scalar bsdfPdf,
+	Scalar guidePdf,
+	Scalar f,
+	Scalar combinedPdf,
+	Scalar learningRate
+	) const
+{
+	if( combinedPdf <= 0 || !std::isfinite( f ) || f <= 0 ) {
+		return;
+	}
+
+	std::unique_lock<std::shared_mutex> lock( cellAlphaMutex );
+	CellAdamState& s = cellState[ cellId ];	// inserts default if missing
+	const float alpha = 1.0f / (1.0f + std::exp( -s.theta ));
+
+	// dL/dα for KL(p_optimal || p_combined), p_optimal ∝ f, single-
+	// sample IS estimator drawn from p_combined.  Negative when
+	// guide is more concentrated where f is large (push α up).
+	const float dL_dalpha = -( static_cast<float>( f ) /
+		static_cast<float>( combinedPdf * combinedPdf ) ) *
+		( static_cast<float>( guidePdf ) - static_cast<float>( bsdfPdf ) );
+
+	// Sigmoid derivative: dα/dθ = α(1-α).
+	const float g = dL_dalpha * alpha * (1.0f - alpha);
+
+	if( !std::isfinite( g ) ) {
+		return;
+	}
+
+	// Adam update.
+	const float beta1 = 0.9f;
+	const float beta2 = 0.999f;
+	const float eps   = 1e-8f;
+
+	s.t++;
+	s.m = beta1 * s.m + (1.0f - beta1) * g;
+	s.v = beta2 * s.v + (1.0f - beta2) * g * g;
+
+	const float bias1 = 1.0f - std::pow( beta1, static_cast<float>( s.t ) );
+	const float bias2 = 1.0f - std::pow( beta2, static_cast<float>( s.t ) );
+	const float m_hat = s.m / bias1;
+	const float v_hat = s.v / bias2;
+
+	s.theta -= static_cast<float>( learningRate ) * m_hat /
+		( std::sqrt( v_hat ) + eps );
+
+	// Clamp so α stays in (~3.4e-4, ~0.9997); keeps the sigmoid in
+	// its sensitive range while allowing pure-BSDF / pure-guide
+	// modes to be chosen confidently.
+	if( s.theta > 8.0f ) s.theta = 8.0f;
+	if( s.theta < -8.0f ) s.theta = -8.0f;
 }
 
 

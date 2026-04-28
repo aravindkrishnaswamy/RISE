@@ -442,9 +442,20 @@ namespace
 		return 0.212671 * pel[0] + 0.715160 * pel[1] + 0.072169 * pel[2];
 	}
 
+	// Guiding-eligible scatter types — non-delta upper-hemisphere
+	// reflection (diffuse or glossy).  Refraction and translucent are
+	// excluded because their sampling space is the lower hemisphere
+	// or a delta-transmission, neither of which the surface guiding
+	// distribution covers.  Cycles enables guiding on glossy via the
+	// roughness threshold; here we admit any non-delta reflection
+	// lobe and let GuidingEffectiveAlpha damp glossy down by half.
 	static inline bool GuidingSupportsSurfaceSampling( const ScatteredRay& scat )
 	{
-		return !scat.isDelta && scat.type == ScatteredRay::eRayDiffuse;
+		if( scat.isDelta ) {
+			return false;
+		}
+		return scat.type == ScatteredRay::eRayDiffuse ||
+		       scat.type == ScatteredRay::eRayReflection;
 	}
 
 	static inline Vector3 GuidingCosineNormal( const RayIntersectionGeometric& rig )
@@ -456,70 +467,37 @@ namespace
 		return normal;
 	}
 
+	// Per-vertex effective guiding alpha — Cycles-style: drop to zero
+	// for delta or specular ray-state, half-trust glossy reflection,
+	// full-trust diffuse.  No multi-lobe penalty: the caller has
+	// already selected one scatter via RandomlySelect, so the chosen
+	// lobe is what we sample for.  Real material roughness would be
+	// an upgrade over this scatter-type proxy (would need a new
+	// IMaterial::GetRoughness API).
 	static inline Scalar GuidingEffectiveAlpha(
 		const Scalar baseAlpha,
-		const ScatteredRayContainer& scattered,
-		const IMaterial* const pMaterial,
-		const IRayCaster::RAY_STATE& rs,
-		const bool bNM
+		const ScatteredRay& scat,
+		const IRayCaster::RAY_STATE& rs
 		)
 	{
 		if( baseAlpha <= NEARZERO ) {
 			return 0;
 		}
-
-		Scalar totalWeight = 0;
-		Scalar diffuseWeight = 0;
-		bool hasNonDiffuse = false;
-		bool hasTransmissive = pMaterial && pMaterial->CouldLightPassThrough();
-
-		for( unsigned int i=0; i<scattered.Count(); i++ )
+		if( scat.isDelta ) {
+			return 0;
+		}
+		if( rs.type == IRayCaster::RAY_STATE::eRaySpecular ) {
+			return 0;
+		}
+		switch( scat.type )
 		{
-			const ScatteredRay& scat = scattered[i];
-			const Scalar w = bNM ? fabs( scat.krayNM ) : ColorMath::MaxValue( scat.kray );
-
-			if( w <= NEARZERO ) {
-				continue;
-			}
-
-			totalWeight += w;
-
-			if( GuidingSupportsSurfaceSampling( scat ) ) {
-				diffuseWeight += w;
-			} else {
-				hasNonDiffuse = true;
-			}
-
-			if( scat.isDelta ||
-				scat.type == ScatteredRay::eRayRefraction ||
-				scat.type == ScatteredRay::eRayTranslucent )
-			{
-				hasTransmissive = true;
-			}
+			case ScatteredRay::eRayDiffuse:
+				return baseAlpha;
+			case ScatteredRay::eRayReflection:
+				return baseAlpha * 0.5;
+			default:
+				return 0;
 		}
-
-		if( totalWeight <= NEARZERO || diffuseWeight <= NEARZERO ) {
-			return 0;
-		}
-
-		const Scalar diffuseFraction = diffuseWeight / totalWeight;
-		if( rs.type == IRayCaster::RAY_STATE::eRaySpecular || hasTransmissive ) {
-			return 0;
-		}
-
-		if( hasNonDiffuse && diffuseFraction < 0.8 ) {
-			return 0;
-		}
-
-		Scalar alpha = baseAlpha;
-		if( hasNonDiffuse ) {
-			alpha *= diffuseFraction * diffuseFraction;
-			if( alpha > 0.2 ) {
-				alpha = 0.2;
-			}
-		}
-
-		return alpha >= 0.05 ? alpha : 0;
 	}
 }
 
@@ -538,6 +516,27 @@ namespace
 		dst.x += static_cast<float>( src[0] );
 		dst.y += static_cast<float>( src[1] );
 		dst.z += static_cast<float>( src[2] );
+	}
+
+	// One pending Adam update for the per-cell learned α.  Populated
+	// at one-sample MIS guide-selection time and applied after the
+	// path completes so the f estimate uses the actual radiance that
+	// flowed through the chosen direction (deltaResult / throughputBefore
+	// · combinedPdf), not a BSDF-only proxy.  See Müller 2017 v2 / Tom94.
+	struct PTIPendingGuideUpdate
+	{
+		uint32_t	cellId;
+		Scalar		bsdfPdf;
+		Scalar		guidePdf;
+		Scalar		combinedPdf;
+		Scalar		resultBefore;		///< lum(result) at sample time
+		Scalar		throughputBefore;	///< lum(throughput) at sample time
+	};
+
+	static inline std::vector<PTIPendingGuideUpdate>& GetPTIPendingGuideUpdates()
+	{
+		static thread_local std::vector<PTIPendingGuideUpdate> pending;
+		return pending;
 	}
 
 	struct PTIGuidingPathRecorder
@@ -2098,7 +2097,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				depth <= rc.maxGuidingDepth && GuidingSupportsSurfaceSampling( *pS ) )
 			{
 				const Scalar alpha = GuidingEffectiveAlpha(
-					rc.guidingAlpha, scattered, ri.pMaterial, rs, false );
+					rc.guidingAlpha, *pS, rs );
 
 				if( alpha > NEARZERO && rc.pGuidingField->InitDistribution( guideDist,
 					ri.geometric.ptIntersection,
@@ -2196,10 +2195,37 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					}
 					else
 					{
-						// One-sample MIS
+						// One-sample MIS.  When rc.guidingLearnedAlpha
+						// is true, use Müller 2017 v2's per-cell Adam-
+						// learned mixing weight σ(θ_cell) — `alpha` is
+						// the Cycles-style scatter-type damping factor
+						// and learnedCellAlpha ∈ (0,1) (default 0.5)
+						// scales it via 2× so initial learned=0.5
+						// reproduces the fixed-α (2a) behaviour and
+						// learning can push effective up or down.
+						// Clamp to [0,1] for the MIS probability
+						// invariant.  Adam step is deferred to path
+						// completion so f = BSDF·cos·Li uses the
+						// actual radiance flowing through the chosen
+						// direction.  When false, falls back to the
+						// fixed `alpha` from GuidingEffectiveAlpha —
+						// reproducible, slightly higher mean σ² in
+						// production (~2% measured at 256 SPP).
+						Scalar effectiveAlpha = alpha;
+						if( rc.guidingLearnedAlpha )
+						{
+							const Scalar learnedCellAlpha =
+								rc.pGuidingField->GetCellAlpha( guideDist );
+							effectiveAlpha = alpha * 2.0 * learnedCellAlpha;
+							if( effectiveAlpha > 1.0 ) effectiveAlpha = 1.0;
+						}
 						const Scalar xiG = sampler.Get1D();
 
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+						Scalar smplBsdfPdf = 0;
+						Scalar smplGuidePdf = 0;
+						Scalar smplCombinedPdf = 0;
+
+						if( PathTransportUtilities::ShouldUseGuidedSample( effectiveAlpha, xiG ) )
 						{
 							Scalar guidePdf = 0;
 							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
@@ -2212,7 +2238,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurface(
 									pSPF, ri.geometric, guidedDir, iorStack );
 								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
+									PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdf, bsdfPdfGuided );
 
 								if( combinedPdf > NEARZERO )
 								{
@@ -2222,6 +2248,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
 									traceIorStack = &iorStack;
+									smplBsdfPdf = bsdfPdfGuided;
+									smplGuidePdf = guidePdf;
+									smplCombinedPdf = combinedPdf;
 								}
 								else
 								{
@@ -2237,13 +2266,35 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						{
 							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDist, pS->ray.Dir() );
 							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
+								PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdfForBsdf, pS->pdf );
 
 							if( combinedPdf > NEARZERO )
 							{
 								scatterThroughput = pS->kray * (pS->pdf / combinedPdf);
 								effectiveBsdfPdf = combinedPdf;
+								smplBsdfPdf = pS->pdf;
+								smplGuidePdf = guidePdfForBsdf;
+								smplCombinedPdf = combinedPdf;
 							}
+						}
+
+						// Defer Adam update until path completion (only
+						// at root: recursive split branches use a
+						// separate result frame and would attribute
+						// radiance to the wrong vertex).  Skipped when
+						// learning is disabled — keeps the queue
+						// empty so the apply-pending block is a no-op.
+						if( rc.guidingLearnedAlpha && guidingRootRay &&
+							smplCombinedPdf > NEARZERO )
+						{
+							PTIPendingGuideUpdate u;
+							u.cellId           = rc.pGuidingField->GetCellId( guideDist );
+							u.bsdfPdf          = smplBsdfPdf;
+							u.guidePdf         = smplGuidePdf;
+							u.combinedPdf      = smplCombinedPdf;
+							u.resultBefore     = GuidingTrainingLuminance( result );
+							u.throughputBefore = GuidingTrainingLuminance( throughput );
+							GetPTIPendingGuideUpdates().push_back( u );
 						}
 					}
 				}
@@ -2387,6 +2438,31 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		FF_TRACE( "=== END SAMPLE %lu result=(%.3e,%.3e,%.3e) maxLum=%.3e ===",
 			ffSample, result[0], result[1], result[2], lum );
 	}
+
+#ifdef RISE_ENABLE_OPENPGL
+	// Apply pending Adam updates from this path's guide samples.
+	// f at vertex i = lum(deltaResult_i) · combinedPdf_i / lum(throughputBefore_i)
+	// where deltaResult_i = lum(result) - lum(resultBefore_i).
+	if( guidingRootRay && rc.pGuidingField )
+	{
+		auto& pending = GetPTIPendingGuideUpdates();
+		if( !pending.empty() )
+		{
+			const Scalar resultEndLum = GuidingTrainingLuminance( result );
+			for( const PTIPendingGuideUpdate& u : pending )
+			{
+				const Scalar deltaResult = resultEndLum - u.resultBefore;
+				if( u.throughputBefore > NEARZERO && deltaResult > 0 )
+				{
+					const Scalar f = deltaResult * u.combinedPdf / u.throughputBefore;
+					rc.pGuidingField->UpdateCellAlpha(
+						u.cellId, u.bsdfPdf, u.guidePdf, f, u.combinedPdf, 0.01 );
+				}
+			}
+			pending.clear();
+		}
+	}
+#endif
 
 	return result;
 }
@@ -3580,7 +3656,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				depth <= rc.maxGuidingDepth && GuidingSupportsSurfaceSampling( *pS ) )
 			{
 				const Scalar alpha = GuidingEffectiveAlpha(
-					rc.guidingAlpha, scattered, ri.pMaterial, rs, true );
+					rc.guidingAlpha, *pS, rs );
 
 				if( alpha > NEARZERO && rc.pGuidingField->InitDistribution( guideDistNM,
 					ri.geometric.ptIntersection,
@@ -3679,10 +3755,23 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					}
 					else
 					{
-						// One-sample MIS (spectral)
+						// One-sample MIS (spectral) — gated on
+						// rc.guidingLearnedAlpha; see RGB block above.
+						Scalar effectiveAlpha = alpha;
+						if( rc.guidingLearnedAlpha )
+						{
+							const Scalar learnedCellAlpha =
+								rc.pGuidingField->GetCellAlpha( guideDistNM );
+							effectiveAlpha = alpha * 2.0 * learnedCellAlpha;
+							if( effectiveAlpha > 1.0 ) effectiveAlpha = 1.0;
+						}
 						const Scalar xiG = sampler.Get1D();
 
-						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+						Scalar smplBsdfPdf = 0;
+						Scalar smplGuidePdf = 0;
+						Scalar smplCombinedPdf = 0;
+
+						if( PathTransportUtilities::ShouldUseGuidedSample( effectiveAlpha, xiG ) )
 						{
 							Scalar guidePdf = 0;
 							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
@@ -3695,7 +3784,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurfaceNM(
 									pSPF, ri.geometric, guidedDir, nm, iorStack );
 								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdfGuided );
+									PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdf, bsdfPdfGuided );
 
 								if( combinedPdf > NEARZERO )
 								{
@@ -3705,6 +3794,9 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
 									traceIorStack = &iorStack;
+									smplBsdfPdf = bsdfPdfGuided;
+									smplGuidePdf = guidePdf;
+									smplCombinedPdf = combinedPdf;
 								}
 								else
 								{
@@ -3720,13 +3812,29 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						{
 							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDistNM, pS->ray.Dir() );
 							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdf, pS->pdf );
+								PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdfForBsdf, pS->pdf );
 
 							if( combinedPdf > NEARZERO )
 							{
 								scatterThroughputNM = pS->krayNM * (pS->pdf / combinedPdf);
 								effectiveBsdfPdf = combinedPdf;
+								smplBsdfPdf = pS->pdf;
+								smplGuidePdf = guidePdfForBsdf;
+								smplCombinedPdf = combinedPdf;
 							}
+						}
+
+						if( rc.guidingLearnedAlpha && guidingRootRay &&
+							smplCombinedPdf > NEARZERO )
+						{
+							PTIPendingGuideUpdate u;
+							u.cellId           = rc.pGuidingField->GetCellId( guideDistNM );
+							u.bsdfPdf          = smplBsdfPdf;
+							u.guidePdf         = smplGuidePdf;
+							u.combinedPdf      = smplCombinedPdf;
+							u.resultBefore     = fabs( result );
+							u.throughputBefore = fabs( throughput );
+							GetPTIPendingGuideUpdates().push_back( u );
 						}
 					}
 				}
@@ -3837,6 +3945,29 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			}
 		}
 	}
+
+#ifdef RISE_ENABLE_OPENPGL
+	// Apply pending Adam updates from this NM path's guide samples.
+	if( guidingRootRay && rc.pGuidingField )
+	{
+		auto& pending = GetPTIPendingGuideUpdates();
+		if( !pending.empty() )
+		{
+			const Scalar resultEndLum = fabs( result );
+			for( const PTIPendingGuideUpdate& u : pending )
+			{
+				const Scalar deltaResult = resultEndLum - u.resultBefore;
+				if( u.throughputBefore > NEARZERO && deltaResult > 0 )
+				{
+					const Scalar f = deltaResult * u.combinedPdf / u.throughputBefore;
+					rc.pGuidingField->UpdateCellAlpha(
+						u.cellId, u.bsdfPdf, u.guidePdf, f, u.combinedPdf, 0.01 );
+				}
+			}
+			pending.clear();
+		}
+	}
+#endif
 
 	return result;
 }
