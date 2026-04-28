@@ -279,3 +279,51 @@ In short, the BVH path's cost factors that SBVH was meant to ameliorate are now 
 **Excise SBVH.**  B2 (Sutherland-Hodgman polygon clipping) and B3 (duplicate-aware SAH) might tighten the result by a few percent more, but neither would close the gap from "null" to "worth the build/memory/code cost".  The structural answer is that with the closest-hit-native intersection and BVH4 collapse already in place, plain SAH is extracting most of the locatable benefit on this codebase's geometry.  Rather than carry a dual-builder branch that's known-no-help on the hardest workload, we revert to a single-path SAH BVH and reclaim the simplicity.
 
 The excision lands as a follow-up PR after this one — see commit history for the diff.
+
+---
+
+## Tier C — partial outcome (2026-04-27)
+
+### C1 — Cache-line-aligned float filter: **no-op**
+
+The original C1 framing assumed the 260 MB float filter on xyzdragon was a net cost (cache pressure exceeding L3, hurting traversal).  Three remedies were proposed: (a) drop on huge meshes, (b) interleave with BVH4 nodes, (c) compress to fp16 (18 B/tri).  All three only make sense if the filter is hurting.
+
+| Mesh | Filter ON | Filter OFF | Δ (filter helps by) |
+|---|---|---|---|
+| xyzdragon (7.2M tris) | 14.27 ± 0.67s | 15.05 ± 0.73s | **+5.5%** |
+| sss_comparison_dragon (47.8K tris) | 43.90 ± 0.87s | 46.71 ± 0.36s | **+6.4%** |
+
+(N=5 each, `Total Rasterization Time` from RISE_Log.txt, env-var `RISE_BENCH_FILTER_OFF=1` flips the filter off at construction.)
+
+The filter is **+5–7% beneficial uniformly** across mesh sizes.  Option (a) "drop on huge meshes" would lose 5.5% on xyzdragon — the opposite of what we want.  (b) and (c) only matter if the filter's memory pressure was the bottleneck, but the filter is already winning despite that pressure — the saved double-precision `RayElementIntersection` calls more than compensate for the L3 misses.
+
+**Decision: no remedy.**  The filter is doing its job.  If a future workload appears where the filter is genuinely costly (e.g. a 100M-tri mesh where DRAM bandwidth becomes the limiter), revisit option (c) — fp16 compression has the cleanest correctness story (the conservative filter accepts all true hits regardless of precision; double-precision cert handles false positives at the leaf).
+
+### C2 — Persistent triangle precompute in v3 cache: **deferred**
+
+C2 would serialise the 260 MB float filter to disk in the v4 `.risemesh` format, saving the rebuild step on cold load.  Cost-benefit on xyzdragon:
+
+- **Saved**: ~280 ms of `BuildFastFilter` work on every cold load
+- **Paid**: +260 MB on disk per file (xyzrgb_dragon goes from 521 MB to ~781 MB, +50%)
+- **Wall-time impact**: ~280 ms / ~5900 ms parse+build = **4.7% cold-load reduction**
+
+This is not a great trade.  Animation refit (the originally-cited beneficiary) is still subject to the same `BuildFastFilter` walk on every Refit, but Refit on a 7.2M-tri mesh is already animation-only territory and rare in practice.
+
+**Decision: deferred.**  Reconsider only if a specific user workload makes the cold-load cost significant — and even then, prefer making `BuildFastFilter` faster (parallelise it across cores) over caching it on disk.
+
+### C3 — SAH-degradation safeguard for refit: **delivered**
+
+After many keyframes of high-amplitude vertex displacement, `Refit()` preserves topology but per-node bboxes can grow until ray traversal expected cost exceeds the freshly-built tree's by a wide margin.  `Refit()` alone can't fix that — only a full rebuild from polygon data can.  C3 adds the detection + caller-driven rebuild trigger.
+
+Implementation (~30 min, in this PR):
+
+1. **`Scalar BVH::originalSAH`** captured once at construction (after Build/BuildFastFilter/BuildBVH4 finish).  `ComputeSAH()` returns the SAH cost of the current tree normalised by root surface area — a single O(N) walk.
+2. **`Scalar BVH::SAHDegradationRatio()`** = `ComputeSAH() / originalSAH`, public getter.
+3. **`Refit()`** logs a warning at >2.0× and an info log otherwise — but doesn't force a rebuild itself (it doesn't own the input prim list).
+4. **`TriangleMeshGeometryIndexed::UpdateVertices`** checks the ratio post-Refit; if >2.0, frees and rebuilds the BVH from `ptr_polygons`.
+
+Defensive: kicks in only on truly-pathological keyframed animation.  Static renders and modest-amplitude animation never hit the threshold.  The 2.0× threshold is conservative — the BVH's actual cost-vs-rebuild tradeoff probably favours rebuild even at 1.5×, but at 2.0× the case is unambiguous.
+
+### C4 — Compressed BVH4 nodes: **next up**
+
+Defer to its own PR.  ~1–2 days to implement 6-byte quantised child AABBs (vs current 32-byte fp32) — a ~5× node-memory reduction.  More important than C1 because the BVH4 node count on xyzdragon is ~2.3M × 128 B = ~295 MB, which is bigger than the float filter and the dominant L3-overflow source on huge meshes.

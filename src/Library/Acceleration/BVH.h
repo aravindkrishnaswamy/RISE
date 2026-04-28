@@ -147,6 +147,15 @@ namespace RISE
 		const TreeElementProcessor<Element>& ep;
 		AccelerationConfig                   cfg;
 
+		// Tier C3 (2026-04-27): SAH cost recorded once at build, used as
+		// the denominator in `SAHDegradationRatio()`.  Refit() preserves
+		// topology but bboxes can grow as keyframed vertices move; if
+		// they grow far enough that traversal expected-cost more than
+		// doubles, refit is no longer adequate and the caller should
+		// rebuild from polygon data.  See Refit() warning + caller
+		// rebuild fallback in TriangleMeshGeometryIndexed::UpdateVertices.
+		Scalar                               originalSAH = 0;
+
 		virtual ~BVH() {}
 
 	public:
@@ -174,6 +183,12 @@ namespace RISE
 
 			BuildFastFilter();
 			BuildBVH4();
+
+			// Tier C3: snapshot the SAH cost of the freshly-built tree.
+			// Refit-driven keyframe animation can grow per-node bboxes
+			// arbitrarily; SAHDegradationRatio() compares against this
+			// to detect "refit no longer adequate" cases.
+			originalSAH = ComputeSAH();
 		}
 
 		size_t numNodes()   const { return nodes.size(); }
@@ -182,6 +197,30 @@ namespace RISE
 		bool   FastFilterEnabled() const { return hasFastFilter; }
 		bool   BVH4Enabled() const { return useBVH4; }
 		const BoundingBox& GetBBox() const { return overallBox; }
+
+		//////////////////////////////////////////////////////////////////
+		//  SAHDegradationRatio (Tier C3 — refit safeguard).
+		//
+		//  Returns currentSAH / originalSAH.  The original SAH was
+		//  captured at construction (a freshly-built balanced tree);
+		//  Refit() preserves topology but per-node bboxes can grow as
+		//  keyframed vertices move.  If they grow far enough that the
+		//  ratio exceeds ~2.0, ray-traversal expected cost has more
+		//  than doubled vs the original tree — the refit-only path is
+		//  no longer adequate, and the caller should rebuild from
+		//  polygon data instead.
+		//
+		//  Returns 1.0 if originalSAH is unset (e.g. mesh deserialized
+		//  from a v3 cache that pre-dates Tier C3 — they get the safe
+		//  default rather than a spurious "rebuild now" signal).
+		//////////////////////////////////////////////////////////////////
+		Scalar SAHDegradationRatio() const
+		{
+			if( originalSAH <= 0 ) return 1.0;
+			const Scalar cur = ComputeSAH();
+			if( cur <= 0 ) return 1.0;
+			return cur / originalSAH;
+		}
 
 		//////////////////////////////////////////////////////////////////
 		//  Refit (Tier 1 §3 animation support).
@@ -263,9 +302,26 @@ namespace RISE
 
 			t.stop();
 			const unsigned int ms = (unsigned int)t.getInterval();
-			GlobalLog()->PrintEx( eLog_Info,
-				"BVH:: Refit %u nodes (%u prims) in %u ms",
-				(unsigned)nodes.size(), (unsigned)prims.size(), ms );
+
+			// Tier C3: SAH-degradation log.  We don't *force* a rebuild
+			// from inside Refit (BVH doesn't own the input prim list,
+			// only the caller does) — instead we emit a warning at
+			// 2.0× and let the caller decide based on
+			// SAHDegradationRatio().
+			const Scalar ratio = SAHDegradationRatio();
+			if( ratio > 2.0 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"BVH:: Refit %u nodes (%u prims) in %u ms — "
+					"SAH degraded %.2fx vs original tree, caller may "
+					"want to rebuild from polygon data",
+					(unsigned)nodes.size(), (unsigned)prims.size(), ms,
+					(double)ratio );
+			} else {
+				GlobalLog()->PrintEx( eLog_Info,
+					"BVH:: Refit %u nodes (%u prims) in %u ms (SAH ratio %.2fx)",
+					(unsigned)nodes.size(), (unsigned)prims.size(), ms,
+					(double)ratio );
+			}
 			return ms;
 		}
 
@@ -988,6 +1044,35 @@ namespace RISE
 			uint32_t n = 0;
 			for( const Node& node : nodes ) if( node.primCount != 0 ) ++n;
 			return n;
+		}
+
+		// Tier C3: SAH cost of the current tree, normalised by root-bbox
+		// surface area.  See SAHDegradationRatio() for rationale.
+		// Single O(N) walk; the typical caller invokes this after Refit
+		// where the AABB walk has already warmed the cache, so the
+		// amortised cost is small.  Empty tree returns 0.
+		Scalar ComputeSAH() const
+		{
+			if( nodes.empty() ) return 0;
+			BoundingBox rootBox(
+				Point3( nodes[0].bboxMin[0], nodes[0].bboxMin[1], nodes[0].bboxMin[2] ),
+				Point3( nodes[0].bboxMax[0], nodes[0].bboxMax[1], nodes[0].bboxMax[2] ) );
+			const Scalar rootArea = SurfaceArea( rootBox );
+			if( rootArea <= 0 ) return 0;
+
+			Scalar cost = 0;
+			for( const Node& n : nodes ) {
+				BoundingBox nb(
+					Point3( n.bboxMin[0], n.bboxMin[1], n.bboxMin[2] ),
+					Point3( n.bboxMax[0], n.bboxMax[1], n.bboxMax[2] ) );
+				const Scalar a = SurfaceArea( nb );
+				if( n.primCount > 0 ) {
+					cost += cfg.sahIntersectionCost * (Scalar)n.primCount * a;
+				} else {
+					cost += cfg.sahTraversalCost * a;
+				}
+			}
+			return cost / rootArea;
 		}
 
 		static inline Scalar AxisVal( const Point3& p, uint8_t axis )
