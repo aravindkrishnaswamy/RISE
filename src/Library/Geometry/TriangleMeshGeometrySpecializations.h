@@ -29,6 +29,19 @@ namespace RISE
 		return bbTri;
 	}
 
+	bool TriangleMeshGeometry::GetFloatTriangleVertices(
+		const MYOBJ elem, float v0[3], float v1[3], float v2[3] ) const
+	{
+		// Tier 1 §4: extract triangle vertices in float for the BVH leaf
+		// float-Möller-Trumbore filter.  Same pattern as the indexed
+		// mesh override.
+		const Triangle& tri = *elem;
+		v0[0] = (float)tri.vertices[0].x; v0[1] = (float)tri.vertices[0].y; v0[2] = (float)tri.vertices[0].z;
+		v1[0] = (float)tri.vertices[1].x; v1[1] = (float)tri.vertices[1].y; v1[2] = (float)tri.vertices[1].z;
+		v2[0] = (float)tri.vertices[2].x; v2[1] = (float)tri.vertices[2].y; v2[2] = (float)tri.vertices[2].z;
+		return true;
+	}
+
 	bool TriangleMeshGeometry::ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const
 	{
 		const Triangle&	p = *elem;
@@ -132,8 +145,10 @@ namespace RISE
 		{
 			RayTriangleIntersection( ri.ray, h, thisTri.vertices[0], vEdgeA, vEdgeB );
 
-			// I don't think the range check is necessary, but I could be wrong...
-			if( h.bHit /* && h.dRange > 0.01*/ ) {
+			// Cleanup §1: native closest-hit check.  See indexed-mesh
+			// equivalent in TriangleMeshGeometryIndexedSpecializations.h
+			// for the rationale.
+			if( h.bHit && h.dRange < ri.range ) {
 				ri.bHit = true;
 				ri.range = h.dRange;
 

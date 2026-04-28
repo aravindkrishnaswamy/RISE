@@ -107,6 +107,18 @@ namespace RISE
 		//!			  You must have added all the IndexedTriangles
 		//!	          You MUST not have called DoneIndexedTriangles yet!
 		virtual void ComputeVertexNormals() = 0;
+
+		//! Tier 1 §3 animation refit support.  Replace vertex / normal
+		//! arrays in place (count must match the existing arrays —
+		//! topology preserved) and refit the BVH bottom-up.  Returns
+		//! the BVH refit duration in ms; 0 on size mismatch.
+		//!
+		//! Caller must ensure this is invoked between frames, never
+		//! concurrent with intersection.  See
+		//! docs/BVH_ACCELERATION_PLAN.md §4.6.
+		virtual unsigned int UpdateVertices(
+			const VerticesListType& newVertices,
+			const NormalsListType&  newNormals ) = 0;
 	};
 }
 

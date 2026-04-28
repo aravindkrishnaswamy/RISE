@@ -29,6 +29,23 @@ namespace RISE
 		return bbTri;
 	}
 
+	bool TriangleMeshGeometryIndexed::GetFloatTriangleVertices(
+		const MYOBJ elem, float v0[3], float v1[3], float v2[3] ) const
+	{
+		// Phase 2: extract the three triangle vertices in float for the
+		// BVH leaf float-Möller-Trumbore filter.  The PointerTriangle's
+		// vertex pointers point into the mesh's pPoints array; this is
+		// a straight double→float cast per component.  Conservativeness
+		// is handled inside the BVH float Möller-Trumbore via an
+		// epsilon-padded barycentric check — the filter never wrong-
+		// rejects a hit the double-precision certifier would catch.
+		const PointerTriangle& tri = *elem;
+		v0[0] = (float)tri.pVertices[0]->x; v0[1] = (float)tri.pVertices[0]->y; v0[2] = (float)tri.pVertices[0]->z;
+		v1[0] = (float)tri.pVertices[1]->x; v1[1] = (float)tri.pVertices[1]->y; v1[2] = (float)tri.pVertices[1]->z;
+		v2[0] = (float)tri.pVertices[2]->x; v2[1] = (float)tri.pVertices[2]->y; v2[2] = (float)tri.pVertices[2]->z;
+		return true;
+	}
+
 	bool TriangleMeshGeometryIndexed::ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const
 	{
 		const PointerTriangle&	p = *elem;
@@ -143,7 +160,16 @@ namespace RISE
 		{
 			RayTriangleIntersection( ri.ray, h, *thisTri.pVertices[0], vEdgeA, vEdgeB );
 
-			if( h.bHit /* && h.dRange > 0.01*/ ) {
+			// Cleanup §1: native closest-hit check.  Previously this
+			// unconditionally overwrote ri.range on hit; BSP traversal
+			// worked around it by using a local myRI per element +
+			// external compare ([BSPTreeSAHNode.h:449]), and the BVH
+			// integration used the same pattern in its leaf iteration.
+			// With this guard in place, both BSP and BVH leaves can call
+			// RayElementIntersection directly with `ri` and rely on it
+			// to preserve the closest-hit invariant.  Recovers the
+			// per-element-copy overhead Phase 1 §6.2 documented.
+			if( h.bHit && h.dRange < ri.range ) {
 				ri.bHit = true;
 				ri.range = h.dRange;
 

@@ -176,26 +176,24 @@ private:
         const unsigned int H = img.GetHeight();
         if( W == 0 || H == 0 ) return;
 
-        // Allocate a fresh buffer per frame.  The buffer lives only as
-        // long as the bitmap rep we hand to SwiftUI; no persistent
-        // state, no race with the next render's writes.
-        const size_t bytes = static_cast<size_t>(W) * H * 4;
-        std::vector<unsigned char> pixels( bytes );
-
-        // Single-pass full-image read.  GetPEL is virtual per-pixel,
-        // but we only do it once per render pass now (instead of once
-        // per tile, which was thousands of times).
-        unsigned char* p = pixels.data();
-        for( unsigned int y = 0; y < H; ++y ) {
-            for( unsigned int x = 0; x < W; ++x ) {
-                RISEColor c = img.GetPEL( x, y );
-                *p++ = Clamp8( c.base.r );
-                *p++ = Clamp8( c.base.g );
-                *p++ = Clamp8( c.base.b );
-                *p++ = 255;
-            }
-        }
-
+        // Allocate the NSBitmapImageRep first and write pixels directly
+        // into its owned bitmapData buffer.  The previous implementation
+        // staged pixels through a per-frame std::vector<uint8_t> and then
+        // memcpy'd into the rep — that's two W*H*4 allocations and a
+        // memcpy per frame.  At a 30Hz preview cadence with a 1200x800
+        // viewport, the staged-vector path was churning ~115 MB/sec
+        // through the macOS xzone allocator, fragmenting it within a few
+        // minutes and crashing inside `xzm_segment_group_alloc_chunk`
+        // (see post-mortem in BVH_CLEANUP_AND_NEXT.md → Tier A follow-ups).
+        //
+        // Cutting the intermediate buffer halves the per-frame allocation
+        // pressure with no thread-safety implication: the rep itself is
+        // still allocated fresh per frame because the previous frame's
+        // dispatch_async block keeps its NSImage (and therefore its rep)
+        // alive on the main queue, so reusing the rep would race with
+        // SwiftUI's display upload of the previous frame.  A future
+        // optimisation would pool a small ring of reps to eliminate even
+        // that allocation.
         @autoreleasepool {
             NSBitmapImageRep* rep = [[NSBitmapImageRep alloc]
                 initWithBitmapDataPlanes:NULL
@@ -208,11 +206,29 @@ private:
                           colorSpaceName:NSDeviceRGBColorSpace
                              bytesPerRow:W * 4
                             bitsPerPixel:32];
-            if( rep && rep.bitmapData ) {
-                std::memcpy( rep.bitmapData, pixels.data(), bytes );
+            if( !rep || !rep.bitmapData ) {
+                // Allocation failure path: skip the dispatch.  SwiftUI
+                // will see the prior frame until the next render.  Better
+                // than crashing on a downstream nullptr write.
+                return;
             }
+
+            // Single-pass full-image read.  GetPEL is virtual per-pixel,
+            // but we only do it once per render pass now (instead of once
+            // per tile, which was thousands of times).
+            unsigned char* p = rep.bitmapData;
+            for( unsigned int y = 0; y < H; ++y ) {
+                for( unsigned int x = 0; x < W; ++x ) {
+                    RISEColor c = img.GetPEL( x, y );
+                    *p++ = Clamp8( c.base.r );
+                    *p++ = Clamp8( c.base.g );
+                    *p++ = Clamp8( c.base.b );
+                    *p++ = 255;
+                }
+            }
+
             NSImage* nsImg = [[NSImage alloc] initWithSize:NSMakeSize(W, H)];
-            if( rep ) [nsImg addRepresentation:rep];
+            [nsImg addRepresentation:rep];
 
             dispatch_async( dispatch_get_main_queue(), ^{
                 block( nsImg );

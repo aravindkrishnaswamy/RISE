@@ -908,6 +908,8 @@
     <ClInclude Include="..\..\..\src\Library\Volume\ZuckerHummelOperator.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTreeSAH.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTreeSAHNode.h" />
+    <ClInclude Include="..\..\..\src\Library\Acceleration\BVH.h" />
+    <ClInclude Include="..\..\..\src\Library\Acceleration\AccelerationConfig.h" />
     <ClInclude Include="..\..\..\src\Library\Cameras\CameraUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\ICubicInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IMedium.h" />

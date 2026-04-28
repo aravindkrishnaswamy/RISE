@@ -87,6 +87,60 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+## Compiler Warnings Are Bugs
+
+This codebase treats compiler warnings as bugs.  Do not introduce them
+and do not leave them behind when you finish a task.
+
+- **Do not suppress.**  No `#pragma GCC diagnostic ignored`, no
+  `#pragma clang diagnostic push`, no `-Wno-foo` added to any build
+  file's compile flags, no `(void)unused_var` to silence "unused"
+  unless the variable is genuinely intentional dead state (and even
+  then, prefer deleting it).  The compiler is right; suppressing it
+  is hiding the symptom.
+- **Fix the root cause.**  A warning means the compiler found something
+  worth your attention.  Examples of the principled fix per warning kind:
+  - `-Winconsistent-missing-override` → add `override` to every method
+    that overrides a base class virtual.  This is not cosmetic — it
+    catches future signature drift between base and derived classes
+    at compile time, which is exactly the kind of latent bug RISE has
+    been bitten by historically.
+  - `-Wunused-function` / `-Wunused-variable` → delete the dead code.
+    Git history preserves it if you ever need to resurrect.  Prefer
+    deletion over `[[maybe_unused]]`; the latter is for genuinely-
+    intentional dead state (e.g., variables kept for debugging).
+  - `-Wsign-compare` → fix the type mismatch.  Don't cast.  If a
+    container's `size()` is being compared against a signed counter,
+    change the counter to `size_t` (or use a range-for).
+  - `-Wimplicit-fallthrough` → add `[[fallthrough]];` if intentional,
+    `break;` if not.  Don't suppress.
+  - `-Wshadow` → rename one of the shadowed variables.  Almost always
+    a legit readability concern.
+  - `-Wreorder` → fix the member-init order to match declaration order.
+  - `-Wdeprecated-declarations` → migrate to the non-deprecated API.
+- **Verify before you finish.**  Both the make build and the Xcode build
+  must come up warning-free on a clean rebuild:
+
+  ```sh
+  # make build
+  make -C build/make/rise clean
+  make -C build/make/rise -j8 all 2>&1 | grep "warning:"   # expect empty
+
+  # Xcode RISE-GUI build
+  cd build/XCode/rise
+  xcodebuild -project rise.xcodeproj -scheme RISE-GUI -configuration Deployment clean
+  xcodebuild -project rise.xcodeproj -scheme RISE-GUI -configuration Deployment build 2>&1 | grep "warning:" | grep -v appintentsmetadataprocessor   # expect empty
+  ```
+
+  Incremental builds will hide warnings on files that didn't recompile.
+  When you've finished a task that touched headers or shared sources,
+  always do at least one clean rebuild to surface warnings the
+  incremental build missed.
+- **Third-party headers are out of scope.**  System headers (libc++,
+  Foundation, etc.) and bundled dependencies (`opt/homebrew/...`) sometimes
+  emit warnings the compiler attributes to RISE source via include chains.
+  Filter these out by path; don't try to fix them.
+
 ## Noise To Ignore
 
 - `.claude/` is local agent workspace state, not project source.

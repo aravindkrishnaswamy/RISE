@@ -26,20 +26,14 @@ DisplacedGeometry::DisplacedGeometry(
 	const unsigned int  detail,
 	const IFunction2D*  displacement,
 	const Scalar        disp_scale,
-	const unsigned int  max_polys_per_node,
-	const unsigned char max_recursion_level,
 	const bool          bDoubleSided,
-	const bool          bUseBSP,
 	const bool          bUseFaceNormals
 	) :
   m_pBase( pBase ),
   m_pDisplacement( displacement ),
   m_dispScale( disp_scale ),
   m_detail( detail ),
-  m_maxPolysPerNode( max_polys_per_node ),
-  m_maxRecursionLevel( max_recursion_level ),
   m_bDoubleSided( bDoubleSided ),
-  m_bUseBSP( bUseBSP ),
   m_bUseFaceNormals( bUseFaceNormals ),
   m_pMesh( 0 ),
   m_displacementSubscription()
@@ -67,8 +61,15 @@ DisplacedGeometry::DisplacedGeometry(
 		const Observable* obs = dynamic_cast<const Observable*>( m_pDisplacement );
 		if( obs ) {
 			m_displacementSubscription = Subscription( obs, [this]{
-				DestroyMesh();
-				BuildMesh();
+				// Tier 1 §3 animation refit: instead of destroying and
+				// rebuilding the mesh from scratch, re-run tessellate +
+				// displacement and feed the new vertices to the existing
+				// mesh's UpdateVertices().  Topology (triangle indices,
+				// vertex count) is stable across painter notifications
+				// because m_detail is a constructor argument — only
+				// vertex positions and normals change.  See
+				// docs/BVH_ACCELERATION_PLAN.md §4.6 for the full design.
+				RefreshMeshVertices();
 			} );
 		}
 	}
@@ -141,7 +142,7 @@ void DisplacedGeometry::BuildMesh()
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
 	}
 
-	m_pMesh = new TriangleMeshGeometryIndexed( m_maxPolysPerNode, m_maxRecursionLevel, m_bDoubleSided, m_bUseBSP, m_bUseFaceNormals );
+	m_pMesh = new TriangleMeshGeometryIndexed( m_bDoubleSided, m_bUseFaceNormals );
 	GlobalLog()->PrintNew( m_pMesh, __FILE__, __LINE__, "displaced geometry internal mesh" );
 
 	m_pMesh->BeginIndexedTriangles();
@@ -150,6 +151,52 @@ void DisplacedGeometry::BuildMesh()
 	m_pMesh->AddTexCoords( coords );
 	m_pMesh->AddIndexedTriangles( tris );
 	m_pMesh->DoneIndexedTriangles();
+}
+
+void DisplacedGeometry::RefreshMeshVertices()
+{
+	// Tier 1 §3: refit-not-rebuild observer path.  See header.
+	if( !m_pBase || !m_pMesh ) {
+		// No current mesh — fall back to full build.
+		DestroyMesh();
+		BuildMesh();
+		return;
+	}
+
+	IndexTriangleListType tris;
+	VerticesListType      vertices;
+	NormalsListType       normals;
+	TexCoordsListType     coords;
+
+	if( !m_pBase->TessellateToMesh( tris, vertices, normals, coords, m_detail ) ) {
+		GlobalLog()->Print( eLog_Error, "DisplacedGeometry::RefreshMeshVertices: base tessellation failed" );
+		return;
+	}
+
+	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
+	if( bVerticesDisplaced ) {
+		TexCoordsListType displacementCoords = coords;
+		RemapTextureCoords( displacementCoords );
+		ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+	}
+
+	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
+		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
+	}
+
+	// Topology assumption: tri count and vertex count match what
+	// the existing m_pMesh has.  m_detail is a const constructor arg,
+	// so this holds across every painter notification.  If a future
+	// change makes detail keyframable, the mismatch path inside
+	// UpdateVertices logs an error and we fall back to full rebuild.
+	const unsigned int refitMs = m_pMesh->UpdateVertices( vertices, normals );
+	if( refitMs == 0 ) {
+		// Mismatch (vertex count differs) — fall back to full rebuild.
+		GlobalLog()->PrintEasyWarning(
+			"DisplacedGeometry::RefreshMeshVertices: UpdateVertices failed; rebuilding from scratch" );
+		DestroyMesh();
+		BuildMesh();
+	}
 }
 
 void DisplacedGeometry::DestroyMesh()

@@ -17,19 +17,20 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 // Helper: build a simple indexed triangle mesh geometry with the given
-// triangles and return it configured with BSP enabled.
+// triangles.  Tier A2 cleanup (2026-04-27) dropped the per-leaf/depth/BSP
+// knobs — BVH is the sole accelerator now and its build params are
+// internal — so the leaf-size/depth args are accepted-and-ignored to
+// keep the existing test bodies readable.  The original test names
+// ("MaxLeaf=1") still document the intent of each fixture.
 static TriangleMeshGeometryIndexed* BuildMesh(
 	const std::vector<Point3>& verts,
 	const std::vector<unsigned int>& indices,
-	unsigned int maxPerLeaf = 2,
-	unsigned char maxDepth = 20
+	unsigned int /*maxPerLeaf_unused*/ = 2,
+	unsigned char /*maxDepth_unused*/ = 20
 )
 {
 	TriangleMeshGeometryIndexed* pMesh = new TriangleMeshGeometryIndexed(
-		maxPerLeaf,    // max polygons per node
-		maxDepth,      // max recursion level
 		true,          // double sided
-		true,          // use BSP
 		true           // use face normals (avoids needing per-vertex normals)
 	);
 

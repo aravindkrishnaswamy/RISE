@@ -19,6 +19,15 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "GeometryUtilities.h"
 #include "../Utilities/stl_utils.h"
+// BSPTreeSAH / Octree headers are still needed in the .cpp because v2/v3
+// .risemesh files have BSP/octree byte blocks that we read into local
+// temporaries during Deserialize so the byte stream advances correctly,
+// even though the parsed trees are never used (BVH owns intersection now).
+// They are NOT pulled into the .h — this class no longer carries any
+// BSP/octree state, only the ability to consume the legacy bytes.
+#include "../Octree.h"
+#include "../BSPTreeSAH.h"
+#include <cmath>
 
 inline unsigned int VoidPtrToUInt( const void* v )
 {
@@ -31,24 +40,16 @@ using namespace RISE::Implementation;
 #include "TriangleMeshGeometrySpecializations.h"
 
 TriangleMeshGeometry::TriangleMeshGeometry(
-	const unsigned int max_polys_per_node, 
-	const unsigned char max_recursion_level, 
-	const bool bDoubleSided_,
-	const bool bUseBSP_
+	const bool bDoubleSided_
 	) :
-  nMaxPerOctantNode( max_polys_per_node ),
-  nMaxRecursionLevel( max_recursion_level), 
   bDoubleSided( bDoubleSided_ ),
-  bUseBSP( bUseBSP_ ),
-  pPolygonsOctree( 0 ), 
-  pPolygonsBSPtree( 0 )
+  pPolygonsBVH( 0 )
 {
 }
 
 TriangleMeshGeometry::~TriangleMeshGeometry()
 {
-	safe_release( pPolygonsOctree );
-	safe_release( pPolygonsBSPtree );
+	safe_release( pPolygonsBVH );
 }
 
 bool TriangleMeshGeometry::TessellateToMesh(
@@ -82,10 +83,11 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 {
 	// Triangle mesh geometry never generates exit information, it just ignores that command!
 
-	if( bUseBSP && pPolygonsBSPtree ) {
-		pPolygonsBSPtree->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
-	} else if( pPolygonsOctree ) {
-		pPolygonsOctree->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
+	// Cleanup §3+§4: BVH is the only active path; legacy BSP/octree
+	// members preserved on the class (for v1/v2 .risemesh deserialize
+	// compat) but never reachable at runtime.
+	if( pPolygonsBVH ) {
+		pPolygonsBVH->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
 	}
 
 	if( ri.bHit && bDoubleSided ) {
@@ -98,15 +100,11 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 
 bool TriangleMeshGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
-	bool bHit = false;
-
-	if( bUseBSP && pPolygonsBSPtree) {
-		return pPolygonsBSPtree->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
-	} else if( pPolygonsOctree ) {
-		return pPolygonsOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
+	// Cleanup §3+§4: BVH-only.
+	if( pPolygonsBVH ) {
+		return pPolygonsBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
 	}
-
-	return bHit;
+	return false;
 }
 
 void TriangleMeshGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
@@ -129,8 +127,7 @@ Scalar TriangleMeshGeometry::GetArea( ) const
 
 void TriangleMeshGeometry::BeginTriangles( )
 {
-	safe_release( pPolygonsOctree );
-	safe_release( pPolygonsBSPtree );
+	safe_release( pPolygonsBVH );
 	areas.clear();
 	areasCDF.clear();
 }
@@ -143,8 +140,16 @@ void TriangleMeshGeometry::AddTriangle( const Triangle& tri )
 
 void TriangleMeshGeometry::ComputeAreas()
 {
-	// Compute triangle areas
+	// Self-clearing: the inner loops both push_back, so we MUST clear
+	// before recomputing or the CDF grows quadratically across repeated
+	// calls.  No observer path on the non-indexed mesh today, but the
+	// invariant is shared with TriangleMeshGeometryIndexed::ComputeAreas
+	// for defense in depth.  See Tier A2 review notes, 2026-04-27.
+	areas.clear();
+	areasCDF.clear();
 	totalArea = 0;
+
+	// Compute triangle areas
 	{
 		MyTriangleList::const_iterator i, e;
 		for( i=polygons.begin(), e=polygons.end(); i!=e; i++ ) {
@@ -157,7 +162,7 @@ void TriangleMeshGeometry::ComputeAreas()
 		}
 	}
 	// Compute the areas CDF
-	{
+	if( totalArea > 0 ) {
 		const Scalar invArea = 1.0 / totalArea;
 		Scalar sum = 0;
 
@@ -190,25 +195,24 @@ void TriangleMeshGeometry::DoneTriangles( )
 		}
 	}
 
-	if( bUseBSP ) {
-		safe_release( pPolygonsBSPtree );
+	// Tier 1 §4: BVH replaces BSP/octree as the active acceleration
+	// structure for non-indexed meshes too.  (Cleanup §3+§4: env-var
+	// escape hatch and BSP/octree fallback both removed; pPolygonsBSPtree
+	// / pPolygonsOctree members are kept for v1/v2 .risemesh deserialize
+	// compat but are never built or consulted at runtime.)
+	safe_release( pPolygonsBVH );
 
-		pPolygonsBSPtree = new BSPTreeSAH<const Triangle*>( *this, bbox, nMaxPerOctantNode );
-		GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons bsptree" );
+	AccelerationConfig cfg;
+	cfg.maxLeafSize            = 4;
+	cfg.binCount               = 32;
+	cfg.sahTraversalCost       = 1.0;
+	cfg.sahIntersectionCost    = 1.0;
+	cfg.doubleSided            = bDoubleSided;
+	cfg.buildSBVH              = false;
+	cfg.sbvhDuplicationBudget  = 0.30;
 
-		pPolygonsBSPtree->AddElements( temp, nMaxRecursionLevel );
-
-//		pPolygonsBSPtree->DumpStatistics( eLog_Info );
-	} else {
-		safe_release( pPolygonsOctree );
-
-		pPolygonsOctree = new Octree<const Triangle*>( *this, bbox, nMaxPerOctantNode );
-		GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons octree" );
-
-		pPolygonsOctree->AddElements( temp, nMaxRecursionLevel );
-
-//		pPolygonsOctree->DumpStatistics( eLog_Info );
-	}
+	pPolygonsBVH = new BVH<const Triangle*>( *this, temp, bbox, cfg );
+	GlobalLog()->PrintNew( pPolygonsBVH, __FILE__, __LINE__, "polygons BVH" );
 
 	ComputeAreas();
 }
@@ -259,17 +263,26 @@ void TriangleMeshGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& rad
 
 BoundingBox TriangleMeshGeometry::GenerateBoundingBox( ) const
 {
-	if( bUseBSP && pPolygonsBSPtree ) {
-		return pPolygonsBSPtree->GetBBox();
-	} else if( pPolygonsOctree ) {
-		return pPolygonsOctree->GetBBox();
+	// Cleanup §3+§4: BVH-only.
+	if( pPolygonsBVH ) {
+		return pPolygonsBVH->GetBBox();
 	}
-	
 	return BoundingBox();
 }
 
 static const char * szSignature = "RISE_TMG";
-static const unsigned int cur_version = 3;
+static const unsigned int cur_version = 4;
+//
+// Version history (non-indexed mesh):
+//   2 — original layout: octree settings + polygons + bDoubleSided +
+//       BSP/octree byte block.
+//   3 — same layout (Tier 1 §4 added a runtime BVH but didn't change
+//       the on-disk format; v3 readers built BVH at load-time).
+//   4 — Tier A2 cleanup (2026-04-27): drops the legacy on-disk fields
+//       (nMaxPerOctantNode, nMaxRecursionLevel, bUseBSP, bptrXX, tree
+//       bytes).  Layout: signature(8) + version(4) + numpolys(4) +
+//       Triangle data + bDoubleSided(1).  No BVH cache yet — non-
+//       indexed meshes still build BVH at load time post-Deserialize.
 
 void TriangleMeshGeometry::Serialize( IWriteBuffer& buffer ) const
 {
@@ -278,11 +291,6 @@ void TriangleMeshGeometry::Serialize( IWriteBuffer& buffer ) const
 	// first write out the signature and version
 	buffer.setBytes( szSignature, 8 );
 	buffer.setUInt( cur_version );
-	
-	// put octree settings
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( char ) );
-	buffer.setUInt( nMaxPerOctantNode );
-	buffer.setChar( nMaxRecursionLevel );
 
 	// Now put geometry data
 	{
@@ -309,34 +317,13 @@ void TriangleMeshGeometry::Serialize( IWriteBuffer& buffer ) const
 		}
 	}
 
-	GlobalLog()->PrintEasyInfo( "TriangleMeshGeometry:: Begining Octree serialization" );
-
 	buffer.ResizeForMore( sizeof( char ) );
 	buffer.setChar( bDoubleSided ? 1 : 0 );
 
-	// Write out which octree exist
-	buffer.ResizeForMore( sizeof( char ) );
-	buffer.setChar( bUseBSP ? 1 : 0 );
-
-	if( bUseBSP ) {
-		buffer.ResizeForMore( sizeof( char ) * 2 );
-		buffer.setChar( pPolygonsBSPtree ? 1 : 0 );
-
-		// Now serialize the octree
-		if( pPolygonsBSPtree ) {
-			pPolygonsBSPtree->Serialize( buffer );
-		}
-	} else {
-		buffer.ResizeForMore( sizeof( char ) * 2 );
-		buffer.setChar( pPolygonsOctree ? 1 : 0 );
-
-		// Now serialize the octree
-		if( pPolygonsOctree ) {
-			pPolygonsOctree->Serialize( buffer );
-		}
-	}
-
-	// Thats it we are done!
+	// Tier A2 (.risemesh v4): no more BSP/octree byte block.  BVH is
+	// built at load time in Deserialize.  A future commit could add
+	// a v5 BVH cache here, mirroring the indexed mesh's cache, when
+	// non-indexed mesh load time becomes a measurable bottleneck.
 }
 
 void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
@@ -354,19 +341,22 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 
 	// Next check version
 	const unsigned int version = buffer.getUInt();
-	
-	if( version != 2 && version != cur_version ) {
-		GlobalLog()->PrintEasyError( "TriangleMeshGeometry::Deserialize:: Versions don't match.  Are you using an older format?" );
+
+	if( version < 2 || version > cur_version ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"TriangleMeshGeometry::Deserialize:: Unsupported .risemesh version %u (this build understands v2..v%u)",
+			version, cur_version );
 		return;
 	}
 
-	// First get octree settings
-	nMaxPerOctantNode = buffer.getUInt();
-	nMaxRecursionLevel = buffer.getChar();
+	// Pre-v4 layouts started with octree settings (nMaxPerOctantNode +
+	// nMaxRecursionLevel) before the polygon data.  Read+discard them.
+	if( version < 4 ) {
+		(void)buffer.getUInt();   // legacy nMaxPerOctantNode
+		(void)buffer.getChar();   // legacy nMaxRecursionLevel
+	}
 
 	polygons.clear();
-	safe_release( pPolygonsOctree );
-	safe_release( pPolygonsBSPtree );
 
 	// Get the list of pure triangles
 	{
@@ -402,54 +392,43 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 	bDoubleSided = !!bdoublesided;
 	GlobalLog()->PrintEx( eLog_Info, "  TriangleMeshGeometry::Deserialize:: Polygons are double sided? [%s]", bDoubleSided?"YES":"NO" );
 
-	char bsp = buffer.getChar();
-	bUseBSP = !!bsp;
-	bool bTreeValid = false;
-		
-	if( bUseBSP ) {
-		// Deserialize the bsp trees
-		const bool bpolybsptree = !!buffer.getChar();
+	// Pre-v4 files have a BSP/octree block here that the live class no
+	// longer carries.  Read+discard via Deserialize-local temporaries so
+	// the byte stream advances past the block; the parsed trees are
+	// validated for "structurally non-broken" so we can warn loudly on
+	// truly corrupt files, but the BVH is the sole live acceleration
+	// structure regardless.
+	if( version < 4 ) {
+		const bool legacyUseBSP = !!buffer.getChar();
+		const bool legacyHaveTree = !!buffer.getChar();
 
-		if( bpolybsptree ) {
-				if( version == cur_version ) {
-					pPolygonsBSPtree = new BSPTreeSAH<const Triangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
-					GlobalLog()->PrintNew( pPolygonsBSPtree, __FILE__, __LINE__, "polygons bsptree" );
-
-				// Deserialize
-				pPolygonsBSPtree->Deserialize( buffer );
-
-				BoundingBox treeBBox = pPolygonsBSPtree->GetBBox();
-				Vector3 extents = treeBBox.GetExtents();
-				if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
-					std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
-					std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
-				{
-					bTreeValid = true;
-				} else {
-					GlobalLog()->PrintEasyWarning( "TriangleMeshGeometry::Deserialize:: Deserialized BSP tree has invalid bounding box, will rebuild" );
-					safe_release( pPolygonsBSPtree );
-					pPolygonsBSPtree = 0;
-				}
-				} else {
-					GlobalLog()->PrintEasyWarning( "TriangleMeshGeometry::Deserialize:: Legacy BSP serialization detected, rebuilding SAH tree from polygon data" );
-				}
+		if( legacyHaveTree ) {
+			if( legacyUseBSP ) {
+				BSPTreeSAH<const Triangle*>* pLegacyBSP =
+					new BSPTreeSAH<const Triangle*>(
+						*this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), 1 );
+				GlobalLog()->PrintNew( pLegacyBSP, __FILE__, __LINE__, "legacy polygons BSP (read+discard)" );
+				pLegacyBSP->Deserialize( buffer );
+				safe_release( pLegacyBSP );
+			} else {
+				Octree<const Triangle*>* pLegacyOct =
+					new Octree<const Triangle*>(
+						*this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), 1 );
+				GlobalLog()->PrintNew( pLegacyOct, __FILE__, __LINE__, "legacy polygons Octree (read+discard)" );
+				pLegacyOct->Deserialize( buffer );
+				safe_release( pLegacyOct );
 			}
-	} else {
-		// Deserialize the octrees
-		const bool bpolyoctree = !!buffer.getChar();
-
-		if( bpolyoctree ) {
-			pPolygonsOctree = new Octree<const Triangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons octree" );
-
-			// Deserialize
-			pPolygonsOctree->Deserialize( buffer );
-			bTreeValid = true;
 		}
 	}
 
-	if( !bTreeValid && polygons.size() > 0 ) {
-		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometry::Deserialize:: Rebuilding spatial structure from %u polygons", polygons.size() );
+	// Build the BVH from the loaded polygon data.  Non-indexed mesh
+	// .risemesh files don't yet carry a BVH cache, so we always build
+	// at load time (cheap for the small number of non-indexed meshes
+	// in the asset library).
+	safe_release( pPolygonsBVH );
+
+	if( polygons.size() > 0 ) {
+		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometry::Deserialize:: Building BVH from %u polygons", (unsigned)polygons.size() );
 
 		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
 		std::vector<const Triangle*> temp;
@@ -461,15 +440,17 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 			}
 		}
 
-		if( bUseBSP ) {
-			pPolygonsBSPtree = new BSPTreeSAH<const Triangle*>( *this, bbox, nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPolygonsBSPtree, __FILE__, __LINE__, "polygons bsptree (rebuilt)" );
-			pPolygonsBSPtree->AddElements( temp, nMaxRecursionLevel );
-		} else {
-			pPolygonsOctree = new Octree<const Triangle*>( *this, bbox, nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPolygonsOctree, __FILE__, __LINE__, "polygons octree (rebuilt)" );
-			pPolygonsOctree->AddElements( temp, nMaxRecursionLevel );
-		}
+		AccelerationConfig cfg;
+		cfg.maxLeafSize            = 4;
+		cfg.binCount               = 32;
+		cfg.sahTraversalCost       = 1.0;
+		cfg.sahIntersectionCost    = 1.0;
+		cfg.doubleSided            = bDoubleSided;
+		cfg.buildSBVH              = false;
+		cfg.sbvhDuplicationBudget  = 0.30;
+
+		pPolygonsBVH = new BVH<const Triangle*>( *this, temp, bbox, cfg );
+		GlobalLog()->PrintNew( pPolygonsBVH, __FILE__, __LINE__, "polygons BVH (built post-deserialize)" );
 	}
 
 	ComputeAreas();

@@ -90,4 +90,23 @@ namespace RISE
 	}
 }
 
+#else
+// When RISE_ENABLE_PROFILING is not defined, the entire translation unit
+// would compile to zero symbols, producing an empty object file.  Under
+// `-flto` that emits empty LLVM bitcode, which `ranlib` then warns about
+// (`librise.a(Profiling.o) has no symbols`).  An anonymous-namespace
+// constant gets eliminated by LTO before reaching the bitcode anchor;
+// only an externally-linked symbol forced through dead-code-elimination
+// is preserved by both clang's optimiser and LTO.
+//
+// Cross-compiler: GCC/Clang use `__attribute__((used))`, MSVC has no
+// equivalent (and doesn't need one — its archive format never warns about
+// empty TUs from `lib.exe`/link.exe).  Guard accordingly so the file
+// builds clean on every supported toolchain.
+namespace RISE {
+#if defined(__GNUC__) || defined(__clang__)
+	__attribute__((used))
+#endif
+	extern "C" const char kRiseProfilingDisabledAnchor = 0;
+}
 #endif

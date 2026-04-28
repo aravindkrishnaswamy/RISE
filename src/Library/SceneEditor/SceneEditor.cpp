@@ -141,27 +141,6 @@ namespace
 		return std::isnan( p.x ) || std::isnan( p.y ) || std::isnan( p.z );
 	}
 
-	// Rodrigues' rotation: rotate v around unit axis k by angle theta.
-	//   v_rot = v cos t + (k x v) sin t + k (k . v) (1 - cos t)
-	static Vector3 RotateAroundAxis( const Vector3& v, const Vector3& k, Scalar theta )
-	{
-		const Scalar c = std::cos( theta );
-		const Scalar s = std::sin( theta );
-		const Scalar dotKV = k.x * v.x + k.y * v.y + k.z * v.z;
-		const Scalar oneMc = 1.0 - c;
-
-		Vector3 cross;
-		cross.x = k.y * v.z - k.z * v.y;
-		cross.y = k.z * v.x - k.x * v.z;
-		cross.z = k.x * v.y - k.y * v.x;
-
-		Vector3 r;
-		r.x = v.x * c + cross.x * s + k.x * dotKV * oneMc;
-		r.y = v.y * c + cross.y * s + k.y * dotKV * oneMc;
-		r.z = v.z * c + cross.z * s + k.z * dotKV * oneMc;
-		return r;
-	}
-
 	// Apply forward camera op to a CameraCommon, given screen-space
 	// pixel deltas in v3a.  `sceneScale` is the characteristic length
 	// of the current scene (bbox-union diagonal) — pan / zoom use

@@ -627,9 +627,22 @@ int Polynomial::SolveQuartic( const Scalar (&coeff)[ 5 ], Scalar (&sol)[ 4 ] )
 	{
 		double d3 = D - l3 * l3;
 		if( d3 <= 0 ) {
+			// `err0` is a "least-error" sentinel: when the primary path
+			// (realcase0 == 1) didn't pick this branch, we want the
+			// identical-alpha alternative to win unconditionally.  Using
+			// `numeric_limits<double>::infinity()` is the textbook
+			// sentinel, but the build enables `-ffast-math`
+			// (-ffinite-math-only), under which `infinity()` is UB.
+			// `numeric_limits<double>::max()` is the right finite-math
+			// equivalent: any real-valued error is < max, so the
+			// alternative still always wins when realcase0 != 1.  The
+			// comparison `err1 < err0` below short-circuits on
+			// `realcase0 != 1` anyway, so this branch is effectively
+			// dead — but keeping the value finite preserves correctness
+			// if a future refactor evaluates it.
 			double err0 = ( realcase0 == 1 )
 				? oqs_calc_err_d( errmin, D, bq, dq )
-				: std::numeric_limits<double>::infinity();
+				: std::numeric_limits<double>::max();
 			double sqrtd3 = sqrt( -d3 );
 			double aq1 = l1, bq1 = l3 + sqrtd3, cq1 = l1, dq1 = l3 - sqrtd3;
 			if( fabs( dq1 ) < fabs( bq1 ) ) dq1 = D / bq1;
