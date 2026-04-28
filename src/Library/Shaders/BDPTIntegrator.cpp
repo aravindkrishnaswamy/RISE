@@ -471,7 +471,7 @@ namespace
 			scratch.pathSegments,
 			false,
 			false,
-			false );
+			true );
 
 		// Flush this path's stats into the shared accumulator.
 		// Single lock acquisition per path; no contention during
@@ -687,6 +687,19 @@ namespace
 				v.guidingRoughness >= 0 ? v.guidingRoughness : 1.0 );
 		}
 
+		// rrAffectsDirectContribution = false here, intentionally asymmetric
+		// with the eye-path call above.  Eye paths build directContribution
+		// inside an accumulating throughput that already carries (1/p_rr)
+		// factors from earlier survivals, so OpenPGL must divide it back
+		// out.  The reversed light-path's directContribution at vertex 1 is
+		// Le itself (bare emission, recovered from lightVerts[0]); no RR has
+		// been applied to it.  The russianRouletteSurvivalProbability stored
+		// on segment v1 is the RR rolled AT v1 before continuing toward v2,
+		// which is unrelated to Le's amplification history.  Setting this to
+		// true makes OpenPGL divide Le by an unrelated p_rr — when v1's RR
+		// happens to survive a low-probability roll, the resulting 1/p_rr
+		// blow-up shows up as a P99 firefly regression (measured ~+66% on
+		// bdpt_jewel_vault).  See docs/skills/variance-measurement.md.
 		pGuidingField->AddPathSegments(
 			lightScratch.pathSegments,
 			false,

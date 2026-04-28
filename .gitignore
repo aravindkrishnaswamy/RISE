@@ -74,3 +74,6 @@ extlib/
 /build/VS2022/Library/Release
 /build/VS2022/Tests/x64
 /build/bin
+/build/VS2022/Library/vcpkg_installed
+/build/VS2022/Tools/x64
+/var_test

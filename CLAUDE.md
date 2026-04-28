@@ -73,6 +73,7 @@ Process skills distilled from prior RISE sessions.  Auto-invoked via
 - [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) — decision tree to run BEFORE reaching for `mutable` / `const_cast` / dropping a `const`.
 - [precision-fix-the-formulation](docs/skills/precision-fix-the-formulation.md) — when you're tempted to widen a `< NEARZERO` check, add a fudge factor, or pick a magic ε to silence speckles / fireflies / FP-noise spurious hits.  Find the cancellation; deflate the polynomial / transform all corners / evaluate both algorithm branches instead of papering over with thresholds.
 - [sms-firefly-diagnosis](docs/skills/sms-firefly-diagnosis.md) — when you see bright outlier pixels in an SMS render, or the user reports "fireflies" in an SMS scene.  Walks the firefly-triggered trace, decodes `attenChain` fingerprints into specific bugs, and lists audit sites (`ManifoldSolver`, `SMSPhotonMap`, PT emission-suppression state) that historically produce spurious contributions.
+- [variance-measurement](docs/skills/variance-measurement.md) — when you need to PROVE a rendering change reduces variance / RMSE rather than just looks different.  K-trial EXR protocol with `bin/tools/HDRVarianceTest.exe`, master-vs-fix stash-rebuild-pop sequencing, both pure variance and RMSE-vs-reference metrics.  Knows the pitfalls (PNG quantization, HDRReader RLE bug, `LNK1104` SolutionDir trap, K too small).
 
 ## Read Next
 

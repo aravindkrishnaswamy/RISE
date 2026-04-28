@@ -579,7 +579,7 @@ namespace
 		void End( PathGuidingField* field )
 		{
 			if( active && field && storage && pglPathSegmentGetNumSegments( storage ) > 0 ) {
-				field->AddPathSegments( storage, false, false, false );
+				field->AddPathSegments( storage, false, false, true );
 			}
 			active = false;
 		}
@@ -692,7 +692,10 @@ namespace
 		const Vector3& direction,
 		const Scalar pdf,
 		const RISEPel& scatteringWeight,
-		const bool isDelta
+		const bool isDelta,
+		const Scalar rrSurvivalProb,
+		const Scalar eta,
+		const Scalar roughness
 		)
 	{
 		if( !segment ) {
@@ -706,7 +709,57 @@ namespace
 		segment->pdfDirectionIn = static_cast<float>( pdf );
 		SetPGLVec3FromRISEPel( segment->scatteringWeight, scatteringWeight );
 		segment->isDelta = isDelta;
-		segment->roughness = isDelta ? 0.0f : 1.0f;
+		segment->roughness = static_cast<float>( roughness );
+		segment->eta = static_cast<float>( eta > NEARZERO ? eta : 1.0 );
+		segment->russianRouletteSurvivalProbability =
+			static_cast<float>( rrSurvivalProb > 0 ? rrSurvivalProb : 1.0 );
+	}
+
+	static inline PGLPathSegmentData* BeginPTIGuidingVolumeSegment(
+		PTIGuidingPathRecorder& recorder,
+		const Point3& scatterPt,
+		const Vector3& wo
+		)
+	{
+		if( !recorder.active || !recorder.storage ) {
+			return 0;
+		}
+
+		PGLPathSegmentData* segment = pglPathSegmentStorageNextSegment( recorder.storage );
+		if( !segment ) {
+			return 0;
+		}
+
+		pglPoint3f( segment->position,
+			static_cast<float>( scatterPt.x ),
+			static_cast<float>( scatterPt.y ),
+			static_cast<float>( scatterPt.z ) );
+
+		pglVec3f( segment->directionOut,
+			static_cast<float>( -wo.x ),
+			static_cast<float>( -wo.y ),
+			static_cast<float>( -wo.z ) );
+
+		// Volumes have no surface normal; OpenPGL needs SOME unit vector
+		// here (it's used to orient the cosine product, which is gated by
+		// volumeScatter=true and shouldn't matter for medium events).
+		pglVec3f( segment->normal, 0.0f, 0.0f, 1.0f );
+
+		pglVec3f( segment->directionIn, 0.0f, 0.0f, 0.0f );
+		segment->volumeScatter = true;
+		segment->pdfDirectionIn = 0.0f;
+		segment->isDelta = false;
+		pglVec3f( segment->scatteringWeight, 0.0f, 0.0f, 0.0f );
+		pglVec3f( segment->transmittanceWeight, 1.0f, 1.0f, 1.0f );
+		pglVec3f( segment->directContribution, 0.0f, 0.0f, 0.0f );
+		segment->miWeight = 1.0f;
+		pglVec3f( segment->scatteredContribution, 0.0f, 0.0f, 0.0f );
+		segment->russianRouletteSurvivalProbability = 1.0f;
+		segment->eta = 1.0f;
+		segment->roughness = 1.0f;
+		segment->regionPtr = 0;
+
+		return segment;
 	}
 
 	static inline void AddPTIGuidingBackgroundSegment(
@@ -960,6 +1013,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 					throughput = throughput * medWeight;
 
+#ifdef RISE_ENABLE_OPENPGL
+					PGLPathSegmentData* volSegment =
+						(guidingRecorder && guidingRecorder->active) ?
+							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
+#endif
+
 					// NEE at scatter point
 					if( pLS )
 					{
@@ -972,6 +1031,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							directContrib = ClampContribution( directContrib,
 								stabilityConfig.directClamp );
 							result = result + directContrib;
+#ifdef RISE_ENABLE_OPENPGL
+							AddPTIGuidingScatteredContribution( volSegment, Ld );
+#endif
 						}
 					}
 
@@ -981,15 +1043,73 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						break;
 					}
 
-					const Vector3 wi = pPhase->Sample( wo, sampler );
-					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					Vector3 wi = pPhase->Sample( wo, sampler );
+					Scalar phasePdf = pPhase->Pdf( wo, wi );
 					if( phasePdf <= NEARZERO ) {
+						break;
+					}
+					Scalar effectivePdf = phasePdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+					// Volume guiding: one-sample MIS between phase function
+					// and learned volume distribution.  Mirrors the surface
+					// guiding path.  Falls through to pure phase sampling
+					// when the field has no volume data at this position.
+					if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+						rc.guidingAlpha > 0 && depth <= rc.maxGuidingDepth )
+					{
+						static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandle;
+						if( rc.pGuidingField->InitVolumeDistribution(
+								volGuideHandle, scatterPt, sampler.Get1D() ) )
+						{
+							const Scalar meanCosine = pPhase->GetMeanCosine();
+							if( fabs( meanCosine ) > 1e-6 ) {
+								rc.pGuidingField->ApplyHGProduct(
+									volGuideHandle, wo, meanCosine );
+							}
+
+							const Scalar alpha = rc.guidingAlpha;
+							const Scalar xiG = sampler.Get1D();
+							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+							{
+								Scalar guidePdf = 0;
+								const Point2 xi2D( sampler.Get1D(), sampler.Get1D() );
+								const Vector3 guidedDir =
+									rc.pGuidingField->SampleVolume( volGuideHandle, xi2D, guidePdf );
+								if( guidePdf > 0 )
+								{
+									wi = guidedDir;
+									phasePdf = pPhase->Pdf( wo, wi );
+									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
+										alpha, guidePdf, phasePdf );
+								}
+							}
+							else
+							{
+								const Scalar guidePdf =
+									rc.pGuidingField->PdfVolume( volGuideHandle, wi );
+								if( guidePdf > 0 ) {
+									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
+										alpha, guidePdf, phasePdf );
+								}
+							}
+						}
+					}
+#endif
+
+					if( effectivePdf <= NEARZERO ) {
 						break;
 					}
 
 					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					throughput = throughput * RISEPel(
-						phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
+					const Scalar volScatterScalar = phaseVal / effectivePdf;
+					RISEPel volScatterThroughput(
+						volScatterScalar, volScatterScalar, volScatterScalar );
+#ifdef RISE_ENABLE_OPENPGL
+					const RISEPel preRRVolScatterThroughput = volScatterThroughput;
+					Scalar volRrSurvivalProb = 1.0;
+#endif
+					throughput = throughput * volScatterThroughput;
 
 					// Russian roulette on volume scatter
 					{
@@ -1005,11 +1125,28 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						}
 						if( rr.survivalProb < 1.0 ) {
 							throughput = throughput * (1.0 / rr.survivalProb);
+#ifdef RISE_ENABLE_OPENPGL
+							volRrSurvivalProb = rr.survivalProb;
+#endif
 						}
 					}
 
+#ifdef RISE_ENABLE_OPENPGL
+					if( volSegment ) {
+						SetPTIGuidingContinuation(
+							volSegment,
+							wi,
+							effectivePdf,
+							preRRVolScatterThroughput,
+							false,
+							volRrSurvivalProb,
+							1.0,
+							1.0 );
+					}
+#endif
+
 					currentRay = Ray( scatterPt, wi );
-					bsdfPdf = phasePdf;
+					bsdfPdf = effectivePdf;
 					considerEmission = true;
 					volumeBounces++;
 					continue;  // Re-enter loop: needsIntersection is still true
@@ -1251,7 +1388,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				}
 
 #ifdef RISE_ENABLE_OPENPGL
-				if( guidingSegment && depth >= 2 &&
+				if( guidingSegment &&
 					ColorMath::MaxValue( rawEmission ) > 0 ) {
 					SetPTIGuidingDirectContribution( guidingSegment, rawEmission, emissionMiWeight );
 				}
@@ -1810,9 +1947,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			}
 
 #ifdef RISE_ENABLE_OPENPGL
-			if( depth >= 2 ) {
-				AddPTIGuidingScatteredContribution( guidingSegment, directAll );
-			}
+			AddPTIGuidingScatteredContribution( guidingSegment, directAll );
 #endif
 		}
 
@@ -1856,9 +1991,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				}
 
 #ifdef RISE_ENABLE_OPENPGL
-				if( depth >= 2 ) {
-					AddPTIGuidingScatteredContribution( guidingSegment, sms.contribution * sms.misWeight );
-				}
+				AddPTIGuidingScatteredContribution( guidingSegment, sms.contribution * sms.misWeight );
 #endif
 			} else if( ff ) {
 				FF_TRACE( "  depth=%u SMS invalid (no path)", depth );
@@ -2129,6 +2262,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					rast.x, rast.y, kTechniqueBSDF );
 			}
 
+#ifdef RISE_ENABLE_OPENPGL
+			// Capture pre-RR throughput so the guiding segment records
+			// scatteringWeight = bsdf*cos/pdf (without RR amplification).
+			// OpenPGL applies RR separately via russianRouletteSurvivalProbability.
+			const RISEPel preRRScatterThroughput = scatterThroughput;
+			Scalar rrSurvivalProb = 1.0;
+#endif
+
 			// Russian roulette
 			if( !skipContinuation )
 			{
@@ -2142,6 +2283,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					skipContinuation = true;
 				} else if( rr.survivalProb < 1.0 ) {
 					scatterThroughput = scatterThroughput * (1.0 / rr.survivalProb);
+#ifdef RISE_ENABLE_OPENPGL
+					rrSurvivalProb = rr.survivalProb;
+#endif
 				}
 			}
 
@@ -2168,12 +2312,24 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 #ifdef RISE_ENABLE_OPENPGL
 			if( guidingSegment && !skipContinuation )
 			{
+				const Scalar segEta =
+					( pS->ior_stack && pS->ior_stack->top() > NEARZERO ) ?
+						pS->ior_stack->top() :
+						( iorStack.top() > NEARZERO ? iorStack.top() : 1.0 );
+				const Scalar segRoughness = pS->isDelta ?
+					Scalar( 0.0 ) :
+					( pS->type == ScatteredRay::eRayDiffuse ?
+						Scalar( 1.0 ) :
+						Scalar( 0.5 ) );
 				SetPTIGuidingContinuation(
 					guidingSegment,
 					traceRay.Dir(),
 					effectiveBsdfPdf,
-					scatterThroughput,
-					pS->isDelta );
+					preRRScatterThroughput,
+					pS->isDelta,
+					rrSurvivalProb,
+					segEta,
+					segRoughness );
 			}
 #endif
 
@@ -2574,6 +2730,12 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 					throughput *= medWeight;
 
+#ifdef RISE_ENABLE_OPENPGL
+					PGLPathSegmentData* volSegment =
+						(guidingRecorder && guidingRecorder->active) ?
+							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
+#endif
+
 					// NEE at scatter point (spectral)
 					if( pLS )
 					{
@@ -2586,6 +2748,9 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 							directContrib = ClampContribution( directContrib,
 								stabilityConfig.directClamp );
 							result += directContrib;
+#ifdef RISE_ENABLE_OPENPGL
+							AddPTIGuidingScatteredContribution( volSegment, RISEPel( Ld ) );
+#endif
 						}
 					}
 
@@ -2595,14 +2760,69 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						break;
 					}
 
-					const Vector3 wi = pPhase->Sample( wo, sampler );
-					const Scalar phasePdf = pPhase->Pdf( wo, wi );
+					Vector3 wi = pPhase->Sample( wo, sampler );
+					Scalar phasePdf = pPhase->Pdf( wo, wi );
 					if( phasePdf <= NEARZERO ) {
+						break;
+					}
+					Scalar effectivePdf = phasePdf;
+
+#ifdef RISE_ENABLE_OPENPGL
+					// Volume guiding: one-sample MIS between phase function
+					// and learned volume distribution.
+					if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
+						rc.guidingAlpha > 0 && depth <= rc.maxGuidingDepth )
+					{
+						static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandleNM;
+						if( rc.pGuidingField->InitVolumeDistribution(
+								volGuideHandleNM, scatterPt, sampler.Get1D() ) )
+						{
+							const Scalar meanCosine = pPhase->GetMeanCosine();
+							if( fabs( meanCosine ) > 1e-6 ) {
+								rc.pGuidingField->ApplyHGProduct(
+									volGuideHandleNM, wo, meanCosine );
+							}
+
+							const Scalar alpha = rc.guidingAlpha;
+							const Scalar xiG = sampler.Get1D();
+							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
+							{
+								Scalar guidePdf = 0;
+								const Point2 xi2D( sampler.Get1D(), sampler.Get1D() );
+								const Vector3 guidedDir =
+									rc.pGuidingField->SampleVolume( volGuideHandleNM, xi2D, guidePdf );
+								if( guidePdf > 0 )
+								{
+									wi = guidedDir;
+									phasePdf = pPhase->Pdf( wo, wi );
+									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
+										alpha, guidePdf, phasePdf );
+								}
+							}
+							else
+							{
+								const Scalar guidePdf =
+									rc.pGuidingField->PdfVolume( volGuideHandleNM, wi );
+								if( guidePdf > 0 ) {
+									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
+										alpha, guidePdf, phasePdf );
+								}
+							}
+						}
+					}
+#endif
+
+					if( effectivePdf <= NEARZERO ) {
 						break;
 					}
 
 					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					throughput *= phaseVal / phasePdf;
+					const Scalar volScatterScalar = phaseVal / effectivePdf;
+#ifdef RISE_ENABLE_OPENPGL
+					const Scalar preRRVolScatterScalar = volScatterScalar;
+					Scalar volRrSurvivalProb = 1.0;
+#endif
+					throughput *= volScatterScalar;
 
 					// Russian roulette on volume scatter
 					{
@@ -2618,11 +2838,28 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 						}
 						if( rr.survivalProb < 1.0 ) {
 							throughput /= rr.survivalProb;
+#ifdef RISE_ENABLE_OPENPGL
+							volRrSurvivalProb = rr.survivalProb;
+#endif
 						}
 					}
 
+#ifdef RISE_ENABLE_OPENPGL
+					if( volSegment ) {
+						SetPTIGuidingContinuation(
+							volSegment,
+							wi,
+							effectivePdf,
+							RISEPel( preRRVolScatterScalar ),
+							false,
+							volRrSurvivalProb,
+							1.0,
+							1.0 );
+					}
+#endif
+
 					currentRay = Ray( scatterPt, wi );
-					bsdfPdf = phasePdf;
+					bsdfPdf = effectivePdf;
 					considerEmission = true;
 					volumeBounces++;
 					continue;
@@ -2685,6 +2922,15 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					}
 
 					result += throughput * envRadiance;
+
+#ifdef RISE_ENABLE_OPENPGL
+					if( guidingRecorder && guidingRecorder->active &&
+						fabs( envRadiance ) > 0 )
+					{
+						AddPTIGuidingBackgroundSegment(
+							*guidingRecorder, currentRay, RISEPel( envRadiance ) );
+					}
+#endif
 				}
 				break;
 			}
@@ -2720,6 +2966,12 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		rs.translucentBounces = translucentBounces;
 		rs.glossyFilterWidth = glossyFilterWidth;
 
+#ifdef RISE_ENABLE_OPENPGL
+		PGLPathSegmentData* guidingSegment =
+			(guidingRecorder && guidingRecorder->active) ?
+				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
+#endif
+
 		// ============================================================
 		// PART 1: Emission (spectral)
 		// ============================================================
@@ -2738,6 +2990,8 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			{
 				Scalar emission = pEmitter->emittedRadianceNM(
 					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
+				const Scalar rawEmission = emission;
+				Scalar emissionMiWeight = 1.0;
 
 				if( bsdfPdf > 0 && ri.pObject )
 				{
@@ -2756,6 +3010,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 							if( pLS && pLS->IsRISActive() )
 							{
 								emission = 0;
+								emissionMiWeight = 0;
 							}
 							else
 							{
@@ -2796,6 +3051,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 								{
 									w_bsdf = PowerHeuristic( bsdfPdf, p_nee );
 								}
+								emissionMiWeight = w_bsdf;
 								emission *= w_bsdf;
 							}
 						}
@@ -2807,6 +3063,13 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				}
 
 				result += throughput * emission;
+
+#ifdef RISE_ENABLE_OPENPGL
+				if( guidingSegment && fabs( rawEmission ) > 0 ) {
+					SetPTIGuidingDirectContribution(
+						guidingSegment, RISEPel( rawEmission ), emissionMiWeight );
+				}
+#endif
 			}
 		}
 
@@ -3189,6 +3452,10 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				ri.pObject, pCurrentMedium, false, pMediumObject );
 			directAllNM = ClampContribution( directAllNM, stabilityConfig.directClamp );
 			result += throughput * directAllNM;
+
+#ifdef RISE_ENABLE_OPENPGL
+			AddPTIGuidingScatteredContribution( guidingSegment, RISEPel( directAllNM ) );
+#endif
 		}
 
 		// SMS for caustics (spectral — per-wavelength IOR for dispersion)
@@ -3218,6 +3485,10 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				Scalar smsContribNM = sms.contribution * sms.misWeight;
 				smsContribNM = ClampContribution( smsContribNM, stabilityConfig.directClamp );
 				result += throughput * smsContribNM;
+
+#ifdef RISE_ENABLE_OPENPGL
+				AddPTIGuidingScatteredContribution( guidingSegment, RISEPel( smsContribNM ) );
+#endif
 			}
 		}
 
@@ -3461,9 +3732,6 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				}
 			}
 
-			const bool collectTrainingSampleNM =
-				rc.pGuidingField && rc.pGuidingField->IsCollectingTrainingSamples() &&
-				GuidingSupportsSurfaceSampling( *pS ) && effectiveBsdfPdf > NEARZERO;
 #endif // RISE_ENABLE_OPENPGL
 
 			bool skipContinuation = fabs( scatterThroughputNM ) <= NEARZERO;
@@ -3475,6 +3743,11 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
 					rast.x, rast.y, kTechniqueBSDF );
 			}
+
+#ifdef RISE_ENABLE_OPENPGL
+			const Scalar preRRScatterThroughputNM = scatterThroughputNM;
+			Scalar rrSurvivalProb = 1.0;
+#endif
 
 			// Russian roulette
 			if( !skipContinuation )
@@ -3489,6 +3762,9 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					skipContinuation = true;
 				} else if( rr.survivalProb < 1.0 ) {
 					scatterThroughputNM /= rr.survivalProb;
+#ifdef RISE_ENABLE_OPENPGL
+					rrSurvivalProb = rr.survivalProb;
+#endif
 				}
 			}
 
@@ -3511,6 +3787,30 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			if( pS->isDelta && bSMSEnabled ) {
 				nextConsiderEmission = false;
 			}
+
+#ifdef RISE_ENABLE_OPENPGL
+			if( guidingSegment && !skipContinuation )
+			{
+				const Scalar segEta =
+					( pS->ior_stack && pS->ior_stack->top() > NEARZERO ) ?
+						pS->ior_stack->top() :
+						( iorStack.top() > NEARZERO ? iorStack.top() : 1.0 );
+				const Scalar segRoughness = pS->isDelta ?
+					Scalar( 0.0 ) :
+					( pS->type == ScatteredRay::eRayDiffuse ?
+						Scalar( 1.0 ) :
+						Scalar( 0.5 ) );
+				SetPTIGuidingContinuation(
+					guidingSegment,
+					traceRay.Dir(),
+					effectiveBsdfPdf,
+					RISEPel( preRRScatterThroughputNM ),
+					pS->isDelta,
+					rrSurvivalProb,
+					segEta,
+					segRoughness );
+			}
+#endif
 
 			if( skipContinuation ) {
 				break;
@@ -3535,12 +3835,6 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			if( traceIorStack != &iorStack ) {
 				iorStack = *traceIorStack;
 			}
-
-#ifdef RISE_ENABLE_OPENPGL
-			// Training sample: collect after next hit/miss
-			// (hitDist is computed when we intersect the next bounce)
-			(void)collectTrainingSampleNM;
-#endif
 		}
 	}
 
