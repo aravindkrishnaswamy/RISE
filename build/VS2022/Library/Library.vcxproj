@@ -60,8 +60,8 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <OmitFramePointers>true</OmitFramePointers>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;C:\Dev\oidn-2.4.1.x64.windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>NDEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;C:\Dev\oidn-2.4.1.x64.windows\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NDEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -91,8 +91,8 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;C:\Dev\oidn-2.4.1.x64.windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;C:\Dev\oidn-2.4.1.x64.windows\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
       <PrecompiledHeader>Use</PrecompiledHeader>

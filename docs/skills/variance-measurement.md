@@ -226,6 +226,32 @@ are the most common signature.
    FALSE` in the test scene.  Same for `adaptive_max_samples 0`
    (uniform SPP only) and `adaptive_threshold #disabled`.
 
+9. **If guided wall time ≈ unguided wall time, guiding probably
+   isn't running at all.**  Sanity-check before believing any
+   variance ratio.  Training (`pathguiding_iterations × pathguiding_spp`
+   passes plus the configured render SPP) should make guided
+   substantially slower than unguided — typically 30%–500%
+   depending on integrator.  When the times match within ~5%, look
+   for an `#ifdef RISE_ENABLE_OPENPGL` that's silently disabled —
+   the VS2022 Library.vcxproj historically did not include the
+   define, so the entire OpenPGL integration was dead code on
+   Windows even though the parser accepted `pathguiding TRUE`.
+   The fix is to add `RISE_ENABLE_OPENPGL` to the
+   `<PreprocessorDefinitions>` of `build/VS2022/Library/Library.vcxproj`
+   (Release + Debug), add `C:\Dev\openpgl-install\include` to
+   `<AdditionalIncludeDirectories>`, and add `openpgl.lib` +
+   `C:\Dev\openpgl-install\lib\` to RISE-CLI's link line.  Verify
+   with: `bin/RISE_Log.txt` should contain a `PathGuidingField::
+   Initialized` line after a guided render.
+
+10. **Build the OpenPGL dependency once via its CMake superbuild**
+    (`cd /c/Dev/openpgl-0.7.1 && mkdir build && cd build && cmake -G
+    "Visual Studio 18 2026" -A x64 -DCMAKE_INSTALL_PREFIX=C:/Dev/openpgl-install
+    -DBUILD_OIDN=OFF -DBUILD_TOOLS=OFF ../superbuild && cmake --build .
+    --config Release`).  The superbuild auto-fetches TBB.  Copy
+    `C:/Dev/openpgl-install/bin/openpgl.dll` and `tbb12.dll` into
+    `bin/` so the built RISE-CLI can find them at runtime.
+
 ## Worked example: OpenPGL fix evaluation
 
 Background: an OpenPGL integration fix changed (a) the
