@@ -73,6 +73,15 @@ namespace RISE
 
 		Type					type;
 
+		// ---------------------------------------------------------------
+		// Surface state mirrored from RayIntersectionGeometric — the fields
+		// in this block PLUS the per-vertex-color block below (vColor,
+		// bHasVertexColor).  When adding any new mirrored field, also
+		// update PathVertexEval::PopulateRIGFromVertex AND extend
+		// tests/BDPTVertexRIGRebuildTest.cpp with a sentinel assertion.
+		// See the contract block above PopulateRIGFromVertex for the
+		// failure mode this protocol prevents.
+		// ---------------------------------------------------------------
 		Point3					position;
 		Vector3					normal;
 		OrthonormalBasis3D		onb;
@@ -80,6 +89,17 @@ namespace RISE
 		Point3					ptObjIntersec;	///< Object-space intersection point (for 3D procedural painters)
 		const IMaterial*		pMaterial;		///< NULL for camera/light endpoints
 		const IObject*			pObject;		///< NULL for camera/light endpoints
+
+		/// Per-vertex color interpolated by the geometry at the hit point
+		/// (linear ROMM RGB; see RISEPel).  Captured during subpath
+		/// generation and replayed into the reconstructed
+		/// RayIntersectionGeometric on connection / merge so the
+		/// VertexColorPainter sees the same color it would on a direct PT
+		/// path.  bHasVertexColor mirrors the intersection field of the
+		/// same name; false for camera / light / medium vertices and for
+		/// surface hits on geometry without per-vertex colors.
+		RISEPel					vColor;
+		bool					bHasVertexColor;
 
 		RISEPel					throughput;		///< Cumulative throughput from subpath origin (alpha_i)
 		Scalar					throughputNM;	///< Spectral throughput for a single wavelength
@@ -153,6 +173,8 @@ namespace RISE
 		ptObjIntersec( Point3( 0, 0, 0 ) ),
 		pMaterial( 0 ),
 		pObject( 0 ),
+		vColor( RISEPel( 0, 0, 0 ) ),
+		bHasVertexColor( false ),
 		throughput( RISEPel( 0, 0, 0 ) ),
 		throughputNM( 0 ),
 		pdfFwd( 0 ),

@@ -683,6 +683,7 @@
     <ClInclude Include="..\..\..\src\Library\Painters\SpectralColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\TexturePainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\UniformColorPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi3DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\AsciiCommandParser.h" />

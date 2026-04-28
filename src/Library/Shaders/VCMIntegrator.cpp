@@ -572,9 +572,10 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.ptPosition = v.position;
 			lv.plane      = 0;
 			lv.flags      = 0;
-			if( v.isDelta        ) lv.flags |= kLVF_IsDelta;
-			if( v.isConnectible  ) lv.flags |= kLVF_IsConnectible;
-			if( v.isBSSRDFEntry  ) lv.flags |= kLVF_IsBSSRDFEntry;
+			if( v.isDelta          ) lv.flags |= kLVF_IsDelta;
+			if( v.isConnectible    ) lv.flags |= kLVF_IsConnectible;
+			if( v.isBSSRDFEntry    ) lv.flags |= kLVF_IsBSSRDFEntry;
+			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
 			lv.normal     = v.normal;
 			// Direction FROM the previous vertex TO this one.
@@ -590,6 +591,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.pMaterial  = v.pMaterial;
 			lv.pObject    = v.pObject;
 			lv.throughput = v.throughput;
+			lv.vColor     = v.vColor;
 			lv.mis        = mis;
 			out.push_back( lv );
 		}

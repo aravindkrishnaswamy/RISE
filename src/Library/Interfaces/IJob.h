@@ -402,6 +402,16 @@ namespace RISE
 									const char* cspace				///< [in] Color space of the given color
 									) = 0;
 
+		//! Adds a painter that returns the per-vertex color interpolated by the
+		//! geometry at the hit point (`ri.vColor`).  Falls back to the supplied
+		//! default for hits on geometry without vertex colors.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddVertexColorPainter(
+									const char* name,				///< [in] Name of the painter
+									const double fallback[3],		///< [in] Default color when no vertex color is present
+									const char* cspace				///< [in] Color space of the fallback color
+									) = 0;
+
 		//! Adds a HDR texture painter
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddHDRTexturePainter(

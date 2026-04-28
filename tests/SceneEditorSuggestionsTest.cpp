@@ -1,6 +1,6 @@
 // SceneEditorSuggestionsTest — exercises the scene grammar, cursor
 // context resolver, and suggestion engine.  Asserts the core contract:
-// all 126 chunk keywords are enumerable, context resolution picks the
+// all 128 chunk keywords are enumerable, context resolution picks the
 // right scope in representative scene fragments, and the suggestion
 // engine returns chunk keywords at scene root and rejects already-
 // authored non-repeatable parameters inside a block.
@@ -29,9 +29,9 @@ void TestGrammarCoverage()
 	std::cout << "GrammarCoverage\n";
 	const SceneGrammar& g = SceneGrammar::Instance();
 	const auto& kws = g.AllChunkKeywords();
-	// 126 chunk types per the parser registry (including legacy alias
+	// 128 chunk types per the parser registry (including legacy alias
 	// mis_pathtracing_shaderop which shares a class with pathtracing_shaderop).
-	EXPECT( kws.size() == 126 );
+	EXPECT( kws.size() == 128 );
 
 	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
 	// Describe() is pure-virtual, so every registered parser has its own
@@ -153,7 +153,7 @@ void TestSuggestChunkKeywordsAtRoot()
 	SuggestionEngine engine;
 	const std::string buf = "RISE ASCII SCENE 5\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
-	EXPECT( sugs.size() == 126 );
+	EXPECT( sugs.size() == 128 );
 	bool found_ambient = false;
 	for( const Suggestion& s : sugs ) {
 		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }

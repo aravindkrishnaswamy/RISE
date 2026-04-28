@@ -250,6 +250,16 @@ void TriangleMeshGeometryIndexed::AddTexCoords( const TexCoordsListType& coords 
 	pCoords.insert( pCoords.end(), coords.begin(), coords.end() );
 }
 
+void TriangleMeshGeometryIndexed::AddColor( const VertexColor& color )
+{
+	pColors.push_back( color );
+}
+
+void TriangleMeshGeometryIndexed::AddColors( const VertexColorsListType& colors )
+{
+	pColors.insert( pColors.end(), colors.begin(), colors.end() );
+}
+
 void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri )
 {
 	indexedtris.push_back( tri );
@@ -531,7 +541,7 @@ BoundingBox TriangleMeshGeometryIndexed::GenerateBoundingBox( ) const
 }
 
 static const char * szSignature = "RISETMGI";
-static const unsigned int cur_version = 4;
+static const unsigned int cur_version = 5;
 //
 // Version history:
 //   1 — original (legacy)
@@ -550,6 +560,15 @@ static const unsigned int cur_version = 4;
 //       Pre-v4 readers cannot load v4 files (different field ordering
 //       + missing bytes); v4 readers handle every prior version via
 //       the per-version Deserialize branches below.
+//   5 — Per-vertex color support (2026-04-28): inserts an optional
+//       colors block immediately after the texture-coordinate block
+//       and before the polygon block.  Layout adds:
+//         * numColors (uint32) — 0 means "no colors"
+//         * numColors × 3 doubles (linear ROMM RGB triplets)
+//       Color indices are tied to vertex position indices, so no
+//       per-triangle color index is written.  v1..v4 readers cannot
+//       load v5 files; v5 readers handle every prior version via the
+//       per-version Deserialize branches below.
 
 void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 {
@@ -606,6 +625,23 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 			const TexCoord&	c = *it;
 			buffer.setDouble( c.x );
 			buffer.setDouble( c.y );
+		}
+	}
+
+	// v5: optional list of per-vertex colors.  numColors == 0 when the
+	// mesh has no color data.  Each color is three doubles in the
+	// engine's working color space (linear ROMM RGB; see RISEPel).
+	{
+		buffer.ResizeForMore( static_cast<unsigned int>(sizeof(double) * 3 * pColors.size() + sizeof( unsigned int )) );
+
+		buffer.setUInt( static_cast<unsigned int>(pColors.size()) );
+
+		MyColorsList::const_iterator it;
+		for( it = pColors.begin(); it != pColors.end(); ++it ) {
+			const VertexColor& c = *it;
+			buffer.setDouble( c.r );
+			buffer.setDouble( c.g );
+			buffer.setDouble( c.b );
 		}
 	}
 
@@ -763,6 +799,25 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		}
 
 		GlobalLog()->PrintEx( eLog_Info, "  TriangleMeshGeometryIndexed::Deserialize:: Read %d texture co-ordinates", numcoords );
+	}
+
+	// v5: optional per-vertex colors.  Pre-v5 files do not have this
+	// block; pColors stays empty and the vertex-color painter will fall
+	// back to its configured default for any consumer of those meshes.
+	pColors.clear();
+	if( version >= 5 ) {
+		unsigned int numColorsRead = buffer.getUInt();
+		if( numColorsRead > 0 ) {
+			pColors.reserve( numColorsRead );
+			for( unsigned int i = 0; i < numColorsRead; ++i ) {
+				VertexColor c;
+				c.r = buffer.getDouble();
+				c.g = buffer.getDouble();
+				c.b = buffer.getDouble();
+				pColors.push_back( c );
+			}
+		}
+		GlobalLog()->PrintEx( eLog_Info, "  TriangleMeshGeometryIndexed::Deserialize:: Read %u vertex colors", numColorsRead );
 	}
 
 	// Get the list of indexed triangles, convert them to "pointer polygons"

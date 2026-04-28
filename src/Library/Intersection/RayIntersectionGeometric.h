@@ -17,6 +17,7 @@
 
 #include "../Utilities/Ray.h"
 #include "../Utilities/OrthonormalBasis3D.h"
+#include "../Utilities/Color/Color.h"
 
 namespace RISE
 {
@@ -95,6 +96,14 @@ namespace RISE
 		//! fall back to IGeometry::ComputeSurfaceDerivatives.
 		SurfaceDerivativesInfo		derivatives;
 
+		//! Per-vertex color interpolated at the hit point.  Populated only
+		//! by triangle meshes that carry a vertex-color array (loaded from
+		//! PLY, RAW2, etc.).  Consumers (the VertexColorPainter, primarily)
+		//! must check `bHasVertexColor` before reading `vColor` — when
+		//! false, the painter falls back to its configured default color.
+		RISEPel						vColor;
+		bool						bHasVertexColor;
+
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),
@@ -102,7 +111,8 @@ namespace RISE
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
 		  pCustom( 0 ),
-		  glossyFilterWidth( 0 )
+		  glossyFilterWidth( 0 ),
+		  bHasVertexColor( false )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -126,7 +136,9 @@ namespace RISE
 		  onb( r.onb ),
 		  pCustom( r.pCustom ),
 		  glossyFilterWidth( r.glossyFilterWidth ),
-		  derivatives( r.derivatives )
+		  derivatives( r.derivatives ),
+		  vColor( r.vColor ),
+		  bHasVertexColor( r.bHasVertexColor )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -150,6 +162,8 @@ namespace RISE
 			ptObjExit = r.ptObjExit;
 			onb = r.onb;
 			glossyFilterWidth = r.glossyFilterWidth;
+			vColor = r.vColor;
+			bHasVertexColor = r.bHasVertexColor;
 
 			safe_release( pCustom );
 			pCustom = r.pCustom;

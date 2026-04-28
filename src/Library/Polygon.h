@@ -17,6 +17,7 @@
 
 #include <vector>
 #include "Utilities/Math3D/Math3D.h"
+#include "Utilities/Color/Color.h"
 
 namespace RISE
 {
@@ -151,10 +152,16 @@ namespace RISE
 	typedef Point3							Vertex;
 	typedef Vector3							Normal;
 	typedef Point2							TexCoord;
+	//! Per-vertex color stored in the engine's working color space
+	//! (linear ROMM RGB; see RISEPel in Utilities/Color/Color.h).
+	//! Loaders are responsible for converting from the source color
+	//! space (typically sRGB for PLY/Blender exports) at load time.
+	typedef RISEPel							VertexColor;
 
 	typedef std::vector<Vertex>				VerticesListType;
 	typedef std::vector<Normal>				NormalsListType;
 	typedef std::vector<TexCoord>			TexCoordsListType;
+	typedef std::vector<VertexColor>		VertexColorsListType;
 
 	typedef std::vector<BezierPatch>		BezierPatchesListType;
 }

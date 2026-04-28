@@ -120,6 +120,39 @@ namespace RISE
 			const VerticesListType& newVertices,
 			const NormalsListType&  newNormals ) = 0;
 	};
+
+	//! Sub-interface that adds optional per-vertex color storage to
+	//! ITriangleMeshGeometryIndexed.  Color indices are tied to vertex
+	//! position indices (every position index `i` maps to the same color
+	//! index `i`) — the convention every common exporter (PLY, 3DS, RAW2,
+	//! FBX, glTF COLOR_0) actually produces, so adding a fourth `iColors`
+	//! per triangle would just bloat `PointerTriangle` (the BVH leaf
+	//! payload) for no exporter-driven benefit.
+	//!
+	//! Loaders that want to attach colors `dynamic_cast` to this
+	//! interface; if the cast fails the loader should drop colors with a
+	//! warning rather than fail the load.  Adding it as a separate
+	//! interface (instead of new pure virtuals on the v1 interface)
+	//! preserves the v1 vtable layout for any out-of-tree subclass.
+	class ITriangleMeshGeometryIndexed2 : public virtual ITriangleMeshGeometryIndexed
+	{
+	protected:
+		ITriangleMeshGeometryIndexed2(){};
+		virtual ~ITriangleMeshGeometryIndexed2(){};
+
+	public:
+		//! Adds a single per-vertex color (linear ROMM RGB; see RISEPel).
+		virtual void AddColor( const VertexColor& color ) = 0;
+
+		//! Adds a list of per-vertex colors.
+		virtual void AddColors( const VertexColorsListType& colors ) = 0;
+
+		/// \return The number of stored vertex colors (0 if not present)
+		virtual unsigned int numColors() const = 0;
+
+		/// \return The vertex-color array; may be empty.
+		virtual VertexColorsListType const& getColors() const = 0;
+	};
 }
 
 #endif
