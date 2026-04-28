@@ -306,6 +306,46 @@ unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
 
 	// Refit the BVH (bottom-up AABB recompute + filter + BVH4 redo).
 	const unsigned int refitMs = pPtrBVH->Refit();
+
+	// Tier C3 SAH-degradation safeguard: refit preserves topology but
+	// per-node bboxes can grow as keyframed vertices move.  When the
+	// SAH cost exceeds 2× the freshly-built tree's, ray-traversal
+	// expected cost has more than doubled — refit is no longer
+	// adequate and we should rebuild from scratch.  Free the BVH and
+	// reconstruct from ptr_polygons; the caller (DisplacedGeometry's
+	// RefreshMeshVertices observer) sees the original refitMs return,
+	// not the rebuild time, but that's fine — the rebuild is logged
+	// and the caller's perf budget already had to accept the worse
+	// of refit-time and degradation cost.
+	if( pPtrBVH->SAHDegradationRatio() > 2.0 ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"TriangleMeshGeometryIndexed::UpdateVertices:: SAH ratio %.2fx > 2.0, "
+			"rebuilding BVH from polygon data instead of refit",
+			(double)pPtrBVH->SAHDegradationRatio() );
+
+		safe_release( pPtrBVH );
+
+		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+		                  Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY ) );
+		std::vector<const PointerTriangle*> temp;
+		for( MyPointerTriangleList::iterator pi = ptr_polygons.begin(); pi != ptr_polygons.end(); ++pi ) {
+			temp.push_back( &(*pi) );
+		}
+		for( MyPointsList::const_iterator mi = pPoints.begin(); mi != pPoints.end(); ++mi ) {
+			bbox.Include( *mi );
+		}
+
+		AccelerationConfig cfg;
+		cfg.maxLeafSize         = 4;
+		cfg.binCount            = 32;
+		cfg.sahTraversalCost    = 1.0;
+		cfg.sahIntersectionCost = 1.0;
+		cfg.doubleSided         = bDoubleSided;
+
+		pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg );
+		GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (rebuilt after SAH-degradation)" );
+	}
+
 	return refitMs;
 }
 
