@@ -62,8 +62,8 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>RISE.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;C:\Dev\oidn-2.4.1.x64.windows\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>RISE.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;C:\Dev\oidn-2.4.1.x64.windows\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
