@@ -144,6 +144,7 @@ and do not leave them behind when you finish a task.
 ## Noise To Ignore
 
 - `.claude/` is local agent workspace state, not project source.
+- `.agents/` is local agent workspace state, not project source.
 - `rendered/` is output, not source.
 - `.DS_Store` files are incidental.
 - Untracked `*.o` files or `* 2.o` files under `src/Library` are local build artifacts and not source-of-truth code.

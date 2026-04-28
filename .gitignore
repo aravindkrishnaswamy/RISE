@@ -13,6 +13,7 @@ Xcuserdata/
 RISE_Log.txt
 *.mov
 .claude/
+.agents/
 extlib/
 
 # Visual studio on Windows

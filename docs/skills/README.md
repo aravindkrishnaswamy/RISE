@@ -42,6 +42,9 @@ here.  The source of truth is this directory; the shim stays thin.
 Other LLM tools (Cursor, Aider, Codex CLI, etc.) should be configured
 to read `docs/skills/` at session start via their own equivalent
 mechanism, or follow references from [AGENTS.md](../../AGENTS.md).
+Do not mirror full skill bodies into tool-specific directories such as
+`.agents/`; those locations are local harness state and should only
+point back here when a tool requires a shim.
 
 ## Available Skills
 
