@@ -324,6 +324,27 @@ Implementation (~30 min, in this PR):
 
 Defensive: kicks in only on truly-pathological keyframed animation.  Static renders and modest-amplitude animation never hit the threshold.  The 2.0× threshold is conservative — the BVH's actual cost-vs-rebuild tradeoff probably favours rebuild even at 1.5×, but at 2.0× the case is unambiguous.
 
-### C4 — Compressed BVH4 nodes: **next up**
+### C4 — Compressed BVH4 nodes: **investigated, regressed, reverted**
 
-Defer to its own PR.  ~1–2 days to implement 6-byte quantised child AABBs (vs current 32-byte fp32) — a ~5× node-memory reduction.  More important than C1 because the BVH4 node count on xyzdragon is ~2.3M × 128 B = ~295 MB, which is bigger than the float filter and the dominant L3-overflow source on huge meshes.
+The proposal: replace the 96-byte fp32 child-AABB block in each `BVH4Node` with 24 bytes of uint8 quantised child AABBs (3 mins + 3 maxes per child × 4 children) plus 24 bytes of inline fp32 nodeMin/nodeMax as the dequantisation reference.  Net per-node: 128 → 80 bytes (1.6×, not the docs' 5× — the original framing was optimistic about how aggressively the children could be compressed without a precision crisis).
+
+**Implementation** (full, ~440 lines of changes in `BVH.h`): redesigned `BVH4Node` struct, conservative-rounding quantisation helpers (`QuantiseFloor` rounds mins down, `QuantiseCeil` rounds maxes up — guarantees the dequantised AABB always encloses the true AABB, so the slab test can never reject a true-positive hit), three-phase `CollapseRecursive` (Phase 1 gather candidate fp32 AABBs + recurse, Phase 2 compute union for the node's nodeMin/nodeMax, Phase 3 quantise each child relative to it), updated `RayBox4` SIMD kernel for NEON / SSE2 / scalar with in-register dequantisation via fused multiply-add.
+
+**Correctness**: pixel diff vs pre-C4 baseline matched the path-tracer's run-to-run noise floor (max 0.86 vs 0.85 noise; mean 0.005 vs 0.007 noise; 29.68% pixels >1e-5 vs 29.70% noise floor).  No correctness regression.
+
+**Performance** (N=5 each, `Total Rasterization Time`):
+
+| Mesh | Pre-C4 | C4 | Δ |
+|---|---|---|---|
+| xyzdragon (7.2M tris) | 14.27 ± 0.67s | 15.57 ± 0.74s | **+9.1% (slower)** |
+| sss_comparison_dragon (47.8K tris) | 43.90 ± 0.87s | 48.05 ± 0.64s | **+9.4% (slower)** |
+
+**Why it regressed**: 8-bit quantisation gives 1 part in 255 of the node range as precision.  In a SAH BVH the parent-to-leaf size ratio is large — a 1m parent box might contain a 1mm leaf bbox.  At 1/255 of 1m = 4mm quantum, each axis of a 1mm leaf gets inflated to ~4mm — a **4× linear / 64× volume inflation**.  The slab test then false-positives at a much higher rate, sending many more rays into the leaf double-precision cert that they wouldn't have visited under fp32 traversal.  The cost of those extra leaf intersections dominates the modest cache-pressure relief.
+
+**Decision: revert.**  The 5× memory reduction the docs cited isn't achievable at uint8 precision without paying for it elsewhere.  Two paths could plausibly recover the win, but neither was attempted in this round:
+
+- **16-bit quantisation** (uint16 per axis): 1/65535 precision → ~30 µm quantum on a 1m parent, well below leaf-size scale.  Memory: 12 bytes/child × 4 = 48 bytes for child AABBs (vs 96 fp32) → **1.4× node-memory reduction**.  Modest but plausibly net-positive on huge meshes if the cache pressure relief outweighs the slightly more expensive uint16→fp32 dequant.
+
+- **Hybrid scheme**: fp32 child AABBs at the leaf level (where precision matters most), uint8 quantised at upper levels (where parent ranges are large enough that 1/255 is fine).  More complex; doc + implementation cost likely outpaces the savings.
+
+If a future workload makes the BVH4 footprint a real bottleneck (it currently isn't — the renderer is fine on xyzdragon with fp32 nodes), revisit option (B).  For now, **plain fp32 BVH4 nodes are the best balance** of precision and traversal speed for this codebase's typical scenes.
