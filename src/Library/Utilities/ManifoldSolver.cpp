@@ -3385,18 +3385,36 @@ ManifoldResult ManifoldSolver::Solve(
 			const Scalar minReliableSegment = 0.01;
 			const unsigned int k = static_cast<unsigned int>( specularChain.size() );
 			bool tooShort = false;
+			// tooShortIdx / tooShortDist exist only to feed the
+			// SMS_TRACE_DIAGNOSTIC histogram + log.  Wrap declarations
+			// AND assignments under the same #if so the variables don't
+			// exist (and aren't unused-but-set) in production builds.
+#if SMS_TRACE_DIAGNOSTIC
 			unsigned int tooShortIdx = 0;
 			Scalar tooShortDist = 0;
+#endif
 			for( unsigned int i = 0; i < k && !tooShort; i++ )
 			{
 				const Point3 prevPos = (i == 0) ? shadingPoint : specularChain[i-1].position;
 				const Scalar d = Point3Ops::Distance( prevPos, specularChain[i].position );
-				if( d < minReliableSegment ) { tooShort = true; tooShortIdx = i; tooShortDist = d; }
+				if( d < minReliableSegment ) {
+					tooShort = true;
+#if SMS_TRACE_DIAGNOSTIC
+					tooShortIdx = i;
+					tooShortDist = d;
+#endif
+				}
 			}
 			if( k > 0 && !tooShort )
 			{
 				const Scalar d = Point3Ops::Distance( specularChain[k-1].position, emitterPoint );
-				if( d < minReliableSegment ) { tooShort = true; tooShortIdx = k; tooShortDist = d; }
+				if( d < minReliableSegment ) {
+					tooShort = true;
+#if SMS_TRACE_DIAGNOSTIC
+					tooShortIdx = k;
+					tooShortDist = d;
+#endif
+				}
 			}
 			if( tooShort )
 			{

@@ -24,11 +24,6 @@ static int g_fails = 0;
 
 #define EXPECT(cond) do { if(!(cond)) { std::cerr << "FAIL " << __FILE__ << ":" << __LINE__ << " " #cond << std::endl; ++g_fails; } } while(0)
 
-static std::size_t FindStr( const std::string& s, const char* needle )
-{
-	return s.find( needle );
-}
-
 void TestGrammarCoverage()
 {
 	std::cout << "GrammarCoverage\n";

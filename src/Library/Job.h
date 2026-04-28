@@ -920,10 +920,7 @@ namespace RISE
 							const unsigned int numnormals,			///< [in] Number of normals
 							const unsigned int numcoords,			///< [in] Number of texture co-ordinate points
 							const unsigned int numfaces,			///< [in] Number of faces
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							);
 
@@ -932,10 +929,7 @@ namespace RISE
 		bool Add3DSTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* filename,					///< [in] The 3DS file to load
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							);
 
@@ -944,10 +938,7 @@ namespace RISE
 		bool AddRAWTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+							const bool double_sided					///< [in] Are the triangles double sided ?
 							);
 
 		//! Creates a triangle mesh geometry from a file of version 2
@@ -957,10 +948,7 @@ namespace RISE
 		bool AddRAW2TriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							);
 
@@ -969,10 +957,7 @@ namespace RISE
 		bool AddPLYTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool bInvertFaces,				///< [in] Should the faces be inverted?
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							);
@@ -1014,10 +999,7 @@ namespace RISE
 							const unsigned int  detail,
 							const char*         displacement,
 							const Scalar        disp_scale,
-							const unsigned int  max_polys,
-							const unsigned char max_recur,
 							const bool          double_sided,
-							const bool          use_bsp,
 							const bool          face_normals );
 
 		//

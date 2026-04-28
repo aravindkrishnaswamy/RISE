@@ -34,7 +34,13 @@ endif
 # options for the linker
 CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) -flto
 
-CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -Wall -pedantic -Wno-c++11-long-long
+# C++17 standard pinned explicitly: the codebase uses [[nodiscard]] et al.
+# Without -std=, Apple clang's default standard varies by toolchain version
+# (it became gnu++17 in Xcode 15+, but earlier was gnu++14), and -pedantic
+# treats C++17 attributes as extensions when the standard isn't C++17,
+# producing `-Wc++17-attribute-extensions` warnings.  Linux already pins
+# gnu++17 in Config.Linux; OSX matches.
+CXXFLAGS = -O3 -flto -ffast-math -funroll-loops -std=gnu++17 -Wall -pedantic -Wno-c++11-long-long
 
 # For debugging information
 # CXXFLAGS = -ggdb

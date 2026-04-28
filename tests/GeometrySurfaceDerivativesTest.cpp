@@ -342,7 +342,7 @@ static void TestInfinitePlane()
 static TriangleMeshGeometryIndexed* BuildFlatQuadMesh()
 {
 	TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed(
-		10, 8, false, false, /*bUseFaceNormals=*/false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 	m->BeginIndexedTriangles();
 	m->AddVertex( Point3( 0, 0, 0 ) );
 	m->AddVertex( Point3( 1, 0, 0 ) );
@@ -373,7 +373,7 @@ static TriangleMeshGeometryIndexed* BuildFlatQuadMesh()
 static TriangleMeshGeometryIndexed* BuildCurvedQuadMesh()
 {
 	TriangleMeshGeometryIndexed* m = new TriangleMeshGeometryIndexed(
-		10, 8, false, false, /*bUseFaceNormals=*/false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 	m->BeginIndexedTriangles();
 	m->AddVertex( Point3( 0, 0, 0 ) );
 	m->AddVertex( Point3( 1, 0, 0 ) );
@@ -575,7 +575,7 @@ static void TestDisplacedGeometry()
 	TestConstDisplacement* pZero = new TestConstDisplacement( 0.0 );
 	DisplacedGeometry* pDisp = new DisplacedGeometry(
 		pBase, 32, pZero, 0.0,
-		10, 8, false, true, false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 
 	CheckViaRay( *pDisp, Point3( 3, 0.5, 0 ), Vector3( -1, 0, 0 ),
 		"displaced-sphere (zero disp)" );
@@ -606,7 +606,7 @@ static void TestDisplacedGeometry()
 	TestSinDisplacement* pSin = new TestSinDisplacement( 1.0 );
 	DisplacedGeometry* pDisp2 = new DisplacedGeometry(
 		pBase2, 32, pSin, 0.2,
-		10, 8, false, true, false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 
 	CheckViaRay( *pDisp2, Point3( 3, 0.5, 0.3 ), Vector3( -1, 0, 0 ),
 		"displaced-sphere (sin disp)" );

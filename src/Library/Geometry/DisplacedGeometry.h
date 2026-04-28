@@ -41,10 +41,7 @@ namespace RISE
 			const IFunction2D*               m_pDisplacement;
 			Scalar                           m_dispScale;
 			unsigned int                     m_detail;
-			unsigned int                     m_maxPolysPerNode;
-			unsigned char                    m_maxRecursionLevel;
 			bool                             m_bDoubleSided;
-			bool                             m_bUseBSP;
 			bool                             m_bUseFaceNormals;
 			ITriangleMeshGeometryIndexed*    m_pMesh;
 
@@ -68,16 +65,21 @@ namespace RISE
 			void BuildMesh();
 			void DestroyMesh();
 
+			// Tier 1 §3 animation refit path: re-tessellate base + re-apply
+			// displacement, then call m_pMesh->UpdateVertices() to swap
+			// vertex/normal storage in place and refit the BVH instead of
+			// rebuilding.  Falls back to DestroyMesh+BuildMesh if there
+			// is no current mesh or topology has changed (which is not
+			// currently possible — m_detail is fixed at construction).
+			void RefreshMeshVertices();
+
 		public:
 			DisplacedGeometry(
 				IGeometry*          pBase,
 				const unsigned int  detail,
 				const IFunction2D*  displacement,
 				const Scalar        disp_scale,
-				const unsigned int  max_polys_per_node,
-				const unsigned char max_recursion_level,
 				const bool          bDoubleSided,
-				const bool          bUseBSP,
 				const bool          bUseFaceNormals );
 
 			DisplacedGeometry( const DisplacedGeometry& ) = delete;

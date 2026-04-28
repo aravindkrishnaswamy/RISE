@@ -211,6 +211,9 @@
     <Filter Include="Volume">
       <UniqueIdentifier>{73d66bf8-a711-44fa-b290-ebf8e3968cb7}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Acceleration">
+      <UniqueIdentifier>{a1ce1e10-acce-4e10-a000-000000000a01}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp">
@@ -2368,6 +2371,12 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\pch.h" />
     <ClInclude Include="..\..\..\src\Library\Version.h" />
+    <ClInclude Include="..\..\..\src\Library\Acceleration\BVH.h">
+      <Filter>Acceleration</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Acceleration\AccelerationConfig.h">
+      <Filter>Acceleration</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\BSPTreeSAH.h">
       <Filter>BSPTree</Filter>
     </ClInclude>

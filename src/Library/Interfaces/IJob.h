@@ -845,7 +845,9 @@ namespace RISE
 										const double minorRad		///< [in] Minor radius (as a percentage of the major radius)
 										) = 0;
 
-		//! Adds a triangle mesh geometry from the pointers passed it
+		//! Adds a triangle mesh geometry from the pointers passed it.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+		//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddIndexedTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
@@ -859,60 +861,48 @@ namespace RISE
 							const unsigned int numnormals,			///< [in] Number of normals
 							const unsigned int numcoords,			///< [in] Number of texture co-ordinate points
 							const unsigned int numfaces,			///< [in] Number of faces
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Adds a triangle mesh geometry from a 3DS file
+		//! Adds a triangle mesh geometry from a 3DS file.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool Add3DSTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* filename,					///< [in] The 3DS file to load
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Adds a triangle mesh geometry from a raw file
+		//! Adds a triangle mesh geometry from a raw file.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
 		/// \return TRUE if successful, FALSE otherwise
 		/// \todo this is deprecated and should be removed
 		virtual bool AddRAWTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+							const bool double_sided					///< [in] Are the triangles double sided ?
 							) = 0;
 
-		//! Creates a triangle mesh geometry from a file of version 2
-		//! The format of the file for this version is different from the one
-		//! above
+		//! Creates a triangle mesh geometry from a file of version 2.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
+		//! The format of the file for this version is different from the one above.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddRAW2TriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
-		//! Creates a triangle mesh geometry from a ply file
+		//! Creates a triangle mesh geometry from a ply file.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPLYTriangleMeshGeometry(
 							const char* name,						///< [in] Name of the geometry
 							const char* szFileName,					///< [in] Name of the file to load from
-							const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-							const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 							const bool double_sided,				///< [in] Are the triangles double sided ?
-							const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 							const bool bInvertFaces,				///< [in] Should the faces be inverted?
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
@@ -955,6 +945,8 @@ namespace RISE
 		//! tessellating it via IGeometry::TessellateToMesh and displacing vertices along the
 		//! surface normal by displacement(u,v)*disp_scale.  Returns false if the base cannot be
 		//! tessellated (e.g. InfinitePlaneGeometry) — the whole scene should then fail to parse.
+		//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+		//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddDisplacedGeometry(
 							const char*         name,				///< [in] Name of the geometry to register
@@ -962,10 +954,7 @@ namespace RISE
 							const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
 							const char*         displacement,		///< [in] Name of registered IFunction2D, or NULL for pure tessellation
 							const Scalar        disp_scale,			///< [in] Displacement scale factor
-							const unsigned int  max_polys,			///< [in] Max polygons per acceleration-structure node
-							const unsigned char max_recur,			///< [in] Max acceleration-structure depth
 							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
-							const bool          use_bsp,			///< [in] Use BSP-SAH tree (recommended for dense displaced meshes)
 							const bool          face_normals		///< [in] Use face normals instead of topologically re-averaged vertex normals
 							) = 0;
 

@@ -514,33 +514,27 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a triangle mesh geometry object
+	//! Creates a triangle mesh geometry object.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometry(
 						ITriangleMeshGeometry** ppi,			///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+						const bool double_sided					///< [in] Are the triangles double sided ?
 						)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new TriangleMeshGeometry( max_polys, max_recur, double_sided, use_bsp );
+		(*ppi) = new TriangleMeshGeometry( double_sided );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "triangle mesh" );
 		return true;
 	}
 
-	//! Creates an indexed triangle mesh geometry object
+	//! Creates an indexed triangle mesh geometry object.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometryIndexed(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp,					///< [in] Use a BSP tree rather than an Octree
 						const bool face_normals				///< [in] Use face normals rather than vertex normals
 						)
 	{
@@ -548,7 +542,7 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new TriangleMeshGeometryIndexed( max_polys, max_recur, double_sided, use_bsp, face_normals );
+		(*ppi) = new TriangleMeshGeometryIndexed( double_sided, face_normals );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "triangle mesh indexed" );
 		return true;
 	}
@@ -666,10 +660,7 @@ namespace RISE
 						const unsigned int  detail,
 						IFunction2D*        displacement,
 						const Scalar        disp_scale,
-						const unsigned int  max_polys,
-						const unsigned char max_recur,
 						const bool          double_sided,
-						const bool          use_bsp,
 						const bool          face_normals
 						)
 	{
@@ -685,7 +676,7 @@ namespace RISE
 
 		DisplacedGeometry* pGeom = new DisplacedGeometry(
 			pBase, detail, displacement, disp_scale,
-			max_polys, max_recur, double_sided, use_bsp, face_normals );
+			double_sided, face_normals );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
 
 		if( !pGeom->IsValid() ) {

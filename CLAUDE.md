@@ -27,6 +27,16 @@ When you add **or remove** any `.cpp` / `.h` under `src/Library/`, update every 
 
 Full rules, exclusions, and related update surfaces (API, parser chunks, tests, scenes) are in [AGENTS.md](AGENTS.md) → "Change Checklist".
 
+## Compiler warnings are bugs
+
+Don't introduce warnings.  Don't leave them.  Don't suppress them with
+pragmas or `-Wno-*` flags — fix the root cause.  Both the `make` build
+and the Xcode `RISE-GUI` build must come up warning-free on a *clean*
+rebuild before you call a task done — incremental builds hide warnings
+on files that didn't recompile.  Full rationale, the principled fix per
+warning kind, and the verification commands are in [AGENTS.md](AGENTS.md) →
+"Compiler Warnings Are Bugs".
+
 ## High-Value Facts
 
 - `branching_threshold` (StabilityConfig, default 0.5): normalized throughput gate for subpath splitting at multi-lobe delta vertices (Fresnel dielectric etc.). Parameter on all rasterizer chunks (PT/BDPT/VCM pel & spectral, MLT). `0` = always branch at first encounter, `1` = never branch. Live on RGB + spectral NM for both eye and light subpaths across PT/BDPT/VCM — the photon-store build also branches and renormalizes `mLightSubPathCount` with actual `pathsShot`. MLT forces `1.0` (Markov-chain proposal assumes single-subpath). The retired `branch` param on PathTracing/DistributionTracing shader-ops is silently ignored by the parser; photon tracers keep their own `bBranch` (out of scope).

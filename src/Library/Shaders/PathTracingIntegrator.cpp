@@ -3650,7 +3650,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 	const Scalar heroNM = swl.HeroLambda();
 
-	Scalar throughputHero = 1.0;
+	// throughputComp[0] is the hero-wavelength throughput; throughputComp[1..N-1]
+	// are companion wavelengths.  An earlier draft kept a separate
+	// `throughputHero` mirror but every read site now uses throughputComp[0]
+	// directly — the mirror was dropped to remove an always-equal bookkeeping
+	// pair that the compiler (rightly) flagged as set-but-not-used.
 	Scalar throughputComp[SampledWavelengths::N];
 	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 		throughputComp[w] = 1.0;
@@ -3762,7 +3766,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 							currentRay, ri.geometric.range, swl.lambda[w] );
 						throughputComp[w] *= Tr;
 					}
-					throughputHero = throughputComp[0];
 				}
 			}
 
@@ -4200,7 +4203,6 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 			throughputComp[w] *= compScatterNM[w];
 		}
-		throughputHero = throughputComp[0];
 		importance = rs2.importance;
 		bsdfPdf = effectiveBsdfPdf;
 		considerEmission = nextConsiderEmission;

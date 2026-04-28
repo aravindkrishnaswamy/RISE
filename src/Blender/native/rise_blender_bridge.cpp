@@ -829,10 +829,7 @@ namespace
 			mesh.num_normals,
 			mesh.num_uvs,
 			mesh.num_triangles,
-			24,
-			24,
 			mesh.double_sided != 0,
-			true,
 			mesh.use_face_normals != 0 ) )
 		{
 			write_error( error_message, error_message_size, "Failed to add indexed triangle mesh geometry to the RISE job" );

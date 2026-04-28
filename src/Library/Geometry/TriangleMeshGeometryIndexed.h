@@ -17,16 +17,16 @@
 
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "Geometry.h"
-#include "../Octree.h"
-#include "../BSPTreeSAH.h"
+#include "../Acceleration/BVH.h"
+#include "../Acceleration/AccelerationConfig.h"
 #include <vector>
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class TriangleMeshGeometryIndexed : 
-			public virtual ITriangleMeshGeometryIndexed, 
+		class TriangleMeshGeometryIndexed :
+			public virtual ITriangleMeshGeometryIndexed,
 			public virtual Geometry,
 			public virtual TreeElementProcessor<const PointerTriangle*>
 		{
@@ -52,16 +52,16 @@ namespace RISE
 			MyCoordsList			pCoords;			// The list of coords
 			MyPointerTriangleList	ptr_polygons;		// The list of pointer triangles
 
-			unsigned int			nMaxPerOctantNode;	// Maximum number of polygons per octant node
-			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
-
 			bool					bDoubleSided;		// Are the polygons all double sided?
-			bool					bUseBSP;			// Are we using BSP trees ?
-			
 			bool					bUseFaceNormals;	// Are we going to use computed face normals rather than interpolated vertex normals?
 
-			Octree<const PointerTriangle*>*		pPtrOctree;
-			BSPTreeSAH<const PointerTriangle*>*	pPtrBSPtree;
+			// BVH is the sole active acceleration structure (Tier A2 cleanup,
+			// 2026-04-27).  Legacy BSP/octree members were dropped along with
+			// the on-disk v4 format that stops emitting BSP/octree bytes.
+			// Pre-A2 v1/v2/v3 .risemesh files still load — the legacy bytes
+			// are read into Deserialize-local temporaries, validated, and
+			// discarded, never reaching this class as state.
+			BVH<const PointerTriangle*>*		pPtrBVH;
 
 			TriangleAreasList		areas;				// Areas of the triangles
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas
@@ -79,73 +79,89 @@ namespace RISE
 			void ComputeAreas();
 
 		public:
-			TriangleMeshGeometryIndexed( 
-				const unsigned int max_polys_per_node, 
-				const unsigned char max_recursion_level, 
+			TriangleMeshGeometryIndexed(
 				const bool bDoubleSided_,
-				const bool bUseBSP,
 				const bool bUseFaceNormals
 				);
 
 			// From ISerializable interface
-			void Serialize( IWriteBuffer& buffer ) const;
-			void Deserialize( IReadBuffer& buffer );
+			void Serialize( IWriteBuffer& buffer ) const override;
+			void Deserialize( IReadBuffer& buffer ) override;
 
 			// Pass-through tessellation: emits the stored indexed triangles unchanged.
 			// The `detail` parameter is ignored — an indexed mesh already IS a mesh.
 			// Index references are offset by the caller's existing vertex count.
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const;
-			BoundingBox GenerateBoundingBox() const;
-			bool DoPreHitTest( ) const { return true; };
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
+			BoundingBox GenerateBoundingBox() const override;
+			bool DoPreHitTest( ) const override { return true; };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea() const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea() const override;
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			// Functions special to this class
 			// Adds indexed triangle lists
-			void BeginIndexedTriangles( );				// I'm going to feed you a bunch of indexed triangles
-			void AddVertex( const Vertex& point );		// Adds a point
-			void AddNormal( const Normal& normal );		// Adds a normal
-			void AddTexCoord( const TexCoord& coord );	// Adds a texture co-ordinate
-			void AddVertices( const VerticesListType& points );
-			void AddNormals( const NormalsListType& normals );
-			void AddTexCoords( const TexCoordsListType& coords );
-			void AddIndexedTriangle( const IndexedTriangle& tri );
-			void AddIndexedTriangles( const IndexTriangleListType& tris );
-			unsigned int numPoints( ) const		{ return static_cast<unsigned int>(pPoints.size()); }
-			unsigned int numNormals( ) const	{ return static_cast<unsigned int>(pNormals.size()); }
-			unsigned int numCoords( ) const		{ return static_cast<unsigned int>(pCoords.size()); }
+			void BeginIndexedTriangles( ) override;				// I'm going to feed you a bunch of indexed triangles
+			void AddVertex( const Vertex& point ) override;		// Adds a point
+			void AddNormal( const Normal& normal ) override;	// Adds a normal
+			void AddTexCoord( const TexCoord& coord ) override;	// Adds a texture co-ordinate
+			void AddVertices( const VerticesListType& points ) override;
+			void AddNormals( const NormalsListType& normals ) override;
+			void AddTexCoords( const TexCoordsListType& coords ) override;
+			void AddIndexedTriangle( const IndexedTriangle& tri ) override;
+			void AddIndexedTriangles( const IndexTriangleListType& tris ) override;
+			unsigned int numPoints( ) const	override	{ return static_cast<unsigned int>(pPoints.size()); }
+			unsigned int numNormals( ) const override	{ return static_cast<unsigned int>(pNormals.size()); }
+			unsigned int numCoords( ) const	override	{ return static_cast<unsigned int>(pCoords.size()); }
 			MyPointsList const& getVertices() const { return pPoints; }
 			MyNormalsList const& getNormals() const { return pNormals; }
 			MyCoordsList const& getCoords() const { return pCoords; }
 			MyPointerTriangleList const& getFaces() const { return ptr_polygons; }
-			void DoneIndexedTriangles( );				// I'm done feeding you a bunch of indexed triangles
+			void DoneIndexedTriangles( ) override;				// I'm done feeding you a bunch of indexed triangles
 
-			void ComputeVertexNormals();
+			//! Tier 1 §3 animation support.  Replace the vertex and
+			//! normal arrays in place (count must match the existing
+			//! arrays — topology is preserved), then refit the BVH
+			//! bottom-up rather than rebuild from scratch.
+			//!
+			//! Returns the BVH refit duration in milliseconds for
+			//! caller bench reporting.  Returns 0 if there is no
+			//! current BVH (caller should call DoneIndexedTriangles
+			//! first) or on size mismatch.
+			//!
+			//! Thread-safety: must be called between frames, never
+			//! concurrent with intersection.  See docs/BVH_ACCELERATION_PLAN.md
+			//! §4.6 for the full design.
+			unsigned int UpdateVertices( const VerticesListType& newVertices,
+			                             const NormalsListType&  newNormals ) override;
+
+			void ComputeVertexNormals() override;
 
 			// From TreeElementProcessor
 			typedef const PointerTriangle*	MYOBJ;
-				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const;
-				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
-				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
+				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const override;
+				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const override;
+				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const override;
 
-			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const;
-			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const;
+			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const override;
+			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const override;
+
+			//! Phase 2 BVH float-filter: extract per-vertex float positions.
+			bool GetFloatTriangleVertices( const MYOBJ elem, float v0[3], float v1[3], float v2[3] ) const override;
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0; };
-			void SetIntermediateValue( const IKeyframeParameter& val ){};
-			void RegenerateData( ){};
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override { return 0; };
+			void SetIntermediateValue( const IKeyframeParameter& val ) override {};
+			void RegenerateData( ) override {};
 		};
 	}
 }

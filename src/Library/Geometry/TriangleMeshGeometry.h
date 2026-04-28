@@ -17,16 +17,16 @@
 
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "Geometry.h"
-#include "../Octree.h"
-#include "../BSPTreeSAH.h"
+#include "../Acceleration/BVH.h"
+#include "../Acceleration/AccelerationConfig.h"
 #include <vector>
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class TriangleMeshGeometry : 
-			public virtual ITriangleMeshGeometry, 
+		class TriangleMeshGeometry :
+			public virtual ITriangleMeshGeometry,
 			public virtual Geometry,
 			public virtual TreeElementProcessor<const Triangle*>
 		{
@@ -44,14 +44,15 @@ namespace RISE
 		protected:
 			MyTriangleList			polygons;			// The list of polygons
 
-			unsigned int			nMaxPerOctantNode;	// Maximum number of polygons per octant node
-			unsigned char			nMaxRecursionLevel;	// Maximum recursion level when generating the tree
-
 			bool					bDoubleSided;		// Are the polygons all double sided?
-			bool					bUseBSP;			// Are we using BSP trees ?
-			
-			Octree<const Triangle*>*			pPolygonsOctree;
-				BSPTreeSAH<const Triangle*>*			pPolygonsBSPtree;
+
+			// BVH is the sole active acceleration structure (Tier A2 cleanup,
+			// 2026-04-27).  Legacy BSP/octree members were dropped along with
+			// the on-disk v4 format that stops emitting BSP/octree bytes.
+			// Pre-A2 v2/v3 .risemesh files still load — the legacy bytes are
+			// read into Deserialize-local temporaries, validated, and
+			// discarded, never reaching this class as state.
+			BVH<const Triangle*>*				pPolygonsBVH;
 
 			TriangleAreasList		areas;				// Areas of the triangles
 			TriangleAreasList		areasCDF;			// Cumulative density function of the triangle areas
@@ -61,58 +62,58 @@ namespace RISE
 			void ComputeAreas();
 
 		public:
-			TriangleMeshGeometry( 
-				const unsigned int max_polys_per_node, 
-				const unsigned char max_recursion_level, 
-				const bool bDoubleSided_,
-				const bool bUseBSP
+			TriangleMeshGeometry(
+				const bool bDoubleSided_
 				);
 
 			// From ISerializable interface
-			void Serialize( IWriteBuffer& buffer ) const;
-			void Deserialize( IReadBuffer& buffer );
+			void Serialize( IWriteBuffer& buffer ) const override;
+			void Deserialize( IReadBuffer& buffer ) override;
 
 			// Pass-through tessellation: emits the existing triangles (de-indexed per-vertex).
 			// The `detail` parameter is ignored — a triangle-mesh source already IS a mesh.
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const;
-			BoundingBox GenerateBoundingBox() const;
-			bool DoPreHitTest( ) const { return true; };
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
+			BoundingBox GenerateBoundingBox() const override;
+			bool DoPreHitTest( ) const override { return true; };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea() const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea() const override;
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			// Functions special to this class
 
 			// Adds a triangle to the existing list of triangles
-			void BeginTriangles( );						// I'm going to feed you a bunch of triangles
-			void AddTriangle( const Triangle& tri );
-			void DoneTriangles( );						// I'm done feeding you a bunch of triangles
-			
+			void BeginTriangles( ) override;					// I'm going to feed you a bunch of triangles
+			void AddTriangle( const Triangle& tri ) override;
+			void DoneTriangles( ) override;						// I'm done feeding you a bunch of triangles
+
 			const MyTriangleList	getTriangles() const{ return polygons; }
 
 			// From TreeElementProcessor
 			typedef const Triangle*	MYOBJ;
-				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const;
-				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
-				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
+				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const override;
+				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const override;
+				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const override;
 
-			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const;
-			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const;
+			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const override;
+			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const override;
+
+			//! Tier 1 §4 BVH float-filter: extract per-vertex float positions.
+			bool GetFloatTriangleVertices( const MYOBJ elem, float v0[3], float v1[3], float v2[3] ) const override;
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0; };
-			void SetIntermediateValue( const IKeyframeParameter& val ){};
-			void RegenerateData( ){};
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override { return 0; };
+			void SetIntermediateValue( const IKeyframeParameter& val ) override {};
+			void RegenerateData( ) override {};
 		};
 	}
 }

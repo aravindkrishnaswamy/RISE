@@ -2586,10 +2586,7 @@ bool Job::AddIndexedTriangleMeshGeometry(
 					const unsigned int numnormals,			///< [in] Number of normals
 					const unsigned int numcoords,			///< [in] Number of texture co-ordinate points
 					const unsigned int numfaces,			///< [in] Number of faces
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
@@ -2598,7 +2595,7 @@ bool Job::AddIndexedTriangleMeshGeometry(
 	}
 
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	pGeometry->BeginIndexedTriangles();
 
@@ -2658,15 +2655,12 @@ bool Job::AddIndexedTriangleMeshGeometry(
 bool Job::Add3DSTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* filename,					///< [in] The 3DS file to load
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	IReadBuffer* pBuffer = 0;
 	RISE_API_CreateDiskFileReadBuffer( &pBuffer, filename );
@@ -2691,14 +2685,11 @@ bool Job::Add3DSTriangleMeshGeometry(
 bool Job::AddRAWTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+					const bool double_sided					///< [in] Are the triangles double sided ?
 					)
 {
 	ITriangleMeshGeometry* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometry( &pGeometry, max_polys, max_recur, double_sided, use_bsp );
+	RISE_API_CreateTriangleMeshGeometry( &pGeometry, double_sided );
 
 	ITriangleMeshLoader* pLoader = 0;
 	RISE_API_CreateRAWTriangleMeshLoader( &pLoader, szFileName );
@@ -2721,15 +2712,12 @@ bool Job::AddRAWTriangleMeshGeometry(
 bool Job::AddRAW2TriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	ITriangleMeshLoaderIndexed* pLoader = 0;
 	RISE_API_CreateRAW2TriangleMeshLoader( &pLoader, szFileName );
@@ -2751,16 +2739,13 @@ bool Job::AddRAW2TriangleMeshGeometry(
 bool Job::AddPLYTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* szFileName,					///< [in] Name of the file to load from
-					const unsigned int max_polys,			///< [in] Maximum number of polygons in one octant node
-					const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 					const bool double_sided,				///< [in] Are the triangles double sided ?
-					const bool use_bsp,						///< [in] Use a BSP tree rather than an Octree
 					const bool bInvertFaces,				///< [in] Should the faces be inverted?
 					const bool face_normals					///< [in] Use face normals rather than vertex normals
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, max_polys, max_recur, double_sided, use_bsp, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
 
 	ITriangleMeshLoaderIndexed* pLoader = 0;
 	RISE_API_CreatePLYTriangleMeshLoader( &pLoader, szFileName, bInvertFaces );
@@ -2786,7 +2771,7 @@ bool Job::AddRISEMeshTriangleMeshGeometry(
 					)
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, 0, 0, false, true, face_normals );
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, false, face_normals );
 
 	bool bLoaded = false;
 
@@ -3003,10 +2988,7 @@ bool Job::AddDisplacedGeometry(
 	const unsigned int  detail,
 	const char*         displacement,
 	const Scalar        disp_scale,
-	const unsigned int  max_polys,
-	const unsigned char max_recur,
 	const bool          double_sided,
-	const bool          use_bsp,
 	const bool          face_normals
 	)
 {
@@ -3033,7 +3015,7 @@ bool Job::AddDisplacedGeometry(
 	IGeometry* pGeometry = 0;
 	const bool bOK = RISE_API_CreateDisplacedGeometry(
 		&pGeometry, pBase, detail, pFunc, disp_scale,
-		max_polys, max_recur, double_sided, use_bsp, face_normals );
+		double_sided, face_normals );
 
 	if( !bOK || !pGeometry ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: failed to create displaced geometry `%s` (base `%s` may not support tessellation)", name, base_geometry_name );

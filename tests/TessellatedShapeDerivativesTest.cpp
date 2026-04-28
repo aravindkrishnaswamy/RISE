@@ -379,12 +379,9 @@ static DisplacedGeometry* WrapAsTessellation( IGeometry* base )
 	// bUseFaceNormals=false → smooth (interpolated) normals, so the
 	// tessellated-vs-analytical comparison exercises the smooth
 	// shading path rather than flat triangle normals.
-	// Other args match DisplacedGeometryTest's defaults.
+	// Tier A2 cleanup (2026-04-27): max_polys/max_recursion/bUseBSP are gone.
 	return new DisplacedGeometry( base, DETAIL, nullptr, 0.0,
-		/*max_polys_per_node*/10,
-		/*max_recursion_level*/8,
 		/*bDoubleSided*/true,
-		/*bUseBSP*/true,
 		/*bUseFaceNormals*/false );
 }
 

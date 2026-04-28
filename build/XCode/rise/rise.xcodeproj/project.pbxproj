@@ -1370,6 +1370,8 @@
 		F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 		F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */; };
 		F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */; };
+		ACE1000000000000000000A4 /* BVH.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A2 /* BVH.h */; };
+		ACE1000000000000000000A5 /* AccelerationConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A3 /* AccelerationConfig.h */; };
 		F2C5D5652F6E447400546C97 /* SplatFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5642F6E447400546C97 /* SplatFilm.cpp */; };
 		F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5632F6E447400546C97 /* SplatFilm.h */; };
 		F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */; };
@@ -2305,6 +2307,8 @@
 		F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeEmitter.cpp; sourceTree = "<group>"; };
 		F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAH.h; sourceTree = "<group>"; };
 		F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAHNode.h; sourceTree = "<group>"; };
+		ACE1000000000000000000A2 /* BVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BVH.h; sourceTree = "<group>"; };
+		ACE1000000000000000000A3 /* AccelerationConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AccelerationConfig.h; sourceTree = "<group>"; };
 		F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerStateCache.h; sourceTree = "<group>"; };
 		F2C5D5632F6E447400546C97 /* SplatFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SplatFilm.h; sourceTree = "<group>"; };
 		F2C5D5642F6E447400546C97 /* SplatFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SplatFilm.cpp; sourceTree = "<group>"; };
@@ -2554,6 +2558,7 @@
 		F27F07E8069C428F0069C9E5 /* Library */ = {
 			isa = PBXGroup;
 			children = (
+				ACE1000000000000000000A1 /* Acceleration */,
 				F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */,
 				F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */,
 				F277342507ECCC1600C0B600 /* Detector Spheres */,
@@ -2601,6 +2606,15 @@
 			name = Library;
 			path = ../../../src/Library;
 			sourceTree = SOURCE_ROOT;
+		};
+		ACE1000000000000000000A1 /* Acceleration */ = {
+			isa = PBXGroup;
+			children = (
+				ACE1000000000000000000A2 /* BVH.h */,
+				ACE1000000000000000000A3 /* AccelerationConfig.h */,
+			);
+			path = Acceleration;
+			sourceTree = "<group>";
 		};
 		F27F07EB069C428F0069C9E5 /* Animation */ = {
 			isa = PBXGroup;
@@ -3677,6 +3691,8 @@
 				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
 				F28639642F9245040009D9AE /* PreviewScheduler.h in Headers */,
 				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
+				ACE1000000000000000000A4 /* BVH.h in Headers */,
+				ACE1000000000000000000A5 /* AccelerationConfig.h in Headers */,
 				F27F0AAB069C42910069C9E5 /* TorusGeometry.h in Headers */,
 				F27F0AAD069C42910069C9E5 /* TriangleMeshGeometry.h in Headers */,
 				F27F0AAF069C42910069C9E5 /* TriangleMeshGeometryIndexed.h in Headers */,

@@ -78,7 +78,12 @@ namespace
 
 		pBuffer->seek( IBuffer::START, 0 );
 
-		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( 1, 8, false, true, false );
+		// Tier A2 cleanup (2026-04-27): the constructor takes only
+		// (double_sided, face_normals) now.  The v1 byte stream above
+		// still contains the legacy nMaxPerOctantNode/nMaxRecursionLevel/
+		// bUseBSP fields — Deserialize reads+discards them via the
+		// version<4 backward-compat branch.
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( false, false );
 		pGeom->Deserialize( *pBuffer );
 
 		assert( pGeom->numPoints() == 3 );

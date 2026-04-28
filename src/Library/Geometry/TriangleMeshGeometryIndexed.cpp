@@ -19,6 +19,14 @@
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "GeometryUtilities.h"
 #include "../Utilities/stl_utils.h"
+// BSPTreeSAH / Octree headers are still needed in the .cpp because v1/v2/v3
+// .risemesh files have BSP/octree byte blocks that we read into local
+// temporaries during Deserialize so the byte stream advances correctly,
+// even though the parsed trees are never used (BVH owns intersection now).
+// They are NOT pulled into the .h — this class no longer carries any
+// BSP/octree state, only the ability to consume the legacy bytes.
+#include "../Octree.h"
+#include "../BSPTreeSAH.h"
 #include <cmath>
 #ifdef RISE_ENABLE_MAILBOXING
 #include <atomic>
@@ -59,19 +67,12 @@ namespace {
 #include "TriangleMeshGeometryIndexedSpecializations.h"
 
 TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
-	const unsigned int max_polys_per_node, 
-	const unsigned char max_recursion_level, 
 	const bool bDoubleSided_,
-	const bool bUseBSP_,
 	const bool bUseFaceNormals_
 	) :
-  nMaxPerOctantNode( max_polys_per_node ),
-  nMaxRecursionLevel( max_recursion_level), 
   bDoubleSided( bDoubleSided_ ),
-  bUseBSP( bUseBSP_ ),
   bUseFaceNormals( bUseFaceNormals_ ),
-  pPtrOctree( 0 ),
-  pPtrBSPtree( 0 )
+  pPtrBVH( 0 )
 #ifdef RISE_ENABLE_MAILBOXING
   , geometryId( s_nextGeometryId.fetch_add(1) )
 #endif
@@ -80,8 +81,7 @@ TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(
 
 TriangleMeshGeometryIndexed::~TriangleMeshGeometryIndexed()
 {
-	safe_release( pPtrOctree );
-	safe_release( pPtrBSPtree );
+	safe_release( pPtrBVH );
 }
 
 bool TriangleMeshGeometryIndexed::TessellateToMesh(
@@ -159,10 +159,12 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 	}
 #endif
 
-	if( bUseBSP && pPtrBSPtree ) {
-		pPtrBSPtree->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
-	} else if( pPtrOctree ) {
-		pPtrOctree->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
+	// Cleanup §3+§4: BVH-only.  pPtrBSPtree / pPtrOctree members
+	// remain on the class for v1/v2 .risemesh deserialize compat
+	// (legacy on-disk data is read into temp instances and discarded)
+	// but never reached at runtime.
+	if( pPtrBVH ) {
+		pPtrBVH->IntersectRay( ri, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
 	}
 
 	if( ri.bHit && bDoubleSided ) {
@@ -182,12 +184,10 @@ bool TriangleMeshGeometryIndexed::IntersectRay_IntersectionOnly( const Ray& ray,
 	}
 #endif
 
-	if( bUseBSP && pPtrBSPtree ) {
-		return pPtrBSPtree->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
-	} else if( pPtrOctree ) {
-		return pPtrOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
+	// Cleanup §3+§4: BVH-only.
+	if( pPtrBVH ) {
+		return pPtrBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bDoubleSided?1:bHitFrontFaces, bDoubleSided?1:bHitBackFaces );
 	}
-
 	return false;
 }
 
@@ -211,8 +211,7 @@ Scalar TriangleMeshGeometryIndexed::GetArea( ) const
 
 void TriangleMeshGeometryIndexed::BeginIndexedTriangles( )
 {
-	safe_release( pPtrOctree );
-	safe_release( pPtrBSPtree );
+	safe_release( pPtrBVH );
 	areas.clear();
 	areasCDF.clear();
 }
@@ -261,10 +260,70 @@ void TriangleMeshGeometryIndexed::AddIndexedTriangles( const IndexTriangleListTy
 	indexedtris.insert( indexedtris.end(), tris.begin(), tris.end() );
 }
 
+unsigned int TriangleMeshGeometryIndexed::UpdateVertices(
+	const VerticesListType& newVertices,
+	const NormalsListType&  newNormals )
+{
+	// Tier 1 §3: refit-not-rebuild path for keyframed-painter-driven
+	// DisplacedGeometry.  Topology (ptr_polygons indices) is preserved;
+	// only vertex positions and normals change.
+
+	if( !pPtrBVH ) {
+		GlobalLog()->PrintEasyWarning(
+			"TriangleMeshGeometryIndexed::UpdateVertices:: no BVH yet — call DoneIndexedTriangles first" );
+		return 0;
+	}
+	if( newVertices.size() != pPoints.size() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"TriangleMeshGeometryIndexed::UpdateVertices:: vertex count mismatch (%u vs %u)",
+			(unsigned)newVertices.size(), (unsigned)pPoints.size() );
+		return 0;
+	}
+	if( !bUseFaceNormals && newNormals.size() != pNormals.size() ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"TriangleMeshGeometryIndexed::UpdateVertices:: normal count mismatch (%u vs %u)",
+			(unsigned)newNormals.size(), (unsigned)pNormals.size() );
+		return 0;
+	}
+
+	// In-place vertex / normal replacement.  ptr_polygons hold pointers
+	// INTO pPoints/pNormals — those pointers stay valid as long as we
+	// resize 0 (we're overwriting, not reallocating).  We use plain
+	// assignment to overwrite without changing storage; if the old
+	// arrays were sized to match (always true post-DoneIndexedTriangles)
+	// the underlying storage is reused.
+	for( size_t i = 0; i < pPoints.size(); ++i ) {
+		pPoints[i] = newVertices[i];
+	}
+	if( !bUseFaceNormals ) {
+		for( size_t i = 0; i < pNormals.size(); ++i ) {
+			pNormals[i] = newNormals[i];
+		}
+	}
+
+	// Recompute triangle areas + CDF (vertex positions changed).
+	ComputeAreas();
+
+	// Refit the BVH (bottom-up AABB recompute + filter + BVH4 redo).
+	const unsigned int refitMs = pPtrBVH->Refit();
+	return refitMs;
+}
+
 void TriangleMeshGeometryIndexed::ComputeAreas()
 {
-	// Compute triangle areas
+	// Self-clearing: the inner loops both push_back, so we MUST clear
+	// before recomputing or the CDF grows quadratically across repeated
+	// calls.  Tier 1 §3 added an observer path
+	// (DisplacedGeometry::RefreshMeshVertices → UpdateVertices →
+	// ComputeAreas) that fires once per keyframe, so a corrupted CDF
+	// would crash UniformRandomPoint with an out-of-bounds idx into
+	// ptr_polygons after a few keyframes.  See Tier A2 review notes,
+	// 2026-04-27.
+	areas.clear();
+	areasCDF.clear();
 	totalArea = 0;
+
+	// Compute triangle areas
 	{
 		MyPointerTriangleList::const_iterator i, e;
 		for( i=ptr_polygons.begin(), e=ptr_polygons.end(); i!=e; i++ ) {
@@ -278,7 +337,7 @@ void TriangleMeshGeometryIndexed::ComputeAreas()
 	}
 
 	// Compute the areas CDF
-	{
+	if( totalArea > 0 ) {
 		const Scalar invArea = 1.0 / totalArea;
 		Scalar sum = 0;
 
@@ -366,25 +425,26 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 		}
 	}
 
-	if( bUseBSP ) {	
-		safe_release( pPtrBSPtree );
+	// Phase 1: BVH replaces BSP/octree as the active acceleration structure.
+	// Build SAH-binned BVH2 over the pointer-triangle list.
+	//
+	// Env-var escape hatch for adversarial review and A/B regression
+	// Cleanup §3+§4: BVH-only.  Legacy BSP/octree fallback removed
+	// (members preserved for v1/v2 .risemesh deserialize compat).
+	// SBVH off by default per Tier 1 §1 (regression on big meshes).
+	safe_release( pPtrBVH );
 
-		pPtrBSPtree = new BSPTreeSAH<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
-		GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree" );
+	AccelerationConfig cfg;
+	cfg.maxLeafSize            = 4;
+	cfg.binCount               = 32;
+	cfg.sahTraversalCost       = 1.0;
+	cfg.sahIntersectionCost    = 1.0;
+	cfg.doubleSided            = bDoubleSided;
+	cfg.buildSBVH              = false;
+	cfg.sbvhDuplicationBudget  = 0.30;
 
-		pPtrBSPtree->AddElements( temp, nMaxRecursionLevel );
-
-//		pPtrBSPtree->DumpStatistics( eLog_Info );
-	} else {
-		safe_release( pPtrOctree );
-
-		pPtrOctree = new Octree<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
-		GlobalLog()->PrintNew( pPtrOctree, __FILE__, __LINE__, "pointers octree" );
-
-		pPtrOctree->AddElements( temp, nMaxRecursionLevel );
-
-//		pPtrOctree->DumpStatistics( eLog_Info );
-	}
+	pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg );
+	GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH" );
 
 	ComputeAreas();
 }
@@ -425,17 +485,33 @@ void TriangleMeshGeometryIndexed::GenerateBoundingSphere( Point3& ptCenter, Scal
 
 BoundingBox TriangleMeshGeometryIndexed::GenerateBoundingBox( ) const
 {
-	if( bUseBSP && pPtrBSPtree ) {
-		return pPtrBSPtree->GetBBox();
-	} else if( pPtrOctree ) {
-		return pPtrOctree->GetBBox();
+	// Cleanup §3+§4: BVH-only.
+	if( pPtrBVH ) {
+		return pPtrBVH->GetBBox();
 	}
-	
 	return BoundingBox();
 }
 
 static const char * szSignature = "RISETMGI";
-static const unsigned int cur_version = 2;
+static const unsigned int cur_version = 4;
+//
+// Version history:
+//   1 — original (legacy)
+//   2 — same layout, added BSP/octree validation on load
+//   3 — Tier 1 §2 .risemesh: writes BVH cache after the (now-vestigial)
+//       BSP/octree block.  Readers that didn't understand v3 fell back
+//       to v2 behaviour.
+//   4 — Tier A2 cleanup (2026-04-27): drops the legacy on-disk fields
+//       that are no longer carried as class state.  Specifically:
+//         * nMaxPerOctantNode (uint32) — gone
+//         * nMaxRecursionLevel (char)  — gone
+//         * bUseBSP (char) + bptrbsptree/bptroctree (char) + tree-bytes — gone
+//       Layout: signature(8) + version(4) + bUseFaceNormals(1) +
+//         pPoints + pNormals + pCoords + ptr_polygons (variable) +
+//         bDoubleSided(1) + haveBVHCache(1) + (BVH bytes if cached).
+//       Pre-v4 readers cannot load v4 files (different field ordering
+//       + missing bytes); v4 readers handle every prior version via
+//       the per-version Deserialize branches below.
 
 void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 {
@@ -444,18 +520,14 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 	// first write out the signature and version
 	buffer.setBytes( szSignature, 8 );
 	buffer.setUInt( cur_version );
-	
-	// put octree settings
-	buffer.ResizeForMore( sizeof( unsigned int ) + sizeof( char ) );
-	buffer.setUInt( nMaxPerOctantNode );
-	buffer.setChar( nMaxRecursionLevel );
 
 	// put geometry settings
+	buffer.ResizeForMore( sizeof( char ) );
 	buffer.setChar( bUseFaceNormals ? 1 : 0 );
 
 	// Now put geometry data
-	
-	// List of points 
+
+	// List of points
 	{
 		buffer.ResizeForMore( static_cast<unsigned int>(sizeof(Vertex)*pPoints.size() + sizeof( unsigned int )) );
 
@@ -526,34 +598,34 @@ void TriangleMeshGeometryIndexed::Serialize( IWriteBuffer& buffer ) const
 		}
 	}
 
-	GlobalLog()->PrintEasyInfo( "TriangleMeshGeometryIndexed:: Begining Octree serialization" );
-
 	buffer.ResizeForMore( sizeof( char ) );
 	buffer.setChar( bDoubleSided ? 1 : 0 );
 
-	// Write out which octree exist
-	buffer.ResizeForMore( sizeof( char ) );
-	buffer.setChar( bUseBSP ? 1 : 0 );
-
-	if( bUseBSP ) {
-		buffer.ResizeForMore( sizeof( char ) * 2 );
-		buffer.setChar( pPtrBSPtree ? 1 : 0 );
-
-		// Now serialize the bsp tree
-		if( pPtrBSPtree ) {
-			pPtrBSPtree->Serialize( buffer );
-		}
-	} else {
-		buffer.ResizeForMore( sizeof( char ) * 2 );
-		buffer.setChar( pPtrOctree ? 1 : 0 );
-
-		// Now serialize the octree
-		if( pPtrOctree ) {
-			pPtrOctree->Serialize( buffer );
+	// Tier A2 (.risemesh v4): the BVH cache is the only acceleration
+	// data on disk.  No more BSP/octree byte block.
+	//
+	// Symmetric-gating: only emit the cache flag when we actually have
+	// polygon data.  Deserialize gates the read on the same condition
+	// (`ptr_polygons.size() > 0`), so an empty-mesh round-trip stays
+	// byte-symmetric across Serialize/Deserialize.  Empty meshes occur
+	// in test fixtures (mesh-not-yet-fed-via-Begin/Done) and would
+	// otherwise leave a trailing flag byte unconsumed in composite
+	// streams.  See Tier A2 review notes, 2026-04-27.
+	if( !ptr_polygons.empty() ) {
+		buffer.ResizeForMore( sizeof( char ) );
+		if( pPtrBVH ) {
+			buffer.setChar( 1 );
+			// Index function: each prim is a (const PointerTriangle*) into
+			// our ptr_polygons array; subtract base pointer to get the index.
+			const PointerTriangle* base = &ptr_polygons[0];
+			pPtrBVH->Serialize( buffer,
+				[base]( const PointerTriangle* p ) -> unsigned int {
+					return (unsigned int)( p - base );
+				} );
+		} else {
+			buffer.setChar( 0 );
 		}
 	}
-
-	// Thats it we are done!
 }
 
 void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
@@ -569,17 +641,25 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		return;
 	}
 
-	// Next check version
+	// Next check version.  The Tier A2 v4 format is the canonical write
+	// format; v1/v2/v3 are kept for backward-compatible reads.
 	const unsigned int version = buffer.getUInt();
-	
-	if( version != 1 && version != cur_version ) {
-		GlobalLog()->PrintEasyError( "TriangleMeshGeometryIndexed::Deserialize:: Versions don't match.  Are you using an older format?" );
+
+	if( version < 1 || version > cur_version ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"TriangleMeshGeometryIndexed::Deserialize:: Unsupported .risemesh version %u (this build understands v1..v%u)",
+			version, cur_version );
 		return;
 	}
 
-	// First get octree settings
-	nMaxPerOctantNode = buffer.getUInt();
-	nMaxRecursionLevel = buffer.getChar();
+	// Pre-v4 layouts started with octree settings (nMaxPerOctantNode +
+	// nMaxRecursionLevel) before the geometry settings.  Read+discard them
+	// for backward compat — the BVH builder is parameter-free in this code
+	// path (cfg below holds the live values).
+	if( version < 4 ) {
+		(void)buffer.getUInt();   // legacy nMaxPerOctantNode
+		(void)buffer.getChar();   // legacy nMaxRecursionLevel
+	}
 
 	// Get geometry settings
 	bUseFaceNormals = !!buffer.getChar();
@@ -588,8 +668,6 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	pNormals.clear();
 	pCoords.clear();
 	ptr_polygons.clear();
-	safe_release( pPtrOctree );
-	safe_release( pPtrBSPtree );
 
 	// Now get the list of points
 	{
@@ -661,7 +739,7 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 
 				for( unsigned int i=0; i<3; i++ ) {
 					ptrtri.pVertices[i] = &pPoints[buffer.getUInt()];
-					
+
 					unsigned int normal_id = buffer.getUInt();
 					if( bUseFaceNormals || pNormals.size()==0 ) {
 						ptrtri.pNormals[i] = 0;
@@ -683,72 +761,98 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 	bDoubleSided = !!bdoublesided;
 	GlobalLog()->PrintEx( eLog_Info, "  TriangleMeshGeometryIndexed::Deserialize:: Polygons are double sided? [%s]", bDoubleSided?"YES":"NO" );
 
-	char bsp = buffer.getChar();
-	bUseBSP = !!bsp;
-		
-	// Try to deserialize the spatial acceleration structure, but validate 
-	// the bounding box afterwards. If it's corrupted, rebuild from scratch.
-	bool bTreeValid = false;
+	// Pre-v4 files have a BSP/octree block here that the live class no
+	// longer carries.  Read+discard via Deserialize-local temporaries so
+	// the byte stream advances past the block; the parsed trees are
+	// validated for "structurally non-broken" so we can warn loudly on
+	// truly corrupt files (e.g. mid-stream truncation), but the BVH is
+	// the sole live acceleration structure regardless.
+	if( version < 4 ) {
+		const bool legacyUseBSP = !!buffer.getChar();
+		const bool legacyHaveTree = !!buffer.getChar();
 
-	if( bUseBSP ) {
-		// Deserialize the bsp trees
-		const bool bptrbsptree = !!buffer.getChar();
-
-		if( bptrbsptree ) {
-			if( version == cur_version ) {
-				pPtrBSPtree = new BSPTreeSAH<const PointerTriangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
-				GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree" );
-
-				// Deserialize
-				pPtrBSPtree->Deserialize( buffer );
-
-				// Validate the deserialized bounding box
-				BoundingBox treeBBox = pPtrBSPtree->GetBBox();
-				Vector3 extents = treeBBox.GetExtents();
-				if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
-					std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
-					std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
-				{
-					bTreeValid = true;
+		if( legacyHaveTree ) {
+			// v2/v3 streams stored a real serialized tree; v1 streams
+			// also reach here but their tree format is not byte-compatible
+			// with the v2 SAH layout, so v1 files just emit a warning
+			// and fall through (rebuild from polygon data below).
+			if( version >= 2 ) {
+				if( legacyUseBSP ) {
+					BSPTreeSAH<const PointerTriangle*>* pLegacyBSP =
+						new BSPTreeSAH<const PointerTriangle*>(
+							*this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), 1 );
+					GlobalLog()->PrintNew( pLegacyBSP, __FILE__, __LINE__, "legacy BSP (read+discard)" );
+					pLegacyBSP->Deserialize( buffer );
+					safe_release( pLegacyBSP );
 				} else {
-					GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Deserialized BSP tree has invalid bounding box, will rebuild" );
-					safe_release( pPtrBSPtree );
-					pPtrBSPtree = 0;
+					Octree<const PointerTriangle*>* pLegacyOct =
+						new Octree<const PointerTriangle*>(
+							*this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), 1 );
+					GlobalLog()->PrintNew( pLegacyOct, __FILE__, __LINE__, "legacy Octree (read+discard)" );
+					pLegacyOct->Deserialize( buffer );
+					safe_release( pLegacyOct );
 				}
 			} else {
-				GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Legacy BSP serialization detected, rebuilding SAH tree from polygon data" );
-			}
-		}
-	} else {
-		// Deserialize the octrees
-		const bool bptroctree = !!buffer.getChar();
-
-		if( bptroctree ) {
-			pPtrOctree = new Octree<const PointerTriangle*>( *this, BoundingBox(Point3(0,0,0), Point3(0,0,0)), nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPtrOctree, __FILE__, __LINE__, "pointers octree" );
-
-			// Deserialize
-			pPtrOctree->Deserialize( buffer );
-
-			// Validate the deserialized bounding box
-			BoundingBox treeBBox = pPtrOctree->GetBBox();
-			Vector3 extents = treeBBox.GetExtents();
-			if( std::isfinite(treeBBox.ll.x) && std::isfinite(treeBBox.ll.y) && std::isfinite(treeBBox.ll.z) &&
-				std::isfinite(treeBBox.ur.x) && std::isfinite(treeBBox.ur.y) && std::isfinite(treeBBox.ur.z) &&
-				std::abs(extents.x) < 1e10 && std::abs(extents.y) < 1e10 && std::abs(extents.z) < 1e10 )
-			{
-				bTreeValid = true;
-			} else {
-				GlobalLog()->PrintEasyWarning( "TriangleMeshGeometryIndexed::Deserialize:: Deserialized Octree has invalid bounding box, will rebuild" );
-				safe_release( pPtrOctree );
-				pPtrOctree = 0;
+				GlobalLog()->PrintEasyWarning(
+					"TriangleMeshGeometryIndexed::Deserialize:: Legacy v1 BSP byte block detected — skipping (BVH will rebuild from polygon data)" );
 			}
 		}
 	}
 
-	// If the deserialized tree was invalid, rebuild from the loaded polygon data
-	if( !bTreeValid && ptr_polygons.size() > 0 ) {
-		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Rebuilding spatial structure from %u polygons", ptr_polygons.size() );
+	// v3+ files have the BVH cache after the legacy block (or, in v4,
+	// directly after bDoubleSided).  Try to load it; on success we skip
+	// the SAH rebuild entirely.  v1/v2 files don't have this trailing
+	// section and fall through to rebuild.
+	bool bvhCacheLoaded = false;
+	safe_release( pPtrBVH );
+
+	if( version >= 3 && ptr_polygons.size() > 0 ) {
+		const char haveBVHCache = buffer.getChar();
+		if( haveBVHCache ) {
+			AccelerationConfig cfg;
+			cfg.maxLeafSize            = 4;
+			cfg.binCount               = 32;
+			cfg.sahTraversalCost       = 1.0;
+			cfg.sahIntersectionCost    = 1.0;
+			cfg.doubleSided            = bDoubleSided;
+			cfg.buildSBVH              = false;
+			cfg.sbvhDuplicationBudget  = 0.30;
+
+			// Empty-input ctor: we only want the BVH<> shell so we can
+			// call Deserialize.  Pass an empty input vector + a dummy
+			// bbox.  Build()/BuildSBVH() return early on empty input;
+			// Deserialize then overwrites the empty state.
+			std::vector<const PointerTriangle*> emptyTemp;
+			BoundingBox dummyBox( Point3(0,0,0), Point3(0,0,0) );
+			pPtrBVH = new BVH<const PointerTriangle*>( *this, emptyTemp, dummyBox, cfg );
+			GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (cache load)" );
+
+			const PointerTriangle* base = ptr_polygons.empty() ? nullptr : &ptr_polygons[0];
+			const bool ok = pPtrBVH->Deserialize( buffer,
+				(uint32_t)ptr_polygons.size(),
+				[base]( unsigned int idx ) -> const PointerTriangle* {
+					return base + idx;
+				} );
+
+			if( ok ) {
+				bvhCacheLoaded = true;
+				GlobalLog()->PrintEx( eLog_Info,
+					"TriangleMeshGeometryIndexed::Deserialize:: Loaded BVH cache "
+					"(%u nodes, %u prims) — skipping SAH rebuild",
+					(unsigned)pPtrBVH->numNodes(),
+					(unsigned)pPtrBVH->numPrims() );
+			} else {
+				GlobalLog()->PrintEasyWarning(
+					"TriangleMeshGeometryIndexed::Deserialize:: BVH cache failed to load; rebuilding" );
+				safe_release( pPtrBVH );
+			}
+		}
+	}
+
+	// If we don't have a usable BVH yet (legacy file, missing cache, or
+	// cache deserialize failed), rebuild from the loaded polygon data.
+	if( !bvhCacheLoaded && ptr_polygons.size() > 0 ) {
+		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Rebuilding BVH from %u polygons", ptr_polygons.size() );
 
 		// Compute bounding box from vertex data
 		BoundingBox bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ), Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) );
@@ -764,17 +868,20 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 			bbox.Include( *mi );
 		}
 
-		if( bUseBSP ) {
-			pPtrBSPtree = new BSPTreeSAH<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPtrBSPtree, __FILE__, __LINE__, "pointers bsptree (rebuilt)" );
-			pPtrBSPtree->AddElements( temp, nMaxRecursionLevel );
-		} else {
-			pPtrOctree = new Octree<const PointerTriangle*>( *this, bbox, nMaxPerOctantNode );
-			GlobalLog()->PrintNew( pPtrOctree, __FILE__, __LINE__, "pointers octree (rebuilt)" );
-			pPtrOctree->AddElements( temp, nMaxRecursionLevel );
-		}
+		safe_release( pPtrBVH );
 
-		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: Spatial structure rebuilt successfully" );
+		AccelerationConfig cfg;
+		cfg.maxLeafSize            = 4;
+		cfg.binCount               = 32;
+		cfg.sahTraversalCost       = 1.0;
+		cfg.sahIntersectionCost    = 1.0;
+		cfg.doubleSided            = bDoubleSided;
+		cfg.buildSBVH              = false;
+		cfg.sbvhDuplicationBudget  = 0.30;
+
+		pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg );
+		GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (rebuilt from .risemesh polygon data)" );
+		GlobalLog()->PrintEx( eLog_Info, "TriangleMeshGeometryIndexed::Deserialize:: BVH rebuilt successfully" );
 	}
 
 	ComputeAreas();

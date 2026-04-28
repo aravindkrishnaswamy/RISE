@@ -316,24 +316,22 @@ namespace RISE
 									const Scalar minorRad		///< [in] Minor radius (as a percentage of the major radius)
 									);
 
-	//! Creates a triangle mesh geometry object
+	//! Creates a triangle mesh geometry object.
+	//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+	//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometry(
 						ITriangleMeshGeometry** ppi,			///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
-						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp						///< [in] Use a BSP tree rather than an Octree
+						const bool double_sided					///< [in] Are the triangles double sided ?
 						);
 
-	//! Creates an indexed triangle mesh geometry object
+	//! Creates an indexed triangle mesh geometry object.
+	//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+	//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTriangleMeshGeometryIndexed(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to recieve the geometry
-						const unsigned int max_polys,			///< [in] Maximum number of polygons / octant node
-						const unsigned char max_recur,			///< [in] Maximum depth of the octree or bsp tree
 						const bool double_sided,				///< [in] Are the triangles double sided ?
-						const bool use_bsp,					///< [in] Use a BSP tree rather than an Octree
 						const bool face_normals				///< [in] Use face normals rather than vertex normals
 						);
 
@@ -392,6 +390,8 @@ namespace RISE
 	//! Creates a displaced geometry that wraps any existing IGeometry, tessellates it, and
 	//! applies a displacement map along the vertex normals.  The base geometry must support
 	//! IGeometry::TessellateToMesh (InfinitePlaneGeometry does not — construction fails loudly).
+	//! BVH is the only acceleration structure (Tier A2 cleanup, 2026-04-27);
+	//! the legacy `max_polys`, `max_recur`, `use_bsp` parameters are gone.
 	/// \return TRUE if successful, FALSE if the base cannot be tessellated or ppi is null
 	bool RISE_API_CreateDisplacedGeometry(
 						IGeometry**         ppi,				///< [out] Pointer to receive the geometry
@@ -399,10 +399,7 @@ namespace RISE
 						const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
 						IFunction2D*        displacement,		///< [in] Displacement function (may be null for pure tessellation)
 						const Scalar        disp_scale,			///< [in] Displacement scale factor
-						const unsigned int  max_polys,			///< [in] Max polygons per spatial-accel-struct node
-						const unsigned char max_recur,			///< [in] Max spatial-accel-struct recursion depth
 						const bool          double_sided,		///< [in] Are generated polygons double-sided?
-						const bool          use_bsp,			///< [in] Use a BSP-SAH tree rather than an Octree (BSP recommended)
 						const bool          face_normals		///< [in] Use face normals rather than topologically re-averaged vertex normals
 						);
 

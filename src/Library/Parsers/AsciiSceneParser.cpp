@@ -3296,12 +3296,13 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name",        "noname" );
 					std::string file = bag.GetString( "file",        "none" );
-					unsigned int maxPoly  = bag.GetUInt( "maxpolygons",  10 );
-					unsigned int maxRecur = bag.GetUInt( "maxdepth",     8 );
-					bool double_sided     = bag.GetBool( "double_sided", false );
-					bool bsp              = bag.GetBool( "bsp",          false );
-					bool face_normals     = bag.GetBool( "face_normals", false );
-					return pJob.Add3DSTriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp, face_normals );
+					bool double_sided = bag.GetBool( "double_sided", false );
+					bool face_normals = bag.GetBool( "face_normals", false );
+					// Tier A2 cleanup (2026-04-27): `maxpolygons`, `maxdepth`,
+					// and `bsp` are accepted but ignored — BVH is the sole
+					// acceleration structure now and has no user-tunable
+					// build parameters from scene files.
+					return pJob.Add3DSTriangleMeshGeometry( name.c_str(), file.c_str(), double_sided, face_normals );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3312,11 +3313,12 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .3ds file"; }
-						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build a BSP acceleration structure"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Use flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Retired (BVH is sole accelerator)"; }
 						return cd;
 					}();
 					return d;
@@ -3329,11 +3331,9 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name",        "noname" );
 					std::string file = bag.GetString( "file",        "none" );
-					unsigned int maxPoly  = bag.GetUInt( "maxpolygons",  10 );
-					unsigned int maxRecur = bag.GetUInt( "maxdepth",     8 );
-					bool double_sided     = bag.GetBool( "double_sided", false );
-					bool bsp              = bag.GetBool( "bsp",          false );
-					return pJob.AddRAWTriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp );
+					bool double_sided = bag.GetBool( "double_sided", false );
+					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
+					return pJob.AddRAWTriangleMeshGeometry( name.c_str(), file.c_str(), double_sided );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3344,10 +3344,11 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW file"; }
-						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Retired (BVH is sole accelerator)"; }
 						return cd;
 					}();
 					return d;
@@ -3360,12 +3361,10 @@ namespace RISE
 				{
 					std::string name = bag.GetString( "name",        "noname" );
 					std::string file = bag.GetString( "file",        "none" );
-					unsigned int maxPoly  = bag.GetUInt( "maxpolygons",  10 );
-					unsigned int maxRecur = bag.GetUInt( "maxdepth",     8 );
-					bool double_sided     = bag.GetBool( "double_sided", false );
-					bool bsp              = bag.GetBool( "bsp",          false );
-					bool face_normals     = bag.GetBool( "face_normals", false );
-					return pJob.AddRAW2TriangleMeshGeometry( name.c_str(), file.c_str(), maxPoly, maxRecur, double_sided, bsp, face_normals );
+					bool double_sided = bag.GetBool( "double_sided", false );
+					bool face_normals = bag.GetBool( "face_normals", false );
+					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
+					return pJob.AddRAW2TriangleMeshGeometry( name.c_str(), file.c_str(), double_sided, face_normals );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3376,11 +3375,12 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source RAW2 file"; }
-						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Max BSP tree depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Build BSP"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";  p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";     p.kind = ValueKind::UInt;     p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";          p.kind = ValueKind::Bool;     p.description = "Retired (BVH is sole accelerator)"; }
 						return cd;
 					}();
 					return d;
@@ -3555,12 +3555,9 @@ namespace RISE
 					unsigned int detail       = bag.GetUInt(   "detail",        32 );
 					std::string displacement  = bag.GetString( "displacement",  "none" );
 					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
-					unsigned int maxPoly      = bag.GetUInt(   "maxpolygons",   10 );
-					unsigned int maxRecur     = bag.GetUInt(   "maxdepth",      8 );
 					bool double_sided         = bag.GetBool(   "double_sided",  false );
-					// BSP-SAH is the better default for dense displaced meshes.
-					bool bsp                  = bag.GetBool(   "bsp",           true );
 					bool face_normals         = bag.GetBool(   "face_normals",  false );
+					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
 
 					if( base_geometry.empty() ) {
 						GlobalLog()->Print( eLog_Error, "DisplacedGeometry:: `base_geometry` is required" );
@@ -3573,10 +3570,7 @@ namespace RISE
 						detail,
 						displacement == "none" ? 0 : displacement.c_str(),
 						disp_scale,
-						maxPoly,
-						maxRecur,
 						double_sided,
-						bsp,
 						face_normals );
 				}
 
@@ -3591,11 +3585,12 @@ namespace RISE
 						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "32"; }
 						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
 						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Max polygons per BSP leaf"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Max BSP depth"; p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;      p.description = "Build BSP"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
+						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
+						{ auto& p = P(); p.name = "bsp";           p.kind = ValueKind::Bool;      p.description = "Retired (BVH is sole accelerator)"; }
 						return cd;
 					}();
 					return d;

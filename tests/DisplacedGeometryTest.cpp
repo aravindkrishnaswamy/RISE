@@ -40,9 +40,10 @@ static DisplacedGeometry* WrapSphere(
 	const IFunction2D*  displacement,
 	const Scalar        disp_scale )
 {
+	// Tier A2 cleanup (2026-04-27): max_polys/max_recur/bUseBSP are gone.
 	return new DisplacedGeometry(
 		pBase, detail, displacement, disp_scale,
-		10, 8, false, true, false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 }
 
 //-----------------------------------------------------------------------------
@@ -289,7 +290,7 @@ static void TestInfinitePlaneFailSafe()
 	InfinitePlaneGeometry* pPlane = new InfinitePlaneGeometry( 1.0, 1.0 );
 	DisplacedGeometry* pDisp = new DisplacedGeometry(
 		pPlane, 16, 0, 0.0,
-		10, 8, false, true, false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 
 	assert( !pDisp->IsValid() );
 
@@ -390,7 +391,7 @@ static void TestFaceNormalMeshDisplacesAlongFaceNormal()
 
 	// Build a quad in the YZ plane at x = 1, facing +X.
 	TriangleMeshGeometryIndexed* pMesh = new TriangleMeshGeometryIndexed(
-		10, 8, false, false, /*bUseFaceNormals=*/true );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/true );
 	pMesh->BeginIndexedTriangles();
 	pMesh->AddVertex( Point3( 1.0, -0.5, -0.5 ) );
 	pMesh->AddVertex( Point3( 1.0,  0.5, -0.5 ) );
@@ -417,7 +418,7 @@ static void TestFaceNormalMeshDisplacesAlongFaceNormal()
 
 	DisplacedGeometry* pDisp = new DisplacedGeometry(
 		pMesh, 0, pConst, k,
-		10, 8, false, true, false );
+		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 	assert( pDisp->IsValid() );
 
 	// Ray from (10, 0, 0) toward -X should hit the displaced quad at x = 1 + k = 1.1.
