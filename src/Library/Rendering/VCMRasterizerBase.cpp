@@ -472,7 +472,23 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 						const BDPTVertex& curr = tmpLightVerts[k];
 						const BDPTVertex& prevV = tmpLightVerts[k - 1];
 
-						if( curr.isDelta || prevV.isDelta ) {
+						// "foundSpecular" gates whether VM is actually
+						// needed.  Only DELTA SURFACE scatters (specular
+						// reflection / refraction) require VM — those are
+						// the paths NEE cannot sample.  Delta-position
+						// LIGHTS (omni / spot / directional) also have
+						// isDelta=true but they are perfectly NEE-friendly:
+						// NEE samples their position deterministically.
+						// Treating them as "specular" enables VM with an
+						// auto-radius wide enough that VM gets significant
+						// MIS weight on direct-lighting paths, producing
+						// visible photon-density splotches at low spp on
+						// scenes that should converge instantly via NEE.
+						const bool currIsSpecularSurface =
+							curr.isDelta  && curr.type  == BDPTVertex::SURFACE;
+						const bool prevIsSpecularSurface =
+							prevV.isDelta && prevV.type == BDPTVertex::SURFACE;
+						if( currIsSpecularSurface || prevIsSpecularSurface ) {
 							foundSpecular = true;
 						}
 
