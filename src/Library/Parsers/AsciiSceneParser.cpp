@@ -456,6 +456,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "pathguiding_iterations";                 p.kind = ValueKind::UInt;   p.description = "Training iterations";                   p.defaultValueHint = "4"; }
 				{ auto& p = P(); p.name = "pathguiding_spp";                        p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training";     p.defaultValueHint = "4"; }
 				{ auto& p = P(); p.name = "pathguiding_alpha";                      p.kind = ValueKind::Double; p.description = "Mixing factor with BSDF sampling";      p.defaultValueHint = "0.5"; }
+				{ auto& p = P(); p.name = "pathguiding_learned_alpha";              p.kind = ValueKind::Bool;   p.description = "Per-cell Adam-learned mixing alpha (Müller 2017 v2); modest win at SPP >= 256, neutral at low SPP";  p.defaultValueHint = "TRUE"; }
 				{ auto& p = P(); p.name = "pathguiding_max_depth";                  p.kind = ValueKind::UInt;   p.description = "Max depth to apply guiding";            p.defaultValueHint = "8"; }
 				{ auto& p = P(); p.name = "pathguiding_light_max_depth";            p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";               p.defaultValueHint = "8"; }
 				{ auto& p = P(); p.name = "pathguiding_sampling_type";              p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy (any string other than ris/RIS selects OneSampleMIS)";  p.defaultValueHint = "OneSampleMIS"; }
@@ -4951,6 +4952,7 @@ namespace RISE
 					if( bag.Has("pathguiding_iterations") )                              guidingConfig.trainingIterations     = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )                                     guidingConfig.trainingSPP            = bag.GetUInt("pathguiding_spp");
 					if( bag.Has("pathguiding_alpha") )                                   guidingConfig.alpha                  = bag.GetDouble("pathguiding_alpha");
+				if( bag.Has("pathguiding_learned_alpha") )                           guidingConfig.learnedAlpha           = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )                               guidingConfig.maxGuidingDepth        = bag.GetUInt("pathguiding_max_depth");
 					if( bag.Has("pathguiding_light_max_depth") )                         guidingConfig.maxLightGuidingDepth   = bag.GetUInt("pathguiding_light_max_depth");
 					if( bag.Has("pathguiding_sampling_type") ) {
@@ -5215,6 +5217,7 @@ namespace RISE
 					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
 					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
 					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
 					if( bag.Has("pathguiding_sampling_type") ) {
@@ -5340,6 +5343,7 @@ namespace RISE
 					if( bag.Has("pathguiding_iterations") ) guidingConfig.trainingIterations = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )        guidingConfig.trainingSPP        = bag.GetUInt("pathguiding_spp");
 					if( bag.Has("pathguiding_alpha") )      guidingConfig.alpha              = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") ) guidingConfig.learnedAlpha    = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )  guidingConfig.maxGuidingDepth    = bag.GetUInt("pathguiding_max_depth");
 					if( bag.Has("pathguiding_sampling_type") ) {
 						const std::string st = bag.GetString("pathguiding_sampling_type");
@@ -5657,6 +5661,7 @@ namespace RISE
 					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
 					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
 					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
 					if( bag.Has("pathguiding_sampling_type") ) {

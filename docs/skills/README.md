@@ -53,6 +53,7 @@ mechanism, or follow references from [AGENTS.md](../../AGENTS.md).
 | [const-correctness-over-escape-hatches](const-correctness-over-escape-hatches.md) | Tempted to add `mutable` / `const_cast` / drop a `const` — stop and apply this decision tree first. |
 | [precision-fix-the-formulation](precision-fix-the-formulation.md) | Tempted to widen a `< NEARZERO` / `< EPSILON` check, add an ε fudge, or use a magic `1e-N` to silence FP-noise speckle / firefly / near-zero misclassification.  Find the cancellation and reformulate. |
 | [sms-firefly-diagnosis](sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; "fireflies" reported; a new SMS scene differs from its VCM reference by bright speckles. |
+| [variance-measurement](variance-measurement.md) | Need to prove a rendering change reduces variance / RMSE — K=16 EXR protocol with `bin/tools/HDRVarianceTest.exe`, master-vs-fix stash-rebuild-pop, both pure variance and RMSE-vs-reference. |
 | [write-highly-effective-tests](write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into real regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
 
 ## Authoring New Skills
