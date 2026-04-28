@@ -171,7 +171,7 @@ namespace RISE
 		{
 			// Plain SAH binned BVH2 builder.  An SBVH spatial-split
 			// alternative was investigated in Tier 1 §1 and excised in
-			// Tier B (2026-04-27) — see docs/BVH_CLEANUP_AND_NEXT.md.
+			// Tier B (2026-04-27) — see docs/BVH_RETROSPECTIVE.md.
 			// Decision: with closest-hit-native intersection and BVH4
 			// collapse already in place, plain SAH extracts most of
 			// the locatable benefit on this codebase's geometry;

@@ -55,7 +55,7 @@ namespace RISE
 		//! Both were excised in Tier B (2026-04-27) after measurement
 		//! showed no statistically significant rasterize-time benefit
 		//! at any duplication budget on the canonical 7.2M-tri xyzdragon
-		//! stress mesh.  See docs/BVH_CLEANUP_AND_NEXT.md → Tier B for
+		//! stress mesh.  See docs/BVH_RETROSPECTIVE.md → Tier B for
 		//! the data and decision.  If a future codebase change shifts
 		//! the tradeoff (e.g. very different scene geometry, or
 		//! algorithmic changes that make leaf-overlap a bigger cost
