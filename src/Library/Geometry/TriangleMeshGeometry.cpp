@@ -208,8 +208,6 @@ void TriangleMeshGeometry::DoneTriangles( )
 	cfg.sahTraversalCost       = 1.0;
 	cfg.sahIntersectionCost    = 1.0;
 	cfg.doubleSided            = bDoubleSided;
-	cfg.buildSBVH              = false;
-	cfg.sbvhDuplicationBudget  = 0.30;
 
 	pPolygonsBVH = new BVH<const Triangle*>( *this, temp, bbox, cfg );
 	GlobalLog()->PrintNew( pPolygonsBVH, __FILE__, __LINE__, "polygons BVH" );
@@ -446,8 +444,6 @@ void TriangleMeshGeometry::Deserialize( IReadBuffer& buffer )
 		cfg.sahTraversalCost       = 1.0;
 		cfg.sahIntersectionCost    = 1.0;
 		cfg.doubleSided            = bDoubleSided;
-		cfg.buildSBVH              = false;
-		cfg.sbvhDuplicationBudget  = 0.30;
 
 		pPolygonsBVH = new BVH<const Triangle*>( *this, temp, bbox, cfg );
 		GlobalLog()->PrintNew( pPolygonsBVH, __FILE__, __LINE__, "polygons BVH (built post-deserialize)" );

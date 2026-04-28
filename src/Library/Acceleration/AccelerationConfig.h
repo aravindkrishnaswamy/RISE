@@ -50,27 +50,17 @@ namespace RISE
 		//! BVH builder doesn't need to ask the mesh.
 		bool           doubleSided;
 
-		//! Tier 1 §1 — Build a Spatial-BVH (SBVH) instead of plain SAH BVH.
-		//! When enabled, the builder tries both object-split and spatial-
-		//! split SAH at each node and picks whichever has lower cost,
-		//! subject to the duplication budget.  Spatial splits duplicate
-		//! straddling primitives across the split, with each duplicate's
-		//! bbox clipped against the split plane.
-		//!
-		//! Spatial splits typically improve traversal speed by 10–30 %
-		//! on non-uniform geometry (where centroid-based object splits
-		//! produce overlapping child bboxes) at the cost of a longer
-		//! build (2–3× the plain-SAH builder) and modestly more memory
-		//! (proportional to duplication budget).
-		bool           buildSBVH;
-
-		//! Maximum allowed duplication of primitive references during
-		//! SBVH construction, expressed as a fraction of the input
-		//! primitive count.  E.g. 0.30 = at most 30 % more references
-		//! than triangles.  Once exceeded, the builder reverts to
-		//! object-split-only for all subsequent decisions.  Ignored
-		//! when buildSBVH is false.
-		Scalar         sbvhDuplicationBudget;
+		//! NOTE: a Spatial-BVH (SBVH) builder lived here in Tier 1 §1
+		//! with two extra fields (`buildSBVH`, `sbvhDuplicationBudget`).
+		//! Both were excised in Tier B (2026-04-27) after measurement
+		//! showed no statistically significant rasterize-time benefit
+		//! at any duplication budget on the canonical 7.2M-tri xyzdragon
+		//! stress mesh.  See docs/BVH_CLEANUP_AND_NEXT.md → Tier B for
+		//! the data and decision.  If a future codebase change shifts
+		//! the tradeoff (e.g. very different scene geometry, or
+		//! algorithmic changes that make leaf-overlap a bigger cost
+		//! factor), reintroduce by reverting that commit and the
+		//! BVH.h SBVH block.
 	};
 }
 

@@ -440,8 +440,6 @@ void TriangleMeshGeometryIndexed::DoneIndexedTriangles( )
 	cfg.sahTraversalCost       = 1.0;
 	cfg.sahIntersectionCost    = 1.0;
 	cfg.doubleSided            = bDoubleSided;
-	cfg.buildSBVH              = false;
-	cfg.sbvhDuplicationBudget  = 0.30;
 
 	pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg );
 	GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH" );
@@ -815,12 +813,10 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 			cfg.sahTraversalCost       = 1.0;
 			cfg.sahIntersectionCost    = 1.0;
 			cfg.doubleSided            = bDoubleSided;
-			cfg.buildSBVH              = false;
-			cfg.sbvhDuplicationBudget  = 0.30;
 
 			// Empty-input ctor: we only want the BVH<> shell so we can
 			// call Deserialize.  Pass an empty input vector + a dummy
-			// bbox.  Build()/BuildSBVH() return early on empty input;
+			// bbox.  Build() returns early on empty input;
 			// Deserialize then overwrites the empty state.
 			std::vector<const PointerTriangle*> emptyTemp;
 			BoundingBox dummyBox( Point3(0,0,0), Point3(0,0,0) );
@@ -876,8 +872,6 @@ void TriangleMeshGeometryIndexed::Deserialize( IReadBuffer& buffer )
 		cfg.sahTraversalCost       = 1.0;
 		cfg.sahIntersectionCost    = 1.0;
 		cfg.doubleSided            = bDoubleSided;
-		cfg.buildSBVH              = false;
-		cfg.sbvhDuplicationBudget  = 0.30;
 
 		pPtrBVH = new BVH<const PointerTriangle*>( *this, temp, bbox, cfg );
 		GlobalLog()->PrintNew( pPtrBVH, __FILE__, __LINE__, "pointers BVH (rebuilt from .risemesh polygon data)" );
