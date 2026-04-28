@@ -98,21 +98,19 @@ namespace
 
 	AccelerationConfig MkCfg( unsigned int leafSize )
 	{
-		// Initialize EVERY field explicitly.  AccelerationConfig is a POD
-		// without in-class initializers (per the codebase's no-default-
-		// parameters convention, see memory/feedback_no_default_params.md).
-		// Earlier revisions left buildSBVH and sbvhDuplicationBudget
-		// uninitialized, which made the BVH ctor branch nondeterministically
-		// into the SBVH builder when stack contents happened to be non-zero
-		// — a subtle test flake that defeats the regression guard's purpose.
+		// Initialize EVERY field explicitly per the codebase's
+		// no-default-parameters convention
+		// (memory/feedback_no_default_params.md).  AccelerationConfig
+		// is a POD without in-class initializers; missing-field bugs
+		// were a real defect class historically (see Tier A2/A3 review
+		// notes), so we keep the explicit-init discipline even after
+		// the SBVH fields were excised in Tier B.
 		AccelerationConfig c;
 		c.maxLeafSize           = leafSize;
 		c.binCount              = 32;
 		c.sahTraversalCost      = 1.0;
 		c.sahIntersectionCost   = 1.0;
 		c.doubleSided           = false;
-		c.buildSBVH             = false;
-		c.sbvhDuplicationBudget = 0.30;
 		return c;
 	}
 
@@ -379,6 +377,178 @@ namespace
 		bvh->release();
 		proc->release();
 	}
+
+	//
+	// Refit fixture: a prim type whose bbox lives in an externally-
+	// managed vector keyed by id.  Mutating that vector reflects into
+	// every BVH that references it — that's what makes "refit after
+	// vertex mutation" testable in a unit test (the standard TestPrim
+	// stores its bbox inline and the BVH copies it, so external
+	// mutation can't reach the BVH).
+	//
+	struct MutablePrim
+	{
+		unsigned int id;
+		MutablePrim() : id(0) {}
+		explicit MutablePrim( unsigned int i ) : id(i) {}
+	};
+
+	class MutableTestProc :
+		public virtual TreeElementProcessor<MutablePrim>,
+		public virtual Reference
+	{
+	public:
+		std::vector<BoundingBox> boxes;
+
+		virtual ~MutableTestProc() {}
+
+		void RayElementIntersection( RayIntersectionGeometric& ri, const MutablePrim elem, const bool, const bool ) const
+		{
+			BOX_HIT h;
+			RayBoxIntersection( ri.ray, h, boxes[elem.id].ll, boxes[elem.id].ur );
+			if( h.bHit && h.dRange >= NEARZERO && h.dRange < ri.range ) {
+				ri.bHit          = true;
+				ri.range         = h.dRange;
+				ri.ptIntersection = ri.ray.PointAtLength( h.dRange );
+				ri.ptCoord       = Point2( static_cast<Scalar>(elem.id), 0 );
+			}
+		}
+		void RayElementIntersection( RayIntersection& ri, const MutablePrim elem, const bool a, const bool b, const bool ) const
+		{
+			RayElementIntersection( ri.geometric, elem, a, b );
+		}
+		bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MutablePrim elem, const bool, const bool ) const
+		{
+			BOX_HIT h;
+			RayBoxIntersection( ray, h, boxes[elem.id].ll, boxes[elem.id].ur );
+			return h.bHit && h.dRange >= NEARZERO && h.dRange <= dHowFar;
+		}
+		BoundingBox GetElementBoundingBox( const MutablePrim elem ) const
+		{
+			return boxes[elem.id];
+		}
+		bool ElementBoxIntersection( const MutablePrim elem, const BoundingBox& bbox ) const
+		{
+			return boxes[elem.id].DoIntersect( bbox );
+		}
+		char WhichSideofPlaneIsElement( const MutablePrim elem, const Plane& plane ) const
+		{
+			return GeometricUtilities::WhichSideOfPlane( plane, boxes[elem.id] );
+		}
+		void SerializeElement( IWriteBuffer&, const MutablePrim ) const {}
+		void DeserializeElement( IReadBuffer&, MutablePrim& ) const {}
+	};
+
+	//
+	// Tier 1 §3 + Tier C3 regression: end-to-end refit path.  Build a
+	// BVH on N prims at one position, ray-test to confirm hit
+	// location, mutate the prim bboxes (translate them along +z),
+	// refit, ray-test again and confirm the hit moved with the prims.
+	//
+	// Pre-Tier-1-§3 there was no Refit() at all.  Pre-PR-#7 the
+	// BuildBVH4-clear-on-rebuild bug would silently keep the stale
+	// pre-refit root at nodes4[0] and rays would still hit the OLD
+	// positions.  Both regressions are now caught here.
+	//
+	void TestRefitWithVertexMutation()
+	{
+		std::cerr << "TestRefitWithVertexMutation...\n";
+
+		MutableTestProc* proc = new MutableTestProc(); proc->addref();
+		std::vector<MutablePrim> prims;
+		for( unsigned int i = 0; i < 16; ++i ) {
+			const Scalar x = (Scalar)i;
+			proc->boxes.push_back( BoundingBox(
+				Point3( x - 0.1, -0.1, 4.9 ),
+				Point3( x + 0.1,  0.1, 5.1 ) ) );
+			prims.push_back( MutablePrim( i ) );
+		}
+
+		BoundingBox worldBox( Point3( -1, -1, 4.5 ), Point3( 16, 1, 5.5 ) );
+		BVH<MutablePrim>* bvh = new BVH<MutablePrim>( *proc, prims, worldBox, MkCfg(2) );
+
+		// Hit prim 5 at z ≈ 4.9 (top of bbox is z=5.1, ray going +z hits ll first).
+		Ray ray; ray.origin = Point3( 5.0, 0, 0 ); ray.SetDir( Vector3( 0, 0, 1 ) );
+		RayIntersectionGeometric riBefore( ray, nullRasterizerState );
+		bvh->IntersectRay( riBefore, true, true );
+		EXPECT( riBefore.bHit, "ray hits some prim before refit" );
+		EXPECT( riBefore.bHit && (int)riBefore.ptCoord.x == 5, "ray hits prim 5 (id == ptCoord.x)" );
+		const Scalar rangeBefore = riBefore.range;
+
+		// Mutate: translate every box by +10 along z.
+		for( auto& b : proc->boxes ) {
+			b.ll.z += 10.0;
+			b.ur.z += 10.0;
+		}
+
+		const unsigned int refitMs = bvh->Refit();
+		(void)refitMs;
+
+		// Ray hits same prim id but at z+10 distance.
+		RayIntersectionGeometric riAfter( ray, nullRasterizerState );
+		bvh->IntersectRay( riAfter, true, true );
+		EXPECT( riAfter.bHit, "ray hits a prim after refit" );
+		EXPECT( riAfter.bHit && (int)riAfter.ptCoord.x == 5, "ray still hits prim 5 after refit (topology preserved)" );
+		EXPECT( std::fabs( ( riAfter.range - rangeBefore ) - 10.0 ) < 1e-6,
+			"hit range tracks the +10 translation of the prim" );
+
+		bvh->release();
+		proc->release();
+	}
+
+	//
+	// Tier C3 regression: SAH-degradation detection.  Build a BVH at
+	// reasonable spacing, ratio should be 1.0.  Mutate prims to span
+	// 50× their original extent (well beyond the original tree's
+	// expected coverage).  Refit.  SAHDegradationRatio() should now
+	// exceed 2.0, signalling the caller (TriangleMeshGeometryIndexed::
+	// UpdateVertices in production) that a full rebuild is warranted.
+	//
+	void TestSAHDegradationDetection()
+	{
+		std::cerr << "TestSAHDegradationDetection...\n";
+
+		MutableTestProc* proc = new MutableTestProc(); proc->addref();
+		std::vector<MutablePrim> prims;
+		for( unsigned int i = 0; i < 64; ++i ) {
+			const Scalar x = (Scalar)i;
+			proc->boxes.push_back( BoundingBox(
+				Point3( x - 0.05, -0.05, 4.95 ),
+				Point3( x + 0.05,  0.05, 5.05 ) ) );
+			prims.push_back( MutablePrim( i ) );
+		}
+
+		BoundingBox worldBox( Point3( -1, -1, 4.5 ), Point3( 64, 1, 5.5 ) );
+		BVH<MutablePrim>* bvh = new BVH<MutablePrim>( *proc, prims, worldBox, MkCfg(2) );
+
+		const Scalar ratioJustAfterBuild = bvh->SAHDegradationRatio();
+		EXPECT( std::fabs( ratioJustAfterBuild - 1.0 ) < 1e-6,
+			"SAH ratio is 1.0 immediately after build (no refit yet)" );
+
+		// Refit with no mutation: ratio stays at 1.0.
+		bvh->Refit();
+		const Scalar ratioAfterNoOpRefit = bvh->SAHDegradationRatio();
+		EXPECT( std::fabs( ratioAfterNoOpRefit - 1.0 ) < 1e-3,
+			"SAH ratio stays ~1.0 after no-op refit" );
+
+		// Now blow up the bboxes — each prim's box grows by 50× along
+		// each axis, way past what the original tree was optimised for.
+		for( auto& b : proc->boxes ) {
+			const Point3 c = Point3Ops::WeightedAverage2( b.ll, b.ur, 0.5 );
+			const Vector3 e = Vector3Ops::mkVector3( b.ur, b.ll );
+			b.ll = Point3( c.x - e.x * 25.0, c.y - e.y * 25.0, c.z - e.z * 25.0 );
+			b.ur = Point3( c.x + e.x * 25.0, c.y + e.y * 25.0, c.z + e.z * 25.0 );
+		}
+		bvh->Refit();
+
+		const Scalar ratioAfterBlowup = bvh->SAHDegradationRatio();
+		std::cerr << "  ratio after 50x bbox blowup: " << ratioAfterBlowup << "x\n";
+		EXPECT( ratioAfterBlowup > 2.0,
+			"SAH ratio detects 50x bbox blowup (>2.0 triggers rebuild fallback in production)" );
+
+		bvh->release();
+		proc->release();
+	}
 }
 
 int main()
@@ -391,6 +561,8 @@ int main()
 	TestRandom( 5000, 1000, 4 );
 	TestRefitClearsNodes4();
 	TestDeepTreeTraversal();
+	TestRefitWithVertexMutation();
+	TestSAHDegradationDetection();
 
 	std::cerr << "\nBVHBuilderTest: " << (totalChecks - failures) << "/"
 	          << totalChecks << " checks passed, " << failures << " failures.\n";
