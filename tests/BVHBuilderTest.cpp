@@ -98,21 +98,19 @@ namespace
 
 	AccelerationConfig MkCfg( unsigned int leafSize )
 	{
-		// Initialize EVERY field explicitly.  AccelerationConfig is a POD
-		// without in-class initializers (per the codebase's no-default-
-		// parameters convention, see memory/feedback_no_default_params.md).
-		// Earlier revisions left buildSBVH and sbvhDuplicationBudget
-		// uninitialized, which made the BVH ctor branch nondeterministically
-		// into the SBVH builder when stack contents happened to be non-zero
-		// — a subtle test flake that defeats the regression guard's purpose.
+		// Initialize EVERY field explicitly per the codebase's
+		// no-default-parameters convention
+		// (memory/feedback_no_default_params.md).  AccelerationConfig
+		// is a POD without in-class initializers; missing-field bugs
+		// were a real defect class historically (see Tier A2/A3 review
+		// notes), so we keep the explicit-init discipline even after
+		// the SBVH fields were excised in Tier B.
 		AccelerationConfig c;
 		c.maxLeafSize           = leafSize;
 		c.binCount              = 32;
 		c.sahTraversalCost      = 1.0;
 		c.sahIntersectionCost   = 1.0;
 		c.doubleSided           = false;
-		c.buildSBVH             = false;
-		c.sbvhDuplicationBudget = 0.30;
 		return c;
 	}
 

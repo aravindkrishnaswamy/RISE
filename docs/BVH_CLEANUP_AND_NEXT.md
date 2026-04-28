@@ -212,6 +212,70 @@ Excluding the 9 .risemesh model-file blobs (rebaked content, not code):
 
 ### Pre-existing issues surfaced (out of scope, flag for follow-up)
 
-1. **`src/Library/Acceleration/{BVH.h,AccelerationConfig.h}` untracked + absent from IDE projects.** `make` works (auto-discovery), VS2022/Xcode users see them as orphan headers.  Per CLAUDE.md "Source-file add/remove" they need `<ClInclude>` in `Library.vcxproj` + `.vcxproj.filters` and `PBXFileReference`+`PBXGroup` entries in `project.pbxproj`. **Cost: ~30 min** (E3 in this doc's menu).
+1. **`src/Library/Acceleration/{BVH.h,AccelerationConfig.h}` untracked + absent from IDE projects.** `make` works (auto-discovery), VS2022/Xcode users see them as orphan headers.  Per CLAUDE.md "Source-file add/remove" they need `<ClInclude>` in `Library.vcxproj` + `.vcxproj.filters` and `PBXFileReference`+`PBXGroup` entries in `project.pbxproj`. **Cost: ~30 min** (E3 in this doc's menu). [Resolved in PR #7.]
 2. **Non-indexed `.risemesh` doesn't cache its BVH on disk.** Every load rebuilds. Pre-existing. Negligible for current asset library (no large non-indexed meshes), would matter if RISE ever ships a 1M+ tri non-indexed mesh.
 3. **v2 `.risemesh` cold-load cost** (with `bptrbsptree=1` and a real stored tree): allocates+parses+discards a full BSPTreeSAH on read. Pre-existing — A2 didn't change it; just made the discard explicit. The just-rebaked v3 files have `bptrbsptree=0` so this cost only applies to externally-sourced v2 files.
+
+---
+
+## Tier B — investigated and excised (2026-04-27)
+
+### Question
+
+Tier 1 §1 originally measured SBVH at **−15% on xyzdragon-class meshes** (7.22M triangles).  Tier B was three plausible rescue attempts (B1 lower duplication budget, B2 Sutherland-Hodgman polygon clipping, B3 duplicate-aware SAH cost), with "excise" as the fourth option if none helped.  This section captures the decision and the data behind it.
+
+### Method
+
+`scenes/Internal/xyzdragon_bench.RISEscene` (1280×720 pinhole, 9 SPP, max_recursion=2, the canonical big-mesh stress).  All measurements with `render_thread_reserve_count 0` per [`AGENTS.md`](../AGENTS.md) thread-priority guidance.  Metric: `Total Rasterization Time` from `RISE_Log.txt` (excludes parse + BVH build, isolates the structural quality of the accelerator).  N=5 per config after one warmup pass.  Wall-clock and `parse+build` captured separately for the SBVH @ 0.30 case to quantify the build-time tax.
+
+A temporary env-var harness (`RISE_BENCH_SBVH`, `RISE_BENCH_SBVH_BUDGET`, `RISE_BENCH_FORCE_REBUILD`) was added to `TriangleMeshGeometryIndexed.cpp` so the four rebuild configs and the cache-baseline could share one binary.  Removed before the excision commit; not committed.
+
+### Results
+
+| Config | rasterize mean ± stddev (N=5) | Δ vs control | wall | parse+build |
+|---|---|---|---|---|
+| Cache, SBVH off (production) | 15.043 ± 0.244s | (different code path — uses v3 cache) | n/a | n/a |
+| Rebuild, SBVH off (apples-to-apples control) | 13.993 ± 0.808s | baseline | ~19.9s | ~5.9s |
+| Rebuild, **SBVH @ 0.30** (Tier 1 default) | 13.175 ± 0.582s | **−5.8%** (within 1σ) | ~24.4s | ~10.9s |
+| Rebuild, **SBVH @ 0.10** (B1 probe) | 14.097 ± 0.741s | +0.8% | — | — |
+| Rebuild, **SBVH @ 0.05** (B1 probe) | 13.932 ± 0.662s | −0.4% | — | — |
+
+Rasterize-time deltas at every duplication budget tested are **within 1σ** of the rebuild control — i.e., not statistically significant.  The ostensibly-best result (SBVH @ 0.30, −5.8%) sits in the noise band, not above it.
+
+### Correctness invariant
+
+Path-traced output is stochastic, so a strict pixel-equality check is meaningless.  Instead we use a **noise-floor comparison**: render the scene twice with the exact same configuration, measure the run-to-run pixel diff, and compare that floor to the SBVH-vs-non-SBVH diff.  If the SBVH diff is comparable to or smaller than the run-to-run floor, SBVH is functionally correct.
+
+| diff | max | mean | rmse | %pixels >1e-5 |
+|---|---|---|---|---|
+| SBVH off — run vs run (noise floor) | 0.846 | 0.0066 | 0.0247 | 29.70% |
+| SBVH off vs SBVH @ 0.30 | 0.952 | 0.0047 | 0.0197 | 29.69% |
+
+The two distributions are statistically indistinguishable.  SBVH produces correct images; ~30% of pixels visibly differ across any two renders simply because traversal-order changes cascade through the path tracer's branching, and one-bounce-different paths can blow up a pixel's contribution.
+
+### Why Tier 1's −15% didn't reproduce
+
+Most likely closed by intervening cleanup work between Tier 1 and now:
+
+- **Closest-hit native** in `RayElementIntersection` (Cleanup §1) — was a workaround in BSP days; now native, removes per-element copy/compare overhead.
+- **BVH4 collapse** (Phase 3) — fewer nodes traversed per ray.
+- **Float Möller-Trumbore filter** (Phase 2) — gates the expensive double-precision intersection.
+- **`BuildBVH4` clear-on-rebuild fix** (PR #7 review finding) — prior runs may have been double-collapsing on Refit, biasing measurements.
+- **Bounded-dynamic traversal stack** (PR #7 review finding) — `thread_local std::vector` instead of fixed `stack[64]`; removes any depth-related correctness/perf cliff.
+
+In short, the BVH path's cost factors that SBVH was meant to ameliorate are now small enough that spatial splits don't have a useful margin to recover.
+
+### Cost of keeping SBVH
+
+| Axis | Penalty |
+|---|---|
+| **Build time** | +5s on xyzdragon (~2× the SAH builder); +22% wall-time per render |
+| **Memory** | Up to +30% primitive references at 0.30 budget; permanent overhead |
+| **Code surface** | ~250 lines of dual-builder logic in `BVH.h` (`BuildSBVH`, `BuildSBVHNode`, `Ref` struct, spatial-split SAH path, ref-budget tracking) |
+| **Config surface** | Two fields on `AccelerationConfig` (`buildSBVH`, `sbvhDuplicationBudget`) and seven init sites that have to keep them in sync |
+
+### Decision
+
+**Excise SBVH.**  B2 (Sutherland-Hodgman polygon clipping) and B3 (duplicate-aware SAH) might tighten the result by a few percent more, but neither would close the gap from "null" to "worth the build/memory/code cost".  The structural answer is that with the closest-hit-native intersection and BVH4 collapse already in place, plain SAH is extracting most of the locatable benefit on this codebase's geometry.  Rather than carry a dual-builder branch that's known-no-help on the hardest workload, we revert to a single-path SAH BVH and reclaim the simplicity.
+
+The excision lands as a follow-up PR after this one — see commit history for the diff.
