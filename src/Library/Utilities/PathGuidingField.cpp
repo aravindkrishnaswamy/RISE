@@ -452,7 +452,7 @@ Scalar PathGuidingField::GetCellAlpha(
 	}
 	const uint32_t cellId = pglSurfaceSamplingDistributionGetId( handle.dist );
 
-	std::shared_lock<std::shared_mutex> lock( cellAlphaMutex );
+	std::lock_guard<std::mutex> lock( cellAlphaMutex );
 	auto it = cellState.find( cellId );
 	if( it == cellState.end() ) {
 		return 0.5;
@@ -474,7 +474,7 @@ void PathGuidingField::UpdateCellAlpha(
 		return;
 	}
 
-	std::unique_lock<std::shared_mutex> lock( cellAlphaMutex );
+	std::lock_guard<std::mutex> lock( cellAlphaMutex );
 	CellAdamState& s = cellState[ cellId ];	// inserts default if missing
 	const float alpha = 1.0f / (1.0f + std::exp( -s.theta ));
 

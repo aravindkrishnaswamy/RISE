@@ -105,7 +105,7 @@ namespace RISE
 #endif
 #include "../Interfaces/IReference.h"
 #include "../Utilities/Reference.h"
-#include <shared_mutex>
+#include <mutex>
 #include <unordered_map>
 
 namespace RISE
@@ -191,7 +191,7 @@ namespace RISE
 				CellAdamState() : theta( 0.0f ), m( 0.0f ), v( 0.0f ), t( 0 ) {}
 			};
 
-			mutable std::shared_mutex	cellAlphaMutex;
+			mutable std::mutex	cellAlphaMutex;
 			mutable std::unordered_map<uint32_t, CellAdamState> cellState;
 
 			virtual ~PathGuidingField();
@@ -313,7 +313,7 @@ namespace RISE
 
 			/// Read the learned α at the cell where `handle` is
 			/// currently initialized.  Returns 0.5 (neutral) when the
-			/// cell has no updates yet.  Cheap (shared_lock over
+			/// cell has no updates yet.  Cheap (lock_guard over
 			/// unordered_map lookup); safe to call on the hot path.
 			Scalar GetCellAlpha(
 				const GuidingDistributionHandle& handle
