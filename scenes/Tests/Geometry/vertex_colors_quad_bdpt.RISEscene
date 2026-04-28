@@ -1,0 +1,81 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           vertex_colors_quad_bdpt.RISEscene                                                       #
+#   Description:    BDPT companion to vertex_colors_quad.RISEscene.  Verifies that per-vertex color        #
+#                   propagates correctly through BDPT eye / light vertex stores and the connection-time    #
+#                   RayIntersectionGeometric reconstruction in PathVertexEval.                             #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-28                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+bdpt_pel_rasterizer
+{
+	max_eye_depth		3
+	max_light_depth		3
+	samples				64
+	pixel_filter        box
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/vertex_colors_quad_bdpt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 3.5
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					30.0
+}
+
+vertex_color_painter
+{
+	name				pnt_vcolor
+	fallback			1.0 1.0 1.0
+	colorspace			sRGB
+}
+
+lambertian_material
+{
+	name				vcolor_lambert
+	reflectance			pnt_vcolor
+}
+
+plymesh_geometry
+{
+	name				vcolor_quad_geom
+	file				scenes/Tests/Geometry/vertex_colors_quad.ply
+	double_sided		TRUE
+}
+
+standard_object
+{
+	name				vcolor_quad
+	geometry			vcolor_quad_geom
+	material			vcolor_lambert
+	receives_shadows	FALSE
+	casts_shadows		FALSE
+}
+
+omni_light
+{
+	name				key
+	power				4.0
+	color				1.0 1.0 1.0
+	position			0.0 0.0 5.0
+}

@@ -1715,6 +1715,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
+		v.vColor = ri.geometric.vColor;
+		v.bHasVertexColor = ri.geometric.bHasVertexColor;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -2843,6 +2845,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
+		v.vColor = ri.geometric.vColor;
+		v.bHasVertexColor = ri.geometric.bHasVertexColor;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -4634,12 +4638,7 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 
 					Ray evalRay( eyeEnd.position, -wo );
 					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-					ri.bHit = true;
-					ri.ptIntersection = eyeEnd.position;
-					ri.vNormal = eyeEnd.normal;
-					ri.onb = eyeEnd.onb;
-					ri.ptCoord = eyeEnd.ptCoord;
-					ri.ptObjIntersec = eyeEnd.ptObjIntersec;
+					PathVertexEval::PopulateRIGFromVertex( eyeEnd, ri );
 
 					const bool bReceivesShadows = eyeEnd.pObject
 						? eyeEnd.pObject->DoesReceiveShadows() : true;
@@ -4799,10 +4798,22 @@ Scalar BDPTIntegrator::MISWeight(
 			// for connection vertices isDelta was cleared above if connectible.
 			// Both vertices at the proposed connection must be non-delta
 			// (PBRT convention: !v[i].delta && !v[i-1].delta).
+			//
+			// EXCEPTION (delta light sources at i=1): the strategy (1, t+1)
+			// is NEE, which explicitly samples the delta-position light by
+			// direct sampling — its pdf in area measure is well-defined
+			// despite the delta vertex.  Without including it in the MIS
+			// denominator, s>=2 light-tracing strategies for paths through
+			// delta lights get misWeight=1 instead of being downweighted to
+			// ~0, producing per-pixel bias every time a light-tracing splat
+			// lands on a pixel.  The cure for that mode is to count NEE as
+			// a competing strategy here.
 			if( vi.isDelta ) {
 				continue;
 			}
-			if( i > 0 && lightVerts[i-1].isDelta ) {
+			if( i > 0 && lightVerts[i-1].isDelta &&
+				!( i == 1 && lightVerts[0].type == BDPTVertex::LIGHT ) )
+			{
 				continue;
 			}
 
@@ -7849,12 +7860,7 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 
 					Ray evalRay( eyeEnd.position, -wo );
 					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-					ri.bHit = true;
-					ri.ptIntersection = eyeEnd.position;
-					ri.vNormal = eyeEnd.normal;
-					ri.onb = eyeEnd.onb;
-					ri.ptCoord = eyeEnd.ptCoord;
-					ri.ptObjIntersec = eyeEnd.ptObjIntersec;
+					PathVertexEval::PopulateRIGFromVertex( eyeEnd, ri );
 
 					const bool bReceivesShadows = eyeEnd.pObject
 						? eyeEnd.pObject->DoesReceiveShadows() : true;

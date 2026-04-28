@@ -1168,6 +1168,39 @@ bool Job::AddUniformColorPainter(
 	return true;
 }
 
+bool Job::AddVertexColorPainter(
+							const char* name,
+							const double fallback[3],
+							const char* cspace
+							)
+{
+	IPainter* pPainter = 0;
+	if( cspace ) {
+		if( strcmp( cspace, "Rec709RGB_Linear" ) == 0 ) {
+			RISE_API_CreateVertexColorPainter( &pPainter, Rec709RGBPel(fallback) );
+		} else if ( strcmp( cspace, "sRGB" ) == 0  ) {
+			RISE_API_CreateVertexColorPainter( &pPainter, sRGBPel(fallback) );
+		} else if ( strcmp( cspace, "ROMMRGB_Linear" ) == 0  ) {
+			RISE_API_CreateVertexColorPainter( &pPainter, ROMMRGBPel(fallback) );
+		} else if ( strcmp( cspace, "ProPhotoRGB" ) == 0  ) {
+			RISE_API_CreateVertexColorPainter( &pPainter, ProPhotoRGBPel(fallback) );
+		} else if ( strcmp( cspace, "RISERGB" ) == 0  ) {
+			RISE_API_CreateVertexColorPainter( &pPainter, RISEPel(fallback) );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "Unknown color space: %s", cspace );
+			return false;
+		}
+	} else {
+		// Default: treat fallback as sRGB (matches AddUniformColorPainter).
+		RISE_API_CreateVertexColorPainter( &pPainter, sRGBPel(fallback) );
+	}
+
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a painter that paints a voronoi diagram
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddVoronoi2DPainter(

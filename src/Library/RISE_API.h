@@ -934,6 +934,15 @@ namespace RISE
 								const RISEPel& c				///< [in] Color to paint
 								);
 
+	//! Creates a painter that returns the per-vertex color the geometry
+	//! interpolates at the hit point (`ri.vColor`).  Falls back to the
+	//! supplied default for hits on geometry without vertex colors.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateVertexColorPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const RISEPel& fallback			///< [in] Color to use when no per-vertex color is present
+								);
+
 	//! Creates a painter that paints a voronoi diagram
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateVoronoi2DPainter(

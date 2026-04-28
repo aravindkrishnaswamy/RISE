@@ -187,6 +187,28 @@ namespace RISE
 					Vector2Ops::mkVector2(*thisTri.pCoords[1],*thisTri.pCoords[0])*a+
 					Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );
 
+				// Per-vertex color interpolation.  pColors is indexed by
+				// vertex *position* index (the convention every common
+				// exporter produces — see the comment on
+				// ITriangleMeshGeometryIndexed2 for why we don't carry a
+				// fourth iColors[3]).  Recover the position index from
+				// the PointerTriangle by pointer arithmetic into pPoints.
+				if( !pColors.empty() && !pPoints.empty() ) {
+					const Vertex* pBase = &pPoints[0];
+					const size_t i0 = (size_t)( thisTri.pVertices[0] - pBase );
+					const size_t i1 = (size_t)( thisTri.pVertices[1] - pBase );
+					const size_t i2 = (size_t)( thisTri.pVertices[2] - pBase );
+					if( i0 < pColors.size() && i1 < pColors.size() && i2 < pColors.size() ) {
+						const VertexColor& c0 = pColors[i0];
+						ri.vColor = c0 + (pColors[i1] - c0) * a + (pColors[i2] - c0) * b;
+						ri.bHasVertexColor = true;
+					} else {
+						ri.bHasVertexColor = false;
+					}
+				} else {
+					ri.bHasVertexColor = false;
+				}
+
 				// Populate surface derivatives for SMS consumers.
 				//
 				// Strategy: use the per-vertex (u, v) texture coordinates

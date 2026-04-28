@@ -26,7 +26,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class TriangleMeshGeometryIndexed :
-			public virtual ITriangleMeshGeometryIndexed,
+			public virtual ITriangleMeshGeometryIndexed2,
 			public virtual Geometry,
 			public virtual TreeElementProcessor<const PointerTriangle*>
 		{
@@ -42,6 +42,7 @@ namespace RISE
 			typedef VerticesListType					MyPointsList;
 			typedef NormalsListType						MyNormalsList;
 			typedef TexCoordsListType					MyCoordsList;
+			typedef VertexColorsListType				MyColorsList;
 
 			typedef std::vector<Scalar>					TriangleAreasList;
 
@@ -50,6 +51,12 @@ namespace RISE
 			MyPointsList			pPoints;			// The list of points
 			MyNormalsList			pNormals;			// The list of normals
 			MyCoordsList			pCoords;			// The list of coords
+			//! Optional per-vertex colors.  Indices into this array match
+			//! position indices (i.e. a face's `iVertices[k]` selects the
+			//! colour at `pColors[iVertices[k]]`).  Empty when the source
+			//! mesh has no color data — the vertex-color painter falls
+			//! back to its configured default in that case.
+			MyColorsList			pColors;
 			MyPointerTriangleList	ptr_polygons;		// The list of pointer triangles
 
 			bool					bDoubleSided;		// Are the polygons all double sided?
@@ -123,6 +130,13 @@ namespace RISE
 			MyNormalsList const& getNormals() const { return pNormals; }
 			MyCoordsList const& getCoords() const { return pCoords; }
 			MyPointerTriangleList const& getFaces() const { return ptr_polygons; }
+
+			// ITriangleMeshGeometryIndexed2 — per-vertex color support.
+			void AddColor( const VertexColor& color ) override;
+			void AddColors( const VertexColorsListType& colors ) override;
+			unsigned int numColors() const override { return static_cast<unsigned int>(pColors.size()); }
+			VertexColorsListType const& getColors() const override { return pColors; }
+
 			void DoneIndexedTriangles( ) override;				// I'm done feeding you a bunch of indexed triangles
 
 			//! Tier 1 §3 animation support.  Replace the vertex and

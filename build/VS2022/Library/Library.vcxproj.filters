@@ -1404,6 +1404,9 @@
     <ClInclude Include="..\..\..\src\Library\Painters\UniformColorPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi2DPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>

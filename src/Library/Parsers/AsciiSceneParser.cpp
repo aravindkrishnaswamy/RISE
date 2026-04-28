@@ -633,6 +633,36 @@ namespace RISE
 				}
 			};
 
+			struct VertexColorPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",       "noname" );
+					double fallback[3]      = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "fallback", fallback );
+					std::string color_space = bag.GetString( "colorspace", "sRGB" );
+
+					return pJob.AddVertexColorPainter( name.c_str(), fallback, color_space.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "vertex_color_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Painter that returns the per-vertex color "
+							"interpolated by the geometry at the hit point.  "
+							"Falls back to the configured color when the hit "
+							"surface has no per-vertex color data.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name";                                p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "fallback";   p.kind = ValueKind::DoubleVec3; p.description = "RGB used when no vertex color is present";   p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::String;     p.description = "Interpretation of the fallback RGB";          p.defaultValueHint = "sRGB"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct SpectralPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -3408,6 +3438,37 @@ namespace RISE
 						{ auto& p = P(); p.name = "file";           p.kind = ValueKind::Filename; p.description = "Source .risemesh file"; }
 						{ auto& p = P(); p.name = "loadintomemory"; p.kind = ValueKind::Bool;     p.description = "Load entire mesh into memory"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "face_normals";   p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PLYMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",         "noname" );
+					std::string file        = bag.GetString( "file",         "none" );
+					bool double_sided       = bag.GetBool(   "double_sided", false );
+					bool invert_faces       = bag.GetBool(   "invert_faces", false );
+					bool face_normals       = bag.GetBool(   "face_normals", false );
+					return pJob.AddPLYTriangleMeshGeometry( name.c_str(), file.c_str(), double_sided, invert_faces, face_normals );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "plymesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a Stanford PLY file.  "
+							"Per-vertex colors (when present in the PLY) are read into the "
+							"mesh and exposed at hit time via `vertex_color_painter`.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .ply file"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Treat polygons as double sided"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "invert_faces"; p.kind = ValueKind::Bool;     p.description = "Reverse face winding";          p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals";         p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -6562,6 +6623,7 @@ namespace RISE
 
 		// Painters
 		add( "uniformcolor_painter",                  new UniformColorPainterAsciiChunkParser() );
+		add( "vertex_color_painter",                  new VertexColorPainterAsciiChunkParser() );
 		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
 		add( "png_painter",                           new PngPainterAsciiChunkParser() );
 		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );
@@ -6638,6 +6700,7 @@ namespace RISE
 		add( "rawmesh_geometry",                      new RAWMeshGeometryAsciiChunkParser() );
 		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );
 		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
+		add( "plymesh_geometry",                      new PLYMeshGeometryAsciiChunkParser() );
 		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );

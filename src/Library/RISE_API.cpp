@@ -1311,6 +1311,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Painters/UniformColorPainter.h"
+#include "Painters/VertexColorPainter.h"
 #include "Painters/SpectralColorPainter.h"
 #include "Painters/TexturePainter.h"
 #include "Painters/CheckerPainter.h"
@@ -1741,6 +1742,20 @@ namespace RISE
 
 		(*ppi) = new UniformColorPainter( c );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uniform color painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateVertexColorPainter(
+								IPainter** ppi,
+								const RISEPel& fallback
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new VertexColorPainter( fallback );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "vertex color painter" );
 		return true;
 	}
 

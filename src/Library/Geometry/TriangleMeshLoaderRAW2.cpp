@@ -15,6 +15,7 @@
 #include "TriangleMeshLoaderRAW2.h"
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
+#include "../Interfaces/ITriangleMeshGeometry.h"
 #include "../Utilities/MediaPathLocator.h"
 #include <stdio.h>
 
@@ -41,6 +42,16 @@ bool TriangleMeshLoaderRAW2::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGe
 
 	pGeom->BeginIndexedTriangles();
 
+	// RAW2 vertex line is "v vX vY vZ nX nY nZ cX cY [r g b]".
+	// The trailing R G B triple is optional and added 2026-04-28.
+	// Older files (no colors) parse with 9 sscanf fields; new files
+	// parse with 12.  Colors are buffered locally and attached to the
+	// geometry after the loop iff every vertex supplied them — partial
+	// coverage gets dropped with a warning to keep the color array
+	// aligned with pPoints.
+	ITriangleMeshGeometryIndexed2* pGeom2 = dynamic_cast<ITriangleMeshGeometryIndexed2*>( pGeom );
+	std::vector<RISEPel> pendingColors;
+
 	char line[4096];
 
 	// First read how many vertices we have and how many polygons we have
@@ -59,9 +70,11 @@ bool TriangleMeshLoaderRAW2::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGe
 
 		char type;
 		double vX, vY, vZ, nX, nY, nZ, cX, cY;
-		sscanf( line, "%c %lf %lf %lf %lf %lf %lf %lf %lf", &type, &vX, &vY, &vZ, &nX, &nY, &nZ, &cX, &cY );
+		double r = 0, g = 0, b = 0;
+		const int n = sscanf( line, "%c %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+			&type, &vX, &vY, &vZ, &nX, &nY, &nZ, &cX, &cY, &r, &g, &b );
 
-		if( type != 'v' ) {
+		if( type != 'v' || (n != 9 && n != 12) ) {
 			GlobalLog()->Print( eLog_Error, "TriangleMeshLoaderRAW2:: Expected a vertex but didn't get one" );
 			return false;
 		}
@@ -69,6 +82,24 @@ bool TriangleMeshLoaderRAW2::LoadTriangleMesh( ITriangleMeshGeometryIndexed* pGe
 		pGeom->AddVertex( Vertex( vX, vY, vZ ) );
 		pGeom->AddNormal( Normal( nX, nY, nZ ) );
 		pGeom->AddTexCoord( TexCoord( cX, cY ) );
+
+		if( n == 12 ) {
+			// RAW2 colors are conventionally sRGB-encoded floats in
+			// [0, 1] (matches the PLY uchar interpretation).
+			pendingColors.push_back( RISEPel( sRGBPel( r, g, b ) ) );
+		}
+	}
+
+	if( !pendingColors.empty() ) {
+		if( pendingColors.size() == numVerts && pGeom2 ) {
+			pGeom2->AddColors( pendingColors );
+		} else if( pendingColors.size() != numVerts ) {
+			GlobalLog()->PrintEasyWarning(
+				"TriangleMeshLoaderRAW2:: file mixes colored and uncolored vertex lines — colors dropped" );
+		} else if( !pGeom2 ) {
+			GlobalLog()->PrintEasyWarning(
+				"TriangleMeshLoaderRAW2:: target geometry does not implement ITriangleMeshGeometryIndexed2 — colors dropped" );
+		}
 	}
 
 	// Read the triangles

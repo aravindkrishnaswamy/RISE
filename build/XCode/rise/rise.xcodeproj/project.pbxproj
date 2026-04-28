@@ -404,6 +404,7 @@
 		F24B73352F52A632008304C4 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
 		F24B73362F52A632008304C4 /* TexturePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0949069C42900069C9E5 /* TexturePainter.h */; };
 		F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094A069C42900069C9E5 /* UniformColorPainter.h */; };
+		AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
 		F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
 		F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */; };
 		F24B733A2F52A632008304C4 /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
@@ -1102,6 +1103,7 @@
 		F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
 		F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0949069C42900069C9E5 /* TexturePainter.h */; };
 		F27F0BAE069C42910069C9E5 /* UniformColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094A069C42900069C9E5 /* UniformColorPainter.h */; };
+		AAB7C04202604280000000A2 /* VertexColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
 		F27F0BAF069C42910069C9E5 /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
 		F27F0BB0069C42910069C9E5 /* Voronoi2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */; };
 		F27F0BB1069C42910069C9E5 /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
@@ -2047,6 +2049,7 @@
 		F27F0948069C42900069C9E5 /* TexturePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TexturePainter.cpp; sourceTree = "<group>"; };
 		F27F0949069C42900069C9E5 /* TexturePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexturePainter.h; sourceTree = "<group>"; };
 		F27F094A069C42900069C9E5 /* UniformColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UniformColorPainter.h; sourceTree = "<group>"; };
+		AAB7C04202604280000000A3 /* VertexColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VertexColorPainter.h; sourceTree = "<group>"; };
 		F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Voronoi2DPainter.cpp; sourceTree = "<group>"; };
 		F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Voronoi2DPainter.h; sourceTree = "<group>"; };
 		F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Voronoi3DPainter.cpp; sourceTree = "<group>"; };
@@ -3104,6 +3107,7 @@
 				F27F0948069C42900069C9E5 /* TexturePainter.cpp */,
 				F27F0949069C42900069C9E5 /* TexturePainter.h */,
 				F27F094A069C42900069C9E5 /* UniformColorPainter.h */,
+				AAB7C04202604280000000A3 /* VertexColorPainter.h */,
 				F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */,
 				F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */,
 				F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */,
@@ -3912,6 +3916,7 @@
 				F27F0BAB069C42910069C9E5 /* SpectralColorPainter.h in Headers */,
 				F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */,
 				F27F0BAE069C42910069C9E5 /* UniformColorPainter.h in Headers */,
+				AAB7C04202604280000000A2 /* VertexColorPainter.h in Headers */,
 				F27F0BB0069C42910069C9E5 /* Voronoi2DPainter.h in Headers */,
 				F27F0BB2069C42910069C9E5 /* Voronoi3DPainter.h in Headers */,
 				F2C5D5E72F716C5000546C97 /* BDPTPelRasterizer.h in Headers */,
@@ -4951,6 +4956,7 @@
 				F24C54492F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */,
 				F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */,
+				AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */,
 				F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */,
 				F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */,
 				F24B733A2F52A632008304C4 /* Voronoi3DPainter.cpp in Sources */,

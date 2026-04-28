@@ -53,7 +53,8 @@ namespace RISE
 		{
 			kLVF_IsDelta		= 1 << 0,	///< Sampled interaction at this vertex is a delta (specular) BSDF lobe
 			kLVF_IsConnectible	= 1 << 1,	///< Material has at least one non-delta BxDF component
-			kLVF_IsBSSRDFEntry	= 1 << 2	///< Skip: non-analytic PDF, recurrence terminates here
+			kLVF_IsBSSRDFEntry	= 1 << 2,	///< Skip: non-analytic PDF, recurrence terminates here
+			kLVF_HasVertexColor	= 1 << 3	///< vColor was populated from a colored mesh hit; consumers should mirror it into the reconstructed ri.bHasVertexColor
 		};
 
 		/// Compact per-vertex record stored in the VCM light vertex
@@ -74,6 +75,15 @@ namespace RISE
 			RISEPel				throughput;		///< Cumulative alpha_i from light origin
 			VCMMisQuantities	mis;			///< dVCM/dVC/dVM at this vertex after the geometric update
 
+			//! Per-vertex color interpolated by the geometry at hit time
+			//! (linear ROMM RGB; see RISEPel).  Replayed into the
+			//! reconstructed RayIntersectionGeometric on merge so the
+			//! vertex-color painter sees the same color it would on a
+			//! direct PT path.  bHasVertexColor mirrors the intersection
+			//! field of the same name; encoded as a flag bit on `flags`
+			//! to avoid a per-vertex padding hole.
+			RISEPel				vColor;
+
 			LightVertex() :
 				ptPosition( 0, 0, 0 ),
 				plane( 0 ),
@@ -83,7 +93,8 @@ namespace RISE
 				wi( 0, 0, 0 ),
 				pMaterial( 0 ),
 				pObject( 0 ),
-				throughput( 0, 0, 0 )
+				throughput( 0, 0, 0 ),
+				vColor( 0, 0, 0 )
 			{}
 		};
 

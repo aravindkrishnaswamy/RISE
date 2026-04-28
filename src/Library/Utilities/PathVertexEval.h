@@ -78,6 +78,49 @@ namespace RISE
 		}
 
 		//////////////////////////////////////////////////////////////////////
+		// PopulateRIGFromVertex
+		//
+		// Single source of truth for reconstructing a
+		// RayIntersectionGeometric from a stored BDPTVertex's surface state.
+		// Used by every BDPT/VCM site that hands a manually-built `ri` to a
+		// BSDF, painter, or material query.  Centralising the copy keeps
+		// the BDPTVertex / RayIntersectionGeometric surface-state field
+		// lists from drifting out of sync — a class of bug that previously
+		// produced silent BDPT firefly regressions when a new field
+		// (vertex color, surface derivatives, ...) was added to the
+		// intersection struct but missed at one of the manual reconstruction
+		// sites.
+		//
+		// CONTRACT — when adding any new field to RayIntersectionGeometric
+		// that is consumed by IBSDF::value / IPainter / IMaterial::Get*
+		// paths, you MUST:
+		//   1. Add the corresponding field to BDPTVertex (surface state
+		//      block).
+		//   2. Populate it during eye/light subpath generation in
+		//      BDPTIntegrator::GenerateEyeSubpath / GenerateLightSubpath
+		//      (and the spectral / VCM equivalents).
+		//   3. Add the copy below.
+		//   4. Extend tests/BDPTVertexRIGRebuildTest.cpp with a sentinel
+		//      assertion for the new field.
+		// The cross-reference comment in BDPTVertex.h points the next
+		// developer at this contract.
+		//////////////////////////////////////////////////////////////////////
+		inline void PopulateRIGFromVertex(
+			const BDPTVertex& vertex,
+			RayIntersectionGeometric& ri
+			)
+		{
+			ri.bHit            = true;
+			ri.ptIntersection  = vertex.position;
+			ri.vNormal         = vertex.normal;
+			ri.onb             = vertex.onb;
+			ri.ptCoord         = vertex.ptCoord;
+			ri.ptObjIntersec   = vertex.ptObjIntersec;
+			ri.vColor          = vertex.vColor;
+			ri.bHasVertexColor = vertex.bHasVertexColor;
+		}
+
+		//////////////////////////////////////////////////////////////////////
 		// RGB BSDF Evaluation
 		//////////////////////////////////////////////////////////////////////
 
@@ -166,12 +209,7 @@ namespace RISE
 			// Negate wo to get ri.ray.Dir() toward the surface.
 			Ray evalRay( vertex.position, -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			ri.bHit = true;
-			ri.ptIntersection = vertex.position;
-			ri.vNormal = vertex.normal;
-			ri.onb = vertex.onb;
-			ri.ptCoord = vertex.ptCoord;
-			ri.ptObjIntersec = vertex.ptObjIntersec;
+			PopulateRIGFromVertex( vertex, ri );
 
 			return pBSDF->value( wi, ri );
 		}
@@ -301,12 +339,7 @@ namespace RISE
 
 			Ray evalRay( vertex.position, -wo );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			ri.bHit = true;
-			ri.ptIntersection = vertex.position;
-			ri.vNormal = vertex.normal;
-			ri.onb = vertex.onb;
-			ri.ptCoord = vertex.ptCoord;
-			ri.ptObjIntersec = vertex.ptObjIntersec;
+			PopulateRIGFromVertex( vertex, ri );
 
 			return pBSDF->valueNM( wi, ri, nm );
 		}
