@@ -61,6 +61,9 @@ namespace RISE
 		bool			enabled;				///< Master switch
 		unsigned int	trainingIterations;		///< Number of training passes before final render
 		unsigned int	trainingSPP;			///< Samples per pixel during each training pass
+		bool			combineTrainingIterations;	///< If true, accumulate every training iteration's rendered pixels into the final image weighted by its SPP (Müller 2017 §5).  When false (legacy behaviour) training-iteration pixels are discarded — fine only when total final SPP ≫ training SPP.  At low final SPP, discarding wastes the work and trial-to-trial training non-determinism dominates the variance budget.
+		bool			online;					///< If true, the training-iteration loop IS the entire render — no separate final pass, every sample feeds both the field and the image.  Implies combineTrainingIterations.  Best for low-SPP regimes where the train-then-render two-phase pattern wastes too much budget on discarded training pixels (Vorba 2014 / NASG 2024 style).  Total SPP = pathguiding_iterations × pathguiding_spp; the scene's `samples` parameter is ignored in this mode.
+		unsigned int	warmupIterations;		///< Number of training iterations to render with alpha=0 (pure BSDF sampling) before switching to the configured alpha.  Samples still feed the field — but because they're produced by unguided BDPT, their pixels are statistically clean to keep in the final image when combine/online is on.  This avoids the bias regression where naive online combine mixes early pixels-from-untrained-field into the output.  Useful primarily when `online` is true; ignored when `combineTrainingIterations` is false.
 		Scalar			alpha;					///< MIS blending weight: P(sample from guide)
 		bool			learnedAlpha;			///< Per-cell Adam-learned α (Müller 2017 v2 / Tom94's practical-path-guiding).  When true the per-vertex α used in one-sample MIS is `alpha · 2 · σ(θ_cell)`, with θ_cell updated by Adam on the deferred KL gradient at path completion.  Neutral at low SPP (32), ~2% mean-σ² reduction at 256 SPP.  When false, falls back to fixed `alpha`.
 		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling
@@ -75,6 +78,9 @@ namespace RISE
 		enabled( false ),
 		trainingIterations( 4 ),
 		trainingSPP( 4 ),
+		combineTrainingIterations( true ),
+		online( false ),
+		warmupIterations( 0 ),
 		alpha( 0.5 ),
 		learnedAlpha( true ),
 		maxGuidingDepth( 3 ),
