@@ -30,9 +30,25 @@ namespace RISE
 {
 	class ISampling2D;
 	class IRayCaster;
+	class IRasterizer;
 
 	namespace Implementation
 	{
+		//! Constructs the shared cross-platform interactive preview
+		//! pipeline: material-preview shading, bounded preview AO, a
+		//! live-drag caster, a richer pointer-up polish caster, and an
+		//! InteractivePelRasterizer wired to swap between them.
+		//!
+		//! Returned pointers are refcounted ownership references for
+		//! the caller to release.  The rasterizer also addrefs the
+		//! casters internally, so platform bridges may keep and release
+		//! their own caster handles exactly as they do for normal
+		//! RISE_API_CreateRayCaster results.
+		bool CreateInteractiveMaterialPreviewPipeline(
+			IRasterizer** ppRasterizer,
+			IRayCaster** ppPreviewCaster,
+			IRayCaster** ppPolishCaster );
+
 		class InteractivePelRasterizer : public PixelBasedPelRasterizer
 		{
 		public:
@@ -95,10 +111,9 @@ namespace RISE
 			//! mode so the next pass runs as a single multi-sampled
 			//! render.  If a polish ray caster has been installed via
 			//! SetPolishRayCaster, n>1 also swaps to that caster so
-			//! the polish pass benefits from higher max-recursion
-			//! (more reflection/refraction/glossy bounces) than the
-			//! preview caster used during live drag.  Sticky until
-			//! cleared with SetSampleCount(1).
+			//! the polish pass can use richer preview shading (for
+			//! example, more AO probes) than the caster used during
+			//! live drag.  Sticky until cleared with SetSampleCount(1).
 			//!
 			//! Used by SceneEditController to do a final 4-SPP polish
 			//! pass at full resolution after the user releases the
@@ -108,13 +123,9 @@ namespace RISE
 
 			//! Install an optional secondary ray caster that
 			//! SetSampleCount(>1) swaps in for the duration of a
-			//! multi-SPP polish pass.  The bridge typically constructs
-			//! this with a higher max-recursion (e.g. 2) than the
-			//! preview caster (max-recursion 1) so glass / mirrors /
-			//! glossy materials get one bounce of refl/refr/glossy in
-			//! the polish image, while the live preview stays cheap.
-			//! Refcounted; the rasterizer addrefs and releases on
-			//! destruction.  Pass nullptr to clear.
+			//! multi-SPP polish pass.  Refcounted; the rasterizer
+			//! addrefs and releases on destruction.  Pass nullptr to
+			//! clear.
 			void SetPolishRayCaster( IRayCaster* polishCaster );
 
 		protected:

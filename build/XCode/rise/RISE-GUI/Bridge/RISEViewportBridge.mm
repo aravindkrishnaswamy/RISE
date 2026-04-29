@@ -5,8 +5,8 @@
 //    C entry points.
 //
 //    Phase 5: live-preview wiring.  When the host RISEBridge has a
-//    loaded scene with at least one shader, we construct an
-//    InteractivePelRasterizer alongside a viewport-targeted
+//    loaded scene, we construct an InteractivePelRasterizer alongside
+//    a viewport-targeted
 //    IRasterizerOutput sink that converts each finished tile into
 //    an NSImage and posts it to a Swift-supplied block on the main
 //    thread.  This is what makes the SwiftUI viewport actually
@@ -22,9 +22,6 @@
 #include "Interfaces/IRasterizer.h"
 #include "Interfaces/IRasterizerOutput.h"
 #include "Interfaces/IRasterImage.h"
-#include "Interfaces/IShaderManager.h"
-#include "Interfaces/IShader.h"
-#include "Interfaces/IEnumCallback.h"
 #include "Utilities/Reference.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
@@ -45,29 +42,6 @@ using namespace RISE;
 @end
 
 namespace {
-
-// ============================================================
-// Scrape the first available shader name out of an
-// IShaderManager.  Used to pick a shader for the interactive
-// rasterizer's ray caster.
-// ============================================================
-class FirstShaderNameCallback : public IEnumCallback<const char *> {
-public:
-    String firstName;
-
-    bool operator()( const char* const& name ) override {
-        if( firstName.size() <= 1 && name && name[0] != 0 ) {
-            firstName = name;
-        }
-        return true;
-    }
-};
-
-static String FindFirstShaderName( IShaderManager& mgr ) {
-    FirstShaderNameCallback cb;
-    mgr.EnumerateItemNames( cb );
-    return cb.firstName;
-}
 
 // ============================================================
 // IRasterizerOutput sink for the interactive viewport.
@@ -271,8 +245,8 @@ private:
     IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
 
     // Try to build the live-preview rasterizer.  This is best-effort:
-    // a scene without any shader degrades to skeleton mode (edits
-    // still work, user clicks Render to see the production result).
+    // if setup fails, edits still work and the user can click Render
+    // to see the production result.
     [self tryBuildLivePreviewForJob:pJob];
 
     if (!RISE_API_CreateSceneEditController(pJob, _interactiveRasterizer, &_controller)) {
@@ -293,51 +267,19 @@ private:
 }
 
 - (void)tryBuildLivePreviewForJob:(IJobPriv*)pJob {
-    IShaderManager* shaders = pJob->GetShaders();
-    if (!shaders) return;
+    (void)pJob;
 
-    String firstShaderName = FindFirstShaderName(*shaders);
-    if (firstShaderName.size() <= 1) return;   // empty == "" + null term
-
-    IShader* pShader = shaders->GetItem(firstShaderName.c_str());
-    if (!pShader) return;
-
-    // Cheap caster for live drag: max recursion 1 (primary visibility
-    // only), luminaires not directly visible, no environment-radiance
-    // see-through.  Used during the cancel-restart loop so each frame
-    // is fast enough for 30Hz target.
+    IRasterizer* interactive = nullptr;
     IRayCaster* pCaster = nullptr;
-    if (!RISE_API_CreateRayCaster(&pCaster, /*seeRadianceMap*/false,
-                                  /*maxR*/1, *pShader, /*showLuminaires*/false))
+    IRayCaster* pPolishCaster = nullptr;
+    if (!Implementation::CreateInteractiveMaterialPreviewPipeline(
+            &interactive, &pCaster, &pPolishCaster))
     {
         return;
     }
 
-    // Higher-quality caster for the post-release 4-SPP polish pass:
-    // max recursion 2 lets glass / mirrors / glossy materials produce
-    // one bounce of reflected / refracted / glossy rays in the final
-    // image.  Best-effort — if construction fails, polish falls back
-    // to the preview caster (no bounces).
-    IRayCaster* pPolishCaster = nullptr;
-    RISE_API_CreateRayCaster(&pPolishCaster, /*seeRadianceMap*/false,
-                             /*maxR*/2, *pShader, /*showLuminaires*/false);
-
-    Implementation::InteractivePelRasterizer::Config cfg;
-    // Defaults are right for live preview: 1 SPP, center-out tiles,
-    // no progressive on idle (keep it simple for Phase 5).
-    cfg.progressiveOnIdle = false;
-
-    // Assign the casters to the members BEFORE the rasterizer ctor so
-    // a bad_alloc in the rasterizer ctor leaves the casters owned by
-    // the bridge and -shutdown will release them.  Same pattern for
-    // the sink.  Without this, an exception leaks the casters.
     _caster = pCaster;
     _polishCaster = pPolishCaster;
-
-    auto* interactive = new Implementation::InteractivePelRasterizer(pCaster, cfg);
-    if (pPolishCaster) {
-        interactive->SetPolishRayCaster(pPolishCaster);
-    }
     _interactiveRasterizer = interactive;
 
     _previewSink = new ViewportPreviewSink();

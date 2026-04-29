@@ -901,13 +901,17 @@ void BDPTRasterizerBase::RasterizeScene(
 	pIntegrator->ResetStrategySelectionStats();
 #endif
 
-	// Tier 2 online mode: the training-iteration loop above IS the entire
-	// render.  pCombineAccum already holds Σ N_train_k · I_train_k from
-	// every iteration.  Skip the multi-pass final render — pImage stays
-	// zero and the final blend below will use only the accumulator
-	// (finalWeight=0).  Total SPP delivered = pathguiding_iterations ×
-	// pathguiding_spp; the scene's `samples` parameter is ignored.
-	const bool skipFinalPass = guidingConfig.enabled && guidingConfig.online && pCombineAccum;
+		// Tier 2 online mode: the training-iteration loop above IS the entire
+		// render.  pCombineAccum already holds Σ N_train_k · I_train_k from
+		// every iteration.  Skip the multi-pass final render — pImage stays
+		// zero and the final blend below will use only the accumulator
+		// (finalWeight=0).  Total SPP delivered = pathguiding_iterations ×
+		// pathguiding_spp; the scene's `samples` parameter is ignored.
+#ifdef RISE_ENABLE_OPENPGL
+		const bool skipFinalPass = guidingConfig.enabled && guidingConfig.online && pCombineAccum;
+#else
+		const bool skipFinalPass = false;
+#endif
 
 	if( progressiveConfig.enabled && pSampling && !skipFinalPass )
 	{
@@ -1095,24 +1099,26 @@ void BDPTRasterizerBase::RasterizeScene(
 		}
 	}
 
-	// Müller 2017 §5 finalize: blend the training-iteration accumulator
-	// (Σ N_k · I_train_k) with the final-render image at its sample-
-	// count weight.  All training-iteration pixels now contribute to
-	// the output instead of being discarded.  Skipped when the
-	// accumulator was never allocated (combineTrainingIterations=false,
-	// OpenPGL disabled at compile time, or pathguiding disabled at
-	// runtime).
-	if( pCombineAccum ) {
-		const Scalar finalWeight = skipFinalPass ?
-			static_cast<Scalar>( 0 ) :
-			static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
-		FinalizeVarianceAwareCombine(
-			*pImage,
-			*pCombineAccum,
-			combineAccumWeight,
-			finalWeight );
-		safe_release( pCombineAccum );
-	}
+		// Müller 2017 §5 finalize: blend the training-iteration accumulator
+		// (Σ N_k · I_train_k) with the final-render image at its sample-
+		// count weight.  All training-iteration pixels now contribute to
+		// the output instead of being discarded.  Skipped when the
+		// accumulator was never allocated (combineTrainingIterations=false,
+		// OpenPGL disabled at compile time, or pathguiding disabled at
+		// runtime).
+#ifdef RISE_ENABLE_OPENPGL
+		if( pCombineAccum ) {
+			const Scalar finalWeight = skipFinalPass ?
+				static_cast<Scalar>( 0 ) :
+				static_cast<Scalar>( pSampling ? pSampling->GetNumSamples() : 0 );
+			FinalizeVarianceAwareCombine(
+				*pImage,
+				*pCombineAccum,
+				combineAccumWeight,
+				finalWeight );
+			safe_release( pCombineAccum );
+		}
+#endif
 
 	RISE_PROFILE_REPORT(GlobalLog());
 

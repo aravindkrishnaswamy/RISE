@@ -20,9 +20,6 @@
 #include "Interfaces/IRasterizerOutput.h"
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/IScene.h"
-#include "Interfaces/IShaderManager.h"
-#include "Interfaces/IShader.h"
-#include "Interfaces/IEnumCallback.h"
 #include "Interfaces/ILogPriv.h"
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/Reference.h"
@@ -467,57 +464,21 @@ private:
     std::atomic<bool>          m_suppressNext{false};
 };
 
-class FirstShaderNameCallback : public RISE::IEnumCallback<const char*> {
-public:
-    RISE::String firstName;
-    bool operator()(const char* const& name) override {
-        if (firstName.size() <= 1 && name && name[0] != 0) firstName = name;
-        return true;
-    }
-};
-
 }  // anonymous namespace
 
 void RiseBridge::buildViewportLivePreview() {
     if (!m_job) return;
-    RISE::IShaderManager* shaders = m_job->GetShaders();
-    if (!shaders) return;
 
-    FirstShaderNameCallback scb;
-    shaders->EnumerateItemNames(scb);
-    if (scb.firstName.size() <= 1) return;
-
-    RISE::IShader* pShader = shaders->GetItem(scb.firstName.c_str());
-    if (!pShader) return;
-
-    // Cheap caster for live drag (max-recursion 1, primary visibility
-    // only).  See macOS bridge for full rationale.
+    RISE::IRasterizer* interactive = nullptr;
     RISE::IRayCaster* pCaster = nullptr;
-    if (!RISE::RISE_API_CreateRayCaster(&pCaster, /*seeRadianceMap*/false,
-                                        /*maxR*/1, *pShader, /*showLuminaires*/false)) {
+    RISE::IRayCaster* pPolishCaster = nullptr;
+    if (!RISE::Implementation::CreateInteractiveMaterialPreviewPipeline(
+            &interactive, &pCaster, &pPolishCaster)) {
         return;
     }
 
-    // Higher-quality caster for the post-release 4-SPP polish pass
-    // (max-recursion 2 → one bounce of glossy / refl / refr).
-    RISE::IRayCaster* pPolishCaster = nullptr;
-    RISE::RISE_API_CreateRayCaster(&pPolishCaster, /*seeRadianceMap*/false,
-                                   /*maxR*/2, *pShader, /*showLuminaires*/false);
-
-    RISE::Implementation::InteractivePelRasterizer::Config cfg;
-    cfg.progressiveOnIdle = false;
-
-    // Member-assign before each subsequent allocation so bad_alloc
-    // during the rasterizer or sink ctor still leaves prior resources
-    // owned by the bridge — releaseViewportLivePreview will clean
-    // them up.  Without this, an exception leaks pCaster.
     m_viewportCaster = pCaster;
     m_viewportPolishCaster = pPolishCaster;
-
-    auto* interactive = new RISE::Implementation::InteractivePelRasterizer(pCaster, cfg);
-    if (pPolishCaster) {
-        interactive->SetPolishRayCaster(pPolishCaster);
-    }
     m_viewportRasterizer = interactive;
 
     auto* sink = new ViewportPreviewSink(this);

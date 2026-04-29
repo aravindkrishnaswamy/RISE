@@ -23,6 +23,7 @@ namespace RISE
 {
 	class Ray;
 	class IScene;
+	class RayIntersection;
 
 	namespace Implementation { class LightSampler; }
 
@@ -49,6 +50,12 @@ namespace RISE
 			bool						bPendingUseLightBVH;
 
 			virtual ~RayCaster();
+
+			//! Selects the shader used for a surface hit.  The default
+			//! honours the per-object shader and falls back to the
+			//! caster's default shader.  Interactive preview casters can
+			//! override this policy without mutating scene objects.
+			virtual const IShader& SelectShader( const RayIntersection& ri ) const;
 
 		public:
 			RayCaster(

@@ -11,18 +11,6 @@ JavaVM*                g_vm        = nullptr;
 CachedCallbackMethods  g_cb        = {};
 pthread_key_t          g_detachKey = 0;
 
-namespace {
-// pthread_key destructor: detach the thread from the JVM when it exits so we
-// don't leak JVM-side ThreadLocal state. This runs on each library worker
-// thread shutdown (they are spawned by pthread_create inside librise per
-// Rasterize() call).
-void detachOnThreadExit(void* /*ignored*/) {
-    if (g_vm) {
-        g_vm->DetachCurrentThread();
-    }
-}
-} // namespace
-
 JNIEnv* getJniEnv() {
     if (!g_vm) {
         LOGE("getJniEnv: g_vm is null (JNI_OnLoad did not run?)");
@@ -38,8 +26,8 @@ JNIEnv* getJniEnv() {
 
     if (rc == JNI_EDETACHED) {
         // Attach as daemon so process shutdown doesn't deadlock waiting for
-        // this thread to detach. The pthread_key destructor below will detach
-        // us when the thread exits normally.
+        // this thread to detach. JNI_OnLoad registers a pthread_key destructor
+        // that detaches us when the thread exits normally.
         if (g_vm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) {
             LOGE("getJniEnv: AttachCurrentThreadAsDaemon failed");
             return nullptr;

@@ -21,35 +21,11 @@
 #include "Interfaces/IRasterizer.h"
 #include "Interfaces/IRasterizerOutput.h"
 #include "Interfaces/IRasterImage.h"
-#include "Interfaces/IShaderManager.h"
-#include "Interfaces/IShader.h"
-#include "Interfaces/IEnumCallback.h"
 #include "Utilities/Reference.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
 
 using namespace RISE;
-
-namespace {
-
-// Pick the first available shader name from an IShaderManager so we
-// can build a RayCaster.  Same trick as macOS's bridge.
-class FirstShaderNameCallback : public IEnumCallback<const char*> {
-public:
-    String firstName;
-    bool operator()(const char* const& name) override {
-        if (firstName.size() <= 1 && name && name[0] != 0) firstName = name;
-        return true;
-    }
-};
-
-static String FindFirstShaderName(IShaderManager& mgr) {
-    FirstShaderNameCallback cb;
-    mgr.EnumerateItemNames(cb);
-    return cb.firstName;
-}
-
-} // namespace
 
 // =====================================================================
 // ViewportPreviewSink — IRasterizerOutput that converts the final frame
@@ -189,45 +165,17 @@ void ViewportBridge::buildLivePreview()
     if (!m_engine) return;
     void* opaque = m_engine->opaqueJobHandle();
     if (!opaque) return;
-    IJobPriv* pJob = static_cast<IJobPriv*>(opaque);
 
-    IShaderManager* shaders = pJob->GetShaders();
-    if (!shaders) return;
-
-    String firstShader = FindFirstShaderName(*shaders);
-    if (firstShader.size() <= 1) return;
-
-    IShader* pShader = shaders->GetItem(firstShader.c_str());
-    if (!pShader) return;
-
-    // Cheap caster for live drag (max-recursion 1, primary visibility
-    // only).  See macOS bridge for full rationale.
+    IRasterizer* interactive = nullptr;
     IRayCaster* pCaster = nullptr;
-    if (!RISE_API_CreateRayCaster(&pCaster, /*seeRadianceMap*/false,
-                                  /*maxR*/1, *pShader, /*showLuminaires*/false)) {
+    IRayCaster* pPolishCaster = nullptr;
+    if (!Implementation::CreateInteractiveMaterialPreviewPipeline(
+            &interactive, &pCaster, &pPolishCaster)) {
         return;
     }
 
-    // Higher-quality caster for the post-release 4-SPP polish pass
-    // (max-recursion 2 → one bounce of glossy / refl / refr).  Best-
-    // effort; on construction failure the polish falls back to the
-    // preview caster.
-    IRayCaster* pPolishCaster = nullptr;
-    RISE_API_CreateRayCaster(&pPolishCaster, /*seeRadianceMap*/false,
-                             /*maxR*/2, *pShader, /*showLuminaires*/false);
-
-    Implementation::InteractivePelRasterizer::Config cfg;
-    cfg.progressiveOnIdle = false;
-
-    // Member-assign-then-new so exception during rasterizer ctor still
-    // leaves the casters owned by the bridge and ~ViewportBridge's
-    // releaseLivePreview will release them.
     m_caster = pCaster;
     m_polishCaster = pPolishCaster;
-    auto* interactive = new Implementation::InteractivePelRasterizer(pCaster, cfg);
-    if (pPolishCaster) {
-        interactive->SetPolishRayCaster(pPolishCaster);
-    }
     m_interactiveRasterizer = interactive;
 
     m_previewSink = new ViewportPreviewSink(this);

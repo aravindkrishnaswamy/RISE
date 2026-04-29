@@ -68,6 +68,11 @@ RayCaster::RayCaster(
 	pDefaultShader.addref();
 }
 
+const IShader& RayCaster::SelectShader( const RayIntersection& ri ) const
+{
+	return ri.pShader ? *ri.pShader : pDefaultShader;
+}
+
 RayCaster::~RayCaster( )
 {
 	safe_release( pScene );
@@ -728,11 +733,7 @@ bool RayCaster::CastRay(
 		ior_stack.SetCurrentObject( ri.pObject );
 
 		// Apply shade by calling the appropriate shader
-		if( ri.pShader ) {
-			ri.pShader->Shade( rc, ri, *this, rs, c, ior_stack );
-		} else {
-			pDefaultShader.Shade( rc, ri, *this, rs, c, ior_stack );
-		}
+		SelectShader( ri ).Shade( rc, ri, *this, rs, c, ior_stack );
 
 		// Apply medium transmittance to surface shading result
 		if( pMedium ) {
@@ -1255,11 +1256,7 @@ bool RayCaster::CastRayNM(
 		ior_stack.SetCurrentObject( ri.pObject );
 
 		// Apply shade by calling the appropriate shader
-		if( ri.pShader ) {
-			c = ri.pShader->ShadeNM( rc, ri, *this, rs, nm, ior_stack );
-		} else {
-			c = pDefaultShader.ShadeNM( rc, ri, *this, rs, nm, ior_stack );
-		}
+		c = SelectShader( ri ).ShadeNM( rc, ri, *this, rs, nm, ior_stack );
 
 		// Apply medium transmittance to surface shading result
 		if( pMedium ) {
@@ -1470,11 +1467,7 @@ bool RayCaster::CastRayHWSS(
 		// Dispatch to ShadeHWSS — this routes through
 		// PerformOperationHWSS, enabling hero-wavelength
 		// directional sharing in PathTracingShaderOp.
-		if( ri.pShader ) {
-			ri.pShader->ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
-		} else {
-			pDefaultShader.ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
-		}
+		SelectShader( ri ).ShadeHWSS( rc, ri, *this, rs, c, swl, ior_stack );
 
 		if( distance ) {
 			*distance = ri.geometric.range;
@@ -1555,4 +1548,3 @@ void RayCaster::SetLuminaireSampling(
 		pLumSampling->addref();
 	}
 }
-
