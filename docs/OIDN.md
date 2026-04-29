@@ -585,7 +585,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     transient bandwidth per denoise on the CPU path.
 
 #### OIDN-P1-3 — Progress monitor (cancel intentionally NOT wired)
-- **Status:** Open
+- **Status:** Closed (won't do unless an interactive UI consumer
+  arrives) — 2026-04-29.  No call site reads denoise progress
+  today; the cancel-no-propagate invariant is documented below
+  for future reference if the call gets revisited.
 - **Owner:** —
 - **PR:** —
 - **Project invariant — do NOT propagate cancel to OIDN.** The user
@@ -646,7 +649,11 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P2 — polish
 
 #### OIDN-P2-1 — CLI override flag for denoise
-- **Status:** Open
+- **Status:** Closed (won't do, low ROI) — 2026-04-29.  Editing
+  the scene file is acceptable friction for batch sweeps; the
+  parser already supports per-chunk `oidn_denoise` and
+  `oidn_quality` parameters.  Reopen if a benchmarking workflow
+  emerges that genuinely needs flag-driven override.
 - **Owner:** —
 - **PR:** —
 - **Why:** Today the only way to flip `oidn_denoise` for a scene is to edit
@@ -658,7 +665,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P2-2 — Write `_albedo` / `_normal` AOVs as separate file outputs
-- **Status:** Open
+- **Status:** Closed (won't do, low ROI) — 2026-04-29.  No
+  concrete debugging request.  Reopen when a real "denoise
+  looks wrong on this scene" report arrives that's hard to
+  diagnose without aux dumps.
 - **Owner:** —
 - **PR:** —
 - **Why:** Useful for offline debugging when a user reports "denoise looks
@@ -671,7 +681,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P2-3 — Expose `inputScale` for extreme-HDR scenes
-- **Status:** Open
+- **Status:** Closed (won't do, niche) — 2026-04-29.  OIDN's
+  auto-exposure (`inputScale=NaN` default) handles all
+  observed scenes correctly.  Reopen if a specific extreme-HDR
+  pathology is identified.
 - **Owner:** —
 - **PR:** —
 - **Why:** OIDN auto-exposes when `inputScale=NaN`. For scenes with extreme
@@ -683,7 +696,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P2-4 — `maxMemoryMB` for memory-constrained systems
-- **Status:** Open
+- **Status:** Closed (won't do, niche) — 2026-04-29.  Apple
+  Silicon's unified memory + RISE's typical render scale don't
+  hit memory pressure.  Reopen if a memory-bound user reports
+  OOM during denoise.
 - **Owner:** —
 - **PR:** —
 - **Touch:** parser + denoiser.
@@ -740,6 +756,29 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — Backlog wrap-up: P1-3 / P2-* closed as not worth doing
+- After shipping P0-1..P0-4, P1-1 (v1+v2), and P1-2, the user
+  evaluated the remaining backlog and decided none of it is worth
+  the effort right now.  Items closed:
+  - **P1-3** progress monitor — no current consumer; reopen when
+    an interactive UI needs denoise progress feedback.
+  - **P2-1** CLI override flag — editing the scene file is
+    acceptable friction; the parser surface is already enough.
+  - **P2-2** aux-buffer EXR dump — no concrete debugging request.
+  - **P2-3** inputScale knob — OIDN's auto-exposure handles
+    observed scenes; niche.
+  - **P2-4** maxMemoryMB knob — Apple Silicon unified memory
+    means RISE doesn't hit pressure here.
+- The "Why" / "What" sections of each closed entry are preserved
+  verbatim so a future reopener has the full context without
+  needing to re-derive the design.  Each Status field carries
+  the dated rationale and a "reopen if…" trigger condition.
+- This closes out the OIDN integration audit started 2026-04-29
+  with five P0 + two P1 wins shipped (`9eb9b31`, `dc237d1`,
+  `3369f09`, `db50bbe`, plus prior P0 commits).  All future
+  OIDN work has its own concrete trigger; the tracker is no
+  longer carrying speculative items.
 
 ### 2026-04-29 — OIDN-P1-2 shipped (zero-copy shared buffers on CPU device)
 - `OIDNDenoiser::Denoise` now uses
