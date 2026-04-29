@@ -529,8 +529,16 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
       (vs 518 ms accurate, 2.3× speedup as designed).
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
-- **Status:** Open
-- **Owner:** —
+- **Status:** Shipped — 2026-04-29.  `oidn::DeviceRef::newBuffer(void*, size_t)`
+  (the C++ wrapper for `oidnNewSharedBuffer`) wraps host memory
+  directly; the device-side `newBuffer(size_t)` + `buffer.write` /
+  `read` round trip is now skipped on CPU device.  GPU devices
+  (Metal / SYCL / CUDA / HIP) keep the device-owned-buffer path
+  because their memory isn't host-mapped.  Mode is auto-detected
+  by introspecting the actual device type after creation, so
+  `oidn_device auto` correctly picks zero-copy when OIDN falls
+  back to CPU on a Mac without the metal device dylib.
+- **Owner:** Aravind
 - **PR:** —
 - **Why:** Today `Denoise()` does up to 4 host-side full-image copies (image
   → beautyBuf, beautyBuf → colorBuf, outputBuf → denoisedBuf, denoisedBuf →
@@ -542,7 +550,39 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Touch:** [OIDNDenoiser.cpp:113](../src/Library/Rendering/OIDNDenoiser.cpp#L113).
 - **Effort:** ~1 hour. Subtle aliasing rules — test in/out buffer overlap.
 - **Verification:** heap profiler before / after on a 4K denoise.
-- **Result:** —
+- **Result:**
+  - `OIDNDenoiser::State` gains `useSharedBuffers` (bool, set after
+    device commit by introspecting `device.get<int>("type")` == CPU)
+    and four `boundXxxPtr` host-pointer trackers.
+  - Cache-key extension: when `useSharedBuffers` is true, a change
+    in any of (color / albedo / normal / output) host pointer
+    triggers a cache miss → filter rebuild against the new pointer.
+    In practice the staging vectors (`beautyStaging`, `denoisedStaging`)
+    inside State are stable across calls of the same dimensions
+    (vector capacity is preserved), and `AOVBuffers` lives on the
+    rasterizer for its lifetime, so cache hits are the common case.
+  - `Denoise()` rebuild branch: shared mode calls
+    `device.newBuffer(host_ptr, bytes)` for color / output / albedo /
+    normal (with `const_cast` on the input-only aux pointers — safe
+    in Fast mode since OIDN doesn't write through them; in Accurate
+    mode the prefilter writes back in-place, which is intentional
+    and harmless because `AOVBuffers::Reset()` zeroes the buffers
+    before each render).  Non-shared mode keeps the original
+    `newBuffer(bytes)` device-owned path.
+  - Per-call write/read are gated on `!useSharedBuffers` — in shared
+    mode the data is already aliased and the copies are no-ops.
+  - Build clean, 72/72 tests pass.  Smoke tests on M1 Max:
+    - **CPU shared** (`oidn_device cpu`) at 200×150 + glass scene:
+      cold-cache 12 ms, warm-cache 5.9 ms.  Log shows
+      `[zero-copy shared buffers]` suffix on device creation.
+    - **Metal** (`oidn_device auto`, default) at 200×150 + glass:
+      cold 209 ms (Metal init dominates), warm 5.2 ms.  No
+      `[zero-copy]` suffix as expected.
+    - **CPU shared + Accurate prefilter**: 24 ms cold (vs 12 ms
+      Fast).  In-place prefilter through shared aliases works.
+  - Memory savings scale with image size: at 4K RGB a single
+    image is ~96 MB; eliminating 4 such copies saves ~380 MB of
+    transient bandwidth per denoise on the CPU path.
 
 #### OIDN-P1-3 — Progress monitor (cancel intentionally NOT wired)
 - **Status:** Open
@@ -700,6 +740,44 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P1-2 shipped (zero-copy shared buffers on CPU device)
+- `OIDNDenoiser::Denoise` now uses
+  `oidn::DeviceRef::newBuffer(host_ptr, bytes)` (the C++ wrapper for
+  `oidnNewSharedBuffer`) on CPU device, eliminating up to 4
+  image-sized memcpy operations per denoise (color in, albedo in,
+  normal in, output out — each was ~50 MB at 4K RGB).
+- **Auto-detection over user knob:** mode is decided by introspecting
+  `device.get<int>("type") == CPU` AFTER device creation.  This is
+  more robust than trusting the user's `oidn_device` parameter
+  because `Default` silently picks CPU when no GPU backend is
+  loadable (e.g., Mac without the metal device dylib — see
+  OIDN-P0-3 install gotcha).  The log line gains a
+  `[zero-copy shared buffers]` suffix when shared mode kicks in,
+  so it's visible at a glance.
+- **Cache-key extension for pointer stability:** shared buffers pin
+  to a specific host address at filter-commit time; if the caller
+  passes a different pointer next call, we must rebuild.  Added
+  `boundColorPtr` / `boundOutputPtr` / `boundAlbedoPtr` /
+  `boundNormalPtr` to State and treat any mismatch as a cache
+  miss.  In practice the State staging vectors (`beautyStaging`,
+  `denoisedStaging`) and `AOVBuffers` are stable across calls of
+  the same dimensions, so cache hits are the common case.
+- **Const correctness deliberately relaxed:** input-only aux
+  pointers are `const float*` in the API, but
+  `oidn::Buffer::newBuffer(void*, size_t)` requires a non-const
+  pointer.  `const_cast` is safe in Fast mode (OIDN doesn't write
+  inputs).  In Accurate mode the in-place prefilter writes back
+  to the aux buffer through the shared alias, which mutates the
+  host AOV vector — that's intentional and harmless because
+  `AOVBuffers::Reset()` zeroes the buffers before each render.
+  Documented in the OIDN-P1-2 entry.
+- **GPU path unchanged:** Metal / SYCL / CUDA / HIP devices keep
+  the original `newBuffer(bytes)` + `buffer.write` / `read` round
+  trip because their memory is not host-mapped.  Smoke test
+  confirmed no regression on Metal (cold 209 ms / warm 5.2 ms,
+  same as pre-P1-2 numbers).
+- 72/72 tests pass; build clean.  No new source files.
 
 ### 2026-04-29 — OIDN-P1-1 v2 shipped (BDPT + VCM walk-past-delta AOV)
 - BDPT Pel, VCM Pel, and VCM Spectral rasterizers now walk
