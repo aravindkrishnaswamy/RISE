@@ -177,6 +177,57 @@ compensation that's recovering with too small a survival probability,
 or a guide-PDF in the denominator that's too small).  Fireflies in P99
 are the most common signature.
 
+### 7. Compute ROI vs unguided BDPT at fixed wall time
+
+Variance ratios between two PGL configurations are useful but
+incomplete.  The harder question is whether *any* PGL is better than
+no PGL at fixed wall budget — because path guiding always pays a
+training overhead, and that overhead has to come back through reduced
+sampling variance to be worthwhile.
+
+The protocol:
+
+1. Render `pathguiding FALSE` at the same scene at K=16, get a
+   baseline `(σ²₀, W₀)` pair.
+2. For each PGL configuration with measured `(σ²_PGL, W_PGL)`,
+   project unguided variance at the PGL config's wall time:
+   `σ²_unguided(W_PGL) = σ²₀ × W₀ / W_PGL` (1/N scaling, where N is
+   linear in wall time).
+3. **ROI = σ²_unguided(W_PGL) / σ²_PGL.**  ROI > 1 means PGL beats
+   unguided at the same wall budget; ROI < 1 means unguided wins.
+
+Compute ROI separately for **mean σ²**, **P99 σ²**, and **max σ²** —
+they often disagree.  Path guiding is fundamentally a tail-variance
+tool: it reduces fireflies on hard-to-sample paths.  A scene where
+PGL has mean ROI < 1 but P99 ROI > 1 is the *expected* shape, not a
+failure.  A configuration that fixes mean σ² at the cost of P99 (or
+vice versa) is *also* a real result, just not the one you wanted.
+
+**Do not compare PGL configurations only against other PGL
+configurations.**  An A-vs-B win between two guided modes can still
+be a B-vs-unguided loss.  Both A and B might be losing the wall-time
+race against `pathguiding FALSE` — the meaningful number is whether
+*any* mode wins against off.
+
+#### When RMSE-vs-reference is unreliable
+
+Multiple "reference" renders that *should* converge to the same
+truth can disagree with each other at K=1.  In particular,
+PGL-on-with-frozen-field-mode at high SPP, PGL-online-mode at high
+SPP, and unguided BDPT at high SPP can produce images that differ
+from each other by RMSE values larger than any K=16 trial set's
+internal noise.  This was observed on `bdpt_jewel_vault` —
+references at 128 SPP (offline-PGL), 128 SPP (online-PGL), and 1024
+SPP (unguided) had pairwise RMSE 6–14 and channel means differing by
+~5%.
+
+When references disagree at this level, **RMSE-vs-any-particular-
+reference is not a comparison metric** — you'd be measuring "how
+far each trial is from this particular biased point," and the
+direction of the bias depends on which reference you picked.  Fall
+back to pure inter-trial σ² (Mode 1) and ROI vs unguided (above)
+until the reference disagreement is investigated and resolved.
+
 ## Pitfalls and how to avoid them
 
 1. **PNG outputs are 8-bit sRGB.** ImageDiffTest works on PNG and is
@@ -252,48 +303,191 @@ are the most common signature.
     `C:/Dev/openpgl-install/bin/openpgl.dll` and `tbb12.dll` into
     `bin/` so the built RISE-CLI can find them at runtime.
 
-## Worked example: OpenPGL fix evaluation
+11. **PGL training non-determinism dominates at low final-SPP — always
+    measure against an unguided baseline before claiming guided X is
+    better than guided Y.**  RISE's default config is 6 training
+    iterations × 12 SPP each (= 72 SPP of pure training) + the
+    configured final SPP.  At 16 final SPP on `bdpt_jewel_vault`,
+    guided mean σ² is ~9.3 and unguided is ~3.3 — *PGL nearly triples
+    the variance.*  Per-trial training non-determinism
+    (`pglFieldArgumentsSetDefaults(..., false, ...)` in
+    [PathGuidingField.cpp:66](../../src/Library/Utilities/PathGuidingField.cpp:66)
+    means each K=16 run trains a different field) overwhelms whatever
+    sampling-quality benefit the guide provides.  Bias is not the
+    issue — channel means agree to ~0.6%.  This isn't a bug; it's
+    "guiding doesn't pay off until final SPP × is large enough to
+    amortize training jitter."  Before drawing conclusions about a
+    PGL-internal change, render a `pathguiding FALSE` baseline at the
+    same SPP and confirm guided actually beats unguided.  If it
+    doesn't, you're measuring training jitter, not your fix.
+
+## Worked example: OpenPGL fix evaluation — and a cautionary tale
 
 Background: an OpenPGL integration fix changed (a) the
-`rrAffectsDirectContribution` flag from false to true,
-(b) the recorded `russianRouletteSurvivalProbability`, and
-(c) the recorded `eta` and `roughness` per path segment.  Question:
-does it measurably help?
+`rrAffectsDirectContribution` flag from false to true on both PT and
+BDPT, eye and light paths, (b) the recorded
+`russianRouletteSurvivalProbability`, and (c) the recorded `eta` and
+`roughness` per path segment.  Question: does it measurably help?
 
-K=16 EXR variance on `pt_jewel_vault` (32 SPP, RIS, max-depth 8):
+**The original measurement got two things wrong** and is preserved here
+because the failure mode is instructive.  Skip to the "what really
+happened" section if you just want the punchline.
 
-| Metric                | Master    | Fix       | Δ        |
-|-----------------------|-----------|-----------|----------|
-| mean σ²               | 4.520     | 4.508     | -0.28%   |
-| median σ²             | 5.17e-5   | 5.09e-5   | -1.6%    |
-| 99th percentile σ²    | 2.93      | 3.02      | +3.0%    |
-| RMSE vs 256-SPP ref   | 6.379     | 6.383     | +0.07%   |
+### What we measured first (invalid)
 
-K=16 EXR variance on `pt_torus_chain_atrium` (32 SPP, RIS, max-depth 8):
+K=16 EXR variance on `bdpt_jewel_vault` (16 SPP, RIS, max-depth 8),
+Windows VS2022 build:
 
-| Metric                | Master    | Fix       | Δ        |
-|-----------------------|-----------|-----------|----------|
-| mean σ²               | 0.4292    | 0.4370    | +1.8%    |
-| median σ²             | 6.22e-3   | 5.90e-3   | -5.2%    |
-| 99th percentile σ²    | 6.08      | 5.98      | -1.6%    |
-| RMSE vs 256-SPP ref   | 2.170     | 2.172     | +0.08%   |
-
-K=16 EXR variance on `bdpt_jewel_vault` (16 SPP, RIS, max-depth 8):
-
-| Metric                | Master    | Fix       | Δ        |
+| Metric                | "Master"  | "Fix"     | Δ        |
 |-----------------------|-----------|-----------|----------|
 | mean σ²               | 3.022     | 3.584     | +18.6%   |
 | median σ²             | 9.68e-6   | 9.30e-6   | -3.9%    |
-| 99th percentile σ²    | 0.090     | 0.149     | +66%     |
+| 99th percentile σ²    | 0.090     | 0.149     | **+66%** |
 | RMSE vs 128-SPP ref   | 4.592     | 4.562     | -0.67%   |
 
-Honest read: the fix is **net-neutral on average** but the median is
-consistently slightly better while a few tail pixels get worse.  The
-BDPT 99th-percentile spike (+66%) signals an RR amplification problem
-in some path subset — likely the light-subpath
-`rrAffectsDirectContribution=true` flag interacting with how Le is
-recorded at vertex 1 of the reversed light walk.  Fix is correctness-
-sound but doesn't yield a measurable speed win at this configuration.
+This led to a wrong-but-plausible story: the fix's BDPT light-path
+`rrAffectsDirectContribution=true` was dividing the bare-emission Le
+recorded at reversed-walk vertex 1 by an unrelated `p_rr`, blowing up
+fireflies in the P99.  The story even matched the asymmetry between
+median (slightly better) and P99 (much worse) — exactly what
+RR-amplification fireflies look like.
+
+### What really happened
+
+The Windows `build/VS2022/Library/Library.vcxproj` was missing
+`RISE_ENABLE_OPENPGL` from `<PreprocessorDefinitions>` (fixed in
+commit 09be84b).  Every `#ifdef RISE_ENABLE_OPENPGL` block — which is
+the entire path-guiding subsystem including both `AddPathSegments`
+call sites — was compiled out.  All three "conditions" (master,
+full fix, partial fix) were running pure unguided BDPT.  The +66% was
+trial-to-trial threading variance for K=16 unguided BDPT on this
+scene, not a fingerprint of any code we changed.
+
+The wall-time tell was right there: ~12 s per render with
+`pathguiding TRUE` in the scene file.  After fixing the build define,
+the same scene takes ~62 s (6 training iterations + final pass).  A
+5× slowdown when guiding turns on is not subtle — but if you don't
+have a comparison number in front of you, it's easy to miss.  **See
+pitfall #9 above; verify guided wall time looks slow before believing
+any variance ratio.**
+
+### What the proper measurement showed (PGL actually firing)
+
+K=16 EXR variance on `bdpt_jewel_vault` (16 SPP, RIS, max-depth 8),
+Windows build with `RISE_ENABLE_OPENPGL` set:
+
+| Metric                | Master  | Full fix | Partial fix | Unguided |
+|-----------------------|---------|----------|-------------|----------|
+| mean σ²               | 9.320   | 9.950    | 9.461       | 3.316    |
+| median σ²             | 9.03e-5 | 9.10e-5  | 9.05e-5     | 1.27e-5  |
+| 99th percentile σ²    | 0.2575  | 0.2385   | 0.2543      | 0.1371   |
+| max σ²                | 28140   | 36059    | 34928       | 21317    |
+| RMSE vs 128-SPP ref   | 5.220   | 5.240    | 5.145       | 4.695    |
+
+Two things to notice:
+
+1. **The +66% P99 spike disappeared** — Full vs Master is now −7.4%
+   on P99, partial is +1.4% on Master.  The hypothesis the original
+   measurement seemed to support (BDPT light-path RR amplification)
+   was a phantom.  The theoretical reasoning still favours
+   `rrAffectsDirectContribution=false` on the BDPT light-path
+   (vertex-1 Le has no RR history to compensate for), but it stays
+   that way on principle, not measured P99 behaviour.
+2. **PGL is currently *worse* than unguided on this scene.**  Guided
+   mean σ² ~9.4 vs unguided 3.3.  RMSE-vs-ref ~5.2 vs 4.7.  This is
+   training non-determinism dominating the variance budget at low
+   final-SPP — see pitfall #11.
+
+The interesting comparison stopped being master-vs-fix and became
+guided-vs-unguided.  When you spend an hour rebuilding and re-measuring
+to debunk one hypothesis, the bigger picture is often the *next*
+hypothesis hiding in the data.
+
+## Worked example: tier ladder for fixing low-SPP PGL
+
+Continuing on `bdpt_jewel_vault` after the master/fix sweep above
+showed PGL *losing* to unguided BDPT at low final SPP, four
+incremental architectural changes were prototyped to see which
+(if any) could close the gap.  The tiers map to user-controllable
+config knobs added during this work:
+
+- **Tier 0** — discard training pixels (legacy default).
+  `pathguiding_combine_training FALSE`.
+- **Tier 1 MVP** — accumulate every training-iteration's pixels into
+  the final image with sample-count weights (Müller 2017 §5 with
+  uniform weighting).  `pathguiding_combine_training TRUE`
+  (default in [PathGuidingField.h](../../src/Library/Utilities/PathGuidingField.h)).
+- **Tier 1.5** — inverse-MSE-vs-previous-iteration weighting.  Tried
+  and reverted: hand-rolled scalar MSE proxy isn't proportional to
+  per-sample variance, gave inconsistent results across SPP regimes
+  (small 16-SPP win, 64-SPP regression).  See deleted code in commit
+  history for details.
+- **Tier 2** — online mode: training-iteration loop *is* the entire
+  render, every sample feeds both field and image.
+  `pathguiding_online TRUE`.
+- **Tier 2 + warmup** — the first N iterations render with α=0
+  (pure BSDF sampling) before switching to the configured guide α.
+  `pathguiding_warmup_iterations 2` is the recommended companion
+  for online mode.  Samples still train the field during warmup —
+  but because they're produced unguided, their pixels are
+  statistically clean to keep in the final image.
+
+K=16 EXR on `bdpt_jewel_vault` (16-SPP-final scene template, RIS,
+max-depth 8), with the **variance ROI vs unguided 16-SPP** computed
+per the protocol above.  Larger ROI = bigger PGL win at fixed wall
+time; ROI < 1 means unguided beats this configuration:
+
+| Condition                        | Wall  | mean σ² | mean ROI | P99 σ²  | **P99 ROI** | max σ²  |
+|----------------------------------|------:|--------:|--------:|--------:|------------:|--------:|
+| Unguided 16 SPP                  |   13s |  3.316  |  1.00    |  0.137  |   1.00      |  21317  |
+| Tier 0 OFF (16 train + 16 final) |   22s |  8.621  |  0.23    |  0.216  |   0.38      |  51457  |
+| Tier 1 MVP (combine, 16+16)      |   22s |  8.619  |  0.23    |  0.229  |   0.35      |  40212  |
+| Tier 2 online (warmup=0)         |  ~14s |  5.260  |  0.59    |  0.038  | **3.34**    |  30753  |
+| **Tier 2 online + warmup=2**     |   22s |  3.667  |  0.53    | **0.023** | **3.52**  |  12944  |
+| Tier 1 MVP (combine, 16+64)      |   62s |  2.218  |  0.31    |  0.072  |   0.40      |   5743  |
+
+Reading:
+
+- **No PGL configuration beats unguided on mean σ² at fixed wall
+  time** for this scene at this SPP regime.  Path guiding's training
+  overhead doesn't pay back through reduced sampling variance for
+  typical pixels, because most pixels in `bdpt_jewel_vault` are not
+  actually that hard to sample.  This is a property of the *scene*,
+  not a bug in the guide.
+- **Tier 2 + warmup=2 wins decisively on P99 σ² (3.5×) and max σ²
+  (1.6× vs unguided, 3.1× vs Tier 1 MVP).**  Path guiding is
+  fundamentally a tail-variance tool — it's most effective on the
+  hard-to-sample paths that produce fireflies.  When P99/max is what
+  you care about (denoising, animation flicker, perceptual quality),
+  Tier 2 + warmup=2 at ~22 s wall is roughly equivalent to ~80 SPP
+  unguided.
+- **Tier 1 MVP at fixed train:final ratio of 1:1 is a no-op** at
+  this SPP regime because field non-determinism (per-trial random
+  field training) dominates the per-pixel variance over the actual
+  sample variance.  Tier 1 MVP only starts paying off at higher
+  final SPP where sample variance becomes the limiting factor (we
+  measured −10% mean σ² at 64 final SPP).
+- **Median σ² consistently follows mean σ²**.  No configuration
+  inverts that ordering — the bulk-of-pixels variance and the mean-
+  pixel variance track each other on this scene.  Distinct
+  median-vs-mean separations would indicate a small subset of pixels
+  causing all the trouble (a firefly localization), but on this
+  scene the variance is broadly distributed.
+
+**RMSE-vs-reference is omitted from this table** because the various
+"reference" renders disagree with each other.  Offline-PGL 128 SPP,
+online-PGL 128 SPP, and unguided 1024 SPP all produced different
+images for this scene — pairwise RMSE 6–14, channel means differing
+by ~5%.  This points to a real correctness issue worth tracking
+down separately, but it makes RMSE-vs-any-particular-reference an
+unreliable comparison metric in the meantime.  See the section on
+*"When RMSE-vs-reference is unreliable"* in the protocol.
+
+The takeaway: **the right framing for "does PGL help?" is metric-
+specific.**  On mean σ², PGL doesn't pay on this scene at this
+budget.  On firefly suppression, Tier 2 + warmup=2 is a real win.
+A user asking "should I enable path guiding?" needs the answer to
+match the metric that actually matters for their use case.
 
 ## Worked example: SPP-scaling matters more than you think
 
@@ -302,6 +496,16 @@ Same scene, same algorithm, comparing **fixed α (Cycles-style)** vs
 one-sample-MIS guiding.  Tom94's reference says learned α should beat
 fixed α — but only when each spatial cell sees enough samples for
 Adam to converge from its 0.5 prior.
+
+> **⚠ Caveat.** The numbers in the tables below were measured on the
+> Windows build before commit `09be84b` added `RISE_ENABLE_OPENPGL` to
+> `Library.vcxproj`, so guiding was compiled out and both "fixed" and
+> "learned" reduced to the same unguided PT.  Differences are
+> threading non-determinism, not a fixed-vs-learned signal.  The
+> *principle* below — measure at multiple SPPs because a feature can
+> flip from neutral to win as cells accumulate samples — is sound and
+> consistent with Müller 2017 v2.  The specific numbers should be
+> re-measured on a PGL-enabled binary before quoting.
 
 K=16 at 32 SPP per pixel (final-render budget; cells get ~few×10²
 updates each):
@@ -355,14 +559,29 @@ samples; they get noisier.
 
 ## Going forward — for any rendering change
 
-1. Add a comparison entry to `var_test/<change-name>/master|fix/` so
+1. **Before you measure, prove the feature is on.**  Wall-time delta
+   between guided/unguided.  Log line check
+   (`PathGuidingField:: Initialized` in `bin/RISE_Log.txt`).  For a
+   non-PGL feature, find the equivalent: a printf in the new code path,
+   or check the binary links/imports the new dependency.  Pitfall #9
+   exists because we burned hours measuring a no-op binary.
+2. **Always include a "feature off" baseline**, not just A-vs-B
+   between two on-states.  If A and B both lose to "off," the
+   interesting question changed.  Pitfall #11 exists because PGL on
+   `bdpt_jewel_vault` at 16 SPP is *worse* than unguided, and the
+   master-vs-fix delta we were chasing was meaningless next to that.
+3. Add a comparison entry to `var_test/<change-name>/master|fix/` so
    you can re-run the variance with new tooling later.
-2. Save the K=16 master + fix EXRs and the reference somewhere if
+4. Save the K=16 master + fix EXRs and the reference somewhere if
    the change is significant — re-rendering ground truth on a future
    machine may give different results.
-3. If a change shows P99 regression, run the SMS firefly diagnosis
+5. If a change shows P99 regression, run the SMS firefly diagnosis
    skill or look at firefly-trace output for the worst-offending
-   pixel — it's often diagnosable.
-4. Keep this skill updated when you find new pitfalls.  The HDR RLE
-   bug, the `LNK1104` SolutionDir trick, and the bin/tools/ DLL copy
-   are all things future me will forget.
+   pixel — it's often diagnosable.  But also reconsider: P99 is
+   sensitive to a few outlier pixels, so K=16 P99 ratios in the ±50%
+   range can be threading variance, not signal — re-test before
+   building a hypothesis on it.
+6. Keep this skill updated when you find new pitfalls.  The HDR RLE
+   bug, the `LNK1104` SolutionDir trick, the bin/tools/ DLL copy, the
+   missing `RISE_ENABLE_OPENPGL` define, and the training-jitter
+   dominance at low SPP are all things future me will forget.

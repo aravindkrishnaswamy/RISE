@@ -696,10 +696,10 @@ namespace
 		// been applied to it.  The russianRouletteSurvivalProbability stored
 		// on segment v1 is the RR rolled AT v1 before continuing toward v2,
 		// which is unrelated to Le's amplification history.  Setting this to
-		// true makes OpenPGL divide Le by an unrelated p_rr — when v1's RR
-		// happens to survive a low-probability roll, the resulting 1/p_rr
-		// blow-up shows up as a P99 firefly regression (measured ~+66% on
-		// bdpt_jewel_vault).  See docs/skills/variance-measurement.md.
+		// true would ask OpenPGL to divide Le by that unrelated p_rr.
+		// Empirically (K=16 EXR, bdpt_jewel_vault, 16 SPP, RIS) the choice
+		// is within trial-to-trial training-non-determinism noise, so this
+		// stays false on theoretical grounds.
 		pGuidingField->AddPathSegments(
 			lightScratch.pathSegments,
 			false,

@@ -460,6 +460,9 @@ namespace RISE
 				{ auto& p = P(); p.name = "pathguiding";                            p.kind = ValueKind::Bool;   p.description = "Enable path guiding";                   p.defaultValueHint = "FALSE"; }
 				{ auto& p = P(); p.name = "pathguiding_iterations";                 p.kind = ValueKind::UInt;   p.description = "Training iterations";                   p.defaultValueHint = "4"; }
 				{ auto& p = P(); p.name = "pathguiding_spp";                        p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training";     p.defaultValueHint = "4"; }
+				{ auto& p = P(); p.name = "pathguiding_combine_training";           p.kind = ValueKind::Bool;   p.description = "Accumulate training-iteration pixels into the final image weighted by SPP (Müller 2017 §5).  Off = legacy discard behaviour."; p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "pathguiding_online";                     p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is the entire render; no separate final pass.  Best for low-SPP regimes (Vorba/NASG style)."; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "pathguiding_warmup_iterations";          p.kind = ValueKind::UInt;   p.description = "First N training iterations render with alpha=0 (unguided) so their pixels are unbiased even when combine/online is on.  Samples still feed the field."; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "pathguiding_alpha";                      p.kind = ValueKind::Double; p.description = "Mixing factor with BSDF sampling";      p.defaultValueHint = "0.5"; }
 				{ auto& p = P(); p.name = "pathguiding_learned_alpha";              p.kind = ValueKind::Bool;   p.description = "Per-cell Adam-learned mixing alpha (Müller 2017 v2); modest win at SPP >= 256, neutral at low SPP";  p.defaultValueHint = "TRUE"; }
 				{ auto& p = P(); p.name = "pathguiding_max_depth";                  p.kind = ValueKind::UInt;   p.description = "Max depth to apply guiding";            p.defaultValueHint = "8"; }
@@ -4973,6 +4976,9 @@ namespace RISE
 					if( bag.Has("pathguiding") )                                         guidingConfig.enabled                = bag.GetBool("pathguiding");
 					if( bag.Has("pathguiding_iterations") )                              guidingConfig.trainingIterations     = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )                                     guidingConfig.trainingSPP            = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                        guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                                  guidingConfig.online                 = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                       guidingConfig.warmupIterations       = bag.GetUInt("pathguiding_warmup_iterations");
 					if( bag.Has("pathguiding_alpha") )                                   guidingConfig.alpha                  = bag.GetDouble("pathguiding_alpha");
 				if( bag.Has("pathguiding_learned_alpha") )                           guidingConfig.learnedAlpha           = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )                               guidingConfig.maxGuidingDepth        = bag.GetUInt("pathguiding_max_depth");
@@ -5241,6 +5247,9 @@ namespace RISE
 					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
 					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online               = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations     = bag.GetUInt("pathguiding_warmup_iterations");
 					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
 					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
@@ -5368,6 +5377,9 @@ namespace RISE
 					if( bag.Has("pathguiding") )            guidingConfig.enabled            = bag.GetBool("pathguiding");
 					if( bag.Has("pathguiding_iterations") ) guidingConfig.trainingIterations = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )        guidingConfig.trainingSPP        = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") ) guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )     guidingConfig.online             = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") ) guidingConfig.warmupIterations = bag.GetUInt("pathguiding_warmup_iterations");
 					if( bag.Has("pathguiding_alpha") )      guidingConfig.alpha              = bag.GetDouble("pathguiding_alpha");
 					if( bag.Has("pathguiding_learned_alpha") ) guidingConfig.learnedAlpha    = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )  guidingConfig.maxGuidingDepth    = bag.GetUInt("pathguiding_max_depth");
@@ -5432,6 +5444,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "pathguiding";                 p.kind = ValueKind::Bool;   p.description = "Enable path guiding";              p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "pathguiding_iterations";      p.kind = ValueKind::UInt;   p.description = "Training iterations";             p.defaultValueHint = "4"; }
 						{ auto& p = P(); p.name = "pathguiding_spp";             p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training"; p.defaultValueHint = "4"; }
+						{ auto& p = P(); p.name = "pathguiding_combine_training";p.kind = ValueKind::Bool;   p.description = "Combine training pixels into final image (Müller 2017 §5)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "pathguiding_online";          p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is entire render"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "pathguiding_warmup_iterations"; p.kind = ValueKind::UInt; p.description = "Iters to render with alpha=0 before configured alpha"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "pathguiding_alpha";           p.kind = ValueKind::Double; p.description = "Mixing factor";                   p.defaultValueHint = "0.5"; }
 						{ auto& p = P(); p.name = "pathguiding_max_depth";       p.kind = ValueKind::UInt;   p.description = "Max guiding depth";               p.defaultValueHint = "8"; }
 						{ auto& p = P(); p.name = "pathguiding_sampling_type";   p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy"; p.defaultValueHint = "OneSampleMIS"; }
@@ -5689,6 +5704,9 @@ namespace RISE
 					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
 					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
 					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online               = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations     = bag.GetUInt("pathguiding_warmup_iterations");
 					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
 					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
 					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
