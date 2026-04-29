@@ -640,9 +640,11 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						alphas += weight;
 					}
 
-					// Welford update on luminance (always in progressive mode,
-					// or when adaptive is enabled in single-pass mode)
-					if( adaptive || pProgFilm ) {
+					// Welford update on luminance.  Gated on `adaptive`
+					// only — progressive multi-pass mode must NOT
+					// trigger convergence-based termination (see
+					// BDPTPelRasterizer for selection-bias rationale).
+					if( adaptive ) {
 						const Scalar lum = bHit ? ColorMath::MaxValue(c) : 0;
 						wN++;
 						const Scalar delta = lum - wMean;
@@ -650,7 +652,7 @@ void PixelBasedPelRasterizer::IntegratePixel(
 						const Scalar delta2 = lum - wMean;
 						wM2 += delta * delta2;
 					}
-				} else if( adaptive || pProgFilm ) {
+				} else if( adaptive ) {
 					wN++;
 					const Scalar delta = -wMean;
 					wMean += delta / Scalar(wN);
@@ -662,10 +664,8 @@ void PixelBasedPelRasterizer::IntegratePixel(
 			}
 
 			// Check convergence after enough cumulative samples for reliable
-			// statistics.  In progressive mode, wN accumulates across all
-			// passes, so convergence detection kicks in once enough total
-			// samples have been gathered (typically pass 4+ at 8 SPP/pass).
-			if( (adaptive || pProgFilm) && wN >= 32 )
+			// statistics.  Gated on `adaptive` only — see Welford comment.
+			if( adaptive && wN >= 32 )
 			{
 				const Scalar variance = wM2 / Scalar(wN - 1);
 				const Scalar stdError = sqrt( variance / Scalar(wN) );

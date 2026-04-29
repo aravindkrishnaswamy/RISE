@@ -4751,6 +4751,7 @@ namespace RISE
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
 								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
 								const bool useHWSS
@@ -4772,6 +4773,7 @@ namespace RISE
 			enableVC,
 			enableVM,
 			guidingConfig,
+			adaptiveConfig,
 			stabilityConfig,
 			useZSobol,
 			useHWSS );

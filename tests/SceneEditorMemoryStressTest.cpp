@@ -43,8 +43,25 @@
 #include <cstring>
 #include <iostream>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <sys/stat.h>		// stat() / _stat() on both POSIX and Windows-MSVCRT
+#ifdef _WIN32
+	#include <direct.h>		// _getcwd() — POSIX getcwd is in <unistd.h> on real systems
+	#define getcwd _getcwd
+	// Windows MSVCRT has no setenv; use _putenv_s with the same
+	// "do nothing if already set" semantics as setenv(..., overwrite=0).
+	static inline int rise_test_setenv( const char* name, const char* value, int overwrite ) {
+		if( !overwrite ) {
+			size_t needed = 0;
+			if( getenv_s( &needed, nullptr, 0, name ) == 0 && needed > 0 ) {
+				return 0;	// already set; preserve as overwrite=0 specifies
+			}
+		}
+		return _putenv_s( name, value );
+	}
+	#define setenv rise_test_setenv
+#else
+	#include <unistd.h>		// getcwd(), POSIX setenv()
+#endif
 
 #if defined(__APPLE__)
 #include <mach/mach.h>

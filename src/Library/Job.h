@@ -1528,6 +1528,7 @@ namespace RISE
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
 			);

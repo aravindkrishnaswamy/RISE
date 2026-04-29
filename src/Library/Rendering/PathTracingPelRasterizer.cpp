@@ -311,8 +311,11 @@ void PathTracingPelRasterizer::IntegratePixel(
 				alphas += weight;
 			}
 
-			// Welford update on luminance
-			if( adaptive || pProgFilm ) {
+			// Welford update on luminance.  Gated on `adaptive` only:
+			// see BDPTPelRasterizer for the multi-pass selection-bias
+			// rationale — convergence-based termination must NOT fire
+			// in non-adaptive progressive mode.
+			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue(sampleColor);
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -325,7 +328,7 @@ void PathTracingPelRasterizer::IntegratePixel(
 		}
 
 		// Check convergence after enough batches for reliable statistics.
-		if( (adaptive || pProgFilm) && wN >= 32 )
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar(wN - 1);
 			const Scalar stdError = sqrt( variance / Scalar(wN) );

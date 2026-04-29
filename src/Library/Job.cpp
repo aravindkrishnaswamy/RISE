@@ -4446,7 +4446,11 @@ bool Job::SetPixelBasedPelRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4641,7 +4645,11 @@ bool Job::SetBDPTPelRasterizer(
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4721,7 +4729,11 @@ bool Job::SetBDPTSpectralRasterizer(
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
 		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4817,7 +4829,11 @@ bool Job::SetVCMPelRasterizer(
 		stabilityConfig,
 		pixelFilterConfig.blueNoiseSampler );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4848,6 +4864,7 @@ bool Job::SetVCMSpectralRasterizer(
 	const OidnQuality oidnQuality,
 	const OidnDevice oidnDevice,
 	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
 	const ProgressiveConfig& progressiveConfig
 	)
@@ -4913,11 +4930,16 @@ bool Job::SetVCMSpectralRasterizer(
 		oidnQuality,
 		oidnDevice,
 		guidingConfig,
+		adaptiveConfig,
 		stabilityConfig,
 		pixelFilterConfig.blueNoiseSampler,
 		spectralConfig.useHWSS );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -4994,7 +5016,11 @@ bool Job::SetPathTracingPelRasterizer(
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 
@@ -5072,7 +5098,11 @@ bool Job::SetPathTracingSpectralRasterizer(
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
 		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
-	if( pRaster && progressiveConfig.enabled ) {
+	// Always propagate the parsed progressiveConfig — including
+	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
+	// scene file is silently ignored (the rasterizer's default
+	// ProgressiveConfig::enabled is true).
+	if( pRaster ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
 	}
 

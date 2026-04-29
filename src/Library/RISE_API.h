@@ -2247,6 +2247,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling

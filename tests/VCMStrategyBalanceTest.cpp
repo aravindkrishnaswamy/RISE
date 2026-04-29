@@ -72,7 +72,12 @@
 #include <cmath>
 #include <string>
 #include <algorithm>
-#include <unistd.h>		// getpid()
+#ifdef _WIN32
+	#include <process.h>		// _getpid()
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"

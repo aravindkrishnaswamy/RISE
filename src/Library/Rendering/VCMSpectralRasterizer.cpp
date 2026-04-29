@@ -57,6 +57,7 @@ VCMSpectralRasterizer::VCMSpectralRasterizer(
 	const bool enableVC,
 	const bool enableVM,
 	const PathGuidingConfig& /*guidingConfig*/,
+	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityConfig_,
 	const bool useZSobol,
 	const bool useHWSS
@@ -71,7 +72,8 @@ VCMSpectralRasterizer::VCMSpectralRasterizer(
 		spectralSamples,
 		stabilityConfig_,
 		useZSobol,
-		useHWSS )
+		useHWSS ),
+	adaptiveConfig( adaptiveCfg )
 {
 }
 
@@ -84,6 +86,14 @@ void VCMSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 	PixelBasedSpectralIntegratingRasterizer::PrepareRuntimeContext( rc );
 	const StabilityConfig& sc = VCMRasterizerBase::stabilityConfig;
 	rc.pStabilityConfig = &sc;
+}
+
+unsigned int VCMSpectralRasterizer::GetProgressiveTotalSPP() const
+{
+	if( adaptiveConfig.maxSamples > 0 ) {
+		return adaptiveConfig.maxSamples;
+	}
+	return PixelBasedRasterizerHelper::GetProgressiveTotalSPP();
 }
 
 void VCMSpectralRasterizer::PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
@@ -136,7 +146,16 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-	const unsigned int maxSamples = batchSize;
+
+	// Adaptive sampling: when enabled, the per-pixel loop can take up
+	// to adaptiveConfig.maxSamples and uses Welford-based convergence
+	// to terminate early.  When disabled (the default), every pixel
+	// takes exactly batchSize samples per pass — convergence-based
+	// skipping is gated on `adaptive` so progressive multi-pass mode
+	// stays unbiased on heavy-tailed sample distributions.  Mirrors
+	// VCMPelRasterizer / BDPTPelRasterizer.
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	BDPTIntegrator* pGen = pIntegrator ? pIntegrator->GetGenerator() : 0;
 	if( !pGen ) {
@@ -621,7 +640,11 @@ void VCMSpectralRasterizer::IntegratePixel(
 			colAccrued = colAccrued + samplePel * weight;
 			alphasAccrued += weight;
 
-			if( pProgFilm ) {
+			// Welford update gated on `adaptive` only — see
+			// BDPTPelRasterizer for the multi-pass selection-bias
+			// rationale (progressive must not trigger convergence-
+			// based termination on heavy-tailed sample distributions).
+			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue( samplePel );
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -631,8 +654,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 			}
 		}
 
-		// Adaptive / progressive convergence check (mirrors Pel).
-		if( pProgFilm && wN >= 32 )
+		// Adaptive convergence check.  Gated on `adaptive` only — see
+		// Welford comment above.
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar( wN - 1 );
 			const Scalar stdError = sqrt( variance / Scalar( wN ) );
@@ -640,7 +664,7 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 			if( meanAbs > NEARZERO ) {
 				const Scalar confidence = 1.0 - 4.0 / Scalar( wN );
-				if( stdError / meanAbs < Scalar( 0.01 ) * confidence ) {
+				if( stdError / meanAbs < adaptiveConfig.threshold * confidence ) {
 					converged = true;
 				}
 			} else if( wM2 < NEARZERO && wN >= 64 ) {
@@ -665,7 +689,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	if( pProgFilm ) {
+	// Track total samples for splat film normalization.  In adaptive
+	// mode add the live delta (samples rendered THIS pass); otherwise
+	// every pixel takes the full configured SPP each pass since
+	// convergence-based skip is gated on `adaptive` only — see Welford
+	// comment above.  Mirrors VCMPelRasterizer.
+	if( adaptive ) {
 		AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
 	} else {
 		AddAdaptiveSamples( batchSize );
@@ -677,7 +706,12 @@ void VCMSpectralRasterizer::IntegratePixel(
 	}
 #endif
 
-	if( alphasAccrued > 0 ) {
+	if( adaptive && adaptiveConfig.showMap ) {
+		// Heatmap mode: write a grayscale ramp proportional to the
+		// fraction of the budget consumed.  Mirrors VCMPelRasterizer.
+		const Scalar t = Scalar( pixelSampleIndex ) / Scalar( targetSamples );
+		cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+	} else if( alphasAccrued > 0 ) {
 		colAccrued = colAccrued * ( Scalar( 1 ) / alphasAccrued );
 		cret = RISEColor( colAccrued, alphasAccrued / weightsAccrued );
 	} else {

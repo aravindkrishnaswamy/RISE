@@ -334,7 +334,10 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 					alphas += weight;
 				}
 
-				if( adaptive || pProgFilm ) {
+				// Welford update gated on `adaptive` only (see
+				// BDPTPelRasterizer for the multi-pass selection-bias
+				// rationale).
+				if( adaptive ) {
 					const Scalar lum = ColorMath::MaxValue(samplePel);
 					wN++;
 					const Scalar delta = lum - wMean;
@@ -346,7 +349,7 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 				rc.pSampler = 0;
 			}
 
-			if( (adaptive || pProgFilm) && wN >= 32 )
+			if( adaptive && wN >= 32 )
 			{
 				const Scalar variance = wM2 / Scalar(wN - 1);
 				const Scalar stdError = sqrt( variance / Scalar(wN) );

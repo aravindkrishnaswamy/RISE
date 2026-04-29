@@ -80,6 +80,16 @@ if(NOT DEFINED OIDN_DIR)
     set(OIDN_DIR "C:/Dev/oidn-2.4.1.x64.windows")
 endif()
 
+# OpenPGL install — must match the path baked into Library.vcxproj /
+# RISE-CLI.vcxproj (currently C:/Dev/openpgl-install).  RISE.lib is
+# compiled with RISE_ENABLE_OPENPGL on the VS2022 side, so every test
+# .exe must link openpgl.lib to resolve the pgl* symbols pulled in
+# from RISE.lib.  Override with -DOPENPGL_DIR=... at configure time
+# if installed elsewhere.
+if(NOT DEFINED OPENPGL_DIR)
+    set(OPENPGL_DIR "C:/Dev/openpgl-install")
+endif()
+
 # RISE static library produced by Library.vcxproj.
 set(RISE_LIB_RELEASE "${RISE_ROOT}/bin/RISE.lib")
 set(RISE_LIB_DEBUG   "${RISE_ROOT}/dbin/RISE.lib")
@@ -98,6 +108,14 @@ endif()
 if(NOT EXISTS "${OIDN_DIR}/lib/OpenImageDenoise.lib")
     message(FATAL_ERROR
         "OIDN not found at ${OIDN_DIR}. Pass -DOIDN_DIR=<path> at configure time.")
+endif()
+
+if(NOT EXISTS "${OPENPGL_DIR}/lib/openpgl.lib")
+    message(FATAL_ERROR
+        "OpenPGL not found at ${OPENPGL_DIR}/lib/openpgl.lib. "
+        "Pass -DOPENPGL_DIR=<path> at configure time. RISE.lib is "
+        "compiled with RISE_ENABLE_OPENPGL so test exes must link "
+        "openpgl.lib to resolve pgl* symbols.")
 endif()
 
 # -----------------------------------------------------------------------------
@@ -121,9 +139,32 @@ set(OPENEXR_LIBS_DEBUG
     "${VCPKG_LIB_DEBUG}/Imath-3_2_d.lib"
 )
 
+# libpng + zlib are pulled in transitively via RISE.lib's
+# PNGReader / PNGWriter.  The VS2022 RISE-CLI link doesn't list them
+# explicitly because vcpkg's libpng.h emits `#pragma comment(lib,
+# "libpng16.lib")` which the compiler auto-injects when png.h is
+# included — but test .cpp files don't include png.h, so those
+# pragmas never fire and the linker can't find the symbols.  Listing
+# the libs explicitly here mirrors what auto-linking would have done.
+set(LIBPNG_LIBS_RELEASE
+    "${VCPKG_LIB_RELEASE}/libpng16.lib"
+    "${VCPKG_LIB_RELEASE}/zlib.lib"
+)
+set(LIBPNG_LIBS_DEBUG
+    "${VCPKG_LIB_DEBUG}/libpng16d.lib"
+    "${VCPKG_LIB_DEBUG}/zlibd.lib"
+)
+
 set(OIDN_LIBS
     "${OIDN_DIR}/lib/OpenImageDenoise.lib"
     "${OIDN_DIR}/lib/OpenImageDenoise_core.lib"
+)
+
+# OpenPGL ships a single library (no _d suffix) used for both Debug
+# and Release configs — same pattern as OIDN.  Mirrors the link line
+# in build/VS2022/RISE-CLI/RISE-CLI.vcxproj.
+set(OPENPGL_LIBS
+    "${OPENPGL_DIR}/lib/openpgl.lib"
 )
 
 # Runtime DLLs to deploy alongside test exes. bin/ and dbin/ are populated by
@@ -140,26 +181,59 @@ file(GLOB RUNTIME_DLLS_RELEASE
     "${RISE_ROOT}/bin/Iex*.dll"
     "${RISE_ROOT}/bin/Imath*.dll"
     "${RISE_ROOT}/bin/OpenImageDenoise*.dll"
+    "${RISE_ROOT}/bin/openpgl*.dll"
+    "${RISE_ROOT}/bin/tbb*.dll"
+    "${RISE_ROOT}/bin/libpng*.dll"
+    "${RISE_ROOT}/bin/zlib*.dll"
+    "${RISE_ROOT}/bin/deflate*.dll"
 )
 
+# Build per-config DLL lists independently.  Older logic dropped a
+# Release DLL when no Debug counterpart existed, which silently broke
+# the Release deployment (e.g. openpgl.dll has no Debug variant in
+# dbin/, so the dropping logic skipped it from bin/tests/ too).
+# We keep them separate: a Debug build only needs Debug DLLs, a
+# Release build only needs Release DLLs, and the per-test post-build
+# COPY uses a config-conditional source picked at build time.
 set(RUNTIME_DLLS_PAIRED_RELEASE "")
 set(RUNTIME_DLLS_PAIRED_DEBUG   "")
 foreach(_rel_dll ${RUNTIME_DLLS_RELEASE})
     get_filename_component(_rel_name "${_rel_dll}" NAME)
-    string(REGEX REPLACE "\\.dll$" "_d.dll" _dbg_name_d "${_rel_name}")
-    set(_dbg_path "${RISE_ROOT}/dbin/${_dbg_name_d}")
-    if(NOT EXISTS "${_dbg_path}")
-        # OIDN-style: same filename in both bin/ and dbin/ (no _d suffix).
-        set(_dbg_path "${RISE_ROOT}/dbin/${_rel_name}")
-    endif()
-    if(NOT EXISTS "${_dbg_path}")
-        message(WARNING
-            "rise-tests: no debug DLL for ${_rel_name} in dbin/ - "
-            "Debug builds will be missing this runtime dependency.")
-        continue()
-    endif()
+
+    # Locate a Debug-side counterpart.  Try a few naming conventions
+    # in order of specificity so vcpkg's mixed scheme works:
+    #   "<name>_d.dll"   — OpenEXR-style debug suffix
+    #   "<name>d.dll"    — vcpkg libpng / zlib style ("libpng16d.dll")
+    #   "<name>.dll"     — OIDN-style same-name in both trees
+    string(REGEX REPLACE "\\.dll$" "_d.dll"  _dbg_underscore "${_rel_name}")
+    string(REGEX REPLACE "\\.dll$" "d.dll"   _dbg_appended    "${_rel_name}")
+    string(REGEX REPLACE "1\\.dll$" "d1.dll" _dbg_zlib        "${_rel_name}")
+    set(_dbg_path "")
+    foreach(_candidate "${_dbg_underscore}" "${_dbg_appended}" "${_dbg_zlib}" "${_rel_name}")
+        if(EXISTS "${RISE_ROOT}/dbin/${_candidate}")
+            set(_dbg_path "${RISE_ROOT}/dbin/${_candidate}")
+            break()
+        endif()
+    endforeach()
+
+    # Always carry the Release DLL — tests in bin/tests/ need it
+    # regardless of whether dbin/ has been populated.
     list(APPEND RUNTIME_DLLS_PAIRED_RELEASE "${_rel_dll}")
-    list(APPEND RUNTIME_DLLS_PAIRED_DEBUG   "${_dbg_path}")
+
+    if(_dbg_path STREQUAL "")
+        message(STATUS
+            "rise-tests: no Debug DLL for ${_rel_name} in dbin/ — "
+            "Debug builds will be missing this runtime dependency. "
+            "Release builds in bin/tests/ are unaffected.")
+        # Pad with the Release path so list lengths stay aligned;
+        # the IF generator expression below routes Debug builds away
+        # from this entry by virtue of dest being dbin/tests, so the
+        # Release DLL just lands in dbin/tests too — no functional
+        # harm, since Debug isn't the configured runtime.
+        list(APPEND RUNTIME_DLLS_PAIRED_DEBUG   "${_rel_dll}")
+    else()
+        list(APPEND RUNTIME_DLLS_PAIRED_DEBUG   "${_dbg_path}")
+    endif()
 endforeach()
 
 # -----------------------------------------------------------------------------
@@ -212,7 +286,10 @@ foreach(test_src ${TEST_SOURCES})
         $<$<NOT:$<CONFIG:Debug>>:${RISE_LIB_RELEASE}>
         $<$<CONFIG:Debug>:${OPENEXR_LIBS_DEBUG}>
         $<$<NOT:$<CONFIG:Debug>>:${OPENEXR_LIBS_RELEASE}>
+        $<$<CONFIG:Debug>:${LIBPNG_LIBS_DEBUG}>
+        $<$<NOT:$<CONFIG:Debug>>:${LIBPNG_LIBS_RELEASE}>
         ${OIDN_LIBS}
+        ${OPENPGL_LIBS}
         user32
         gdi32
     )

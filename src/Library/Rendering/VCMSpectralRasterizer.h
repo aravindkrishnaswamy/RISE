@@ -24,6 +24,7 @@
 
 #include "VCMRasterizerBase.h"
 #include "PixelBasedSpectralIntegratingRasterizer.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
 
 namespace RISE
 {
@@ -34,6 +35,8 @@ namespace RISE
 			public PixelBasedSpectralIntegratingRasterizer
 		{
 		protected:
+			AdaptiveSamplingConfig		adaptiveConfig;
+
 			virtual ~VCMSpectralRasterizer();
 
 			const char* GetProgressTitle() const { return "VCM Spectral Rasterizing: "; }
@@ -43,6 +46,10 @@ namespace RISE
 			/// Override to use VCMRasterizerBase::stabilityConfig
 			/// instead of the default from PixelBasedRasterizerHelper.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			/// Override to return the adaptive sampling budget when active.
+			/// Mirrors VCMPelRasterizer.
+			unsigned int GetProgressiveTotalSPP() const;
 
 			/// Diamond-inheritance disambiguation — see the same
 			/// override on VCMPelRasterizer for the rationale.
@@ -78,6 +85,7 @@ namespace RISE
 				const bool enableVC,
 				const bool enableVM,
 				const PathGuidingConfig& guidingConfig,
+				const AdaptiveSamplingConfig& adaptiveCfg,
 				const StabilityConfig& stabilityConfig,
 				const bool useZSobol,
 				const bool useHWSS

@@ -485,8 +485,11 @@ void VCMPelRasterizer::IntegratePixel(
 			colAccrued = colAccrued + sampleColor * weight;
 			alphasAccrued += weight;
 
-			// Welford update on luminance of non-splat contribution.
-			if( adaptive || pProgFilm ) {
+			// Welford update on luminance.  Gated on `adaptive` only:
+			// progressive multi-pass mode must NOT trigger convergence-
+			// based termination (selection bias on skewed sample
+			// distributions, see BDPTPelRasterizer for full rationale).
+			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue( sampleColor );
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -496,8 +499,9 @@ void VCMPelRasterizer::IntegratePixel(
 			}
 		}
 
-		// Adaptive/progressive convergence check (mirrors BDPT).
-		if( ( adaptive || pProgFilm ) && wN >= 32 )
+		// Adaptive convergence check.  Gated on `adaptive` only — see
+		// Welford comment above.
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar( wN - 1 );
 			const Scalar stdError = sqrt( variance / Scalar( wN ) );
@@ -535,10 +539,12 @@ void VCMPelRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	// Track total samples for the splat film normalization.  Add only
-	// the delta (samples rendered THIS pass) to avoid double counting
-	// across progressive passes.
-	if( adaptive || pProgFilm ) {
+	// Track total samples for the splat film normalization.  In
+	// adaptive mode add the live delta (samples rendered THIS pass);
+	// otherwise add the static batch (every pixel takes the full
+	// configured SPP each pass since convergence-based skip is gated
+	// on `adaptive` only — see Welford comment above).
+	if( adaptive ) {
 		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 	} else {
 		AddAdaptiveSamples( batchSize );

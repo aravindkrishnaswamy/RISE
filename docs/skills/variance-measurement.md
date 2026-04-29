@@ -209,24 +209,35 @@ be a B-vs-unguided loss.  Both A and B might be losing the wall-time
 race against `pathguiding FALSE` — the meaningful number is whether
 *any* mode wins against off.
 
-#### When RMSE-vs-reference is unreliable
+#### Historical: when RMSE-vs-reference was unreliable (bug, now fixed)
 
 Multiple "reference" renders that *should* converge to the same
-truth can disagree with each other at K=1.  In particular,
-PGL-on-with-frozen-field-mode at high SPP, PGL-online-mode at high
-SPP, and unguided BDPT at high SPP can produce images that differ
-from each other by RMSE values larger than any K=16 trial set's
-internal noise.  This was observed on `bdpt_jewel_vault` —
-references at 128 SPP (offline-PGL), 128 SPP (online-PGL), and 1024
-SPP (unguided) had pairwise RMSE 6–14 and channel means differing by
-~5%.
+truth disagreed with each other at K=1: 128 SPP (offline-PGL), 128
+SPP (online-PGL), and 1024 SPP (unguided) on `bdpt_jewel_vault` had
+pairwise RMSE 6–14 and channel means differing by ~5%, with the
+1024-SPP reference always darkest.  Root cause: the progressive
+multi-pass code path fired a per-pixel convergence check
+(`stdError/mean < 0.01`) even when adaptive sampling was disabled.
+On heavy-tailed (firefly-prone) sample distributions, the check is
+more likely to fire on a "lucky-low" 32-sample realization than on
+a high one, freezing those pixels mid-render while pixels that hit
+a firefly continue to refine.  Bias scales with pass count: ~1% per
+pass, ~5.4% at 32 passes (1024 SPP / 32 spp-per-pass).
 
-When references disagree at this level, **RMSE-vs-any-particular-
-reference is not a comparison metric** — you'd be measuring "how
-far each trial is from this particular biased point," and the
-direction of the bias depends on which reference you picked.  Fall
-back to pure inter-trial σ² (Mode 1) and ROI vs unguided (above)
-until the reference disagreement is investigated and resolved.
+Fixed in commit `<tbd>` by gating the Welford accumulator,
+convergence check, and `AddAdaptiveSamples` on the `adaptive` flag
+alone (not `adaptive || pProgFilm`) in `BDPTPelRasterizer`,
+`PathTracingPelRasterizer`, `PathTracingSpectralRasterizer`,
+`PixelBasedPelRasterizer`, and `VCMPelRasterizer`.  After the fix,
+default-progressive 1024-SPP unguided BDPT on `bdpt_jewel_vault`
+agrees with 1-pass progressive at any SPP, and RMSE-vs-reference is
+a reliable metric again.
+
+**If you still see references disagree by more than per-trial σ:**
+verify the build is post-fix, render a 1-pass progressive control
+(`progressive_samples_per_pass = total samples`), and compare.
+If the 1-pass control still differs from default-progressive,
+re-open the convergence-bias investigation.
 
 ## Pitfalls and how to avoid them
 
@@ -474,14 +485,12 @@ Reading:
   causing all the trouble (a firefly localization), but on this
   scene the variance is broadly distributed.
 
-**RMSE-vs-reference is omitted from this table** because the various
-"reference" renders disagree with each other.  Offline-PGL 128 SPP,
-online-PGL 128 SPP, and unguided 1024 SPP all produced different
-images for this scene — pairwise RMSE 6–14, channel means differing
-by ~5%.  This points to a real correctness issue worth tracking
-down separately, but it makes RMSE-vs-any-particular-reference an
-unreliable comparison metric in the meantime.  See the section on
-*"When RMSE-vs-reference is unreliable"* in the protocol.
+**RMSE-vs-reference was originally omitted from this table** because
+references rendered with the buggy progressive convergence path
+(see the historical section on *"When RMSE-vs-reference was
+unreliable"*) disagreed with each other by ~5%.  Re-render any
+references on a post-fix build before quoting RMSE numbers from
+that era.
 
 The takeaway: **the right framing for "does PGL help?" is metric-
 specific.**  On mean σ², PGL doesn't pay on this scene at this

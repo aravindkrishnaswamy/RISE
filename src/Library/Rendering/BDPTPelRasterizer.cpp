@@ -499,8 +499,16 @@ void BDPTPelRasterizer::IntegratePixel(
 			colAccrued = colAccrued + sampleColor * weight;
 			alphas += weight;
 
-			// Welford update on luminance of non-splat contribution
-			if( adaptive || pProgFilm ) {
+			// Welford update on luminance of non-splat contribution.
+			// Gated on `adaptive` only: progressive multi-pass mode
+			// MUST NOT fire convergence-based termination, otherwise
+			// pixels whose 32-sample empirical variance/mean falls
+			// below threshold get frozen at "lucky-low" realizations,
+			// while pixels that hit a firefly continue and regress to
+			// truth — a selection bias that darkens the image by
+			// ~1% per pass on hard scenes.  See bdpt_jewel_vault
+			// 1024 SPP unguided test: bias ~5.4% at 32 passes.
+			if( adaptive ) {
 				const Scalar lum = ColorMath::MaxValue(sampleColor);
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -511,7 +519,7 @@ void BDPTPelRasterizer::IntegratePixel(
 		}
 
 		// Check convergence after enough cumulative samples
-		if( (adaptive || pProgFilm) && wN >= 32 )
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar(wN - 1);
 			const Scalar stdError = sqrt( variance / Scalar(wN) );
@@ -551,8 +559,13 @@ void BDPTPelRasterizer::IntegratePixel(
 
 	// Track total adaptive samples for splat film normalization.
 	// Use the delta (samples rendered THIS pass) to avoid double-counting
-	// across progressive passes.
-	if( adaptive || pProgFilm ) {
+	// across progressive passes.  Gated on `adaptive` only: in non-
+	// adaptive progressive mode every pixel takes the full configured
+	// SPP, so the static mSplatTotalSamples set in BDPTRasterizerBase::
+	// RasterizeScene is the correct splat divisor.  Tracking the live
+	// per-pass count made sense only when adaptive convergence could
+	// give pixels different sample counts.
+	if( adaptive ) {
 		AddAdaptiveSamples( globalSampleIndex - passStartSampleIndex );
 	}
 

@@ -5625,6 +5625,11 @@ namespace RISE
 
 					PathGuidingConfig guidingConfig;	// VCMSpectral does not consume pathguiding params
 
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )            stabilityConfig.directClamp           = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )          stabilityConfig.indirectClamp         = bag.GetDouble("indirect_clamp");
@@ -5652,7 +5657,7 @@ namespace RISE
 						showLuminaires,
 						spectralConfig,
 						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality, oidnDevice,
-						guidingConfig, stabilityConfig, progressiveConfig );
+						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5674,6 +5679,7 @@ namespace RISE
 						// fields; RGB-to-SPD conversion is done in the
 						// painters pipeline.
 						AddSpectralCoreParams( P );
+						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
 						AddProgressiveParams( P );
 						return cd;
