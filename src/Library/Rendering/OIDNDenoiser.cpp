@@ -27,7 +27,9 @@
 #include "../Utilities/ThreadPool.h"
 #include "../Utilities/RandomNumbers.h"
 
+#include <algorithm>
 #include <chrono>
+#include <vector>
 
 #ifdef RISE_ENABLE_OIDN
 #if defined(__clang__)
@@ -55,6 +57,8 @@ struct OIDNDenoiser::State
 	oidn::BufferRef		outputBuf;
 	oidn::BufferRef		albedoBuf;
 	oidn::BufferRef		normalBuf;
+	std::vector<float>	beautyStaging;
+	std::vector<float>	denoisedStaging;
 
 	// Cache key.  When any of these change between Denoise calls the
 	// filter is torn down and rebuilt; otherwise we just memcpy data
@@ -508,7 +512,8 @@ void OIDNDenoiser::Denoise(
 void OIDNDenoiser::CollectFirstHitAOVs(
 	const IScene& scene,
 	IRayCaster& caster,
-	AOVBuffers& aovBuffers
+	AOVBuffers& aovBuffers,
+	unsigned int samplesPerPixel
 	)
 {
 	const ICamera* pCamera = scene.GetCamera();
@@ -534,8 +539,10 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 	// is the sweet spot: enough aperture coverage to track the beauty's
 	// blur, cheap enough that the retrace stays under a second on
 	// scenes with thin-lens cameras.
-	const unsigned int aovSamplesPerPixel = 4;
-	const Scalar invSamples = Scalar( 1.0 ) / Scalar( aovSamplesPerPixel );
+	if( samplesPerPixel == 0 ) {
+		samplesPerPixel = 1;
+	}
+	const Scalar invSamples = Scalar( 1.0 ) / Scalar( samplesPerPixel );
 
 	// Parallelize over rows.  Each row uses a thread-local RNG so the
 	// process-wide GlobalRNG isn't contended by N workers calling
@@ -546,7 +553,7 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 
 		for( unsigned int x = 0; x < width; x++ )
 		{
-			for( unsigned int s = 0; s < aovSamplesPerPixel; ++s )
+			for( unsigned int s = 0; s < samplesPerPixel; ++s )
 			{
 				const Scalar jx = tl_rng.CanonicalRandom();
 				const Scalar jy = tl_rng.CanonicalRandom();
@@ -601,19 +608,24 @@ void OIDNDenoiser::ApplyDenoise(
 
 	const auto t_begin = std::chrono::steady_clock::now();
 
-	std::vector<float> beautyBuf( w * h * 3 );
-	std::vector<float> denoisedBuf( w * h * 3 );
-	ImageToFloatBuffer( image, beautyBuf.data(), w, h );
+	const size_t floatCount = static_cast<size_t>( w ) * h * 3;
+	mState->beautyStaging.resize( floatCount );
+	mState->denoisedStaging.resize( floatCount );
+	ImageToFloatBuffer( image, mState->beautyStaging.data(), w, h );
+	std::copy(
+		mState->beautyStaging.begin(),
+		mState->beautyStaging.end(),
+		mState->denoisedStaging.begin() );
 	Denoise(
-		beautyBuf.data(),
+		mState->beautyStaging.data(),
 		aovBuffers.GetAlbedoPtr(),
 		aovBuffers.GetNormalPtr(),
 		w, h,
-		denoisedBuf.data(),
+		mState->denoisedStaging.data(),
 		requestedQuality,
 		requestedDevice,
 		renderSecondsBeforeDenoise );
-	FloatBufferToImage( denoisedBuf.data(), image, w, h );
+	FloatBufferToImage( mState->denoisedStaging.data(), image, w, h );
 
 	const auto t_end = std::chrono::steady_clock::now();
 	const double elapsedMs = std::chrono::duration<double, std::milli>(

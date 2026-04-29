@@ -91,6 +91,21 @@ unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
 	return pSampling ? pSampling->GetNumSamples() : 0;
 }
 
+#ifdef RISE_ENABLE_OIDN
+bool PixelBasedRasterizerHelper::ShouldDenoiseCompletedRender(
+	bool passCompleted,
+	unsigned int /*width*/,
+	unsigned int /*height*/ ) const
+{
+	return bDenoisingEnabled && passCompleted;
+}
+
+unsigned int PixelBasedRasterizerHelper::GetDenoiseAOVSamplesPerPixel() const
+{
+	return 4;
+}
+#endif
+
 bool PixelBasedRasterizerHelper::UseFilteredFilm() const
 {
 	if( !pPixelFilter ) return false;
@@ -550,12 +565,16 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	delete pAOVBuffers;
-	pAOVBuffers = 0;
 	if( bDenoisingEnabled ) {
-		pAOVBuffers = new AOVBuffers( width, height );
+		if( !pAOVBuffers ) {
+			pAOVBuffers = new AOVBuffers( width, height );
+		} else {
+			pAOVBuffers->Reset( width, height );
+		}
 	}
 #endif
+
+	bool mainPassCompleted = true;
 
 	if( progressiveConfig.enabled && pSampling )
 	{
@@ -636,6 +655,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				GlobalLog()->PrintEx( eLog_Event,
 					"Progressive:: Cancelled after pass %u/%u",
 					passIdx+1, numPasses );
+				mainPassCompleted = false;
 				break;
 			}
 
@@ -685,7 +705,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 	else
 	{
-		RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
+		mainPassCompleted = RasterizeScenePass( RuntimeContext::PASS_NORMAL, pScene, *pImage, pRect, *pRasterSequence );
 	}
 
 	// Resolve filtered film: overwrites per-pixel inline estimates with
@@ -712,7 +732,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	const bool bWillDenoise = ( bDenoisingEnabled && pAOVBuffers );
+	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoiseCompletedRender( mainPassCompleted, width, height ) );
 #else
 	const bool bWillDenoise = false;
 #endif
@@ -725,12 +745,14 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 #ifdef RISE_ENABLE_OIDN
 		if( !pAOVBuffers->HasData() ) {
-			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers );
+			OIDNDenoiser::CollectFirstHitAOVs(
+				pScene,
+				*pCaster,
+				*pAOVBuffers,
+				GetDenoiseAOVSamplesPerPixel() );
 		}
 		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 			mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
-		delete pAOVBuffers;
-		pAOVBuffers = 0;
 #endif
 
 		// File outputs write the denoised image with a "_denoised" suffix;

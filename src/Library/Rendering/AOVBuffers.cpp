@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "AOVBuffers.h"
+#include <algorithm>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -25,6 +26,21 @@ AOVBuffers::AOVBuffers( unsigned int w, unsigned int h ) :
   albedo( w * h * 3, 0.0f ),
   normals( w * h * 3, 0.0f )
 {
+}
+
+void AOVBuffers::Reset( unsigned int w, unsigned int h )
+{
+	width = w;
+	height = h;
+	bHasData = false;
+	const size_t count = static_cast<size_t>( w ) * h * 3;
+	if( albedo.size() != count ) {
+		albedo.assign( count, 0.0f );
+		normals.assign( count, 0.0f );
+	} else {
+		std::fill( albedo.begin(), albedo.end(), 0.0f );
+		std::fill( normals.begin(), normals.end(), 0.0f );
+	}
 }
 
 void AOVBuffers::AccumulateAlbedo(

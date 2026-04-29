@@ -3,8 +3,10 @@
 //  InteractivePelRasterizer.h - A pel-based rasterizer tuned for
 //    live interactive preview.  Subclass of PixelBasedPelRasterizer
 //    that hard-codes the "no GI, no path guiding, no adaptive
-//    sampling, no OIDN, 1 SPP" configuration so platform code can't
-//    accidentally inherit production-mode behaviour.
+//    sampling, 1 SPP" configuration so platform code can't accidentally
+//    inherit production-mode behaviour.  Optional OIDN denoising is
+//    explicitly selected by the scene-edit controller for completed
+//    idle / polish passes only; live drag stays raw.
 //
 //  Configuration knobs are documented at the InteractivePelRasterizer::
 //  Config struct.  See docs/INTERACTIVE_EDITOR_PLAN.md §4.4.
@@ -92,6 +94,18 @@ namespace RISE
 
 			InteractivePelRasterizer( IRayCaster* pCaster, const Config& cfg );
 
+			enum PreviewDenoiseMode
+			{
+				PreviewDenoise_Off,
+				PreviewDenoise_Fast,
+				PreviewDenoise_Balanced
+			};
+
+			//! Selects the OIDN policy for the next RasterizeScene call.
+			//! Off during active manipulation, Fast for idle refinement,
+			//! Balanced for pointer-up polish.
+			void SetPreviewDenoiseMode( PreviewDenoiseMode mode );
+
 			//! Switch between "live drag" and "idle progressive
 			//! refinement" modes.  Called from the SceneEditController:
 			//!   - false during pointer-move flurries (1 SPP, no progressive)
@@ -162,9 +176,18 @@ namespace RISE
 			// keyed on the same flag.
 			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 
+#ifdef RISE_ENABLE_OIDN
+			virtual bool ShouldDenoiseCompletedRender(
+				bool passCompleted,
+				unsigned int width,
+				unsigned int height ) const override;
+			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const override;
+#endif
+
 		private:
 			Config                mCfg;
 			mutable bool          mIdleMode;
+			PreviewDenoiseMode    mPreviewDenoiseMode;
 
 			// Lazy-initialized 2D sampling kernel for multi-SPP polish
 			// passes.  Constructed on first SetSampleCount(>1); reused

@@ -3,7 +3,7 @@
 //  InteractivePelRasterizer.cpp
 //
 //  All defaults are "minimum-cost preview": no GI, no path guiding,
-//  no adaptive sampling, no OIDN denoiser, 1 SPP.  We rely on the
+//  no adaptive sampling, no live-drag OIDN denoiser, 1 SPP.  We rely on the
 //  default ctors of PathGuidingConfig / AdaptiveSamplingConfig /
 //  StabilityConfig, all of which produce "disabled" state.  The
 //  zsobol flag is left false: low-discrepancy ordering buys little
@@ -265,7 +265,33 @@ private:
 		return Clamp01( Vector3Ops::Dot( n, direction ) );
 	}
 
-	static RISEPel StudioLighting( const Vector3& n, const Vector3& v, const RISEPel& base )
+	static RISEPel EvaluateStudioLight(
+		const IBSDF* bsdf,
+		const RayIntersection& ri,
+		const Vector3& n,
+		const Vector3& direction,
+		const RISEPel& color,
+		const Scalar intensity )
+	{
+		const Scalar nDotL = DirectionalTerm( n, direction );
+		if( nDotL <= 0.0 ) {
+			return RISEPel( 0, 0, 0 );
+		}
+
+		if( !bsdf ) {
+			return color * ( nDotL * intensity );
+		}
+
+		RayIntersectionGeometric rig( ri.geometric );
+		rig.vNormal = n;
+		rig.onb.CreateFromW( n );
+
+		RISEPel f = bsdf->value( direction, rig );
+		ColorMath::Clamp( f, 0.0, 8.0 );
+		return color * f * ( nDotL * intensity );
+	}
+
+	static RISEPel StudioLighting( const RayIntersection& ri, const Vector3& n, const Vector3& v, const RISEPel& base )
 	{
 		Vector3 key( -0.38, 0.56, 0.74 );
 		Vector3 fill( 0.68, 0.18, 0.35 );
@@ -274,17 +300,36 @@ private:
 		Vector3Ops::NormalizeMag( fill );
 		Vector3Ops::NormalizeMag( top );
 
-		const Scalar keyTerm = DirectionalTerm( n, key );
-		const Scalar fillTerm = DirectionalTerm( n, fill );
-		const Scalar topTerm = DirectionalTerm( n, top );
 		const Scalar halfLambert = 0.5 + 0.5 * DirectionalTerm( n, v );
+		const IBSDF* bsdf = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
-		const RISEPel studioColor =
-			RISEPel( 0.12, 0.13, 0.15 ) +
-			RISEPel( 0.76, 0.72, 0.64 ) * keyTerm +
-			RISEPel( 0.18, 0.22, 0.30 ) * fillTerm +
-			RISEPel( 0.10, 0.11, 0.12 ) * topTerm;
-		return base * ( studioColor + RISEPel( 0.18, 0.18, 0.18 ) * halfLambert );
+		RISEPel result = base * ( RISEPel( 0.11, 0.12, 0.14 ) + RISEPel( 0.10, 0.10, 0.10 ) * halfLambert );
+		result = result + EvaluateStudioLight(
+			bsdf,
+			ri,
+			n,
+			key,
+			RISEPel( 0.92, 0.86, 0.74 ),
+			2.65 );
+		result = result + EvaluateStudioLight(
+			bsdf,
+			ri,
+			n,
+			fill,
+			RISEPel( 0.34, 0.40, 0.56 ),
+			1.15 );
+		result = result + EvaluateStudioLight(
+			bsdf,
+			ri,
+			n,
+			top,
+			RISEPel( 0.38, 0.40, 0.43 ),
+			0.85 );
+
+		if( ColorMath::MaxValue( result ) < 0.035 ) {
+			result = base * ( RISEPel( 0.20, 0.21, 0.24 ) + RISEPel( 0.18, 0.18, 0.18 ) * halfLambert );
+		}
+		return result;
 	}
 
 	RISEPel PreviewPel( const RayIntersection& ri, const IRayCaster& caster ) const
@@ -304,7 +349,7 @@ private:
 
 		const RISEPel base = MaterialAlbedo( ri );
 		const Scalar ao = CombinedAmbientOcclusion( ri, caster, n );
-		RISEPel result = StudioLighting( n, v, base ) * ao + RISEPel( 0.16, 0.18, 0.22 ) * rim;
+		RISEPel result = StudioLighting( ri, n, v, base ) * ao + RISEPel( 0.16, 0.18, 0.22 ) * rim;
 		ColorMath::Clamp( result, 0.0, 1.0 );
 		return result;
 	}
@@ -395,6 +440,7 @@ InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const C
   )
 , mCfg( cfg )
 , mIdleMode( false )
+, mPreviewDenoiseMode( PreviewDenoise_Off )
 , mPolishKernel( 0 )
 , mPolishCaster( 0 )
 , mSavedPreviewCaster( 0 )
@@ -414,6 +460,32 @@ InteractivePelRasterizer::~InteractivePelRasterizer()
 	}
 	safe_release( mPolishKernel );
 	safe_release( mPolishCaster );
+}
+
+void InteractivePelRasterizer::SetPreviewDenoiseMode( PreviewDenoiseMode mode )
+{
+	mPreviewDenoiseMode = mode;
+#ifdef RISE_ENABLE_OIDN
+	switch( mode )
+	{
+	case PreviewDenoise_Fast:
+		SetDenoisingEnabled( true );
+		SetDenoisingQuality( OidnQuality::Fast );
+		SetDenoisingDevice( OidnDevice::Auto );
+		break;
+	case PreviewDenoise_Balanced:
+		SetDenoisingEnabled( true );
+		SetDenoisingQuality( OidnQuality::Balanced );
+		SetDenoisingDevice( OidnDevice::Auto );
+		break;
+	case PreviewDenoise_Off:
+	default:
+		SetDenoisingEnabled( false );
+		break;
+	}
+#else
+	(void)mode;
+#endif
 }
 
 void InteractivePelRasterizer::SetPolishRayCaster( IRayCaster* polishCaster )
@@ -520,6 +592,22 @@ void InteractivePelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 	// RuntimeContext::bFastPreview for the contract.
 	rc.bFastPreview = true;
 }
+
+#ifdef RISE_ENABLE_OIDN
+bool InteractivePelRasterizer::ShouldDenoiseCompletedRender(
+	bool passCompleted,
+	unsigned int width,
+	unsigned int height ) const
+{
+	return PixelBasedPelRasterizer::ShouldDenoiseCompletedRender( passCompleted, width, height ) &&
+		mPreviewDenoiseMode != PreviewDenoise_Off;
+}
+
+unsigned int InteractivePelRasterizer::GetDenoiseAOVSamplesPerPixel() const
+{
+	return 1;
+}
+#endif
 
 IRasterizeSequence* InteractivePelRasterizer::CreateDefaultRasterSequence( unsigned int tileEdge ) const
 {

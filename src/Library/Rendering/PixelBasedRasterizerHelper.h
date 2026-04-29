@@ -136,6 +136,20 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
+
+			//! Whether the just-finished render should be denoised.
+			//! Default requires the render to complete; interactive
+			//! subclasses can add pass-state policy on top.
+			virtual bool ShouldDenoiseCompletedRender(
+				bool passCompleted,
+				unsigned int width,
+				unsigned int height ) const;
+
+			//! Number of primary-ray AOV samples to collect when the
+			//! renderer did not accumulate AOVs during shading.  The
+			//! production default keeps DOF/AA coverage; interactive
+			//! preview overrides to 1 for latency.
+			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
 #endif
 
 			/// Returns true when the pixel filter's support extends beyond

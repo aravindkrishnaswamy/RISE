@@ -95,7 +95,8 @@ namespace RISE
 			static void CollectFirstHitAOVs(
 				const IScene& scene,
 				IRayCaster& caster,
-				AOVBuffers& aovBuffers
+				AOVBuffers& aovBuffers,
+				unsigned int samplesPerPixel = 4
 				);
 
 			/// Runs the full denoise pipeline on an image using the

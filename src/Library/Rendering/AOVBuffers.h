@@ -51,6 +51,11 @@ namespace RISE
 		public:
 			AOVBuffers( unsigned int w, unsigned int h );
 
+			/// Clears existing contents for reuse.  Reallocates only
+			/// when dimensions change; otherwise preserves vector
+			/// capacity and zeroes the existing storage.
+			void Reset( unsigned int w, unsigned int h );
+
 			/// Accumulates a weighted albedo sample at (x,y).
 			/// The RISEPel channels (double) are narrowed to float.
 			void AccumulateAlbedo(

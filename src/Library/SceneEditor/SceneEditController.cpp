@@ -891,6 +891,15 @@ void SceneEditController::RenderLoop()
 			static_cast<PolishState>( mPolishState.load( std::memory_order_acquire ) );
 		const bool isPolishPass = ( polishStateBefore == PolishState::PolishQueued );
 		if( mInteractiveImpl ) {
+			Implementation::InteractivePelRasterizer::PreviewDenoiseMode denoiseMode =
+				Implementation::InteractivePelRasterizer::PreviewDenoise_Off;
+			if( isPolishPass ) {
+				denoiseMode = Implementation::InteractivePelRasterizer::PreviewDenoise_Balanced;
+			} else if( mInRefinementPass &&
+			           mPreviewScale.load( std::memory_order_acquire ) <= 2 ) {
+				denoiseMode = Implementation::InteractivePelRasterizer::PreviewDenoise_Fast;
+			}
+			mInteractiveImpl->SetPreviewDenoiseMode( denoiseMode );
 			mInteractiveImpl->SetSampleCount( isPolishPass ? kPolishSampleCount : 1 );
 		}
 
@@ -937,7 +946,11 @@ void SceneEditController::RenderLoop()
 		//   3. Anything else: leave state alone.
 		if( isPolishPass )
 		{
-			if( mInteractiveImpl ) mInteractiveImpl->SetSampleCount( 1 );
+			if( mInteractiveImpl ) {
+				mInteractiveImpl->SetSampleCount( 1 );
+				mInteractiveImpl->SetPreviewDenoiseMode(
+					Implementation::InteractivePelRasterizer::PreviewDenoise_Off );
+			}
 			// Don't blindly clobber state to None — KickRender (user
 			// edit during polish) may have already reset it.  Only
 			// transition out of PolishQueued.
