@@ -52,6 +52,10 @@ $SourceDir = Join-Path $ScriptDir 'source'
 $BuildDir  = Join-Path $SourceDir 'build'
 $InstallDir = Join-Path $ScriptDir 'install'
 
+# RISE repo root is two levels up from extlib/oidn/.  Used for the
+# bin/ + dbin/ runtime-DLL staging step at the end of this script.
+$RiseRoot = Resolve-Path (Join-Path $ScriptDir '..\..')
+
 if (-not (Test-Path $SourceDir)) {
 	Write-Error "OIDN source not found at $SourceDir.`nRun from repo root: git submodule update --init extlib/oidn/source"
 }
@@ -115,10 +119,40 @@ Write-Host "==> Installing to $InstallDir..."
 & cmake --install $BuildDir --config Release
 if ($LASTEXITCODE -ne 0) { throw "cmake install failed (exit $LASTEXITCODE)" }
 
+# Stage runtime DLLs into bin/ and dbin/.  The VS projects link
+# against the new import lib at extlib/oidn/install/lib but Windows
+# DLL search starts in the EXE directory at runtime.  If bin/ still
+# holds an older OIDN DLL with a different ABI (different MSVC / TBB
+# / ispc build of the same OIDN version), the loader picks that one
+# and you get a heap-corruption crash deep inside ucrtbase the first
+# time a denoise runs.  Hit on a clean migration from system OIDN to
+# the in-tree build (2026-04-29).
+Write-Host '==> Staging OIDN DLLs to bin/ and dbin/...'
+foreach ($dest in @('bin', 'dbin')) {
+	$destDir = Join-Path $RiseRoot $dest
+	if (-not (Test-Path $destDir)) {
+		New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+	}
+	$oidnBin = Join-Path $InstallDir 'bin'
+	if (Test-Path $oidnBin) {
+		Get-ChildItem -Path $oidnBin -Filter 'OpenImageDenoise*.dll' -ErrorAction SilentlyContinue |
+			ForEach-Object { Copy-Item -Force -Path $_.FullName -Destination $destDir }
+	}
+	# Also stage TBB if a known install root is set.  oneTBB ships a
+	# `redist\intel64\vc14\` layout that we mirror into bin/dbin so
+	# the OIDN CPU device's TBB runtime dependency is satisfied.
+	if ($env:TBB_ROOT -and (Test-Path "$env:TBB_ROOT\redist\intel64\vc14")) {
+		Get-ChildItem -Path "$env:TBB_ROOT\redist\intel64\vc14" -Filter 'tbb*.dll' -ErrorAction SilentlyContinue |
+			ForEach-Object { Copy-Item -Force -Path $_.FullName -Destination $destDir }
+	}
+}
+
 Write-Host
 Write-Host '==> Done.  OIDN install tree:'
 Get-ChildItem -Path (Join-Path $InstallDir 'lib') -ErrorAction SilentlyContinue | Format-Table -AutoSize
 Write-Host
-Write-Host 'RISE''s VS2022 projects (build/VS2022/*.vcxproj) will pick this'
-Write-Host 'up automatically.  Verify the selected device at render time:'
+Write-Host 'RISE''s VS2022 projects (build/VS2022/*.vcxproj) link against'
+Write-Host 'extlib/oidn/install/lib at compile time; the matching DLLs are'
+Write-Host 'now staged in bin/ and dbin/ for runtime.  Verify the selected'
+Write-Host 'device at render time:'
 Write-Host '    OIDN: creating <Type> device (one-time per rasterizer)'
