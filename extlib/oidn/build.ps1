@@ -128,7 +128,34 @@ if ($LASTEXITCODE -ne 0) { throw "cmake install failed (exit $LASTEXITCODE)" }
 # time a denoise runs.  Hit on a clean migration from system OIDN to
 # the in-tree build (2026-04-29).
 Write-Host '==> Staging OIDN DLLs to bin/ and dbin/...'
-$tbbRedist = if ($env:TBB_ROOT) { Join-Path $env:TBB_ROOT 'redist\intel64\vc14' } else { $null }
+
+# Locate the directory holding TBB runtime DLLs.  Two layouts in
+# common use, in priority order:
+#   1. oneTBB binary release zip from
+#      https://github.com/uxlfoundation/oneTBB/releases —
+#      $TBB_ROOT/redist/intel64/vc14/{tbb12,tbbbind*,tbbmalloc*}.dll
+#   2. openpgl-install (and other superbuilds that bundle TBB) —
+#      flat layout: $TBB_ROOT/bin/{tbb12,tbbbind*}.dll, no redist tree.
+# We probe both and use whichever exists.  When OIDN is built against
+# the same TBB that openpgl already links, we want THAT TBB binary in
+# bin/ so the entire process sees a single TBB version — mixing oneTBB
+# 2021.x (openpgl) with 2022.x (a freshly downloaded oneTBB) loaded
+# from the same `tbb12.dll` import name results in heap corruption
+# that surfaces deep in Qt's allocator (observed 2026-04-29).
+$tbbDllDir = $null
+if ($env:TBB_ROOT) {
+	$candidates = @(
+		(Join-Path $env:TBB_ROOT 'redist\intel64\vc14'),
+		(Join-Path $env:TBB_ROOT 'bin')
+	)
+	foreach ($cand in $candidates) {
+		if ((Test-Path $cand) -and (Test-Path (Join-Path $cand 'tbb12.dll'))) {
+			$tbbDllDir = $cand
+			break
+		}
+	}
+}
+
 foreach ($entry in @(
 	@{ Dest = 'bin';  TbbPattern = @('tbb12.dll',       'tbbbind.dll',       'tbbbind_2_0.dll',       'tbbbind_2_5.dll'      ) },
 	@{ Dest = 'dbin'; TbbPattern = @('tbb12_debug.dll', 'tbbbind_debug.dll', 'tbbbind_2_0_debug.dll', 'tbbbind_2_5_debug.dll') }
@@ -153,10 +180,12 @@ foreach ($entry in @(
 	# only `tbb12.dll`; the `tbbbind*.dll` family is dynamically
 	# loaded by tbb12 for NUMA-aware thread binding (optional but
 	# improves perf — small file, worth shipping).  bin/ gets release
-	# variants, dbin/ gets the `_debug.dll` counterparts.
-	if ($tbbRedist -and (Test-Path $tbbRedist)) {
+	# variants, dbin/ gets the `_debug.dll` counterparts when present
+	# (openpgl-install ships only release tbb12.dll, no `_debug` —
+	# that's fine, the missing-file case is silently skipped).
+	if ($tbbDllDir) {
 		foreach ($name in $entry.TbbPattern) {
-			$src = Join-Path $tbbRedist $name
+			$src = Join-Path $tbbDllDir $name
 			if (Test-Path $src) {
 				Copy-Item -Force -Path $src -Destination $destDir
 			}

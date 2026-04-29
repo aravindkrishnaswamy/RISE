@@ -81,12 +81,27 @@ fixes below are what get you past each one.
     winget put it) to PATH.
 
   - oneTBB — required by the OIDN CPU device's `find_package(TBB)`.
-    Download the binary release zip from
-    https://github.com/uxlfoundation/oneTBB/releases (e.g.
-    `oneapi-tbb-2022.3.0-win.zip`) — extract anywhere and set the
-    `TBB_ROOT` environment variable to the unzipped root (the dir
-    that contains both `include/tbb/tbb.h` and `lib/intel64/vc14/`).
-    Verified working: oneTBB v2022.3.0.
+    Two ways to satisfy this:
+      a) Reuse the TBB that already ships with your openpgl install.
+         If you built openpgl from source into e.g.
+         `C:\Dev\openpgl-install`, that dir is a valid `TBB_ROOT`
+         (flat layout: `bin/tbb12.dll`, `lib/tbb12.lib`).  PREFER
+         THIS — it guarantees OIDN and openpgl link the same TBB
+         binary, avoiding the heap-corruption crashes that result
+         from loading two different `tbb12.dll` versions into the
+         same RISE process (observed 2026-04-29: openpgl built
+         against TBB 2021.13 + OIDN built against oneTBB 2022.3.0
+         crashed deep in Qt's allocator).
+      b) Fresh oneTBB binary release zip from
+         https://github.com/uxlfoundation/oneTBB/releases (e.g.
+         `oneapi-tbb-2022.3.0-win.zip`) — extract anywhere and set
+         `TBB_ROOT` to the unzipped root (redist layout:
+         `redist/intel64/vc14/tbb12.dll`).  Use this only if you
+         don't have an openpgl-install handy, AND verify openpgl
+         uses the same major version.  Verified working alone:
+         oneTBB v2022.3.0.
+    `extlib\oidn\build.ps1` probes both layouts (redist + flat)
+    and uses whichever it finds.
 
   - GPU backends (opt-in, only if you pass `-EnableCuda` / -EnableHip
     / -EnableSycl): CUDA Toolkit 11+ on PATH; oneAPI Base Toolkit
