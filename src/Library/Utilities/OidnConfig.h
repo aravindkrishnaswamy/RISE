@@ -40,6 +40,27 @@ namespace RISE
 		Balanced,
 		Fast
 	};
+
+	/// OIDN device backend selector.  Default is `Auto`, which asks
+	/// OIDN to pick the fastest available device (Metal on Apple
+	/// Silicon, CUDA / SYCL / HIP on supported workstations).  If
+	/// the requested GPU backend is unavailable the denoiser falls
+	/// back to CPU automatically.
+	///
+	///   Auto - prefer GPU, silently fall back to CPU.
+	///   CPU  - force CPU.
+	///   GPU  - prefer GPU, fall back to CPU with a warning so
+	///          explicit requests aren't silently downgraded.
+	///
+	/// The actually-selected device type is logged on first denoise
+	/// (e.g. "OIDN: creating Metal device (one-time per rasterizer)")
+	/// so it's easy to confirm GPU acceleration is on after a render.
+	enum class OidnDevice
+	{
+		Auto = 0,
+		CPU,
+		GPU
+	};
 }
 
 #endif

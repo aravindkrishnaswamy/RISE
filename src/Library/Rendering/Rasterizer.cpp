@@ -26,6 +26,7 @@ Rasterizer::Rasterizer() :
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
+  ,mDenoisingDevice( OidnDevice::Auto )
   ,mRenderStartTime( std::chrono::steady_clock::now() )
   ,mDenoiser( new OIDNDenoiser() )
 #endif

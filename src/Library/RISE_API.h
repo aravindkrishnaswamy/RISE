@@ -2125,6 +2125,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2143,6 +2144,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
@@ -2167,6 +2169,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2196,6 +2199,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
@@ -2216,6 +2220,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool enableVM,				///< [in] Enable vertex merging strategy
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2240,6 +2245,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool enableVM,				///< [in] Enable vertex merging strategy
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
@@ -2263,6 +2269,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2290,6 +2297,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
@@ -2339,6 +2347,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar largeStepProb,					///< [in] Large step probability
 								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,				///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnDevice oidnDevice,				///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								ISampling2D* pSampler,						///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
 								IPixelFilter* pFilter						///< [in] Reconstruction kernel; may be null for unfiltered point splats
 								);
@@ -2380,6 +2389,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
 								IPixelFilter* pFilter				///< [in] Reconstruction kernel; may be null for unfiltered point splats
 								);

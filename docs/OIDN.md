@@ -261,8 +261,8 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     the property the interactive viewport needs.
 
 #### OIDN-P0-3 — Add Metal device backend on Apple Silicon
-- **Status:** Open
-- **Owner:** —
+- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Owner:** Aravind
 - **PR:** —
 - **Why:** RISE primarily targets macOS / Apple Silicon. OIDN 2.x ships a
   Metal backend that runs on the GPU. On an M-series machine the speedup vs.
@@ -273,10 +273,33 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   `oidn::newSharedBuffer` (CPU device) or `oidn::newBuffer + memcpy` (GPU
   device, which is what the current code already does) — so the existing
   copy-in/copy-out pattern is **already GPU-compatible**.
-- **What:** Try `oidn::DeviceType::Default`, fall back to CPU on
-  `getError()`. Or expose `oidn_device` parameter (`auto` / `cpu` / `gpu`).
-  Verify the existing `device.newBuffer(bufBytes) + memcpy` flow works on
-  Metal — it should.
+- **What:**
+  - Add `oidn_device` scene-language parameter (enum: `auto` / `cpu` /
+    `gpu`, default `auto`).  Adds `OidnDevice` enum to
+    `src/Library/Utilities/OidnConfig.h` and threads it through every
+    rasterizer factory + `IJob` virtual + parser Finalize, mirroring
+    `oidn_quality`.
+  - Device-selection helper does try-with-fallback:
+    `auto` → `oidn::DeviceType::Default` (which OIDN picks; on macOS
+    that's Metal), fall back silently to CPU if Default fails.
+    `gpu` → same as auto but emits a warning when the fallback fires
+    so explicit GPU requests don't silently downgrade.  `cpu` → CPU
+    always.  After the (committed) device is in hand, query
+    `device.get<int>("type")` and log the actual selected type so
+    logs surface "Metal" vs "CPU" rather than "what we asked for".
+  - Convert the buffer copy paths from `std::memcpy(buf.getData(), …)`
+    to `buf.write(0, bytes, hostPtr)` / `buf.read(0, bytes, hostPtr)`.
+    The existing memcpy approach only works for CPU devices (where
+    `getData()` returns a host pointer); GPU buffers may not be
+    host-mapped.  The C++ wrapper's `read`/`write` handle both cases
+    correctly with no slowdown on CPU (reduces to memcpy under the
+    hood).
+- **NOT in this PR:** auto-quality threshold recalibration.  The
+  existing `r < 3 → FAST` / `r < 20 → BALANCED` thresholds were
+  calibrated against CPU denoise cost.  Once Metal is verified working
+  and we have measured timings, threshold retuning becomes a
+  measurement-driven follow-up commit (the constants are already
+  `static constexpr` for that purpose).
 - **Touch:** [OIDNDenoiser.cpp:106](../src/Library/Rendering/OIDNDenoiser.cpp#L106).
   Build-system: confirm OIDN was built with `OIDN_DEVICE_METAL=ON` on the
   Mac dev machine.
@@ -293,7 +316,37 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   with measurements rather than guessing. Tracker location for the
   thresholds: `kAutoFastUntilSecPerMP` / `kAutoBalancedUntilSecPerMP` in
   [OIDNDenoiser.cpp](../src/Library/Rendering/OIDNDenoiser.cpp).
-- **Result:** —
+- **Install gotcha — Metal needs the device dylib next to the core dylib.**
+  OIDN ships device backends as separate plugin dylibs that the core
+  loads at runtime from the same directory.  The Homebrew formula
+  (`open-image-denoise` 2.4.1) only ships
+  `libOpenImageDenoise_device_cpu.dylib` — no Metal — so on a Homebrew-
+  based RISE build, `auto` and `gpu` both end up on CPU.  To enable
+  Metal: either symlink Blender's bundled
+  `libOpenImageDenoise_device_metal.dylib` (typically at
+  `…/blender/lib/macos_arm64/openimagedenoise/lib/`) into
+  `/opt/homebrew/opt/open-image-denoise/lib/`, or rebuild OIDN from
+  source with `OIDN_DEVICE_METAL=ON`.  Both are user-environment
+  changes; the RISE code is install-agnostic and picks Metal up
+  automatically when the dylib is loadable.
+- **Result:**
+  - `make -C build/make/rise -j8 all` clean (no new warnings).
+  - `./run_all_tests.sh` clean: **72/72 pass**.
+  - Verified all three device paths on `shapes.RISEscene`:
+    - `oidn_device auto` (default): silent CPU selection because the
+      Homebrew OIDN install lacks the Metal device dylib.
+    - `oidn_device gpu` (explicit): emits the documented warning
+      (`OIDN: GPU device requested but unavailable in this OIDN install; using CPU`)
+      then proceeds on CPU — the user's request is honoured to the
+      extent the install allows.
+    - `oidn_device cpu`: silent CPU, no warning.
+  - Subtle correctness fix during verification: `oidn::DeviceType::Default`
+    does not fail when no GPU backend is loadable — it silently
+    returns a CPU device.  `ResolveOidnDevice` introspects the
+    returned device's actual type via `device.get<int>("type")` and
+    only suppresses the warning when the user asked for `auto`.
+  - Once the Metal device dylib is in place, no code change is
+    needed — the same auto path will pick Metal up.
 
 #### OIDN-P0-4 — Register an error callback + verbose toggle
 - **Status:** Code complete — pending commit/PR (2026-04-29)
@@ -533,6 +586,36 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P0-3 code complete (Metal-ready, install-gated)
+- New scene-language parameter `oidn_device` (enum: `auto` / `cpu` /
+  `gpu`, default `auto`).  Plumbed through the same surface as
+  `oidn_quality`: `OidnDevice` enum in OidnConfig.h, threaded through
+  10 IJob virtuals, 10 RISE_API factories, and all matching Job
+  overrides + parser Finalize calls.  The two MLT legacy IJob
+  overloads forward `OidnDevice::Auto`.
+- `ResolveOidnDevice` honours the knob with try-with-fallback:
+  - `Auto`: try `oidn::DeviceType::Default`; silently use whatever
+    OIDN picks (Metal where available, CPU otherwise).
+  - `GPU`: try Default; if the returned device's actual type is CPU,
+    emit a warning so explicit GPU requests aren't silently
+    downgraded.  This is the subtle case — Default does NOT fail when
+    no GPU backend is loadable; it returns CPU.  We introspect via
+    `device.get<int>("type")` after commit.
+  - `CPU`: bypass Default entirely.
+- The error callback (P0-4) is registered AFTER ResolveOidnDevice has
+  returned a working device, not before, so first-attempt failures
+  during fallback don't spam the log.
+- `std::memcpy(buf.getData(), …)` replaced throughout with
+  `buf.write(0, bytes, hostPtr)` / `buf.read(0, bytes, hostPtr)` so
+  the same code works on GPU buffers (where `getData()` may return
+  NULL).  No CPU regression — the C++ wrapper reduces to memcpy on
+  CPU.
+- Verified: build clean, 72/72 tests pass.  All three device paths
+  produce the right log lines.  Metal selection itself is gated by
+  whether the user's OIDN install ships the Metal device dylib — see
+  the OIDN-P0-3 ticket result block for the install-gotcha
+  workaround.
 
 ### 2026-04-29 — OIDN-P0-4 code complete; cancel-doesn't-propagate invariant recorded
 - `OidnErrorCallback` (file-static, C-style function pointer) is

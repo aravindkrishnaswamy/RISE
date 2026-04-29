@@ -607,6 +607,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = "TRUE"; }
 				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = "TRUE"; }
 				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
+				{ auto& p = P(); p.name = "oidn_device";                            p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
 			}
 
 			// Parse the `oidn_quality` enum string from a parser bag.  Unknown
@@ -622,6 +623,21 @@ namespace RISE
 					"Parser: unknown oidn_quality value \"%s\"; defaulting to auto",
 					s.c_str() );
 				return OidnQuality::Auto;
+			}
+
+			// Parse the `oidn_device` enum string from a parser bag.
+			// Same fallback discipline as ParseOidnQuality — typos
+			// fall through to Auto with a warning rather than silently
+			// pinning the user to one backend.
+			static inline OidnDevice ParseOidnDevice( const std::string& s )
+			{
+				if( s == "cpu"  ) return OidnDevice::CPU;
+				if( s == "gpu"  ) return OidnDevice::GPU;
+				if( s == "auto" ) return OidnDevice::Auto;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Parser: unknown oidn_device value \"%s\"; defaulting to auto",
+					s.c_str() );
+				return OidnDevice::Auto;
 			}
 
 			//////////////////////////////////////////
@@ -4950,6 +4966,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5025,7 +5042,7 @@ namespace RISE
 						maxRecur, defaultshader.c_str(), radianceMapConfig,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilterConfig,
-						showLuminaires, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						showLuminaires, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5043,6 +5060,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
+						{ auto& p = P(); p.name = "oidn_device";           p.kind = ValueKind::Enum;      p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
 						{ auto& p = P(); p.name = "choose_one_light";      p.kind = ValueKind::Bool;      p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -5087,6 +5105,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 					bool integrateRGB           = bag.GetBool(   "integrate_rgb",   false );
 
 					SpectralConfig spectralConfig;
@@ -5173,7 +5192,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
-						oidnDenoise, oidnQuality, stabilityConfig
+						oidnDenoise, oidnQuality, oidnDevice, stabilityConfig
 						);
 				}
 
@@ -5211,6 +5230,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5296,7 +5316,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						smsConfig, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5334,6 +5354,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5419,7 +5440,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						smsConfig, oidnDenoise, oidnQuality, guidingConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5472,6 +5493,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
 					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
 					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
@@ -5529,7 +5551,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality,
+						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality, oidnDevice,
 						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
@@ -5568,6 +5590,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
 					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
 					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
@@ -5628,7 +5651,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality,
+						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality, oidnDevice,
 						guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
@@ -5668,6 +5691,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5752,7 +5776,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						smsConfig, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5786,6 +5810,7 @@ namespace RISE
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5862,7 +5887,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						smsConfig, oidnDenoise, oidnQuality, adaptiveConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, oidnDevice, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5924,6 +5949,7 @@ namespace RISE
 					// can still enable it with `oidn_denoise true`.
 					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
 					OidnQuality oidnQuality       = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice        = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					// Pixel filter for sub-pixel reconstruction.  Default
 					// is Mitchell-Netravali (B=C=1/3, width/height=1.0)
@@ -5946,7 +5972,7 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality,
+						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality, oidnDevice,
 						pixelFilterConfig,
 						stabilityConfig );
 				}
@@ -5967,6 +5993,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
+						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
 						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						// MLT accepts only light_bvh and branching_threshold from
@@ -5996,6 +6023,7 @@ namespace RISE
 					// MLT parser for the detailed rationale.
 					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
 					OidnQuality oidnQuality       = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
+					OidnDevice  oidnDevice        = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
 
 					SpectralConfig spectralConfig;
 					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
@@ -6018,7 +6046,7 @@ namespace RISE
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires,
-						spectralConfig, oidnDenoise, oidnQuality,
+						spectralConfig, oidnDenoise, oidnQuality, oidnDevice,
 						pixelFilterConfig,
 						stabilityConfig );
 				}
@@ -6040,6 +6068,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
+						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
 						AddPixelFilterParams( P );
 						// MLT spectral consumes only the core spectral
 						// fields; RGB-to-SPD conversion is done in the

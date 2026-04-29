@@ -1440,6 +1440,7 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1466,6 +1467,7 @@ namespace RISE
 			const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
 
@@ -1481,6 +1483,7 @@ namespace RISE
 			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1501,6 +1504,7 @@ namespace RISE
 			const bool enableVM,									///< [in] Enable vertex merging strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1522,6 +1526,7 @@ namespace RISE
 			const bool enableVM,									///< [in] Enable vertex merging strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
@@ -1540,6 +1545,7 @@ namespace RISE
 			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
@@ -1554,6 +1560,7 @@ namespace RISE
 			const SMSConfig& smsConfig,
 			const bool oidnDenoise,
 			const OidnQuality oidnQuality,
+			const OidnDevice oidnDevice,
 			const PathGuidingConfig& guidingConfig,
 			const AdaptiveSamplingConfig& adaptiveConfig,
 			const StabilityConfig& stabilityConfig,
@@ -1570,6 +1577,7 @@ namespace RISE
 			const SMSConfig& smsConfig,
 			const bool oidnDenoise,
 			const OidnQuality oidnQuality,
+			const OidnDevice oidnDevice,
 			const AdaptiveSamplingConfig& adaptiveConfig,
 			const StabilityConfig& stabilityConfig,
 			const ProgressiveConfig& progressiveConfig
@@ -1597,6 +1605,7 @@ namespace RISE
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);
@@ -1613,6 +1622,7 @@ namespace RISE
 			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			);

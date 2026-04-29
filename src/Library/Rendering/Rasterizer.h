@@ -36,6 +36,7 @@ namespace RISE
 #ifdef RISE_ENABLE_OIDN
 			bool									bDenoisingEnabled;
 			OidnQuality								mDenoisingQuality;
+			OidnDevice								mDenoisingDevice;
 
 			//! Wall-clock timestamp captured at the start of RasterizeScene
 			//! by derived rasterizers via BeginRenderTimer().  Read by the
@@ -90,6 +91,7 @@ namespace RISE
 #ifdef RISE_ENABLE_OIDN
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
+			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
 #endif
 		};
 	}

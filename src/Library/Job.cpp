@@ -4390,6 +4390,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 	const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 	const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 	const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -4443,7 +4444,7 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4480,6 +4481,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	const double rgb_spd_b[],								///< [in] Array that contains the RGB SPD amplitudes for blue
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
 {
@@ -4559,7 +4561,7 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, oidnDenoise, oidnQuality, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, oidnDenoise, oidnQuality, oidnDevice, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 	}
 
 	safe_release( pPixelSampler );
@@ -4586,6 +4588,7 @@ bool Job::SetBDPTPelRasterizer(
 	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
@@ -4636,7 +4639,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4665,6 +4668,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
 	const ProgressiveConfig& progressiveConfig
@@ -4715,7 +4719,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -4745,6 +4749,7 @@ bool Job::SetVCMPelRasterizer(
 	const bool enableVM,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
@@ -4806,6 +4811,7 @@ bool Job::SetVCMPelRasterizer(
 		enableVM,
 		oidnDenoise,
 		oidnQuality,
+		oidnDevice,
 		guidingConfig,
 		adaptiveConfig,
 		stabilityConfig,
@@ -4840,6 +4846,7 @@ bool Job::SetVCMSpectralRasterizer(
 	const bool enableVM,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
 	const ProgressiveConfig& progressiveConfig
@@ -4904,6 +4911,7 @@ bool Job::SetVCMSpectralRasterizer(
 		enableVM,
 		oidnDenoise,
 		oidnQuality,
+		oidnDevice,
 		guidingConfig,
 		stabilityConfig,
 		pixelFilterConfig.blueNoiseSampler,
@@ -4933,6 +4941,7 @@ bool Job::SetPathTracingPelRasterizer(
 	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
@@ -4983,7 +4992,7 @@ bool Job::SetPathTracingPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5010,6 +5019,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
 	const ProgressiveConfig& progressiveConfig
@@ -5060,7 +5070,7 @@ bool Job::SetPathTracingSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, oidnDenoise, oidnQuality, oidnDevice, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
 	if( pRaster && progressiveConfig.enabled ) {
 		RISE_API_SetRasterizerProgressiveRendering( pRaster, progressiveConfig.enabled, progressiveConfig.samplesPerPass );
@@ -5088,6 +5098,7 @@ bool Job::SetMLTRasterizer(
 	const bool bShowLuminaires,
 	const bool oidnDenoise,									///< [in] Should we denoise the output with OIDN?
 	const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+	const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 	)
@@ -5124,7 +5135,7 @@ bool Job::SetMLTRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
-		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise, oidnQuality,
+		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise, oidnQuality, oidnDevice,
 		pPixelSampler, pPixelFilter );
 
 	safe_release( pCaster );
@@ -5150,6 +5161,7 @@ bool Job::SetMLTSpectralRasterizer(
 	const SpectralConfig& spectralConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
 	const PixelFilterConfig& pixelFilterConfig,
 	const StabilityConfig& stabilityConfig
 	)
@@ -5181,7 +5193,7 @@ bool Job::SetMLTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateMLTSpectralRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.spectralSamples, spectralConfig.useHWSS, oidnDenoise, oidnQuality,
+		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.spectralSamples, spectralConfig.useHWSS, oidnDenoise, oidnQuality, oidnDevice,
 		pPixelSampler, pPixelFilter );
 
 	safe_release( pCaster );

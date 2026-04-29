@@ -957,7 +957,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
 				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-					mDenoisingQuality, GetRenderElapsedSeconds() );
+					mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, 0 );
 			} else

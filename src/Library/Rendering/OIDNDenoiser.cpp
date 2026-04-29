@@ -228,6 +228,93 @@ namespace
 			codeName,
 			message ? message : "(no message)" );
 	}
+
+	// Friendly name for the actual selected OIDN device type.  Read
+	// from `device.get<int>("type")` after the device is committed,
+	// so it reflects what OIDN actually picked when DeviceType::Default
+	// was requested (Metal on Apple Silicon, CPU on hardware without
+	// a supported GPU backend, etc.).
+	const char* OidnDeviceTypeName( int t )
+	{
+		switch( t ) {
+			case static_cast<int>( oidn::DeviceType::CPU ):   return "CPU";
+			case static_cast<int>( oidn::DeviceType::SYCL ):  return "SYCL";
+			case static_cast<int>( oidn::DeviceType::CUDA ):  return "CUDA";
+			case static_cast<int>( oidn::DeviceType::HIP ):   return "HIP";
+			case static_cast<int>( oidn::DeviceType::Metal ): return "Metal";
+			default:                                          return "?";
+		}
+	}
+
+	// Try to create + commit a single-type OIDN device.  Returns a
+	// committed device on success, an empty DeviceRef on any failure
+	// (newDevice returned null OR commit emitted an error).  Errors
+	// here are deliberately consumed without going through our user-
+	// facing log channel — fall-back from a failed first attempt to
+	// CPU is a normal-flow signal, not a user-visible error.  The
+	// permanent error callback is registered by the caller AFTER a
+	// device is in hand so subsequent errors do route to the log.
+	oidn::DeviceRef TryCreateOidnDevice( oidn::DeviceType type )
+	{
+		oidn::DeviceRef d = oidn::newDevice( type );
+		if( !d ) {
+			return oidn::DeviceRef();
+		}
+		d.commit();
+		const char* err = 0;
+		if( d.getError( err ) != oidn::Error::None ) {
+			return oidn::DeviceRef();
+		}
+		return d;
+	}
+
+	// Resolve `OidnDevice` -> a committed `oidn::DeviceRef`, with
+	// fall-back behaviour described in OidnConfig.h:
+	//   Auto -> Default; on failure CPU.            (silent fallback)
+	//   GPU  -> Default; on failure or CPU-only     (explicit warn)
+	//           OIDN install, fall back to CPU
+	//           with a warning so the request isn't
+	//           silently downgraded.
+	//   CPU  -> CPU only.
+	// Returns an empty DeviceRef if even CPU fails (catastrophic).
+	//
+	// Subtlety: `oidn::DeviceType::Default` does NOT fail when no GPU
+	// backend is loadable — it returns a CPU device.  So a successful
+	// Default doesn't mean we got a GPU; we have to introspect the
+	// returned device's `type` and warn for OidnDevice::GPU when it
+	// turns out to be CPU.  Metal device dylibs ship as a separate
+	// `libOpenImageDenoise_device_metal.dylib` next to the main OIDN
+	// library; if it's missing from the install path Default silently
+	// picks CPU.
+	oidn::DeviceRef ResolveOidnDevice( OidnDevice requested )
+	{
+		if( requested == OidnDevice::CPU ) {
+			return TryCreateOidnDevice( oidn::DeviceType::CPU );
+		}
+
+		// Auto / GPU: try Default first.  OIDN picks the fastest
+		// available backend (Metal on Apple Silicon when the metal
+		// device dylib is present).
+		oidn::DeviceRef d = TryCreateOidnDevice( oidn::DeviceType::Default );
+		if( d ) {
+			const int actualType = d.get<int>( "type" );
+			const bool isCPU = ( actualType == static_cast<int>( oidn::DeviceType::CPU ) );
+			if( isCPU && requested == OidnDevice::GPU ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"OIDN: GPU device requested but unavailable in this OIDN install; using CPU" );
+			}
+			return d;
+		}
+
+		// Default failed entirely (rare — would mean no devices at
+		// all).  Try CPU as a last-ditch fallback so we don't drop
+		// the denoise pass.
+		if( requested == OidnDevice::GPU ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"OIDN: GPU device requested but unavailable; falling back to CPU" );
+		}
+		return TryCreateOidnDevice( oidn::DeviceType::CPU );
+	}
 }
 
 void OIDNDenoiser::Denoise(
@@ -238,6 +325,7 @@ void OIDNDenoiser::Denoise(
 	unsigned int h,
 	float* outputBuffer,
 	OidnQuality requestedQuality,
+	OidnDevice requestedDevice,
 	double renderSecondsBeforeDenoise
 	)
 {
@@ -273,25 +361,39 @@ void OIDNDenoiser::Denoise(
 	if( needsRebuild ) {
 		// Lazy device creation.  Only happens once per OIDNDenoiser
 		// lifetime regardless of how many cache rebuilds follow — the
-		// device's CPU-kernel state is dimension-agnostic.
+		// device is dimension-agnostic.  Resolution honours the
+		// `requestedDevice` knob with fall-back semantics documented
+		// in OidnConfig.h.
 		//
-		// Use CPU device explicitly to ensure host pointers are
-		// accessible.  GPU backends (SYCL/HIP) require device-allocated
-		// buffers, which would clash with our memcpy-into-device-buffer
-		// pattern.  Switching to a GPU device is OIDN-P0-3.
+		// Buffers go through `buffer.write` / `buffer.read` (rather
+		// than the older `memcpy(buf.getData(), …)` pattern) because
+		// GPU backends do not guarantee that buffer storage is
+		// host-mapped — for those, `getData()` returns NULL and a
+		// direct memcpy would segfault.  The C++ wrapper's read/write
+		// pick the correct path per device and reduce to memcpy on
+		// CPU, so there's no slowdown on the CPU path.
 		//
-		// Set the error callback BEFORE commit() so any commit-time
-		// failures route through our log system instead of OIDN's
-		// default stderr handler.  `OIDN_VERBOSE=N` env var still
-		// controls OIDN's own diagnostic verbosity (we don't override
-		// it via API) — set it in the shell to debug commit / network
-		// build issues.
+		// We register the error callback AFTER ResolveOidnDevice has
+		// returned a working device.  ResolveOidnDevice deliberately
+		// swallows first-attempt errors (e.g. "Metal not available")
+		// since they are normal-flow signals during fallback, not
+		// user-visible errors.  Registering the callback only on the
+		// final device avoids logging spurious failure messages.
+		// `OIDN_VERBOSE=N` env var still controls OIDN's own
+		// diagnostic verbosity (we don't override via API).
 		if( !mState->device ) {
-			GlobalLog()->PrintEx( eLog_Event,
-				"OIDN: creating CPU device (one-time per rasterizer)" );
-			mState->device = oidn::newDevice( oidn::DeviceType::CPU );
+			mState->device = ResolveOidnDevice( requestedDevice );
+			if( !mState->device ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"OIDN: failed to create any device (CPU fallback also failed); skipping denoise" );
+				return;
+			}
 			mState->device.setErrorFunction( OidnErrorCallback, 0 );
-			mState->device.commit();
+
+			const int actualType = mState->device.get<int>( "type" );
+			GlobalLog()->PrintEx( eLog_Event,
+				"OIDN: creating %s device (one-time per rasterizer)",
+				OidnDeviceTypeName( actualType ) );
 		}
 
 		// Reallocate buffers only when dimensions change.  Toggling aux
@@ -370,16 +472,18 @@ void OIDNDenoiser::Denoise(
 			w, h, OidnQualityName( resolvedQuality ) );
 	}
 
-	// Copy the per-render data into the cached buffers.  The device
-	// owns the storage; getData() returns the host pointer for CPU
-	// devices.  On GPU devices (P0-3) this would need oidnWriteBuffer
-	// instead, but that's still cheaper than rebuilding the filter.
-	std::memcpy( mState->colorBuf.getData(),  beautyBuffer, bufBytes );
+	// Copy the per-render data into the cached buffers.  Use
+	// `buffer.write` rather than `memcpy(getData(), …)` so the same
+	// code path works on both CPU (where getData() is host-mapped)
+	// and GPU devices (where it isn't, and a direct memcpy would
+	// segfault).  On CPU the C++ wrapper reduces to memcpy under the
+	// hood, so there's no slowdown.
+	mState->colorBuf.write( 0, bufBytes, beautyBuffer );
 	if( hasAlbedo ) {
-		std::memcpy( mState->albedoBuf.getData(), albedoBuffer, bufBytes );
+		mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
 	}
 	if( hasNormal ) {
-		std::memcpy( mState->normalBuf.getData(), normalBuffer, bufBytes );
+		mState->normalBuf.write( 0, bufBytes, normalBuffer );
 	}
 
 	// Execute the cached filter.  No commit() needed — that's already
@@ -398,7 +502,7 @@ void OIDNDenoiser::Denoise(
 		return;
 	}
 
-	std::memcpy( outputBuffer, mState->outputBuf.getData(), bufBytes );
+	mState->outputBuf.read( 0, bufBytes, outputBuffer );
 }
 
 void OIDNDenoiser::CollectFirstHitAOVs(
@@ -489,6 +593,7 @@ void OIDNDenoiser::ApplyDenoise(
 	unsigned int w,
 	unsigned int h,
 	OidnQuality requestedQuality,
+	OidnDevice requestedDevice,
 	double renderSecondsBeforeDenoise
 	)
 {
@@ -506,6 +611,7 @@ void OIDNDenoiser::ApplyDenoise(
 		w, h,
 		denoisedBuf.data(),
 		requestedQuality,
+		requestedDevice,
 		renderSecondsBeforeDenoise );
 	FloatBufferToImage( denoisedBuf.data(), image, w, h );
 

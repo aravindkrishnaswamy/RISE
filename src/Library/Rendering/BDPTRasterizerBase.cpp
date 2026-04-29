@@ -1181,7 +1181,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
 		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-			mDenoisingQuality, GetRenderElapsedSeconds() );
+			mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
 	}
 #endif
 

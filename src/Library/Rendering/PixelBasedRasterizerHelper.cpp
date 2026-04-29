@@ -728,7 +728,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers );
 		}
 		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-			mDenoisingQuality, GetRenderElapsedSeconds() );
+			mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
 		delete pAOVBuffers;
 		pAOVBuffers = 0;
 #endif
