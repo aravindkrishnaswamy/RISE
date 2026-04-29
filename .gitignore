@@ -14,7 +14,12 @@ RISE_Log.txt
 *.mov
 .claude/
 .agents/
-extlib/
+# Build artifacts under extlib/ (vendored sources & submodules
+# stay tracked; only build outputs and generated installs are
+# ignored).  Pattern is per-package because each extlib has its
+# own build idiom — see extlib/README.TXT.
+extlib/oidn/source/build/
+extlib/oidn/install/
 
 # Visual studio on Windows
 /build/VS2005

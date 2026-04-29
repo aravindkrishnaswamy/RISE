@@ -261,7 +261,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     the property the interactive viewport needs.
 
 #### OIDN-P0-3 — Add Metal device backend on Apple Silicon
-- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Status:** Shipped — code complete, Metal verified end-to-end via
+  the in-tree OIDN install at `extlib/oidn/install/` (2026-04-29).
+  Auto-quality threshold recalibration deferred — see decision log
+  for the measurement-driven reasoning.
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** RISE primarily targets macOS / Apple Silicon. OIDN 2.x ships a
@@ -316,37 +319,52 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   with measurements rather than guessing. Tracker location for the
   thresholds: `kAutoFastUntilSecPerMP` / `kAutoBalancedUntilSecPerMP` in
   [OIDNDenoiser.cpp](../src/Library/Rendering/OIDNDenoiser.cpp).
-- **Install gotcha — Metal needs the device dylib next to the core dylib.**
-  OIDN ships device backends as separate plugin dylibs that the core
-  loads at runtime from the same directory.  The Homebrew formula
-  (`open-image-denoise` 2.4.1) only ships
-  `libOpenImageDenoise_device_cpu.dylib` — no Metal — so on a Homebrew-
-  based RISE build, `auto` and `gpu` both end up on CPU.  To enable
-  Metal: either symlink Blender's bundled
-  `libOpenImageDenoise_device_metal.dylib` (typically at
-  `…/blender/lib/macos_arm64/openimagedenoise/lib/`) into
-  `/opt/homebrew/opt/open-image-denoise/lib/`, or rebuild OIDN from
-  source with `OIDN_DEVICE_METAL=ON`.  Both are user-environment
-  changes; the RISE code is install-agnostic and picks Metal up
-  automatically when the dylib is loadable.
+- **Install gotcha — Metal needs an OIDN built with `OIDN_DEVICE_METAL=ON`,
+  not just the dylib.**  Symlinking Blender's bundled Metal device
+  dylib into Homebrew's location is NOT sufficient — the OIDN core's
+  list of attempted device backends is baked at compile time, not
+  discovered at runtime.  Confirmed empirically with `OIDN_VERBOSE=4`:
+  Homebrew's core only ever tries `libOpenImageDenoise_device_cpu.dylib`,
+  even with the Metal dylib in place.  **RISE's solution: an in-tree
+  build at `extlib/oidn/install/`.**  OIDN is added as a git submodule
+  at `extlib/oidn/source`; `extlib/oidn/build.sh` (macOS / Linux) or
+  `extlib/oidn/build.ps1` (Windows) configures cmake with the right
+  device-backend flags and installs to `extlib/oidn/install/`.  All
+  RISE build configs (Makefile, every VS2022 vcxproj, the
+  rise-tests CMakeLists) prefer this install when present and fall
+  back to the system OIDN otherwise.  See `extlib/README.TXT` and
+  CLAUDE.md "Quickstart" for the one-time setup commands.
 - **Result:**
   - `make -C build/make/rise -j8 all` clean (no new warnings).
   - `./run_all_tests.sh` clean: **72/72 pass**.
   - Verified all three device paths on `shapes.RISEscene`:
-    - `oidn_device auto` (default): silent CPU selection because the
-      Homebrew OIDN install lacks the Metal device dylib.
+    - `oidn_device auto` (default): silently picks Metal when an
+      OIDN install with the Metal backend is loadable
+      (`extlib/oidn/install/` after running `build.sh`); falls back
+      to CPU on a Homebrew-only install.
     - `oidn_device gpu` (explicit): emits the documented warning
-      (`OIDN: GPU device requested but unavailable in this OIDN install; using CPU`)
-      then proceeds on CPU — the user's request is honoured to the
-      extent the install allows.
+      when CPU fallback fires.
     - `oidn_device cpu`: silent CPU, no warning.
   - Subtle correctness fix during verification: `oidn::DeviceType::Default`
     does not fail when no GPU backend is loadable — it silently
     returns a CPU device.  `ResolveOidnDevice` introspects the
     returned device's actual type via `device.get<int>("type")` and
     only suppresses the warning when the user asked for `auto`.
-  - Once the Metal device dylib is in place, no code change is
-    needed — the same auto path will pick Metal up.
+  - **Metal performance vs CPU on Apple M1 Max, warm-cache, 1920×1080
+    (2.07 MP):**
+
+    | Quality   | CPU      | Metal    | Speedup |
+    |-----------|----------|----------|---------|
+    | FAST      | 250 ms   | 107 ms   | 2.3×    |
+    | BALANCED  | 480 ms   | 150 ms   | 3.2×    |
+    | HIGH      | 1010 ms  | 226 ms   | 4.5×    |
+
+    Smaller speedup than the doc's original "5–15×" estimate — the
+    M1 Max's BNNS-accelerated CPU backend is genuinely fast.  Metal's
+    win grows with quality (4.5× at HIGH where the network is biggest).
+    Cold-rebuild is ~200 ms slower on Metal than CPU because of GPU
+    pipeline / shader-compile overhead, but the cache from `OIDN-P0-2`
+    amortises that across the rasterizer's lifetime.
 
 #### OIDN-P0-4 — Register an error callback + verbose toggle
 - **Status:** Code complete — pending commit/PR (2026-04-29)
@@ -586,6 +604,43 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P0-3 shipped (Metal verified end-to-end via in-tree submodule build)
+- OIDN added as a git submodule at `extlib/oidn/source` pinned to
+  v2.4.1 (matches the Homebrew bottle version we were already on, so
+  no API drift).  `extlib/oidn/build.sh` (macOS / Linux) and
+  `.../build.ps1` (Windows) install to `extlib/oidn/install/` with
+  the right per-platform device backends compiled in.
+- Build-config rewiring: `build/make/rise/Config.OSX` adds an
+  `OIDN_PREFIX` variable that prefers `extlib/oidn/install/` when
+  present and falls back to Homebrew otherwise.  All 8 affected
+  Windows vcxproj files (Library, RISE-CLI, RISE-GUI, 5 Tools/
+  test projects) and `build/cmake/rise-tests/CMakeLists.txt` swap
+  hardcoded `C:\Dev\oidn-2.4.1.x64.windows\` paths for
+  `$(SolutionDir)..\..\extlib\oidn\install\` (Windows) /
+  `${RISE_ROOT}/extlib/oidn/install` (CMake).  Hardcoded
+  `C:\Dev\GitHub\RISE\bin\` in `Tools/ExrFireflyInspect.vcxproj`
+  fixed in the same sweep.
+- `build/make/rise/Config.OSX` rpath is `$(abspath ...)` rather than
+  the relative path that `$(OIDN_EXTLIB_PREFIX)` would naturally
+  produce: dyld interprets non-absolute non-`@token` rpaths
+  relative to cwd, which would silently fall through to
+  `/opt/homebrew/lib` and load the CPU-only Homebrew OIDN even
+  though the Makefile pointed at extlib.  This took ~30 minutes
+  to track down; the comment in Config.OSX records the gotcha so
+  future agents don't reintroduce it.
+- **Threshold recalibration NOT done.**  After measuring
+  CPU vs Metal at 1080p (see OIDN-P0-3 result block), the
+  speedup turned out to be 2.3–4.5× — much smaller than the
+  doc's original 5–15× projection.  More importantly, the
+  `r = render_seconds / megapixels` heuristic was originally
+  framed as a USER-INTENT signal (short render = preview =
+  FAST denoise; long render = final = HIGH denoise), not a
+  cost-budget calculation.  Keeping the same thresholds means
+  the user gets consistent quality decisions across CPU and
+  Metal, with Metal just delivering them faster.  Reopen if a
+  real animation flow makes the cost-budget framing more
+  important than intent matching.
 
 ### 2026-04-29 — OIDN-P0-3 code complete (Metal-ready, install-gated)
 - New scene-language parameter `oidn_device` (enum: `auto` / `cpu` /

@@ -15,6 +15,40 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+### One-time setup: OIDN with GPU support (extlib submodule)
+
+OIDN is shipped as a git submodule at `extlib/oidn/source` so RISE
+links against an in-tree install with GPU device backends enabled
+(Metal on macOS; CUDA / HIP / SYCL toggles on Windows). System OIDN
+installs from Homebrew, vcpkg, etc., are typically built with CPU
+device only — RISE's denoise then silently runs on CPU even on a
+Metal-capable Mac. Full background in [docs/OIDN.md](docs/OIDN.md)
+(OIDN-P0-3 install gotcha).
+
+Run once after cloning, and again whenever the OIDN submodule
+commit is bumped:
+
+```sh
+# macOS / Linux
+git submodule update --init extlib/oidn/source
+extlib/oidn/build.sh
+```
+
+```powershell
+# Windows (PowerShell, in repo root)
+git submodule update --init extlib/oidn/source
+pwsh -File extlib\oidn\build.ps1     # add -EnableCuda / -EnableHip / -EnableSycl as needed
+```
+
+Both scripts populate `extlib/oidn/install/`; RISE's Makefile and
+VS2022 project files prefer that path over any system OIDN. Verify
+the selected device on your first render — look for:
+`OIDN: creating Metal device (one-time per rasterizer)` in the log.
+
+Skipping this step is fine — RISE falls back to the system OIDN
+(typically Homebrew's CPU-only build) and denoise still works,
+just without GPU acceleration.
+
 ## Source-file add/remove — touch ALL five build projects
 
 When you add **or remove** any `.cpp` / `.h` under `src/Library/`, update every one of these; none auto-discovers files:

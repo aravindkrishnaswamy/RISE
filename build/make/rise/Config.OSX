@@ -17,6 +17,26 @@ OPENEXR_PREFIX ?= /opt/homebrew/opt/openexr
 IMATH_PREFIX ?= /opt/homebrew/opt/imath
 LIBTIFF_PREFIX ?= /opt/homebrew/opt/libtiff
 
+# OIDN_PREFIX picks the in-tree submodule build (extlib/oidn/install/)
+# when present and falls back to the Homebrew install otherwise.  The
+# in-tree build (built via extlib/oidn/build.sh) ships the Metal device
+# dylib, which the Homebrew bottle does not — see docs/OIDN.md
+# (OIDN-P0-3) for the install gotcha that motivated this.  Override on
+# the command line if you have a third OIDN install elsewhere:
+#     make OIDN_PREFIX=/path/to/oidn -C build/make/rise -j8 all
+#
+# `$(abspath …)` is required for the rpath: relative rpaths get
+# interpreted by dyld relative to cwd at load time, which means a
+# binary built here would silently fall through to /opt/homebrew/lib
+# (where the linker also looks) and pick up the CPU-only Homebrew
+# OIDN.  Absolute rpath nails resolution to the in-tree install.
+OIDN_EXTLIB_PREFIX = $(abspath ../../../extlib/oidn/install)
+ifneq ($(wildcard $(OIDN_EXTLIB_PREFIX)/lib/libOpenImageDenoise.dylib),)
+OIDN_PREFIX ?= $(OIDN_EXTLIB_PREFIX)
+else
+OIDN_PREFIX ?= /opt/homebrew/opt/open-image-denoise
+endif
+
 ifneq ($(wildcard $(OPENEXR_PREFIX)/include/OpenEXR/ImfRgbaFile.h),)
 CPPFLAGS_OPENEXR = -I$(OPENEXR_PREFIX)/include/OpenEXR -I$(OPENEXR_PREFIX)/include -I$(IMATH_PREFIX)/include/Imath -I$(IMATH_PREFIX)/include
 LDLIBS_EXR = -L$(OPENEXR_PREFIX)/lib -Wl,-rpath,$(OPENEXR_PREFIX)/lib -L$(IMATH_PREFIX)/lib -Wl,-rpath,$(IMATH_PREFIX)/lib -lOpenEXR -lOpenEXRUtil -lOpenEXRCore -lIex -lIlmThread -lImath
@@ -31,8 +51,10 @@ else
 DEF_TIFF = -DNO_TIFF_SUPPORT
 endif
 
+CPPFLAGS_OIDN = -I$(OIDN_PREFIX)/include
+
 # options for the linker
-CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) -flto
+CPPFLAGS = -I$(PATHLIBRARY) -I/opt/homebrew/include $(CPPFLAGS_TIFF) $(CPPFLAGS_OPENEXR) $(CPPFLAGS_OIDN) -flto
 
 # C++17 standard pinned explicitly: the codebase uses [[nodiscard]] et al.
 # Without -std=, Apple clang's default standard varies by toolchain version
@@ -65,7 +87,11 @@ DEF_OPENPGL = -DRISE_ENABLE_OPENPGL
 
 DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_PROFILING) $(DEF_MAILBOXING) $(DEF_OIDN) $(DEF_OPENPGL)
 
-# libraries to link with
-LDLIBS_OIDN = -lOpenImageDenoise
+# libraries to link with.  OIDN-specific -L is listed BEFORE
+# /opt/homebrew/lib so the in-tree extlib OIDN install wins over
+# any Homebrew OIDN that might be on disk; otherwise the linker
+# would happily resolve -lOpenImageDenoise against Homebrew's
+# CPU-only build first and we'd never pick up Metal.
+LDLIBS_OIDN = -L$(OIDN_PREFIX)/lib -Wl,-rpath,$(OIDN_PREFIX)/lib -lOpenImageDenoise
 LDLIBS_OPENPGL = -lopenpgl
-LDLIBS = -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OIDN) $(LDLIBS_OPENPGL)
+LDLIBS = $(LDLIBS_OIDN) -L/opt/homebrew/lib -Wl,-rpath,/opt/homebrew/lib -lpng -lz $(LDLIBS_TIFF) $(LDLIBS_EXR) $(LDLIBS_OPENPGL)

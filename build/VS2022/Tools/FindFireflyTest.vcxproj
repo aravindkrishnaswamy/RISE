@@ -46,7 +46,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <AdditionalDependencies>RISE.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;C:\Dev\oidn-2.4.1.x64.windows\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

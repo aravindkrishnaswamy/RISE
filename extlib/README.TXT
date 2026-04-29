@@ -13,6 +13,65 @@ For more information about OpenEXR:
 http://www.openexr.com/
 
 
+====================================================================
+oidn/  --  Intel Open Image Denoise (added 2026-04-29)
+====================================================================
+
+OIDN is included as a git SUBMODULE pointing at v2.4.1 of
+https://github.com/RenderKit/oidn rather than as vendored source.
+Reason: at full source + trained weights + built-binary scope, OIDN
+is ~120 MB — disproportionate next to libpng / libtiff / openexr in
+this directory (~5 MB total).  The submodule reference is just a
+commit hash and lets `git submodule update --init` reproduce the
+exact upstream tree on every clone.
+
+After cloning RISE:
+
+    git submodule update --init extlib/oidn/source
+
+Then build it with the platform-appropriate script.  The build is
+opt-in: RISE's build configs prefer extlib/oidn/install/ when
+present and fall back to the system-installed OIDN otherwise (see
+docs/OIDN.md OIDN-P0-3 for the install gotcha that motivated this).
+
+macOS / Linux:
+    extlib/oidn/build.sh
+
+Windows (PowerShell):
+    pwsh -File extlib\oidn\build.ps1
+
+Both scripts produce extlib/oidn/install/ with platform-best
+backends compiled in (CPU + Metal on macOS; CPU on Windows by
+default with -EnableCuda / -EnableHip / -EnableSycl flags for GPU).
+
+Prerequisites: cmake, ispc, plus the platform's native GPU SDK
+(Xcode CLT for Metal on macOS; CUDA Toolkit for CUDA on Windows;
+oneAPI for SYCL; ROCm for HIP).  See the script headers for the
+exact list per platform.
+
+For more information about Open Image Denoise:
+https://www.openimagedenoise.org/
+
+
+OPEN IMAGE DENOISE LICENSE (Apache 2.0):
+
+Licensed under the Apache License, Version 2.0 (the "License"); you
+may not use this file except in compliance with the License.  You
+may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied.  See the License for the specific language governing
+permissions and limitations under the License.
+
+Full third-party license details ship with each OIDN release at
+extlib/oidn/install/share/doc/OpenImageDenoise/ once build.sh /
+build.ps1 has been run.
+
+
 LIBPNG LICENSE
 
 

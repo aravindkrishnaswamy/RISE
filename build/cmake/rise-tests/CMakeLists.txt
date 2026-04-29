@@ -19,9 +19,11 @@
 #        - bin/RISE.lib, dbin/RISE.lib
 #        - bin/*.dll, dbin/*.dll (OpenEXR + OIDN runtime)
 #        - build/VS2022/vcpkg_installed/x64-windows/x64-windows/{include,lib,...}
-#   2. Have OIDN installed at C:/Dev/oidn-2.4.1.x64.windows (matches the path
-#      used by build/VS2022/Library/Library.vcxproj). Override with
-#      -DOIDN_DIR=... at configure time if it lives elsewhere.
+#   2. Have OIDN built into extlib/oidn/install/ via
+#      `extlib/oidn/build.ps1` (Windows) or `extlib/oidn/build.sh`
+#      (macOS/Linux). The build matches the version that
+#      build/VS2022/Library/Library.vcxproj links against.  Override
+#      with -DOIDN_DIR=<path> if you have a third install elsewhere.
 #
 # Usage (from this directory):
 #   cmake -B _out -G "Visual Studio 17 2022" -A x64
@@ -75,9 +77,20 @@ set(VCPKG_INCLUDE    "${VCPKG_INSTALLED}/include")
 set(VCPKG_LIB_RELEASE "${VCPKG_INSTALLED}/lib")
 set(VCPKG_LIB_DEBUG   "${VCPKG_INSTALLED}/debug/lib")
 
-# OIDN install (override on the command line if installed elsewhere).
+# OIDN install — prefer the in-tree extlib build (built via
+# extlib/oidn/build.sh on macOS / Linux or extlib/oidn/build.ps1 on
+# Windows), fall back to a hand-installed location if the user has
+# pre-existing infrastructure pointed elsewhere.  Override on the
+# command line with -DOIDN_DIR=<path> if needed.
 if(NOT DEFINED OIDN_DIR)
-    set(OIDN_DIR "C:/Dev/oidn-2.4.1.x64.windows")
+    set(_oidn_extlib "${RISE_ROOT}/extlib/oidn/install")
+    if(EXISTS "${_oidn_extlib}/lib/OpenImageDenoise.lib"
+       OR EXISTS "${_oidn_extlib}/lib/libOpenImageDenoise.dylib"
+       OR EXISTS "${_oidn_extlib}/lib/libOpenImageDenoise.so")
+        set(OIDN_DIR "${_oidn_extlib}")
+    else()
+        set(OIDN_DIR "C:/Dev/oidn-2.4.1.x64.windows")
+    endif()
 endif()
 
 # OpenPGL install — must match the path baked into Library.vcxproj /
