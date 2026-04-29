@@ -542,10 +542,23 @@ namespace
 	struct PTIGuidingPathRecorder
 	{
 		PGLPathSegmentStorage storage;
+		// Capacity passed to pglPathSegmentStorageReserve.  Tracked
+		// here because openpgl 0.7.1's pglPathSegmentStorageNextSegment
+		// has an off-by-one (`m_seg_idx + 1 <= m_max_seg_size`) that
+		// performs ONE OOB write on call N+1 when the buffer was
+		// reserved for N elements, BEFORE returning nullptr on call
+		// N+2.  By the time the nullptr signal arrives, the heap has
+		// already been corrupted.  We early-out at `numSegments + 1
+		// >= reservedCapacity` so openpgl's bug never triggers (caught
+		// 2026-04-29 by Application Verifier full-page-heap on
+		// pt_jewel_vault.RISEscene during HQ render with path guiding
+		// + dielectric refraction).
+		int reservedCapacity;
 		bool active;
 
 		PTIGuidingPathRecorder() :
 			storage( 0 ),
+			reservedCapacity( 0 ),
 			active( false )
 		{
 		}
@@ -560,10 +573,21 @@ namespace
 
 		void Begin()
 		{
+			// Reserve well above any plausible path complexity so the
+			// per-pixel hot path never has to grow.  The dominant
+			// contributors are: per-hit segments up to the integrator's
+			// recursion depth, plus volume-scatter segments along each
+			// participating-medium leg, plus one optional background
+			// segment.  256 covers max_depth values comfortably even
+			// when SMS / dispersion / heavy refraction inflate the
+			// effective vertex count.
+			static const size_t kReservedSegments = 256;
+
 			if( !storage ) {
 				storage = pglNewPathSegmentStorage();
 				if( storage ) {
-					pglPathSegmentStorageReserve( storage, 64 );
+					pglPathSegmentStorageReserve( storage, kReservedSegments );
+					reservedCapacity = static_cast<int>( kReservedSegments );
 				}
 			}
 
@@ -615,12 +639,28 @@ namespace
 		return recorder;
 	}
 
+	// True when one more pglPathSegmentStorageNextSegment() call would
+	// trigger openpgl 0.7.1's off-by-one OOB write.  See the comment
+	// on PTIGuidingPathRecorder::reservedCapacity.
+	static inline bool PTIGuidingAtCapacity(
+		const PTIGuidingPathRecorder& recorder
+		)
+	{
+		if( recorder.reservedCapacity <= 0 ) {
+			return false;
+		}
+		return pglPathSegmentGetNumSegments( recorder.storage ) + 1 >= recorder.reservedCapacity;
+	}
+
 	static inline PGLPathSegmentData* BeginPTIGuidingSegment(
 		PTIGuidingPathRecorder& recorder,
 		const RayIntersectionGeometric& rig
 		)
 	{
 		if( !recorder.active || !recorder.storage ) {
+			return 0;
+		}
+		if( PTIGuidingAtCapacity( recorder ) ) {
 			return 0;
 		}
 
@@ -723,6 +763,9 @@ namespace
 		if( !recorder.active || !recorder.storage ) {
 			return 0;
 		}
+		if( PTIGuidingAtCapacity( recorder ) ) {
+			return 0;
+		}
 
 		PGLPathSegmentData* segment = pglPathSegmentStorageNextSegment( recorder.storage );
 		if( !segment ) {
@@ -768,6 +811,9 @@ namespace
 		)
 	{
 		if( !recorder.active || !recorder.storage ) {
+			return;
+		}
+		if( PTIGuidingAtCapacity( recorder ) ) {
 			return;
 		}
 
