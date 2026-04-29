@@ -224,7 +224,12 @@ inline char evaluate_first_function_in_expression( String& token )
 	case 'h':
 		// Halton random number sequence
 		if( str[1] == 'a' && str[2] == 'l' ) {
-			val = mh.next_halton(int(expr.eval()));
+			const int d = int(expr.eval());
+			if( d < 0 || d >= QMC_NUM_PRIMES ) {
+				GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: hal(d): dimension d=%d is out of range [0, %d); clamp or pick a smaller value", d, QMC_NUM_PRIMES );
+				return 2;
+			}
+			val = mh.next_halton(d);
 		} else {
 			return 2;
 		}
