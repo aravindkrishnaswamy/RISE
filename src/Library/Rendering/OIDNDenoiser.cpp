@@ -191,6 +191,43 @@ namespace
 		}
 		return static_cast<int>( oidn::Quality::High );
 	}
+
+	// OIDN error callback.  Routes OIDN's diagnostics through RISE's
+	// log system instead of stderr.  Registered immediately after the
+	// device is created and before its first commit, so any errors
+	// during commit / setImage / set / execute funnel through here
+	// instead of being silently dropped if the caller forgets to poll
+	// `device.getError()`.  The synchronous `getError()` polls in
+	// Denoise() are kept too — together they catch warnings (callback)
+	// and confirm clean state per call (poll).
+	//
+	// Cancellation is intentionally NOT propagated to OIDN — see
+	// docs/OIDN.md (OIDN-P1-3) for the project invariant.  Even if a
+	// progress monitor is wired up later it must always return `true`.
+	void OidnErrorCallback( void* /*userPtr*/, oidn::Error code, const char* message )
+	{
+		if( code == oidn::Error::None ) {
+			return;
+		}
+
+		const char* codeName = "?";
+		bool        isFatal  = true;
+		switch( code ) {
+			case oidn::Error::None:                break;	// handled above
+			case oidn::Error::Unknown:             codeName = "Unknown";             break;
+			case oidn::Error::InvalidArgument:     codeName = "InvalidArgument";     break;
+			case oidn::Error::InvalidOperation:    codeName = "InvalidOperation";    break;
+			case oidn::Error::OutOfMemory:         codeName = "OutOfMemory";         break;
+			case oidn::Error::UnsupportedHardware: codeName = "UnsupportedHardware"; break;
+			case oidn::Error::Cancelled:           codeName = "Cancelled"; isFatal = false; break;
+		}
+
+		GlobalLog()->PrintEx(
+			isFatal ? eLog_Error : eLog_Warning,
+			"OIDN [%s]: %s",
+			codeName,
+			message ? message : "(no message)" );
+	}
 }
 
 void OIDNDenoiser::Denoise(
@@ -242,10 +279,18 @@ void OIDNDenoiser::Denoise(
 		// accessible.  GPU backends (SYCL/HIP) require device-allocated
 		// buffers, which would clash with our memcpy-into-device-buffer
 		// pattern.  Switching to a GPU device is OIDN-P0-3.
+		//
+		// Set the error callback BEFORE commit() so any commit-time
+		// failures route through our log system instead of OIDN's
+		// default stderr handler.  `OIDN_VERBOSE=N` env var still
+		// controls OIDN's own diagnostic verbosity (we don't override
+		// it via API) — set it in the shell to debug commit / network
+		// build issues.
 		if( !mState->device ) {
 			GlobalLog()->PrintEx( eLog_Event,
 				"OIDN: creating CPU device (one-time per rasterizer)" );
 			mState->device = oidn::newDevice( oidn::DeviceType::CPU );
+			mState->device.setErrorFunction( OidnErrorCallback, 0 );
 			mState->device.commit();
 		}
 

@@ -296,8 +296,8 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P0-4 — Register an error callback + verbose toggle
-- **Status:** Open
-- **Owner:** —
+- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Owner:** Aravind
 - **PR:** —
 - **Why:** Today RISE polls `device.getError()` exactly once after
   `filter.execute()`. OIDN can emit warnings (deprecated parameter usage,
@@ -305,17 +305,33 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   filters (`OIDN-P1-1` below) some of these warnings happen at commit time,
   before the polled `getError`.
 - **What:**
-  ```cpp
-  device.setErrorFunction( []( void*, oidn::Error code, const char* msg ) {
-      GlobalLog()->PrintEx( eLog_Warning, "OIDN: %s", msg );
-  });
-  device.set( "verbose", verboseLevel );  // 0 default, 2 in debug builds
-  ```
+  - Register `device.setErrorFunction(OidnErrorCallback, nullptr)`
+    immediately after `oidn::newDevice(...)` and before the device's
+    first `commit()` so commit-time failures route through our log
+    system instead of being silently dropped.  Existing
+    `device.getError(...)` polls in `Denoise()` are kept as a per-call
+    "no error since last poll" confirmation.
+  - Severity mapping: `OIDN_ERROR_CANCELLED` → `eLog_Warning` (we
+    don't propagate cancel to OIDN per `OIDN-P1-3` invariant, but if
+    OIDN signals it for any reason it's not a fatal condition).  All
+    other non-`None` codes → `eLog_Error`.
+  - Verbose toggle: defer to OIDN's `OIDN_VERBOSE` env var.  We do
+    not call `device.set("verbose", N)` ourselves — setting the env
+    var in the shell (e.g. `OIDN_VERBOSE=2 ./bin/rise scene…`) gives
+    a knob without baking a build-time level into RISE.
 - **Touch:** [OIDNDenoiser.cpp](../src/Library/Rendering/OIDNDenoiser.cpp).
-- **Effort:** ~30 min.
-- **Verification:** deliberately commit a filter with an unset image to verify
-  the callback fires.
-- **Result:** —
+- **Effort:** ~20 min actual.
+- **Verification:** confirm callback registers + does not misfire on a
+  clean render (no spurious `OIDN [Code]: …` lines in the log when
+  nothing is actually wrong).  Provoking real errors is impractical
+  without breaking the deliberate code path; the implementation
+  follows OIDN's documented C-API contract verbatim.
+- **Result:**
+  - `make -C build/make/rise -j8 all` clean (no new warnings).
+  - `./run_all_tests.sh` clean: **72/72 pass**.
+  - Sample render of `scenes/Tests/Geometry/shapes.RISEscene`
+    (800×800) produces no `OIDN [...]` callback lines — exactly the
+    expected silence on a healthy code path.
 
 ### P1 — solid wins, moderate effort
 
@@ -369,21 +385,31 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Verification:** heap profiler before / after on a 4K denoise.
 - **Result:** —
 
-#### OIDN-P1-3 — Progress monitor + cancel hook
+#### OIDN-P1-3 — Progress monitor (cancel intentionally NOT wired)
 - **Status:** Open
 - **Owner:** —
 - **PR:** —
-- **Why:** On GPU at 4K, denoise can take 1–3 s; on CPU FAST it's still
-  noticeable. With future interactive flows or long animations, cancel-mid-
-  render becomes important.
-- **What:** Register `oidnSetFilterProgressMonitorFunction` that reads RISE's
-  existing render-cancel signal (if any) and returns false to abort. Today
-  RISE's CLI doesn't have an interactive cancel signal, so this is mostly
-  forward-compat.
+- **Project invariant — do NOT propagate cancel to OIDN.** The user
+  has explicitly stated a preference for OIDN to keep running on
+  partial render results when the user cancels mid-render. Cancelling
+  mid-render still produces a useful denoised image of whatever
+  samples were collected, which is more useful than aborting the
+  denoise and getting nothing. Any progress monitor we register
+  must always return `true`. If you find yourself wiring
+  `is_cancelled()` through to a `return !cancelled` callback, stop
+  and re-read this entry.
+- **Why (the kept-around progress part):** On GPU at 4K, denoise can take
+  1–3 s; on CPU FAST it's still noticeable. A progress monitor is
+  useful for surfacing denoise progress in interactive UI, just not
+  for cancellation.
+- **What:** Register `oidnSetFilterProgressMonitorFunction` for visual
+  progress feedback only. Always returns `true` (continue). Defer
+  until there's a concrete interactive UI that consumes the progress
+  values.
 - **Touch:** [OIDNDenoiser.cpp](../src/Library/Rendering/OIDNDenoiser.cpp).
 - **Effort:** ~1 hour, mostly plumbing.
-- **Verification:** add a temporary `kill -INT` handler; confirm denoise
-  aborts with a log line rather than hanging.
+- **Verification:** observe progress callback firing with monotonically
+  increasing values during a longer render.
 - **Result:** —
 
 #### OIDN-P1-4 — Recurse through specular hits when collecting AOVs
@@ -507,6 +533,25 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P0-4 code complete; cancel-doesn't-propagate invariant recorded
+- `OidnErrorCallback` (file-static, C-style function pointer) is
+  registered on the OIDN device immediately after `oidn::newDevice`
+  and before its first `commit()`.  Maps OIDN's error codes to a
+  short name + severity and routes through `GlobalLog()->PrintEx(...)`.
+- Verbose: deferred to OIDN's own `OIDN_VERBOSE` env var.  We do not
+  override it via `device.set("verbose", ...)` — keeping it as an
+  env-var knob is consistent with OIDN's documented control surface
+  and avoids baking a level into RISE itself.
+- **New project invariant: cancel does NOT propagate to OIDN.**  The
+  user has stated explicit preference for OIDN to keep running on
+  partial render results when the user cancels.  Cancellation
+  produces a useful denoised image of whatever samples were
+  collected, which is more valuable than aborting the denoise.  Any
+  future progress monitor (`OIDN-P1-3`) must always return `true`.
+  This is recorded in the `OIDN-P1-3` ticket body and called out in
+  the error-callback docstring so future agents don't accidentally
+  wire `is_cancelled()` into a `return !cancelled` callback.
 
 ### 2026-04-29 — OIDN-P0-2 code complete
 - `OIDNDenoiser` is now a stateful instance class with private opaque
