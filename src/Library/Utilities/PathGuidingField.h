@@ -63,11 +63,11 @@ namespace RISE
 		unsigned int	trainingSPP;			///< Samples per pixel during each training pass
 		bool			combineTrainingIterations;	///< If true, accumulate every training iteration's rendered pixels into the final image weighted by its SPP (Müller 2017 §5).  When false (legacy behaviour) training-iteration pixels are discarded — fine only when total final SPP ≫ training SPP.  At low final SPP, discarding wastes the work and trial-to-trial training non-determinism dominates the variance budget.
 		bool			online;					///< If true, the training-iteration loop IS the entire render — no separate final pass, every sample feeds both the field and the image.  Implies combineTrainingIterations.  Best for low-SPP regimes where the train-then-render two-phase pattern wastes too much budget on discarded training pixels (Vorba 2014 / NASG 2024 style).  Total SPP = pathguiding_iterations × pathguiding_spp; the scene's `samples` parameter is ignored in this mode.
-		unsigned int	warmupIterations;		///< Number of training iterations to render with alpha=0 (pure BSDF sampling) before switching to the configured alpha.  Samples still feed the field — but because they're produced by unguided BDPT, their pixels are statistically clean to keep in the final image when combine/online is on.  This avoids the bias regression where naive online combine mixes early pixels-from-untrained-field into the output.  Useful primarily when `online` is true; ignored when `combineTrainingIterations` is false.
+		unsigned int	warmupIterations;		///< Number of training iterations to render with alpha=0 (pure BSDF sampling) before switching to the configured alpha.  Samples still feed the field — but because they're produced by unguided BDPT, their pixels are statistically clean to keep in the final image when combine/online is on.  Default 1 keeps the FIRST iteration's pixels (sampled against an empty field) out of the final-image bias when combineTrainingIterations is on; raise to 2 in online mode to extend the unbiased-sample window.  Ignored when combineTrainingIterations is false (the iteration's pixels are discarded anyway).
 		Scalar			alpha;					///< MIS blending weight: P(sample from guide)
 		bool			learnedAlpha;			///< Per-cell Adam-learned α (Müller 2017 v2 / Tom94's practical-path-guiding).  When true the per-vertex α used in one-sample MIS is `alpha · 2 · σ(θ_cell)`, with θ_cell updated by Adam on the deferred KL gradient at path completion.  Neutral at low SPP (32), ~2% mean-σ² reduction at 256 SPP.  When false, falls back to fixed `alpha`.
-		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling
-		unsigned int	maxLightGuidingDepth;	///< Max light subpath bounce depth for guided sampling (0 = disabled)
+		unsigned int	maxGuidingDepth;		///< Max eye subpath bounce depth for guided sampling.  Default 8 matches the typical scene's max_eye_depth so guidance applies through the full eye walk; lower values cap guiding to early bounces and trade convergence on indirect-heavy pixels for slightly less per-vertex OpenPGL overhead.
+		unsigned int	maxLightGuidingDepth;	///< Max light subpath bounce depth for guided sampling (0 = disabled).  Off by default — light-subpath guiding requires a separate trained field (training cost) and we have no measured win on the curated benchmark scenes; opt in per-scene.
 		GuidingSamplingType	samplingType;		///< Directional sampling strategy
 		unsigned int	risCandidates;			///< Reserved for future N>2 RIS; currently only N=2 is implemented
 		bool			completePathGuiding;	///< Experimental BDPT complete-path recorder/guide
@@ -80,10 +80,10 @@ namespace RISE
 		trainingSPP( 4 ),
 		combineTrainingIterations( true ),
 		online( false ),
-		warmupIterations( 0 ),
+		warmupIterations( 1 ),
 		alpha( 0.5 ),
 		learnedAlpha( true ),
-		maxGuidingDepth( 3 ),
+		maxGuidingDepth( 8 ),
 		maxLightGuidingDepth( 0 ),
 		samplingType( eGuidingOneSampleMIS ),
 		risCandidates( 2 ),
