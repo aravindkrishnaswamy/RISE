@@ -362,25 +362,36 @@ void VCMSpectralRasterizer::IntegratePixel(
 				}
 
 #ifdef RISE_ENABLE_OIDN
-				// First-hit AOV capture (hero wavelength, first bundle).
-				if( ss == 0 && pAOVBuffers && eyeVerts.size() > 1 ) {
-					const BDPTVertex& v1 = eyeVerts[1];
-					if( v1.type == BDPTVertex::SURFACE && !v1.isDelta && v1.pMaterial ) {
-						PixelAOV aov;
-						aov.normal = v1.normal;
-						if( v1.pMaterial->GetBSDF() ) {
-							Ray aovRay( Point3Ops::mkPoint3( v1.position, v1.normal ), -v1.normal );
-							RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-							rig.ptIntersection = v1.position;
-							rig.vNormal = v1.normal;
-							rig.onb = v1.onb;
-							aov.albedo = v1.pMaterial->GetBSDF()->value( v1.normal, rig ) * PI;
-						} else {
-							aov.albedo = RISEPel( 1, 1, 1 );
+				// AOV capture (hero wavelength, first bundle).  Walks the
+				// eye subpath until the first non-delta SURFACE vertex,
+				// matching BDPTSpectralRasterizer's pattern — see
+				// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
+				// rationale.  Glass / mirror are skipped so the AOV
+				// represents the visible surface beyond them; rough
+				// dielectrics are handled per-sample because each vertex's
+				// `isDelta` was set from the chosen scatter in
+				// GenerateEyeSubpathNM.
+				if( ss == 0 && pAOVBuffers ) {
+					for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
+						const BDPTVertex& v = eyeVerts[iv];
+						if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+							PixelAOV aov;
+							aov.normal = v.normal;
+							if( v.pMaterial->GetBSDF() ) {
+								Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
+								RayIntersectionGeometric rig( aovRay, nullRasterizerState );
+								rig.ptIntersection = v.position;
+								rig.vNormal = v.normal;
+								rig.onb = v.onb;
+								aov.albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+							} else {
+								aov.albedo = RISEPel( 1, 1, 1 );
+							}
+							aov.valid = true;
+							pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+							pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+							break;
 						}
-						aov.valid = true;
-						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
 					}
 				}
 #endif

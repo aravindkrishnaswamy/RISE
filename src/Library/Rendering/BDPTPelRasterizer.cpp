@@ -122,34 +122,47 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 	const size_t numLightBranches = lightSubpathStarts.size() >= 2 ?
 		( lightSubpathStarts.size() - 1 ) : 0;
 
-	// Extract first-hit AOV data for the denoiser.  Use the actual
-	// first eye-subpath surface vertex so the albedo / normal buffers
-	// match what unidirectional PT produces.  For delta (specular)
-	// surfaces like glass GetBSDF() returns NULL; per OIDN docs,
-	// transparent surfaces should use white albedo (1,1,1) rather than
-	// zero — the beauty signal at those pixels is pure illumination
-	// with no surface modulation, and zero would let OIDN misinterpret
-	// the energy balance on glass paths fed by light-subpath splats.
-	if( pAOV && eyeVerts.size() > 1 ) {
-		const BDPTVertex& v = eyeVerts[1];
-		if( v.type == BDPTVertex::SURFACE && v.pMaterial ) {
-			pAOV->normal = v.normal;
-			if( v.pMaterial->GetBSDF() ) {
-				// Synthesize the camera-ray RayIntersectionGeometric so
-				// the BSDF's albedo() can read the real view direction
-				// via rig.ray.Dir() (BDPTVertex doesn't carry a ray).
-				const Vector3 viewDir = Vector3Ops::Normalize(
-					Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-				const Ray cameraRay( eyeVerts[0].position, viewDir );
-				RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
-				rig.ptIntersection = v.position;
-				rig.vNormal = v.normal;
-				rig.onb = v.onb;
-				pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
-			} else {
-				pAOV->albedo = RISEPel( 1, 1, 1 );
+	// Extract AOV data for the denoiser.  Walks the eye subpath from
+	// the camera until it finds the first non-delta SURFACE vertex
+	// (skipping glass / mirror, whose `pScat->isDelta` was recorded
+	// per-sample on each vertex's `isDelta` field by GenerateEyeSubpath).
+	// This is the BDPT analogue of PathTracingIntegrator's
+	// first-non-delta hook — for OIDN-P1-1 v2, see docs/OIDN.md.
+	//
+	// Rough dielectrics handled correctly: each sample's Fresnel
+	// decision sets `isDelta` on the chosen scatter, so per-sample
+	// the AOV is recorded at the rough surface or behind it
+	// depending on each sample's outcome.  Averaged across samples
+	// (via AccumulateAlbedo / AccumulateNormal at the per-sample
+	// caller above), this gives a Fresnel-weighted mix that matches
+	// the beauty signal.
+	//
+	// When no non-delta surface is found (whole subpath is glass /
+	// mirror), pAOV stays !valid and the caller skips accumulation,
+	// which OIDN handles via its empty-aux path.
+	if( pAOV ) {
+		for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
+			const BDPTVertex& v = eyeVerts[iv];
+			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+				pAOV->normal = v.normal;
+				if( v.pMaterial->GetBSDF() ) {
+					// Synthesize the camera-ray RayIntersectionGeometric so
+					// the BSDF's albedo() can read the real view direction
+					// via rig.ray.Dir() (BDPTVertex doesn't carry a ray).
+					const Vector3 viewDir = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+					const Ray cameraRay( eyeVerts[0].position, viewDir );
+					RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
+					rig.ptIntersection = v.position;
+					rig.vNormal = v.normal;
+					rig.onb = v.onb;
+					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
+				} else {
+					pAOV->albedo = RISEPel( 1, 1, 1 );
+				}
+				pAOV->valid = true;
+				break;
 			}
-			pAOV->valid = true;
 		}
 	}
 

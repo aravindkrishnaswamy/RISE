@@ -342,29 +342,37 @@ void VCMPelRasterizer::IntegratePixel(
 			}
 
 #ifdef RISE_ENABLE_OIDN
-			// Extract first-hit AOV data for the denoiser from the
-			// first eye-subpath surface vertex.  Mirrors
-			// BDPTPelRasterizer::IntegratePixelRGB.
-			if( pAOVBuffers && eyeVerts.size() > 1 ) {
-				const BDPTVertex& v = eyeVerts[1];
-				if( v.type == BDPTVertex::SURFACE && v.pMaterial ) {
-					PixelAOV aov;
-					aov.normal = v.normal;
-					if( v.pMaterial->GetBSDF() ) {
-						const Vector3 viewDir = Vector3Ops::Normalize(
-							Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-						const Ray cameraRay( eyeVerts[0].position, viewDir );
-						RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
-						rig.ptIntersection = v.position;
-						rig.vNormal = v.normal;
-						rig.onb = v.onb;
-						aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
-					} else {
-						aov.albedo = RISEPel( 1, 1, 1 );
+			// Extract AOV data for the denoiser by walking the eye
+			// subpath until the first non-delta SURFACE vertex.
+			// Mirrors BDPTPelRasterizer::IntegratePixelRGB — see
+			// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
+			// rationale.  The walk skips glass / mirror; rough
+			// dielectrics are handled probabilistically per sample
+			// because each vertex's `isDelta` was set from the
+			// chosen scatter's `pScat->isDelta` in GenerateEyeSubpath.
+			if( pAOVBuffers ) {
+				for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
+					const BDPTVertex& v = eyeVerts[iv];
+					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
+						PixelAOV aov;
+						aov.normal = v.normal;
+						if( v.pMaterial->GetBSDF() ) {
+							const Vector3 viewDir = Vector3Ops::Normalize(
+								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+							const Ray cameraRay( eyeVerts[0].position, viewDir );
+							RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
+							rig.ptIntersection = v.position;
+							rig.vNormal = v.normal;
+							rig.onb = v.onb;
+							aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
+						} else {
+							aov.albedo = RISEPel( 1, 1, 1 );
+						}
+						aov.valid = true;
+						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+						break;
 					}
-					aov.valid = true;
-					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
-					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
 				}
 			}
 #endif

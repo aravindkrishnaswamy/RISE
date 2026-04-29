@@ -407,16 +407,24 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P1 — solid wins, moderate effort
 
 #### OIDN-P1-1 — Inline AOV accumulation + `accurate` prefilter mode
-- **Status:** Shipped (v1, PT-only) — 2026-04-29.  Supersedes
-  OIDN-P1-4 — inline accumulation handles glass refraction
-  probabilistically via per-sample `ScatteredRay::isDelta` instead of
-  a separate recursive retrace.  v1 ships the full plumbing + the
-  3-filter prefilter pipeline + first-non-delta AOV recording in
-  `PathTracingIntegrator` (used by `pathtracing_pel_rasterizer`).
-  BDPT / VCM / PixelBasedPel inline AOV currently records at the
-  first hit regardless of mode — they still benefit from the
-  3-filter prefilter pipeline in accurate mode but the AOV signal
-  doesn't yet skip past glass.  Tracked as **v2 follow-up**.
+- **Status:** Shipped (v1 PT-only on 2026-04-29; v2 BDPT + VCM
+  Pel/Spectral on 2026-04-29).  Supersedes OIDN-P1-4 — inline
+  accumulation handles glass refraction probabilistically via
+  per-sample `ScatteredRay::isDelta` instead of a separate recursive
+  retrace.  v1 shipped the full plumbing + the 3-filter prefilter
+  pipeline + first-non-delta AOV recording in `PathTracingIntegrator`
+  (used by `pathtracing_pel_rasterizer`).  v2 extends the
+  first-non-delta AOV walk to BDPT (Pel + Spectral) and VCM
+  (Pel + Spectral) by walking the post-trace `eyeVerts[]` vector
+  for the first non-delta SURFACE vertex — exploiting BDPT/VCM's
+  reified-path representation so no integrator-signature changes
+  are needed.  PathTracingIntegrator's Fast-mode IntegrateRay
+  hook intentionally does NOT walk past delta — PT can't reify
+  the path the way BDPT/VCM do, and the Accurate-mode inline-
+  during-trace path is the principled answer when walk-past
+  matters; in Fast mode PT records at the camera ray's first
+  hit (using the dielectric's view-dependent albedo for glass,
+  white for NULL-BSDF transparency).
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** First-hit retrace AOVs are correct only when the beauty's first hit
@@ -477,6 +485,48 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     Metal device init), `fast` cold-cache 197 ms.  The accurate /
     fast ratio holds — accurate is paying for the two extra filter
     commits as designed, not regressing.
+- **Result (v2):**
+  - **BDPT (Pel)** — `BDPTPelRasterizer.cpp:133` rewritten from
+    "use eyeVerts[1]" to a walk-past-delta loop matching
+    BDPTSpectralRasterizer's pre-existing pattern.  The walk uses
+    `BDPTVertex::isDelta` which carries the per-sample
+    `pScat->isDelta` value already populated by `GenerateEyeSubpath`
+    at line 2990.  No signature change to the integrator was
+    required — BDPT reifies the path into `eyeVerts[]` so the
+    walk happens at the rasterizer level after the subpath is
+    generated.
+  - **BDPT (Spectral)** — already did walk-past-delta as of v1;
+    no change needed.
+  - **VCM (Pel)** — `VCMPelRasterizer.cpp:348` mirrored to the
+    same walk-past-delta pattern as BDPT Pel.
+  - **VCM (Spectral)** — `VCMSpectralRasterizer.cpp:366` rewritten
+    from "check `eyeVerts[1].isDelta` and silently skip if delta"
+    (which was actually a regression in glass scenes — the
+    sample's AOV contribution was dropped) to the proper
+    walk-past-delta loop matching BDPTSpectralRasterizer.
+  - **PathTracingIntegrator** — intentionally NOT changed.
+    The Fast-mode `IntegrateRay` hook still records at the
+    camera ray's first hit using the dielectric's `albedo()`
+    method, which gives the view-dependent Fresnel-tinted
+    albedo for glass (better than white-fallback).  The
+    Accurate-mode hook in `IntegrateFromHit` continues to
+    walk past delta scatters via per-sample `ScatteredRay::isDelta`.
+  - The `oidn_prefilter` knob now has consistent semantics across
+    all integrators: Fast = 1 OIDN filter (cleanAux=true, AOV
+    treated as clean) + cheap AOV recording; Accurate = 3 OIDN
+    filters (prefilter passes treat AOV as noisy) + (for PT)
+    inline first-non-delta AOV recording.  For BDPT/VCM the AOV
+    quality is uniform across modes — the walk-past-delta is
+    essentially free since `eyeVerts[]` already exists; the only
+    mode-driven difference is the OIDN filter pipeline cost.
+  - Build clean, 72/72 tests pass.  Smoke tests on M1 Max + Metal
+    at 256×256 with `oidn_prefilter accurate`:
+    - BDPT cornellbox + glass spheres: 4.5 s render, 518 ms
+      cold-cache denoise.
+    - VCM cornellbox + glass spheres: 4.3 s render, 437 ms
+      cold-cache denoise.
+    - BDPT same scene with `oidn_prefilter fast`: 228 ms denoise
+      (vs 518 ms accurate, 2.3× speedup as designed).
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
 - **Status:** Open
@@ -650,6 +700,38 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P1-1 v2 shipped (BDPT + VCM walk-past-delta AOV)
+- BDPT Pel, VCM Pel, and VCM Spectral rasterizers now walk
+  `eyeVerts[]` for the first non-delta SURFACE vertex when
+  extracting OIDN AOVs, mirroring the pattern BDPTSpectralRasterizer
+  already used.  Glass / mirror first-hits are skipped so the AOV
+  represents the surface visible *through* the delta material —
+  matching what the beauty pass shows.
+- **Key insight:** BDPT/VCM reify the path into `eyeVerts[]` so the
+  per-sample `isDelta` walk happens after the subpath is generated,
+  at zero ray-casting cost.  No integrator-signature changes were
+  needed; the original v2 plan (thread `PixelAOV*` through
+  `BDPTIntegrator::GenerateEyeSubpath` to plant inline hooks)
+  was scrapped in favour of this simpler, equivalent post-walk.
+- **PathTracingIntegrator** intentionally not changed.  PT cannot
+  reify the path the way BDPT/VCM do; its Fast-mode IntegrateRay
+  hook stays at first-hit (using the dielectric's view-dependent
+  `albedo()` for glass, which is reasonable — better than
+  white-fallback).  Walk-past-delta semantics in PT live in
+  Accurate mode where the inline-during-trace hook in
+  `IntegrateFromHit` already does this via per-sample
+  `ScatteredRay::isDelta`.
+- VCM Spectral additionally fixes a small pre-existing issue:
+  before v2, glass-front samples silently dropped their AOV
+  contribution (the `if v1.isDelta` check guarded against writing
+  but didn't fall back to a deeper vertex).  Now the walk
+  recovers a useful AOV from the surface behind the glass.
+- Smoke tests on M1 Max + Metal at 256×256 with both modes:
+  BDPT 4.5 s render + 518 ms accurate / 228 ms fast denoise;
+  VCM 4.3 s render + 437 ms accurate.  All 72 tests pass; build
+  clean.  No new source files added so the five-build-system
+  file-list update from CLAUDE.md does not apply.
 
 ### 2026-04-29 — OIDN-P1-1 v1 code complete; OIDN-P1-4 closed as superseded
 - New scene-language parameter `oidn_prefilter` (enum: `fast` /
