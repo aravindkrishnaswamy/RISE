@@ -128,22 +128,39 @@ if ($LASTEXITCODE -ne 0) { throw "cmake install failed (exit $LASTEXITCODE)" }
 # time a denoise runs.  Hit on a clean migration from system OIDN to
 # the in-tree build (2026-04-29).
 Write-Host '==> Staging OIDN DLLs to bin/ and dbin/...'
-foreach ($dest in @('bin', 'dbin')) {
-	$destDir = Join-Path $RiseRoot $dest
+$tbbRedist = if ($env:TBB_ROOT) { Join-Path $env:TBB_ROOT 'redist\intel64\vc14' } else { $null }
+foreach ($entry in @(
+	@{ Dest = 'bin';  TbbPattern = @('tbb12.dll',       'tbbbind.dll',       'tbbbind_2_0.dll',       'tbbbind_2_5.dll'      ) },
+	@{ Dest = 'dbin'; TbbPattern = @('tbb12_debug.dll', 'tbbbind_debug.dll', 'tbbbind_2_0_debug.dll', 'tbbbind_2_5_debug.dll') }
+)) {
+	$destDir = Join-Path $RiseRoot $entry.Dest
 	if (-not (Test-Path $destDir)) {
 		New-Item -ItemType Directory -Force -Path $destDir | Out-Null
 	}
+
 	$oidnBin = Join-Path $InstallDir 'bin'
 	if (Test-Path $oidnBin) {
 		Get-ChildItem -Path $oidnBin -Filter 'OpenImageDenoise*.dll' -ErrorAction SilentlyContinue |
 			ForEach-Object { Copy-Item -Force -Path $_.FullName -Destination $destDir }
 	}
-	# Also stage TBB if a known install root is set.  oneTBB ships a
-	# `redist\intel64\vc14\` layout that we mirror into bin/dbin so
-	# the OIDN CPU device's TBB runtime dependency is satisfied.
-	if ($env:TBB_ROOT -and (Test-Path "$env:TBB_ROOT\redist\intel64\vc14")) {
-		Get-ChildItem -Path "$env:TBB_ROOT\redist\intel64\vc14" -Filter 'tbb*.dll' -ErrorAction SilentlyContinue |
-			ForEach-Object { Copy-Item -Force -Path $_.FullName -Destination $destDir }
+
+	# Stage only the TBB DLLs OIDN actually depends on.  Critically,
+	# do NOT stage `tbbmalloc*.dll` — `tbbmalloc_proxy.dll` is a
+	# malloc-replacement DLL that, if loaded into the process, hijacks
+	# every malloc/free in every loaded module.  When mixed with Qt's
+	# heap allocations that's a recipe for heap-corruption crashes
+	# deep in QClipData / QPainter (observed 2026-04-29).  OIDN imports
+	# only `tbb12.dll`; the `tbbbind*.dll` family is dynamically
+	# loaded by tbb12 for NUMA-aware thread binding (optional but
+	# improves perf — small file, worth shipping).  bin/ gets release
+	# variants, dbin/ gets the `_debug.dll` counterparts.
+	if ($tbbRedist -and (Test-Path $tbbRedist)) {
+		foreach ($name in $entry.TbbPattern) {
+			$src = Join-Path $tbbRedist $name
+			if (Test-Path $src) {
+				Copy-Item -Force -Path $src -Destination $destDir
+			}
+		}
 	}
 }
 
