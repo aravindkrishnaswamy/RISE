@@ -24,6 +24,8 @@ namespace RISE
 {
 	namespace Implementation
 	{
+		class OIDNDenoiser;	// forward decl — full type only needed in Rasterizer.cpp
+
 		class Rasterizer : public virtual IRasterizer, public virtual Reference
 		{
 		protected:
@@ -41,6 +43,17 @@ namespace RISE
 			//! to drive the OidnQuality::Auto heuristic.  See docs/OIDN.md
 			//! (OIDN-P0-1) for the heuristic itself.
 			mutable std::chrono::steady_clock::time_point mRenderStartTime;
+
+			//! Per-rasterizer OIDN denoise context.  Owns the cached
+			//! oidn::DeviceRef + FilterRef + buffer handles so cross-
+			//! render reuse on the same rasterizer (especially the
+			//! interactive viewport) skips the device/filter commit
+			//! cost on cache hits.  Allocated eagerly in the
+			//! constructor, freed in the destructor.  See docs/OIDN.md
+			//! (OIDN-P0-2) for the cache key and rebuild semantics.
+			//! `mutable` because the denoise call site is reached from
+			//! const methods (RasterizeScene is `const`).
+			mutable OIDNDenoiser*					mDenoiser;
 #endif
 
 			Rasterizer();

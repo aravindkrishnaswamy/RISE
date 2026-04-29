@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Rasterizer.h"
+#include "OIDNDenoiser.h"
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/CPU.h"
 #include "../Utilities/CPUTopology.h"
@@ -26,6 +27,7 @@ Rasterizer::Rasterizer() :
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
   ,mRenderStartTime( std::chrono::steady_clock::now() )
+  ,mDenoiser( new OIDNDenoiser() )
 #endif
 {
 }
@@ -33,6 +35,10 @@ Rasterizer::Rasterizer() :
 Rasterizer::~Rasterizer( )
 {
 	FreeRasterizerOutputs();
+#ifdef RISE_ENABLE_OIDN
+	delete mDenoiser;
+	mDenoiser = 0;
+#endif
 }
 
 int Rasterizer::HowManyThreadsToSpawn() const

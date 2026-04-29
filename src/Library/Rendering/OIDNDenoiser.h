@@ -29,9 +29,24 @@ namespace RISE
 	{
 		class AOVBuffers;
 
+		/// Stateful OIDN denoise context.  Caches the OIDN device,
+		/// filter, and per-buffer handles across calls; cross-render
+		/// reuse on the same rasterizer pays the device.commit() and
+		/// filter.commit() cost only once per cache key (resolution ×
+		/// quality × aux presence).  Held by the Rasterizer base for
+		/// the rasterizer's lifetime.
+		///
+		/// Stateless helpers (ImageToFloatBuffer, FloatBufferToImage,
+		/// CollectFirstHitAOVs) remain static — they don't touch any
+		/// OIDN device state and are safe to call without an instance.
 		class OIDNDenoiser
 		{
 		public:
+			OIDNDenoiser();
+			~OIDNDenoiser();
+
+			OIDNDenoiser( const OIDNDenoiser& ) = delete;
+			OIDNDenoiser& operator=( const OIDNDenoiser& ) = delete;
 
 			/// Converts an IRasterImage (double-precision RISEColor pixels)
 			/// to an interleaved float RGB buffer for OIDN consumption.
@@ -59,7 +74,7 @@ namespace RISE
 			/// requestedQuality selects the OIDN quality preset; Auto picks
 			/// from the render-time heuristic (see docs/OIDN.md OIDN-P0-1).
 			/// renderSecondsBeforeDenoise drives the Auto heuristic.
-			static void Denoise(
+			void Denoise(
 				float* beautyBuffer,
 				const float* albedoBuffer,
 				const float* normalBuffer,
@@ -71,22 +86,23 @@ namespace RISE
 				);
 
 			/// Collects first-hit albedo and normal AOVs by casting one
-			/// primary ray per pixel through the scene.  Generic method
-			/// that works with any rasterizer type.
+			/// primary ray per pixel through the scene.  Stateless —
+			/// kept static because nothing about AOV collection benefits
+			/// from device caching.
 			static void CollectFirstHitAOVs(
 				const IScene& scene,
 				IRayCaster& caster,
 				AOVBuffers& aovBuffers
 				);
 
-			/// Convenience method: runs the full denoise pipeline on an
-			/// image using the given AOV buffers.  Allocates temporary
-			/// float buffers, converts, denoises, and writes back.
-			/// requestedQuality selects the OIDN quality preset; Auto picks
-			/// from the render-time heuristic.  renderSecondsBeforeDenoise
-			/// is wall-clock from rasterizer start to immediately before
+			/// Runs the full denoise pipeline on an image using the
+			/// given AOV buffers.  Allocates temporary float buffers,
+			/// converts, denoises, and writes back.  requestedQuality
+			/// selects the OIDN quality preset; Auto picks from the
+			/// render-time heuristic.  renderSecondsBeforeDenoise is
+			/// wall-clock from rasterizer start to immediately before
 			/// the denoise filter runs.
-			static void ApplyDenoise(
+			void ApplyDenoise(
 				IRasterImage& image,
 				const AOVBuffers& aovBuffers,
 				unsigned int w,
@@ -94,7 +110,16 @@ namespace RISE
 				OidnQuality requestedQuality,
 				double renderSecondsBeforeDenoise
 				);
+#endif
 
+		private:
+#ifdef RISE_ENABLE_OIDN
+			// Opaque pImpl: holds oidn::DeviceRef, oidn::FilterRef,
+			// oidn::BufferRef handles plus the cache key.  Defined in
+			// OIDNDenoiser.cpp so this header doesn't drag oidn.hpp
+			// into every transitively-including TU.
+			struct State;
+			State* mState;
 #endif
 		};
 	}

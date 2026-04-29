@@ -27,6 +27,8 @@
 #include "../Utilities/ThreadPool.h"
 #include "../Utilities/RandomNumbers.h"
 
+#include <chrono>
+
 #ifdef RISE_ENABLE_OIDN
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -41,6 +43,53 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+#ifdef RISE_ENABLE_OIDN
+struct OIDNDenoiser::State
+{
+	// OIDN handles.  All are reference-counted smart pointers; default-
+	// constructed as null and lazily filled in on first denoise.
+	oidn::DeviceRef		device;
+	oidn::FilterRef		filter;
+	oidn::BufferRef		colorBuf;
+	oidn::BufferRef		outputBuf;
+	oidn::BufferRef		albedoBuf;
+	oidn::BufferRef		normalBuf;
+
+	// Cache key.  When any of these change between Denoise calls the
+	// filter is torn down and rebuilt; otherwise we just memcpy data
+	// into the existing buffers and re-execute the committed network.
+	bool				initialized;
+	unsigned int		width;
+	unsigned int		height;
+	bool				hasAlbedo;
+	bool				hasNormal;
+	OidnQuality			resolvedQuality;	// post-Auto resolution
+
+	State()
+	  : initialized( false )
+	  , width( 0 )
+	  , height( 0 )
+	  , hasAlbedo( false )
+	  , hasNormal( false )
+	  , resolvedQuality( OidnQuality::High )
+	{}
+};
+#endif
+
+OIDNDenoiser::OIDNDenoiser()
+#ifdef RISE_ENABLE_OIDN
+  : mState( new State() )
+#endif
+{
+}
+
+OIDNDenoiser::~OIDNDenoiser()
+{
+#ifdef RISE_ENABLE_OIDN
+	delete mState;
+#endif
+}
 
 void OIDNDenoiser::ImageToFloatBuffer(
 	const IRasterImage& img,
@@ -169,59 +218,142 @@ void OIDNDenoiser::Denoise(
 			OidnQualityName( resolvedQuality ) );
 	}
 
-	// Use CPU device explicitly to ensure host pointers are accessible.
-	// The default device may select a GPU backend (SYCL/HIP) on some
-	// platforms, which requires device-allocated buffers.  Falling back
-	// to CPU keeps the code portable and avoids the
-	// "image data not accessible by the device" error.
-	oidn::DeviceRef device = oidn::newDevice( oidn::DeviceType::CPU );
-	device.commit();
+	const bool hasAlbedo = ( albedoBuffer != 0 );
+	const bool hasNormal = ( normalBuffer != 0 );
+	const size_t bufBytes = static_cast<size_t>( w ) * h * 3 * sizeof( float );
+	const bool dimsChanged = ( mState->width != w || mState->height != h );
 
-	const size_t pixelCount = static_cast<size_t>( w ) * h;
-	const size_t bufBytes   = pixelCount * 3 * sizeof( float );
+	// Cache key match?  If yes, skip the (expensive) device.commit() and
+	// filter.commit() steps and just memcpy + execute.  If no, tear down
+	// the filter and rebuild — buffers only get reallocated when the
+	// dimensions changed, otherwise they're reused.
+	const bool needsRebuild = !mState->initialized
+		|| dimsChanged
+		|| mState->hasAlbedo != hasAlbedo
+		|| mState->hasNormal != hasNormal
+		|| mState->resolvedQuality != resolvedQuality;
 
-	// Wrap host memory in OIDNBuffers so all device types can access it
-	oidn::BufferRef colorBuf  = device.newBuffer( bufBytes );
-	oidn::BufferRef outputBuf = device.newBuffer( bufBytes );
+	if( needsRebuild ) {
+		// Lazy device creation.  Only happens once per OIDNDenoiser
+		// lifetime regardless of how many cache rebuilds follow — the
+		// device's CPU-kernel state is dimension-agnostic.
+		//
+		// Use CPU device explicitly to ensure host pointers are
+		// accessible.  GPU backends (SYCL/HIP) require device-allocated
+		// buffers, which would clash with our memcpy-into-device-buffer
+		// pattern.  Switching to a GPU device is OIDN-P0-3.
+		if( !mState->device ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"OIDN: creating CPU device (one-time per rasterizer)" );
+			mState->device = oidn::newDevice( oidn::DeviceType::CPU );
+			mState->device.commit();
+		}
 
-	std::memcpy( colorBuf.getData(), beautyBuffer, bufBytes );
+		// Reallocate buffers only when dimensions change.  Toggling aux
+		// presence reuses existing color/output buffers but allocates
+		// or releases the aux buffers.
+		if( dimsChanged || !mState->colorBuf ) {
+			mState->colorBuf  = mState->device.newBuffer( bufBytes );
+			mState->outputBuf = mState->device.newBuffer( bufBytes );
+		}
+		if( hasAlbedo && ( dimsChanged || !mState->albedoBuf ) ) {
+			mState->albedoBuf = mState->device.newBuffer( bufBytes );
+		} else if( !hasAlbedo ) {
+			mState->albedoBuf = oidn::BufferRef();
+		}
+		if( hasNormal && ( dimsChanged || !mState->normalBuf ) ) {
+			mState->normalBuf = mState->device.newBuffer( bufBytes );
+		} else if( !hasNormal ) {
+			mState->normalBuf = oidn::BufferRef();
+		}
 
-	oidn::FilterRef filter = device.newFilter( "RT" );
-	filter.setImage( "color",  colorBuf,  oidn::Format::Float3, w, h );
-	filter.setImage( "output", outputBuf, oidn::Format::Float3, w, h );
+		// Build a fresh filter.  Replacing the FilterRef here releases
+		// the previous filter's network state via OIDN's reference
+		// counting; setImage / set / commit on the new one binds it to
+		// the (possibly reused) buffers.
+		mState->filter = mState->device.newFilter( "RT" );
+		mState->filter.setImage( "color",  mState->colorBuf,  oidn::Format::Float3, w, h );
+		mState->filter.setImage( "output", mState->outputBuf, oidn::Format::Float3, w, h );
+		if( hasAlbedo ) {
+			mState->filter.setImage( "albedo", mState->albedoBuf, oidn::Format::Float3, w, h );
+		}
+		if( hasNormal ) {
+			mState->filter.setImage( "normal", mState->normalBuf, oidn::Format::Float3, w, h );
+		}
+		mState->filter.set( "hdr", true );
+		mState->filter.set( "quality", OidnQualityAsFilterInt( resolvedQuality ) );
+		if( hasAlbedo || hasNormal ) {
+			// IBSDF::albedo() returns a real directional-hemispherical
+			// reflectance estimate (per-pixel constant, no MC noise),
+			// and CollectFirstHitAOVs multi-samples for proper aperture
+			// / DOF coverage — so the aux buffers genuinely are clean
+			// and OIDN should use them directly without spatial
+			// pre-filtering.
+			mState->filter.set( "cleanAux", true );
+		}
+		mState->filter.commit();
 
-	oidn::BufferRef albedoBuf, normalBuf;
-	if( albedoBuffer ) {
-		albedoBuf = device.newBuffer( bufBytes );
-		std::memcpy( albedoBuf.getData(), albedoBuffer, bufBytes );
-		filter.setImage( "albedo", albedoBuf, oidn::Format::Float3, w, h );
-	}
-	if( normalBuffer ) {
-		normalBuf = device.newBuffer( bufBytes );
-		std::memcpy( normalBuf.getData(), normalBuffer, bufBytes );
-		filter.setImage( "normal", normalBuf, oidn::Format::Float3, w, h );
-	}
+		const char* errorMessage = 0;
+		if( mState->device.getError( errorMessage ) != oidn::Error::None ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"OIDN denoiser build error: %s",
+				errorMessage ? errorMessage : "(no message)" );
+			// Leave initialized=false so the next call retries from
+			// scratch instead of executing on a possibly-broken filter.
+			mState->initialized = false;
+			return;
+		}
 
-	filter.set( "hdr", true );
-	filter.set( "quality", OidnQualityAsFilterInt( resolvedQuality ) );
-	if( albedoBuffer || normalBuffer ) {
-		// IBSDF::albedo() returns a real directional-hemispherical
-		// reflectance estimate (per-pixel constant, no MC noise), and
-		// CollectFirstHitAOVs multi-samples for proper aperture / DOF
-		// coverage — so the aux buffers genuinely are clean and OIDN
-		// should use them directly without spatial pre-filtering.
-		filter.set( "cleanAux", true );
-	}
-	filter.commit();
-	filter.execute();
+		const char* auxStr = "none";
+		if( hasAlbedo && hasNormal ) auxStr = "albedo+normal";
+		else if( hasAlbedo )         auxStr = "albedo";
+		else if( hasNormal )         auxStr = "normal";
 
-	const char* errorMessage;
-	if( device.getError( errorMessage ) != oidn::Error::None ) {
-		GlobalLog()->PrintEx( eLog_Error, "OIDN denoiser error: %s", errorMessage );
+		GlobalLog()->PrintEx( eLog_Event,
+			"OIDN cache: rebuild filter (%ux%u q=%s aux=%s)",
+			w, h, OidnQualityName( resolvedQuality ), auxStr );
+
+		mState->initialized     = true;
+		mState->width           = w;
+		mState->height          = h;
+		mState->hasAlbedo       = hasAlbedo;
+		mState->hasNormal       = hasNormal;
+		mState->resolvedQuality = resolvedQuality;
 	} else {
-		// Copy denoised result back to caller's buffer
-		std::memcpy( outputBuffer, outputBuf.getData(), bufBytes );
+		GlobalLog()->PrintEx( eLog_Event,
+			"OIDN cache: hit (%ux%u q=%s)",
+			w, h, OidnQualityName( resolvedQuality ) );
 	}
+
+	// Copy the per-render data into the cached buffers.  The device
+	// owns the storage; getData() returns the host pointer for CPU
+	// devices.  On GPU devices (P0-3) this would need oidnWriteBuffer
+	// instead, but that's still cheaper than rebuilding the filter.
+	std::memcpy( mState->colorBuf.getData(),  beautyBuffer, bufBytes );
+	if( hasAlbedo ) {
+		std::memcpy( mState->albedoBuf.getData(), albedoBuffer, bufBytes );
+	}
+	if( hasNormal ) {
+		std::memcpy( mState->normalBuf.getData(), normalBuffer, bufBytes );
+	}
+
+	// Execute the cached filter.  No commit() needed — that's already
+	// been done either on this call (rebuild branch) or on a previous
+	// call that this hit re-uses.
+	mState->filter.execute();
+
+	const char* errorMessage = 0;
+	if( mState->device.getError( errorMessage ) != oidn::Error::None ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"OIDN denoiser execute error: %s",
+			errorMessage ? errorMessage : "(no message)" );
+		// Don't copy back garbage; subsequent renders will retry with
+		// the same cached state.  If the error persists we'd see it
+		// here on every render, which is the desired escalation.
+		return;
+	}
+
+	std::memcpy( outputBuffer, mState->outputBuf.getData(), bufBytes );
 }
 
 void OIDNDenoiser::CollectFirstHitAOVs(
@@ -317,6 +449,8 @@ void OIDNDenoiser::ApplyDenoise(
 {
 	GlobalLog()->PrintEx( eLog_Event, "Running OIDN denoiser (%ux%u)...", w, h );
 
+	const auto t_begin = std::chrono::steady_clock::now();
+
 	std::vector<float> beautyBuf( w * h * 3 );
 	std::vector<float> denoisedBuf( w * h * 3 );
 	ImageToFloatBuffer( image, beautyBuf.data(), w, h );
@@ -330,7 +464,10 @@ void OIDNDenoiser::ApplyDenoise(
 		renderSecondsBeforeDenoise );
 	FloatBufferToImage( denoisedBuf.data(), image, w, h );
 
-	GlobalLog()->PrintEx( eLog_Event, "OIDN denoising complete." );
+	const auto t_end = std::chrono::steady_clock::now();
+	const double elapsedMs = std::chrono::duration<double, std::milli>(
+		t_end - t_begin ).count();
+	GlobalLog()->PrintEx( eLog_Event, "OIDN denoising complete. (%.1f ms)", elapsedMs );
 }
 
 #endif // RISE_ENABLE_OIDN

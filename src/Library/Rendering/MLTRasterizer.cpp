@@ -1150,7 +1150,7 @@ void MLTRasterizer::RasterizeScene(
 
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height,
+				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
 					mDenoisingQuality, GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, 0 );

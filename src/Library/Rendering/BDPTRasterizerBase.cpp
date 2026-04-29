@@ -1033,7 +1033,7 @@ void BDPTRasterizerBase::RasterizeScene(
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
-		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 			mDenoisingQuality, GetRenderElapsedSeconds() );
 	}
 #endif

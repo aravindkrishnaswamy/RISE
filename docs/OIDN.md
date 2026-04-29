@@ -214,9 +214,24 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     and rise_sources.cmake skipped as those track only `.cpp` files).
 
 #### OIDN-P0-2 — Cache device + filter across renders
-- **Status:** Open
-- **Owner:** —
+- **Status:** Code complete — pending commit/PR (2026-04-29)
+- **Owner:** Aravind
 - **PR:** —
+- **Primary motivator:** Interactive renderer ([InteractivePelRasterizer](../src/Library/Rendering/InteractivePelRasterizer.h)).
+  Each viewport-driven re-render is a fresh `RasterizeScene` call on the
+  same persistent rasterizer instance.  Today every call recreates the
+  OIDN device + filter, paying ~50–200 ms per frame for kernel loading
+  and network commit.  At interactive frame rates that overhead alone
+  caps the achievable fps; caching makes the steady-state denoise cost
+  essentially "execute + memcpy."
+- **Cache key:** `(width, height, hasAlbedo, hasNormal, resolvedQuality)`.
+  Mismatch on any → tear down filter and (only if dims change) reallocate
+  buffers, rebuild filter, re-commit.  Match → reuse, skip the commit.
+  Device is created once on first denoise and survives the rasterizer
+  lifetime; only filter and buffers re-key.
+- **Lifetime:** Cache lives on the `Rasterizer` base via an opaque pImpl
+  pointer so OIDNDenoiser internals stay out of the public header and
+  the cache naturally dies with the rasterizer.
 - **Why:** Each render today calls `oidn::newDevice(CPU)` and
   `device.commit()`, which is non-trivial (loads ISA-specific kernels,
   allocates pools). For animation or interactive workflows (per-frame
@@ -227,12 +242,23 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   presence / quality change. Use `filter.setImage(...)` to swap buffers
   without re-committing the network. (OIDN's `commit()` is what takes time;
   re-execute is cheap.)
-- **Touch:** [OIDNDenoiser.cpp](../src/Library/Rendering/OIDNDenoiser.cpp).
-- **Effort:** ~3 hours; needs a `~OIDNDenoiser` shutdown or atexit hook.
+- **Touch:** [OIDNDenoiser.{h,cpp}](../src/Library/Rendering/OIDNDenoiser.cpp),
+  [Rasterizer.{h,cpp}](../src/Library/Rendering/Rasterizer.h).
+- **Effort:** ~2 hours actual.
 - **Verification:** render twice in a row from the same `rise` process and
-  confirm second invocation's `eLog_Event "Running OIDN denoiser…"` to
-  completion timing drops. Add a stopwatch around the call site.
-- **Result:** —
+  confirm the second invocation's denoise wall-clock drops. Stopwatch added
+  around `ApplyDenoise`.
+- **Result:**
+  - `make -C build/make/rise -j8 all` clean (no new warnings).
+  - `./run_all_tests.sh` clean: **72/72 pass**.
+  - 3-render back-to-back on `scenes/Tests/Geometry/shapes.RISEscene`
+    (800×800):
+    - Render 1 (cold): logs `OIDN: creating CPU device (one-time per rasterizer)` and `OIDN cache: rebuild filter (800x800 q=FAST aux=albedo+normal)`. Denoise 94.1 ms.
+    - Render 2 (warm): logs `OIDN cache: hit (800x800 q=FAST)`. Denoise 69.7 ms (24 ms / ~26% saved).
+    - Render 3 (warm): cache hit, 68.2 ms.
+  - The "creating device" line fires exactly once → device + filter
+    state genuinely persist for the rasterizer's lifetime, which is
+    the property the interactive viewport needs.
 
 #### OIDN-P0-3 — Add Metal device backend on Apple Silicon
 - **Status:** Open
@@ -481,6 +507,32 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P0-2 code complete
+- `OIDNDenoiser` is now a stateful instance class with private opaque
+  pImpl `State` holding the cached `oidn::DeviceRef` / `FilterRef` /
+  `BufferRef` handles plus the cache key
+  `(width, height, hasAlbedo, hasNormal, resolvedQuality)`.  Static
+  helpers (`ImageToFloatBuffer`, `FloatBufferToImage`,
+  `CollectFirstHitAOVs`) stay static — none of them touch device state.
+- Cache lifetime: one `OIDNDenoiser*` member on `Rasterizer` base,
+  allocated in the constructor and freed in the destructor.  All four
+  call sites (PixelBased, BDPT, MLT, MLT spectral) now go through
+  `mDenoiser->ApplyDenoise(...)`.  Per-rasterizer ownership means the
+  interactive viewport's persistent rasterizer instance reuses the
+  same cached state across every viewport-driven re-render.
+- Rebuild semantics: any cache-key mismatch tears down the filter and
+  re-commits.  Buffers are re-allocated only when dimensions change;
+  toggling aux presence keeps existing color/output buffers and just
+  allocates / releases the aux ones.  Device is built lazily on first
+  denoise and survives the entire rasterizer lifetime regardless of
+  filter rebuilds.
+- New log lines: one-shot `OIDN: creating CPU device (one-time per rasterizer)`,
+  per-render `OIDN cache: rebuild filter (...)` or `OIDN cache: hit (...)`,
+  and total denoise wall-clock appended to the existing
+  `OIDN denoising complete.` line as `(N.N ms)`.
+- Verified: 800x800 back-to-back render shows 94.1 ms cold → 69.7 ms /
+  68.2 ms warm (~25 ms saved per frame).
 
 ### 2026-04-29 — OIDN-P0-1 code complete
 - Implementation lands all of: `OidnQuality` enum in
