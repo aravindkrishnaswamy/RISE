@@ -27,6 +27,7 @@ Rasterizer::Rasterizer() :
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
   ,mDenoisingDevice( OidnDevice::Auto )
+  ,mDenoisingPrefilter( OidnPrefilter::Fast )
   ,mRenderStartTime( std::chrono::steady_clock::now() )
   ,mDenoiser( new OIDNDenoiser() )
 #endif

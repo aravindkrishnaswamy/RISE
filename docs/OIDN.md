@@ -407,8 +407,17 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P1 — solid wins, moderate effort
 
 #### OIDN-P1-1 — Inline AOV accumulation + `accurate` prefilter mode
-- **Status:** Open
-- **Owner:** —
+- **Status:** Shipped (v1, PT-only) — 2026-04-29.  Supersedes
+  OIDN-P1-4 — inline accumulation handles glass refraction
+  probabilistically via per-sample `ScatteredRay::isDelta` instead of
+  a separate recursive retrace.  v1 ships the full plumbing + the
+  3-filter prefilter pipeline + first-non-delta AOV recording in
+  `PathTracingIntegrator` (used by `pathtracing_pel_rasterizer`).
+  BDPT / VCM / PixelBasedPel inline AOV currently records at the
+  first hit regardless of mode — they still benefit from the
+  3-filter prefilter pipeline in accurate mode but the AOV signal
+  doesn't yet skip past glass.  Tracked as **v2 follow-up**.
+- **Owner:** Aravind
 - **PR:** —
 - **Why:** First-hit retrace AOVs are correct only when the beauty's first hit
   matches the retrace's first hit. They diverge for:
@@ -438,7 +447,36 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
   (`scenes/Tests/Materials/glass...` or similar) with `fast` and `accurate`
   prefilters; the latter should preserve refraction tint where the former
   smears. Diff PSNR against a high-spp reference render.
-- **Result:** —
+- **Result (v1):**
+  - `make -C build/make/rise -j8 all` clean (no new warnings).
+  - `./run_all_tests.sh` clean: **72/72 pass**.
+  - 3-filter pipeline verified end-to-end on M1 Max + Metal:
+    - Cold rebuild with `oidn_prefilter accurate`: ~755 ms (3 filter
+      compiles vs 1 in fast).
+    - Warm cache hit with `accurate`: ~60 ms (within noise of fast
+      mode's 43-67 ms — the prefilter networks are smaller than the
+      beauty filter and don't dominate).
+    - Cache key extended with `prefilterMode` so toggling the knob
+      triggers a clean rebuild without leaking state.
+  - Per-sample `ScatteredRay::isDelta` is the principled signal — no
+    static `isPureSpecular` check on IBSDF needed (RISE's IBSDF is
+    purely an evaluation primitive, sampling lives in shaders).
+    Rough dielectrics handled correctly: each sample's Fresnel
+    decision flips the per-sample AOV target, averaging to a
+    Fresnel-weighted mix that matches the beauty.
+  - **v2 scope** (BDPT / VCM / PixelBasedPel first-non-delta hooks)
+    is tracked at the bottom of this ticket.
+  - **Re-verification on 2026-04-29 after rebase + stash pop:**
+    Stash auto-merged with the upstream "Add preview OIDN denoise
+    ladder" commit (`6ac3824`) cleanly — both branches' edits to
+    `OIDNDenoiser::State`, `Denoise()`/`ApplyDenoise()` signatures,
+    and `PixelBasedRasterizerHelper::PrepareRuntimeContext` were
+    additive and orthogonal.  Rebuild clean, all 72 tests pass.
+    Smoke test on glass scene (200×150, M1 Max + Metal):
+    `oidn_prefilter accurate` cold-cache 461 ms (3 commits +
+    Metal device init), `fast` cold-cache 197 ms.  The accurate /
+    fast ratio holds — accurate is paying for the two extra filter
+    commits as designed, not regressing.
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
 - **Status:** Open
@@ -484,7 +522,15 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P1-4 — Recurse through specular hits when collecting AOVs
-- **Status:** Open
+- **Status:** Closed — superseded by OIDN-P1-1 (2026-04-29).  The
+  retrace-based recursion would have been a stepping stone toward
+  the principled inline-accumulation answer; once we picked the
+  inline approach, P1-4's straight-through recursion in the retrace
+  pass is no longer the right shape of fix.  The `fast` retrace
+  path keeps its existing first-hit-only behavior; the `accurate`
+  prefilter mode (P1-1) handles the multi-bounce glass case
+  through per-sample `ScatteredRay::isDelta` detection during the
+  actual path trace.
 - **Owner:** —
 - **PR:** —
 - **Why:**
@@ -604,6 +650,59 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — OIDN-P1-1 v1 code complete; OIDN-P1-4 closed as superseded
+- New scene-language parameter `oidn_prefilter` (enum: `fast` /
+  `accurate`, default `fast`).  Plumbed through the full surface:
+  `OidnPrefilter` enum in OidnConfig.h, threaded through every
+  IJob virtual + RISE_API factory + Job override + parser Finalize
+  call.  MLT integrators always force `Fast` regardless of the knob
+  — the splat-film invariant from OIDN-P1-1 remains intact.
+- `RuntimeContext` gains `aovPrefilterMode` so integrators that
+  inline-accumulate AOVs can branch on it.  Set by the rasterizer's
+  `PrepareRuntimeContext` from `mDenoisingPrefilter`.
+- OIDN denoiser State extended with `albedoFilter` + `normalFilter`.
+  In `accurate` mode they're committed alongside the beauty filter
+  during the cache rebuild path and run in-place on the aux buffers
+  before the beauty filter executes.  Cache key adds `prefilter`
+  field so toggling modes triggers a clean rebuild.
+- `PathTracingIntegrator::IntegrateRay` now gates first-hit AOV
+  recording on `aovPrefilterMode == Fast`.  In `Accurate` mode the
+  hook moves to the scatter sites in `IntegrateFromHit` (multi-
+  select + single-select branches) where `ScatteredRay::isDelta`
+  is the per-sample signal: first non-delta scatter on a path
+  records the AOV at that vertex, walking past glass / mirror.
+- Per-sample detection (rather than a static `IBSDF::isPureSpecular`
+  check) avoids the brittleness in mixed-Fresnel materials: rough
+  dielectrics record at the rough surface or behind it depending
+  on each sample's Fresnel decision, averaging to a Fresnel-
+  weighted mix that matches the beauty.  Confirmed against
+  RISE's `IBSDF` interface — it's purely an evaluation primitive
+  (no `Sample` method); scattering decisions live in `IShader` /
+  `IShaderOp` and produce `ScatteredRay` records with `isDelta`
+  already populated.
+- **v1 scope:** `pathtracing_pel_rasterizer` (and any rasterizer
+  using `PathTracingIntegrator`) gets the full first-non-delta
+  AOV in `accurate` mode.  BDPT pel/spectral, VCM pel/spectral,
+  `pixelpel_rasterizer`, and `PixelBasedSpectralIntegratingRasterizer`
+  pay the prefilter cost in `accurate` mode but their AOV still
+  records at first hit (their integrator chains haven't been
+  extended yet).  v2 follow-up.
+- **OIDN-P1-4 closed as superseded** — the recursive-retrace
+  approach in P1-4 was always going to be a stepping stone.  P1-1's
+  inline + per-sample-isDelta is the principled answer; once it
+  lands fully (v2), P1-4 has no remaining value.
+- **Rebase + ship addendum (same day):** prior to commit, the
+  branch picked up an upstream commit `6ac3824 "Add preview OIDN
+  denoise ladder"` (interactive viewport denoise capability —
+  staging buffers in `OIDNDenoiser::State`, `samplesPerPixel` knob
+  on `CollectFirstHitAOVs`).  Stash auto-merged cleanly with all
+  P1-1 hunks; both sides' edits to the State struct, denoise
+  signatures, and `PrepareRuntimeContext` were additive.  Build,
+  72/72 tests, and a glass-scene smoke test (`accurate` 461 ms
+  cold, `fast` 197 ms cold on M1 Max + Metal at 200×150) all
+  clean.  Committed as a follow-up commit on top of the preview
+  ladder.
 
 ### 2026-04-29 — OIDN-P0-3 shipped (Metal verified end-to-end via in-tree submodule build)
 - OIDN added as a git submodule at `extlib/oidn/source` pinned to

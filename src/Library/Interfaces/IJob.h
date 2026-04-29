@@ -1402,6 +1402,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1429,6 +1430,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
 
@@ -1445,6 +1447,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1465,6 +1468,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
@@ -1485,6 +1489,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1507,6 +1512,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1524,6 +1530,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
@@ -1542,6 +1549,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
@@ -1563,6 +1571,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
@@ -1594,7 +1603,7 @@ namespace RISE
 			return SetMLTRasterizer(
 				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 				nMutationsPerPixel, largeStepProb, shader,
-				bShowLuminaires, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto,
+				bShowLuminaires, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
 				legacyNone, stabilityConfig );
 		}
 
@@ -1613,6 +1622,7 @@ namespace RISE
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const StabilityConfig& stabilityConfig					///< [in] Production stability controls
 			) = 0;
@@ -1648,7 +1658,7 @@ namespace RISE
 				maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 				nMutationsPerPixel, largeStepProb, shader,
 				bShowLuminaires,
-				legacySpectral, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto,
+				legacySpectral, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast,
 				legacyNone, stabilityConfig );
 		}
 

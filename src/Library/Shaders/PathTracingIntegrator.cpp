@@ -873,7 +873,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	Scalar glossyFilterWidth,
 	bool smsPassedThroughSpecular_initial,
 	bool smsHadNonSpecularShading_initial,
-	bool splitFired_initial
+	bool splitFired_initial,
+	PixelAOV* pAOV
 	) const
 {
 	RISEPel result( 0, 0, 0 );
@@ -1763,7 +1764,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 									volumeBounces, rs2.glossyFilterWidth,
 									rs2.smsPassedThroughSpecular,
 									rs2.smsHadNonSpecularShading,
-									true );
+									true,
+									pAOV );
 							}
 						}
 						else
@@ -1842,6 +1844,21 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				} else {
 					bPassedThroughSpecular = false;
 					bHadNonSpecularShading = true;
+#ifdef RISE_ENABLE_OIDN
+					// Accurate prefilter mode: record AOV at the first
+					// non-delta scatter on this path.  See docs/OIDN.md
+					// (OIDN-P1-1).  Fast mode records at first hit in
+					// IntegrateRay and skips this branch.
+					if( pAOV && !pAOV->valid &&
+					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+					{
+						pAOV->normal = ri.geometric.vNormal;
+						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+							: RISEPel( 1, 1, 1 );
+						pAOV->valid = true;
+					}
+#endif
 				}
 
 				if( ff ) {
@@ -1900,6 +1917,21 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				} else {
 					bPassedThroughSpecular = false;
 					bHadNonSpecularShading = true;
+#ifdef RISE_ENABLE_OIDN
+					// Accurate prefilter mode: record AOV at the first
+					// non-delta scatter on this path.  See docs/OIDN.md
+					// (OIDN-P1-1).  Fast mode records at first hit in
+					// IntegrateRay and skips this branch.
+					if( pAOV && !pAOV->valid &&
+					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+					{
+						pAOV->normal = ri.geometric.vNormal;
+						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+							: RISEPel( 1, 1, 1 );
+						pAOV->valid = true;
+					}
+#endif
 				}
 
 				if( ff ) {
@@ -2493,11 +2525,23 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	RayIntersection ri( cameraRay, rast );
 	scene.GetObjects()->IntersectRay( ri, true, true, false );
 
-	// Extract first-hit AOV data for the denoiser.  For delta /
-	// transparent surfaces (GetBSDF()==NULL) use white albedo per OIDN
-	// documentation: those surfaces have no diffuse signature and the
-	// beauty pass is pure illumination.
-	if( pAOV && ri.geometric.bHit )
+	// Extract first-hit AOV data for the denoiser (Fast prefilter mode).
+	// For delta / transparent surfaces (GetBSDF()==NULL) use white albedo
+	// per OIDN documentation: those surfaces have no diffuse signature
+	// and the beauty pass is pure illumination.
+	//
+	// Accurate prefilter mode SKIPS this hook and instead records inside
+	// IntegrateFromHit at the first vertex where the shader's scatter
+	// was non-delta (per-sample via ScatteredRay::isDelta).  Glass /
+	// mirror are walked through naturally; rough dielectrics record at
+	// the rough surface or behind it depending on each sample's Fresnel
+	// decision.  See docs/OIDN.md (OIDN-P1-1) for the design.
+#ifdef RISE_ENABLE_OIDN
+	const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
+#else
+	const bool aovUseFirstHit = true;
+#endif
+	if( pAOV && ri.geometric.bHit && aovUseFirstHit )
 	{
 		pAOV->normal = ri.geometric.vNormal;
 		pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
@@ -2611,7 +2655,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayDiffuse,
 				0, 0, 0, 0, 1, 0,
-				false, false, false );
+				false, false, false, pAOV );
 
 			return result + volThroughput * hitResult;
 		}
@@ -2633,7 +2677,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				0, RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayView,
 				0, 0, 0, 0, 0, 0,
-				false, false, false );
+				false, false, false, pAOV );
 
 			return Tr * hitResult;
 		}
@@ -2660,7 +2704,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 		0, RISEPel( 0, 0, 0 ), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
 		0, 0, 0, 0, 0, 0,
-		false, false, false );
+		false, false, false, pAOV );
 }
 
 

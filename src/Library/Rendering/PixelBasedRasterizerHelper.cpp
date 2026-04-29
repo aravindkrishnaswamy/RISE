@@ -84,6 +84,13 @@ void PixelBasedRasterizerHelper::PrepareRuntimeContext( RuntimeContext& rc ) con
 {
 	rc.pProgressiveFilm = mProgressiveFilm;
 	rc.totalProgressiveSPP = mTotalProgressiveSPP;
+#ifdef RISE_ENABLE_OIDN
+	// Forward the rasterizer's prefilter mode into the per-thread
+	// RuntimeContext so integrators that inline-accumulate AOVs know
+	// whether to record at first hit (Fast) or first non-delta scatter
+	// (Accurate).  Field is harmless on integrators that don't read it.
+	rc.aovPrefilterMode = mDenoisingPrefilter;
+#endif
 }
 
 unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
@@ -752,7 +759,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				GetDenoiseAOVSamplesPerPixel() );
 		}
 		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-			mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
+			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+			GetRenderElapsedSeconds() );
 #endif
 
 		// File outputs write the denoised image with a "_denoised" suffix;

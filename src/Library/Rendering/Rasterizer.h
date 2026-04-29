@@ -37,6 +37,7 @@ namespace RISE
 			bool									bDenoisingEnabled;
 			OidnQuality								mDenoisingQuality;
 			OidnDevice								mDenoisingDevice;
+			OidnPrefilter							mDenoisingPrefilter;
 
 			//! Wall-clock timestamp captured at the start of RasterizeScene
 			//! by derived rasterizers via BeginRenderTimer().  Read by the
@@ -92,6 +93,7 @@ namespace RISE
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }
 			void SetDenoisingDevice( OidnDevice device ) { mDenoisingDevice = device; }
+			void SetDenoisingPrefilter( OidnPrefilter prefilter ) { mDenoisingPrefilter = prefilter; }
 #endif
 		};
 	}

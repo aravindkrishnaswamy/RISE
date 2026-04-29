@@ -1150,8 +1150,14 @@ void MLTRasterizer::RasterizeScene(
 
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				// MLT always uses Fast prefilter regardless of the
+				// `mDenoisingPrefilter` setting — its splat film is
+				// incompatible with the inline accumulation that
+				// Accurate mode relies on.  See docs/OIDN.md
+				// (OIDN-P1-1) for the project invariant.
 				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
+					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+					GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, 0 );
 			} else

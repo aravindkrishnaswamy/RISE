@@ -52,7 +52,9 @@ struct OIDNDenoiser::State
 	// OIDN handles.  All are reference-counted smart pointers; default-
 	// constructed as null and lazily filled in on first denoise.
 	oidn::DeviceRef		device;
-	oidn::FilterRef		filter;
+	oidn::FilterRef		filter;			// beauty filter
+	oidn::FilterRef		albedoFilter;	// aux prefilter (Accurate mode only)
+	oidn::FilterRef		normalFilter;	// aux prefilter (Accurate mode only)
 	oidn::BufferRef		colorBuf;
 	oidn::BufferRef		outputBuf;
 	oidn::BufferRef		albedoBuf;
@@ -69,6 +71,7 @@ struct OIDNDenoiser::State
 	bool				hasAlbedo;
 	bool				hasNormal;
 	OidnQuality			resolvedQuality;	// post-Auto resolution
+	OidnPrefilter		prefilter;			// Fast vs Accurate
 
 	State()
 	  : initialized( false )
@@ -77,6 +80,7 @@ struct OIDNDenoiser::State
 	  , hasAlbedo( false )
 	  , hasNormal( false )
 	  , resolvedQuality( OidnQuality::High )
+	  , prefilter( OidnPrefilter::Fast )
 	{}
 };
 #endif
@@ -330,6 +334,7 @@ void OIDNDenoiser::Denoise(
 	float* outputBuffer,
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
+	OidnPrefilter requestedPrefilter,
 	double renderSecondsBeforeDenoise
 	)
 {
@@ -360,7 +365,8 @@ void OIDNDenoiser::Denoise(
 		|| dimsChanged
 		|| mState->hasAlbedo != hasAlbedo
 		|| mState->hasNormal != hasNormal
-		|| mState->resolvedQuality != resolvedQuality;
+		|| mState->resolvedQuality != resolvedQuality
+		|| mState->prefilter != requestedPrefilter;
 
 	if( needsRebuild ) {
 		// Lazy device creation.  Only happens once per OIDNDenoiser
@@ -418,10 +424,10 @@ void OIDNDenoiser::Denoise(
 			mState->normalBuf = oidn::BufferRef();
 		}
 
-		// Build a fresh filter.  Replacing the FilterRef here releases
-		// the previous filter's network state via OIDN's reference
-		// counting; setImage / set / commit on the new one binds it to
-		// the (possibly reused) buffers.
+		// Build a fresh beauty filter.  Replacing the FilterRef here
+		// releases the previous filter's network state via OIDN's
+		// reference counting; setImage / set / commit on the new one
+		// binds it to the (possibly reused) buffers.
 		mState->filter = mState->device.newFilter( "RT" );
 		mState->filter.setImage( "color",  mState->colorBuf,  oidn::Format::Float3, w, h );
 		mState->filter.setImage( "output", mState->outputBuf, oidn::Format::Float3, w, h );
@@ -433,16 +439,54 @@ void OIDNDenoiser::Denoise(
 		}
 		mState->filter.set( "hdr", true );
 		mState->filter.set( "quality", OidnQualityAsFilterInt( resolvedQuality ) );
+
+		// `cleanAux=true` tells OIDN the aux buffers are noise-free
+		// per pixel, so it skips its internal spatial prefilter on
+		// them.  Either path here can satisfy that:
+		//   • Fast prefilter — aux comes from the deterministic 4-spp
+		//     retrace (or first-hit inline accumulation, which is
+		//     identical per-sample in practice).  Already clean.
+		//   • Accurate prefilter — aux is noisy from inline path
+		//     accumulation, but we run dedicated `RT` filter passes
+		//     on each aux channel below, in-place, BEFORE the beauty
+		//     filter executes.  After the prefilter passes the aux
+		//     IS clean from the beauty filter's perspective.
 		if( hasAlbedo || hasNormal ) {
-			// IBSDF::albedo() returns a real directional-hemispherical
-			// reflectance estimate (per-pixel constant, no MC noise),
-			// and CollectFirstHitAOVs multi-samples for proper aperture
-			// / DOF coverage — so the aux buffers genuinely are clean
-			// and OIDN should use them directly without spatial
-			// pre-filtering.
 			mState->filter.set( "cleanAux", true );
 		}
 		mState->filter.commit();
+
+		// Build per-aux prefilter handles for Accurate mode.  Both
+		// run in-place on the same buffers the beauty filter reads —
+		// when execution time comes around we run them first, then
+		// the beauty filter sees already-prefiltered (= clean) aux.
+		// Quality and HDR settings differ from the beauty filter:
+		// albedo / normal are bounded ([0,1] / [-1,1]) so hdr=false.
+		if( requestedPrefilter == OidnPrefilter::Accurate ) {
+			if( hasAlbedo ) {
+				mState->albedoFilter = mState->device.newFilter( "RT" );
+				mState->albedoFilter.setImage( "color",  mState->albedoBuf, oidn::Format::Float3, w, h );
+				mState->albedoFilter.setImage( "output", mState->albedoBuf, oidn::Format::Float3, w, h );
+				mState->albedoFilter.set( "quality", OidnQualityAsFilterInt( resolvedQuality ) );
+				mState->albedoFilter.commit();
+			} else {
+				mState->albedoFilter = oidn::FilterRef();
+			}
+			if( hasNormal ) {
+				mState->normalFilter = mState->device.newFilter( "RT" );
+				mState->normalFilter.setImage( "color",  mState->normalBuf, oidn::Format::Float3, w, h );
+				mState->normalFilter.setImage( "output", mState->normalBuf, oidn::Format::Float3, w, h );
+				mState->normalFilter.set( "quality", OidnQualityAsFilterInt( resolvedQuality ) );
+				mState->normalFilter.commit();
+			} else {
+				mState->normalFilter = oidn::FilterRef();
+			}
+		} else {
+			// Fast mode: release any prefilter handles from a previous
+			// Accurate run so the cache state is consistent on toggle.
+			mState->albedoFilter = oidn::FilterRef();
+			mState->normalFilter = oidn::FilterRef();
+		}
 
 		const char* errorMessage = 0;
 		if( mState->device.getError( errorMessage ) != oidn::Error::None ) {
@@ -461,8 +505,9 @@ void OIDNDenoiser::Denoise(
 		else if( hasNormal )         auxStr = "normal";
 
 		GlobalLog()->PrintEx( eLog_Event,
-			"OIDN cache: rebuild filter (%ux%u q=%s aux=%s)",
-			w, h, OidnQualityName( resolvedQuality ), auxStr );
+			"OIDN cache: rebuild filter (%ux%u q=%s aux=%s prefilter=%s)",
+			w, h, OidnQualityName( resolvedQuality ), auxStr,
+			( requestedPrefilter == OidnPrefilter::Accurate ) ? "accurate" : "fast" );
 
 		mState->initialized     = true;
 		mState->width           = w;
@@ -470,10 +515,12 @@ void OIDNDenoiser::Denoise(
 		mState->hasAlbedo       = hasAlbedo;
 		mState->hasNormal       = hasNormal;
 		mState->resolvedQuality = resolvedQuality;
+		mState->prefilter       = requestedPrefilter;
 	} else {
 		GlobalLog()->PrintEx( eLog_Event,
-			"OIDN cache: hit (%ux%u q=%s)",
-			w, h, OidnQualityName( resolvedQuality ) );
+			"OIDN cache: hit (%ux%u q=%s prefilter=%s)",
+			w, h, OidnQualityName( resolvedQuality ),
+			( mState->prefilter == OidnPrefilter::Accurate ) ? "accurate" : "fast" );
 	}
 
 	// Copy the per-render data into the cached buffers.  Use
@@ -490,9 +537,24 @@ void OIDNDenoiser::Denoise(
 		mState->normalBuf.write( 0, bufBytes, normalBuffer );
 	}
 
-	// Execute the cached filter.  No commit() needed — that's already
-	// been done either on this call (rebuild branch) or on a previous
-	// call that this hit re-uses.
+	// Accurate mode: prefilter the (noisy) aux buffers in-place so
+	// the beauty filter sees clean aux.  Both filters write back into
+	// the same albedoBuf / normalBuf the beauty filter reads, so
+	// there's no extra I/O — just two extra `execute()` calls.  On
+	// Metal at 1080p this adds ~80-150 ms per call (smaller networks
+	// than the beauty filter).
+	if( requestedPrefilter == OidnPrefilter::Accurate ) {
+		if( hasAlbedo && mState->albedoFilter ) {
+			mState->albedoFilter.execute();
+		}
+		if( hasNormal && mState->normalFilter ) {
+			mState->normalFilter.execute();
+		}
+	}
+
+	// Execute the cached beauty filter.  No commit() needed — that's
+	// already been done either on this call (rebuild branch) or on a
+	// previous call that this hit re-uses.
 	mState->filter.execute();
 
 	const char* errorMessage = 0;
@@ -601,6 +663,7 @@ void OIDNDenoiser::ApplyDenoise(
 	unsigned int h,
 	OidnQuality requestedQuality,
 	OidnDevice requestedDevice,
+	OidnPrefilter requestedPrefilter,
 	double renderSecondsBeforeDenoise
 	)
 {
@@ -624,6 +687,7 @@ void OIDNDenoiser::ApplyDenoise(
 		mState->denoisedStaging.data(),
 		requestedQuality,
 		requestedDevice,
+		requestedPrefilter,
 		renderSecondsBeforeDenoise );
 	FloatBufferToImage( mState->denoisedStaging.data(), image, w, h );
 

@@ -84,6 +84,14 @@ namespace RISE
 
 			/// Traces a path starting from a pre-computed surface hit.
 			/// Both IntegrateRay and the ShaderOp wrapper delegate here.
+			/// pAOV (when non-null and rc.aovPrefilterMode is Accurate)
+			/// receives the first-non-delta-vertex aux capture: the
+			/// loop walks past delta-only scatters (glass / mirror)
+			/// and records albedo + normal at the first vertex where
+			/// the shader sampled a non-delta direction.  When
+			/// rc.aovPrefilterMode is Fast, pAOV is filled at the
+			/// camera ray's first hit by IntegrateRay before this
+			/// function is called and is not touched here.
 			RISEPel IntegrateFromHit(
 				const RuntimeContext& rc,
 				const RasterizerState& rast,
@@ -107,7 +115,8 @@ namespace RISE
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_,
 				bool smsHadNonSpecularShading_,
-				bool splitFired_
+				bool splitFired_,
+				PixelAOV* pAOV = 0
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (NM).

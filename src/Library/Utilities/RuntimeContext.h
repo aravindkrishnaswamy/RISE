@@ -22,6 +22,7 @@
 #include "RandomNumbers.h"
 #include "ISampler.h"
 #include "StabilityConfig.h"
+#include "OidnConfig.h"
 #include "../Rendering/RasterizerStateCache.h"
 #include <map>
 #include <cstdint>
@@ -113,6 +114,30 @@ namespace RISE
 		/// is disabled.
 		unsigned int											totalProgressiveSPP;
 
+		/// OIDN aux-buffer source mode.  Read by integrators that
+		/// inline-accumulate AOVs to decide where along the path to
+		/// record the first sample:
+		///
+		///   Fast (default) — record at the camera ray's first hit.
+		///       Cheap, deterministic per sample, fully matches the
+		///       existing retrace behaviour.  cleanAux=true on the
+		///       OIDN filter.  Returns white at glass / mirror
+		///       (NULL-BSDF) surfaces.
+		///
+		///   Accurate — skip past delta-only scatters and record at
+		///       the first vertex where the shader sampled a
+		///       non-delta direction (probabilistic per sample via
+		///       `ScatteredRay::isDelta`).  Glass / mirror walked
+		///       through naturally; rough dielectrics record at
+		///       their surface or behind it depending on each
+		///       sample's Fresnel decision.  Aux is now noisy →
+		///       OIDN runs a prefilter pass on each aux channel
+		///       before the beauty filter.
+		///
+		/// MLT integrators ignore this — see docs/OIDN.md (OIDN-P1-1)
+		/// for the splat-film exclusion rationale.
+		OidnPrefilter											aovPrefilterMode;
+
 #ifdef RISE_ENABLE_OPENPGL
 		/// Path guiding field for guided directional sampling.
 		/// Set by the rasterizer before rendering.  NULL when guiding
@@ -156,7 +181,8 @@ namespace RISE
 		  pStabilityConfig( 0 ),
 		  pOptimalMIS( 0 ),
 		  pProgressiveFilm( 0 ),
-		  totalProgressiveSPP( 0 )
+		  totalProgressiveSPP( 0 ),
+		  aovPrefilterMode( OidnPrefilter::Fast )
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )

@@ -75,6 +75,10 @@ namespace RISE
 			/// from the render-time heuristic (see docs/OIDN.md OIDN-P0-1).
 			/// requestedDevice picks the OIDN backend (Auto / CPU / GPU);
 			/// see docs/OIDN.md OIDN-P0-3 for fallback semantics.
+			/// requestedPrefilter selects between Fast (cleanAux=true on
+			/// the beauty filter, no prefilter pass) and Accurate (run
+			/// dedicated prefilter passes on each aux buffer first, then
+			/// the beauty filter).  See docs/OIDN.md OIDN-P1-1.
 			/// renderSecondsBeforeDenoise drives the Auto-quality heuristic.
 			void Denoise(
 				float* beautyBuffer,
@@ -85,6 +89,7 @@ namespace RISE
 				float* outputBuffer,
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
+				OidnPrefilter requestedPrefilter,
 				double renderSecondsBeforeDenoise
 				);
 
@@ -101,12 +106,11 @@ namespace RISE
 
 			/// Runs the full denoise pipeline on an image using the
 			/// given AOV buffers.  Allocates temporary float buffers,
-			/// converts, denoises, and writes back.  requestedQuality
-			/// selects the OIDN quality preset; Auto picks from the
-			/// render-time heuristic.  requestedDevice picks the OIDN
-			/// backend (Auto / CPU / GPU).  renderSecondsBeforeDenoise
-			/// is wall-clock from rasterizer start to immediately
-			/// before the denoise filter runs.
+			/// converts, denoises, and writes back.  See Denoise() for
+			/// requestedQuality / requestedDevice / requestedPrefilter
+			/// semantics.  renderSecondsBeforeDenoise is wall-clock from
+			/// rasterizer start to immediately before the denoise filter
+			/// runs.
 			void ApplyDenoise(
 				IRasterImage& image,
 				const AOVBuffers& aovBuffers,
@@ -114,6 +118,7 @@ namespace RISE
 				unsigned int h,
 				OidnQuality requestedQuality,
 				OidnDevice requestedDevice,
+				OidnPrefilter requestedPrefilter,
 				double renderSecondsBeforeDenoise
 				);
 #endif

@@ -956,8 +956,12 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				// MLT always uses Fast prefilter regardless of the
+				// `mDenoisingPrefilter` setting — see MLTRasterizer.cpp
+				// for the rationale (and docs/OIDN.md OIDN-P1-1).
 				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, GetRenderElapsedSeconds() );
+					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+					GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, 0 );
 			} else

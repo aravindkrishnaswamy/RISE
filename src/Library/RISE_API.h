@@ -2126,6 +2126,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2145,6 +2146,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
@@ -2170,6 +2172,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2200,6 +2203,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
@@ -2221,6 +2225,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2246,6 +2251,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2271,6 +2277,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -2299,6 +2306,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
@@ -2349,6 +2357,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,				///< [in] OIDN quality preset (Auto = render-time heuristic)
 								const OidnDevice oidnDevice,				///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+								const OidnPrefilter oidnPrefilter,			///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								ISampling2D* pSampler,						///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
 								IPixelFilter* pFilter						///< [in] Reconstruction kernel; may be null for unfiltered point splats
 								);
@@ -2391,6 +2400,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
 								IPixelFilter* pFilter				///< [in] Reconstruction kernel; may be null for unfiltered point splats
 								);
