@@ -4437,6 +4437,7 @@ namespace RISE
 								ISampling2D* pSamples,				///< [in] Sampler for subsamples
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
@@ -4451,10 +4452,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 #ifndef RISE_ENABLE_OPENPGL
@@ -4483,6 +4486,7 @@ namespace RISE
 								const Scalar lambda_end,			///< [in] nm to end sampling at
 								const unsigned int num_wavelengths,	///< [in] Number of wavelengths to sample
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
@@ -4496,10 +4500,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		if( pSamples && pFilter ) {
@@ -4543,6 +4549,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
@@ -4573,10 +4580,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4606,6 +4615,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								const PathGuidingConfig& guidingConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
@@ -4638,10 +4648,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4662,6 +4674,7 @@ namespace RISE
 								const bool enableVC,
 								const bool enableVM,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
@@ -4690,10 +4703,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4718,6 +4733,7 @@ namespace RISE
 								const bool enableVC,
 								const bool enableVM,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								const PathGuidingConfig& guidingConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
@@ -4750,10 +4766,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4776,6 +4794,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
@@ -4807,10 +4826,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4837,6 +4858,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
@@ -4869,10 +4891,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		(*ppi) = pRasterizer;
@@ -4909,6 +4933,7 @@ namespace RISE
 								const unsigned int nMutationsPerPixel,
 								const Scalar largeStepProb,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								ISampling2D* pSampler,
 								IPixelFilter* pFilter
 								)
@@ -4922,10 +4947,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		// Install the pixel filter (and sampler, if any) on the base
@@ -4962,7 +4989,7 @@ namespace RISE
 	{
 		return RISE_API_CreateMLTRasterizerWithFilter( ppi, caster,
 			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
-			nMutationsPerPixel, largeStepProb, oidnDenoise, 0, 0 );
+			nMutationsPerPixel, largeStepProb, oidnDenoise, OidnQuality::Auto, 0, 0 );
 	}
 
 	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(
@@ -4979,6 +5006,7 @@ namespace RISE
 								const unsigned int nSpectralSamples,
 								const bool useHWSS,
 								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
 								ISampling2D* pSampler,
 								IPixelFilter* pFilter
 								)
@@ -4993,10 +5021,12 @@ namespace RISE
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
+		pRasterizer->SetDenoisingQuality( oidnQuality );
 #else
 		if( oidnDenoise ) {
 			GlobalLog()->PrintEasyWarning( "OIDN denoising requested but RISE was compiled without RISE_ENABLE_OIDN support" );
 		}
+		(void)oidnQuality;
 #endif
 
 		// See RISE_API_CreateMLTRasterizerWithFilter above — install the
@@ -5032,7 +5062,7 @@ namespace RISE
 		return RISE_API_CreateMLTSpectralRasterizerWithFilter( ppi, caster,
 			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 			nMutationsPerPixel, largeStepProb, lambda_begin, lambda_end,
-			nSpectralSamples, useHWSS, oidnDenoise, 0, 0 );
+			nSpectralSamples, useHWSS, oidnDenoise, OidnQuality::Auto, 0, 0 );
 	}
 }
 

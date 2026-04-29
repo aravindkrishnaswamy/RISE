@@ -18,6 +18,7 @@
 
 #include "../Interfaces/IRasterImage.h"
 #include "../Utilities/Math3D/Math3D.h"
+#include "../Utilities/OidnConfig.h"
 
 namespace RISE
 {
@@ -55,13 +56,18 @@ namespace RISE
 			/// beautyBuffer is the noisy input (w*h*3 floats, HDR).
 			/// albedoBuffer and normalBuffer are optional (may be NULL).
 			/// outputBuffer receives the denoised result (may alias beautyBuffer).
+			/// requestedQuality selects the OIDN quality preset; Auto picks
+			/// from the render-time heuristic (see docs/OIDN.md OIDN-P0-1).
+			/// renderSecondsBeforeDenoise drives the Auto heuristic.
 			static void Denoise(
 				float* beautyBuffer,
 				const float* albedoBuffer,
 				const float* normalBuffer,
 				unsigned int w,
 				unsigned int h,
-				float* outputBuffer
+				float* outputBuffer,
+				OidnQuality requestedQuality,
+				double renderSecondsBeforeDenoise
 				);
 
 			/// Collects first-hit albedo and normal AOVs by casting one
@@ -76,11 +82,17 @@ namespace RISE
 			/// Convenience method: runs the full denoise pipeline on an
 			/// image using the given AOV buffers.  Allocates temporary
 			/// float buffers, converts, denoises, and writes back.
+			/// requestedQuality selects the OIDN quality preset; Auto picks
+			/// from the render-time heuristic.  renderSecondsBeforeDenoise
+			/// is wall-clock from rasterizer start to immediately before
+			/// the denoise filter runs.
 			static void ApplyDenoise(
 				IRasterImage& image,
 				const AOVBuffers& aovBuffers,
 				unsigned int w,
-				unsigned int h
+				unsigned int h,
+				OidnQuality requestedQuality,
+				double renderSecondsBeforeDenoise
 				);
 
 #endif

@@ -24,6 +24,8 @@ Rasterizer::Rasterizer() :
   pProgressFunc( 0 )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
+  ,mDenoisingQuality( OidnQuality::Auto )
+  ,mRenderStartTime( std::chrono::steady_clock::now() )
 #endif
 {
 }

@@ -1012,6 +1012,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OptimalMISAccumulator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PSSMLTSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\PathGuidingField.h" />

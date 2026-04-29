@@ -598,6 +598,22 @@ namespace RISE
 				{ auto& p = P(); p.name = "samples";                                p.kind = ValueKind::UInt;   p.description = "Samples per pixel";                     p.defaultValueHint = "1"; }
 				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = "TRUE"; }
 				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
+			}
+
+			// Parse the `oidn_quality` enum string from a parser bag.  Unknown
+			// strings fall through to Auto with a warning so a typo doesn't
+			// silently freeze the user at HIGH on every render.
+			static inline OidnQuality ParseOidnQuality( const std::string& s )
+			{
+				if( s == "high"     ) return OidnQuality::High;
+				if( s == "balanced" ) return OidnQuality::Balanced;
+				if( s == "fast"     ) return OidnQuality::Fast;
+				if( s == "auto"     ) return OidnQuality::Auto;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Parser: unknown oidn_quality value \"%s\"; defaulting to auto",
+					s.c_str() );
+				return OidnQuality::Auto;
 			}
 
 			//////////////////////////////////////////
@@ -4925,6 +4941,7 @@ namespace RISE
 					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", 1.0 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -4997,7 +5014,7 @@ namespace RISE
 						maxRecur, defaultshader.c_str(), radianceMapConfig,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
 						pixelFilterConfig,
-						showLuminaires, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						showLuminaires, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5014,6 +5031,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
 						{ auto& p = P(); p.name = "choose_one_light";      p.kind = ValueKind::Bool;      p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -5057,6 +5075,7 @@ namespace RISE
 					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", 1.0 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 					bool integrateRGB           = bag.GetBool(   "integrate_rgb",   false );
 
 					SpectralConfig spectralConfig;
@@ -5143,7 +5162,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						integrateRGB, static_cast<unsigned int>(spd_wavelengths.size()), integrateRGB?&spd_wavelengths[0]:0, integrateRGB?&spd_r[0]:0, integrateRGB?&spd_g[0]:0, integrateRGB?&spd_b[0]:0,
-						oidnDenoise, stabilityConfig
+						oidnDenoise, oidnQuality, stabilityConfig
 						);
 				}
 
@@ -5180,6 +5199,7 @@ namespace RISE
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5262,7 +5282,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5299,6 +5319,7 @@ namespace RISE
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5381,7 +5402,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						smsConfig, oidnDenoise, guidingConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5430,6 +5451,7 @@ namespace RISE
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
 					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
 					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
@@ -5487,7 +5509,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						mergeRadius, enableVC, enableVM, oidnDenoise,
+						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality,
 						guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
@@ -5525,6 +5547,7 @@ namespace RISE
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
 					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
 					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
@@ -5585,7 +5608,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						mergeRadius, enableVC, enableVM, oidnDenoise,
+						mergeRadius, enableVC, enableVM, oidnDenoise, oidnQuality,
 						guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
@@ -5624,6 +5647,7 @@ namespace RISE
 					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5705,7 +5729,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						smsConfig, oidnDenoise, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5738,6 +5762,7 @@ namespace RISE
 					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
+					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5814,7 +5839,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						smsConfig, oidnDenoise, adaptiveConfig, stabilityConfig, progressiveConfig );
+						smsConfig, oidnDenoise, oidnQuality, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5875,6 +5900,7 @@ namespace RISE
 					// the residual Markov-chain noise in a long render)
 					// can still enable it with `oidn_denoise true`.
 					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
+					OidnQuality oidnQuality       = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					// Pixel filter for sub-pixel reconstruction.  Default
 					// is Mitchell-Netravali (B=C=1/3, width/height=1.0)
@@ -5897,7 +5923,7 @@ namespace RISE
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
-						defaultshader.c_str(), showLuminaires, oidnDenoise,
+						defaultshader.c_str(), showLuminaires, oidnDenoise, oidnQuality,
 						pixelFilterConfig,
 						stabilityConfig );
 				}
@@ -5917,6 +5943,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
 						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						// MLT accepts only light_bvh and branching_threshold from
@@ -5945,6 +5972,7 @@ namespace RISE
 					// MLT spectral also defaults OIDN off — see the Pel
 					// MLT parser for the detailed rationale.
 					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
+					OidnQuality oidnQuality       = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
 
 					SpectralConfig spectralConfig;
 					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
@@ -5967,7 +5995,7 @@ namespace RISE
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
 						defaultshader.c_str(), showLuminaires,
-						spectralConfig, oidnDenoise,
+						spectralConfig, oidnDenoise, oidnQuality,
 						pixelFilterConfig,
 						stabilityConfig );
 				}
@@ -5988,6 +6016,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
 						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
 						AddPixelFilterParams( P );
 						// MLT spectral consumes only the core spectral
 						// fields; RGB-to-SPD conversion is done in the

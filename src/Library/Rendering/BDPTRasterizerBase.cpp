@@ -289,6 +289,12 @@ void BDPTRasterizerBase::RasterizeScene(
 		return;
 	}
 
+#ifdef RISE_ENABLE_OIDN
+	// Stamp render-start wall clock so the OIDN auto-quality heuristic
+	// can compute render_seconds / megapixels at denoise time.
+	BeginRenderTimer();
+#endif
+
 	// Acquire scene dimensions
 	const unsigned int width = pScene.GetCamera()->GetWidth();
 	const unsigned int height = pScene.GetCamera()->GetHeight();
@@ -1027,7 +1033,8 @@ void BDPTRasterizerBase::RasterizeScene(
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
-		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
+		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+			mDenoisingQuality, GetRenderElapsedSeconds() );
 	}
 #endif
 

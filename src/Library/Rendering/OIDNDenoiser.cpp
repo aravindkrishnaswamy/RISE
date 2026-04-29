@@ -89,15 +89,86 @@ void OIDNDenoiser::FloatBufferToImage(
 
 #ifdef RISE_ENABLE_OIDN
 
+namespace
+{
+	// Auto-quality heuristic thresholds (s / megapixel).  See docs/OIDN.md
+	// (OIDN-P0-1) for derivation and OIDN-P0-3 for the Metal-backend
+	// recalibration note.  Tuned against Apple Silicon CPU; faster
+	// devices will leave the heuristic underspending.
+	static constexpr double kAutoFastUntilSecPerMP     = 3.0;
+	static constexpr double kAutoBalancedUntilSecPerMP = 20.0;
+
+	OidnQuality ResolveAutoQuality(
+		double renderSeconds,
+		unsigned int w,
+		unsigned int h,
+		double& outR,			// render seconds per megapixel (for logging)
+		double& outMP			// megapixels (for logging)
+		)
+	{
+		outMP = ( static_cast<double>( w ) * static_cast<double>( h ) ) / 1.0e6;
+		outR  = ( outMP > 0.0 ) ? renderSeconds / outMP : 0.0;
+		if( outR < kAutoFastUntilSecPerMP ) {
+			return OidnQuality::Fast;
+		}
+		if( outR < kAutoBalancedUntilSecPerMP ) {
+			return OidnQuality::Balanced;
+		}
+		return OidnQuality::High;
+	}
+
+	const char* OidnQualityName( OidnQuality q )
+	{
+		switch( q ) {
+			case OidnQuality::High:     return "HIGH";
+			case OidnQuality::Balanced: return "BALANCED";
+			case OidnQuality::Fast:     return "FAST";
+			case OidnQuality::Auto:     return "AUTO";
+		}
+		return "?";
+	}
+
+	int OidnQualityAsFilterInt( OidnQuality q )
+	{
+		// OIDN's quality codes (`OIDN_QUALITY_*` / `oidn::Quality::*`).
+		// Cast to plain int so we don't depend on a specific
+		// `Filter::set(const char*, oidn::Quality)` overload that older
+		// OIDN headers may not expose.
+		switch( q ) {
+			case OidnQuality::High:     return static_cast<int>( oidn::Quality::High );
+			case OidnQuality::Balanced: return static_cast<int>( oidn::Quality::Balanced );
+			case OidnQuality::Fast:     return static_cast<int>( oidn::Quality::Fast );
+			case OidnQuality::Auto:     return static_cast<int>( oidn::Quality::High );
+		}
+		return static_cast<int>( oidn::Quality::High );
+	}
+}
+
 void OIDNDenoiser::Denoise(
 	float* beautyBuffer,
 	const float* albedoBuffer,
 	const float* normalBuffer,
 	unsigned int w,
 	unsigned int h,
-	float* outputBuffer
+	float* outputBuffer,
+	OidnQuality requestedQuality,
+	double renderSecondsBeforeDenoise
 	)
 {
+	// Resolve Auto via the render-time / megapixels heuristic; explicit
+	// presets pass through unchanged.  When Auto fires, log the inputs
+	// and the picked preset so the threshold constants can be tuned
+	// from real-world telemetry without re-running the render.
+	OidnQuality resolvedQuality = requestedQuality;
+	if( requestedQuality == OidnQuality::Auto ) {
+		double r = 0.0, mp = 0.0;
+		resolvedQuality = ResolveAutoQuality( renderSecondsBeforeDenoise, w, h, r, mp );
+		GlobalLog()->PrintEx( eLog_Event,
+			"OIDN auto: render=%.2fs, image=%ux%u (%.2f MP), r=%.2f s/MP -> %s",
+			renderSecondsBeforeDenoise, w, h, mp, r,
+			OidnQualityName( resolvedQuality ) );
+	}
+
 	// Use CPU device explicitly to ensure host pointers are accessible.
 	// The default device may select a GPU backend (SYCL/HIP) on some
 	// platforms, which requires device-allocated buffers.  Falling back
@@ -132,6 +203,7 @@ void OIDNDenoiser::Denoise(
 	}
 
 	filter.set( "hdr", true );
+	filter.set( "quality", OidnQualityAsFilterInt( resolvedQuality ) );
 	if( albedoBuffer || normalBuffer ) {
 		// IBSDF::albedo() returns a real directional-hemispherical
 		// reflectance estimate (per-pixel constant, no MC noise), and
@@ -238,7 +310,9 @@ void OIDNDenoiser::ApplyDenoise(
 	IRasterImage& image,
 	const AOVBuffers& aovBuffers,
 	unsigned int w,
-	unsigned int h
+	unsigned int h,
+	OidnQuality requestedQuality,
+	double renderSecondsBeforeDenoise
 	)
 {
 	GlobalLog()->PrintEx( eLog_Event, "Running OIDN denoiser (%ux%u)...", w, h );
@@ -251,7 +325,9 @@ void OIDNDenoiser::ApplyDenoise(
 		aovBuffers.GetAlbedoPtr(),
 		aovBuffers.GetNormalPtr(),
 		w, h,
-		denoisedBuf.data() );
+		denoisedBuf.data(),
+		requestedQuality,
+		renderSecondsBeforeDenoise );
 	FloatBufferToImage( denoisedBuf.data(), image, w, h );
 
 	GlobalLog()->PrintEx( eLog_Event, "OIDN denoising complete." );

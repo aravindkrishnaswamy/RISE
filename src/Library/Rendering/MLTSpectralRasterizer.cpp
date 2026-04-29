@@ -600,6 +600,12 @@ void MLTSpectralRasterizer::RasterizeScene(
 		return;
 	}
 
+#ifdef RISE_ENABLE_OIDN
+	// Stamp render-start wall clock so the OIDN auto-quality heuristic
+	// can compute render_seconds / megapixels at denoise time.
+	BeginRenderTimer();
+#endif
+
 	const unsigned int width = pCamera->GetWidth();
 	const unsigned int height = pCamera->GetHeight();
 
@@ -950,7 +956,8 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height );
+				OIDNDenoiser::ApplyDenoise( *pImage, aovBuffers, width, height,
+					mDenoisingQuality, GetRenderElapsedSeconds() );
 
 				FlushDenoisedToOutputs( *pImage, 0, 0 );
 			} else

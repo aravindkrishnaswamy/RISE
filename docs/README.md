@@ -10,6 +10,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 
 - [SMS.md](SMS.md): Specular Manifold Sampling solver design, constraint formulations, MIS analysis (SMS vs BDPT path-space disjointness), and tuning guidance.
 - [VCM.md](VCM.md): Vertex Connection and Merging integrator (BDPT + photon mapping under one MIS umbrella), recurrence design, post-pass conversion, and Veach-transparency handling for specular chains.
+- [OIDN.md](OIDN.md): Intel Open Image Denoise integration — audit of current usage vs. upstream feature set, ranked improvement backlog with stable IDs, and decision log. Update entries in place as work lands.
 - [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md): postmortem on two variant MLT rasterizers (MMLT, PathMLT) that shipped briefly and were retired. Explains what was built, why it was motivated, the empirical data that killed them, and what workload would actually justify reviving them.
 
 ## Planning Docs

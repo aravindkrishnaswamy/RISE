@@ -478,6 +478,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		return;
 	}
 
+#ifdef RISE_ENABLE_OIDN
+	// Stamp render-start wall clock so the OIDN auto-quality heuristic
+	// can compute render_seconds / megapixels at denoise time.
+	BeginRenderTimer();
+#endif
+
 	// Acquire scene dimensions
 	const unsigned int width = pScene.GetCamera()->GetWidth();
 	const unsigned int height = pScene.GetCamera()->GetHeight();
@@ -721,7 +727,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		if( !pAOVBuffers->HasData() ) {
 			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, *pAOVBuffers );
 		}
-		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height );
+		OIDNDenoiser::ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+			mDenoisingQuality, GetRenderElapsedSeconds() );
 		delete pAOVBuffers;
 		pAOVBuffers = 0;
 #endif
