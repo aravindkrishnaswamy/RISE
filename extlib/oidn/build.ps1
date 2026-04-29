@@ -91,10 +91,13 @@ if ($EnableHip)  { $DeviceFlags += '-DOIDN_DEVICE_HIP=ON' }
 if ($EnableSycl) { $DeviceFlags += '-DOIDN_DEVICE_SYCL=ON' }
 
 Write-Host "==> Configuring OIDN (build dir: $BuildDir)..."
+# Omit -G so cmake auto-detects the latest installed Visual Studio
+# (VS17/VS18/...).  Hardcoding "Visual Studio 17 2022" failed on
+# machines that only have a newer VS where the v143 toolset is
+# absent (`MSB8020: build tools for v143 cannot be found`).
 $configureArgs = @(
 	'-S', $SourceDir,
 	'-B', $BuildDir,
-	'-G', 'Visual Studio 17 2022',
 	'-A', 'x64',
 	"-DCMAKE_INSTALL_PREFIX=$InstallDir",
 	'-DOIDN_APPS=OFF',
