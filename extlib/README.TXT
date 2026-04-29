@@ -44,10 +44,83 @@ Both scripts produce extlib/oidn/install/ with platform-best
 backends compiled in (CPU + Metal on macOS; CPU on Windows by
 default with -EnableCuda / -EnableHip / -EnableSycl flags for GPU).
 
-Prerequisites: cmake, ispc, plus the platform's native GPU SDK
-(Xcode CLT for Metal on macOS; CUDA Toolkit for CUDA on Windows;
-oneAPI for SYCL; ROCm for HIP).  See the script headers for the
-exact list per platform.
+Prerequisites — Windows
+~~~~~~~~~~~~~~~~~~~~~~~
+
+OIDN's CMake build needs four host-side tools.  The build script
+fails with a specific cmake error when any of them is missing; the
+fixes below are what get you past each one.
+
+  - Visual Studio 2022 or 2026 with the C++ desktop workload + CMake
+    component.  build.ps1 omits cmake's `-G` so it auto-detects the
+    most-recent installed VS — works for VS17 / VS18 / future without
+    edits.
+
+  - cmake (bundled with VS at e.g.
+    `C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
+    IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`; add
+    that directory to PATH for this shell).
+
+  - ispc — Intel SPMD Program Compiler.  OIDN uses it for SIMD-
+    parallel code generation on the CPU device.  Try:
+
+        winget install Intel.ImplicitSPMDProgramCompiler
+
+    If winget can't find the package on your machine (the source
+    sometimes drops it depending on region / Microsoft Store state),
+    grab the binary release zip from
+    https://github.com/ispc/ispc/releases — extract anywhere and add
+    its `bin/` to PATH.  Verified working: ispc v1.30.0.
+
+  - Python 3.x — used by OIDN's CMake at configure time for code
+    generation; ZERO runtime dependency on Python.
+
+        winget install Python.Python.3.13
+
+    Then add `%LOCALAPPDATA%\Programs\Python\Python313` (or wherever
+    winget put it) to PATH.
+
+  - oneTBB — required by the OIDN CPU device's `find_package(TBB)`.
+    Download the binary release zip from
+    https://github.com/uxlfoundation/oneTBB/releases (e.g.
+    `oneapi-tbb-2022.3.0-win.zip`) — extract anywhere and set the
+    `TBB_ROOT` environment variable to the unzipped root (the dir
+    that contains both `include/tbb/tbb.h` and `lib/intel64/vc14/`).
+    Verified working: oneTBB v2022.3.0.
+
+  - GPU backends (opt-in, only if you pass `-EnableCuda` / -EnableHip
+    / -EnableSycl): CUDA Toolkit 11+ on PATH; oneAPI Base Toolkit
+    for SYCL; ROCm SDK for HIP.
+
+One-liner that runs the build with all four prereqs wired in:
+
+    pwsh -ExecutionPolicy Bypass -Command "
+      `$env:PATH='C:\Users\<you>\AppData\Local\Programs\Python\Python313;' +
+        'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;' +
+        'C:\Dev\ispc\ispc-v1.30.0-windows\bin;' + `$env:PATH;
+      `$env:TBB_ROOT='C:\Dev\tbb\oneapi-tbb-2022.3.0';
+      cd C:\Dev\GitHub\RISE;
+      & extlib\oidn\build.ps1"
+
+The script's output ends with `==> Done. OIDN install tree: ...` on
+success.  Build time is ~10 min on a modern desktop.
+
+Prerequisites — macOS / Linux
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  - Xcode Command Line Tools (macOS) or gcc/clang + cmake (Linux).
+  - ispc on PATH (`brew install ispc` on macOS;
+    https://github.com/ispc/ispc/releases on Linux).
+  - Python 3 on PATH.
+  - TBB headers + libs.  On macOS: `brew install tbb` and the script
+    finds it through Homebrew's pkg-config.  On Linux: distro
+    package or set `TBB_ROOT`.
+  - For the macOS Metal device backend: a working Xcode Metal
+    toolchain.  build.sh runs `xcodebuild -downloadComponent
+    MetalToolchain` automatically — no manual step needed.
+
+See the script headers for the per-platform invocations and
+optional flags.
 
 For more information about Open Image Denoise:
 https://www.openimagedenoise.org/
