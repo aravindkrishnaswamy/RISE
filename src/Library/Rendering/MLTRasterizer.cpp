@@ -674,51 +674,45 @@ unsigned int MLTRasterizer::PredictTimeToRasterizeScene(
 }
 
 //////////////////////////////////////////////////////////////////////
-// RasterizeScene - Main entry point for MLT rendering.
+// RenderFrameOfMLT - Run the full PSSMLT pipeline for a single frame.
 //
-// Orchestrates the full PSSMLT pipeline with progressive rendering:
-// 1. Initialize light sampler from scene
-// 2. Bootstrap: generate independent samples, estimate normalization
-// 3. Build CDF for chain initialization
-// 4. Initialize all chain states
-// 5. Run rounds: dispatch chains → join → snapshot → output → repeat
-// 6. Clean up chain states
+// Shared by both RasterizeScene (still images, frame=0) and
+// RasterizeSceneAnimation (per-frame loop).  Independent chains
+// across frames is enforced by allocating ChainState fresh on every
+// call — there is no persistent chain state outside this function.
+// Strategy A in docs/OIDN.md decision log "2026-04-29 MLT animation".
 //
-// The round-based structure ensures that:
-// - Markov chains are never interrupted (state persists across rounds)
-// - Progress is accurately reported (round / numRounds)
-// - Cancellation produces a valid image (last snapshot)
-// - Film snapshots are race-free (taken after all threads join)
+// Phases:
+// 1. Bootstrap: generate independent BDPT samples, estimate b
+// 2. CDF: build importance-weighted CDF over bootstrap luminances
+// 3. Chain init: seed chains from the CDF using bootstrap-faithful
+//    PSSMLTSampler reproduction (Phase 1/2 split — see InitChain)
+// 4. Rounds: dispatch mutations to threads → resolve film → output
+//    intermediate previews → repeat until budget consumed
+//
+// Returns true if all rounds completed.  Returns false on:
+// - User cancellation at any phase boundary
+// - Bootstrap finding zero luminance (degenerate scene)
+//
+// On true return, *pImageOut is a fresh refcount-1 image holding
+// the final resolved frame.  Caller must safe_release.
+// On false return, *pImageOut may be NULL or hold the last
+// partially-resolved snapshot (still-image cancel-still-denoises
+// uses this; animation discards it).
+//
+// AttachScene / LightSampler setup is the CALLER's responsibility
+// — those are scene-wide, not per-frame, so we don't re-do them.
 //////////////////////////////////////////////////////////////////////
 
-void MLTRasterizer::RasterizeScene(
+bool MLTRasterizer::RenderFrameOfMLT(
 	const IScene& pScene,
-	const Rect* /*pRect*/,
-	IRasterizeSequence* /*pRasterSequence*/
+	const ICamera& pCamera,
+	const unsigned int width,
+	const unsigned int height,
+	IRasterImage*& pImageOut
 	) const
 {
-	const ICamera* pCamera = pScene.GetCamera();
-	if( !pCamera ) {
-		GlobalLog()->PrintSourceError( "MLTRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
-		return;
-	}
-
-#ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
-	BeginRenderTimer();
-#endif
-
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
-
-	// AttachScene creates and Prepare()s the unified LightSampler
-	pCaster->AttachScene( &pScene );
-	pScene.GetObjects()->PrepareForRendering();
-
-	// Share the RayCaster's prepared LightSampler with the integrator
-	const LightSampler* pLS = pCaster->GetLightSampler();
-	pIntegrator->SetLightSampler( pLS );
+	pImageOut = 0;
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Starting PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Bootstrap samples: %u, Chains: %u, Mutations/pixel: %u, Large step prob: %.2f",
@@ -765,7 +759,7 @@ void MLTRasterizer::RasterizeScene(
 		PSSMLTSampler* pBootSampler = new PSSMLTSampler( i, largeStepProb );
 		pBootSampler->StartIteration();
 
-		MLTSample sample = EvaluateSample( pScene, *pCamera, *pBootSampler, width, height );
+		MLTSample sample = EvaluateSample( pScene, pCamera, *pBootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;
@@ -775,7 +769,7 @@ void MLTRasterizer::RasterizeScene(
 
 		if( pProgressFunc && (i % 1000 == 0) ) {
 			if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
-				return;
+				return false;
 			}
 		}
 	}
@@ -791,7 +785,7 @@ void MLTRasterizer::RasterizeScene(
 
 	if( b_mean <= 0 ) {
 		GlobalLog()->PrintSourceError( "MLTRasterizer:: Bootstrap found zero luminance -- scene produces no visible light!", __FILE__, __LINE__ );
-		return;
+		return false;
 	}
 
 	const Scalar numPixels = static_cast<Scalar>( width ) * static_cast<Scalar>( height );
@@ -914,7 +908,7 @@ void MLTRasterizer::RasterizeScene(
 		const unsigned int bootstrapIdx = SelectFromCDF( cdf, u );
 		const BootstrapSample& seed = bootstrapSamples[bootstrapIdx];
 
-		InitChain( chainStates[c], pScene, *pCamera, seed, c, width, height );
+		InitChain( chainStates[c], pScene, pCamera, seed, c, width, height );
 
 		if( pProgressFunc && (c % 10 == 0) ) {
 			if( !pProgressFunc->Progress( static_cast<double>(c), static_cast<double>(effectiveChains) ) ) {
@@ -922,7 +916,7 @@ void MLTRasterizer::RasterizeScene(
 				for( unsigned int j = 0; j <= c; j++ ) {
 					safe_release( chainStates[j].pSampler );
 				}
-				return;
+				return false;
 			}
 		}
 	}
@@ -1013,7 +1007,7 @@ void MLTRasterizer::RasterizeScene(
 							break;
 						}
 						RunChainSegment(
-							chainStates[c], pScene, *pCamera, *pSplatFilm,
+							chainStates[c], pScene, pCamera, *pSplatFilm,
 							mutThisRound, b, width, height );
 					}
 					FlushCallingThreadSplatBuffer();
@@ -1033,7 +1027,7 @@ void MLTRasterizer::RasterizeScene(
 			// Single-threaded: run all chains sequentially
 			for( unsigned int c = 0; c < effectiveChains; c++ )
 			{
-				RunChainSegment( chainStates[c], pScene, *pCamera, *pSplatFilm,
+				RunChainSegment( chainStates[c], pScene, pCamera, *pSplatFilm,
 					mutThisRound, b, width, height );
 			}
 			FlushCallingThreadSplatBuffer();
@@ -1113,6 +1107,12 @@ void MLTRasterizer::RasterizeScene(
 			static_cast<Scalar>( mutationsPerChain > 0 ? mutationsPerChain : 1 );
 		const bool isFinalRound = ( mutationsDonePerChain >= mutationsPerChain );
 
+		// Each round allocates a fresh image — SplatFilm::Resolve is
+		// ADDITIVE (it does `target[x,y] += splat / fraction`), not
+		// overwrite, so reusing a single image across rounds would
+		// double-count the accumulated splats.  We release every
+		// intermediate image after sending its preview; the final
+		// round's image is transferred to the caller via pImageOut.
 		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
 		pSplatFilm->Resolve( *pImage, fraction );
 
@@ -1135,39 +1135,22 @@ void MLTRasterizer::RasterizeScene(
 			}
 		}
 
-		// Write the final file on completion or cancellation.
-		// On cancellation we still output so the user gets a
-		// valid image at whatever quality was reached.
+		// On final round OR cancellation, transfer this round's image
+		// to the caller for OIDN denoise + flush at the appropriate
+		// frame index.  Releasing any prior pImageOut is safe because
+		// only the FINAL round / cancel path reaches here with a kept
+		// image (intermediate rounds release immediately below).
 		if( isFinalRound || cancelled )
 		{
-#ifdef RISE_ENABLE_OIDN
-			if( bDenoisingEnabled ) {
-				// pImage is already the fully splatted image at this
-				// point (see pSplatFilm->Resolve above), so this is the
-				// pre-denoised-but-splatted snapshot the user wants to
-				// compare against the denoised result.
-				FlushPreDenoisedToOutputs( *pImage, 0, 0 );
-
-				AOVBuffers aovBuffers( width, height );
-				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				// MLT always uses Fast prefilter regardless of the
-				// `mDenoisingPrefilter` setting — its splat film is
-				// incompatible with the inline accumulation that
-				// Accurate mode relies on.  See docs/OIDN.md
-				// (OIDN-P1-1) for the project invariant.
-				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
-					GetRenderElapsedSeconds() );
-
-				FlushDenoisedToOutputs( *pImage, 0, 0 );
-			} else
-#endif
-			{
-				FlushToOutputs( *pImage, 0, 0 );
+			if( pImageOut ) {
+				safe_release( pImageOut );
 			}
+			pImageOut = pImage;	// transfer refcount
 		}
-
-		safe_release( pImage );
+		else
+		{
+			safe_release( pImage );
+		}
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -1188,6 +1171,234 @@ void MLTRasterizer::RasterizeScene(
 	}
 
 	safe_release( pSplatFilm );
+
+	return !cancelled;
+}
+
+//////////////////////////////////////////////////////////////////////
+// RasterizeScene - Still-image entry point.
+//
+// Thin wrapper around RenderFrameOfMLT.  Sets up the scene, runs
+// one frame, and flushes the result with frameIdx=0.  Cancel-still-
+// denoises (per OIDN-P1-3) — the partial image gets a denoise pass
+// before flushing to outputs.
+//////////////////////////////////////////////////////////////////////
+
+void MLTRasterizer::RasterizeScene(
+	const IScene& pScene,
+	const Rect* /*pRect*/,
+	IRasterizeSequence* /*pRasterSequence*/
+	) const
+{
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		GlobalLog()->PrintSourceError( "MLTRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
+	}
+
+#ifdef RISE_ENABLE_OIDN
+	// Stamp render-start wall clock so the OIDN auto-quality heuristic
+	// can compute render_seconds / megapixels at denoise time.
+	BeginRenderTimer();
+#endif
+
+	const unsigned int width = pCamera->GetWidth();
+	const unsigned int height = pCamera->GetHeight();
+
+	// AttachScene creates and Prepare()s the unified LightSampler
+	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+
+	// Share the RayCaster's prepared LightSampler with the integrator
+	const LightSampler* pLS = pCaster->GetLightSampler();
+	pIntegrator->SetLightSampler( pLS );
+
+	IRasterImage* pImage = 0;
+	(void) RenderFrameOfMLT( pScene, *pCamera, width, height, pImage );
+
+	// Flush the final image at frameIdx=0.  Even on cancel we still
+	// flush + denoise so the partial image is a useful preview
+	// (cancel-still-denoises invariant — see docs/OIDN.md OIDN-P1-3).
+	if( pImage )
+	{
+#ifdef RISE_ENABLE_OIDN
+		if( bDenoisingEnabled ) {
+			// Pre-denoised (but fully splatted) image goes to file
+			// outputs under the normal filename first.
+			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
+			AOVBuffers aovBuffers( width, height );
+			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+			// MLT always uses Fast prefilter regardless of the
+			// `mDenoisingPrefilter` setting — its splat film is
+			// incompatible with the inline accumulation that
+			// Accurate mode relies on.  See docs/OIDN.md
+			// (OIDN-P1-1) for the project invariant.
+			mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+				GetRenderElapsedSeconds() );
+
+			FlushDenoisedToOutputs( *pImage, 0, 0 );
+		} else
+#endif
+		{
+			FlushToOutputs( *pImage, 0, 0 );
+		}
+
+		safe_release( pImage );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// RasterizeSceneAnimation - Animation entry point.
+//
+// Independent chains per frame ("Strategy A" in docs/OIDN.md decision
+// log "2026-04-29 MLT animation").  Each frame re-runs the full PSSMLT
+// pipeline — bootstrap → CDF → chain init → rounds — against the
+// scene state at that frame's time.  No chain state carries across
+// frames; the bootstrap CDF is intrinsically per-scene and would
+// be invalidated by a moved camera or transformed light anyway.
+//
+// Per-frame OIDN denoise mirrors PixelBasedRasterizerHelper's flow:
+// BeginRenderTimer + AOV reset + cancel-guarded ApplyDenoise +
+// FlushPreDenoised / FlushDenoised at the actual frameIdx.
+//
+// Cancel mid-frame: the frame is abandoned entirely (no flush, no
+// denoise).  This is intentionally STRICTER than RasterizeScene's
+// cancel-still-denoises behavior — animation has multi-frame
+// coordination concerns (consistent quality across frames, MOV writer
+// expecting complete tail frames) where a half-rendered + half-
+// denoised frame is worse than no frame at all.  The caller (e.g.
+// RISEBridge::rasterizeAnimation) finalize()s the MOV writer after
+// we return so prior completed frames play back correctly.
+//
+// Fields and pRect are not yet honored — MLT's splat film is global
+// to the screen (Markov chain mutations cover the entire image), so
+// the "render only this region" semantics don't apply, and the field-
+// based interlace requires per-row temporal sampling which is out of
+// scope for this initial animation support.  The parameters are
+// accepted for API symmetry; do_fields=true behaves as do_fields=false.
+//////////////////////////////////////////////////////////////////////
+
+void MLTRasterizer::RasterizeSceneAnimation(
+	const IScene& pScene,
+	const Scalar time_start,
+	const Scalar time_end,
+	const unsigned int num_frames,
+	const bool /*do_fields*/,
+	const bool /*invert_fields*/,
+	const Rect* /*pRect*/,
+	const unsigned int* specificFrame,
+	IRasterizeSequence* /*pRasterSequence*/
+	) const
+{
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		GlobalLog()->PrintSourceError( "MLTRasterizer::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
+	}
+
+	const unsigned int width = pCamera->GetWidth();
+	const unsigned int height = pCamera->GetHeight();
+	const Scalar step_size = num_frames > 1
+		? ( time_end - time_start ) / Scalar( num_frames - 1 )
+		: 0;
+
+	// Scene-wide setup: AttachScene + LightSampler are built once, not
+	// per frame.  Matches PixelBasedRasterizerHelper::RasterizeScene-
+	// Animation — keyframed transforms are picked up via the per-frame
+	// EvaluateAtTime + InvalidateSpatialStructure + PrepareForRendering
+	// dance below; light-sampler weights are NOT rebuilt per frame
+	// (consistent with PT/BDPT/VCM animation behavior).
+	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
+
+	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
+	const unsigned int total_frames = specificFrame ? 1 : num_frames;
+
+	GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Animation render: %u frame(s), time [%.4f, %.4f]",
+		total_frames, time_start, time_end );
+
+	bool cancelled = false;
+	for( unsigned int i = 0; i < total_frames && !cancelled; i++ )
+	{
+		const unsigned int frameIdx = specificFrame ? *specificFrame : i;
+		const Scalar curtime = time_start + Scalar( frameIdx ) * step_size;
+
+		// Update animator + scene transforms for this frame.
+		pScene.GetAnimator()->EvaluateAtTime( curtime );
+		if( bHasKeyframedObjects ) {
+			pScene.GetObjects()->InvalidateSpatialStructure();
+		}
+		pScene.GetObjects()->PrepareForRendering();
+		pScene.SetSceneTime( curtime );
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"MLTRasterizer:: Rasterizing frame %u of %u (t=%.4f)",
+			frameIdx + 1, num_frames, curtime );
+
+#ifdef RISE_ENABLE_OIDN
+		// Per-frame timer reset so the OidnQuality::Auto heuristic
+		// decides each frame independently rather than inflating
+		// with cumulative animation time.  Mirrors PixelBased's
+		// RenderFrameOfAnimation.
+		BeginRenderTimer();
+#endif
+
+		IRasterImage* pImage = 0;
+		const bool completed = RenderFrameOfMLT( pScene, *pCamera, width, height, pImage );
+
+		if( !completed )
+		{
+			// Cancel mid-frame: abandon entirely.  No flush, no
+			// denoise — the MOV writer's tail must stay clean so
+			// prior completed frames play back correctly after
+			// the caller finalize()s the writer.
+			if( pImage ) {
+				safe_release( pImage );
+			}
+			cancelled = true;
+			GlobalLog()->PrintEx( eLog_Event,
+				"MLTRasterizer:: Animation cancelled during frame %u of %u; "
+				"skipping remaining frames",
+				frameIdx + 1, num_frames );
+			break;
+		}
+
+		// Frame completed — flush at the actual frameIdx.
+		if( pImage )
+		{
+#ifdef RISE_ENABLE_OIDN
+			if( bDenoisingEnabled ) {
+				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
+
+				AOVBuffers aovBuffers( width, height );
+				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				// MLT always uses Fast prefilter (see RasterizeScene
+				// for the rationale).  Cache hits across frames thanks
+				// to OIDN-P0-2 device/filter caching — only frame 1
+				// pays the cold-rebuild cost.
+				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+					GetRenderElapsedSeconds() );
+
+				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
+			} else
+#endif
+			{
+				FlushToOutputs( *pImage, 0, frameIdx );
+			}
+
+			safe_release( pImage );
+		}
+	}
+
+	if( cancelled ) {
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Animation cancelled by user" );
+	} else {
+		GlobalLog()->PrintEx( eLog_Event, "MLTRasterizer:: Animation complete" );
+	}
 }
 
 void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const

@@ -1,0 +1,514 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#   File:           diamond_teapot_pour.RISEscene
+#   Description:    Showcase + stress test.  Polished marble teapot floats above a dark wood table,
+#                   tilted as if pouring; a cascade of ~50 dispersive-diamond mini-teapots streams from
+#                   its spout to the table top.  Single bezier-patch geometry instanced ~51 times.
+#                   Recessed pot lights in the ceiling provide warm directional illumination.  Rendered
+#                   with VCM to capture S-D-S-E caustics through the diamond stream.
+#   Author:         Aravind Krishnaswamy
+#   Birthdate:      April 28, 2026
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+vcm_pel_rasterizer
+{
+	samples				64
+	max_eye_depth		128
+	max_light_depth		128
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+	pixel_filter		gaussian
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/diamond_teapot_pour
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera (pinhole — keeps the diamond cascade sharp)
+##################################################
+
+pinhole_camera
+{
+	location			1.06256 1.38004 1.04797
+	lookat				0 1.15948 -0.0180852
+	up					0  1  0
+	width				350
+	height				500
+	fov					54
+
+	theta				3.54561
+	phi					-157.018
+}
+
+##################################################
+# Painters (colors + procedural patterns)
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Marble — high-contrast veining
+uniformcolor_painter
+{
+	name				pnt_marble_dark
+	color				0.35 0.32 0.30
+}
+perlin3d_painter
+{
+	name				pnt_marble
+	colora				color_white
+	colorb				pnt_marble_dark
+	persistence			0.62
+	octaves				5
+	scale				4 4 4
+	shift				0 0 0
+}
+
+# Diamond — per-channel IOR for chromatic dispersion in RGB
+uniformcolor_painter
+{
+	name				pnt_diamond_tau
+	color				0.999 0.999 0.999
+	colorspace			RISERGB
+}
+uniformcolor_painter
+{
+	name				pnt_diamond_ior
+	color				2.40 2.42 2.45
+	colorspace			RISERGB
+}
+
+# Dark wood — worley colors must be painter references
+uniformcolor_painter
+{
+	name				pnt_wood_dark
+	color				0.18 0.10 0.05
+}
+uniformcolor_painter
+{
+	name				pnt_wood_light
+	color				0.32 0.18 0.08
+}
+worley3d_painter
+{
+	name				pnt_wood
+	colora				pnt_wood_dark
+	colorb				pnt_wood_light
+	jitter				1.0
+	metric				euclidean
+	output				f1
+	scale				3 1 0.5
+	shift				0 0 0
+}
+
+# Walls (light gray)
+uniformcolor_painter
+{
+	name				pnt_walls
+	color				0.72 0.72 0.74
+	colorspace			RISERGB
+}
+
+# Pot-light fixture face (slightly off-white, emissive)
+uniformcolor_painter
+{
+	name				pnt_fixture
+	color				1.0 0.92 0.78
+	colorspace			RISERGB
+}
+
+##################################################
+# Materials
+##################################################
+
+polished_material
+{
+	name				marble_mat
+	reflectance			pnt_marble
+	tau					color_white
+	scattering			512.0
+	ior					1.5
+}
+
+dielectric_material
+{
+	name				diamond_mat
+	tau					pnt_diamond_tau
+	ior					pnt_diamond_ior
+	scattering			10000
+}
+
+lambertian_material
+{
+	name				wood_mat
+	reflectance			pnt_wood
+}
+
+lambertian_material
+{
+	name				table_mat
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				walls_mat
+	reflectance			pnt_walls
+}
+
+lambertian_luminaire_material
+{
+	name				fixture_lum_mat
+	exitance			pnt_fixture
+	scale				10000.0
+	material			none
+}
+
+##################################################
+# Geometry — single bezier load reused 51 times
+##################################################
+
+bezierpatch_geometry
+{
+	name				teapotgeom
+	file				models/raw/teapot.bezier
+	maxpatches			2
+	maxdepth			7
+	bsp					TRUE
+	center_object		TRUE
+}
+
+# Room walls (clippedplane, default doublesided so winding errors don't kill the render)
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					 1.5  0.0 -1.5
+	ptb					-1.5  0.0 -1.5
+	ptc					-1.5  0.0  1.5
+	ptd					 1.5  0.0  1.5
+}
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					 1.5  2.5  1.5
+	ptb					-1.5  2.5  1.5
+	ptc					-1.5  2.5 -1.5
+	ptd					 1.5  2.5 -1.5
+}
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					 1.5  0.0 -1.5
+	ptb					 1.5  2.5 -1.5
+	ptc					-1.5  2.5 -1.5
+	ptd					-1.5  0.0 -1.5
+}
+clippedplane_geometry
+{
+	name				fwallgeom
+	pta					-1.5  0.0  1.5
+	ptb					-1.5  2.5  1.5
+	ptc					 1.5  2.5  1.5
+	ptd					 1.5  0.0  1.5
+}
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					-1.5  0.0 -1.5
+	ptb					-1.5  2.5 -1.5
+	ptc					-1.5  2.5  1.5
+	ptd					-1.5  0.0  1.5
+}
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					 1.5  0.0  1.5
+	ptb					 1.5  2.5  1.5
+	ptc					 1.5  2.5 -1.5
+	ptd					 1.5  0.0 -1.5
+}
+
+# Table — single thin slab, top surface at y=0.78
+box_geometry
+{
+	name				tablegeom
+	width				2.0
+	height				0.06
+	depth				2.0
+}
+
+# Pot-light fixture face (one geometry, four instances)
+circulardisk_geometry
+{
+	name				fixturegeom
+	radius				0.01
+	axis				z
+}
+
+##################################################
+# Room + table objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			walls_mat
+}
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				fwall
+	geometry			fwallgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			walls_mat
+}
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			walls_mat
+}
+
+standard_object
+{
+	name				table
+	geometry			tablegeom
+	material			wood_mat
+	position			0  0.65  0
+	orientation			0  0  0
+	scale				1  1  1
+}
+
+##################################################
+# The marble teapot (large, tilted forward as if pouring)
+##################################################
+
+standard_object
+{
+	name				marble_teapot
+	geometry			teapotgeom
+	material			marble_mat
+	position			0.6  1.55  -0.15
+	orientation			0  180  -50
+	scale				0.13  0.13  0.13
+}
+
+##################################################
+# Streaming diamond teapots — quadratic Bezier from spout to splash
+# P_start  ≈ marble spout tip (estimated; refine after smoke test)
+# P_ctrl   = arc midpoint, biased toward gravity
+# P_end    = splash point on table top (y=0.81 = table top + small clearance)
+##################################################
+
+DEFINE PSX 0.09
+DEFINE PSY 1.30
+DEFINE PSZ -0.21
+DEFINE PCX 0.02
+DEFINE PCY 1.00
+DEFINE PCZ -0.13
+DEFINE PEX -0.05
+DEFINE PEY 0.82
+DEFINE PEZ -0.05
+
+FOR I 0 17 1
+	# sqrt distribution: teapots are SPARSE near the spout (T grows fast at low I)
+	# and BUNCH near the splash (T grows slowly at high I).  This gives the
+	# stream more breathing room close to the source where it should be a
+	# coherent jet, and lets the splash zone read as a pile.
+	DEFINE T $(sqrt(@I/17.0))
+	DEFINE OMT $(1.0-@T)
+	DEFINE BS $(@OMT*@OMT)
+	DEFINE BC $(2.0*@OMT*@T)
+	DEFINE BE $(@T*@T)
+
+	DEFINE PX $(@BS*@PSX+@BC*@PCX+@BE*@PEX)
+	DEFINE PY $(@BS*@PSY+@BC*@PCY+@BE*@PEY)
+	DEFINE PZ $(@BS*@PSZ+@BC*@PCZ+@BE*@PEZ)
+
+	# hal(d) is a stateful Halton sequence indexed by dimension d (0..255).
+	# Each call to hal(d) returns the next sample in dimension d.  Used here
+	# for per-iteration jitter and tumble — six independent dimensions.
+	# Jitter scales as @T*@T so it grows quadratically with distance from the
+	# spout — tight at the top, fans out widely near the splash.
+	DEFINE TT $(@T*@T)
+	DEFINE JX $(0.28*@TT*(hal(0)-0.5))
+	DEFINE JY $(0.10*@TT*(hal(1)-0.5))
+	DEFINE JZ $(0.28*@TT*(hal(2)-0.5))
+
+	DEFINE RX $(360.0*hal(3))
+	DEFINE RY $(360.0*hal(4))
+	DEFINE RZ $(360.0*hal(5))
+
+	# Teapots grow slightly as they fall — small near the spout, larger near the table
+	DEFINE SC $(0.012+0.012*@T)
+	DEFINE WX $(@PX+@JX)
+	DEFINE WY $(@PY+@JY)
+	DEFINE WZ $(@PZ+@JZ)
+
+	standard_object
+	{
+		name			diamond_!I
+		geometry		teapotgeom
+		material		diamond_mat
+		position		@WX @WY @WZ
+		orientation		@RX @RY @RZ
+		scale			@SC @SC @SC
+	}
+
+	UNDEF T
+	UNDEF OMT
+	UNDEF BS
+	UNDEF BC
+	UNDEF BE
+	UNDEF PX
+	UNDEF PY
+	UNDEF PZ
+	UNDEF TT
+	UNDEF JX
+	UNDEF JY
+	UNDEF JZ
+	UNDEF RX
+	UNDEF RY
+	UNDEF RZ
+	UNDEF SC
+	UNDEF WX
+	UNDEF WY
+	UNDEF WZ
+ENDFOR
+
+##################################################
+# Pot lights (4) — recessed in a 2×2 grid above the table
+# spot_light inner/outer are HALF-angles in degrees.
+# Visible disc fixture is placed slightly ABOVE the spot light origin so the
+# light is not occluded by its own fixture geometry.
+##################################################
+/*
+spot_light
+{
+	name				pot1
+	power				200
+	color				1.0 0.92 0.78
+	position			-0.5  2.495  -0.5
+	target				-0.2  0.78   -0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+spot_light
+{
+	name				pot2
+	power				200
+	color				1.0 0.92 0.78
+	position			 0.5  2.495  -0.5
+	target				 0.2  0.78   -0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+spot_light
+{
+	name				pot3
+	power				200
+	color				1.0 0.92 0.78
+	position			-0.5  2.495   0.5
+	target				-0.2  0.78    0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+spot_light
+{
+	name				pot4
+	power				200
+	color				1.0 0.92 0.78
+	position			 0.5  2.495   0.5
+	target				 0.2  0.78    0.2
+	inner				22
+	outer				40
+	shootphotons		true
+}
+*/
+
+spot_light
+{
+	name				pot1
+	power				500
+	color				1.0 0.92 0.78
+	position			0  2.495  0
+	target				-0.05  0   -0.05
+	inner				15
+	outer				25
+	shootphotons		true
+}
+
+# Visible fixture discs (just above each spot light's origin)
+standard_object
+{
+	name				pot1_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			-0.5  2.499  -0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+standard_object
+{
+	name				pot2_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			 0.5  2.499  -0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+standard_object
+{
+	name				pot3_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			-0.5  2.499   0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
+standard_object
+{
+	name				pot4_disc
+	geometry			fixturegeom
+	material			fixture_lum_mat
+	position			 0.5  2.499   0.5
+	orientation			0  0  0
+	scale				1  1  1
+}
