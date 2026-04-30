@@ -1947,6 +1947,50 @@ namespace RISE
 				}
 			};
 
+			struct ChannelPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name    = bag.GetString( "name",    "noname" );
+					std::string source  = bag.GetString( "source",  "none" );
+					std::string chanStr = bag.GetString( "channel", "R" );
+					double scale        = bag.GetDouble( "scale",   1.0 );
+					double bias         = bag.GetDouble( "bias",    0.0 );
+					char chan = 0;
+					if(      chanStr == "R" || chanStr == "r" ) chan = 0;
+					else if( chanStr == "G" || chanStr == "g" ) chan = 1;
+					else if( chanStr == "B" || chanStr == "b" ) chan = 2;
+					else {
+						GlobalLog()->PrintEx( eLog_Error, "channel_painter:: unknown channel `%s` (expected R / G / B)", chanStr.c_str() );
+						return false;
+					}
+					return pJob.AddChannelPainter( name.c_str(), source.c_str(), chan, scale, bias );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "channel_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Extracts a single R / G / B channel from another painter, "
+							"applies an affine `out = scale * channel + bias`, and broadcasts the "
+							"result as (out, out, out).  Designed for glTF metallic-roughness "
+							"texture decomposition: glTF stores metallic in the .B channel and "
+							"roughness in .G of the metallicRoughnessTexture, and "
+							"`pbr_metallic_roughness_material` routes the texture through two "
+							"channel_painter chunks to feed `ggx_material`'s scalar `rs` and "
+							"`alphax`/`alphay` inputs.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "source";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Source painter (e.g. a png_painter for an MR texture)"; }
+						{ auto& p = P(); p.name = "channel"; p.kind = ValueKind::Enum;      p.enumValues = {"R","G","B"}; p.description = "Which channel to extract (R, G, or B)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;    p.description = "Scale multiplier"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bias";    p.kind = ValueKind::Double;    p.description = "Additive offset (post-scale)"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			//////////////////////////////////////////
 			// Functions
 			//////////////////////////////////////////
@@ -2710,23 +2754,99 @@ namespace RISE
 					std::string alphay     = bag.GetString( "alphay",     "0.15" );
 					std::string ior        = bag.GetString( "ior",        "2.45" );
 					std::string extinction = bag.GetString( "extinction", "3.45" );
+					// Optional emissive: when present, fold a LambertianEmitter
+					// into the material so glTF pbrMetallicRoughness emissives
+					// can be expressed as one chunk instead of needing a
+					// separate composite_emitter wrapper.
+					std::string emissive   = bag.GetString( "emissive",        "none" );
+					double emissive_scale  = bag.GetDouble( "emissive_scale",  1.0 );
+					std::string fresnelMode = bag.GetString( "fresnel_mode",   "conductor" );
 
-					return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(), alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str() );
+					if( emissive == "none" ) {
+						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),
+							alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
+							fresnelMode.c_str() );
+					}
+					return pJob.AddGGXEmissiveMaterial( name.c_str(), rd.c_str(), rs.c_str(),
+						alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
+						emissive.c_str(), emissive_scale, fresnelMode.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ggx_material"; cd.category = ChunkCategory::Material;
-						cd.description = "GGX (Trowbridge-Reitz) microfacet BRDF with optional Fresnel.";
+						cd.description = "GGX (Trowbridge-Reitz) microfacet BRDF with optional Fresnel.  "
+							"Optional `emissive` painter folds a LambertianEmitter into the material "
+							"(matches glTF pbrMetallicRoughness with non-zero emissiveFactor / "
+							"emissiveTexture); leave at default for non-emissive surfaces.  "
+							"`fresnel_mode` selects Fresnel evaluation: `conductor` (default) uses "
+							"the ior + extinction painters with a real conductor Fresnel and `rs` as "
+							"a tint; `schlick_f0` uses Schlick's F0-shaped approximation, treating "
+							"`rs` as F0 directly and ignoring ior + extinction (required by glTF "
+							"metallicRoughness PBR mapping; pbr_metallic_roughness_material picks "
+							"this automatically).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
-						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance (F0)"; }
-						{ auto& p = P(); p.name = "alphax";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness"; }
-						{ auto& p = P(); p.name = "alphay";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR"; }
-						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction"; }
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
+						{ auto& p = P(); p.name = "rs";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance / F0"; }
+						{ auto& p = P(); p.name = "alphax";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X roughness"; }
+						{ auto& p = P(); p.name = "alphay";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y roughness"; }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR (ignored in schlick_f0 mode)"; }
+						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode)"; }
+						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
+						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0"; p.defaultValueHint = "conductor"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PBRMetallicRoughnessMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name           = bag.GetString( "name",            "noname" );
+					std::string base_color     = bag.GetString( "base_color",      "none" );
+					std::string metallic       = bag.GetString( "metallic",        "0.0" );
+					std::string roughness      = bag.GetString( "roughness",       "0.5" );
+					double      ior            = bag.GetDouble( "ior",             1.5 );
+					std::string emissive       = bag.GetString( "emissive",        "none" );
+					double      emissive_scale = bag.GetDouble( "emissive_scale",  1.0 );
+					return pJob.AddPBRMetallicRoughnessMaterial(
+						name.c_str(), base_color.c_str(),
+						metallic.c_str(), roughness.c_str(),
+						ior, emissive.c_str(), emissive_scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "pbr_metallic_roughness_material"; cd.category = ChunkCategory::Material;
+						cd.description = "glTF 2.0 pbrMetallicRoughness material.  Single-chunk authoring "
+							"surface that takes baseColor / metallic / roughness / emissive painters and "
+							"composes the equivalent ggx_material under the hood.  The internal mapping is: "
+							"`F0 = lerp(0.04, baseColor, metallic)` for the GGX specular reflectance, "
+							"`baseColor * (1 - metallic)` for the diffuse colour painter, "
+							"`roughness * roughness` for the GGX α (isotropic).  The (1 - max(F0)) "
+							"diffuse-vs-specular energy split is applied by the BSDF at evaluation time "
+							"(not pre-multiplied into the diffuse painter).  Fresnel mode is forced to "
+							"`schlick_f0`, which treats `F0` as the Schlick-approximation F0 directly and "
+							"ignores the `ior` argument (preserved for API stability only).  "
+							"Internal painters live under prefix `__pbrmr_<name>__`; don't reference "
+							"them by name.  `metallic` and `roughness` can be either a painter reference "
+							"or a scalar string like \"0.5\" (auto-promoted to a uniformcolor painter).  "
+							"`emissive` is optional; pass \"none\" or omit for non-emissive surfaces. "
+							"Full design + Phase 3 status in docs/GLTF_IMPORT.md §4 and §13.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Base color painter (sRGB-decoded RGB; texture or uniform)"; }
+						{ auto& p = P(); p.name = "metallic";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Metallic painter or scalar string (default 0.0)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "roughness";      p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Roughness painter or scalar string (default 0.5)"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Double;    p.description = "Preserved for API stability; ignored under the schlick_f0 Fresnel path that this chunk forces"; p.defaultValueHint = "1.5"; }
+						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter; pass \"none\" / omit for non-emissive"; }
+						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
 					return d;
@@ -3576,6 +3696,68 @@ namespace RISE
 				}
 			};
 
+			struct GLTFImportAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string file              = bag.GetString( "file",                "none" );
+					std::string name_prefix       = bag.GetString( "name_prefix",         "gltf" );
+					// `scene_index` defaults to UINT_MAX (sentinel: "use the
+					// file's default scene") when omitted, so callers don't
+					// inadvertently override an asset's `"scene":` field.
+					// Explicit values map to the corresponding scenes[]
+					// array index.
+					unsigned int scene_index      = bag.Has( "scene_index" ) ?
+					                                  bag.GetUInt( "scene_index", 0u ) :
+					                                  UINT_MAX;
+					bool import_meshes            = bag.GetBool(   "import_meshes",       true );
+					bool import_materials         = bag.GetBool(   "import_materials",    true );
+					bool import_lights            = bag.GetBool(   "import_lights",       true );
+					bool import_cameras           = bag.GetBool(   "import_cameras",      true );
+					bool import_normal_maps       = bag.GetBool(   "import_normal_maps",  true );
+					return pJob.ImportGLTFScene(
+						file.c_str(), name_prefix.c_str(),
+						scene_index,
+						import_meshes, import_materials,
+						import_lights, import_cameras,
+						import_normal_maps );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gltf_import"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Bulk-import of a glTF 2.0 (.gltf or .glb) scene.  Walks the "
+							"scene tree and registers per-primitive standard_objects, per-material "
+							"pbr_metallic_roughness materials (Schlick-from-F0 PBR with optional "
+							"normal_map_modifier and per-material alpha-test shader op for alphaMode "
+							"= MASK), painters for each texture (embedded `.glb` images decode in-"
+							"memory; external URIs read from disk -- no sidecar cache), lights from "
+							"KHR_lights_punctual, and the first camera.  Node transforms flow through "
+							"`Job::AddObjectMatrix` verbatim (lossless 4x4, no Euler decomposition).  "
+							"Object names are prefixed with `name_prefix` to keep manager namespaces "
+							"clean.  Out of scope: animations, skinning, morph targets (warn-and-"
+							"skip), alphaMode = BLEND (treated as opaque), KHR_materials_* extensions "
+							"beyond the core PBR shape, Draco / meshopt compression.  alphaMode = "
+							"MASK is honoured only by integrators routing through IShader::Shade() "
+							"(PT and the legacy direct shaders) -- BDPT, VCM, MLT, photon tracers "
+							"bypass shader ops and treat MASK as opaque.  See docs/GLTF_IMPORT.md §7 "
+							"and §13 for full status.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "file";               p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
+						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names"; p.defaultValueHint = "gltf"; }
+						{ auto& p = P(); p.name = "scene_index";        p.kind = ValueKind::UInt;     p.description = "Index into the file's scenes[] array.  Omit (or use UINT_MAX) to import the file's default scene (the `scene` field in the glTF JSON), which is what most authoring tools intend; explicit values force a particular array index."; p.defaultValueHint = "(default scene)"; }
+						{ auto& p = P(); p.name = "import_meshes";      p.kind = ValueKind::Bool;     p.description = "Create per-primitive standard_objects"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_materials";   p.kind = ValueKind::Bool;     p.description = "Create one PBR material per glTF material"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_lights";      p.kind = ValueKind::Bool;     p.description = "Create lights from KHR_lights_punctual"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_cameras";     p.kind = ValueKind::Bool;     p.description = "Create the first camera (subsequent ones warn)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "import_normal_maps"; p.kind = ValueKind::Bool;     p.description = "Attach normal_map_modifier when material has normalTexture"; p.defaultValueHint = "TRUE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct GLTFMeshGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -4108,17 +4290,6 @@ namespace RISE
 					std::string shader   = bag.GetString( "shader",   "none" );
 					std::string interior_medium = bag.GetString( "interior_medium", "none" );
 
-					double pos[3]    = {0,0,0};
-					double orient[3] = {0,0,0};
-					double scale[3]  = {1.0,1.0,1.0};
-					bag.GetVec3( "position", pos );
-					if( bag.GetVec3( "orientation", orient ) ) {
-						orient[0] *= DEG_TO_RAD;
-						orient[1] *= DEG_TO_RAD;
-						orient[2] *= DEG_TO_RAD;
-					}
-					bag.GetVec3( "scale", scale );
-
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has( "radiance_map" ) )    radianceMapConfig.name  = bag.GetString( "radiance_map" ).c_str();
 					if( bag.Has( "radiance_scale" ) )  radianceMapConfig.scale = bag.GetDouble( "radiance_scale" );
@@ -4131,7 +4302,95 @@ namespace RISE
 					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
 					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
 
-					bool bRet = pJob.AddObject( name.c_str(), geometry.c_str(), material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
+					// Transform precedence (highest first): matrix > quaternion > orientation (Euler).
+					// `position` and `scale` apply alongside quaternion / orientation but are subsumed
+					// by `matrix`, since a 4x4 already encodes translation + rotation + scale.
+					const bool hasMatrix     = bag.Has( "matrix" );
+					const bool hasQuaternion = bag.Has( "quaternion" );
+					const bool hasEuler      = bag.Has( "orientation" );
+
+					if( hasMatrix && (hasQuaternion || hasEuler) ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"standard_object `%s`: `matrix` overrides `quaternion` / `orientation` "
+							"(matrix already encodes the full transform)", name.c_str() );
+					} else if( hasQuaternion && hasEuler ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"standard_object `%s`: `quaternion` overrides `orientation` (Euler decomposition is lossy)",
+							name.c_str() );
+					}
+
+					bool bRet = false;
+					if( hasMatrix ) {
+						double mat[16];
+						bag.GetMat4( "matrix", mat );
+						bRet = pJob.AddObjectMatrix(
+							name.c_str(), geometry.c_str(),
+							material=="none"?0:material.c_str(),
+							modifier=="none"?0:modifier.c_str(),
+							shader=="none"?0:shader.c_str(),
+							radianceMapConfig, mat,
+							bCastsShadows, bReceivesShadows );
+					} else if( hasQuaternion ) {
+						// Compose translation, quaternion rotation, and per-axis scale into a
+						// single column-major 4x4, then call AddObjectMatrix.  Using
+						// AddObject with Euler-from-quaternion would re-introduce the
+						// gimbal-lock loss this parameter exists to avoid.
+						double pos[3]   = {0,0,0};
+						double q[4]     = {0,0,0,1};	// xyzw, glTF convention
+						double scale[3] = {1,1,1};
+						bag.GetVec3( "position",   pos );
+						bag.GetVec4( "quaternion", q );
+						bag.GetVec3( "scale",      scale );
+
+						// Quaternion → 3x3 rotation, then assemble column-major M = T * R * S.
+						const double xx = q[0]*q[0], yy = q[1]*q[1], zz = q[2]*q[2];
+						const double xy = q[0]*q[1], xz = q[0]*q[2], yz = q[1]*q[2];
+						const double wx = q[3]*q[0], wy = q[3]*q[1], wz = q[3]*q[2];
+						const double r00 = 1.0 - 2.0*(yy+zz);
+						const double r01 = 2.0*(xy - wz);
+						const double r02 = 2.0*(xz + wy);
+						const double r10 = 2.0*(xy + wz);
+						const double r11 = 1.0 - 2.0*(xx+zz);
+						const double r12 = 2.0*(yz - wx);
+						const double r20 = 2.0*(xz - wy);
+						const double r21 = 2.0*(yz + wx);
+						const double r22 = 1.0 - 2.0*(xx+yy);
+
+						double M[16];
+						// Column 0: scale[0] * R column 0
+						M[ 0] = scale[0] * r00;  M[ 1] = scale[0] * r10;  M[ 2] = scale[0] * r20;  M[ 3] = 0;
+						// Column 1: scale[1] * R column 1
+						M[ 4] = scale[1] * r01;  M[ 5] = scale[1] * r11;  M[ 6] = scale[1] * r21;  M[ 7] = 0;
+						// Column 2: scale[2] * R column 2
+						M[ 8] = scale[2] * r02;  M[ 9] = scale[2] * r12;  M[10] = scale[2] * r22;  M[11] = 0;
+						// Column 3: translation, w=1
+						M[12] = pos[0];          M[13] = pos[1];          M[14] = pos[2];          M[15] = 1;
+
+						bRet = pJob.AddObjectMatrix(
+							name.c_str(), geometry.c_str(),
+							material=="none"?0:material.c_str(),
+							modifier=="none"?0:modifier.c_str(),
+							shader=="none"?0:shader.c_str(),
+							radianceMapConfig, M,
+							bCastsShadows, bReceivesShadows );
+					} else {
+						double pos[3]    = {0,0,0};
+						double orient[3] = {0,0,0};
+						double scale[3]  = {1.0,1.0,1.0};
+						bag.GetVec3( "position", pos );
+						if( bag.GetVec3( "orientation", orient ) ) {
+							orient[0] *= DEG_TO_RAD;
+							orient[1] *= DEG_TO_RAD;
+							orient[2] *= DEG_TO_RAD;
+						}
+						bag.GetVec3( "scale", scale );
+
+						bRet = pJob.AddObject( name.c_str(), geometry.c_str(),
+							material=="none"?0:material.c_str(),
+							modifier=="none"?0:modifier.c_str(),
+							shader=="none"?0:shader.c_str(),
+							radianceMapConfig, pos, orient, scale, bCastsShadows, bReceivesShadows );
+					}
 
 					if( bRet && !(interior_medium == "none") ) {
 						bRet = pJob.SetObjectInteriorMedium( name.c_str(), interior_medium.c_str() );
@@ -4144,7 +4403,11 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "standard_object"; cd.category = ChunkCategory::Object;
-						cd.description = "Scene object instancing a geometry with material, modifier, and shader.";
+						cd.description = "Scene object instancing a geometry with material, modifier, and shader.  "
+							"Transform precedence: `matrix` > `quaternion` > `orientation` (Euler).  "
+							"`matrix` (16 doubles, column-major) bypasses the position / orientation / scale "
+							"composition entirely; `quaternion` (xyzw, glTF convention) replaces Euler "
+							"rotation but still composes with `position` and `scale`.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "geometry";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to instance"; }
@@ -4153,6 +4416,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "shader";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Shader override"; }
 						{ auto& p = P(); p.name = "position";         p.kind = ValueKind::DoubleVec3;p.description = "World-space position"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "orientation";      p.kind = ValueKind::DoubleVec3;p.description = "Euler orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "quaternion";       p.kind = ValueKind::DoubleVec4;p.description = "Rotation quaternion (xyzw, glTF convention)"; p.defaultValueHint = "0 0 0 1"; }
+						{ auto& p = P(); p.name = "matrix";           p.kind = ValueKind::DoubleMat4;p.description = "Full 4x4 world transform, column-major (overrides position/orientation/quaternion/scale)"; }
 						{ auto& p = P(); p.name = "scale";            p.kind = ValueKind::DoubleVec3;p.description = "Per-axis scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "casts_shadows";    p.kind = ValueKind::Bool;      p.description = "Participates in shadow casting"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "receives_shadows"; p.kind = ValueKind::Bool;      p.description = "Receives shadows from other objects"; p.defaultValueHint = "TRUE"; }
@@ -4863,6 +5128,35 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "transparency"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "one_sided";    p.kind = ValueKind::Bool;      p.description = "Transparent from one side only"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AlphaTestShaderOpAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string alpha  = bag.GetString( "alpha",  "color_white" );
+					double      cutoff = bag.GetDouble( "cutoff", 0.5 );
+					return pJob.AddAlphaTestShaderOp( name.c_str(), alpha.c_str(), cutoff );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "alpha_test_shaderop"; cd.category = ChunkCategory::ShaderOp;
+						cd.description = "Cutout-alpha (glTF alphaMode=MASK) shader op.  At hit time samples "
+							"`alpha` from the painter; if alpha < cutoff the ray is forwarded past the "
+							"surface as if it never hit.  Caveat: only honoured by integrators that go "
+							"through IShader::Shade() (path tracer + legacy direct shaders); BDPT, VCM, "
+							"MLT, and photon tracers treat the surface as fully opaque.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "alpha";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Alpha painter"; p.defaultValueHint = "color_white"; }
+						{ auto& p = P(); p.name = "cutoff"; p.kind = ValueKind::Double;    p.description = "Alpha threshold (alpha < cutoff continues the ray past the surface)"; p.defaultValueHint = "0.5"; }
 						return cd;
 					}();
 					return d;
@@ -6911,6 +7205,7 @@ namespace RISE
 		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
 		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
 		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
+		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions
 		add( "piecewise_linear_function",             new PiecewiseLinearFunctionChunkParser() );
@@ -6936,6 +7231,7 @@ namespace RISE
 		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
 		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );
 		add( "ggx_material",                          new GGXMaterialAsciiChunkParser() );
+		add( "pbr_metallic_roughness_material",       new PBRMetallicRoughnessMaterialAsciiChunkParser() );
 		add( "cooktorrance_material",                 new CookTorranceMaterialAsciiChunkParser() );
 		add( "orennayar_material",                    new OrenNayarMaterialAsciiChunkParser() );
 		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
@@ -6963,6 +7259,7 @@ namespace RISE
 		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
 		add( "plymesh_geometry",                      new PLYMeshGeometryAsciiChunkParser() );
 		add( "gltfmesh_geometry",                     new GLTFMeshGeometryAsciiChunkParser() );
+		add( "gltf_import",                           new GLTFImportAsciiChunkParser() );
 		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
@@ -6994,6 +7291,7 @@ namespace RISE
 		add( "donner_jensen_skin_sss_shaderop",       new DonnerJensenSkinSSSShaderOpAsciiChunkParser() );
 		add( "arealight_shaderop",                    new AreaLightShaderOpAsciiChunkParser() );
 		add( "transparency_shaderop",                 new TransparencyShaderOpAsciiChunkParser() );
+		add( "alpha_test_shaderop",                   new AlphaTestShaderOpAsciiChunkParser() );
 
 		// Shaders
 		add( "standard_shader",                       new StandardShaderAsciiChunkParser() );

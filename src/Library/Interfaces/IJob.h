@@ -441,6 +441,38 @@ namespace RISE
 									const double shift[3]			///< [in] Shift factor for color values
 									) = 0;
 
+		//! Adds a PNG texture painter from an in-memory byte buffer.  Used
+		//! by the glTF importer to register painters for embedded `.glb`
+		//! images without writing them to disk first.  The byte buffer is
+		//! consumed during decode (pixels are copied into an internal
+		//! IRasterImage), so the caller may free `bytes` immediately
+		//! after this call returns.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddInMemoryPNGTexturePainter(
+									const char* name,				///< [in] Name of the painter
+									const unsigned char* bytes,		///< [in] Pointer to PNG-encoded byte buffer
+									const size_t numBytes,			///< [in] Length of byte buffer
+									const char color_space,			///< [in] Color space in the file (same encoding as AddPNGTexturePainter)
+									const char filter_type,			///< [in] Texture filtering (same encoding as AddPNGTexturePainter)
+									const bool lowmemory,			///< [in] Low-memory mode skips image convert
+									const double scale[3],			///< [in] Scale factor for color values
+									const double shift[3]			///< [in] Shift factor for color values
+									) = 0;
+
+		//! Adds a JPEG texture painter from an in-memory byte buffer.
+		//! See AddInMemoryPNGTexturePainter for rationale + lifetime contract.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddInMemoryJPEGTexturePainter(
+									const char* name,
+									const unsigned char* bytes,
+									const size_t numBytes,
+									const char color_space,
+									const char filter_type,
+									const bool lowmemory,
+									const double scale[3],
+									const double shift[3]
+									) = 0;
+
 		//! Adds a HDR texture painter
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddHDRTexturePainter(
@@ -549,6 +581,18 @@ namespace RISE
 									const char* pa,					///< [in] First painter
 									const char* pb,					///< [in] Second painter
 									const char* mask				///< [in] Mask painter
+									) = 0;
+
+		//! Adds a channel-extraction painter.  Returns scale * source[channel] + bias
+		//! broadcast as (v, v, v).  Designed for glTF metallic-roughness texture
+		//! decomposition (B = metallic, G = roughness).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddChannelPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const char  channel,			///< [in] 0=R, 1=G, 2=B
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
 									) = 0;
 
 
@@ -742,16 +786,83 @@ namespace RISE
 			const char* alphay											///< [in] Standard deviation (RMS) of surface slope in y
 			) = 0;
 
-		//! Adds GGX anisotropic microfacet material
+		//! Adds GGX anisotropic microfacet material.
+		//!
+		//! `fresnel_mode` selects the Fresnel evaluation model:
+		//!   "conductor"  (default) — Optics::CalculateConductorReflectance using
+		//!                            ior + ext painters; specular acts as a tint
+		//!                            on top of conductor Fresnel.  Correct for
+		//!                            hand-authored materials with real ior /
+		//!                            extinction values.
+		//!   "schlick_f0" — Schlick approximation `F = F0 + (1-F0)(1-cosθ_h)^5`
+		//!                  treating the `specular` painter as F0 directly; ior
+		//!                  and ext painters are unused.  Required by glTF
+		//!                  metallicRoughness PBR mapping.  Diffuse is modulated
+		//!                  by (1 - max(F0)) per the glTF spec, multiscatter
+		//!                  uses the closed-form Schlick hemispherical average.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddGGXMaterial(
 			const char* name,											///< [in] Name of the material
 			const char* diffuse,										///< [in] Diffuse reflectance
-			const char* specular,										///< [in] Specular reflectance
+			const char* specular,										///< [in] Specular reflectance / F0
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
-			const char* ior,											///< [in] Index of refraction
-			const char* ext												///< [in] Extinction coefficient
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
+			const char* fresnel_mode = "conductor"						///< [in] "conductor" or "schlick_f0"
+			) = 0;
+
+		//! Adds GGX material with optional emissive (LambertianEmitter)
+		//! folded in.  glTF pbrMetallicRoughness materials with non-zero
+		//! emissiveFactor / emissiveTexture map onto this overload.  Pass
+		//! `emissive` = NULL or "none" to fall through to the no-emitter
+		//! AddGGXMaterial behaviour.  See AddGGXMaterial for `fresnel_mode`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGGXEmissiveMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* diffuse,										///< [in] Diffuse reflectance
+			const char* specular,										///< [in] Specular reflectance / F0
+			const char* alphaX,											///< [in] Roughness in tangent u direction
+			const char* alphaY,											///< [in] Roughness in tangent v direction
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
+			const char* emissive,										///< [in] Optional emissive painter; "none" / NULL = no emitter
+			const double emissive_scale,								///< [in] Multiplier on emissive radiance
+			const char* fresnel_mode = "conductor"						///< [in] "conductor" or "schlick_f0"
+			) = 0;
+
+		//! Adds a glTF-spec pbrMetallicRoughness material.  Composes a
+		//! GGX BRDF from PBR-shaped inputs by auto-creating internal
+		//! painters (uniformcolor for constants, blend_painter for the
+		//! base_color / metallic / roughness combinators) and a final
+		//! ggx_material that consumes them.  The internal painters are
+		//! registered in the painter manager with prefix `__pbrmr_<name>__`
+		//! so they don't clash with user-authored painters; users
+		//! shouldn't reference them by name.
+		//!
+		//! Mapping (per glTF 2.0 §3.9.2):
+		//!   diffuse  = baseColor * (1 - metallic)        // diffuse color
+		//!   F0       = lerp(0.04, baseColor, metallic)   // F0 painter
+		//!   alpha    = roughness * roughness
+		//!   ior      = ignored — Fresnel mode is forced to schlick_f0,
+		//!              which uses F0 directly via Schlick's approximation.
+		//!              The `ior` argument is preserved for API stability;
+		//!              it has no effect on rendering.
+		//!
+		//! The (1 - 0.04) "diffuse retention factor" used in earlier
+		//! revisions is now gone — the GGX BRDF's schlick_f0 mode applies
+		//! the (1 - max(F0)) factor at evaluation time per the glTF spec,
+		//! so pre-multiplying it into the diffuse painter would
+		//! double-apply.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPBRMetallicRoughnessMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* base_color,										///< [in] baseColor painter (sRGB-decoded RGB)
+			const char* metallic,										///< [in] Metallic painter or scalar string
+			const char* roughness,										///< [in] Roughness painter or scalar string
+			const double ior,											///< [in] Preserved for API stability; ignored
+			const char* emissive,										///< [in] Optional emissive painter; "none" = no emitter
+			const double emissive_scale									///< [in] Multiplier on emissive radiance
 			) = 0;
 
 		//! Adds Cook Torrance material
@@ -944,6 +1055,45 @@ namespace RISE
 							const bool double_sided,				///< [in] Are the triangles double sided ?
 							const bool bInvertFaces,				///< [in] Should the faces be inverted?
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
+							) = 0;
+
+		//! Imports a complete glTF 2.0 scene into the Job.  Walks the
+		//! file's scene tree and creates per-primitive geometries +
+		//! standard_objects (transforms flow through Job::AddObjectMatrix
+		//! verbatim — no Euler decomposition), per-material PBR materials
+		//! (Schlick-from-F0 mode), per-texture painters (embedded `.glb`
+		//! images decode in-memory; external URIs read from disk — no
+		//! sidecar cache), per-light KHR_lights_punctual entries, and
+		//! the first camera (subsequent ones warn).  alphaMode = MASK
+		//! is honoured via auto-wired alpha_test_shaderop (PT-only;
+		//! BDPT/VCM/MLT/photon tracers treat MASK as opaque).  Object
+		//! names are prefixed with `name_prefix` to avoid manager-level
+		//! collisions.  See docs/GLTF_IMPORT.md §7 (phased plan) and
+		//! §13 (delivered vs deferred) for the full design and the
+		//! out-of-scope features that warn-and-skip (animation /
+		//! skinning / morph targets / alphaMode = BLEND / KHR_materials_*
+		//! beyond core PBR / Draco / meshopt).
+		//!
+		//! `scene_index = UINT_MAX` (the recommended default; this is
+		//! `GLTFImportOptions::kSceneIndexDefault`) imports the file's
+		//! default scene as set in the glTF JSON's top-level `"scene"`
+		//! field, falling back to scenes[0] when no default is declared.
+		//! Any other value is treated as an explicit zero-based index
+		//! into the file's `scenes[]` array; out-of-range values warn
+		//! and fall back to the file default.  Note: passing 0 will now
+		//! force selection of scenes[0], which is NOT the same as
+		//! "default scene" for multi-scene assets whose default is at
+		//! a higher index.
+		/// \return TRUE if the file parsed successfully, FALSE otherwise.
+		virtual bool ImportGLTFScene(
+							const char* filename,					///< [in] .gltf or .glb file
+							const char* name_prefix,				///< [in] Prefix for created object names
+							const unsigned int scene_index,			///< [in] Index into the file's scenes[] array, or UINT_MAX (= GLTFImportOptions::kSceneIndexDefault) for the file's default scene
+							const bool import_meshes,				///< [in] Create per-primitive standard_objects
+							const bool import_materials,			///< [in] Create one PBR material per glTF material
+							const bool import_lights,				///< [in] Create lights from KHR_lights_punctual
+							const bool import_cameras,				///< [in] Create the first camera (subsequent ones warn)
+							const bool import_normal_maps			///< [in] Attach normal_map_modifier when material has normalTexture
 							) = 0;
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
@@ -1198,6 +1348,25 @@ namespace RISE
 			const bool bReceivesShadows								///< [in] Does the object receive shadows?
 		) = 0;
 
+		//! Adds an object whose world transform is supplied as a pre-composed
+		//! 4x4 matrix.  Used by the glTF importer to pass node transforms
+		//! through losslessly instead of round-tripping through Euler XYZ
+		//! decomposition (the latter is gimbal-lock prone for arbitrary
+		//! quaternion rotations).  Matrix layout is column-major to match
+		//! both glTF's `nodes[i].matrix` field and RISE's internal Matrix4.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddObjectMatrix(
+			const char* name,										///< [in] Name of the object
+			const char* geom,										///< [in] Name of the geometry
+			const char* material,									///< [in] Name of the material
+			const char* modifier,									///< [in] Name of the modifier
+			const char* shader,										///< [in] Name of the shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Per-object radiance map (IBL)
+			const double matrix[16],								///< [in] World transform, 4x4 column-major
+			const bool bCastsShadows,
+			const bool bReceivesShadows
+		) = 0;
+
 		//! Creates a CSG object
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddCSGObject(
@@ -1387,6 +1556,29 @@ namespace RISE
 			const char* name,										///< [in] Name of the shaderop
 			const char* transparency,								///< [in] Transparency painter
 			const bool one_sided									///< [in] One sided transparency only (ignore backfaces)
+			) = 0;
+
+		//! Adds a stochastic alpha-test shader op.  Implements glTF
+		//! alphaMode = MASK: at hit time, samples alpha from the
+		//! painter; if alpha < cutoff, the ray is forwarded past the
+		//! surface and shading from behind is composited into the
+		//! current pixel.  Otherwise this op is a no-op and downstream
+		//! shader ops handle the surface normally.
+		//!
+		//! Caveat: this op runs only on integrators that go through
+		//! IShader::Shade() (the path tracer and legacy direct shaders).
+		//! BDPT, VCM, MLT, and photon tracers bypass the shader-op
+		//! pipeline and treat the surface as fully opaque.  No runtime
+		//! warning is emitted when an alpha-masked material renders
+		//! under one of those integrators -- users must choose PT for
+		//! glTF MASK assets, or accept the cutout being silently
+		//! ignored.  See AlphaTestShaderOp.h for the full architectural
+		//! rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddAlphaTestShaderOp(
+			const char* name,										///< [in] Name of the shaderop
+			const char* alpha_painter,								///< [in] Painter sampling alpha at the hit
+			const double cutoff										///< [in] Threshold; alpha < cutoff continues the ray past the surface
 			) = 0;
 
 		//

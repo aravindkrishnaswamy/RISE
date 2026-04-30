@@ -170,6 +170,7 @@ precisely because ad-hoc judgment reliably misses them.
 | [precision-fix-the-formulation](docs/skills/precision-fix-the-formulation.md) | Tempted to widen a `< NEARZERO` / `< EPSILON` check, add an ε fudge, or pick a magic `1e-N` to silence FP-noise speckle / firefly / near-zero misclassification.  Find the cancellation and reformulate. |
 | [sms-firefly-diagnosis](docs/skills/sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; user reports "fireflies" in an SMS scene. |
 | [write-highly-effective-tests](docs/skills/write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into strong regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
+| [effective-rise-scene-authoring](docs/skills/effective-rise-scene-authoring.md) | Author a new `.RISEscene`, port from another tool (glTF / Blender / Unity / Unreal), or diagnose a scene that renders unexpectedly dark / wrong-coloured / oriented backwards.  Walks the [SCENE_CONVENTIONS.md](docs/SCENE_CONVENTIONS.md) checklist + Lambertian-control-sphere diagnostic. |
 
 Claude Code auto-discovers these via thin shims under
 `.claude/skills/<name>/SKILL.md`.  Other LLM tools should read the

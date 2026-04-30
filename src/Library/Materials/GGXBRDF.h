@@ -21,6 +21,7 @@
 #define GGX_BRDF_
 
 #include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IMaterial.h"		// For FresnelMode
 #include "../Interfaces/IPainter.h"
 #include "../Utilities/Reference.h"
 
@@ -41,6 +42,7 @@ namespace RISE
 			const IPainter& pAlphaY;
 			const IPainter& pIOR;
 			const IPainter& pExtinction;
+			const FresnelMode fresnelMode;
 
 		public:
 			GGXBRDF(
@@ -49,7 +51,8 @@ namespace RISE
 				const IPainter& alphaX,
 				const IPainter& alphaY,
 				const IPainter& ior,
-				const IPainter& ext
+				const IPainter& ext,
+				const FresnelMode fresnel_mode = eFresnelConductor
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;

@@ -26,6 +26,14 @@ Chunk syntax rules:
 - The closing `}` must be on its own line.
 - Comments are stripped before the chunk-specific parser sees the chunk body.
 
+For semantic conventions (light direction sign, colour space defaults,
+transform precedence on `standard_object`, V-axis flip, alpha-mask
+integrator caveats, …), see
+[docs/SCENE_CONVENTIONS.md](../../../docs/SCENE_CONVENTIONS.md).
+That document is the canonical reference for "why does my scene
+render unexpectedly?" — the chunk parsers themselves only enforce
+syntactic correctness.
+
 ## Language Features Implemented In The Top-Level Parser
 
 `AsciiSceneParser.cpp` handles more than chunk dispatch:

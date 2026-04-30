@@ -58,6 +58,7 @@ point back here when a tool requires a shim.
 | [sms-firefly-diagnosis](sms-firefly-diagnosis.md) | Bright outlier pixels in an SMS render; "fireflies" reported; a new SMS scene differs from its VCM reference by bright speckles. |
 | [variance-measurement](variance-measurement.md) | Need to prove a rendering change reduces variance / RMSE — K=16 EXR protocol with `bin/tools/HDRVarianceTest.exe`, master-vs-fix stash-rebuild-pop, both pure variance and RMSE-vs-reference. |
 | [write-highly-effective-tests](write-highly-effective-tests.md) | Add or strengthen tests; convert smoke tests into real regression guards; decide whether coverage belongs in `tests/`, `scenes/Tests`, or `tools/`. |
+| [effective-rise-scene-authoring](effective-rise-scene-authoring.md) | Authoring a new `.RISEscene` from scratch, porting from another tool (glTF / Blender / Unity / Unreal), or diagnosing a scene that renders unexpectedly dark / wrong-coloured / oriented backwards.  Walks the [SCENE_CONVENTIONS.md](../SCENE_CONVENTIONS.md) checklist + the Lambertian-control-sphere diagnostic. |
 
 ## Authoring New Skills
 

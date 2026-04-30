@@ -40,14 +40,16 @@ GGXSPF::GGXSPF(
 	const IPainter& alphaX,
 	const IPainter& alphaY,
 	const IPainter& ior,
-	const IPainter& ext
+	const IPainter& ext,
+	const FresnelMode fresnel_mode
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
   pAlphaX( alphaX ),
   pAlphaY( alphaY ),
   pIOR( ior ),
-  pExtinction( ext )
+  pExtinction( ext ),
+  fresnelMode( fresnel_mode )
 {
 	pDiffuse.addref();
 	pSpecular.addref();
@@ -55,6 +57,16 @@ GGXSPF::GGXSPF(
 	pAlphaY.addref();
 	pIOR.addref();
 	pExtinction.addref();
+}
+
+namespace
+{
+	// Closed-form Schlick hemispherical Fresnel average: F0 + (1-F0)/21.
+	template< class T >
+	inline T SchlickFresnelAvg( const T& F0 )
+	{
+		return F0 + (T(1.0) - F0) * (1.0 / 21.0);
+	}
 }
 
 GGXSPF::~GGXSPF()
@@ -124,10 +136,19 @@ void GGXSPF::Scatter(
 			const Scalar mixPdf = (total > 1e-10) ?
 				((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
 
+			RISEPel kray = pDiffuse.GetColor(ri) * (1.0 / pDiffuseSelect);
+			if( fresnelMode == eFresnelSchlickF0 )
+			{
+				// (1 - max(F0)) energy split per glTF spec
+				const RISEPel specColor = pSpecular.GetColor(ri);
+				const Scalar maxF0 = ColorMath::MaxValue( specColor );
+				kray = kray * r_max( Scalar(0), Scalar(1.0) - maxF0 );
+			}
+
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
 			diffuse.ray.Set( ri.ptIntersection, wo );
-			diffuse.kray = pDiffuse.GetColor(ri) * (1.0 / pDiffuseSelect);
+			diffuse.kray = kray;
 			diffuse.pdf = mixPdf;
 			diffuse.isDelta = false;
 			scattered.AddScatteredRay( diffuse );
@@ -159,9 +180,19 @@ void GGXSPF::Scatter(
 							((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m, not macrosurface normal
-						const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-							ri.ray.Dir(), m, RISEPel(1,1,1),
-							pIOR.GetColor(ri), pExtinction.GetColor(ri) );
+						const RISEPel specColor = pSpecular.GetColor(ri);
+						RISEPel F;
+						if( fresnelMode == eFresnelSchlickF0 )
+						{
+							const Scalar cosWoH = r_max( Scalar(0), wiDotM );	// reflection: wi·m == wo·m
+							F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosWoH );
+						}
+						else
+						{
+							F = specColor * Optics::CalculateConductorReflectance<RISEPel>(
+								ri.ray.Dir(), m, RISEPel(1,1,1),
+								pIOR.GetColor(ri), pExtinction.GetColor(ri) );
+						}
 
 						// Height-correlated weight: kray = F * G2 / G1(wi) / pSpecSelect
 						const Vector3 wi_local(
@@ -178,9 +209,8 @@ void GGXSPF::Scatter(
 						const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi_local, wo_local );
 						const Scalar G1wi = MicrofacetUtils::GGX_G1_Aniso( alphaX, alphaY, wi_local );
 
-						const RISEPel specColor = pSpecular.GetColor(ri);
 						const RISEPel kray = (G1wi > 1e-10) ?
-							specColor * fresnel * (G2 / (G1wi * pSpecSelect)) :
+							F * (G2 / (G1wi * pSpecSelect)) :
 							RISEPel(0,0,0);
 
 						if( ColorMath::MaxValue( kray ) > 0 )
@@ -220,14 +250,23 @@ void GGXSPF::Scatter(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
 
-				const RISEPel ior = pIOR.GetColor(ri);
-				const RISEPel ext = pExtinction.GetColor(ri);
-				const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-				const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-
 				const RISEPel specColor = pSpecular.GetColor(ri);
-				const RISEPel kray = specColor * F_ms *
-					((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
+				RISEPel kray;
+				if( fresnelMode == eFresnelSchlickF0 )
+				{
+					const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
+					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+					kray = F_ms * ((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
+				}
+				else
+				{
+					const RISEPel ior = pIOR.GetColor(ri);
+					const RISEPel ext = pExtinction.GetColor(ri);
+					const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+					kray = specColor * F_ms *
+						((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
+				}
 
 				if( ColorMath::MaxValue( kray ) > 0 )
 				{
@@ -298,10 +337,17 @@ void GGXSPF::ScatterNM(
 			const Scalar mixPdf = (total > 1e-10) ?
 				((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
 
+			Scalar krayNM = pDiffuse.GetColorNM(ri,nm) / pDiffuseSelect;
+			if( fresnelMode == eFresnelSchlickF0 )
+			{
+				const Scalar F0 = pSpecular.GetColorNM(ri,nm);
+				krayNM = krayNM * r_max( Scalar(0), Scalar(1.0) - F0 );
+			}
+
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
 			diffuse.ray.Set( ri.ptIntersection, wo );
-			diffuse.krayNM = pDiffuse.GetColorNM(ri,nm) / pDiffuseSelect;
+			diffuse.krayNM = krayNM;
 			diffuse.pdf = mixPdf;
 			diffuse.isDelta = false;
 			scattered.AddScatteredRay( diffuse );
@@ -332,10 +378,21 @@ void GGXSPF::ScatterNM(
 						const Scalar mixPdf = (total > 1e-10) ?
 							((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
 
-						// Fresnel evaluated at microfacet normal m, not macrosurface normal
-						const Scalar fresnel = Optics::CalculateConductorReflectance(
-							ri.ray.Dir(), m, 1.0,
-							pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
+						// Fresnel evaluated at microfacet normal m
+						const Scalar specColor = pSpecular.GetColorNM(ri,nm);
+						Scalar F;
+						if( fresnelMode == eFresnelSchlickF0 )
+						{
+							const Scalar cosWoH = r_max( Scalar(0), wiDotM );
+							F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
+						}
+						else
+						{
+							const Scalar fresnel = Optics::CalculateConductorReflectance(
+								ri.ray.Dir(), m, 1.0,
+								pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
+							F = specColor * fresnel;
+						}
 
 						const Vector3 wi_local(
 							Vector3Ops::Dot( wi, myonb.u() ),
@@ -352,7 +409,7 @@ void GGXSPF::ScatterNM(
 						const Scalar G1wi = MicrofacetUtils::GGX_G1_Aniso( alphaX, alphaY, wi_local );
 
 						const Scalar krayNM = (G1wi > 1e-10) ?
-							pSpecular.GetColorNM(ri,nm) * fresnel * G2 / (G1wi * pSpecSelect) : 0;
+							F * G2 / (G1wi * pSpecSelect) : 0;
 
 						if( krayNM > 0 )
 						{
@@ -391,13 +448,23 @@ void GGXSPF::ScatterNM(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
 
-				const Scalar iorVal = pIOR.GetColorNM(ri,nm);
-				const Scalar extVal = pExtinction.GetColorNM(ri,nm);
-				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-
-				const Scalar krayNM = pSpecular.GetColorNM(ri,nm) * F_ms *
-					(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
+				Scalar krayNM;
+				if( fresnelMode == eFresnelSchlickF0 )
+				{
+					const Scalar F0 = pSpecular.GetColorNM(ri,nm);
+					const Scalar F_avg = SchlickFresnelAvg<Scalar>( F0 );
+					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+					krayNM = F_ms * (1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
+				}
+				else
+				{
+					const Scalar iorVal = pIOR.GetColorNM(ri,nm);
+					const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+					krayNM = pSpecular.GetColorNM(ri,nm) * F_ms *
+						(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
+				}
 
 				if( krayNM > 0 )
 				{

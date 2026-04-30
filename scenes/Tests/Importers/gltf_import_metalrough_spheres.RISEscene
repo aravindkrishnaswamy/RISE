@@ -1,0 +1,92 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           gltf_import_metalrough_spheres.RISEscene                                                #
+#   Description:    Phase 2 PBR oracle: Khronos's MetalRoughSpheres -- a 7x7 grid of spheres                #
+#                   sweeping (metallic, roughness) across [0..1] x [0..1].  This is THE asset for           #
+#                   eyeballing whether a PBR implementation is correct: the diagonal corners                #
+#                   should look like dielectric (top-left, metallic=0 roughness=0) all the way to           #
+#                   mirror-finish metal (bottom-right, metallic=1 roughness=0).                             #
+#                                                                                                           #
+#                   What you should see in a healthy render:                                                #
+#                     - Top row (metallic=0): smooth -> rough dielectrics, all roughly mid-gray             #
+#                     - Bottom row (metallic=1): smooth metals reflecting the env / lights cleanly          #
+#                       at the left, blurring out into rough metals at the right                            #
+#                     - The transition column-by-column should be monotonic (no "weird" steps)              #
+#                                                                                                           #
+#                   Asset bounds are roughly a 12x12 unit grid centred on origin.                           #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_import_metalrough_spheres
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 18
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/MetalRoughSpheres.glb
+	name_prefix			mrspheres
+}
+
+##################################################
+# Lights -- two directional lights from opposite
+# sides so both metal-mirror highlights and matte
+# diffuse reads can be seen on the same sphere.
+# `direction` is FROM surface TO light (RISE convention,
+# DirectionalLight.cpp:48), so both vectors must have a
+# positive Z component to actually illuminate the +Z
+# camera-facing side of the grid.
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.4 0.7
+}
+
+directional_light
+{
+	name		fill
+	power		1.5
+	color		0.7 0.8 1.0
+	direction	-0.5 0.2 0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.30
+	color		1.0 1.0 1.0
+}

@@ -36,14 +36,16 @@ GGXBRDF::GGXBRDF(
 	const IPainter& alphaX,
 	const IPainter& alphaY,
 	const IPainter& ior,
-	const IPainter& ext
+	const IPainter& ext,
+	const FresnelMode fresnel_mode
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
   pAlphaX( alphaX ),
   pAlphaY( alphaY ),
   pIOR( ior ),
-  pExtinction( ext )
+  pExtinction( ext ),
+  fresnelMode( fresnel_mode )
 {
 	pDiffuse.addref();
 	pSpecular.addref();
@@ -51,6 +53,18 @@ GGXBRDF::GGXBRDF(
 	pAlphaY.addref();
 	pIOR.addref();
 	pExtinction.addref();
+}
+
+namespace
+{
+	// Hemispherical Fresnel average for Schlick's approximation:
+	//   F_avg = 2 ∫₀¹ [F0 + (1-F0)(1-μ)^5] μ dμ = F0 + (1-F0)/21
+	// Closed-form, no quadrature needed.  Per-channel for RISEPel.
+	template< class T >
+	inline T SchlickFresnelAvg( const T& F0 )
+	{
+		return F0 + (T(1.0) - F0) * (1.0 / 21.0);
+	}
 }
 
 GGXBRDF::~GGXBRDF()
@@ -108,17 +122,28 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
 	const RISEPel specColor = pSpecular.GetColor(ri);
-	const RISEPel ior = pIOR.GetColor(ri);
-	const RISEPel ext = pExtinction.GetColor(ri);
 
 	RISEPel specular(0,0,0);
 
 	if( specFactor > 0 )
 	{
 		// Fresnel evaluated at microfacet normal (half-vector), not macrosurface normal
-		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-			ri.ray.Dir(), h, RISEPel(1,1,1), ior, ext );
-		specular = specColor * fresnel * specFactor;
+		if( fresnelMode == eFresnelSchlickF0 )
+		{
+			// Schlick: F = F0 + (1-F0)*(1-cosθ_h)^5, where specColor is F0.
+			// cosθ_h = max(0, dot(wo, h)).
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			const RISEPel F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosWoH );
+			specular = F * specFactor;
+		}
+		else
+		{
+			const RISEPel ior = pIOR.GetColor(ri);
+			const RISEPel ext = pExtinction.GetColor(ri);
+			const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
+				ri.ray.Dir(), h, RISEPel(1,1,1), ior, ext );
+			specular = specColor * fresnel * specFactor;
+		}
 	}
 
 	// Kulla-Conty multiscattering energy compensation
@@ -132,12 +157,33 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alphaEff );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-		const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-		const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-		specular = specular + specColor * F_ms * f_ms;
+		if( fresnelMode == eFresnelSchlickF0 )
+		{
+			// Closed-form Schlick hemispherical average.  specColor is F0.
+			const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
+		}
+		else
+		{
+			const RISEPel ior = pIOR.GetColor(ri);
+			const RISEPel ext = pExtinction.GetColor(ri);
+			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+			specular = specular + specColor * F_ms * f_ms;
+		}
 	}
 
-	return pDiffuse.GetColor(ri) * INV_PI + specular;
+	// Diffuse lobe.  In Schlick mode, modulate by (1 - max(F0)) per glTF spec
+	// to enforce the (1-F) energy split between diffuse and specular.
+	RISEPel diffuse = pDiffuse.GetColor(ri) * INV_PI;
+	if( fresnelMode == eFresnelSchlickF0 )
+	{
+		const Scalar maxF0 = ColorMath::MaxValue( specColor );
+		diffuse = diffuse * r_max( Scalar(0), Scalar(1.0) - maxF0 );
+	}
+
+	return diffuse + specular;
 }
 
 Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -178,17 +224,28 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
 	const Scalar specColor = pSpecular.GetColorNM(ri,nm);
-	const Scalar iorVal = pIOR.GetColorNM(ri,nm);
-	const Scalar extVal = pExtinction.GetColorNM(ri,nm);
 
 	Scalar specular = 0;
 
 	if( specFactor > 0 )
 	{
-		// Fresnel evaluated at microfacet normal (half-vector), not macrosurface normal
-		const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, 1.0, iorVal, extVal );
-		if( fresnel > 0 ) {
-			specular = specColor * fresnel * specFactor;
+		// Fresnel evaluated at microfacet normal (half-vector)
+		if( fresnelMode == eFresnelSchlickF0 )
+		{
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			const Scalar F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
+			if( F > 0 ) {
+				specular = F * specFactor;
+			}
+		}
+		else
+		{
+			const Scalar iorVal = pIOR.GetColorNM(ri,nm);
+			const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+			const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, 1.0, iorVal, extVal );
+			if( fresnel > 0 ) {
+				specular = specColor * fresnel * specFactor;
+			}
 		}
 	}
 
@@ -202,23 +259,61 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alphaEff );
 		const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
-		const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-		const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-		specular = specular + specColor * F_ms * f_ms;
+		if( fresnelMode == eFresnelSchlickF0 )
+		{
+			const Scalar F_avg = SchlickFresnelAvg<Scalar>( specColor );
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
+		}
+		else
+		{
+			const Scalar iorVal = pIOR.GetColorNM(ri,nm);
+			const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+			specular = specular + specColor * F_ms * f_ms;
+		}
 	}
 
-	return pDiffuse.GetColorNM(ri,nm) * INV_PI + specular;
+	Scalar diffuse = pDiffuse.GetColorNM(ri,nm) * INV_PI;
+	if( fresnelMode == eFresnelSchlickF0 )
+	{
+		// In NM, F0 is scalar; same (1-F0) split applies.
+		diffuse = diffuse * r_max( Scalar(0), Scalar(1.0) - specColor );
+	}
+
+	return diffuse + specular;
 }
 
 RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
-	// Diffuse + Fresnel(cos θo) · spec, same conductor Fresnel that
-	// `value()` uses.  The D / G microfacet terms shape the lobe but
-	// don't change total integrated reflectance to first order.
+	// Diffuse + Fresnel(cos θo) · spec, matching whichever Fresnel model
+	// `value()` uses.  D / G microfacet terms shape the lobe but don't
+	// change total integrated reflectance to first order.
+	//
+	// The Schlick branch evaluates Fresnel at the actual outgoing-cosine,
+	// matching the conductor branch's intent.  Diffuse gets the
+	// (1 - max(F0)) glTF-spec split.  Earlier revisions used the
+	// hemispherical Schlick average here; review found it
+	// overestimates near-normal and underestimates at grazing.
 	const Vector3 n = ri.onb.w();
-	const RISEPel ior = pIOR.GetColor( ri );
-	const RISEPel ext = pExtinction.GetColor( ri );
-	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
-		ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
-	return pDiffuse.GetColor( ri ) + pSpecular.GetColor( ri ) * fresnel;
+	const RISEPel specColor = pSpecular.GetColor( ri );
+	const RISEPel diffColor = pDiffuse.GetColor( ri );
+
+	if( fresnelMode == eFresnelSchlickF0 )
+	{
+		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+		const Scalar cosThetaO = r_max( Scalar(0), Vector3Ops::Dot( wo, n ) );
+		const RISEPel F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosThetaO );
+		const Scalar maxF0 = ColorMath::MaxValue( specColor );
+		return diffColor * r_max( Scalar(0), Scalar(1.0) - maxF0 ) + F;
+	}
+	else
+	{
+		const RISEPel ior = pIOR.GetColor( ri );
+		const RISEPel ext = pExtinction.GetColor( ri );
+		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
+			ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
+		return diffColor + specColor * fresnel;
+	}
 }

@@ -1,0 +1,78 @@
+RISE ASCII SCENE 5
+# Light-control scene: identical camera + lights to gltf_import_damaged_helmet
+# but with a known Lambertian-white sphere instead of the helmet asset.  If
+# this renders bright, the helmet's darkness is a metallic-without-IBL PBR
+# behaviour, not a missing-light issue.
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_helmet_light_control
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					35.0
+}
+
+uniformcolor_painter
+{
+	name				white
+	color				0.8 0.8 0.8
+	colorspace			Rec709RGB_Linear
+}
+
+lambertian_material
+{
+	name				diffuse_white
+	reflectance			white
+}
+
+sphere_geometry
+{
+	name				sph
+	radius				0.6
+}
+
+standard_object
+{
+	name				ctrl
+	geometry			sph
+	material			diffuse_white
+	position			0 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.4 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.25
+	color		1.0 1.0 1.0
+}

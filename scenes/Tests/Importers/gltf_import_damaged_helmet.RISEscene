@@ -1,0 +1,83 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           gltf_import_damaged_helmet.RISEscene                                                    #
+#   Description:    Phase 2 gltf_import showcase: Khronos's DamagedHelmet, the de-facto                     #
+#                   community PBR demo asset.  Stresses the full PBR mapping (baseColor +                   #
+#                   metallicRoughness + normal + emissive textures) on a single mesh with                   #
+#                   pronounced metal / dielectric mix.                                                      #
+#                                                                                                           #
+#                   The asset's local axes have the helmet looking down -Z at the origin, so                #
+#                   we frame the camera in front (+Z) and slightly above for the "hero" angle.              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_import_damaged_helmet
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+# Helmet bounds are roughly a unit cube around origin (asset is exported
+# in metres, ~1m tall).  Camera at +Z looking back, slight tilt up.
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					35.0
+}
+
+##################################################
+# Bulk import
+##################################################
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/DamagedHelmet.glb
+	name_prefix			helmet
+}
+
+##################################################
+# Lights -- the asset has none
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	# `direction` in RISE points FROM the surface TO the light source
+	# (DirectionalLight.cpp:48 -- N · vDirection > 0 means lit), so to put
+	# the light at the upper-right-front of the helmet (camera-facing side)
+	# the vector must have +Z, not -Z.  Earlier revisions had the inverted
+	# convention and the helmet rendered nearly black.
+	direction	0.4 0.4 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.25
+	color		1.0 1.0 1.0
+}

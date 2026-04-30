@@ -469,19 +469,23 @@ static bool TestMaterialPointwiseConsistency(
 	Scalar alphaXval,
 	Scalar alphaYval,
 	Scalar incomingTheta,
-	int numSamples
+	int numSamples,
+	FresnelMode fresnelMode = eFresnelConductor
 	)
 {
-	// Create painters
+	// Create painters.  In schlick_f0 mode `specular` is interpreted as F0
+	// directly; we use 0.5 to give a clear specular contribution that's
+	// neither pure-dielectric (0.04) nor pure-metal (~baseColor).
+	const Scalar specVal = (fresnelMode == eFresnelSchlickF0) ? 0.5 : 0.8;
 	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel(0.3, 0.3, 0.3) );  diffuse->addref();
-	UniformColorPainter* specular = new UniformColorPainter( RISEPel(0.8, 0.8, 0.8) );  specular->addref();
+	UniformColorPainter* specular = new UniformColorPainter( RISEPel(specVal, specVal, specVal) );  specular->addref();
 	UniformColorPainter* pAlphaX = new UniformColorPainter( RISEPel(alphaXval, alphaXval, alphaXval) );  pAlphaX->addref();
 	UniformColorPainter* pAlphaY = new UniformColorPainter( RISEPel(alphaYval, alphaYval, alphaYval) );  pAlphaY->addref();
 	UniformColorPainter* ior = new UniformColorPainter( RISEPel(2.5, 2.5, 2.5) );  ior->addref();
 	UniformColorPainter* ext = new UniformColorPainter( RISEPel(3.0, 3.0, 3.0) );  ext->addref();
 
-	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext );  brdf->addref();
-	GGXSPF*  spf = new GGXSPF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext );   spf->addref();
+	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext, fresnelMode );  brdf->addref();
+	GGXSPF*  spf = new GGXSPF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext, fresnelMode );   spf->addref();
 
 	RayIntersectionGeometric ri = MakeRI( incomingTheta );
 
@@ -549,7 +553,8 @@ static bool TestMaterialPointwiseConsistency(
 	const double spfAlbedo = (furnaceSamples > 0) ? spfAccum / furnaceSamples : 0;
 	const double brdfAlbedo = (furnaceSamples > 0) ? brdfAccum / furnaceSamples : 0;
 
-	std::cout << "  Material test (ax=" << alphaXval << ", ay=" << alphaYval
+	const char* modeLabel = (fresnelMode == eFresnelSchlickF0) ? "schlick" : "cond";
+	std::cout << "  Material test [" << modeLabel << "] (ax=" << alphaXval << ", ay=" << alphaYval
 	          << ", theta=" << std::fixed << std::setprecision(1) << (incomingTheta * 180.0 / PI)
 	          << "): valid=" << validSamples
 	          << " pdfFail=" << pdfFailures
@@ -658,8 +663,9 @@ int main()
 		}
 	}
 
-	// Test 6: Material-level pointwise consistency (exercises GGXBRDF + GGXSPF)
-	std::cout << std::endl << "--- Test 6: Material BRDF/SPF Pointwise Consistency ---" << std::endl;
+	// Test 6: Material-level pointwise consistency (exercises GGXBRDF + GGXSPF
+	// in eFresnelConductor mode — preserves the existing regression coverage)
+	std::cout << std::endl << "--- Test 6: Material BRDF/SPF Pointwise Consistency [conductor] ---" << std::endl;
 	{
 		// Initialize the global log to prevent null pointer crashes
 		GlobalLog();
@@ -670,7 +676,25 @@ int main()
 
 		for( int a = 0; a < 4; a++ ) {
 			for( int t = 0; t < 3; t++ ) {
-				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000 );
+				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000, eFresnelConductor );
+			}
+		}
+	}
+
+	// Test 7: Same battery, schlick_f0 mode.  Validates that PDF / kray
+	// derivation, multiscatter compensation, and the (1 - max(F0)) diffuse
+	// split all preserve PDF-self-consistency, SPF/BRDF agreement, and
+	// energy conservation when the BRDF uses Schlick-from-F0 instead of
+	// conductor Fresnel.
+	std::cout << std::endl << "--- Test 7: Material BRDF/SPF Pointwise Consistency [schlick_f0] ---" << std::endl;
+	{
+		Scalar alphaX[] = { 0.2, 0.5, 0.2, 0.1 };
+		Scalar alphaY[] = { 0.2, 0.5, 0.5, 0.8 };
+		Scalar thetas[] = { 0.3, 0.8, 1.2 };
+
+		for( int a = 0; a < 4; a++ ) {
+			for( int t = 0; t < 3; t++ ) {
+				allPassed &= TestMaterialPointwiseConsistency( alphaX[a], alphaY[a], thetas[t], 10000, eFresnelSchlickF0 );
 			}
 		}
 	}

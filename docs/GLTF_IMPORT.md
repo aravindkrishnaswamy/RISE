@@ -14,6 +14,76 @@ end-to-end immediately.  Full scene import (`gltf_import`), PBR material
 wrappers, and the rest of Phase 2 stay deferred.  Phase 3+ (animation,
 skinning, KHR extensions) stays deferred.
 
+**Phase 2 status (2026-04-30, this branch, uncommitted):** the bulk of
+Phase 2 has shipped — `gltf_import`, `pbr_metallic_roughness_material`,
+`channel_painter`, optional `emissive` on `ggx_material`, and embedded-
+texture extraction (sidecar-cache form).  Two items were deferred to
+Phase 3 by design (`alpha_test_modifier` — RISE modifiers run after hit
+commit so alpha mask needs new architecture; `quaternion` / `matrix` on
+`standard_object` — current Euler XYZ decomposition is empirically
+adequate for the test corpus).  One **architectural correctness gap**
+identified in adversarial review remains open: the GGX BRDF's conductor
+Fresnel double-counts F0 when the PBR mapping plugs `rs = lerp(0.04,
+baseColor, metallic)` on top of it, which makes metals render ~25× too
+dim.
+
+**Phase 3 status (2026-04-30, this branch, uncommitted):** all
+Phase-2-deferred work has been delivered.  Concretely:
+
+  - **Schlick-from-F0 Fresnel mode on `GGXBRDF` / `GGXSPF`** (fixes
+    P1-1 / P1-2 / P1-3) — new `fresnel_mode` parameter on
+    `ggx_material` (default `conductor`, preserves existing scenes
+    byte-identical).  `pbr_metallic_roughness_material` now flips this
+    to `schlick_f0`, which treats the `specular` painter as F0
+    directly, evaluates `F = F0 + (1-F0)(1-cosθ_h)^5`, and modulates
+    diffuse by `(1 - max(F0))` per glTF spec.  Three test programs
+    cover it: `tests/GGXFresnelModeTest.cpp` (analytical oracles),
+    `tests/GGXMetalRoughGridTest.cpp` (4-corner grid), and Test 7 of
+    `tests/GGXWhiteFurnaceTest.cpp` (energy / PDF / SPF–BRDF
+    consistency under Schlick mode).  Metals now render with full F0
+    reflectance.
+  - **`alpha_test_shaderop`** — new shader op + chunk + Job /
+    RISE_API entry points for glTF `alphaMode = MASK`.  Importer
+    auto-wires it per-material when MASK is set.  Documented caveat:
+    works only under integrators that route through `IShader::Shade()`
+    (the path tracer + legacy direct shaders); BDPT, VCM, MLT, and
+    photon tracers bypass the shader-op pipeline and treat MASK
+    surfaces as opaque.  Tracked as a Phase 4 candidate to promote
+    into a hit-time concern.  Per-pixel alpha currently reads
+    `max(R,G,B)` of baseColor as a proxy because the painter system
+    doesn't expose the A channel — Phase 4 work to add an alpha-aware
+    painter would close this.
+  - **Quaternion / matrix on `standard_object`** — new optional
+    `quaternion` (xyzw) and `matrix` (16 doubles, column-major)
+    parameters with documented precedence (`matrix` > `quaternion` >
+    `orientation`).  Mutual-exclusion warnings if multiple are set.
+    `Job::AddObjectMatrix` constructs the world transform from a
+    column-major 4×4 directly, bypassing `Position*Orientation*
+    Stretch*Scale` composition.  Importer now passes the cgltf node-
+    world matrix verbatim — no Euler decomposition, no gimbal-lock
+    failure mode, no orthonormality assumption.  `DecomposeAffine`
+    deleted (lost its only caller).
+  - **In-memory PNG / JPEG painters** — new
+    `Job::AddInMemoryPNGTexturePainter` /
+    `AddInMemoryJPEGTexturePainter` that take a byte buffer directly.
+    Importer uses these for embedded `.glb` images (and `data:` URIs
+    cgltf already decoded into a bufferView), retiring the
+    `.gltf_cache/` sidecar round-trip.  External-URI textures in the
+    `.gltf` JSON form continue to use the file-path APIs.
+  - **`mkFromQuaternion` bug** at
+    `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both
+    computing `2*a.v.x` instead of `a.v.y` / `a.v.z`.  Fixed (was
+    incorrect regardless of glTF and could have produced silently
+    wrong rotations elsewhere).
+
+**Test results (Phase 3, run 2026-04-30):** 74 / 75 RISE test
+executables pass.  The one failure (`SceneEditorCancelRestartTest`)
+is a pre-existing timing-flaky assertion about render-thread cancel
+behaviour, unrelated to Phase 3.  All four glTF showcase scenes load
++ render correctly (PBR smoke, Avocado, DamagedHelmet,
+MetalRoughSpheres); the matrix path produces correct asset
+orientations.  See §13 for the full delivered-vs-deferred breakdown.
+
 ## Implementation status
 
 | Area | Committed | This branch (uncommitted) | Pending |
@@ -25,14 +95,17 @@ skinning, KHR extensions) stays deferred.
 | **Test corpus** | Box (db65457) | 9 Khronos Sample-Assets `.glb` files committed under `scenes/Tests/Geometry/assets/`: BoxTextured, Duck, Avocado, NormalTangentTest, NormalTangentMirrorTest, VertexColorTest, MultiUVTest, OrientationTest, AlphaBlendModeTest | — |
 | **Test program** | `tests/GLTFLoaderTest.cpp` with 5 cases (db65457) | Extended to 14 cases — adversarial coverage of every Phase 1 attribute path (TANGENT, TEXCOORD_1, COLOR_0 v2 cast, multi-mesh boundary, alpha-mode metadata ignore) | — |
 | **Tangent-space normal mapping** | — | `Modifiers/NormalMap.{h,cpp}` + `normal_map_modifier` chunk + `Job::AddNormalMapModifier` + `RISE_API_CreateNormalMapModifier`; visual-regression scene `gltf_normal_mapped.RISEscene`; sidecar normal-map PNG + extraction helper script | — |
-| **PBR material wrapper** (`pbr_metallic_roughness_material`) | — | — | Phase 2 |
-| **`channel_painter`** for MR-texture extraction | — | — | Phase 2 |
-| **Bulk scene import** (`gltf_import`) | — | — | Phase 2 |
-| **Alpha modes** (`alpha_test_modifier` for MASK) | — | — | Phase 2 |
-| **Quaternion / matrix on `standard_object`** | — | — | Phase 2 |
-| **Emissive on `ggx_material`** | — | — | Phase 2 |
-| **Animation / skinning / morph targets** | — | — | Phase 3+ |
-| **KHR_materials_*** extensions (clearcoat, transmission, sheen, ior, emissive_strength, unlit) | — | — | Phase 3+ |
+| **PBR material wrapper** (`pbr_metallic_roughness_material`) | — | `Job::AddPBRMetallicRoughnessMaterial` constructs a GGX + painter graph; chunk parser registered. **Phase 3 update**: switched to Schlick-from-F0 mode in the BSDF, removed the `0.96 * baseColor` retention pre-multiplier (the (1−max(F0)) factor is now applied at evaluation time per the glTF spec).  Metals render at full F0 reflectance.  See §13. | — |
+| **Schlick-from-F0 Fresnel mode on GGX BSDF** | — | `enum FresnelMode { eFresnelConductor, eFresnelSchlickF0 }` in `Interfaces/IMaterial.h`; new `fresnel_mode` parameter on `ggx_material` chunk (default `conductor`, byte-identical to pre-Phase-3 behaviour); `pbr_metallic_roughness_material` flips it to `schlick_f0`. Multiscatter uses closed-form Schlick hemisphere average `F0 + (1-F0)/21`. | — |
+| **`channel_painter`** for MR-texture extraction | — | Single-header `Painters/ChannelPainter.h` (R/G/B selector + scale + bias); chunk parser registered | — |
+| **Bulk scene import** (`gltf_import`) | — | `Importers/GLTFSceneImporter.{h,cpp}` walks scene tree, emits per-primitive geometries, materials, lights, cameras; `Job::ImportGLTFScene` + `RISE_API_ImportGLTFScene`; chunk parser registered. **Phase 3 update**: embedded `.glb` images go directly through `Job::AddInMemoryPNG/JPEGTexturePainter` (no disk round-trip); `.gltf_cache/` sidecar retired; node-world matrices flow through `Job::AddObjectMatrix` verbatim (no Euler decomposition); skinning / animation / morph targets warn-and-skip; alphaMode = MASK auto-wires per-material alpha-test shader. | — |
+| **In-memory PNG / JPEG painters** | — | `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` consume a byte buffer (no disk path) and reuse the existing painter pipeline.  Used by `gltf_import` for embedded-image bytes. | — |
+| **Alpha modes** (`alpha_test_shaderop` for MASK) | — | `Shaders/AlphaTestShaderOp.{h,cpp}` + `alpha_test_shaderop` chunk + `Job::AddAlphaTestShaderOp` + `RISE_API_CreateAlphaTestShaderOp`.  glTF importer auto-wires per-material when `alphaMode = MASK`.  **Caveat**: shader-op is honoured only by integrators that route through `IShader::Shade()` — PT and legacy direct shaders.  BDPT, VCM, MLT, and photon tracers bypass the shader-op pipeline and treat MASK as opaque (no runtime warning). Per-pixel alpha currently uses `max(R,G,B)` of baseColor as a proxy because `IPainter` does not expose the A channel. | Phase 4: alpha-aware painter, alpha mask under BDPT/VCM/MLT, `alphaMode = BLEND` |
+| **Quaternion / matrix on `standard_object`** | — | New optional `quaternion` (xyzw) and `matrix` (16 doubles, column-major) parameters on `standard_object`; `Job::AddObjectMatrix` consumes a 4×4 directly.  Mutual-exclusion warnings if multiple are set; precedence is `matrix` > `quaternion` > `orientation` (Euler).  glTF importer uses the matrix path; `DecomposeAffine` deleted. | — |
+| **`mkFromQuaternion` bug** | — | `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both computing `2 * a.v.x` instead of `a.v.y` / `a.v.z`.  Fixed; needed by the new `standard_object { quaternion ... }` path. | — |
+| **Emissive on `ggx_material`** | — | Second `GGXMaterial` ctor takes optional `emissive` painter + `emissive_scale`, builds a `LambertianEmitter` and exposes it via `GetEmitter()`; `Job::AddGGXEmissiveMaterial`; parser params `emissive` / `emissive_scale` on `ggx_material` chunk | — |
+| **Animation / skinning / morph targets** | — | — | Phase 4+ |
+| **KHR_materials_*** extensions (clearcoat, transmission, sheen, ior, emissive_strength, unlit) | — | — | Phase 4+ |
 
 The forward-looking design rationale still lives in §§ 1–6; the original
 phased plan ships in §7.  §10 has a per-row status column matching the
@@ -539,18 +612,26 @@ Plus include path entries pointing at `extlib/cgltf` in each.
 
 ---
 
-### Phase 2 — full scene import + PBR materials + tangent / normal-map support — **PARTIALLY DELIVERED EARLY**
+### Phase 2 — full scene import + PBR materials + tangent / normal-map support — **DELIVERED (this branch, uncommitted)**
 
-Tangent storage (v3 interface), the v3 intersection plumbing, and the
-`normal_map_modifier` listed below have already shipped in Phase 1 / this
-branch; what remains is the PBR material wrapper, the `channel_painter`
-helper, the bulk scene importer (`gltf_import`), the alpha-mode modifier,
-and the `standard_object` quaternion/matrix extension.
+Tangent storage (v3 interface), v3 intersection plumbing, and the
+`normal_map_modifier` shipped in Phase 1 / pre-Phase 2.  Phase 2 itself
+delivers `gltf_import`, `pbr_metallic_roughness_material`, `channel_painter`,
+optional `emissive` on `ggx_material`, embedded-texture extraction (sidecar
+form), and the per-primitive node-transform decomposition.
+
+**Deferred from Phase 2 to Phase 3 (see §13):**
+- `alpha_test_modifier` — needs new pre-commit hook on `IModifier`; current
+  modifiers run after hit commit which is too late for stochastic alpha.
+- `quaternion` / `matrix` parameter on `standard_object` — current Euler XYZ
+  decomposition (`DecomposeAffine`) is empirically adequate for the test
+  corpus.  Revisit when an asset surfaces a gimbal-lock failure.
+- BRDF correctness fix — see §13 P1-1/P1-2/P1-3.
 
 Adds `gltf_import` (the bulk import chunk), `pbr_metallic_roughness_material`
 (authoring sugar), `channel_painter` (MR texture extraction),
-`normal_map_modifier`, `alpha_test_modifier`, optional `quaternion` parameter
-on `standard_object`.
+`normal_map_modifier` (already shipped), and optional `emissive` /
+`emissive_scale` parameters on `ggx_material`.
 
 **Surfaces:**
 
@@ -559,7 +640,10 @@ on `standard_object`.
 gltf_import {
     file              scenes/sponza.glb
     name_prefix       sponza             # all created objects prefixed
-    scene_index       0                  # which glTF scene
+    # `scene_index` is OMITTED here so the importer uses the file's
+    # default scene (the glTF JSON's top-level `"scene"` field).
+    # Pass an explicit zero-based index only to force a non-default
+    # scene from a multi-scene asset.
     import_cameras    TRUE
     import_lights     TRUE
     import_materials  TRUE
@@ -620,9 +704,9 @@ alpha_test_modifier am {
 
 ### Phase 1.5 / Phase 2 cleanups (carried over from Phase 1)
 
-| Item | Where it lives now | Phase 2 target |
-|---|---|---|
-| **Embedded-texture extraction for normal-map test** | `scenes/Tests/Geometry/assets/extract_embedded_texture.py` writes a sidecar PNG that the test scene `gltf_normal_mapped.RISEscene` references via `png_painter`. | Folded into `gltf_import` — when the importer encounters a glTF material with a `normalTexture` whose `source.image.bufferView` points into the .glb, it should extract that image to an in-memory `IRasterImage` (or auto-spilled tempfile) and create the painter without a sidecar.  The committed sidecar PNG and the helper script can be deleted at that point. |
+| Item | Where it lives now | Phase 2 target | Phase 2 outcome |
+|---|---|---|---|
+| **Embedded-texture extraction for normal-map test** | `scenes/Tests/Geometry/assets/extract_embedded_texture.py` writes a sidecar PNG that the test scene `gltf_normal_mapped.RISEscene` references via `png_painter`. | Folded into `gltf_import` — when the importer encounters a glTF material with a `normalTexture` whose `source.image.bufferView` points into the .glb, it should extract that image to an in-memory `IRasterImage` (or auto-spilled tempfile) and create the painter without a sidecar.  The committed sidecar PNG and the helper script can be deleted at that point. | **Partially done** — `gltf_import` extracts embedded images to a sidecar `<asset-dir>/.gltf_cache/<hash>.<ext>` (with `/tmp/RISE_gltf_<hash>` fallback if the asset dir is read-only), gitignored.  The `extract_embedded_texture.py` helper is no longer needed for `gltf_import`-driven scenes, but stays in tree because the standalone `gltf_normal_mapped.RISEscene` test still uses the sidecar PNG it produces.  In-memory `IRasterImage` path remains Phase 3. |
 
 ### Phase 3+ — deferred work
 
@@ -687,13 +771,15 @@ records original-plan phase; "Status" records what has actually shipped.
 | `normal_map_modifier` chunk + `NormalMap` class | `Modifiers/` | 2 → 1.5 | **this branch (early)** | Tangent-space normal maps |
 | `Job::AddNormalMapModifier`, `RISE_API_CreateNormalMapModifier` | `Job/RISE_API` | 2 → 1.5 | **this branch (early)** | Construction API for the modifier |
 | Embedded-texture extraction helper (`extract_embedded_texture.py`) | `scenes/Tests/Geometry/assets/` | 1.5 | **this branch (stopgap)** | One-shot script + sidecar PNG until `gltf_import` auto-extracts |
-| `gltf_import` chunk | `AsciiSceneParser.cpp` | 2 | pending | Full scene import surface |
-| `pbr_metallic_roughness_material` chunk | `AsciiSceneParser.cpp` | 2 | pending | PBR authoring sugar |
-| `PBRMetallicRoughnessMaterial` class | `Materials/` | 2 | pending | Constructs GGX + painters from PBR inputs |
-| `channel_painter` chunk + class | `Painters/` | 2 | pending | Extract MR-texture channels |
-| `alpha_test_modifier` chunk + class | `Modifiers/` | 2 | pending | glTF alphaMode = MASK |
-| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 | pending | Lossless node transform import |
-| Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | pending | Avoid double-chunk for PBR + emissive |
+| `gltf_import` chunk | `AsciiSceneParser.cpp` | 2 | **this branch** | Full scene import surface |
+| `pbr_metallic_roughness_material` chunk | `AsciiSceneParser.cpp` | 2 | **this branch** | PBR authoring sugar |
+| ~~`PBRMetallicRoughnessMaterial` class~~ | — | 2 | **dropped — not needed** | Implemented as a `Job::AddPBRMetallicRoughnessMaterial` parser-side decomposition into GGX + painter graph; no new Material class required |
+| `channel_painter` chunk + class | `Painters/` | 2 | **this branch** | Extract MR-texture channels |
+| `GLTFSceneImporter` class + `ImportGLTFScene` API | `Importers/` | 2 | **this branch** | Orchestrates full scene import |
+| `alpha_test_modifier` chunk + class | `Modifiers/` | 2 → 3 | **deferred to Phase 3** | RISE modifiers run post-hit-commit; alpha mask needs pre-commit hook |
+| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 → 3 | **deferred to Phase 3** | Empirical Euler XYZ adequate; revisit on gimbal-lock failure |
+| Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | **this branch** | Avoid double-chunk for PBR + emissive |
+| Schlick-from-F0 mode in GGX BSDF | `Materials/GGXSPF` | — → 3 | **pending — Phase 3 (P1-1)** | Required to fix metals rendering 25× too dim under PBR mapping |
 
 ---
 
@@ -710,8 +796,8 @@ records original-plan phase; "Status" records what has actually shipped.
 
    Recommend the latter; Importers is a natural sibling to `Parsers/`.
 7. **Should `standard_object` get a `matrix` parameter** (16 doubles) **as well as `quaternion`?** A matrix is even more general than quaternion+position+scale and would let the importer emit the node transform verbatim.  Cost: small — the parser converts to internal matrix form anyway.  Benefit: lossless for any glTF input including those with non-uniform / sheared / mirrored transforms.
-8. **Validation strictness.** ~~Reject malformed glTF outright (cgltf's `cgltf_validate()`), or log warnings and try to render what we can?~~  **RESOLVED 2026-04-30 (Phase 1)** — the loader calls `cgltf_validate()` and bails on failure with an `eLog_Error` line naming the file and the cgltf result code; same treatment for `cgltf_parse_file` / `cgltf_load_buffers`.  Per-attribute count mismatches are also a hard fail.  Phase 2's `gltf_import` should match this stance for parse-time errors but probably wants warn-and-skip behaviour for individual primitives that fail (so one bad mesh doesn't tank the whole scene).
-9. **V-axis convention compensation lives at the loader.** ~~No question, just a finding — see §4 V-convention reconciliation.~~  RESOLVED in Phase 1.  Open follow-up: when `gltf_import` lands in Phase 2, it must apply the same V flip (default TRUE) when emitting `gltfmesh_geometry`-equivalent geometry per primitive.
+8. **Validation strictness.** ~~Reject malformed glTF outright (cgltf's `cgltf_validate()`), or log warnings and try to render what we can?~~  **RESOLVED 2026-04-30 (Phase 1+2)** — both the per-mesh loader and the bulk importer call `cgltf_validate()` and bail on failure with an `eLog_Error` line naming the file and the cgltf result code; same treatment for `cgltf_parse_file` / `cgltf_load_buffers`.  Per-primitive failures inside `GLTFSceneImporter::Import` log a warning and skip the primitive rather than aborting the whole import.
+9. **V-axis convention compensation lives at the loader.** ~~No question, just a finding — see §4 V-convention reconciliation.~~  **RESOLVED in Phase 1+2** — `gltf_import` applies the same `flip_v=TRUE` default per primitive when calling `Job::AddGLTFTriangleMeshGeometry`, so all texture-bearing assets render with consistent V orientation regardless of which import surface created the geometry.
 
 ---
 
@@ -783,7 +869,138 @@ Test scenes need predictable asset paths.  Proposed layout:
   header comment with the fetch URL and SHA-256, and `scenes/README.md` lists
   the optional download.
 
-## 13. References
+## 13. Phase 2 adversarial review — what got fixed, what's deferred
+
+A round of three orthogonal adversarial reviewers (correctness / API
+robustness / fit-and-finish) hammered the Phase 2 work before this
+document update.  Findings, in priority order, with what was fixed in
+this branch and what was punted to Phase 3.
+
+### P1 — correctness (highest priority)
+
+**P1-1: Conductor Fresnel double-counts F0 (NOT FIXED — Phase 3).**
+RISE's `GGXBRDF` evaluates Fresnel via
+`Optics::CalculateConductorReflectance(ior, ext, cosθ)`.  At normal
+incidence with the default `ior=1.5` / `ext=0`, that reflectance is
+≈ 0.04 — exactly the dielectric F0.  The PBR mapping in
+`AddPBRMetallicRoughnessMaterial` plugs `rs = lerp(0.04, baseColor,
+metallic)` into the BRDF as the specular reflectance painter, so for
+metals the rendered specular ends up `baseColor * F_conductor(1.5, 0)
+≈ baseColor * 0.04` — i.e., **metals render with ~4 % of their intended
+specular reflectance**, ~25× too dim.  The fix requires a Schlick-from-
+F0 evaluation mode on `GGXBRDF` (multiply `1.0` by `F_schlick(F0,
+cosθ)` instead of `F_conductor(ior, ext, cosθ)`); the PBR material would
+opt into that mode while hand-authored `ggx_material` chunks keep the
+conductor path.
+
+This is an architectural correctness gap, not a bug in the import
+pipeline — the importer hands the right F0 painter to `GGXMaterial`,
+the BRDF then re-Fresnels it.  Fixing it touches `GGXSPF.cpp` and adds
+a chunk parameter.  Phase 3 work.
+
+**P1-2: Multiscatter lobe Fresnel-double-counts the same way (NOT FIXED — Phase 3).**
+Same root cause as P1-1 — the multiscatter compensation path also
+evaluates conductor Fresnel.  Will be fixed by the same Schlick-from-F0
+mode.
+
+**P1-3: PBR mapping ignores the (1−F) energy split between diffuse and specular (NOT FIXED — Phase 3).**
+The glTF spec mathematically writes `diffuse = (1 − F(cosθ)) ·
+baseColor·(1−metallic) / π`, so diffuse energy is dynamically modulated
+by Fresnel.  The current mapping uses a static `c_diff = baseColor *
+(1 − 0.04) * (1 − metallic)`, i.e. the (1−F) factor is collapsed to
+(1−0.04) at normal incidence.  This is the standard "static-F0
+approximation" used by every realtime renderer — visually subtle but a
+spec-correctness gap on grazing angles.  Phase 3 fix is part of the
+Schlick-from-F0 work.
+
+**P1-4: glTF light colors not gamma-encoded (FIXED).**  glTF
+KHR_lights_punctual specifies linear sRGB (linear Rec.709) for `color`,
+but RISE's `Add*Light` methods treat the supplied triple as
+already-encoded sRGB and gamma-decode it internally before lighting.
+Without compensation, glTF lights came out roughly twice as dark as
+authored.  Fixed in `GLTFSceneImporter::CreateLightForNode` by applying
+the Rec.709 OETF (linear → sRGB) to `light->color` before passing to
+`AddDirectionalLight` / `AddPointOmniLight` / `AddPointSpotLight`.
+
+### P2 — API robustness / observable behavior
+
+**P2-7: `Import()` docstring oversells atomicity (FIXED).**  The header
+comment claimed materials would be cleaned up if the scene walk failed.
+They aren't — the painter manager and material manager retain entries
+created in the up-front pass.  Reworded to "NOT all-or-nothing" and
+documented that callers needing atomic import should reset the Job
+themselves.
+
+**P2-9: Sidecar extraction fails on read-only asset directories (FIXED).**
+`ExtractImageToSidecar` previously returned an empty path when the
+asset directory was read-only (e.g., system-installed sample assets,
+network-mounted scenes).  Now falls back to the OS temp dir
+(`GetTempPath` on Windows, `$TMPDIR` / `/tmp` elsewhere) with the same
+hashed filename when the sibling `.gltf_cache/` cannot be created.
+
+**P2-1, P2-2, P2-3, P2-4, P2-5, P2-6, P2-8, P2-10:** Documented as
+known limitations (multi-camera silent drop, lossy Euler decomposition,
+no morph/skin warning when present, etc.).  Not worth a code change for
+Phase 2 — every one is either covered elsewhere in this doc or
+deliberately out of scope for v1 (see §6).
+
+### P3 — fit and finish
+
+**P3-2: `DecomposeAffine` claimed orthonormal rotation submatrix
+(FIXED).**  The implementation makes no orthonormality check — sheared
+or non-uniform-scaled inputs produce skewed Euler angles silently.
+Reworded the comment to admit the assumption + describe the failure
+mode + flag adding a check as Phase 3 work.
+
+**P3-6: Unused `<set>` include (FIXED).**  Replaced with `<cstdlib>`
+which is actually needed for `getenv` / `_dupenv_s`.
+
+**P3-1, P3-3, P3-4, P3-5:** Style / micro-cleanups deferred — they
+don't affect correctness or robustness and would add commit churn
+without proportional value.
+
+### Open Phase 3 work (BRDF correctness + alpha + transforms) — DELIVERED
+
+| Item | Phase | Resolution |
+|---|---|---|
+| Schlick-from-F0 mode on `GGXBRDF` | 3 | **Delivered.**  New `fresnel_mode` param on `ggx_material` (default `conductor`); `pbr_metallic_roughness_material` flips it to `schlick_f0`.  Fixes P1-1 / P1-2 / P1-3.  Three new test programs cover it (see §14). |
+| Direct (1−F) modulation of diffuse | 3 | **Delivered.**  Diffuse is multiplied by `(1 − max(F0))` per glTF spec inside the BRDF/SPF Schlick branch. |
+| `alpha_test_modifier` for glTF MASK | 3 | **Delivered as `alpha_test_shaderop`** (renamed from the Phase 2 plan after review of `IModifier`'s lifecycle confirmed shader-ops are the right hook).  Caveat: works only under integrators that route through `IShader::Shade()` (PT + legacy direct shaders); BDPT, VCM, MLT, and photon tracers bypass and treat MASK as opaque.  Phase 4 candidate to promote into a hit-time concern. |
+| `quaternion` / `matrix` parameter on `standard_object` | 3 | **Delivered.**  Both supported, with documented precedence (`matrix` > `quaternion` > `orientation`).  `Job::AddObjectMatrix` consumes a column-major 4×4 directly; the importer feeds the cgltf node-world matrix verbatim. |
+| In-memory `IRasterImage` path for embedded textures | 3 | **Delivered.**  `Job::AddInMemoryPNGTexturePainter` / `AddInMemoryJPEGTexturePainter` accept byte buffers; importer feeds them with the cgltf bufferView directly.  `.gltf_cache/` sidecar is retired. |
+| Orthonormality check in `DecomposeAffine` | 3 | **Resolved by deletion.**  After the matrix path landed, `DecomposeAffine` lost its only caller and was deleted from the importer; the gimbal-lock + shear failure mode it was paving over no longer exists. |
+| **NEW: `mkFromQuaternion` bug** | 3 | Fixed at `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both computing `2 * a.v.x` instead of `a.v.y` / `a.v.z`.  Pre-existing latent bug surfaced when `standard_object { quaternion … }` exercised the function for the first time. |
+
+### Phase 3 adversarial review — what got fixed, what's deferred
+
+A second round of three orthogonal adversarial reviewers (BRDF
+correctness / API robustness / glTF importer end-to-end) hammered
+the Phase 3 work.  Findings:
+
+- **P1-B (FIXED):** `GGXBRDF::albedo()` Schlick branch was returning
+  the hemispherical Schlick average instead of `Schlick(F0, cosθo)`,
+  inconsistent with the conductor branch's intent and the function's
+  comment.  Now evaluates Schlick at the actual outgoing-cosine.
+- **P2-B (FIXED):** `ResolveFresnelMode` warning could spam the log
+  for scenes with many materials sharing the same typo.  Added a
+  `static std::set` to dedup per-string.
+- **P1-C / P2-A / P3 items:** documented or deferred — see the
+  relevant code comments and the per-reviewer findings recorded in
+  the Phase 3 commit notes.
+
+### Out-of-scope follow-ups (Phase 4 candidates)
+
+| Item | Why Phase 4 |
+|---|---|
+| Per-pixel alpha via alpha-aware painter (extract A channel from RGBA PNG) | The current alpha mask uses `max(R,G,B)` of baseColor as a proxy because `IPainter` only exposes RGB.  Adding an alpha-aware painter or an A-channel `IRasterImageAccessor` would close the gap for foliage textures whose transparent regions don't have low luminance. |
+| Alpha mask under BDPT / VCM / MLT | Requires promoting alpha-test to a hit-time geometry concern; touches the intersector and every integrator's path-sampling loop.  Substantial refactor. |
+| Animation / skinning / morph targets | Original Phase 3+ scope; unchanged. |
+| `KHR_materials_*` extensions (clearcoat, transmission, sheen, …) | Original Phase 3+ scope; unchanged. |
+| `alphaMode = BLEND` (stochastic transparency) | Phase 3 deliberately implemented MASK only; BLEND requires either path-tracer transparency_shaderop wiring or a different sampling strategy. |
+
+---
+
+## 14. References
 
 - glTF 2.0 spec: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
 - glTF sample assets: https://github.com/KhronosGroup/glTF-Sample-Assets

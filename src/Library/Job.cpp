@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "Job.h"
 #include "RISE_API.h"
+#include "Importers/GLTFSceneImporter.h"
 #include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
 #include "Shaders/DirectLightingShaderOp.h"
@@ -21,6 +22,7 @@
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Utilities/RString.h"
 #include <stdio.h>
+#include <set>
 #include "Utilities/MediaPathLocator.h"
 #include "Interfaces/IOptions.h"
 #include "Intersection/RayIntersectionGeometric.h"
@@ -902,6 +904,189 @@ bool Job::AddPNGTexturePainter(
 	return true;
 }
 
+//! Adds a PNG texture painter from an in-memory byte buffer (e.g., a
+//! glTF .glb embedded image bufferView).  Behaves identically to
+//! AddPNGTexturePainter except the byte source is supplied directly,
+//! avoiding the disk round-trip the importer used to make.  The byte
+//! buffer is consumed during decode and may be freed by the caller
+//! once this call returns.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddInMemoryPNGTexturePainter(
+							const char* name,
+							const unsigned char* bytes,
+							const size_t numBytes,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3]
+							)
+{
+	if( !name || !bytes || numBytes == 0 ) {
+		return false;
+	}
+
+	IRasterImage* pImage = 0;
+	if( lowmemory ) {
+		RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+	} else {
+		RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor(0,0,0,0) );
+	}
+
+	// Wrap the caller's bytes in an IMemoryBuffer (which is-a IReadBuffer)
+	// without taking ownership.  PNGReader copies pixel data into the
+	// IRasterImage during LoadImage, so the caller's bytes only need to
+	// live for the duration of this function.
+	IMemoryBuffer* pMemBuffer = 0;
+	RISE_API_CreateCompatibleMemoryBuffer( &pMemBuffer,
+		const_cast<char*>( reinterpret_cast<const char*>( bytes ) ),
+		static_cast<unsigned int>( numBytes ), false );
+	if( !pMemBuffer ) {
+		safe_release( pImage );
+		return false;
+	}
+
+	COLOR_SPACE gc = eColorSpace_sRGB;
+	switch( color_space )
+	{
+	case 0: gc = eColorSpace_Rec709RGB_Linear; break;
+	case 1: gc = eColorSpace_sRGB;             break;
+	case 2: gc = eColorSpace_ROMMRGB_Linear;   break;
+	case 3: gc = eColorSpace_ProPhotoRGB;      break;
+	}
+
+	IRasterImageReader* pImageReader = 0;
+	RISE_API_CreatePNGReader( &pImageReader, *pMemBuffer, gc );
+	pImage->LoadImage( pImageReader );
+
+	// LoadImage doesn't propagate a hard failure for malformed PNG bytes;
+	// instead the image is left empty (0 x 0).  Reject here so we don't
+	// silently register a working-but-blank painter.
+	if( pImage->GetWidth() == 0 || pImage->GetHeight() == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddInMemoryPNGTexturePainter:: PNG decode failed for `%s` "
+			"(0x%zu bytes)", name, numBytes );
+		safe_release( pImageReader );
+		safe_release( pMemBuffer );
+		safe_release( pImage );
+		return false;
+	}
+
+	if( scale[0] != 1 || scale[1] != 1 || scale[2] != 1 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel(scale), 1.0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+	if( shift[0] != 0 || shift[1] != 0 || shift[2] != 0 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel(shift), 0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+
+	safe_release( pRIA );
+	safe_release( pImageReader );
+	safe_release( pMemBuffer );
+	safe_release( pImage );
+
+	return true;
+}
+
+//! Adds a JPEG texture painter from an in-memory byte buffer.  See
+//! AddInMemoryPNGTexturePainter for the rationale and lifetime contract.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddInMemoryJPEGTexturePainter(
+							const char* name,
+							const unsigned char* bytes,
+							const size_t numBytes,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3]
+							)
+{
+	if( !name || !bytes || numBytes == 0 ) {
+		return false;
+	}
+
+	IRasterImage* pImage = 0;
+	if( lowmemory ) {
+		RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+	} else {
+		RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor(0,0,0,0) );
+	}
+
+	IMemoryBuffer* pMemBuffer = 0;
+	RISE_API_CreateCompatibleMemoryBuffer( &pMemBuffer,
+		const_cast<char*>( reinterpret_cast<const char*>( bytes ) ),
+		static_cast<unsigned int>( numBytes ), false );
+	if( !pMemBuffer ) {
+		safe_release( pImage );
+		return false;
+	}
+
+	COLOR_SPACE gc = eColorSpace_sRGB;
+	switch( color_space )
+	{
+	case 0: gc = eColorSpace_Rec709RGB_Linear; break;
+	case 1: gc = eColorSpace_sRGB;             break;
+	case 2: gc = eColorSpace_ROMMRGB_Linear;   break;
+	case 3: gc = eColorSpace_ProPhotoRGB;      break;
+	}
+
+	IRasterImageReader* pImageReader = 0;
+	RISE_API_CreateJPEGReader( &pImageReader, *pMemBuffer, gc );
+	pImage->LoadImage( pImageReader );
+
+	if( pImage->GetWidth() == 0 || pImage->GetHeight() == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddInMemoryJPEGTexturePainter:: JPEG decode failed for `%s` "
+			"(0x%zu bytes)", name, numBytes );
+		safe_release( pImageReader );
+		safe_release( pMemBuffer );
+		safe_release( pImage );
+		return false;
+	}
+
+	if( scale[0] != 1 || scale[1] != 1 || scale[2] != 1 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel(scale), 1.0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+	if( shift[0] != 0 || shift[1] != 0 || shift[2] != 0 ) {
+		IOneColorOperator* pOp = 0;
+		RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel(shift), 0 ) );
+		Apply1ColorOperator( *pImage, *pOp );
+		safe_release( pOp );
+	}
+
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+
+	safe_release( pRIA );
+	safe_release( pImageReader );
+	safe_release( pMemBuffer );
+	safe_release( pImage );
+
+	return true;
+}
+
 //! Adds a JPEG texture painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddJPEGTexturePainter(
@@ -1408,6 +1593,36 @@ bool Job::AddBlackBodyPainter(
 {
 	IPainter* pPainter = 0;
 	RISE_API_CreateBlackBodyPainter( &pPainter, temperature, lambda_begin, lambda_end, num_freq, normalize, scale );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+//! Adds a channel-extraction painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddChannelPainter(
+							const char* name,
+							const char* source,
+							const char  channel,
+							const double scale,
+							const double bias
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddChannelPainter:: source painter `%s` not found", source );
+		return false;
+	}
+	if( channel < 0 || channel > 2 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddChannelPainter:: channel %d out of range (0=R, 1=G, 2=B)", (int)channel );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateChannelPainter( &pPainter, *pSrc, channel, scale, bias );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -2263,6 +2478,25 @@ bool Job::AddWardAnisotropicEllipticalGaussianMaterial(
 
 //! Adds Cook Torrance material
 /// \return TRUE if successful, FALSE otherwise
+// Resolves a `const char*` fresnel-mode selector into the FresnelMode enum.
+// Empty / NULL strings map to conductor (preserves the no-mode call sites).
+// Unknown values fall back to conductor with a per-string-once warning, so
+// a scene with a thousand materials sharing the same typo doesn't generate
+// a thousand warning lines.
+static FresnelMode ResolveFresnelMode( const char* mode )
+{
+	if( !mode || !mode[0] ) return eFresnelConductor;
+	if( std::strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
+	if( std::strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
+
+	static std::set<std::string> seen;
+	if( seen.insert( std::string(mode) ).second ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0", mode );
+	}
+	return eFresnelConductor;
+}
+
 bool Job::AddGGXMaterial(
 	const char* name,
 	const char* diffuse,
@@ -2270,7 +2504,8 @@ bool Job::AddGGXMaterial(
 	const char* alphaX,
 	const char* alphaY,
 	const char* ior,
-	const char* ext
+	const char* ext,
+	const char* fresnel_mode
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -2318,7 +2553,8 @@ bool Job::AddGGXMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt );
+	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
+		ResolveFresnelMode( fresnel_mode ) );
 
 	pMatManager->AddItem( pMaterial, name );
 
@@ -2329,6 +2565,184 @@ bool Job::AddGGXMaterial(
 	safe_release( pExt );
 
 	return true;
+}
+
+//! AddGGXEmissiveMaterial -- GGX with an optional LambertianEmitter folded
+//! in.  Passing emissive=="none" / NULL produces the same material as
+//! AddGGXMaterial; otherwise the emissive painter feeds a LambertianEmitter
+//! at radiance scaled by emissive_scale, and the material's GetEmitter()
+//! returns it.  Used by pbr_metallic_roughness_material when the source
+//! has an emissiveFactor / emissiveTexture.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddGGXEmissiveMaterial(
+	const char* name,
+	const char* diffuse,
+	const char* specular,
+	const char* alphaX,
+	const char* alphaY,
+	const char* ior,
+	const char* ext,
+	const char* emissive,
+	const double emissive_scale,
+	const char* fresnel_mode
+	)
+{
+	IPainter* pRd = pPntManager->GetItem(diffuse);
+	IPainter* pRs = pPntManager->GetItem(specular);
+
+	if( !pRd || !pRs ) {
+		return false;
+	}
+
+	IPainter* pAlphaX = pPntManager->GetItem( alphaX );
+	IPainter* pAlphaY = pPntManager->GetItem( alphaY );
+	IPainter* pIOR    = pPntManager->GetItem( ior );
+	IPainter* pExt    = pPntManager->GetItem( ext );
+
+	if( !pAlphaX ) { double fa = atof(alphaX); RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) ); } else { pAlphaX->addref(); }
+	if( !pAlphaY ) { double fa = atof(alphaY); RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) ); } else { pAlphaY->addref(); }
+	if( !pIOR    ) { double fa = atof(ior);    RISE_API_CreateUniformColorPainter( &pIOR,    RISEPel(fa,fa,fa) ); } else { pIOR->addref();    }
+	if( !pExt    ) { double fa = atof(ext);    RISE_API_CreateUniformColorPainter( &pExt,    RISEPel(fa,fa,fa) ); } else { pExt->addref();    }
+
+	// Resolve the optional emissive painter.  "none" / NULL means no emitter.
+	IPainter* pEmissive = 0;
+	const bool wantEmissive = ( emissive && std::string( emissive ) != "none" );
+	if( wantEmissive ) {
+		pEmissive = pPntManager->GetItem( emissive );
+		if( !pEmissive ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddGGXEmissiveMaterial:: emissive painter `%s` not found", emissive );
+			safe_release( pAlphaX );
+			safe_release( pAlphaY );
+			safe_release( pIOR );
+			safe_release( pExt );
+			return false;
+		}
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateGGXEmissiveMaterial(
+		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
+		ResolveFresnelMode( fresnel_mode ) );
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+	safe_release( pAlphaX );
+	safe_release( pAlphaY );
+	safe_release( pIOR );
+	safe_release( pExt );
+
+	return true;
+}
+
+//! AddPBRMetallicRoughnessMaterial: glTF-spec PBR material composition.
+//!
+//! Builds the painter graph that maps glTF metallicRoughness inputs onto
+//! ggx_material's interface, then registers a final ggx (with optional
+//! emissive) under `name`.  Internal helper painters are registered under
+//! `__pbrmr_<name>__<role>` so they don't clash with user names.
+//!
+//! See IJob.h for the math; see docs/GLTF_IMPORT.md §4 for the design
+//! rationale.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddPBRMetallicRoughnessMaterial(
+	const char* name,
+	const char* base_color,
+	const char* metallic,
+	const char* roughness,
+	const double ior,
+	const char* emissive,
+	const double emissive_scale
+	)
+{
+	// Resolve the base_color painter.  Must already exist.
+	if( !pPntManager->GetItem( base_color ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPBRMetallicRoughnessMaterial:: base_color painter `%s` not found", base_color );
+		return false;
+	}
+
+	// metallic / roughness can be either a painter name or a scalar string
+	// like "0.5".  When the painter manager doesn't have an entry under the
+	// given name, fall back to atof() and synthesise a uniform-color painter
+	// (named after the role + scalar value) to drive downstream blends.
+	std::string nameStr( name );
+	const std::string prefix = "__pbrmr_" + nameStr + "__";
+
+	auto resolveOrSynth = [&]( const char* in, const char* role ) -> std::string {
+		if( pPntManager->GetItem( in ) ) {
+			return std::string( in );
+		}
+		// Synth uniformcolor from scalar.
+		const double v = atof( in );
+		const std::string synthName = prefix + std::string( role ) + "_scalar";
+		const double pel[3] = { v, v, v };
+		AddUniformColorPainter( synthName.c_str(), pel, "Rec709RGB_Linear" );
+		return synthName;
+	};
+
+	const std::string metallicName  = resolveOrSynth( metallic,  "metallic"  );
+	const std::string roughnessName = resolveOrSynth( roughness, "roughness" );
+
+	// Internal helper painters.  All in linear (Rec709 -> ROMM applied at
+	// load), since we're treating these as numeric weights / multipliers,
+	// not display colours.  The blend painter does per-channel arithmetic
+	// without further colour conversion.
+	//
+	// Note: prior revisions also created an `f96` retention painter that
+	// pre-multiplied diffuse by (1 - 0.04).  That's been removed because
+	// the GGX BSDF's schlick_f0 mode applies (1 - max(F0)) at evaluation
+	// time per the glTF spec (which gives ≈ 0.96 for dielectric F0 = 0.04
+	// AND the correct ≈ 0 for metallic F0 = baseColor).  Pre-multiplying
+	// would double-apply.
+	const double zero[3]    = { 0.0, 0.0, 0.0 };
+	const double white[3]   = { 1.0, 1.0, 1.0 };
+	const double f0diel[3]  = { 0.04, 0.04, 0.04 };	// dielectric F0 per glTF spec
+	const double iorVec[3]  = { ior, ior, ior };
+
+	const std::string nZero    = prefix + "zero";
+	const std::string nWhite   = prefix + "white";
+	const std::string nF0Diel  = prefix + "f0diel";
+	const std::string nIORPnt  = prefix + "ior";
+
+	AddUniformColorPainter( nZero.c_str(),   zero,   "Rec709RGB_Linear" );
+	AddUniformColorPainter( nWhite.c_str(),  white,  "Rec709RGB_Linear" );
+	AddUniformColorPainter( nF0Diel.c_str(), f0diel, "Rec709RGB_Linear" );
+	AddUniformColorPainter( nIORPnt.c_str(), iorVec, "Rec709RGB_Linear" );
+
+	// one_minus_met = (1 - metallic) = blend(zero, white, metallic)
+	const std::string nOneMinusMet = prefix + "one_minus_met";
+	AddBlendPainter( nOneMinusMet.c_str(), nZero.c_str(), nWhite.c_str(), metallicName.c_str() );
+
+	// rd = base_color * (1 - metallic) — diffuse-color mixer per glTF spec.
+	// The (1 - max(F0)) split is applied inside the BSDF's schlick_f0 path.
+	const std::string nRd = prefix + "rd";
+	AddBlendPainter( nRd.c_str(), base_color, nZero.c_str(), nOneMinusMet.c_str() );
+
+	// rs = lerp(0.04, base_color, metallic) = blend(base_color, f0diel, metallic).
+	// In schlick_f0 mode the BSDF treats this as F0 directly.
+	const std::string nRs = prefix + "rs";
+	AddBlendPainter( nRs.c_str(), base_color, nF0Diel.c_str(), metallicName.c_str() );
+
+	// rough_sq = roughness * roughness = blend(roughness, zero, roughness)
+	const std::string nRoughSq = prefix + "rough_sq";
+	AddBlendPainter( nRoughSq.c_str(), roughnessName.c_str(), nZero.c_str(), roughnessName.c_str() );
+
+	// Build the final GGX material with these inputs.  Extinction is zero
+	// (opaque); ior is preserved but unused in schlick_f0 mode.  Emissive
+	// flows through unchanged.
+	return AddGGXEmissiveMaterial(
+		name,
+		nRd.c_str(),
+		nRs.c_str(),
+		nRoughSq.c_str(),
+		nRoughSq.c_str(),			// alphax = alphay = roughness^2 (isotropic)
+		nIORPnt.c_str(),
+		nZero.c_str(),				// extinction (unused in schlick_f0)
+		emissive,
+		emissive_scale,
+		"schlick_f0" );				// glTF metallicRoughness uses Schlick from F0
 }
 
 bool Job::AddCookTorranceMaterial(
@@ -2880,6 +3294,32 @@ bool Job::AddPLYTriangleMeshGeometry(
 
 	safe_release( pLoader );
 	return bRet;
+}
+
+//! Imports a glTF 2.0 scene -- Phase 2 entry point.  Defers heavy
+//! lifting to GLTFSceneImporter (see Importers/).
+/// \return TRUE if successful, FALSE otherwise
+bool Job::ImportGLTFScene(
+					const char* filename,
+					const char* name_prefix,
+					const unsigned int scene_index,
+					const bool import_meshes,
+					const bool import_materials,
+					const bool import_lights,
+					const bool import_cameras,
+					const bool import_normal_maps
+					)
+{
+	GLTFSceneImporter importer( filename );
+	GLTFImportOptions opts;
+	opts.namePrefix       = name_prefix;
+	opts.sceneIndex       = scene_index;
+	opts.importMeshes     = import_meshes;
+	opts.importMaterials  = import_materials;
+	opts.importLights     = import_lights;
+	opts.importCameras    = import_cameras;
+	opts.importNormalMaps = import_normal_maps;
+	return importer.Import( *this, opts );
 }
 
 //! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
@@ -3442,6 +3882,101 @@ bool Job::AddObject(
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->SetStretch( Vector3( scale[0], scale[1], scale[2] ) );
+	object->FinalizeTransformations();
+
+	pObjectManager->AddItem( object, name );
+	safe_release( object );
+
+	return true;
+}
+
+bool Job::AddObjectMatrix(
+	const char* name,
+	const char* geom,
+	const char* material,
+	const char* modifier,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const double matrix[16],
+	const bool bCastsShadows,
+	const bool bReceivesShadows
+	)
+{
+	IGeometry* pGeometry = pGeomManager->GetItem( geom );
+	if( !pGeometry ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom );
+		return false;
+	}
+
+	IObjectPriv* object = 0;
+	RISE_API_CreateObject( &object, pGeometry );
+	object->SetShadowParams( bCastsShadows, bReceivesShadows );
+
+	if( material ) {
+		IMaterial* pMat = pMatManager->GetItem(material);
+		if( pMat ) {
+			object->AssignMaterial( *pMat );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Material not found `%s`", material );
+			safe_release( object );
+			return false;
+		}
+	}
+	if( modifier ) {
+		IRayIntersectionModifier* pMod = pModManager->GetItem(modifier);
+		if( pMod ) {
+			object->AssignModifier( *pMod );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Modifier not found `%s`", modifier );
+			safe_release( object );
+			return false;
+		}
+	}
+	if( shader ) {
+		IShader* pShader = pShaderManager->GetItem(shader);
+		if( pShader ) {
+			object->AssignShader( *pShader );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Shader not found `%s`", shader );
+			safe_release( object );
+			return false;
+		}
+	}
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* pPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() );
+		if( pPnt ) {
+			IRadianceMap* pRadianceMap = 0;
+			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
+			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+			object->AssignRadianceMap( *pRadianceMap );
+			safe_release( pRadianceMap );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
+			safe_release( object );
+			return false;
+		}
+	}
+
+	// Build a Matrix4 from the 16-double column-major input.  RISE's
+	// Matrix4 indexes `_<i><j>` as (column=i, row=j) — confirmed by
+	// `Matrix4Ops::Translation`, which writes the translation column
+	// to `_30 / _31 / _32` (column 3, rows 0/1/2), and by the matrix
+	// multiplication rule `ret._00 = a._00*b._00 + a._10*b._01 + ...`
+	// which expands as the standard column-major matmul.  glTF stores
+	// `nodes[i].matrix` column-major, so element `c*4 + r` (column c,
+	// row r) maps directly to `_<c><r>`.
+	Matrix4 mx;
+	mx._00 = matrix[ 0]; mx._01 = matrix[ 1]; mx._02 = matrix[ 2]; mx._03 = matrix[ 3];
+	mx._10 = matrix[ 4]; mx._11 = matrix[ 5]; mx._12 = matrix[ 6]; mx._13 = matrix[ 7];
+	mx._20 = matrix[ 8]; mx._21 = matrix[ 9]; mx._22 = matrix[10]; mx._23 = matrix[11];
+	mx._30 = matrix[12]; mx._31 = matrix[13]; mx._32 = matrix[14]; mx._33 = matrix[15];
+
+	// Use the transform stack to push the matrix as the world transform.
+	// FinalizeTransformations composes (P*O*Stretch*Scale) * stack-bottom,
+	// so we leave P/O/Stretch/Scale as identity and push the supplied
+	// matrix onto the (initially empty) stack.
+	object->ClearAllTransforms();
+	object->PushTopTransStack( mx );
 	object->FinalizeTransformations();
 
 	pObjectManager->AddItem( object, name );
@@ -4124,6 +4659,26 @@ bool Job::AddTransparencyShaderOp(
 
 	IShaderOp* pShaderOp = 0;
 	RISE_API_CreateTransparencyShaderOp( &pShaderOp, *pTrans, one_sided );
+
+	pShaderOpManager->AddItem( pShaderOp, name );
+	safe_release( pShaderOp );
+	return true;
+}
+
+bool Job::AddAlphaTestShaderOp(
+		const char* name,
+		const char* alpha_painter,
+		const double cutoff
+		)
+{
+	IPainter* pAlpha = pPntManager->GetItem( alpha_painter );
+	if( !pAlpha ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::AddAlphaTestShaderOp: Painter not found '%s'", alpha_painter );
+		return false;
+	}
+
+	IShaderOp* pShaderOp = 0;
+	RISE_API_CreateAlphaTestShaderOp( &pShaderOp, *pAlpha, cutoff );
 
 	pShaderOpManager->AddItem( pShaderOp, name );
 	safe_release( pShaderOp );

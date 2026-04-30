@@ -27,6 +27,31 @@ namespace RISE
 	class RayIntersectionGeometric;
 	class IORStack;
 
+	//! Selects which Fresnel model GGX-family materials evaluate internally.
+	//! Visible at the public API level so RISE_API_CreateGGXMaterial /
+	//! Job::AddGGXMaterial / parser layers can pass through the selection
+	//! without dragging in Implementation headers.
+	//!
+	//!   eFresnelConductor (default — preserves existing behaviour):
+	//!     Optics::CalculateConductorReflectance(Ni=1, ior, ext) at the
+	//!     half-vector, multiplied with `specular` painter as a tinting
+	//!     factor.  Use for hand-authored materials with real ior /
+	//!     extinction values.
+	//!
+	//!   eFresnelSchlickF0:
+	//!     Treats `specular` painter as F0 directly; uses Schlick's
+	//!     approximation `F = F0 + (1-F0)(1-cosθ_h)^5`.  Required by
+	//!     glTF metallicRoughness PBR mapping.  In this mode `ior` /
+	//!     `ext` painters are ignored, the diffuse lobe is modulated by
+	//!     `(1 - max(F0))` per glTF spec, and the multiscatter lobe uses
+	//!     the closed-form Schlick hemispherical Fresnel average
+	//!     `F_avg = F0 + (1-F0)/21`.
+	enum FresnelMode
+	{
+		eFresnelConductor = 0,
+		eFresnelSchlickF0 = 1
+	};
+
 	/// Parameters for random-walk subsurface scattering.
 	/// Stored on the material and queried by the integrators.
 	struct RandomWalkSSSParams

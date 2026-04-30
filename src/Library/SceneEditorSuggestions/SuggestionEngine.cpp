@@ -196,6 +196,8 @@ namespace RISE
 				case ValueKind::UInt:       return "0";
 				case ValueKind::Double:     return "0.0";
 				case ValueKind::DoubleVec3: return "0 0 0";
+				case ValueKind::DoubleVec4: return "0 0 0 1";
+				case ValueKind::DoubleMat4: return "1 0 0 0  0 1 0 0  0 0 1 0  0 0 0 1";
 				case ValueKind::Filename:   return "<filename>";
 				case ValueKind::Enum:
 					return p.enumValues.empty() ? std::string() : p.enumValues.front();

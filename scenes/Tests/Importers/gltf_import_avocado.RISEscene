@@ -1,0 +1,86 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           gltf_import_avocado.RISEscene                                                           #
+#   Description:    Phase 2 end-to-end gltf_import smoke test on Khronos's Avocado.glb -- the smallest      #
+#                   real-world asset in the corpus that ships baseColor + metallicRoughness + normal        #
+#                   PBR textures along with TANGENT.  One chunk creates the geometry + per-material         #
+#                   PBR + auto-extracted painters + the normal_map_modifier.                                #
+#                                                                                                           #
+#                   Avocado.glb's bounds are in METRES at sub-cm scale (-0.021..+0.063 along Y),            #
+#                   so the camera lives close to the origin.                                                #
+#                                                                                                           #
+#                   Out of scope for the smoke check (these stay deferred): alphaMode handling,             #
+#                   animations / skinning, KHR_materials_* extensions beyond the core PBR shape,            #
+#                   matrix-form node transforms (the importer decomposes to Euler).                         #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_import_avocado
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+# Camera framed for Avocado (tiny mesh; close-in camera).  Note: the
+# gltf_import chunk would create its own camera if Avocado.glb shipped
+# one -- it doesn't, so this user-authored camera wins.
+pinhole_camera
+{
+	location			0.06 0.04 0.10
+	lookat				0 0.025 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+##################################################
+# The whole asset, in one chunk
+##################################################
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/Avocado.glb
+	name_prefix			avocado
+}
+
+##################################################
+# Lights -- the asset has none, supply a key + ambient
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	# `direction` in RISE points FROM surface TO light source
+	# (DirectionalLight.cpp:48); flip the sign here so the +Z (camera-
+	# facing) side of the avocado actually receives the key light.
+	direction	0.5 0.7 0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

@@ -486,6 +486,28 @@ namespace RISE
 									const double shift[3]			///< [in] Shift factor for color values
 									);
 
+		bool AddInMemoryPNGTexturePainter(
+									const char* name,
+									const unsigned char* bytes,
+									const size_t numBytes,
+									const char color_space,
+									const char filter_type,
+									const bool lowmemory,
+									const double scale[3],
+									const double shift[3]
+									);
+
+		bool AddInMemoryJPEGTexturePainter(
+									const char* name,
+									const unsigned char* bytes,
+									const size_t numBytes,
+									const char color_space,
+									const char filter_type,
+									const bool lowmemory,
+									const double scale[3],
+									const double shift[3]
+									);
+
 		//! Adds a texture painter
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddHDRTexturePainter(
@@ -612,6 +634,16 @@ namespace RISE
 									const char* pa,					///< [in] First painter
 									const char* pb,					///< [in] Second painter
 									const char* mask				///< [in] Mask painter
+									);
+
+		//! Adds a channel-extraction painter.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddChannelPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const char  channel,			///< [in] 0=R, 1=G, 2=B
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
 									);
 
 
@@ -806,6 +838,29 @@ namespace RISE
 
 		//! Adds GGX anisotropic microfacet material
 		/// \return TRUE if successful, FALSE otherwise
+		bool AddGGXEmissiveMaterial(
+			const char* name,
+			const char* diffuse,
+			const char* specular,
+			const char* alphaX,
+			const char* alphaY,
+			const char* ior,
+			const char* ext,
+			const char* emissive,
+			const double emissive_scale,
+			const char* fresnel_mode = "conductor"
+			);
+
+		bool AddPBRMetallicRoughnessMaterial(
+			const char* name,
+			const char* base_color,
+			const char* metallic,
+			const char* roughness,
+			const double ior,
+			const char* emissive,
+			const double emissive_scale
+			);
+
 		bool AddGGXMaterial(
 			const char* name,											///< [in] Name of the material
 			const char* diffuse,										///< [in] Diffuse reflectance
@@ -813,7 +868,8 @@ namespace RISE
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
 			const char* ior,											///< [in] Index of refraction
-			const char* ext												///< [in] Extinction coefficient
+			const char* ext,											///< [in] Extinction coefficient
+			const char* fresnel_mode = "conductor"
 			);
 
 		//! Adds Cook Torrance material
@@ -998,6 +1054,19 @@ namespace RISE
 							const bool double_sided,				///< [in] Are the triangles double sided ?
 							const bool bInvertFaces,				///< [in] Should the faces be inverted?
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
+							);
+
+		//! Bulk-imports a glTF 2.0 scene.  See IJob.h for the full doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool ImportGLTFScene(
+							const char* filename,
+							const char* name_prefix,
+							const unsigned int scene_index,
+							const bool import_meshes,
+							const bool import_materials,
+							const bool import_lights,
+							const bool import_cameras,
+							const bool import_normal_maps
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h
@@ -1224,6 +1293,18 @@ namespace RISE
 			const bool bReceivesShadows								///< [in] Does the object receive shadows?
 		);
 
+		bool AddObjectMatrix(
+			const char* name,
+			const char* geom,
+			const char* material,
+			const char* modifier,
+			const char* shader,
+			const RadianceMapConfig& radianceMapConfig,
+			const double matrix[16],
+			const bool bCastsShadows,
+			const bool bReceivesShadows
+		);
+
 		//! Creates a CSG object
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddCSGObject(
@@ -1411,6 +1492,12 @@ namespace RISE
 			const char* name,										///< [in] Name of the shaderop
 			const char* transparency,								///< [in] Transparency painter
 			const bool one_sided									///< [in] One sided transparency only (ignore backfaces)
+			);
+
+		bool AddAlphaTestShaderOp(
+			const char* name,
+			const char* alpha_painter,
+			const double cutoff
 			);
 
 

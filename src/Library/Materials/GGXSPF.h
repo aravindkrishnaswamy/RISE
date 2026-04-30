@@ -42,6 +42,7 @@ namespace RISE
 			const IPainter& pAlphaY;
 			const IPainter& pIOR;
 			const IPainter& pExtinction;
+			const FresnelMode fresnelMode;
 
 		public:
 			GGXSPF(
@@ -50,7 +51,8 @@ namespace RISE
 				const IPainter& alphaX,
 				const IPainter& alphaY,
 				const IPainter& ior,
-				const IPainter& ext
+				const IPainter& ext,
+				const FresnelMode fresnel_mode = eFresnelConductor
 				);
 
 			void	Scatter(

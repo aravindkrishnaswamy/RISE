@@ -213,8 +213,8 @@ namespace RISE
 			Matrix4		m;
 
 			const Scalar _2x = 2.0 * a.v.x;
-			const Scalar _2y = 2.0 * a.v.x;
-			const Scalar _2z = 2.0 * a.v.x;
+			const Scalar _2y = 2.0 * a.v.y;
+			const Scalar _2z = 2.0 * a.v.z;
 			const Scalar _2xx = _2x * a.v.x;
 			const Scalar _2xy = _2x * a.v.y;
 			const Scalar _2xz = _2x * a.v.z;

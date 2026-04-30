@@ -1,0 +1,159 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           pbr_metallic_roughness.RISEscene                                                        #
+#   Description:    Phase 2 verification scene for the new pbr_metallic_roughness_material chunk.           #
+#                   Authors three sphere objects side-by-side, each driven by the new chunk:                #
+#                     left   = orange dielectric (metallic=0, roughness=0.4)                                #
+#                     center = blue plastic     (metallic=0, roughness=0.7)                                 #
+#                     right  = gold metal       (metallic=1, roughness=0.2)                                 #
+#                                                                                                           #
+#                   The three appearances together stress every leg of the PBR composition graph:          #
+#                   the rd path (diffuse for non-metals), the rs path (lerp(0.04, baseColor, metallic)      #
+#                   for F0), and the alpha-squaring (roughness * roughness via blend painter).              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pbr_metallic_roughness
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	width				768
+	height				256
+	fov					40.0
+}
+
+##################################################
+# Painters -- one base_color per material
+##################################################
+
+uniformcolor_painter
+{
+	name				pbr_orange
+	color				0.95 0.45 0.10
+	colorspace			sRGB
+}
+
+uniformcolor_painter
+{
+	name				pbr_blue
+	color				0.10 0.30 0.85
+	colorspace			sRGB
+}
+
+uniformcolor_painter
+{
+	name				pbr_gold
+	color				1.00 0.85 0.40
+	colorspace			sRGB
+}
+
+##################################################
+# PBR materials -- one chunk per material, all
+# internal painters auto-created (prefix __pbrmr_)
+##################################################
+
+pbr_metallic_roughness_material
+{
+	name				mat_orange
+	base_color			pbr_orange
+	metallic			0.0
+	roughness			0.4
+}
+
+pbr_metallic_roughness_material
+{
+	name				mat_blue
+	base_color			pbr_blue
+	metallic			0.0
+	roughness			0.7
+}
+
+pbr_metallic_roughness_material
+{
+	name				mat_gold
+	base_color			pbr_gold
+	metallic			1.0
+	roughness			0.2
+}
+
+##################################################
+# Geometry + objects (sphere instances)
+##################################################
+
+sphere_geometry
+{
+	name				sph
+	radius				0.7
+}
+
+standard_object
+{
+	name				s_orange
+	geometry			sph
+	material			mat_orange
+	position			-1.7 0 0
+}
+
+standard_object
+{
+	name				s_blue
+	geometry			sph
+	material			mat_blue
+	position			0.0 0 0
+}
+
+standard_object
+{
+	name				s_gold
+	geometry			sph
+	material			mat_gold
+	position			1.7 0 0
+}
+
+##################################################
+# Lights -- key from upper-right + low ambient
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	# `direction` is FROM surface TO light source (RISE convention --
+	# see DirectionalLight.cpp:48).  The vector must have +Z to light the
+	# camera-facing side of the spheres.
+	direction	0.5 0.5 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.15
+	color		1.0 1.0 1.0
+}

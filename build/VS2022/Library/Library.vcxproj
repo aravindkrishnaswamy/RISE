@@ -165,6 +165,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Importers\GLTFSceneImporter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.cpp" />
@@ -388,6 +389,7 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\StandardShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\BitField.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\Color.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\ColorUtils.cpp" />
@@ -504,6 +506,8 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometrySpecializations.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.h" />
+    <ClInclude Include="..\..\..\src\Library\Importers\GLTFSceneImporter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ChannelPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.h" />
@@ -820,6 +824,7 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\StandardShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\TranslucentPelPhotonMapShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\TransparencyShaderOp.h" />
+    <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h" />
     <ClInclude Include="..\..\..\src\Library\TreeElementProcessor.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BitField.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\BoundingBox.h" />

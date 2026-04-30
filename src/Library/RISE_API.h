@@ -655,11 +655,28 @@ namespace RISE
 	bool RISE_API_CreateGGXMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
+								const IPainter& specular,		///< [in] Specular reflectance / F0
 								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
 								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& ext				///< [in] Extinction coefficient
+								const IPainter& ior,			///< [in] Index of refraction (ignored in Schlick mode)
+								const IPainter& ext,			///< [in] Extinction coefficient (ignored in Schlick mode)
+								const FresnelMode fresnel_mode = eFresnelConductor	///< [in] Fresnel evaluation model
+								);
+
+	//! Creates a GGX material with an optional emissive painter.  Pass
+	//! emissive=NULL to skip the emitter (equivalent to RISE_API_CreateGGXMaterial).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterial(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IPainter& alphaX,
+								const IPainter& alphaY,
+								const IPainter& ior,
+								const IPainter& ext,
+								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode = eFresnelConductor	///< [in] Fresnel evaluation model
 								);
 
 	//! Creates a Cook Torrance material
@@ -1019,6 +1036,16 @@ namespace RISE
 								const IPainter& a,				///< [in] First color
 								const IPainter& b,				///< [in] Second color
 								const IPainter& mask			///< [in] Blend mask
+								);
+
+	//! Creates a channel-extraction painter (glTF MR-texture helper).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateChannelPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter
+								const char channel,				///< [in] 0=R, 1=G, 2=B
+								const Scalar scale,				///< [in] Scale on extracted channel
+								const Scalar bias				///< [in] Bias added after scale
 								);
 
 
@@ -2063,6 +2090,15 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IShaderOp** ppi,						///< [out] Pointer to recieve the shaderop
 								const IPainter& transparency,			///< [in] Transparency
 								const bool one_sided					///< [in] One sided transparency only (ignore backfaces)
+								);
+
+	//! Creates an alpha-test (cutout) shaderop.  See IJob::AddAlphaTestShaderOp
+	//! for the integrator-compatibility caveat.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAlphaTestShaderOp(
+								IShaderOp** ppi,						///< [out] Pointer to recieve the shaderop
+								const IPainter& alpha_painter,			///< [in] Alpha painter
+								const Scalar    cutoff					///< [in] alpha < cutoff -> continue ray past surface
 								);
 
 

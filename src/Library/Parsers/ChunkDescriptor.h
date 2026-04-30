@@ -40,6 +40,8 @@ namespace RISE
 		UInt,         // non-negative integer
 		Double,       // double-precision floating point
 		DoubleVec3,   // three space-separated doubles
+		DoubleVec4,   // four space-separated doubles (e.g. quaternion xyzw)
+		DoubleMat4,   // sixteen space-separated doubles, column-major 4x4
 		String,       // free identifier or string
 		Filename,     // path, resolved via RISE_MEDIA_PATH
 		Enum,         // fixed set — see ParameterDescriptor::enumValues
@@ -149,6 +151,34 @@ namespace RISE
 			if( it == mSingles.end() ) return false;
 			out[0] = out[1] = out[2] = 0.0;
 			sscanf( it->second.c_str(), "%lf %lf %lf", &out[0], &out[1], &out[2] );
+			return true;
+		}
+		// Reads four space-separated doubles into out[4] (e.g. quaternion
+		// xyzw).  Returns true if the key was present.
+		bool GetVec4( const std::string& key, double out[4] ) const
+		{
+			ValidateAccess(key);
+			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
+			if( it == mSingles.end() ) return false;
+			out[0] = out[1] = out[2] = out[3] = 0.0;
+			sscanf( it->second.c_str(), "%lf %lf %lf %lf", &out[0], &out[1], &out[2], &out[3] );
+			return true;
+		}
+		// Reads sixteen space-separated doubles into out[16], column-major
+		// 4×4 (matches glTF and RISE's internal Matrix4 layout).  Returns
+		// true if the key was present.
+		bool GetMat4( const std::string& key, double out[16] ) const
+		{
+			ValidateAccess(key);
+			std::map<std::string, std::string>::const_iterator it = mSingles.find( key );
+			if( it == mSingles.end() ) return false;
+			for( int i = 0; i < 16; ++i ) out[i] = 0.0;
+			sscanf( it->second.c_str(),
+				"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+				&out[0],  &out[1],  &out[2],  &out[3],
+				&out[4],  &out[5],  &out[6],  &out[7],
+				&out[8],  &out[9],  &out[10], &out[11],
+				&out[12], &out[13], &out[14], &out[15] );
 			return true;
 		}
 		// All values for a repeatable parameter, in input order.

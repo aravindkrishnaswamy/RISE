@@ -52,6 +52,13 @@ extlib/*/*.vcxproj.filters
 /scenes/Internal
 /models/risemesh/internal
 
+# Legacy glTF importer used to extract embedded image data into a
+# sibling .gltf_cache/ subdir.  Phase 3 retired the disk round-trip
+# (now handled in-memory via Job::AddInMemoryPNG/JPEGTexturePainter).
+# Keep the ignore as cheap insurance against stale caches in
+# pre-Phase-3 worktrees.
+**/.gltf_cache/
+
 # CMake-generated build trees under build/cmake/*/ (e.g., rise-tests/_out,
 # rise-android/_out_jni for the cross-compiled JNI .so).
 /build/cmake/*/_out*

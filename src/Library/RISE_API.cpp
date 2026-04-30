@@ -1207,15 +1207,40 @@ namespace RISE
 								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
 								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
 								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& ext				///< [in] Extinction coefficient
+								const IPainter& ext,			///< [in] Extinction coefficient
+								const FresnelMode fresnel_mode	///< [in] Fresnel evaluation model
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext );
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
+		return true;
+	}
+
+	//! Creates a GGX material with an optional LambertianEmitter folded in.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterial(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IPainter& alphaX,
+								const IPainter& alphaY,
+								const IPainter& ior,
+								const IPainter& ext,
+								const IPainter* emissive,
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
 		return true;
 	}
 
@@ -1360,6 +1385,7 @@ namespace RISE
 #include "Painters/Function1DSpectralPainter.h"
 #include "Painters/BlackBodyPainter.h"
 #include "Painters/BlendPainter.h"
+#include "Painters/ChannelPainter.h"
 
 namespace RISE
 {
@@ -1889,6 +1915,24 @@ namespace RISE
 
 		(*ppi) = new BlackBodyPainter( temperature, lambda_begin,lambda_end, num_freq, normalize, scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blackbody painter" );
+		return true;
+	}
+
+	//! Creates a channel-extraction painter.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateChannelPainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const char channel,
+								const Scalar scale,
+								const Scalar bias
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		(*ppi) = new ChannelPainter( source, (ChannelPainter::Channel)channel, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "channel painter" );
 		return true;
 	}
 
@@ -3876,6 +3920,7 @@ namespace RISE
 #include "Shaders/SSS/DiffusionApproximationExtinction.h"
 #include "Shaders/AreaLightShaderOp.h"
 #include "Shaders/TransparencyShaderOp.h"
+#include "Shaders/AlphaTestShaderOp.h"
 
 namespace RISE
 {
@@ -4287,6 +4332,25 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 		(*ppi) = pShaderOp;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "transparency shaderop" );
+		return true;
+	}
+
+	//! Creates an alpha-test shaderop
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAlphaTestShaderOp(
+								IShaderOp** ppi,
+								const IPainter& alpha_painter,
+								const Scalar    cutoff
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		AlphaTestShaderOp* pShaderOp = new AlphaTestShaderOp( alpha_painter, cutoff );
+
+		(*ppi) = pShaderOp;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "alpha-test shaderop" );
 		return true;
 	}
 }
