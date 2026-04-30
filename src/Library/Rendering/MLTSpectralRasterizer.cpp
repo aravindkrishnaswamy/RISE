@@ -577,45 +577,29 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 }
 
 //////////////////////////////////////////////////////////////////////
-// RasterizeScene - Spectral MLT rendering entry point.
+// RenderFrameOfMLTSpectral - Spectral analog of MLTRasterizer::
+// RenderFrameOfMLT.  Same structure, but every BDPT path is evaluated
+// at one or more wavelengths via EvaluateSampleSpectral.  Shared by
+// RasterizeScene and RasterizeSceneAnimation; see the base helper
+// for the contract.
 //
-// Identical structure to MLTRasterizer::RasterizeScene but uses
-// EvaluateSampleSpectral instead of EvaluateSample for both
-// bootstrap and chain mutations.
-//
-// The bootstrap phase estimates normalization using spectral samples.
-// Chain initialization and round-based execution use the same
-// infrastructure, with the spectral evaluation replacing RGB.
+// Hero wavelength stratification (HWSS) is part of the primary sample
+// space — the wavelength coordinate evolves as another dimension of
+// the Markov chain, so independent-chains-per-frame works the same
+// way as RGB MLT.  No special spectral handling for animation; the
+// per-frame chain restart picks a fresh hero wavelength via the
+// re-bootstrapped PSSMLTSampler.
 //////////////////////////////////////////////////////////////////////
 
-void MLTSpectralRasterizer::RasterizeScene(
+bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 	const IScene& pScene,
-	const Rect* /*pRect*/,
-	IRasterizeSequence* /*pRasterSequence*/
+	const ICamera& pCamera,
+	const unsigned int width,
+	const unsigned int height,
+	IRasterImage*& pImageOut
 	) const
 {
-	const ICamera* pCamera = pScene.GetCamera();
-	if( !pCamera ) {
-		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
-		return;
-	}
-
-#ifdef RISE_ENABLE_OIDN
-	// Stamp render-start wall clock so the OIDN auto-quality heuristic
-	// can compute render_seconds / megapixels at denoise time.
-	BeginRenderTimer();
-#endif
-
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
-
-	// AttachScene creates and Prepare()s the unified LightSampler
-	pCaster->AttachScene( &pScene );
-	pScene.GetObjects()->PrepareForRendering();
-
-	// Share the RayCaster's prepared LightSampler with the integrator
-	const LightSampler* pLS = pCaster->GetLightSampler();
-	pIntegrator->SetLightSampler( pLS );
+	pImageOut = 0;
 
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Starting spectral PSSMLT render (%ux%u)", width, height );
 	GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Lambda range: [%.1f, %.1f] nm, Spectral samples: %u, HWSS: %s",
@@ -646,7 +630,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 		PSSMLTSampler* pBootSampler = new PSSMLTSampler( i, largeStepProb );
 		pBootSampler->StartIteration();
 
-		MLTSample sample = EvaluateSampleSpectral( pScene, *pCamera, *pBootSampler, width, height );
+		MLTSample sample = EvaluateSampleSpectral( pScene, pCamera, *pBootSampler, width, height );
 
 		bootstrapSamples[i].luminance = sample.luminance;
 		bootstrapSamples[i].seed = i;
@@ -656,7 +640,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 		if( pProgressFunc && (i % 1000 == 0) ) {
 			if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(nBootstrap) ) ) {
-				return;
+				return false;
 			}
 		}
 	}
@@ -667,7 +651,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 	if( b_mean <= 0 ) {
 		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer:: Bootstrap found zero luminance -- scene produces no visible light!", __FILE__, __LINE__ );
-		return;
+		return false;
 	}
 
 	const Scalar numPixels = static_cast<Scalar>( width ) * static_cast<Scalar>( height );
@@ -772,7 +756,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 		// Phase 1: reproduce the bootstrap path
 		chainStates[c].pSampler->StartIteration();
-		chainStates[c].currentSample = EvaluateSampleSpectral( pScene, *pCamera, *chainStates[c].pSampler, width, height );
+		chainStates[c].currentSample = EvaluateSampleSpectral( pScene, pCamera, *chainStates[c].pSampler, width, height );
 		chainStates[c].pSampler->Accept();
 
 		// Phase 2: re-seed proposal RNG for divergence
@@ -783,7 +767,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 			for( unsigned int attempt = 0; attempt < 64; attempt++ )
 			{
 				chainStates[c].pSampler->StartIteration();
-				chainStates[c].currentSample = EvaluateSampleSpectral( pScene, *pCamera, *chainStates[c].pSampler, width, height );
+				chainStates[c].currentSample = EvaluateSampleSpectral( pScene, pCamera, *chainStates[c].pSampler, width, height );
 				if( chainStates[c].currentSample.valid ) {
 					chainStates[c].pSampler->Accept();
 					break;
@@ -797,7 +781,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 				for( unsigned int j = 0; j <= c; j++ ) {
 					safe_release( chainStates[j].pSampler );
 				}
-				return;
+				return false;
 			}
 		}
 	}
@@ -857,7 +841,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 							break;
 						}
 						RunChainSegmentSpectral(
-							chainStates[c], pScene, *pCamera, *pSplatFilm,
+							chainStates[c], pScene, pCamera, *pSplatFilm,
 							mutThisRound, b, width, height );
 					}
 					FlushCallingThreadSplatBuffer();
@@ -875,7 +859,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 			// Single-threaded: run all chains sequentially
 			for( unsigned int c = 0; c < effectiveChains; c++ )
 			{
-				RunChainSegmentSpectral( chainStates[c], pScene, *pCamera, *pSplatFilm,
+				RunChainSegmentSpectral( chainStates[c], pScene, pCamera, *pSplatFilm,
 					mutThisRound, b, width, height );
 			}
 			FlushCallingThreadSplatBuffer();
@@ -927,6 +911,10 @@ void MLTSpectralRasterizer::RasterizeScene(
 			static_cast<Scalar>( mutationsPerChain > 0 ? mutationsPerChain : 1 );
 		const bool isFinalRound = ( mutationsDonePerChain >= mutationsPerChain );
 
+		// Each round allocates a fresh image — SplatFilm::Resolve is
+		// ADDITIVE; reusing one image across rounds would double-count.
+		// Final-round image is transferred to pImageOut for the caller
+		// to denoise + flush at the appropriate frame index.
 		IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 1.0 ) );
 		pSplatFilm->Resolve( *pImage, fraction );
 
@@ -948,30 +936,15 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 		if( isFinalRound || cancelled )
 		{
-#ifdef RISE_ENABLE_OIDN
-			if( bDenoisingEnabled ) {
-				// Pre-denoised but fully splatted image goes to file
-				// outputs under the normal filename first.
-				FlushPreDenoisedToOutputs( *pImage, 0, 0 );
-
-				AOVBuffers aovBuffers( width, height );
-				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
-				// MLT always uses Fast prefilter regardless of the
-				// `mDenoisingPrefilter` setting — see MLTRasterizer.cpp
-				// for the rationale (and docs/OIDN.md OIDN-P1-1).
-				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
-					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
-					GetRenderElapsedSeconds() );
-
-				FlushDenoisedToOutputs( *pImage, 0, 0 );
-			} else
-#endif
-			{
-				FlushToOutputs( *pImage, 0, 0 );
+			if( pImageOut ) {
+				safe_release( pImageOut );
 			}
+			pImageOut = pImage;	// transfer refcount to caller
 		}
-
-		safe_release( pImage );
+		else
+		{
+			safe_release( pImage );
+		}
 	}
 
 	//////////////////////////////////////////////////////////////////
@@ -991,4 +964,173 @@ void MLTSpectralRasterizer::RasterizeScene(
 	}
 
 	safe_release( pSplatFilm );
+
+	return !cancelled;
+}
+
+//////////////////////////////////////////////////////////////////////
+// RasterizeScene - Spectral still-image entry point.  Thin wrapper
+// around RenderFrameOfMLTSpectral; flushes the result with frameIdx=0.
+//////////////////////////////////////////////////////////////////////
+
+void MLTSpectralRasterizer::RasterizeScene(
+	const IScene& pScene,
+	const Rect* /*pRect*/,
+	IRasterizeSequence* /*pRasterSequence*/
+	) const
+{
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
+	}
+
+#ifdef RISE_ENABLE_OIDN
+	BeginRenderTimer();
+#endif
+
+	const unsigned int width = pCamera->GetWidth();
+	const unsigned int height = pCamera->GetHeight();
+
+	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
+
+	IRasterImage* pImage = 0;
+	(void) RenderFrameOfMLTSpectral( pScene, *pCamera, width, height, pImage );
+
+	if( pImage )
+	{
+#ifdef RISE_ENABLE_OIDN
+		if( bDenoisingEnabled ) {
+			FlushPreDenoisedToOutputs( *pImage, 0, 0 );
+
+			AOVBuffers aovBuffers( width, height );
+			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+			mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+				GetRenderElapsedSeconds() );
+
+			FlushDenoisedToOutputs( *pImage, 0, 0 );
+		} else
+#endif
+		{
+			FlushToOutputs( *pImage, 0, 0 );
+		}
+
+		safe_release( pImage );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// RasterizeSceneAnimation - Spectral animation entry point.
+//
+// Same independent-chains-per-frame strategy as the RGB MLT path.
+// The hero wavelength evolves as part of the primary sample space,
+// so per-frame chain restart picks a fresh wavelength via the
+// re-bootstrapped PSSMLTSampler — no special spectral handling
+// needed.  See MLTRasterizer::RasterizeSceneAnimation for the full
+// rationale.
+//////////////////////////////////////////////////////////////////////
+
+void MLTSpectralRasterizer::RasterizeSceneAnimation(
+	const IScene& pScene,
+	const Scalar time_start,
+	const Scalar time_end,
+	const unsigned int num_frames,
+	const bool /*do_fields*/,
+	const bool /*invert_fields*/,
+	const Rect* /*pRect*/,
+	const unsigned int* specificFrame,
+	IRasterizeSequence* /*pRasterSequence*/
+	) const
+{
+	const ICamera* pCamera = pScene.GetCamera();
+	if( !pCamera ) {
+		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
+	}
+
+	const unsigned int width = pCamera->GetWidth();
+	const unsigned int height = pCamera->GetHeight();
+	const Scalar step_size = num_frames > 1
+		? ( time_end - time_start ) / Scalar( num_frames - 1 )
+		: 0;
+
+	pCaster->AttachScene( &pScene );
+	pScene.GetObjects()->PrepareForRendering();
+	pIntegrator->SetLightSampler( pCaster->GetLightSampler() );
+
+	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();
+	const unsigned int total_frames = specificFrame ? 1 : num_frames;
+
+	GlobalLog()->PrintEx( eLog_Event,
+		"MLTSpectralRasterizer:: Animation render: %u frame(s), time [%.4f, %.4f]",
+		total_frames, time_start, time_end );
+
+	bool cancelled = false;
+	for( unsigned int i = 0; i < total_frames && !cancelled; i++ )
+	{
+		const unsigned int frameIdx = specificFrame ? *specificFrame : i;
+		const Scalar curtime = time_start + Scalar( frameIdx ) * step_size;
+
+		pScene.GetAnimator()->EvaluateAtTime( curtime );
+		if( bHasKeyframedObjects ) {
+			pScene.GetObjects()->InvalidateSpatialStructure();
+		}
+		pScene.GetObjects()->PrepareForRendering();
+		pScene.SetSceneTime( curtime );
+
+		GlobalLog()->PrintEx( eLog_Event,
+			"MLTSpectralRasterizer:: Rasterizing frame %u of %u (t=%.4f)",
+			frameIdx + 1, num_frames, curtime );
+
+#ifdef RISE_ENABLE_OIDN
+		BeginRenderTimer();
+#endif
+
+		IRasterImage* pImage = 0;
+		const bool completed = RenderFrameOfMLTSpectral( pScene, *pCamera, width, height, pImage );
+
+		if( !completed )
+		{
+			if( pImage ) {
+				safe_release( pImage );
+			}
+			cancelled = true;
+			GlobalLog()->PrintEx( eLog_Event,
+				"MLTSpectralRasterizer:: Animation cancelled during frame %u of %u; "
+				"skipping remaining frames",
+				frameIdx + 1, num_frames );
+			break;
+		}
+
+		if( pImage )
+		{
+#ifdef RISE_ENABLE_OIDN
+			if( bDenoisingEnabled ) {
+				FlushPreDenoisedToOutputs( *pImage, 0, frameIdx );
+
+				AOVBuffers aovBuffers( width, height );
+				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
+					GetRenderElapsedSeconds() );
+
+				FlushDenoisedToOutputs( *pImage, 0, frameIdx );
+			} else
+#endif
+			{
+				FlushToOutputs( *pImage, 0, frameIdx );
+			}
+
+			safe_release( pImage );
+		}
+	}
+
+	if( cancelled ) {
+		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Animation cancelled by user" );
+	} else {
+		GlobalLog()->PrintEx( eLog_Event, "MLTSpectralRasterizer:: Animation complete" );
+	}
 }

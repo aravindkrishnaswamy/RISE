@@ -757,6 +757,115 @@ Any P0 or P1 change additionally needs:
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
 
+### 2026-04-29 — MLT animation rendering with per-frame OIDN denoise
+- Closes the "MLT animation gap" called out in the prior animation-
+  denoise entry.  `MLTRasterizer::RasterizeSceneAnimation` was an
+  empty inline stub before this change — Markov-chain rendering
+  doesn't decompose cleanly into per-frame independent renders the
+  way PT/BDPT/VCM do, because each chain's PSSMLTSampler carries
+  primary-sample-vector state from prior iterations.  This entry
+  records the chain-restart design and per-frame OIDN wiring for
+  both `MLTRasterizer` (RGB) and `MLTSpectralRasterizer` (spectral).
+- **Chain-restart strategy: independent chains per frame ("Strategy
+  A").**  Each frame re-runs the full PSSMLT pipeline — bootstrap →
+  CDF → chain init → round-based mutations — against the scene
+  state at that frame's time.  No chain state carries across
+  frames; the bootstrap CDF is intrinsically per-scene and would
+  be invalidated by a moved camera or transformed light anyway.
+  Considered "Strategy B" (persistent chains across frames with
+  adapted mutation parameters) and rejected because:
+  1. **Stale geometry warm-up.** A chain's primary sample vector
+     represents *the current path in the scene that was active
+     when the chain initialized*.  Carrying it forward to a
+     different scene state means the chain is warmed up against
+     stale geometry, requiring many large-step proposals to find
+     new important regions — most "warm-up" benefit is lost.
+  2. **Per-scene CDF.** Bootstrap luminance distribution depends
+     on visibility/transport at that frame.  Persistent chains
+     would still need per-frame bootstrap, so most of the warm-up
+     cost is paid every frame regardless.
+  3. **Temporal correlation = visible artifacts.**  Persistent
+     chains can produce subtly correlated noise across frames
+     following the chain trajectory.  Independent chains give
+     statistically independent per-frame noise.
+  4. **Smaller blast radius.**  Independent chains let us reuse
+     the existing `RasterizeScene` semantics per frame; no
+     PSSMLTSampler ownership rework, no cross-frame chain
+     accounting.
+- **Code shape.**  Extracted a protected `RenderFrameOfMLT()`
+  helper (and `RenderFrameOfMLTSpectral()` for the spectral
+  subclass) that runs the bootstrap → CDF → chain init → round-
+  based render and transfers a refcount-1 final image to the
+  caller.  Both `RasterizeScene` (still images) and the new
+  `RasterizeSceneAnimation` are thin wrappers around the helper:
+  - `RasterizeScene` — one helper call, flush at frameIdx=0,
+    cancel-still-denoises (per OIDN-P1-3).
+  - `RasterizeSceneAnimation` — outer per-frame loop with
+    animator `EvaluateAtTime` + `InvalidateSpatialStructure`
+    (when keyframed) + `PrepareForRendering` + `SetSceneTime`
+    between frames; per-frame `BeginRenderTimer()` so the
+    OidnQuality::Auto heuristic decides each frame independently;
+    cancel-mid-frame abandons the frame entirely (no flush, no
+    denoise) so the MOV writer's tail stays clean.
+- **Per-frame OIDN flow** mirrors `PixelBasedRasterizerHelper::
+  RasterizeSceneAnimation`: completed frame →
+  `FlushPreDenoisedToOutputs(frameIdx)` →
+  `OIDNDenoiser::CollectFirstHitAOVs` (fresh AOV buffer per frame
+  on the stack, since MLT doesn't keep a persistent `pAOVBuffers`
+  member) → `mDenoiser->ApplyDenoise(...)` →
+  `FlushDenoisedToOutputs(frameIdx)`.  MLT pins the prefilter
+  to `Fast` regardless of the user's `mDenoisingPrefilter`
+  setting because its splat film is incompatible with Accurate
+  mode's inline-accumulation requirement (OIDN-P1-1 invariant).
+  Cache hits across frames thanks to OIDN-P0-2 device/filter
+  caching — only frame 1 pays the cold-rebuild cost on the same
+  rasterizer instance.
+- **Cancel semantics align with PT/BDPT/VCM animation.**  Cancel
+  during a frame ⇒ abandon the frame (no flush, no denoise) ⇒
+  break out of the animation loop.  This is intentionally
+  STRICTER than the still-image cancel-still-denoises behavior:
+  a half-rendered + half-denoised frame in a movie sequence is
+  worse than no frame at all (inconsistent quality across
+  frames; MOV writer expects complete tail frames).
+- **Out-of-scope for this initial implementation.**  Fields-mode
+  rendering (`do_fields=true`) and `Rect`-restricted region
+  rendering are accepted at the API for parity with the
+  PT/BDPT/VCM animation signature but currently behave as
+  full-frame full-image renders — MLT's splat film is global
+  (Markov mutations cover the entire screen), so per-row temporal
+  field interlacing and tile-restricted dispatch require
+  additional design work that's not warranted by current scenes.
+  Header docs the limitation; revisit when there's a concrete
+  use case.
+- **Smoke test.**  3-frame MLT animation on cornellbox_mlt with
+  100k bootstrap × 128 chains × 500 mut/pixel × 512² (the test
+  scene), with `oidn_denoise true` enabled in a copy and a
+  keyframed camera dolly: per-frame "OIDN cache: hit" log lines
+  appear after frame 1's rebuild as expected.  Per-frame raw +
+  denoised PNG pairs land in the `rendered/` directory with
+  the standard `_NNNN` / `_denoised_NNNN` naming.  No MOV writer
+  drift; no chain-state leakage between frames (verified by
+  diffing per-frame logs — each frame's bootstrap reports a
+  fresh normalization constant and chain-init reports fresh
+  PSSMLTSampler seeds).
+- **Limitations.**  (a) Per-frame bootstrap cost is paid in full
+  — for a 100k-bootstrap setting on a complex scene this is
+  ~2 seconds per frame of fixed overhead.  Future optimization
+  could amortize bootstrap across temporally-similar consecutive
+  frames, but that requires a correctness story for moved
+  cameras/lights and is deferred.  (b) Light sampler weights
+  are NOT rebuilt per frame (consistent with PT/BDPT/VCM
+  animation behavior) — `pCaster->AttachScene` is called once
+  before the loop.  Keyframed lights with significantly different
+  positions across the animation could see slightly suboptimal
+  importance sampling at later frames; if observed, escalate to
+  a proper per-frame `LightSampler::Rebuild` design (out of scope
+  here).
+- 72/72 tests pass; build clean (warning-free `make -C build/make/
+  rise -j8 all` per CLAUDE.md → "Compiler warnings are bugs").
+  No new source files added (logic lives in existing MLT.h/.cpp
+  pair), so no five-build-system file-list update needed.
+
 ### 2026-04-29 — Per-frame denoise on animation render
 - Animation rendering (the `renderanimation` CLI command) previously
   flushed each frame raw; OIDN was never invoked.  This was an
@@ -796,15 +905,11 @@ from a reviewer, or has its priority moved. Most recent first.
   `RasterizeSceneAnimation` (no override), so they pick up the
   change automatically.  Their per-pixel `IntegratePixel` is
   invoked through the same animation dispatcher used by PT.
-- **MLT animation gap (intentional, documented).**
-  `MLTRasterizer::RasterizeSceneAnimation` is an empty inline stub
-  today — Markov-chain rendering doesn't decompose cleanly into
-  per-frame independent renders (chains depend on prior chain
-  state via PSSMLTSampler), so adding animation here requires
-  non-trivial design work around chain-restart semantics across
-  frames.  When that work happens, mirror this change's denoise
-  wiring.  Header comment in `MLTRasterizer.h` calls this out so
-  a future implementer doesn't miss the OIDN integration step.
+- **MLT animation gap — closed by the next entry above.**
+  `MLTRasterizer::RasterizeSceneAnimation` was an empty inline
+  stub at the time of this entry.  See "2026-04-29 MLT animation
+  rendering" above for the chain-restart design and the per-frame
+  OIDN wiring that landed shortly after.
 - **Cache hits across frames:** thanks to OIDN-P0-2 device/filter
   caching, only frame 1 pays the cold-rebuild cost on the same
   rasterizer instance.  Subsequent frames (same dimensions, same

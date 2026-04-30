@@ -249,6 +249,34 @@ namespace RISE
 				const unsigned int height
 				) const;
 
+			/// Render a single MLT frame end-to-end: bootstrap → CDF →
+			/// chain init → round-based mutations → final resolve.
+			/// Shared between still-image RasterizeScene and per-frame
+			/// RasterizeSceneAnimation so both observe identical chain
+			/// semantics ("independent chains" — every call allocates
+			/// fresh PSSMLTSampler state and re-bootstraps against the
+			/// current scene).
+			///
+			/// Returns true if all rounds completed.  Returns false if
+			/// the user cancelled mid-render OR the bootstrap found no
+			/// luminance (degenerate scene).  In either case `pImageOut`
+			/// may be NULL or hold the last partially-resolved snapshot
+			/// — callers in animation context discard it; the still
+			/// image caller flushes it (cancel-still-denoises).
+			///
+			/// On success, `pImageOut` is a refcount-1 image owned by
+			/// the caller; the caller must safe_release it after flush.
+			/// AttachScene + LightSampler setup must be done by the
+			/// caller before invoking — they are scene-wide, not per-
+			/// frame.
+			bool RenderFrameOfMLT(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut
+				) const;
+
 			/// Run a segment of mutations on an existing chain.  This is
 			/// the inner Metropolis-Hastings loop, identical to the old
 			/// RunChain but operating on externally-owned state so the
@@ -311,17 +339,21 @@ namespace RISE
 				IRasterizeSequence* pRasterSequence
 				) const;
 
-			//! MLT animation is currently a no-op stub.  Markov-chain
-			//! rendering doesn't decompose cleanly into per-frame
-			//! independent renders the way PT/BDPT/VCM do (chains
-			//! depend on prior chain state via PSSMLTSampler), so
-			//! adding animation here requires non-trivial design work
-			//! around chain-restart semantics across frames.  When
-			//! that work happens, mirror PixelBasedRasterizerHelper::
-			//! RasterizeSceneAnimation's denoise wiring (per-frame
-			//! ApplyDenoise + FlushPreDenoised/FlushDenoised inside
-			//! the cancel-guarded block).  See docs/OIDN.md decision
-			//! log (2026-04-29 animation denoise).
+			//! Render an animation by re-running the full MLT pipeline
+			//! per frame: bootstrap → CDF → chain init → round-based
+			//! mutations.  Markov chains do NOT carry across frames
+			//! ("independent chains per frame" / Strategy A — see
+			//! docs/OIDN.md decision log "2026-04-29 MLT animation").
+			//! Each frame's bootstrap re-estimates the normalization
+			//! constant against the current scene state, so changes in
+			//! camera, transforms, or lights do not poison chains
+			//! warmed up against a previous frame's geometry.  Per-frame
+			//! OIDN denoise mirrors PixelBasedRasterizerHelper::
+			//! RasterizeSceneAnimation: BeginRenderTimer + AOV reset +
+			//! cancel-guarded ApplyDenoise + FlushPreDenoised /
+			//! FlushDenoised at the actual frameIdx.  Cancel mid-frame
+			//! abandons the frame entirely (no flush, no denoise) so
+			//! the MOV writer's tail stays clean.
 			void RasterizeSceneAnimation(
 				const IScene& pScene,
 				const Scalar time_start,
@@ -332,7 +364,7 @@ namespace RISE
 				const Rect* pRect,
 				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
-				) const {};
+				) const;
 
 			/// Thread procedure for parallel round-based chain execution
 			static void* RoundThread_ThreadProc( void* lpParameter );
