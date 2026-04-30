@@ -3601,7 +3601,15 @@ namespace RISE
 					unsigned int primitive_idx = bag.GetUInt(   "primitive",     0 );
 					bool double_sided          = bag.GetBool(   "double_sided",  false );
 					bool face_normals          = bag.GetBool(   "face_normals",  false );
-					bool flip_v                = bag.GetBool(   "flip_v",        false );
+					// Default flip_v to TRUE: glTF stores UV with V increasing
+					// upward (OpenGL convention), RISE's TexturePainter samples
+					// with V increasing downward (image-row convention -- see
+					// BilinRasterImageAccessor::GetPel where v_pixel = V*height,
+					// indexing from PNG row 0 = top of file).  Without the flip,
+					// every glTF-sourced texture renders V-mirrored.  Override
+					// with `flip_v FALSE` only for atypical glTF assets that
+					// were exported with DirectX V already baked in.
+					bool flip_v                = bag.GetBool(   "flip_v",        true );
 					return pJob.AddGLTFTriangleMeshGeometry(
 						name.c_str(), file.c_str(),
 						mesh_idx, primitive_idx,
@@ -3618,7 +3626,10 @@ namespace RISE
 							"chunk (Phase 1 of glTF support; bulk scene import comes in Phase 2 "
 							"via `gltf_import`).  See docs/GLTF_IMPORT.md for the design plan.  "
 							"POSITION + NORMAL + TANGENT + TEXCOORD_0 + TEXCOORD_1 + COLOR_0 + "
-							"indices are honoured; other attributes warn-and-discard.";
+							"indices are honoured; other attributes warn-and-discard.  "
+							"`flip_v` defaults to TRUE because glTF V is up-pointing while RISE's "
+							"TexturePainter samples V down-pointing -- override only for atypical "
+							"DirectX-V-baked exports.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
@@ -3626,7 +3637,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "primitive";    p.kind = ValueKind::UInt;     p.description = "Which primitive within the mesh (0-based)"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Treat polygons as double sided"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "flip_v";       p.kind = ValueKind::Bool;     p.description = "Flip TEXCOORD V at load (glTF UV origin is top-left)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "flip_v";       p.kind = ValueKind::Bool;     p.description = "Flip TEXCOORD V at load to match RISE's V-down sampling (defaults TRUE for glTF)"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -3841,6 +3852,45 @@ namespace RISE
 						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter"; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Finite-difference step"; p.defaultValueHint = "0.01"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct NormalMapModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name    = bag.GetString( "name",       "noname" );
+					std::string painter = bag.GetString( "normal_map", "none" );
+					double scale        = bag.GetDouble( "scale",      1.0 );
+					return pJob.AddNormalMapModifier( name.c_str(), painter.c_str(), scale );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "normal_map_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Tangent-space normal-map modifier.  Samples a normal-map "
+							"painter at the hit's TEXCOORD_0, decodes (2*RGB - 1) -> tangent-space "
+							"normal, and reorients ri.vNormal using the imported per-vertex TANGENT "
+							"(via the v3 ITriangleMeshGeometryIndexed3 storage) plus its bitangent "
+							"sign.  Falls back to UV-derived dpdu/dpdv (silent, qualitatively "
+							"correct on connected UV charts) when the source mesh has no TANGENT, "
+							"and to ONB-derived tangents (one-time warning) when neither TANGENT "
+							"nor valid derivatives are available.  Designed for glTF 2.0 "
+							"normalTexture but works with any linear-RGB normal map.  IMPORTANT: "
+							"the referenced painter MUST be loaded with NO colour-matrix conversion "
+							"-- in today's RISE (RISEPel == ROMMRGBPel) that means `color_space "
+							"ROMMRGB_Linear`, which stores PNG bytes verbatim in the engine "
+							"working space.  Rec709RGB_Linear would skip the gamma decode but "
+							"still apply a Rec709 -> ROMM colour matrix that warps the encoded "
+							"vector; sRGB would gamma-decode and break the [0,1] vector domain.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-map painter (load with `color_space ROMMRGB_Linear` for verbatim store; see chunk description)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "glTF normalTexture.scale (xy multiplier)"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
 					return d;
@@ -6935,6 +6985,7 @@ namespace RISE
 
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
+		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
 
 		// Media
 		add( "homogeneous_medium",                    new HomogeneousMediumAsciiChunkParser() );

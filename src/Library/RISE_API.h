@@ -1349,6 +1349,15 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								);
 
+	//! Creates a tangent-space normal-map modifier.  Painter must be
+	//! linear-RGB (no sRGB decode).  See Modifiers/NormalMap.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNormalMapModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IPainter& painter,		///< [in] Linear-RGB normal-map painter
+								const Scalar scale				///< [in] glTF normalTexture.scale
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Functions

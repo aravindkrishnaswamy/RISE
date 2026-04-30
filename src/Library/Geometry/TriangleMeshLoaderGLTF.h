@@ -33,7 +33,7 @@ namespace RISE
 			std::string		szFilename;			// Resolved on-disk path
 			unsigned int	meshIndex;			// Index into data->meshes
 			unsigned int	primitiveIndex;		// Index into data->meshes[meshIndex].primitives
-			bool			bFlipV;				// Flip TEXCOORD V at load time (glTF UV origin is top-left)
+			bool			bFlipV;				// Flip TEXCOORD V at load.  glTF stores V increasing upward (V=0 = bottom of texture, OpenGL convention), RISE's TexturePainter samples V increasing downward (row 0 = top of stored image, DirectX convention) -- so this must be TRUE for typical glTF assets.  The `gltfmesh_geometry` chunk defaults it TRUE for that reason; the loader itself stays neutral so callers via Job/RISE_API can override.
 
 		public:
 			TriangleMeshLoaderGLTF(

@@ -232,6 +232,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\InterpolatedNoise.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise1D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\PerlinNoise2D.cpp" />
@@ -666,6 +667,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h" />
+    <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\InterpolatedNoise.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\Noise.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\NoiseUtils.h" />

@@ -104,6 +104,19 @@ namespace RISE
 		RISEPel						vColor;
 		bool						bHasVertexColor;
 
+		//! Per-vertex tangent interpolated at the hit point and transformed
+		//! to world space (via Object's forward transform; tangents
+		//! transform like positions, not like normals).  Populated only by
+		//! triangle meshes that carry a TANGENT array (loaded from glTF;
+		//! see `ITriangleMeshGeometryIndexed3` / Tangent4 in Polygon.h).
+		//! Consumers (the NormalMap modifier, primarily) must check
+		//! `bHasTangent` before reading `vTangent` / `bitangentSign` —
+		//! when false, fall back to a tangent derived from the
+		//! orthonormal basis or surface derivatives.
+		Vector3						vTangent;
+		Scalar						bitangentSign;	// +1 or -1; bitangent = sign * cross(vNormal, vTangent)
+		bool						bHasTangent;
+
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),
@@ -112,7 +125,9 @@ namespace RISE
 		  range2( RISE_INFINITY ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
-		  bHasVertexColor( false )
+		  bHasVertexColor( false ),
+		  bitangentSign( 1.0 ),
+		  bHasTangent( false )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -138,7 +153,10 @@ namespace RISE
 		  glossyFilterWidth( r.glossyFilterWidth ),
 		  derivatives( r.derivatives ),
 		  vColor( r.vColor ),
-		  bHasVertexColor( r.bHasVertexColor )
+		  bHasVertexColor( r.bHasVertexColor ),
+		  vTangent( r.vTangent ),
+		  bitangentSign( r.bitangentSign ),
+		  bHasTangent( r.bHasTangent )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -164,6 +182,9 @@ namespace RISE
 			glossyFilterWidth = r.glossyFilterWidth;
 			vColor = r.vColor;
 			bHasVertexColor = r.bHasVertexColor;
+			vTangent = r.vTangent;
+			bitangentSign = r.bitangentSign;
+			bHasTangent = r.bHasTangent;
 
 			safe_release( pCustom );
 			pCustom = r.pCustom;

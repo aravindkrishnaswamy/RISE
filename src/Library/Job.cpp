@@ -3339,6 +3339,27 @@ bool Job::AddBumpMapModifier(
 	return true;
 }
 
+bool Job::AddNormalMapModifier(
+	const char* name,										///< [in] Name of the modifier
+	const char* painter,									///< [in] Linear-RGB normal-map painter
+	const double scale										///< [in] glTF normalTexture.scale
+	)
+{
+	IPainter* pPainter = pPntManager->GetItem( painter );
+	if( !pPainter ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddNormalMapModifier:: painter `%s` not found", painter );
+		return false;
+	}
+
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateNormalMapModifier( &pModifier, *pPainter, scale );
+
+	pModManager->AddItem( pModifier, name );
+	safe_release( pModifier );
+	return true;
+}
+
 //
 // Adding objects
 //

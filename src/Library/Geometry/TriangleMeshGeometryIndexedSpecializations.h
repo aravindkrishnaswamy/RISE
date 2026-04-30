@@ -209,6 +209,37 @@ namespace RISE
 					ri.bHasVertexColor = false;
 				}
 
+				// Per-vertex tangent interpolation (v3 ITriangleMeshGeometryIndexed3
+				// storage).  Same indexing convention as colors: tangent index
+				// follows position index.  glTF TANGENT.w is the bitangent sign
+				// (±1) per spec; we store it on RayIntersectionGeometric so the
+				// NormalMap modifier can rebuild the bitangent in the correct
+				// chirality (mirrored UVs flip the sign).  Since w is binary
+				// per-vertex, pick the sign from vertex 0 of the triangle —
+				// glTF guarantees w is constant within a connected UV chart, so
+				// all three vertices of a triangle share the same w.
+				//
+				// Tangent vector is interpolated linearly without renormalising;
+				// caller (NormalMap) normalises after world-space transform.
+				if( !pTangents.empty() && !pPoints.empty() ) {
+					const Vertex* pBase = &pPoints[0];
+					const size_t i0 = (size_t)( thisTri.pVertices[0] - pBase );
+					const size_t i1 = (size_t)( thisTri.pVertices[1] - pBase );
+					const size_t i2 = (size_t)( thisTri.pVertices[2] - pBase );
+					if( i0 < pTangents.size() && i1 < pTangents.size() && i2 < pTangents.size() ) {
+						const Vector3& t0 = pTangents[i0].dir;
+						ri.vTangent = t0
+							+ (pTangents[i1].dir - t0) * a
+							+ (pTangents[i2].dir - t0) * b;
+						ri.bitangentSign = pTangents[i0].bitangentSign;
+						ri.bHasTangent = true;
+					} else {
+						ri.bHasTangent = false;
+					}
+				} else {
+					ri.bHasTangent = false;
+				}
+
 				// Populate surface derivatives for SMS consumers.
 				//
 				// Strategy: use the per-vertex (u, v) texture coordinates

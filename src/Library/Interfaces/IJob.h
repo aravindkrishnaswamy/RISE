@@ -952,7 +952,7 @@ namespace RISE
 							const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
 							const bool double_sided,				///< [in] Are the triangles double sided?
 							const bool face_normals,				///< [in] Use face normals rather than vertex normals
-							const bool flip_v						///< [in] Flip TEXCOORD V at load (glTF UV origin is top-left)
+							const bool flip_v						///< [in] Flip TEXCOORD V at load.  Default TRUE on the chunk parser because glTF stores V increasing upward (V=0 at bottom of texture, OpenGL convention) while RISE's TexturePainter samples V increasing downward (row 0 = top of stored image, DirectX convention).  Override to FALSE only for atypical glTF exports with DirectX V already baked in.
 							) = 0;
 
 		//! Adds a mesh from a .risemesh file
@@ -1127,6 +1127,24 @@ namespace RISE
 			const char* func,										///< [in] The function to use as the bump generator
 			const double scale,										///< [in] Factor to scale values by
 			const double window										///< [in] Size of the window
+			) = 0;
+
+		//! Adds a tangent-space normal-map modifier.  The painter must
+		//! be loaded with NO colour-matrix conversion: in today's RISE
+		//! (RISEPel == ROMMRGBPel) that means `color_space
+		//! ROMMRGB_Linear` on the png_painter / jpg_painter / etc.,
+		//! which stores PNG bytes verbatim into the engine working
+		//! space.  sRGB would gamma-decode and break the [0,1] vector
+		//! domain; Rec709RGB_Linear skips gamma but still applies a
+		//! Rec709 -> ROMM colour matrix that warps the encoded normal.
+		//! Designed for glTF 2.0 normalTexture but works with any
+		//! linear-RGB normal map.  See Modifiers/NormalMap.h for the
+		//! full rationale.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddNormalMapModifier(
+			const char* name,										///< [in] Name of the modifier
+			const char* painter,									///< [in] Normal-map painter, loaded with no colour-matrix conversion (ROMMRGB_Linear in today's build)
+			const double scale										///< [in] glTF normalTexture.scale (xy multiplier; default 1.0)
 			) = 0;
 
 		//

@@ -795,6 +795,9 @@
     <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Managers\DAGObjectManager.cpp">
       <Filter>Managers</Filter>
     </ClCompile>
@@ -2145,6 +2148,9 @@
       <Filter>Interfaces</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\DAGObjectManager.h">

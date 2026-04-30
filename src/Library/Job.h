@@ -1165,6 +1165,14 @@ namespace RISE
 			const double window										///< [in] Size of the window
 			);
 
+		//! Creates a tangent-space normal-map modifier.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddNormalMapModifier(
+			const char* name,										///< [in] Name of the modifier
+			const char* painter,									///< [in] Linear-RGB normal-map painter
+			const double scale										///< [in] glTF normalTexture.scale
+			);
+
 		//
 		// Adds functions
 		//

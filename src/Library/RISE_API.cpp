@@ -2648,6 +2648,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Modifiers/BumpMap.h"
+#include "Modifiers/NormalMap.h"
 
 namespace RISE
 {
@@ -2666,6 +2667,23 @@ namespace RISE
 
 		(*ppi) = new BumpMap( func, scale, window );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
+		return true;
+	}
+
+	//! Creates a tangent-space normal-map modifier.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateNormalMapModifier(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IPainter& painter,		///< [in] Linear-RGB normal-map painter
+								const Scalar scale				///< [in] glTF normalTexture.scale
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new NormalMap( painter, scale );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "normalmap" );
 		return true;
 	}
 

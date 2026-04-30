@@ -83,7 +83,6 @@ gltfmesh_geometry
 	primitive			0
 	double_sided		FALSE
 	face_normals		FALSE
-	flip_v				FALSE
 }
 
 standard_object

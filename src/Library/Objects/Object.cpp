@@ -31,7 +31,8 @@ Object::Object( ) :
   bIsWorldVisible( true ),
   bCastsShadows( true ),
   bReceivesShadows( true ),
-  SURFACE_INTERSEC_ERROR( 1e-12 )
+  SURFACE_INTERSEC_ERROR( 1e-12 ),
+  m_tangentFrameSign( 1.0 )
 {
 }
 
@@ -47,7 +48,8 @@ Object::Object( const IGeometry* pGeometry_ ) :
   bIsWorldVisible( true ),
   bCastsShadows( true ),
   bReceivesShadows( true ),
-  SURFACE_INTERSEC_ERROR( 1e-12 )
+  SURFACE_INTERSEC_ERROR( 1e-12 ),
+  m_tangentFrameSign( 1.0 )
 {
 	if( pGeometry ) {
 		pGeometry->addref();
@@ -275,6 +277,29 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		ri.geometric.vNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal ));
 		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 
+		// Transform the per-vertex tangent (v3 storage path) from object
+		// space to world space.  Tangents transform with the forward
+		// matrix (like positions / dpdu), NOT inverse-transpose -- they
+		// are surface-tangent directions, not normals.
+		//
+		// bitangentSign needs to flip iff the transform reverses
+		// orientation (det(M) < 0).  For an orientation-preserving
+		// transform, cross(N_world, T_world) gives the same world-space
+		// bitangent as transforming the original cross(N_obj, T_obj),
+		// so the imported sign carries through unchanged.  For a
+		// mirroring transform like `scale -1 1 1` the linear part has
+		// negative determinant and cross(N_world, T_world) ends up
+		// pointing in the opposite world direction from the
+		// transformed-original bitangent -- multiplying the imported
+		// sign by m_tangentFrameSign (computed once in
+		// FinalizeTransformations) puts it back, so the same source
+		// mesh shades correctly under mirrored instancing.
+		if( ri.geometric.bHasTangent ) {
+			ri.geometric.vTangent = Vector3Ops::Normalize(
+				Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.vTangent ) );
+			ri.geometric.bitangentSign *= m_tangentFrameSign;
+		}
+
 		// Transform surface derivatives from object space to world space.
 		// dpdu, dpdv are tangent vectors — transform like positions (use
 		// the forward transform m_mxFinalTrans).  dndu, dndv are normals
@@ -391,4 +416,16 @@ void Object::FinalizeTransformations( )
 {
 	Transformable::FinalizeTransformations();
 	m_mxInvTranspose = Matrix4Ops::Transpose( m_mxInvFinalTrans );
+
+	// Sign of the chirality flip the world-space transform applies to
+	// the tangent frame.  For an affine object transform the 4D
+	// determinant equals the upper-3x3 determinant; <0 means the
+	// transform reverses orientation (e.g. `scale -1 1 1` or any
+	// reflection / mirror), and the imported TANGENT.w needs to be
+	// negated at hit time so cross(N_world, T_world) * w still gives
+	// the bitangent that's consistent with the mirrored surface.
+	// See Object::IntersectRay where this is multiplied into
+	// ri.geometric.bitangentSign.
+	const Scalar det = Matrix4Ops::Determinant( m_mxFinalTrans );
+	m_tangentFrameSign = (det < Scalar( 0 )) ? Scalar( -1 ) : Scalar( 1 );
 }

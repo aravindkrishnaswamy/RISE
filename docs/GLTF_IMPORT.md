@@ -1,15 +1,42 @@
 # glTF 2.0 Import for RISE — Analysis & Plan
 
-**Status:** Planning. No code yet. This document is the source of truth for the
-design; refine it before implementation.
+This document started life as a forward-looking plan; the design rationale is
+still useful, but the **Implementation status** table below is the canonical
+view of what has actually shipped.  Sections that describe pending work are
+marked.
 
-**Scope decision:** Phase 1 (mesh-only import) **+** Phase 2 (full scene
-import with PBR materials, lights, cameras, hierarchical transforms) ship
-together as v1. Phase 3+ (animation, skinning, KHR extensions) is deferred.
+**Scope decision (revised 2026-04-30):** Phase 1 (mesh-only import) ships
+first as a self-contained commit.  Tangent-space normal mapping —
+originally scoped to Phase 2 — was pulled forward because the v3 tangent
+storage added in Phase 1 had no runtime exercise without it; the
+adversarial Khronos test corpus made it possible to verify normal mapping
+end-to-end immediately.  Full scene import (`gltf_import`), PBR material
+wrappers, and the rest of Phase 2 stay deferred.  Phase 3+ (animation,
+skinning, KHR extensions) stays deferred.
 
-**Spun-off work:** JPEG support is being added in a separate task because
-most real-world glTF assets ship JPEG base-color textures and we need that
-in place before scene import is useful end-to-end.
+## Implementation status
+
+| Area | Committed | This branch (uncommitted) | Pending |
+|---|---|---|---|
+| **Library: cgltf v1.15** | `extlib/cgltf/{cgltf.h,cgltf.cpp}` (db65457) | — | — |
+| **JPEG painter** (glTF prereq) | `jpg_painter` chunk + `JPEGReader` + `stb_image` (cbab01f) | — | — |
+| **v3 mesh interface** (`Tangent4`, `ITriangleMeshGeometryIndexed3`) | Header + impl (db65457) | Triangle-mesh intersection now interpolates the tangent + bitangent sign and stamps `bHasTangent` on `RayIntersectionGeometric`; `Object::IntersectRay` transforms the tangent to world space with `m_mxFinalTrans` | — |
+| **Mesh loader** (`gltfmesh_geometry`) | `TriangleMeshLoaderGLTF` + chunk + Job/RISE_API (db65457) | `flip_v` default flipped from FALSE to TRUE — see §4 V-convention reconciliation | — |
+| **Test corpus** | Box (db65457) | 9 Khronos Sample-Assets `.glb` files committed under `scenes/Tests/Geometry/assets/`: BoxTextured, Duck, Avocado, NormalTangentTest, NormalTangentMirrorTest, VertexColorTest, MultiUVTest, OrientationTest, AlphaBlendModeTest | — |
+| **Test program** | `tests/GLTFLoaderTest.cpp` with 5 cases (db65457) | Extended to 14 cases — adversarial coverage of every Phase 1 attribute path (TANGENT, TEXCOORD_1, COLOR_0 v2 cast, multi-mesh boundary, alpha-mode metadata ignore) | — |
+| **Tangent-space normal mapping** | — | `Modifiers/NormalMap.{h,cpp}` + `normal_map_modifier` chunk + `Job::AddNormalMapModifier` + `RISE_API_CreateNormalMapModifier`; visual-regression scene `gltf_normal_mapped.RISEscene`; sidecar normal-map PNG + extraction helper script | — |
+| **PBR material wrapper** (`pbr_metallic_roughness_material`) | — | — | Phase 2 |
+| **`channel_painter`** for MR-texture extraction | — | — | Phase 2 |
+| **Bulk scene import** (`gltf_import`) | — | — | Phase 2 |
+| **Alpha modes** (`alpha_test_modifier` for MASK) | — | — | Phase 2 |
+| **Quaternion / matrix on `standard_object`** | — | — | Phase 2 |
+| **Emissive on `ggx_material`** | — | — | Phase 2 |
+| **Animation / skinning / morph targets** | — | — | Phase 3+ |
+| **KHR_materials_*** extensions (clearcoat, transmission, sheen, ior, emissive_strength, unlit) | — | — | Phase 3+ |
+
+The forward-looking design rationale still lives in §§ 1–6; the original
+phased plan ships in §7.  §10 has a per-row status column matching the
+table above.  §11 marks the open questions resolved by current work.
 
 ---
 
@@ -136,10 +163,15 @@ Plus **morph target deltas** per primitive (POSITION/NORMAL/TANGENT × N targets
 
 ### What to add to RISE for v1
 
-Two new attribute storages, both small extensions to the existing pattern:
+Two new attribute storages, both small extensions to the existing pattern.
 
-- **TANGENT (vec4).** High-value addition. Without it, glTF normal maps either get ignored or computed from screen-space derivatives (low quality). Add via a new `ITriangleMeshGeometryIndexed3` interface that adds `AddTangent(const Tangent4&)` / `AddTangents(...)` / `getTangents()`, parallel to how v2 added colors. Tangent index follows position index (same convention as colors). Surface this at hit-time via a new `tangent_painter` (parallel to `vertex_color_painter`) so a tangent-space normal map modifier can read it.
-- **TEXCOORD_1 (vec2).** Lower-value but cheap. Path tracers compute lighting from scratch so lightmaps are pointless, but **occlusion textures** (glTF's `occlusionTexture`, often packed into the R channel of the metallic-roughness texture but sometimes in a separate map keyed off TEXCOORD_1) are useful as a multiplier on diffuse. Add via the same v3 interface (`AddTexCoord1` / `getTexCoords1`). If we don't add this, the importer falls back to TEXCOORD_0 for occlusion and warns.
+- **TANGENT (vec4).** High-value addition.  Without it, glTF normal maps either get ignored or computed from screen-space derivatives (low quality).  Add via a new `ITriangleMeshGeometryIndexed3` interface that adds `AddTangent(const Tangent4&)` / `AddTangents(...)` / `getTangents()`, parallel to how v2 added colors.  Tangent index follows position index (same convention as colors).  ~~Surface this at hit-time via a new `tangent_painter` (parallel to `vertex_color_painter`) so a tangent-space normal map modifier can read it.~~ The tangent-space `NormalMap` modifier reads the interpolated tangent + bitangent-sign directly off `RayIntersectionGeometric` (`vTangent` / `bitangentSign` / `bHasTangent`, populated by `TriangleMeshGeometryIndexed::IntersectRay`); no separate `tangent_painter` chunk is needed.
+- **TEXCOORD_1 (vec2).** Lower-value but cheap.  Path tracers compute lighting from scratch so lightmaps are pointless, but **occlusion textures** (glTF's `occlusionTexture`, often packed into the R channel of the metallic-roughness texture but sometimes in a separate map keyed off TEXCOORD_1) are useful as a multiplier on diffuse.  Add via the same v3 interface (`AddTexCoord1` / `getTexCoords1`).  If we don't add this, the importer falls back to TEXCOORD_0 for occlusion and warns.
+
+**Status:** delivered in db65457 (storage + loader path) and this branch
+(intersection-time interpolation + Object-level tangent transform).
+Empirically verified end-to-end via the `NormalTangentMirrorTest` adversarial
+asset (mirror-UV diagnostic — see §4 V-convention reconciliation).
 
 ### What to skip in v1 (warn-and-discard at load time)
 
@@ -292,24 +324,92 @@ defer BLEND to a later phase. Both can be added later without breaking v1.
 ### Normal maps
 
 Tangent-space normal maps need (a) tangent storage (added in §3) and (b) a new
-`normal_map_modifier` that takes a normal-map painter + a tangent painter and
-perturbs the geometric normal at hit time. RISE has `bumpmap_modifier` already,
-which handles single-channel height maps; the normal-map version is a sibling,
-~150 lines.
+`normal_map_modifier` that takes a normal-map painter and perturbs the
+geometric normal at hit time.  RISE has `bumpmap_modifier` already, which
+handles single-channel height maps; the normal-map version is a sibling.
+
+**Status:** **delivered in this branch.**  See `Modifiers/NormalMap.{h,cpp}`,
+the `normal_map_modifier` chunk in `AsciiSceneParser.cpp`, and the
+visual-regression scene `scenes/Tests/Geometry/gltf_normal_mapped.RISEscene`.
+Implementation follows the glTF 2.0 §3.7.2.1.4 spec form `B = cross(N, T) *
+tangent.w`, with two extra runtime details worth knowing:
+
+1. **Object-transform handedness is folded into the bitangent sign.** When a
+   `standard_object` is instanced with an orientation-reversing transform
+   (e.g. `scale -1 1 1` or any reflective transform with `det(M) < 0`),
+   `Object::FinalizeTransformations` caches `m_tangentFrameSign = sign(det)`
+   and `Object::IntersectRay` multiplies it into `ri.geometric.bitangentSign`
+   before the modifier runs.  Without this, mirrored instances of a
+   normal-mapped mesh would shade inverted relative to identity-transform
+   instances.  The `gltf_normal_mapped.RISEscene` regression scene renders
+   one identity instance + one `scale -1 1 1` instance side-by-side; both
+   must show the same bump shading direction.
+2. **Three-tier tangent-frame fallback** when the hit has no imported
+   TANGENT:
+   - Imported TANGENT (best path; honours mirrored UVs via `tangent.w`).
+   - `ri.derivatives.dpdu` re-orthogonalised against `N` (silent fallback;
+     correct on any connected UV chart, populated by triangle-mesh
+     intersection — this is the case for any glTF asset whose source mesh
+     happened to ship without TANGENT but did ship TEXCOORD_0).  Bitangent
+     comes from `cross(N, T)` with no imported sign source.
+   - ONB-derived tangents (`ri.onb.u()` / `.v()`) with a one-warning-per-
+     process diagnostic — only reached when neither TANGENT nor valid
+     surface derivatives exist.  ONB orientation is essentially never
+     aligned with the normal map's UV axes, so this path is wrong for
+     virtually any real normal map; the warning text says so.
+
+The modifier is independent of the future `pbr_metallic_roughness_material` —
+users can attach it to any object today.
+
+### V-convention reconciliation (Phase 1 finding)
+
+While verifying normal mapping against `NormalTangentMirrorTest` we found a
+silent V-axis convention mismatch between glTF and RISE that affects
+**every image-based painter**, not just normal maps:
+
+- **glTF authors with V increasing upward** (OpenGL convention) — V=0 is the
+  bottom of the texture, V=1 the top.
+- **RISE samples with V increasing downward** (DirectX convention).  See
+  `BilinRasterImageAccessor::GetPel` (and the NNB / Bicubic siblings):
+  pixel-row index is computed as `V * height`, indexing from row 0 = top of
+  the loaded image.  PNG / JPEG / EXR / HDR / TIFF readers all populate
+  rows top-to-bottom, so the in-memory storage matches "row 0 = top".
+
+Without compensation, every glTF-sourced texture renders V-mirrored.  For
+plain colour textures the mirroring is sometimes invisible (the bumps don't
+care which way is up).  For normal maps it produces a subtler symptom: in
+mirrored-UV regions of an asset (where the asset's own TANGENT.w flips), the
+combined effect of the asset's mirror + RISE's silent V flip leaves the
+mirrored half rendering with inverted bumps relative to the non-mirrored
+half — exactly the failure mode `NormalTangentMirrorTest` is designed to
+catch.
+
+**The fix lives at the right layer.**  We compensate at glTF mesh-load time:
+`gltfmesh_geometry`'s `flip_v` parameter defaults to **TRUE**, so the loader
+stores `(u, 1−v)` instead of `(u, v)` in `pCoords`.  Other mesh formats
+(PLY, 3DS, RAW2) keep their native V conventions; the texture painters keep
+their consistent V-down sampling; the only place that knows about glTF's
+convention difference is the only place that crosses a format boundary.
+Override with `flip_v FALSE` only for atypical glTF assets that were
+exported with DirectX V already baked in.
+
+This finding **must propagate into Phase 2's `gltf_import`**: the bulk
+importer needs to apply the same V flip.  Trying to "fix RISE" by flipping
+V in the painter or image readers would break every existing PLY/3DS-based
+scene that's been authored against the V-down convention.
 
 ### Material story summary
 
-| RISE addition | Lines | Purpose |
-|---|---|---|
-| `channel_painter` chunk + class | ~80 | Extract single channel for MR textures |
-| `pbr_metallic_roughness_material` chunk + Job API | ~150 | Authoring sugar; constructs the GGX + blend painter graph |
-| Optional `emissive` param on `ggx_material` | ~30 | Avoid double-chunk for emissive PBR |
-| `alpha_test_modifier` chunk + class | ~100 | glTF alphaMode = MASK |
-| `normal_map_modifier` chunk + class | ~150 | glTF normalTexture |
-| **Total new material-side code** | **~500 lines** | |
+| RISE addition | Status | Lines | Purpose |
+|---|---|---|---|
+| `channel_painter` chunk + class | pending (Phase 2) | ~80 | Extract single channel for MR textures |
+| `pbr_metallic_roughness_material` chunk + Job API | pending (Phase 2) | ~150 | Authoring sugar; constructs the GGX + blend painter graph |
+| Optional `emissive` param on `ggx_material` | pending (Phase 2) | ~30 | Avoid double-chunk for emissive PBR |
+| `alpha_test_modifier` chunk + class | pending (Phase 2) | ~100 | glTF alphaMode = MASK |
+| `normal_map_modifier` chunk + class | **delivered (this branch)** | ~120 | glTF normalTexture |
 
-No new BSDF. No new SPF. No new Material class. The Phase 2 material work is
-parser-side composition of pieces RISE already has.
+No new BSDF. No new SPF. No new Material class. The remaining Phase 2
+material work is parser-side composition of pieces RISE already has.
 
 ---
 
@@ -379,10 +479,16 @@ exactly what it skipped and why.
 
 ## 7. Phased implementation plan
 
-### Phase 1 — `gltfmesh_geometry` (mesh-only import)
+### Phase 1 — `gltfmesh_geometry` (mesh-only import) — **DELIVERED**
 
 Single-chunk surface; user assembles the rest of the scene with existing
-chunks. Proves out the cgltf dependency and the mesh-construction path.
+chunks.  Proves out the cgltf dependency and the mesh-construction path.
+
+**Shipped in commit db65457** (initial drop) plus this branch's
+adversarial-test extension and tangent plumbing.  The original 2-day
+estimate held; the adversarial-test corpus + tangent-space normal mapping
+extension was the bulk of the additional work.  See the **Implementation
+status** table at the top of this doc for what's committed where.
 
 **Surface:**
 ```
@@ -393,7 +499,10 @@ gltfmesh_geometry {
     primitive    0                     # which primitive in the mesh (default 0)
     double_sided FALSE
     face_normals FALSE
-    flip_v       FALSE                 # glTF UV origin top-left
+    flip_v       TRUE                  # default; flips glTF V-up to RISE V-down
+                                       # (see §4 V-convention reconciliation).
+                                       # Override to FALSE only for atypical
+                                       # exports with DirectX V already baked in.
 }
 ```
 
@@ -430,7 +539,13 @@ Plus include path entries pointing at `extlib/cgltf` in each.
 
 ---
 
-### Phase 2 — full scene import + PBR materials + tangent / normal-map support
+### Phase 2 — full scene import + PBR materials + tangent / normal-map support — **PARTIALLY DELIVERED EARLY**
+
+Tangent storage (v3 interface), the v3 intersection plumbing, and the
+`normal_map_modifier` listed below have already shipped in Phase 1 / this
+branch; what remains is the PBR material wrapper, the `channel_painter`
+helper, the bulk scene importer (`gltf_import`), the alpha-mode modifier,
+and the `standard_object` quaternion/matrix extension.
 
 Adds `gltf_import` (the bulk import chunk), `pbr_metallic_roughness_material`
 (authoring sugar), `channel_painter` (MR texture extraction),
@@ -503,6 +618,12 @@ alpha_test_modifier am {
 
 ---
 
+### Phase 1.5 / Phase 2 cleanups (carried over from Phase 1)
+
+| Item | Where it lives now | Phase 2 target |
+|---|---|---|
+| **Embedded-texture extraction for normal-map test** | `scenes/Tests/Geometry/assets/extract_embedded_texture.py` writes a sidecar PNG that the test scene `gltf_normal_mapped.RISEscene` references via `png_painter`. | Folded into `gltf_import` — when the importer encounters a glTF material with a `normalTexture` whose `source.image.bufferView` points into the .glb, it should extract that image to an in-memory `IRasterImage` (or auto-spilled tempfile) and create the painter without a sidecar.  The committed sidecar PNG and the helper script can be deleted at that point. |
+
 ### Phase 3+ — deferred work
 
 | Feature | Estimate | Notes |
@@ -548,41 +669,49 @@ Negligible. No template-heavy C++ overhead like fastgltf would impose.
 
 ## 10. RISE enhancements summary
 
-Net new chunks/interfaces this plan introduces:
+Net new chunks / interfaces / runtime hooks this work introduces.  "Phase"
+records original-plan phase; "Status" records what has actually shipped.
 
-| Item | Where | Phase | Justification |
-|---|---|---|---|
-| `gltfmesh_geometry` chunk | `AsciiSceneParser.cpp` | 1 | Mesh import surface |
-| `Job::AddGLTFTriangleMeshGeometry` | `Job.{h,cpp}`, `IJob.h` | 1 | Construction API |
-| `RISE_API_CreateGLTFTriangleMeshLoader` | `RISE_API.{h,cpp}` | 1 | Public C-style API |
-| `TriangleMeshLoaderGLTF` class | `Geometry/` | 1 | Loader implementation |
-| `ITriangleMeshGeometryIndexed3` interface | `Interfaces/` | 1 | Tangent + TEXCOORD_1 storage |
-| `tangent_painter` chunk | `Painters/` | 1 | Surface tangents at hit time |
-| `gltf_import` chunk | `AsciiSceneParser.cpp` | 2 | Full scene import surface |
-| `pbr_metallic_roughness_material` chunk | `AsciiSceneParser.cpp` | 2 | PBR authoring sugar |
-| `PBRMetallicRoughnessMaterial` class | `Materials/` | 2 | Constructs GGX + painters from PBR inputs |
-| `channel_painter` chunk + class | `Painters/` | 2 | Extract MR-texture channels |
-| `normal_map_modifier` chunk + class | `Modifiers/` | 2 | Tangent-space normal maps |
-| `alpha_test_modifier` chunk + class | `Modifiers/` | 2 | glTF alphaMode = MASK |
-| Optional `quaternion` param on `standard_object` | `AsciiSceneParser.cpp` | 2 | Lossless node transform import |
-| Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | Avoid double-chunk for PBR + emissive |
+| Item | Where | Phase | Status | Justification |
+|---|---|---|---|---|
+| `gltfmesh_geometry` chunk | `AsciiSceneParser.cpp` | 1 | **delivered db65457** | Mesh import surface |
+| `Job::AddGLTFTriangleMeshGeometry` | `Job.{h,cpp}`, `IJob.h` | 1 | **delivered db65457** | Construction API |
+| `RISE_API_CreateGLTFTriangleMeshLoader` | `RISE_API.{h,cpp}` | 1 | **delivered db65457** | Public C-style API |
+| `TriangleMeshLoaderGLTF` class | `Geometry/` | 1 | **delivered db65457** | Loader implementation |
+| `ITriangleMeshGeometryIndexed3` interface | `Interfaces/` | 1 | **delivered db65457** | Tangent + TEXCOORD_1 storage |
+| ~~`tangent_painter` chunk~~ | — | 1 | **dropped — not needed** | Replaced by direct `RayIntersectionGeometric` fields (see "v3 intersection plumbing" below) |
+| `RayIntersectionGeometric::vTangent / bitangentSign / bHasTangent` | `Intersection/` | 1 | **this branch** | Hit-time tangent surface for the normal-map modifier |
+| Tangent interpolation in `TriangleMeshGeometryIndexed::IntersectRay` | `Geometry/` | 1 | **this branch** | Per-hit barycentric interpolation of v3 storage |
+| Tangent transform in `Object::IntersectRay` | `Objects/` | 1 | **this branch** | Object→world transform via `m_mxFinalTrans` |
+| `flip_v` default = TRUE on `gltfmesh_geometry` | `AsciiSceneParser.cpp` | 1 | **this branch** | V-convention reconciliation (see §4) |
+| `normal_map_modifier` chunk + `NormalMap` class | `Modifiers/` | 2 → 1.5 | **this branch (early)** | Tangent-space normal maps |
+| `Job::AddNormalMapModifier`, `RISE_API_CreateNormalMapModifier` | `Job/RISE_API` | 2 → 1.5 | **this branch (early)** | Construction API for the modifier |
+| Embedded-texture extraction helper (`extract_embedded_texture.py`) | `scenes/Tests/Geometry/assets/` | 1.5 | **this branch (stopgap)** | One-shot script + sidecar PNG until `gltf_import` auto-extracts |
+| `gltf_import` chunk | `AsciiSceneParser.cpp` | 2 | pending | Full scene import surface |
+| `pbr_metallic_roughness_material` chunk | `AsciiSceneParser.cpp` | 2 | pending | PBR authoring sugar |
+| `PBRMetallicRoughnessMaterial` class | `Materials/` | 2 | pending | Constructs GGX + painters from PBR inputs |
+| `channel_painter` chunk + class | `Painters/` | 2 | pending | Extract MR-texture channels |
+| `alpha_test_modifier` chunk + class | `Modifiers/` | 2 | pending | glTF alphaMode = MASK |
+| Optional `quaternion` / `matrix` param on `standard_object` | `AsciiSceneParser.cpp` | 2 | pending | Lossless node transform import |
+| Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | pending | Avoid double-chunk for PBR + emissive |
 
 ---
 
 ## 11. Open questions
 
-1. **`KHR_materials_emissive_strength`** — multiplies emissive by a scalar. Easy. Honor in v1?
-2. **`KHR_materials_unlit`** — bypass BSDF, render baseColor as luminaire. Maps to `lambertian_luminaire_material`. Honor in v1?
-3. **Color space.** glTF spec says baseColor and emissive are sRGB; metallic/roughness/normal/occlusion are linear. Our `png_painter` has a `color_space` param — confirm the auto-mapping logic when the importer creates painters.
+1. **`KHR_materials_emissive_strength`** — multiplies emissive by a scalar.  Easy.  Honor in v1?
+2. **`KHR_materials_unlit`** — bypass BSDF, render baseColor as luminaire.  Maps to `lambertian_luminaire_material`.  Honor in v1?
+3. **Color space.** glTF spec says baseColor and emissive are sRGB; metallic / roughness / normal / occlusion are linear.  Our `png_painter` has a `color_space` param — confirm the auto-mapping logic when the importer creates painters.  Phase 1 finding for one slice of this: **normal maps need `color_space ROMMRGB_Linear`** (NOT `Rec709RGB_Linear`) to bypass the Rec709 → ROMM colour-matrix conversion that would otherwise warp the encoded vector.  Documented in `gltf_normal_mapped.RISEscene` and the `normal_map_modifier` chunk description.
 4. **JPEG dependency timing.** ~~Phase 1 doesn't strictly need JPEG (we can test with PNG-textured glTF assets), but the curated showcase scene in Phase 2 will. Should the JPEG task be a hard dependency for Phase 2, or do we ship Phase 2 without JPEG and document it as "PNG-textured glTF only for now"?~~ **RESOLVED 2026-04-29** — `jpg_painter` shipped, so Phase 2 can use JPEG-textured assets from Khronos Sample-Assets directly without conversion.
-5. **Naming convention for imported objects.** Proposal: `<prefix>.<glTFNodeName>.<primIdx>` for objects, `<prefix>.mat.<materialIdx>` for materials, `<prefix>.tex.<textureIdx>` for textures, `<prefix>.cam.<cameraIdx>` for cameras, `<prefix>.light.<lightIdx>` for lights. Predictable enough that users can override individual items by re-declaring them after the `gltf_import` chunk.
+5. **Naming convention for imported objects.** Proposal: `<prefix>.<glTFNodeName>.<primIdx>` for objects, `<prefix>.mat.<materialIdx>` for materials, `<prefix>.tex.<textureIdx>` for textures, `<prefix>.cam.<cameraIdx>` for cameras, `<prefix>.light.<lightIdx>` for lights.  Predictable enough that users can override individual items by re-declaring them after the `gltf_import` chunk.
 6. **Where does the importer live?** Options:
    - As a static function on `Job` (simple, keeps `Job.cpp` from sprawling further).
    - As a new `src/Library/Importers/` subsystem (extensible — future FBX/USD importers slot in).
 
    Recommend the latter; Importers is a natural sibling to `Parsers/`.
-7. **Should `standard_object` get a `matrix` parameter** (16 doubles) **as well as `quaternion`?** A matrix is even more general than quaternion+position+scale and would let the importer emit the node transform verbatim. Cost: small — the parser converts to internal matrix form anyway. Benefit: lossless for any glTF input including those with non-uniform / sheared / mirrored transforms.
-8. **Validation strictness.** Reject malformed glTF outright (cgltf's `cgltf_validate()`), or log warnings and try to render what we can?
+7. **Should `standard_object` get a `matrix` parameter** (16 doubles) **as well as `quaternion`?** A matrix is even more general than quaternion+position+scale and would let the importer emit the node transform verbatim.  Cost: small — the parser converts to internal matrix form anyway.  Benefit: lossless for any glTF input including those with non-uniform / sheared / mirrored transforms.
+8. **Validation strictness.** ~~Reject malformed glTF outright (cgltf's `cgltf_validate()`), or log warnings and try to render what we can?~~  **RESOLVED 2026-04-30 (Phase 1)** — the loader calls `cgltf_validate()` and bails on failure with an `eLog_Error` line naming the file and the cgltf result code; same treatment for `cgltf_parse_file` / `cgltf_load_buffers`.  Per-attribute count mismatches are also a hard fail.  Phase 2's `gltf_import` should match this stance for parse-time errors but probably wants warn-and-skip behaviour for individual primitives that fail (so one bad mesh doesn't tank the whole scene).
+9. **V-axis convention compensation lives at the loader.** ~~No question, just a finding — see §4 V-convention reconciliation.~~  RESOLVED in Phase 1.  Open follow-up: when `gltf_import` lands in Phase 2, it must apply the same V flip (default TRUE) when emitting `gltfmesh_geometry`-equivalent geometry per primitive.
 
 ---
 

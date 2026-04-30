@@ -364,6 +364,8 @@
 		F24B730D2F52A632008304C4 /* WardIsotropicGaussianSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F24B730E2F52A632008304C4 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F24B730F2F52A632008304C4 /* BumpMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
+		F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
+		F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F002069C42900069C9E5 /* NormalMap.h */; };
 		F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F24B73122F52A632008304C4 /* Noise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -1071,6 +1073,8 @@
 		F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
+		F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
+		F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0F002069C42900069C9E5 /* NormalMap.h */; };
 		F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F27F0B89069C42910069C9E5 /* Noise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -2026,6 +2030,8 @@
 		F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = WardIsotropicGaussianSPF.h; sourceTree = "<group>"; };
 		F27F091E069C42900069C9E5 /* BumpMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BumpMap.cpp; sourceTree = "<group>"; };
 		F27F091F069C42900069C9E5 /* BumpMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BumpMap.h; sourceTree = "<group>"; };
+		F2C0F001069C42900069C9E5 /* NormalMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = NormalMap.cpp; sourceTree = "<group>"; };
+		F2C0F002069C42900069C9E5 /* NormalMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NormalMap.h; sourceTree = "<group>"; };
 		F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InterpolatedNoise.cpp; sourceTree = "<group>"; };
 		F27F0922069C42900069C9E5 /* InterpolatedNoise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InterpolatedNoise.h; sourceTree = "<group>"; };
 		F27F0923069C42900069C9E5 /* Noise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Noise.h; sourceTree = "<group>"; };
@@ -3065,6 +3071,8 @@
 			children = (
 				F27F091E069C42900069C9E5 /* BumpMap.cpp */,
 				F27F091F069C42900069C9E5 /* BumpMap.h */,
+				F2C0F001069C42900069C9E5 /* NormalMap.cpp */,
+				F2C0F002069C42900069C9E5 /* NormalMap.h */,
 			);
 			path = Modifiers;
 			sourceTree = "<group>";
@@ -3954,6 +3962,7 @@
 				F27F0B82069C42910069C9E5 /* WardIsotropicGaussianMaterial.h in Headers */,
 				F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */,
 				F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */,
+				F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */,
 				F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */,
 				F27F0B89069C42910069C9E5 /* Noise.h in Headers */,
 				F27F0B8A069C42910069C9E5 /* NoiseUtils.h in Headers */,
@@ -4450,6 +4459,7 @@
 				F27F0B80069C42910069C9E5 /* WardIsotropicGaussianBRDF.cpp in Sources */,
 				F27F0B83069C42910069C9E5 /* WardIsotropicGaussianSPF.cpp in Sources */,
 				F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */,
+				F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */,
 				F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */,
 				F27F0B8C069C42910069C9E5 /* PerlinNoise1D.cpp in Sources */,
 				F27F0B8D069C42910069C9E5 /* PerlinNoise2D.cpp in Sources */,
@@ -4980,6 +4990,8 @@
 				F24B730D2F52A632008304C4 /* WardIsotropicGaussianSPF.h in Sources */,
 				F24B730E2F52A632008304C4 /* BumpMap.cpp in Sources */,
 				F24B730F2F52A632008304C4 /* BumpMap.h in Sources */,
+				F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */,
+				F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */,
 				F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */,
 				F2C5D57F2F6EA5B300546C97 /* PSSMLTSampler.cpp in Sources */,
 				F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */,

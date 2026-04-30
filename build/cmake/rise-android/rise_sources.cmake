@@ -284,6 +284,7 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBMODIFIERS
     "${RISE_LIB}/Modifiers/BumpMap.cpp"
+    "${RISE_LIB}/Modifiers/NormalMap.cpp"
 
     # SRCLIBRASTERIMAGES
     "${RISE_LIB}/RasterImages/EXRReader.cpp"

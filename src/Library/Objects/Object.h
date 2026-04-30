@@ -49,6 +49,17 @@ namespace RISE
 			// We do( M^-1)^T instead of M*n because this will work with shears and reflections
 			Matrix4											m_mxInvTranspose;
 
+			//! Sign of the tangent-frame chirality flip introduced by
+			//! the object transform.  +1 for orientation-preserving
+			//! transforms (rotation, translation, positive non-uniform
+			//! scale); -1 for orientation-reversing transforms (e.g.
+			//! `scale -1 1 1`, mirrored instances).  Computed from the
+			//! sign of `det(m_mxFinalTrans)` in FinalizeTransformations()
+			//! and applied to `ri.geometric.bitangentSign` at hit time
+			//! so tangent-space normal maps render correctly on
+			//! mirrored object instances of the same source mesh.
+			Scalar											m_tangentFrameSign;
+
 			virtual ~Object( );
 
 		public:

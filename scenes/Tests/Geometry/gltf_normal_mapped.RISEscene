@@ -1,0 +1,204 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           gltf_normal_mapped.RISEscene                                                            #
+#   Description:    End-to-end verification of tangent-space normal mapping driven by glTF TANGENT.         #
+#                   Loads NormalTangentMirrorTest.glb -- one of Khronos's adversarial test assets, an       #
+#                   essentially-flat plane carrying POSITION+NORMAL+TANGENT+TEXCOORD_0 with a tiled         #
+#                   "sphere-bump" normal map applied via mirrored UVs.  The mirrored UVs are the            #
+#                   diagnostic: if the bitangent sign (TANGENT.w) were dropped or normalised, the           #
+#                   mirrored half of the surface would shade WRONG (bumps appearing inverted or sideways).  #
+#                   With the v3 tangent path + normal_map_modifier wired correctly, the bumps appear        #
+#                   raised everywhere the normal map says they should be.                                   #
+#                                                                                                           #
+#                   Normal-map texture is a sidecar PNG extracted from the .glb's BIN chunk via             #
+#                   scenes/Tests/Geometry/assets/extract_embedded_texture.py -- this is a Phase 1.5         #
+#                   stopgap; Phase 2 will fold the extraction into gltf_import.  See                        #
+#                   docs/GLTF_IMPORT.md "Phase 1.5 / Phase 2 cleanups".                                     #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		2
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_normal_mapped
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+# NormalTangentMirrorTest.glb's geometry is a flat-ish surface in the
+# X / Y plane (roughly  X: -1.42..1.41  Y: -1.20..1.05  Z: -0.01..0.08).
+# Camera is wide enough to frame TWO instances side-by-side: one with
+# the identity object transform (left) and one with `scale -1 1 1`
+# (right).  This is the regression check for the orientation-reversing
+# transform fix in Object.cpp -- both instances must render with
+# consistent bump shading direction.  Without the fix, the mirrored
+# instance shades inverted because cross(N_world, T_world) ends up
+# pointing the wrong way relative to the transformed surface.
+pinhole_camera
+{
+	location			0 0 9
+	lookat				0 0 0
+	up					0 1 0
+	width				1024
+	height				512
+	fov					42.0
+}
+
+##################################################
+# Painters
+##################################################
+
+# Plain white substrate so the normal-map shading is the only thing
+# perturbing the lighting -- isolates the Phase 1 normal-map effect
+# from any albedo modulation.
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.95 0.95 0.95
+	colorspace			sRGB
+}
+
+# CRITICAL: a normal map is NOT colour data; the encoded values are
+# vector components in [-1,+1] mapped to [0,1] linearly.  The right
+# "color_space" choice is therefore the one that performs ZERO matrix
+# conversion at load time -- i.e. the one whose name matches RISE's
+# internal RISEPel space.  Today RISEPel is ROMMRGBPel (see
+# Color.h), so `color_space ROMMRGB_Linear` is a pure store-as-is
+# load: PNG bytes -> [0,1] floats -> RISEPel.  Picking sRGB or
+# Rec709RGB_Linear would warp the encoded vector via the colour
+# matrix and break normal-map decoding (especially the +Y/+X regions
+# where r != g != b).
+png_painter
+{
+	name				pnt_normal
+	file				scenes/Tests/Geometry/assets/NormalTangentMirrorTest_normal.png
+	color_space			ROMMRGB_Linear
+	filter_type			Bilinear
+	lowmemory			FALSE
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				mat_white
+	reflectance			pnt_white
+}
+
+##################################################
+# Modifiers
+##################################################
+
+# scale=2.0 amplifies the encoded perturbation a bit so the bumps
+# read clearly against this scene's flat surface and Lambertian
+# substrate.  glTF's authored default is 1.0 (the value the importer
+# would emit in Phase 2) and produces a more subtle look; bump up for
+# this Phase 1 visual smoke test, dial back when integrating with a
+# real PBR material in Phase 2.
+normal_map_modifier
+{
+	name				nm_mirror
+	normal_map			pnt_normal
+	scale				2.0
+}
+
+##################################################
+# Objects
+##################################################
+
+# Single primitive of the single mesh.  Loader populates pTangents
+# from glTF TANGENT.xyz + bitangentSign from TANGENT.w, then the
+# v3 intersection path interpolates them per-hit and the
+# normal_map_modifier consumes them.
+gltfmesh_geometry
+{
+	name				ntm_geom
+	file				scenes/Tests/Geometry/assets/NormalTangentMirrorTest.glb
+	mesh_index			0
+	primitive			0
+	double_sided		TRUE
+	face_normals		FALSE
+	# flip_v defaults to TRUE for glTF (V-up source -> V-down RISE sampling)
+}
+
+# Left half: identity transform.  Sanity baseline.
+standard_object
+{
+	name				ntm_object_normal
+	geometry			ntm_geom
+	material			mat_white
+	modifier			nm_mirror
+	position			-1.7 0 0
+	orientation			0 0 0
+	scale				1 1 1
+}
+
+# Right half: mirrored along X via `scale -1 1 1`.  This is an
+# orientation-REVERSING object transform (det(M) = -1).  With the
+# Object.cpp m_tangentFrameSign fix, ri.bitangentSign gets multiplied
+# by -1 at hit time so cross(N_world, T_world) * sign reconstructs the
+# right bitangent for the mirrored surface.  Without the fix, this
+# half would render with bumps appearing inverted relative to the
+# left half -- the same failure mode as the asset's internal
+# mirrored-UV regions, but introduced at the object-transform level
+# instead.
+standard_object
+{
+	name				ntm_object_mirrored
+	geometry			ntm_geom
+	material			mat_white
+	modifier			nm_mirror
+	position			1.7 0 0
+	orientation			0 0 0
+	scale				-1 1 1
+}
+
+##################################################
+# Lights
+##################################################
+
+# Light coming from the upper left so the raised bumps cast visible
+# shading gradients (lit on upper-left of each bump, dim on lower-right).
+# Strong oblique key light from the right -- hits each bump's right
+# face brightly, leaves the left face in shadow.  Direction values
+# are the propagation direction (light source is at -direction).
+# A near-horizontal angle along +X makes any X-facing normal tilts
+# extremely visible while the bump's vertical (Y) component shows
+# only modestly.  Choose the angle so a correctly-rendered bump has
+# its right hemisphere bright and left hemisphere dark, regardless of
+# whether the underlying tile uses normal or mirrored UVs (the whole
+# point of this scene).
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	-1.0 0.0 -0.3
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.05
+	color		1.0 1.0 1.0
+}
