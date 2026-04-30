@@ -45,8 +45,8 @@ pinhole_camera
 	location			0 0 8
 	lookat				0 0 0
 	up					0 1 0
-	width				64
-	height				64
+	width				512
+	height				512
 	fov					30.0
 }
 
