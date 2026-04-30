@@ -87,7 +87,7 @@ The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiScenePars
 | Painters | 27 | `uniformcolor_painter`, `image_painter`, `voronoi3d_painter`, `iridescent_painter` |
 | Functions | 2 | `piecewise_linear_function`, `piecewise_linear_function2D` |
 | Materials | 23 | `lambertian_material`, `dielectric_material`, `ggx_material`, `composite_material` |
-| Cameras | 6 | `pinhole_camera`, `thinlens_camera`, `realistic_camera`, `fisheye_camera` |
+| Cameras | 5 | `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 15 | `sphere_geometry`, `mesh3DS_geometry`, `displaced_geometry`, `bezier_patch_geometry` |
 | Modifiers | 1 | `bumpmap_modifier` |
 | Media | 3 | `homogeneous_medium`, `heterogeneous_medium`, `painterheterogeneous_medium` |
@@ -101,7 +101,44 @@ The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiScenePars
 | Irradiance cache | 1 | `irradiance_cache` |
 | Animation | 3 | `keyframe`, `timeline`, `animation_options` |
 
-**Total: 125 chunk parsers, 126 chunk keywords** (`mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop`). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list.
+**Total: 124 chunk parsers, 125 chunk keywords** (`mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop`). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list.
+
+`realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
+
+## `thinlens_camera` Sensor-Format Presets
+
+### Unit story (read this first)
+
+`thinlens_camera` has three lengths — `sensor_size`, `focal_length`, `focus_distance` — and **all three must be in the same unit**, which must also match the unit of your scene geometry. The FOV formula `2 * atan(sensor_size / (2 * focal_length))` is unit-free (the ratio is what matters), but the lens equation `v = f·u/(u−f)` used for depth-of-field is *not* — `focal_length` and `focus_distance` are subtracted, which only makes sense in matching units.
+
+`focus_distance` is **required** with no default — you must set it to the focus-plane distance in your scene's unit. The parser also enforces `focus_distance > focal_length` (otherwise the lens equation gives a negative film distance — physically a virtual image, no real photograph).
+
+The presets below are the **mm-equivalent** sensor widths. They work directly when scene geometry is in mm. For other scene units, scale all three lengths by the same factor:
+
+| Scene unit | Full-frame `sensor_size` | "Natural" `focal_length` | Example `focus_distance` |
+|---|---|---|---|
+| millimetres (default) | 36 | 35 | 1000 (i.e. 1 m focus) |
+| centimetres | 3.6 | 3.5 | 100 |
+| metres | 0.036 | 0.035 | 1 |
+
+The aperture diameter is derived as `focal_length / fstop` and inherits the same unit. `fstop` is dimensionless. Aperture-shape parameters (`aperture_blades`, `aperture_rotation`, `anamorphic_squeeze`) shape the bokeh; defaults give a perfect circular disk.
+
+### Sensor format presets (mm-equivalent — scale per the table above for other scene units)
+
+| Format | sensor_size (mm) | Notes |
+|---|---|---|
+| **Full-frame 35mm still** *(default)* | 36.0 | 24×36 — Leica / DSLR / mirrorless |
+| APS-C (Sony/Nikon/Fuji) | 23.6 | 15.7×23.6 |
+| APS-C (Canon) | 22.3 | 14.9×22.3 |
+| Super 35 (cinema) | 24.89 | 18.66×24.89 — most-common digital cinema sensor |
+| Micro Four Thirds | 17.3 | 13×17.3 |
+| Vista Vision | 37.72 | 25.17×37.72 — 8-perf 35mm cinema |
+| IMAX 70mm | 70.41 | 52.63×70.41 — 15-perf |
+| 645 medium format | 56.0 | 41.5×56 |
+| 6×7 medium format | 70.0 | 56×70 |
+| 6×9 medium format | 84.0 | 56×84 |
+| 4×5 large format | 121.0 | 96×121 sheet film |
+| 8×10 large format | 254.0 | 203×254 sheet film |
 
 ## Adding A New Chunk Parser
 
@@ -192,7 +229,7 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 
 | Helper | Used by | Adds |
 |--------|---------|------|
-| `AddCameraCommonParams` | All 6 cameras | `location`, `lookat`, `up`, `width`, `height`, `pixelAR`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … |
+| `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `width`, `height`, `pixelAR`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … |
 | `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
 | `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
 | `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |

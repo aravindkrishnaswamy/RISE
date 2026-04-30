@@ -51,9 +51,9 @@ thinlens_camera
 	up					0 1 0
 	width				512
 	height				512
-	fov					50.0
-	aperture_size		80.0
+	sensor_size			16.79			# matches the previous fov=50 with focal=18 (Cornell-mm scale)
 	focal_length		18.0
+	fstop				0.225			# wide-open lens preserves the historical strong DoF blur
 	focus_distance		490.0
 }
 

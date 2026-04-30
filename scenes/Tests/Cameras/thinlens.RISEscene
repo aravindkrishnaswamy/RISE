@@ -50,9 +50,9 @@ thinlens_camera
 	up					0 1 0
 	width				1024
 	height				512
-	fov					20
-	aperture_size		5				# f/2.8
+	sensor_size			4.94			# matches the previous fov=20 with focal=14
 	focal_length		14				# 14mm
+	fstop				2.8				# f/2.8
 	focus_distance		28.0			# focus distance
 }
 

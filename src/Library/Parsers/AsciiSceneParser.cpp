@@ -2978,17 +2978,46 @@ namespace RISE
 				}
 			};
 
+			// thinlens_camera takes the photographic quartet
+			// (sensor_size, focal_length, fstop, focus_distance) plus
+			// optional aperture-shape params (blades, rotation,
+			// anamorphic squeeze).  The pre-photographic parameters
+			// `fov` and `aperture_size` are no longer accepted; the
+			// descriptor-driven parser rejects them automatically with
+			// "parameter not declared in descriptor" because they're
+			// absent from Describe() below.  Migration formula in
+			// docs/CAMERAS_ROADMAP.md Phase 1.0.
 			struct ThinlensCameraAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					double fov          = 30.0 * DEG_TO_RAD;
-					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
-					unsigned int xres   = bag.GetUInt(   "width",          256 );
-					unsigned int yres   = bag.GetUInt(   "height",         256 );
-					double aperture     = bag.GetDouble( "aperture_size",  1.0 );
-					double focal        = bag.GetDouble( "focal_length",   0.1 );
-					double focus        = bag.GetDouble( "focus_distance", 1.0 );
+					unsigned int xres = bag.GetUInt(   "width",            256 );
+					unsigned int yres = bag.GetUInt(   "height",           256 );
+					// Photographic quartet.  sensor_size, focal_length,
+					// and focus_distance must all be expressed in the
+					// SAME unit as scene geometry — the FOV formula
+					// (sensor / focal) is unit-free, but the lens
+					// equation v = f*u/(u-f) is not.  By convention,
+					// scenes in mm use the photographic numbers
+					// directly (sensor 36, focal 35); scenes in metres
+					// scale them down (sensor 0.036, focal 0.035).
+					// fstop is dimensionless; aperture diameter is
+					// derived as focal_length / fstop.
+					if( !bag.Has( "focus_distance" ) ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: `focus_distance` is required and has no default — set it explicitly to "
+							"the focus plane distance in your scene's unit (must be > focal_length)." );
+						return false;
+					}
+					double focus        = bag.GetDouble( "focus_distance" );
+					double sensor       = bag.GetDouble( "sensor_size",     36.0 );
+					double focal        = bag.GetDouble( "focal_length",    35.0 );
+					double fstop        = bag.GetDouble( "fstop",            2.8 );
+					// Aperture-shape (Phase 1.0 enrichments).
+					unsigned int blades = bag.GetUInt(   "aperture_blades",   0 );
+					double rotation     = bag.GetDouble( "aperture_rotation", 0 );
+					double squeeze      = bag.GetDouble( "anamorphic_squeeze", 1.0 );
+
 					double pixelAR      = bag.GetDouble( "pixelAR",        1.0 );
 					double exposure     = bag.GetDouble( "exposure",       0 );
 					double scanningRate = bag.GetDouble( "scanning_rate",  0 );
@@ -3016,8 +3045,29 @@ namespace RISE
 					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
 					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
 
-					if( focal >= focus ) {
-						GlobalLog()->PrintEx( eLog_Error, "Focal length is >= focus distance, that makes no sense!" );
+					if( fstop <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error, "thinlens_camera:: fstop must be positive; got %g", fstop );
+						return false;
+					}
+					if( sensor <= 0.0 || focal <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: sensor_size (%g) and focal_length (%g) must both be positive", sensor, focal );
+						return false;
+					}
+					if( focus <= focal ) {
+						// The thin-lens equation v = f*u/(u-f) gives a
+						// negative film distance for u <= f, which would
+						// produce inverted/mirror-image rays.  This
+						// almost always means the user mismatched units:
+						// e.g. a 35mm-equivalent focal_length=35 with a
+						// scene-in-metres focus_distance=3 (should be
+						// 0.035 to match scene units, or 3000 to match
+						// mm).  See the chunk doc for the unit story.
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: focus_distance (%g) must be greater than focal_length (%g) in matching units. "
+							"Both must use the same unit as scene geometry — for a scene in metres, "
+							"a 35mm lens is focal_length=0.035, not 35.",
+							focus, focal );
 						return false;
 					}
 
@@ -3028,19 +3078,24 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					return pJob.SetThinlensCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focal, focus );
+					rotation *= DEG_TO_RAD;
+
+					return pJob.SetThinlensCamera( loc, lookat, up, sensor, focal, fstop, focus, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "thinlens_camera"; cd.category = ChunkCategory::Camera;
-						cd.description = "Perspective camera with thin-lens depth of field.";
+						cd.description = "Perspective camera with thin-lens depth of field, parameterised photographically (sensor_size + focal_length + fstop + focus_distance).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "fov";             p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
-						{ auto& p = P(); p.name = "aperture_size";  p.kind = ValueKind::Double; p.description = "Aperture radius"; p.defaultValueHint = "0.01"; }
-						{ auto& p = P(); p.name = "focus_distance"; p.kind = ValueKind::Double; p.description = "Focal distance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "focal_length";  p.kind = ValueKind::Double; p.description = "Focal length (legacy alias)"; }
+						{ auto& p = P(); p.name = "sensor_size";        p.kind = ValueKind::Double; p.description = "Sensor width in scene units (use mm-equivalent numbers like 36 when scene is in mm). Photographic presets — 36: full-frame 35mm; 23.6: APS-C; 24.89: Super 35; 17.3: m4/3; 56: 645 medium format; 121: 4x5 large format; 254: 8x10 large format. For metre-scale scenes scale these down by 1000."; p.defaultValueHint = "36"; }
+						{ auto& p = P(); p.name = "focal_length";       p.kind = ValueKind::Double; p.description = "Lens focal length in the same unit as sensor_size and focus_distance (scene units). 35 is 'natural' for a 36mm sensor."; p.defaultValueHint = "35"; }
+						{ auto& p = P(); p.name = "fstop";              p.kind = ValueKind::Double; p.description = "f-number (aperture diameter = focal_length / fstop)."; p.defaultValueHint = "2.8"; }
+						{ auto& p = P(); p.name = "focus_distance";     p.kind = ValueKind::Double; p.required = true; p.description = "Focus plane distance in scene units (same unit as focal_length); must be > focal_length. No default — depends entirely on the scene."; }
+						{ auto& p = P(); p.name = "aperture_blades";    p.kind = ValueKind::UInt;   p.description = "Polygonal aperture blades; 0 = perfect disk, typical cinematic 5-9."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "aperture_rotation";  p.kind = ValueKind::Double; p.description = "Polygon rotation in degrees."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular)."; p.defaultValueHint = "1.0"; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -3048,82 +3103,12 @@ namespace RISE
 				}
 			};
 
-			struct RealisticCameraAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
-				{
-					unsigned int xres = bag.GetUInt(   "width",          256 );
-					unsigned int yres = bag.GetUInt(   "height",         256 );
-
-					// Default film sizes are 35mm
-					double film_size  = bag.GetDouble( "film_size",      35 );
-					double fstop      = bag.GetDouble( "fstop",          2.8 );
-					double focal      = bag.GetDouble( "focal_length",   0.1 );
-					double focus      = bag.GetDouble( "focus_distance", 1.0 );
-
-					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
-					double exposure     = bag.GetDouble( "exposure",      0 );
-					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
-					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
-
-					double loc[3]    = {0,0,0};
-					double lookat[3] = {0,0,-1};
-					double up[3]     = {0,1,0};
-					bag.GetVec3( "location", loc );
-					bag.GetVec3( "lookat",   lookat );
-					bag.GetVec3( "up",       up );
-
-					double orientation[3] = {0,0,0};
-					if( bag.Has( "orientation" ) ) {
-						bag.GetVec3( "orientation", orientation );
-					}
-					if( bag.Has( "pitch" ) ) orientation[0] = bag.GetDouble( "pitch" );
-					if( bag.Has( "roll" ) )  orientation[1] = bag.GetDouble( "roll" );
-					if( bag.Has( "yaw" ) )   orientation[2] = bag.GetDouble( "yaw" );
-
-					double target_orientation[2] = {0,0};
-					if( bag.Has( "target_orientation" ) ) {
-						sscanf( bag.GetString( "target_orientation" ).c_str(), "%lf %lf", &target_orientation[0], &target_orientation[1] );
-					}
-					if( bag.Has( "theta" ) ) target_orientation[0] = bag.GetDouble( "theta" );
-					if( bag.Has( "phi" ) )   target_orientation[1] = bag.GetDouble( "phi" );
-
-					if( focal >= focus ) {
-						GlobalLog()->PrintEx( eLog_Error, "Focal length is >= focus distance, that makes no sense!" );
-						return false;
-					}
-
-					// From ThinLensCamera.cpp
-					// Angle of View = 2 * ArcTan(Film Dimension / (2 * Focal Length))
-					const double fov = 2.0 * atan(film_size / (2.0 * focal));
-					const double aperture = focal / fstop;
-
-					orientation[0] *= DEG_TO_RAD;
-					orientation[1] *= DEG_TO_RAD;
-					orientation[2] *= DEG_TO_RAD;
-
-					target_orientation[0] *= DEG_TO_RAD;
-					target_orientation[1] *= DEG_TO_RAD;
-
-					return pJob.SetThinlensCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, aperture, focal, focus );
-				}
-
-				const ChunkDescriptor& Describe() const override {
-					static const ChunkDescriptor d = []{
-						ChunkDescriptor cd;
-						cd.keyword = "realistic_camera"; cd.category = ChunkCategory::Camera;
-						cd.description = "Thin-lens camera parameterised by film size and f-stop (defaults to thin-lens internally).";
-						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "film_size";      p.kind = ValueKind::Double; p.description = "Film diagonal (mm)"; p.defaultValueHint = "35"; }
-						{ auto& p = P(); p.name = "fstop";          p.kind = ValueKind::Double; p.description = "Aperture f-stop"; p.defaultValueHint = "2.8"; }
-						{ auto& p = P(); p.name = "focus_distance"; p.kind = ValueKind::Double; p.description = "Focus distance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "focal_length";   p.kind = ValueKind::Double; p.description = "Focal length"; p.defaultValueHint = "0.1"; }
-						AddCameraCommonParams( P );
-						return cd;
-					}();
-					return d;
-				}
-			};
+			// `realistic_camera` keyword is reserved for the future
+			// multi-element lens-system camera (see
+			// docs/CAMERAS_ROADMAP.md Phase 4).  The previous stub
+			// (which delegated to thin-lens) was removed as part of
+			// the Phase 1.0 thin-lens parameter overhaul; existing
+			// scenes were migrated to `thinlens_camera`.
 
 			struct FisheyeCameraAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -6868,7 +6853,7 @@ namespace RISE
 		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
 		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
 		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );
-		add( "realistic_camera",                      new RealisticCameraAsciiChunkParser() );
+		// realistic_camera reserved for Phase 4 (multi-element lens).
 		add( "fisheye_camera",                        new FisheyeCameraAsciiChunkParser() );
 		add( "orthographic_camera",                   new OrthographicCameraAsciiChunkParser() );
 
