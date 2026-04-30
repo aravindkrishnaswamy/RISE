@@ -19,15 +19,14 @@ standard_shader
 	shaderop	DefaultDirectLighting
 }
 
-adaptivepixelpel_rasterizer
+pixelpel_rasterizer
 {
-	max_recursion		10
-	min_samples			32
-	max_samples			2000
-	num_steps			46
-	lum_samples			1
-	threshold			0.0005
-#	show_samples		true
+	max_recursion			10
+	samples					32
+	lum_samples				1
+	adaptive_max_samples	2000
+	adaptive_threshold		0.0005
+#	show_adaptive_map		true
 }
 
 file_rasterizeroutput
