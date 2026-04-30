@@ -21,6 +21,16 @@ RISE_Log.txt
 extlib/oidn/source/build/
 extlib/oidn/install/
 
+# Per-extlib Debug/ folders + standalone .vcxproj files that VS
+# regenerates when these vendored libraries are opened on their
+# own.  RISE no longer builds them this way (Library.vcxproj
+# consumes vcpkg packages instead — see the "Old extlib project
+# references removed" comment in Library.vcxproj.filters), so
+# these are noise.
+extlib/*/Debug/
+extlib/*/*.vcxproj
+extlib/*/*.vcxproj.filters
+
 # Visual studio on Windows
 /build/VS2005
 /build/VS2022/Library/Debug
