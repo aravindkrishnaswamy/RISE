@@ -757,6 +757,62 @@ Any P0 or P1 change additionally needs:
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
 
+### 2026-04-29 — Per-frame denoise on animation render
+- Animation rendering (the `renderanimation` CLI command) previously
+  flushed each frame raw; OIDN was never invoked.  This was an
+  unintentional gap — there was no design reason animation frames
+  shouldn't get denoised, just an asymmetry between
+  `PixelBasedRasterizerHelper::RasterizeScene` (which calls
+  `ApplyDenoise`) and `RasterizeSceneAnimation` (which historically
+  did not).
+- Two-part change in `PixelBasedRasterizerHelper`:
+  1. **`RenderFrameOfAnimation`** gains the per-frame setup:
+     `BeginRenderTimer()` so the OidnQuality::Auto heuristic decides
+     each frame independently rather than inflating with cumulative
+     animation time; `pAOVBuffers` allocate-or-reset per frame so
+     each frame starts with a fresh AOV; AOV normalization after
+     the progressive-film resolve (mirroring `RasterizeScene`'s
+     progressive branch); and the same `!bDenoisingEnabled` gate on
+     `pFilteredFilm->Resolve()` so OIDN sees the inline box-filtered
+     estimate, not the wide-filter reconstruction.
+  2. **`RasterizeSceneAnimation`** runs the denoise + dual flush
+     inside the cancel-guarded block — same shape as
+     `RasterizeScene`'s denoise call site.  Each completed frame
+     gets `FlushPreDenoisedToOutputs(frameIdx)` →
+     `mDenoiser->ApplyDenoise(...)` →
+     `FlushDenoisedToOutputs(frameIdx)`.  Cancelled frames neither
+     denoise nor flush — they're abandoned in their entirety so
+     the MOV writer doesn't see a half-rendered tail and prior
+     completed frames play back correctly after the caller
+     finalize()s the writer.
+- **Cancel semantics intentionally diverge from still images.**
+  `RasterizeScene` denoises on cancel (the partial smoothed image
+  is more useful for interactive cancel-restart loops than raw
+  noise).  `RasterizeSceneAnimation` does NOT — partially-rendered
+  frames in a movie sequence have inconsistent quality across
+  frames and break MOV writer expectations.  Documented in code
+  comment at the cancel-guard.
+- **BDPT / VCM:** they use `PixelBasedRasterizerHelper`'s base-class
+  `RasterizeSceneAnimation` (no override), so they pick up the
+  change automatically.  Their per-pixel `IntegratePixel` is
+  invoked through the same animation dispatcher used by PT.
+- **MLT animation gap (intentional, documented).**
+  `MLTRasterizer::RasterizeSceneAnimation` is an empty inline stub
+  today — Markov-chain rendering doesn't decompose cleanly into
+  per-frame independent renders (chains depend on prior chain
+  state via PSSMLTSampler), so adding animation here requires
+  non-trivial design work around chain-restart semantics across
+  frames.  When that work happens, mirror this change's denoise
+  wiring.  Header comment in `MLTRasterizer.h` calls this out so
+  a future implementer doesn't miss the OIDN integration step.
+- **Cache hits across frames:** thanks to OIDN-P0-2 device/filter
+  caching, only frame 1 pays the cold-rebuild cost on the same
+  rasterizer instance.  Subsequent frames (same dimensions, same
+  quality, same prefilter) hit the cache and run in ~5–10 ms
+  on Metal.  Smoke test (3 frames, M1 Max + Metal, 200×150 glass
+  scene): frame 1 cold 208 ms (Metal init dominates), frames
+  2 & 3 warm 6 ms / 5 ms.  72/72 tests pass; build clean.
+
 ### 2026-04-29 — Cancel-still-denoises: align code with stated invariant
 - Found a doc/code inconsistency.  The OIDN-P1-3 entry stated the
   user invariant: *"Cancelling mid-render still produces a useful
