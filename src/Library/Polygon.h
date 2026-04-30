@@ -158,10 +158,24 @@ namespace RISE
 	//! space (typically sRGB for PLY/Blender exports) at load time.
 	typedef RISEPel							VertexColor;
 
+	//! Per-vertex tangent stored as object-space direction (xyz) +
+	//! bitangent sign (w = +1 or -1).  This is the glTF TANGENT
+	//! convention: bitangent = bitangentSign * cross(normal, dir).
+	//! Storing the sign rather than the bitangent itself lets a
+	//! single mesh handle mirrored UVs without duplicating vertices,
+	//! and matches how every modern exporter (Blender, glTF, FBX)
+	//! emits tangent data.
+	struct Tangent4
+	{
+		Vector3	dir;
+		Scalar	bitangentSign;
+	};
+
 	typedef std::vector<Vertex>				VerticesListType;
 	typedef std::vector<Normal>				NormalsListType;
 	typedef std::vector<TexCoord>			TexCoordsListType;
 	typedef std::vector<VertexColor>		VertexColorsListType;
+	typedef std::vector<Tangent4>			Tangent4ListType;
 
 	typedef std::vector<BezierPatch>		BezierPatchesListType;
 }

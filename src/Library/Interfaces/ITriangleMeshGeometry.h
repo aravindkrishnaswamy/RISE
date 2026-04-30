@@ -153,6 +153,56 @@ namespace RISE
 		/// \return The vertex-color array; may be empty.
 		virtual VertexColorsListType const& getColors() const = 0;
 	};
+
+	//! Sub-interface adding optional per-vertex tangent (vec4) and
+	//! secondary UV (TEXCOORD_1) storage to ITriangleMeshGeometryIndexed2.
+	//!
+	//! Both attributes follow the same indexing rule as v2 colors —
+	//! tangent index == position index, secondary UV uses iCoords[]
+	//! the same way primary UVs do.  Storing them out-of-band rather
+	//! than widening PointerTriangle keeps the BVH leaf payload small
+	//! while still supporting every modern exporter (glTF TANGENT and
+	//! TEXCOORD_1, Blender / FBX equivalents).
+	//!
+	//! Phase 1 of glTF import (see docs/GLTF_IMPORT.md) uses these
+	//! storage hooks; the consumers (`normal_map_modifier`, occlusion
+	//! texture sampling on TEXCOORD_1) come in Phase 2.
+	//!
+	//! Same rationale as v2 for the separate sub-interface: preserves
+	//! the v1/v2 vtable layout for any out-of-tree subclass, and
+	//! loaders fall back gracefully if dynamic_cast to v3 fails.
+	class ITriangleMeshGeometryIndexed3 : public virtual ITriangleMeshGeometryIndexed2
+	{
+	protected:
+		ITriangleMeshGeometryIndexed3(){};
+		virtual ~ITriangleMeshGeometryIndexed3(){};
+
+	public:
+		//! Adds a single per-vertex tangent (object-space direction
+		//! plus bitangent sign).
+		virtual void AddTangent( const Tangent4& tangent ) = 0;
+
+		//! Adds a list of per-vertex tangents.
+		virtual void AddTangents( const Tangent4ListType& tangents ) = 0;
+
+		/// \return The number of stored tangents (0 if not present).
+		virtual unsigned int numTangents() const = 0;
+
+		/// \return The tangent array; may be empty.
+		virtual Tangent4ListType const& getTangents() const = 0;
+
+		//! Adds a single secondary-UV coordinate (TEXCOORD_1).
+		virtual void AddTexCoord1( const TexCoord& coord ) = 0;
+
+		//! Adds a list of secondary-UV coordinates.
+		virtual void AddTexCoords1( const TexCoordsListType& coords ) = 0;
+
+		/// \return The number of stored secondary UVs (0 if not present).
+		virtual unsigned int numTexCoords1() const = 0;
+
+		/// \return The secondary-UV array; may be empty.
+		virtual TexCoordsListType const& getTexCoords1() const = 0;
+	};
 }
 
 #endif

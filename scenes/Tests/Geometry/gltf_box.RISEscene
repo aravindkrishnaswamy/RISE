@@ -1,0 +1,116 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           gltf_box.RISEscene                                                                      #
+#   Description:    Phase 1 glTF import smoke test: loads the Khronos sample Box.glb (the canonical         #
+#                   minimal glTF test asset, 6 face cube with NORMAL + TEXCOORD_0 + indices) through        #
+#                   the new gltfmesh_geometry chunk and renders it with a Lambertian material.              #
+#                                                                                                           #
+#                   Source asset is committed at scenes/Tests/Geometry/assets/Box.glb -- it's 1.6 KB,       #
+#                   CC-BY-licensed by Khronos, and matches the form most real glTF assets ship in.          #
+#                   See docs/GLTF_IMPORT.md §12 for the curated list of additional test models.             #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		2
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_box
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			2 2 3
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_orange
+	color				1.0 0.55 0.1
+	colorspace			sRGB
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				mat_orange
+	reflectance			pnt_orange
+}
+
+##################################################
+# Objects
+##################################################
+
+# Khronos sample Box.glb: 24 unique vertices (6 faces × 4 corners), 12
+# triangles, indexed.  Contains POSITION, NORMAL, TEXCOORD_0.  The
+# Box's canonical extents are -0.5..+0.5 along each axis.
+gltfmesh_geometry
+{
+	name				gltf_box_geom
+	file				scenes/Tests/Geometry/assets/Box.glb
+	mesh_index			0
+	primitive			0
+	double_sided		FALSE
+	face_normals		FALSE
+	flip_v				FALSE
+}
+
+standard_object
+{
+	name				box
+	geometry			gltf_box_geom
+	material			mat_orange
+	position			0 0 0
+	orientation			0 30 0
+	scale				1 1 1
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	-0.5 -0.7 -0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.2
+	color		1.0 1.0 1.0
+}

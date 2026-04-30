@@ -26,7 +26,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class TriangleMeshGeometryIndexed :
-			public virtual ITriangleMeshGeometryIndexed2,
+			public virtual ITriangleMeshGeometryIndexed3,
 			public virtual Geometry,
 			public virtual TreeElementProcessor<const PointerTriangle*>
 		{
@@ -43,6 +43,7 @@ namespace RISE
 			typedef NormalsListType						MyNormalsList;
 			typedef TexCoordsListType					MyCoordsList;
 			typedef VertexColorsListType				MyColorsList;
+			typedef Tangent4ListType					MyTangentsList;
 
 			typedef std::vector<Scalar>					TriangleAreasList;
 
@@ -57,6 +58,15 @@ namespace RISE
 			//! mesh has no color data — the vertex-color painter falls
 			//! back to its configured default in that case.
 			MyColorsList			pColors;
+			//! Optional per-vertex tangents (v3 interface).  Same indexing
+			//! convention as colors: tangent[i] is paired with position[i].
+			//! Empty when absent.  Live-only state — not yet persisted in
+			//! the .risemesh format (Phase 1 glTF import has no consumer).
+			MyTangentsList			pTangents;
+			//! Optional secondary UV set (TEXCOORD_1, v3 interface).
+			//! Indexed via face's iCoords[k] — same indices as primary UVs.
+			//! Empty when absent.  Same persistence note as pTangents.
+			MyCoordsList			pTexCoords1;
 			MyPointerTriangleList	ptr_polygons;		// The list of pointer triangles
 
 			bool					bDoubleSided;		// Are the polygons all double sided?
@@ -136,6 +146,16 @@ namespace RISE
 			void AddColors( const VertexColorsListType& colors ) override;
 			unsigned int numColors() const override { return static_cast<unsigned int>(pColors.size()); }
 			VertexColorsListType const& getColors() const override { return pColors; }
+
+			// ITriangleMeshGeometryIndexed3 — tangents + secondary UV set.
+			void AddTangent( const Tangent4& tangent ) override;
+			void AddTangents( const Tangent4ListType& tangents ) override;
+			unsigned int numTangents() const override { return static_cast<unsigned int>(pTangents.size()); }
+			Tangent4ListType const& getTangents() const override { return pTangents; }
+			void AddTexCoord1( const TexCoord& coord ) override;
+			void AddTexCoords1( const TexCoordsListType& coords ) override;
+			unsigned int numTexCoords1() const override { return static_cast<unsigned int>(pTexCoords1.size()); }
+			TexCoordsListType const& getTexCoords1() const override { return pTexCoords1; }
 
 			void DoneIndexedTriangles( ) override;				// I'm done feeding you a bunch of indexed triangles
 

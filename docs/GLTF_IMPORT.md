@@ -574,7 +574,7 @@ Net new chunks/interfaces this plan introduces:
 1. **`KHR_materials_emissive_strength`** — multiplies emissive by a scalar. Easy. Honor in v1?
 2. **`KHR_materials_unlit`** — bypass BSDF, render baseColor as luminaire. Maps to `lambertian_luminaire_material`. Honor in v1?
 3. **Color space.** glTF spec says baseColor and emissive are sRGB; metallic/roughness/normal/occlusion are linear. Our `png_painter` has a `color_space` param — confirm the auto-mapping logic when the importer creates painters.
-4. **JPEG dependency timing.** Phase 1 doesn't strictly need JPEG (we can test with PNG-textured glTF assets), but the curated showcase scene in Phase 2 will. Should the JPEG task be a hard dependency for Phase 2, or do we ship Phase 2 without JPEG and document it as "PNG-textured glTF only for now"?
+4. **JPEG dependency timing.** ~~Phase 1 doesn't strictly need JPEG (we can test with PNG-textured glTF assets), but the curated showcase scene in Phase 2 will. Should the JPEG task be a hard dependency for Phase 2, or do we ship Phase 2 without JPEG and document it as "PNG-textured glTF only for now"?~~ **RESOLVED 2026-04-29** — `jpg_painter` shipped, so Phase 2 can use JPEG-textured assets from Khronos Sample-Assets directly without conversion.
 5. **Naming convention for imported objects.** Proposal: `<prefix>.<glTFNodeName>.<primIdx>` for objects, `<prefix>.mat.<materialIdx>` for materials, `<prefix>.tex.<textureIdx>` for textures, `<prefix>.cam.<cameraIdx>` for cameras, `<prefix>.light.<lightIdx>` for lights. Predictable enough that users can override individual items by re-declaring them after the `gltf_import` chunk.
 6. **Where does the importer live?** Options:
    - As a static function on `Job` (simple, keeps `Job.cpp` from sprawling further).
@@ -586,7 +586,75 @@ Net new chunks/interfaces this plan introduces:
 
 ---
 
-## 12. References
+## 12. Test assets
+
+The canonical source is **Khronos glTF-Sample-Assets**
+(https://github.com/KhronosGroup/glTF-Sample-Assets) — official, 100+ models,
+organized by purpose, individual per-model licenses (almost all CC0 or CC-BY).
+Each model ships in multiple subdir variants; grab `glTF-Binary/` for `.glb`
+(single file, preferred for the test corpus) or `glTF/` for the
+JSON + `.bin` + textures sidecar form.  The repo is ~1 GB checked out — better
+to curl individual `.glb` files via raw GitHub URLs than to clone the whole
+thing.
+
+### Curated picks
+
+**Phase 1 mesh-loader sanity checks** (small, well-known, simple but fully-featured):
+
+- `Box` — minimal triangle mesh, no textures.
+- `BoxTextured` — adds TEXCOORD_0 and a baseColor texture.
+- `Duck` — the classic; small with a real PBR material.
+- `Avocado` — small but uses the full PBR texture set (baseColor + MR + normal).
+
+**Phase 2 PBR validation** (strong oracles per [docs/skills/write-highly-effective-tests.md](skills/write-highly-effective-tests.md)):
+
+- `MetalRoughSpheres` — grid sweeping every (metallic, roughness) combination.
+  Render it, then byte-check the diagonal: (metallic=1, roughness=0) → mirror
+  reflection of baseColor; (metallic=0, roughness=1) → pure diffuse.  If the
+  PBR mapping is wrong, this scene tells you *which* corner.
+- `DamagedHelmet` — community-favorite PBR showcase; good visual sanity.
+- `BoomBox` — high-quality PBR exercising every channel.
+
+**Attribute / edge-case coverage** (intentionally adversarial — `Models/Testing/`):
+
+- `NormalTangentTest` — tangent-space normal mapping; critical for verifying the
+  new `ITriangleMeshGeometryIndexed3` tangent storage end-to-end.
+- `NormalTangentMirrorTest` — mirrored UVs; exercises the w = ±1 bitangent-sign
+  handling on TANGENT.  Easy to get wrong; this scene catches the bug
+  immediately.
+- `VertexColorTest` — COLOR_0 round-trip.
+- `MultiUVTest` — TEXCOORD_1.
+- `AlphaBlendModeTest` — alpha modes; v1 supports OPAQUE + MASK only, so this
+  partially fails by design.  Useful regression for what we *do* support.
+- `OrientationTest` — coordinate-system sanity; catches Y-up vs Z-up bugs fast.
+
+**Bigger scenes for the Phase 2 showcase render:**
+
+- `Sponza` (Intel reimport, in `Models/Sponza/`) — the canonical "is your
+  renderer real" scene.
+- `ABeautifulGame` — chess set, good PBR variety.
+
+### Other sources (not needed for v1)
+
+- **Poly Haven** (https://polyhaven.com/models) — CC0 photoreal assets, ships
+  glTF and Blender source.
+- **Khronos Sample Viewer** built-in test list — a curated subset of
+  Sample-Assets.
+- **Sketchfab** has a huge library but the license-filter UX is a chore.
+
+### Where to put fetched assets in the repo
+
+Test scenes need predictable asset paths.  Proposed layout:
+
+- `scenes/Tests/Importers/assets/<ModelName>.glb` — single-file `.glb` for the
+  small test corpus.  Commit them; they're each well under 1 MB.
+- `scenes/FeatureBased/assets/<ModelName>/` — sidecar form for larger showcase
+  models where individual texture inspection matters.  Showcase assets larger
+  than ~10 MB should NOT be committed; instead, the `.RISEscene` file has a
+  header comment with the fetch URL and SHA-256, and `scenes/README.md` lists
+  the optional download.
+
+## 13. References
 
 - glTF 2.0 spec: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
 - glTF sample assets: https://github.com/KhronosGroup/glTF-Sample-Assets

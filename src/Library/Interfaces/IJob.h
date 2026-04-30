@@ -946,6 +946,23 @@ namespace RISE
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							) = 0;
 
+		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
+		//! Phase 1 of the glTF import work: a single primitive of a single mesh
+		//! becomes one named geometry.  Materials, scene structure, lights,
+		//! cameras, and animations are NOT imported by this call -- the user
+		//! assembles the rest of the scene with existing chunks.  See
+		//! docs/GLTF_IMPORT.md §7 for the phased plan.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGLTFTriangleMeshGeometry(
+							const char* name,						///< [in] Name of the geometry
+							const char* szFileName,					///< [in] .gltf or .glb file to load
+							const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
+							const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
+							const bool double_sided,				///< [in] Are the triangles double sided?
+							const bool face_normals,				///< [in] Use face normals rather than vertex normals
+							const bool flip_v						///< [in] Flip TEXCOORD V at load (glTF UV origin is top-left)
+							) = 0;
+
 		//! Adds a mesh from a .risemesh file
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddRISEMeshTriangleMeshGeometry(
