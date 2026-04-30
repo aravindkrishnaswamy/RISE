@@ -1764,6 +1764,14 @@ bool RISE_API_CreateIrradianceCache(
 								const COLOR_SPACE color_space		///< [in] Color space to apply
 								);
 
+	//! Creates a JPEG reader
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateJPEGReader(
+								IRasterImageReader** ppi,			///< [out] Pointer to recieve the raster image reader
+								IReadBuffer& buffer,				///< [in] Buffer containing JPEG data
+								const COLOR_SPACE color_space		///< [in] Color space in the file
+								);
+
 	//! Creates a TGA reader
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTGAReader(

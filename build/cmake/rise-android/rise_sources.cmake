@@ -290,6 +290,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/RasterImages/HDRReader.cpp"
     "${RISE_LIB}/RasterImages/HDRWriter.cpp"
     "${RISE_LIB}/RasterImages/PPMWriter.cpp"
+    "${RISE_LIB}/RasterImages/JPEGReader.cpp"
     "${RISE_LIB}/RasterImages/PNGReader.cpp"
     "${RISE_LIB}/RasterImages/PNGWriter.cpp"
     "${RISE_LIB}/RasterImages/RGBEAWriter.cpp"
@@ -342,4 +343,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Scene.cpp"
     "${RISE_LIB}/Job.cpp"
     "${RISE_LIB}/RISE_API.cpp"
+
+    # SRCLIBEXTLIB -- vendored single-header libs we compile inline
+    "${RISE_LIB}/../../extlib/stb/stb_image.cpp"
 )

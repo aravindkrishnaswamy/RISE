@@ -37,6 +37,12 @@
     <Filter Include="Raster Images\PNG">
       <UniqueIdentifier>{1cd82a61-84bc-4d8d-8b40-f53ff915a7ad}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Raster Images\JPEG">
+      <UniqueIdentifier>{c6b48ad1-7ef9-4e24-8c2b-9a3e0e5a0f01}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="External Libraries\stb">
+      <UniqueIdentifier>{c6b48ad1-7ef9-4e24-8c2b-9a3e0e5a0f02}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Raster Images\RGBEA">
       <UniqueIdentifier>{be605979-8afc-4a48-964b-b64e1aafba56}</UniqueIdentifier>
     </Filter>
@@ -357,11 +363,17 @@
     <ClCompile Include="..\..\..\src\Library\RasterImages\HDRWriter.cpp">
       <Filter>Raster Images\HDR</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\RasterImages\JPEGReader.cpp">
+      <Filter>Raster Images\JPEG</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\PNGReader.cpp">
       <Filter>Raster Images\PNG</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\PNGWriter.cpp">
       <Filter>Raster Images\PNG</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\extlib\stb\stb_image.cpp">
+      <Filter>External Libraries\stb</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\RGBEAWriter.cpp">
       <Filter>Raster Images\RGBEA</Filter>
@@ -1338,11 +1350,17 @@
     <ClInclude Include="..\..\..\src\Library\RasterImages\HDRWriter.h">
       <Filter>Raster Images\HDR</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\JPEGReader.h">
+      <Filter>Raster Images\JPEG</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\PNGReader.h">
       <Filter>Raster Images\PNG</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\PNGWriter.h">
       <Filter>Raster Images\PNG</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\extlib\stb\stb_image.h">
+      <Filter>External Libraries\stb</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\RGBEAWriter.h">
       <Filter>Raster Images\RGBEA</Filter>

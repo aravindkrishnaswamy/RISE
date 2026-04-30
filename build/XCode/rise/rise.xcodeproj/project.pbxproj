@@ -464,6 +464,10 @@
 		F24B73702F52A632008304C4 /* NNBRasterImageAccessor.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */; };
 		F24B73712F52A632008304C4 /* PNGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0983069C42900069C9E5 /* PNGReader.cpp */; };
 		F24B73722F52A632008304C4 /* PNGReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0984069C42900069C9E5 /* PNGReader.h */; };
+		F2C0EE10069C42900069C9E5 /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
+		F2C0EE11069C42900069C9E5 /* JPEGReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
+		F2C0EE12069C42900069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
+		F2C0EE13069C42900069C9E5 /* stb_image.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
 		F24B73732F52A632008304C4 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
 		F24B73742F52A632008304C4 /* PNGWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0986069C42900069C9E5 /* PNGWriter.h */; };
 		F24B73752F52A632008304C4 /* PPMWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0987069C42900069C9E5 /* PPMWriter.cpp */; };
@@ -1159,6 +1163,10 @@
 		F27F0BE3069C42910069C9E5 /* NNBRasterImageAccessor.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */; };
 		F27F0BE4069C42910069C9E5 /* PNGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0983069C42900069C9E5 /* PNGReader.cpp */; };
 		F27F0BE5069C42910069C9E5 /* PNGReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0984069C42900069C9E5 /* PNGReader.h */; };
+		F2C0EE20069C42910069C9E5 /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
+		F2C0EE21069C42910069C9E5 /* JPEGReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
+		F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
+		F2C0EE23069C42910069C9E5 /* stb_image.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
 		F27F0BE6069C42910069C9E5 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
 		F27F0BE7069C42910069C9E5 /* PNGWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0986069C42900069C9E5 /* PNGWriter.h */; };
 		F27F0BE8069C42910069C9E5 /* PPMWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0987069C42900069C9E5 /* PPMWriter.cpp */; };
@@ -2106,6 +2114,10 @@
 		F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NNBRasterImageAccessor.h; sourceTree = "<group>"; };
 		F27F0983069C42900069C9E5 /* PNGReader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PNGReader.cpp; sourceTree = "<group>"; };
 		F27F0984069C42900069C9E5 /* PNGReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PNGReader.h; sourceTree = "<group>"; };
+		F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = JPEGReader.cpp; sourceTree = "<group>"; };
+		F2C0EE02069C42900069C9E5 /* JPEGReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = JPEGReader.h; sourceTree = "<group>"; };
+		F2C0EE03069C42900069C9E5 /* stb_image.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = stb_image.h; sourceTree = "<group>"; };
+		F2C0EE04069C42900069C9E5 /* stb_image.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = stb_image.cpp; sourceTree = "<group>"; };
 		F27F0985069C42900069C9E5 /* PNGWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PNGWriter.cpp; sourceTree = "<group>"; };
 		F27F0986069C42900069C9E5 /* PNGWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PNGWriter.h; sourceTree = "<group>"; };
 		F27F0987069C42900069C9E5 /* PPMWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PPMWriter.cpp; sourceTree = "<group>"; };
@@ -2494,12 +2506,31 @@
 			isa = PBXGroup;
 			children = (
 				08FB7795FE84155DC02AAC07 /* Source */,
+				F2C0EE05069C42900069C9E5 /* extlib */,
 				0249A662FF388D9811CA2CEA /* External Frameworks and Libraries */,
 				F24B71C72F52A211008304C4 /* RISE-GUI */,
 				1AB674ADFE9D54B511CA2CBB /* Products */,
 				F24C3E022F54FB56005DA46B /* Frameworks */,
 			);
 			name = rise;
+			sourceTree = "<group>";
+		};
+		F2C0EE05069C42900069C9E5 /* extlib */ = {
+			isa = PBXGroup;
+			children = (
+				F2C0EE06069C42900069C9E5 /* stb */,
+			);
+			name = extlib;
+			path = ../../../extlib;
+			sourceTree = SOURCE_ROOT;
+		};
+		F2C0EE06069C42900069C9E5 /* stb */ = {
+			isa = PBXGroup;
+			children = (
+				F2C0EE03069C42900069C9E5 /* stb_image.h */,
+				F2C0EE04069C42900069C9E5 /* stb_image.cpp */,
+			);
+			path = stb;
 			sourceTree = "<group>";
 		};
 		08FB7795FE84155DC02AAC07 /* Source */ = {
@@ -3189,6 +3220,8 @@
 				F27F0980069C42900069C9E5 /* HDRWriter.cpp */,
 				F27F0981069C42900069C9E5 /* HDRWriter.h */,
 				F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */,
+				F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */,
+				F2C0EE02069C42900069C9E5 /* JPEGReader.h */,
 				F27F0983069C42900069C9E5 /* PNGReader.cpp */,
 				F27F0984069C42900069C9E5 /* PNGReader.h */,
 				F27F0985069C42900069C9E5 /* PNGWriter.cpp */,
@@ -3974,6 +4007,8 @@
 				F2D9B1522F8FA60F0077A171 /* VCMPathOps.h in Headers */,
 				F27F0BE2069C42910069C9E5 /* HDRWriter.h in Headers */,
 				F27F0BE3069C42910069C9E5 /* NNBRasterImageAccessor.h in Headers */,
+				F2C0EE21069C42910069C9E5 /* JPEGReader.h in Headers */,
+				F2C0EE23069C42910069C9E5 /* stb_image.h in Headers */,
 				F27F0BE5069C42910069C9E5 /* PNGReader.h in Headers */,
 				F2C5D5D42F70D4B300546C97 /* MultipoleDiffusion.h in Headers */,
 				F27F0BE7069C42910069C9E5 /* PNGWriter.h in Headers */,
@@ -4449,6 +4484,8 @@
 				F27F0BE1069C42910069C9E5 /* HDRWriter.cpp in Sources */,
 				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
+				F2C0EE20069C42910069C9E5 /* JPEGReader.cpp in Sources */,
+				F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */,
 				F27F0BE4069C42910069C9E5 /* PNGReader.cpp in Sources */,
 				F27F0BE6069C42910069C9E5 /* PNGWriter.cpp in Sources */,
 				F27F0BE8069C42910069C9E5 /* PPMWriter.cpp in Sources */,
@@ -5044,6 +5081,10 @@
 				F24B736E2F52A632008304C4 /* HDRWriter.cpp in Sources */,
 				F24B736F2F52A632008304C4 /* HDRWriter.h in Sources */,
 				F24B73702F52A632008304C4 /* NNBRasterImageAccessor.h in Sources */,
+				F2C0EE10069C42900069C9E5 /* JPEGReader.cpp in Sources */,
+				F2C0EE11069C42900069C9E5 /* JPEGReader.h in Sources */,
+				F2C0EE12069C42900069C9E5 /* stb_image.cpp in Sources */,
+				F2C0EE13069C42900069C9E5 /* stb_image.h in Sources */,
 				F24B73712F52A632008304C4 /* PNGReader.cpp in Sources */,
 				F24B73722F52A632008304C4 /* PNGReader.h in Sources */,
 				F24B73732F52A632008304C4 /* PNGWriter.cpp in Sources */,

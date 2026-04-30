@@ -334,6 +334,7 @@ SRCLIBRASTERIMAGES =\
 	$(PATHLIBRARY)RasterImages/HDRReader.cpp					\
 	$(PATHLIBRARY)RasterImages/HDRWriter.cpp					\
 	$(PATHLIBRARY)RasterImages/PPMWriter.cpp					\
+	$(PATHLIBRARY)RasterImages/JPEGReader.cpp					\
 	$(PATHLIBRARY)RasterImages/PNGReader.cpp					\
 	$(PATHLIBRARY)RasterImages/PNGWriter.cpp					\
 	$(PATHLIBRARY)RasterImages/RGBEAWriter.cpp					\
@@ -388,6 +389,11 @@ SRCLIBMISC =\
 SRCLIBINTERFACES =\
 	$(PATHLIBRARY)Materials/IMaterial.cpp
 
+# Vendored single-header libraries that RISE compiles inline.  These
+# live outside $(PATHLIBRARY) so spell the path explicitly.
+SRCLIBEXTLIB =\
+	../../../extlib/stb/stb_image.cpp
+
 # We assemble the final list of sources here
 SRCLIB =\
 	$(SRCLIBINTERFACES)				\
@@ -412,5 +418,6 @@ SRCLIB =\
 	$(SRCLIBSCENEEDITORSUGGESTIONS)	\
 	$(SRCLIBSCENEEDITOR)			\
 	$(SRCLIBMISC)					\
-	$(SRCLIBSCENEMANAGEMENT)
+	$(SRCLIBSCENEMANAGEMENT)		\
+	$(SRCLIBEXTLIB)
 

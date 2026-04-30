@@ -413,6 +413,26 @@ namespace RISE
 									const char* cspace				///< [in] Color space of the fallback color
 									) = 0;
 
+		//! Adds a JPEG texture painter
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddJPEGTexturePainter(
+									const char* name,				///< [in] Name of the painter
+									const char* filename,			///< [in] Name of the file that contains the texture
+									const char color_space,			///< [in] Color space in the file
+																	///		0 - Rec709 RGB Linear
+																	///		1 - sRGB profile
+																	///		2 - ROMM RGB (ProPhotoRGB) linear
+																	///		3 - ROMM RGB (ProPhotoRGB) non-linear
+									const char filter_type,			///< [in] Type of texture filtering
+																	///     0 - Nearest neighbour
+																	///     1 - Bilinear
+																	///     2 - Catmull Rom Bicubic
+																	///     3 - Uniform BSpline Bicubic
+									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
+									const double scale[3],			///< [in] Scale factor for color values
+									const double shift[3]			///< [in] Shift factor for color values
+									) = 0;
+
 		//! Adds a HDR texture painter
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddHDRTexturePainter(

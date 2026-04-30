@@ -1,0 +1,98 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           jpg_painter.RISEscene                                                                   #
+#   Description:    Smoke test for the jpg_painter chunk -- decodes a tiny JPEG, paints it on a box,        #
+#                   and renders a single frame.  Asset committed under scenes/Tests/Painters/textures so    #
+#                   the test runs without RISE_MEDIA_PATH configured.                                       #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      April 29, 2026                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/jpg_painter
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+pinhole_camera
+{
+	location			0 0 8
+	lookat				0 0 0
+	up					0 1 0
+	width				64
+	height				64
+	fov					30.0
+}
+
+##################################################
+# Painter -- the bit being tested
+##################################################
+
+jpg_painter
+{
+	name				pnt_jpg
+	file				scenes/Tests/Painters/textures/test_pattern.jpg
+	color_space			sRGB
+}
+
+##################################################
+# Material + object that uses it
+##################################################
+
+lambertian_material
+{
+	name				mat_jpg
+	reflectance			pnt_jpg
+}
+
+box_geometry
+{
+	name				boxgeom
+	width				3
+	height				3
+	depth				3
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	orientation			0 0 0
+	position			0 0 0
+	material			mat_jpg
+	receives_shadows	false
+}
+
+directional_light
+{
+	name		light
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}

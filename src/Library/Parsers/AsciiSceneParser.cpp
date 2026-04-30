@@ -875,6 +875,66 @@ namespace RISE
 				}
 			};
 
+			struct JpegPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name     = bag.GetString( "name",     "noname" );
+					std::string filename = bag.GetString( "file",     "none" );
+					bool lowmemory       = bag.GetBool(   "lowmemory", false );
+					double scale[3] = {1,1,1};
+					double shift[3] = {0,0,0};
+					bag.GetVec3( "scale", scale );
+					bag.GetVec3( "shift", shift );
+
+					char color_space = 1;
+					if( bag.Has( "color_space" ) ) {
+						std::string cs = bag.GetString( "color_space" );
+						if(      cs == "Rec709RGB_Linear" ) color_space = 0;
+						else if( cs == "sRGB" )             color_space = 1;
+						else if( cs == "ROMMRGB_Linear" )   color_space = 2;
+						else if( cs == "ProPhotoRGB" )      color_space = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown color space `%s`", cs.c_str() );
+							return false;
+						}
+					}
+
+					char filter_type = 1;
+					if( bag.Has( "filter_type" ) ) {
+						std::string ft = bag.GetString( "filter_type" );
+						if(      ft == "NNB" )            filter_type = 0;
+						else if( ft == "Bilinear" )       filter_type = 1;
+						else if( ft == "CatmullRom" )     filter_type = 2;
+						else if( ft == "UniformBSpline" ) filter_type = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
+							return false;
+						}
+					}
+
+					return pJob.AddJPEGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "jpg_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Texture painter that loads a JPEG image.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "JPEG file path"; }
+						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct HdrPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -6749,6 +6809,7 @@ namespace RISE
 		add( "vertex_color_painter",                  new VertexColorPainterAsciiChunkParser() );
 		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
 		add( "png_painter",                           new PngPainterAsciiChunkParser() );
+		add( "jpg_painter",                           new JpegPainterAsciiChunkParser() );
 		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );
 		add( "exr_painter",                           new ExrPainterAsciiChunkParser() );
 		add( "tiff_painter",                          new TiffPainterAsciiChunkParser() );

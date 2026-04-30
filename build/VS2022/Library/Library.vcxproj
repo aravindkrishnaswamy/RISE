@@ -300,6 +300,7 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\HDRReader.cpp" />
     <ClCompile Include="..\..\..\src\Library\RasterImages\HDRWriter.cpp" />
+    <ClCompile Include="..\..\..\src\Library\RasterImages\JPEGReader.cpp" />
     <ClCompile Include="..\..\..\src\Library\RasterImages\PNGReader.cpp" />
     <ClCompile Include="..\..\..\src\Library\RasterImages\PNGWriter.cpp" />
     <ClCompile Include="..\..\..\src\Library\RasterImages\PPMWriter.cpp" />
@@ -440,6 +441,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\ThreadPool.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\CPUTopology.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\RenderETAEstimator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\extlib\stb\stb_image.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
   </ItemGroup>
@@ -720,6 +724,7 @@
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRWriter.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\HDRReader.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\HDRWriter.h" />
+    <ClInclude Include="..\..\..\src\Library\RasterImages\JPEGReader.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\NNBRasterImageAccessor.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\PNGReader.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\PNGWriter.h" />
@@ -1031,6 +1036,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RenderETAEstimator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ZSobolSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_Painter.h" />
+    <ClInclude Include="..\..\..\extlib\stb\stb_image.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="VTune\Library.vpj" />

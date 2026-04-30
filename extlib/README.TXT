@@ -141,6 +141,43 @@ For more information about Open Image Denoise:
 https://www.openimagedenoise.org/
 
 
+====================================================================
+stb/  --  stb_image single-header decoder (added 2026-04-29)
+====================================================================
+
+stb_image.h is Sean Barrett's public-domain single-header image
+loader (https://github.com/nothings/stb).  RISE uses it solely to
+decode JPEG textures referenced by `jpg_painter` chunks (and, by
+extension, the JPEG base-color textures that ship with most real-
+world glTF assets) -- see src/Library/RasterImages/JPEGReader.{h,
+cpp}.  PNG / HDR / EXR / TIFF continue to use libpng / RGBE /
+OpenEXR / libtiff respectively, so this is purely a JPEG add-on.
+
+Layout:
+
+    extlib/stb/stb_image.h    -- vendored verbatim from upstream
+                                 (v2.30; ~283 KB, ~8000 lines, no
+                                 external dependencies).
+    extlib/stb/stb_image.cpp  -- single translation unit that emits
+                                 the implementation with
+                                 STBI_ONLY_JPEG so non-JPEG decoder
+                                 paths stay out of the binary.  The
+                                 .cpp extension (rather than the
+                                 upstream-conventional .c) lets the
+                                 existing make / cmake / vcxproj /
+                                 pbxproj recipes -- all C++-only --
+                                 pick it up without bespoke C-
+                                 language rules.
+
+Vendored as plain source rather than a submodule because stb is a
+single header with no build system, and pinning a known-good copy
+keeps clones reproducible without a second `git submodule update`
+step.  No upstream modifications.
+
+stb_image is dual-licensed: public domain (Unlicense) OR MIT.  Full
+notice is at the bottom of extlib/stb/stb_image.h.
+
+
 OPEN IMAGE DENOISE LICENSE (Apache 2.0):
 
 Licensed under the Apache License, Version 2.0 (the "License"); you

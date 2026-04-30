@@ -3401,6 +3401,7 @@ namespace RISE
 #include "RasterImages/BicubicRasterImageAccessor.h"
 #include "RasterImages/PNGReader.h"
 #include "RasterImages/PNGWriter.h"
+#include "RasterImages/JPEGReader.h"
 #include "RasterImages/TGAReader.h"
 #include "RasterImages/HDRReader.h"
 #include "RasterImages/TGAWriter.h"
@@ -3620,6 +3621,23 @@ namespace RISE
 
 		(*ppi) = new PNGWriter( buffer, bpp, color_space );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PNG writer" );
+		return true;
+	}
+
+	//! Creates a JPEG reader
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateJPEGReader(
+								IRasterImageReader** ppi,			///< [out] Pointer to recieve the raster image reader
+								IReadBuffer& buffer,				///< [in] Buffer containing JPEG data
+								const COLOR_SPACE color_space		///< [in] Color space in the file
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new JPEGReader( buffer, color_space );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "JPEG reader" );
 		return true;
 	}
 

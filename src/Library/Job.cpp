@@ -899,6 +899,91 @@ bool Job::AddPNGTexturePainter(
 	return true;
 }
 
+//! Adds a JPEG texture painter
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddJPEGTexturePainter(
+							const char* name,				///< [in] Name of the painter
+							const char* filename,			///< [in] Name of the file that contains the texture
+							const char color_space,			///< [in] Color space in the file
+															///		0 - Rec709 RGB linear
+															///		1 - sRGB profile
+															///		2 - ROMM RGB (ProPhotoRGB) linear
+															///		3 - ROMM RGB (ProPhotoRGB) non-linear
+							const char filter_type,			///< [in] Type of texture filtering
+																///     0 - Nearest neighbour
+																///     1 - Bilinear
+																///     2 - Catmull Rom Bicubic
+																///     3 - Uniform BSpline Bicubic
+							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
+							const double scale[3],			///< [in] Scale factor for color values
+							const double shift[3]			///< [in] Shift factor for color values
+							)
+{
+	IRasterImage* pImage = 0;
+	if( lowmemory ) {
+		RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+	} else {
+		RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor(0,0,0,0) );
+	}
+
+	IReadBuffer* pReadBuffer = 0;
+	RISE_API_CreateDiskFileReadBuffer( &pReadBuffer, filename );
+
+	COLOR_SPACE gc = eColorSpace_sRGB;
+	switch( color_space )
+	{
+	case 1:
+		gc = eColorSpace_sRGB;
+		break;
+	case 0:
+		gc = eColorSpace_Rec709RGB_Linear;
+		break;
+	case 2:
+		gc = eColorSpace_ROMMRGB_Linear;
+		break;
+	case 3:
+		gc = eColorSpace_ProPhotoRGB;
+		break;
+	};
+
+	IRasterImageReader* pImageReader = 0;
+	RISE_API_CreateJPEGReader( &pImageReader, *pReadBuffer, gc );
+
+	pImage->LoadImage( pImageReader );
+
+	// Apply the scale and/or shift operators
+	{
+		if( scale[0] != 1 || scale[1] != 1 || scale[2] != 1 ) {
+			IOneColorOperator* pOp = 0;
+			RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel(scale), 1.0 ) );
+			Apply1ColorOperator( *pImage, *pOp );
+			safe_release( pOp );
+		}
+
+		if( shift[0] != 0 || shift[1] != 0 || shift[2] != 0 ) {
+			IOneColorOperator* pOp = 0;
+			RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel(shift), 0 ) );
+			Apply1ColorOperator( *pImage, *pOp );
+			safe_release( pOp );
+		}
+	}
+
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+
+	safe_release( pRIA );
+	safe_release( pImageReader );
+	safe_release( pReadBuffer );
+	safe_release( pImage );
+
+	return true;
+}
+
 //! Adds a texture painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddHDRTexturePainter(
