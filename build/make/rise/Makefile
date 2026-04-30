@@ -47,9 +47,10 @@ SRCTOOLS = $(wildcard $(PATHTOOLS)*.cpp)
 OBJTOOLS = $(SRCTOOLS:.cpp=.o)
 
 # Source trees owned by this makefile. Sweep these for stale object files during clean.
-# extlib/stb is included because we compile stb_image inline (see Filelist
-# SRCLIBEXTLIB); its .o lands next to the source there.
-CLEAN_OBJECT_DIRS = $(PATHLIBRARY) $(PATHSRCS) $(PATHSRCSDRISE) $(PATHTESTS) $(PATHTOOLS) ../../../extlib/stb
+# extlib/stb and extlib/cgltf are included because we compile vendored
+# single-header libs inline (see Filelist SRCLIBEXTLIB); their .o files
+# land next to the sources there.
+CLEAN_OBJECT_DIRS = $(PATHLIBRARY) $(PATHSRCS) $(PATHSRCSDRISE) $(PATHTESTS) $(PATHTOOLS) ../../../extlib/stb ../../../extlib/cgltf
 
 # Standalone entry points -- each .cpp is a one-off main() picked up by the
 # default .cpp.o rule, so they don't appear in any SRC list above. They still

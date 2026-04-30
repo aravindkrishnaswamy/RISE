@@ -2879,6 +2879,36 @@ bool Job::AddPLYTriangleMeshGeometry(
 	return bRet;
 }
 
+//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
+//! Phase 1 scope -- one primitive of one mesh becomes one named geometry.
+//! See docs/GLTF_IMPORT.md for the phased plan.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddGLTFTriangleMeshGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* szFileName,					///< [in] .gltf or .glb file to load
+					const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
+					const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
+					const bool double_sided,				///< [in] Are the triangles double sided?
+					const bool face_normals,				///< [in] Use face normals rather than vertex normals
+					const bool flip_v						///< [in] Flip TEXCOORD V at load
+					)
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
+
+	ITriangleMeshLoaderIndexed* pLoader = 0;
+	RISE_API_CreateGLTFTriangleMeshLoader( &pLoader, szFileName, mesh_index, primitive_index, flip_v );
+
+	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
+	if( bRet ) {
+		pGeomManager->AddItem( pGeometry, name );
+	}
+
+	safe_release( pGeometry );
+	safe_release( pLoader );
+	return bRet;
+}
+
 //! Creates a mesh from a .risemesh file
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddRISEMeshTriangleMeshGeometry(

@@ -43,6 +43,9 @@
     <Filter Include="External Libraries\stb">
       <UniqueIdentifier>{c6b48ad1-7ef9-4e24-8c2b-9a3e0e5a0f02}</UniqueIdentifier>
     </Filter>
+    <Filter Include="External Libraries\cgltf">
+      <UniqueIdentifier>{c6b48ad1-7ef9-4e24-8c2b-9a3e0e5a0f03}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Raster Images\RGBEA">
       <UniqueIdentifier>{be605979-8afc-4a48-964b-b64e1aafba56}</UniqueIdentifier>
     </Filter>
@@ -375,6 +378,9 @@
     <ClCompile Include="..\..\..\extlib\stb\stb_image.cpp">
       <Filter>External Libraries\stb</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\extlib\cgltf\cgltf.cpp">
+      <Filter>External Libraries\cgltf</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RasterImages\RGBEAWriter.cpp">
       <Filter>Raster Images\RGBEA</Filter>
     </ClCompile>
@@ -508,6 +514,9 @@
       <Filter>Geometry</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.cpp">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp">
@@ -1362,6 +1371,9 @@
     <ClInclude Include="..\..\..\extlib\stb\stb_image.h">
       <Filter>External Libraries\stb</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\extlib\cgltf\cgltf.h">
+      <Filter>External Libraries\cgltf</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\RGBEAWriter.h">
       <Filter>Raster Images\RGBEA</Filter>
     </ClInclude>
@@ -1503,6 +1515,9 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h">
+      <Filter>Geometry\Mesh Loaders</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.h">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h">

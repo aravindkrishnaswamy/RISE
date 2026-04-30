@@ -3591,6 +3591,48 @@ namespace RISE
 				}
 			};
 
+			struct GLTFMeshGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name           = bag.GetString( "name",         "noname" );
+					std::string file           = bag.GetString( "file",         "none" );
+					unsigned int mesh_idx      = bag.GetUInt(   "mesh_index",    0 );
+					unsigned int primitive_idx = bag.GetUInt(   "primitive",     0 );
+					bool double_sided          = bag.GetBool(   "double_sided",  false );
+					bool face_normals          = bag.GetBool(   "face_normals",  false );
+					bool flip_v                = bag.GetBool(   "flip_v",        false );
+					return pJob.AddGLTFTriangleMeshGeometry(
+						name.c_str(), file.c_str(),
+						mesh_idx, primitive_idx,
+						double_sided, face_normals, flip_v );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "gltfmesh_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Triangle mesh loaded from a glTF 2.0 (.gltf or .glb) file.  "
+							"Imports a single primitive of a single mesh -- materials, scene "
+							"structure, lights, cameras, and animations are NOT imported by this "
+							"chunk (Phase 1 of glTF support; bulk scene import comes in Phase 2 "
+							"via `gltf_import`).  See docs/GLTF_IMPORT.md for the design plan.  "
+							"POSITION + NORMAL + TANGENT + TEXCOORD_0 + TEXCOORD_1 + COLOR_0 + "
+							"indices are honoured; other attributes warn-and-discard.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
+						{ auto& p = P(); p.name = "mesh_index";   p.kind = ValueKind::UInt;     p.description = "Which mesh in the file (0-based)"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "primitive";    p.kind = ValueKind::UInt;     p.description = "Which primitive within the mesh (0-based)"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Treat polygons as double sided"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "flip_v";       p.kind = ValueKind::Bool;     p.description = "Flip TEXCOORD V at load (glTF UV origin is top-left)"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct CircularDiskGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -6885,6 +6927,7 @@ namespace RISE
 		add( "rawmesh2_geometry",                     new RAWMesh2GeometryAsciiChunkParser() );
 		add( "risemesh_geometry",                     new RISEMeshGeometryAsciiChunkParser() );
 		add( "plymesh_geometry",                      new PLYMeshGeometryAsciiChunkParser() );
+		add( "gltfmesh_geometry",                     new GLTFMeshGeometryAsciiChunkParser() );
 		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );

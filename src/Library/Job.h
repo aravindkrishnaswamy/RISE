@@ -992,6 +992,19 @@ namespace RISE
 							const bool face_normals					///< [in] Use face normals rather than vertex normals
 							);
 
+		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h
+		//! for the full doc; Phase 1 of glTF import only loads geometry.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddGLTFTriangleMeshGeometry(
+							const char* name,						///< [in] Name of the geometry
+							const char* szFileName,					///< [in] .gltf or .glb file to load
+							const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
+							const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
+							const bool double_sided,				///< [in] Are the triangles double sided?
+							const bool face_normals,				///< [in] Use face normals rather than vertex normals
+							const bool flip_v						///< [in] Flip TEXCOORD V at load
+							);
+
 		//! Creates a mesh from a .risemesh file
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddRISEMeshTriangleMeshGeometry(

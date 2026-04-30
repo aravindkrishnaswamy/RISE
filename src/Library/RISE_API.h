@@ -367,6 +367,18 @@ namespace RISE
 						const bool bInvertFaces					///< [in] Should the faces be inverted?
 						);
 
+	//! Creates a mesh loader capable of loading from a glTF 2.0 file
+	//! (.gltf or .glb).  Reads one primitive of one mesh; see
+	//! docs/GLTF_IMPORT.md for the design.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGLTFTriangleMeshLoader(
+						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
+						const char* szFileName,					///< [in] .gltf or .glb file to load
+						const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
+						const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
+						const bool flip_v						///< [in] Flip TEXCOORD V at load
+						);
+
 	//! Creates a bezier-patch geometry with analytic ray intersection.
 	//! Displacement / bulk tessellation are handled by wrapping this in a
 	//! DisplacedGeometry (or `displaced_geometry` in the scene file).

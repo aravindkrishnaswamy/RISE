@@ -178,6 +178,53 @@ stb_image is dual-licensed: public domain (Unlicense) OR MIT.  Full
 notice is at the bottom of extlib/stb/stb_image.h.
 
 
+====================================================================
+cgltf/  --  cgltf single-header glTF 2.0 parser (added 2026-04-29)
+====================================================================
+
+cgltf.h is a single-header C99 glTF 2.0 parser by Johannes Kuhlmann
+(https://github.com/jkuhlmann/cgltf), MIT licensed.  RISE uses it
+solely to parse .gltf / .glb files referenced by `gltfmesh_geometry`
+(Phase 1) and `gltf_import` (Phase 2) chunks -- see
+src/Library/Geometry/TriangleMeshLoaderGLTF.{h,cpp} and the design
+plan in docs/GLTF_IMPORT.md.
+
+cgltf was chosen over tinygltf and fastgltf because:
+
+  - It has zero transitive dependencies (matches the libpng / zlib /
+    libtiff / openexr vendoring pattern in this directory).
+  - It does NOT impose its own image loader -- glTF base-color
+    textures route through RISE's existing png_painter / hdr_painter
+    / exr_painter / tiff_painter / jpg_painter, with no parallel
+    decode path.
+  - C99 portability slots it into all five build projects (make,
+    cmake/Android NDK, VS2022, Xcode, Qt) without grief.
+
+The full library survey is in docs/GLTF_IMPORT.md §2.
+
+Layout:
+
+    extlib/cgltf/cgltf.h    -- vendored verbatim from upstream
+                               (v1.15, ~285 KB, ~7200 lines, no
+                               external dependencies).
+    extlib/cgltf/cgltf.cpp  -- single translation unit that emits
+                               the implementation with
+                               CGLTF_IMPLEMENTATION.  The .cpp
+                               extension (rather than the upstream-
+                               conventional .c) lets the existing
+                               make / cmake / vcxproj / pbxproj
+                               recipes -- all C++-only -- pick it
+                               up without bespoke C-language rules.
+
+Vendored as plain source (rather than a submodule) for the same
+reason as stb: a single header with no build system, pinned to a
+known-good copy so clones reproduce without a second `git submodule
+update` step.  No upstream modifications.
+
+cgltf is MIT-licensed.  Full notice is at the bottom of
+extlib/cgltf/cgltf.h.
+
+
 OPEN IMAGE DENOISE LICENSE (Apache 2.0):
 
 Licensed under the Apache License, Version 2.0 (the "License"); you

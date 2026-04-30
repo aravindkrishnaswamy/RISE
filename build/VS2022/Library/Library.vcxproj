@@ -164,6 +164,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexed.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.cpp" />
@@ -446,6 +447,9 @@
     <ClCompile Include="..\..\..\extlib\stb\stb_image.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\..\extlib\cgltf\cgltf.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\src\Library\Animation\Animator.h" />
@@ -498,6 +502,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometryIndexedSpecializations.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshGeometrySpecializations.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.h" />
@@ -1037,6 +1042,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ZSobolSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_Painter.h" />
     <ClInclude Include="..\..\..\extlib\stb\stb_image.h" />
+    <ClInclude Include="..\..\..\extlib\cgltf\cgltf.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="VTune\Library.vpj" />

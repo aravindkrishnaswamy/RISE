@@ -260,6 +260,35 @@ void TriangleMeshGeometryIndexed::AddColors( const VertexColorsListType& colors 
 	pColors.insert( pColors.end(), colors.begin(), colors.end() );
 }
 
+// ITriangleMeshGeometryIndexed3 — tangents + secondary UV (TEXCOORD_1).
+//
+// Live-only state for now.  Phase 1 of glTF import (docs/GLTF_IMPORT.md)
+// adds these storage hooks to enable downstream Phase 2 consumers
+// (`normal_map_modifier`, secondary-UV occlusion sampling) without
+// re-touching the loader.  Serialize / Deserialize do not yet round-trip
+// these arrays through .risemesh — callers that save a glTF-loaded mesh
+// to .risemesh will lose tangents / TEXCOORD_1.  When Phase 2 lands, the
+// .risemesh format gets a version bump and these arrays start persisting.
+void TriangleMeshGeometryIndexed::AddTangent( const Tangent4& tangent )
+{
+	pTangents.push_back( tangent );
+}
+
+void TriangleMeshGeometryIndexed::AddTangents( const Tangent4ListType& tangents )
+{
+	pTangents.insert( pTangents.end(), tangents.begin(), tangents.end() );
+}
+
+void TriangleMeshGeometryIndexed::AddTexCoord1( const TexCoord& coord )
+{
+	pTexCoords1.push_back( coord );
+}
+
+void TriangleMeshGeometryIndexed::AddTexCoords1( const TexCoordsListType& coords )
+{
+	pTexCoords1.insert( pTexCoords1.end(), coords.begin(), coords.end() );
+}
+
 void TriangleMeshGeometryIndexed::AddIndexedTriangle( const IndexedTriangle& tri )
 {
 	indexedtris.push_back( tri );
