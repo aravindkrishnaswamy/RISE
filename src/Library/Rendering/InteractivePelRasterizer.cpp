@@ -260,6 +260,62 @@ private:
 		return contact * wide;
 	}
 
+	static Scalar MaterialAOWeight( const RayIntersection& ri, const Vector3& n, const Vector3& v )
+	{
+		const IMaterial* material = ri.pMaterial;
+		if( !material ) {
+			return 1.0;
+		}
+
+		Scalar weight = 1.0;
+		if( material->GetEmitter() ) {
+			weight *= 0.18;
+		}
+		if( material->CouldLightPassThrough() ) {
+			weight *= 0.28;
+		}
+		if( material->IsVolumetric() ||
+			material->GetDiffusionProfile() ||
+			material->GetRandomWalkSSSParams() ) {
+			weight *= 0.62;
+		}
+
+		IORStack iorStack( 1.0 );
+		if( ri.pObject ) {
+			iorStack.SetCurrentObject( ri.pObject );
+		}
+		const SpecularInfo specularInfo = material->GetSpecularInfo( ri.geometric, iorStack );
+		if( specularInfo.valid && specularInfo.isSpecular ) {
+			weight *= specularInfo.canRefract ? 0.20 : 0.34;
+		}
+
+		const IBSDF* bsdf = material->GetBSDF();
+		if( bsdf ) {
+			RayIntersectionGeometric rig( ri.geometric );
+			rig.vNormal = n;
+			rig.onb.CreateFromW( n );
+
+			const Vector3 mirror = n * ( 2.0 * Vector3Ops::Dot( n, v ) ) - v;
+			const RISEPel normalResponse = bsdf->value( n, rig );
+			const RISEPel mirrorResponse = bsdf->value( mirror, rig );
+			const Scalar normalMax = ColorMath::MaxValue( normalResponse );
+			const Scalar mirrorMax = ColorMath::MaxValue( mirrorResponse );
+			const Scalar glossyBias = Clamp01(
+				( mirrorMax - normalMax ) /
+				( mirrorMax + normalMax + Scalar( 1.0e-4 ) ) );
+			weight *= 1.0 - 0.55 * glossyBias;
+		} else {
+			weight *= 0.45;
+		}
+
+		return ClampRange( weight, 0.10, 1.0 );
+	}
+
+	static Scalar ApplyAOWeight( const Scalar ao, const Scalar weight )
+	{
+		return 1.0 - ( 1.0 - ao ) * weight;
+	}
+
 	static Scalar DirectionalTerm( const Vector3& n, const Vector3& direction )
 	{
 		return Clamp01( Vector3Ops::Dot( n, direction ) );
@@ -348,7 +404,9 @@ private:
 		const Scalar rim = ( 1.0 - ndv ) * ( 1.0 - ndv );
 
 		const RISEPel base = MaterialAlbedo( ri );
-		const Scalar ao = CombinedAmbientOcclusion( ri, caster, n );
+		const Scalar ao = ApplyAOWeight(
+			CombinedAmbientOcclusion( ri, caster, n ),
+			MaterialAOWeight( ri, n, v ) );
 		RISEPel result = StudioLighting( ri, n, v, base ) * ao + RISEPel( 0.16, 0.18, 0.22 ) * rim;
 		ColorMath::Clamp( result, 0.0, 1.0 );
 		return result;
@@ -594,12 +652,15 @@ void InteractivePelRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
 }
 
 #ifdef RISE_ENABLE_OIDN
-bool InteractivePelRasterizer::ShouldDenoiseCompletedRender(
-	bool passCompleted,
-	unsigned int width,
-	unsigned int height ) const
+bool InteractivePelRasterizer::ShouldDenoise() const
 {
-	return PixelBasedPelRasterizer::ShouldDenoiseCompletedRender( passCompleted, width, height ) &&
+	// Stack the preview-mode toggle on top of the base predicate.
+	// Cancellation is intentionally NOT consulted (see base class doc):
+	// in interactive workflows the cancel-restart loop benefits from
+	// denoising the partial image so the user sees a smoothed preview
+	// of whatever samples landed before the next restart, instead of
+	// raw MC noise.
+	return PixelBasedPelRasterizer::ShouldDenoise() &&
 		mPreviewDenoiseMode != PreviewDenoise_Off;
 }
 

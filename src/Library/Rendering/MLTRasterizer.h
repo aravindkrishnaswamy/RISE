@@ -311,6 +311,17 @@ namespace RISE
 				IRasterizeSequence* pRasterSequence
 				) const;
 
+			//! MLT animation is currently a no-op stub.  Markov-chain
+			//! rendering doesn't decompose cleanly into per-frame
+			//! independent renders the way PT/BDPT/VCM do (chains
+			//! depend on prior chain state via PSSMLTSampler), so
+			//! adding animation here requires non-trivial design work
+			//! around chain-restart semantics across frames.  When
+			//! that work happens, mirror PixelBasedRasterizerHelper::
+			//! RasterizeSceneAnimation's denoise wiring (per-frame
+			//! ApplyDenoise + FlushPreDenoised/FlushDenoised inside
+			//! the cancel-guarded block).  See docs/OIDN.md decision
+			//! log (2026-04-29 animation denoise).
 			void RasterizeSceneAnimation(
 				const IScene& pScene,
 				const Scalar time_start,

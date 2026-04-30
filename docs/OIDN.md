@@ -407,16 +407,24 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P1 — solid wins, moderate effort
 
 #### OIDN-P1-1 — Inline AOV accumulation + `accurate` prefilter mode
-- **Status:** Shipped (v1, PT-only) — 2026-04-29.  Supersedes
-  OIDN-P1-4 — inline accumulation handles glass refraction
-  probabilistically via per-sample `ScatteredRay::isDelta` instead of
-  a separate recursive retrace.  v1 ships the full plumbing + the
-  3-filter prefilter pipeline + first-non-delta AOV recording in
-  `PathTracingIntegrator` (used by `pathtracing_pel_rasterizer`).
-  BDPT / VCM / PixelBasedPel inline AOV currently records at the
-  first hit regardless of mode — they still benefit from the
-  3-filter prefilter pipeline in accurate mode but the AOV signal
-  doesn't yet skip past glass.  Tracked as **v2 follow-up**.
+- **Status:** Shipped (v1 PT-only on 2026-04-29; v2 BDPT + VCM
+  Pel/Spectral on 2026-04-29).  Supersedes OIDN-P1-4 — inline
+  accumulation handles glass refraction probabilistically via
+  per-sample `ScatteredRay::isDelta` instead of a separate recursive
+  retrace.  v1 shipped the full plumbing + the 3-filter prefilter
+  pipeline + first-non-delta AOV recording in `PathTracingIntegrator`
+  (used by `pathtracing_pel_rasterizer`).  v2 extends the
+  first-non-delta AOV walk to BDPT (Pel + Spectral) and VCM
+  (Pel + Spectral) by walking the post-trace `eyeVerts[]` vector
+  for the first non-delta SURFACE vertex — exploiting BDPT/VCM's
+  reified-path representation so no integrator-signature changes
+  are needed.  PathTracingIntegrator's Fast-mode IntegrateRay
+  hook intentionally does NOT walk past delta — PT can't reify
+  the path the way BDPT/VCM do, and the Accurate-mode inline-
+  during-trace path is the principled answer when walk-past
+  matters; in Fast mode PT records at the camera ray's first
+  hit (using the dielectric's view-dependent albedo for glass,
+  white for NULL-BSDF transparency).
 - **Owner:** Aravind
 - **PR:** —
 - **Why:** First-hit retrace AOVs are correct only when the beauty's first hit
@@ -477,10 +485,60 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
     Metal device init), `fast` cold-cache 197 ms.  The accurate /
     fast ratio holds — accurate is paying for the two extra filter
     commits as designed, not regressing.
+- **Result (v2):**
+  - **BDPT (Pel)** — `BDPTPelRasterizer.cpp:133` rewritten from
+    "use eyeVerts[1]" to a walk-past-delta loop matching
+    BDPTSpectralRasterizer's pre-existing pattern.  The walk uses
+    `BDPTVertex::isDelta` which carries the per-sample
+    `pScat->isDelta` value already populated by `GenerateEyeSubpath`
+    at line 2990.  No signature change to the integrator was
+    required — BDPT reifies the path into `eyeVerts[]` so the
+    walk happens at the rasterizer level after the subpath is
+    generated.
+  - **BDPT (Spectral)** — already did walk-past-delta as of v1;
+    no change needed.
+  - **VCM (Pel)** — `VCMPelRasterizer.cpp:348` mirrored to the
+    same walk-past-delta pattern as BDPT Pel.
+  - **VCM (Spectral)** — `VCMSpectralRasterizer.cpp:366` rewritten
+    from "check `eyeVerts[1].isDelta` and silently skip if delta"
+    (which was actually a regression in glass scenes — the
+    sample's AOV contribution was dropped) to the proper
+    walk-past-delta loop matching BDPTSpectralRasterizer.
+  - **PathTracingIntegrator** — intentionally NOT changed.
+    The Fast-mode `IntegrateRay` hook still records at the
+    camera ray's first hit using the dielectric's `albedo()`
+    method, which gives the view-dependent Fresnel-tinted
+    albedo for glass (better than white-fallback).  The
+    Accurate-mode hook in `IntegrateFromHit` continues to
+    walk past delta scatters via per-sample `ScatteredRay::isDelta`.
+  - The `oidn_prefilter` knob now has consistent semantics across
+    all integrators: Fast = 1 OIDN filter (cleanAux=true, AOV
+    treated as clean) + cheap AOV recording; Accurate = 3 OIDN
+    filters (prefilter passes treat AOV as noisy) + (for PT)
+    inline first-non-delta AOV recording.  For BDPT/VCM the AOV
+    quality is uniform across modes — the walk-past-delta is
+    essentially free since `eyeVerts[]` already exists; the only
+    mode-driven difference is the OIDN filter pipeline cost.
+  - Build clean, 72/72 tests pass.  Smoke tests on M1 Max + Metal
+    at 256×256 with `oidn_prefilter accurate`:
+    - BDPT cornellbox + glass spheres: 4.5 s render, 518 ms
+      cold-cache denoise.
+    - VCM cornellbox + glass spheres: 4.3 s render, 437 ms
+      cold-cache denoise.
+    - BDPT same scene with `oidn_prefilter fast`: 228 ms denoise
+      (vs 518 ms accurate, 2.3× speedup as designed).
 
 #### OIDN-P1-2 — Replace `device.newBuffer + memcpy` with `oidnNewSharedBuffer`
-- **Status:** Open
-- **Owner:** —
+- **Status:** Shipped — 2026-04-29.  `oidn::DeviceRef::newBuffer(void*, size_t)`
+  (the C++ wrapper for `oidnNewSharedBuffer`) wraps host memory
+  directly; the device-side `newBuffer(size_t)` + `buffer.write` /
+  `read` round trip is now skipped on CPU device.  GPU devices
+  (Metal / SYCL / CUDA / HIP) keep the device-owned-buffer path
+  because their memory isn't host-mapped.  Mode is auto-detected
+  by introspecting the actual device type after creation, so
+  `oidn_device auto` correctly picks zero-copy when OIDN falls
+  back to CPU on a Mac without the metal device dylib.
+- **Owner:** Aravind
 - **PR:** —
 - **Why:** Today `Denoise()` does up to 4 host-side full-image copies (image
   → beautyBuf, beautyBuf → colorBuf, outputBuf → denoisedBuf, denoisedBuf →
@@ -492,10 +550,45 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Touch:** [OIDNDenoiser.cpp:113](../src/Library/Rendering/OIDNDenoiser.cpp#L113).
 - **Effort:** ~1 hour. Subtle aliasing rules — test in/out buffer overlap.
 - **Verification:** heap profiler before / after on a 4K denoise.
-- **Result:** —
+- **Result:**
+  - `OIDNDenoiser::State` gains `useSharedBuffers` (bool, set after
+    device commit by introspecting `device.get<int>("type")` == CPU)
+    and four `boundXxxPtr` host-pointer trackers.
+  - Cache-key extension: when `useSharedBuffers` is true, a change
+    in any of (color / albedo / normal / output) host pointer
+    triggers a cache miss → filter rebuild against the new pointer.
+    In practice the staging vectors (`beautyStaging`, `denoisedStaging`)
+    inside State are stable across calls of the same dimensions
+    (vector capacity is preserved), and `AOVBuffers` lives on the
+    rasterizer for its lifetime, so cache hits are the common case.
+  - `Denoise()` rebuild branch: shared mode calls
+    `device.newBuffer(host_ptr, bytes)` for color / output / albedo /
+    normal (with `const_cast` on the input-only aux pointers — safe
+    in Fast mode since OIDN doesn't write through them; in Accurate
+    mode the prefilter writes back in-place, which is intentional
+    and harmless because `AOVBuffers::Reset()` zeroes the buffers
+    before each render).  Non-shared mode keeps the original
+    `newBuffer(bytes)` device-owned path.
+  - Per-call write/read are gated on `!useSharedBuffers` — in shared
+    mode the data is already aliased and the copies are no-ops.
+  - Build clean, 72/72 tests pass.  Smoke tests on M1 Max:
+    - **CPU shared** (`oidn_device cpu`) at 200×150 + glass scene:
+      cold-cache 12 ms, warm-cache 5.9 ms.  Log shows
+      `[zero-copy shared buffers]` suffix on device creation.
+    - **Metal** (`oidn_device auto`, default) at 200×150 + glass:
+      cold 209 ms (Metal init dominates), warm 5.2 ms.  No
+      `[zero-copy]` suffix as expected.
+    - **CPU shared + Accurate prefilter**: 24 ms cold (vs 12 ms
+      Fast).  In-place prefilter through shared aliases works.
+  - Memory savings scale with image size: at 4K RGB a single
+    image is ~96 MB; eliminating 4 such copies saves ~380 MB of
+    transient bandwidth per denoise on the CPU path.
 
 #### OIDN-P1-3 — Progress monitor (cancel intentionally NOT wired)
-- **Status:** Open
+- **Status:** Closed (won't do unless an interactive UI consumer
+  arrives) — 2026-04-29.  No call site reads denoise progress
+  today; the cancel-no-propagate invariant is documented below
+  for future reference if the call gets revisited.
 - **Owner:** —
 - **PR:** —
 - **Project invariant — do NOT propagate cancel to OIDN.** The user
@@ -556,7 +649,11 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 ### P2 — polish
 
 #### OIDN-P2-1 — CLI override flag for denoise
-- **Status:** Open
+- **Status:** Closed (won't do, low ROI) — 2026-04-29.  Editing
+  the scene file is acceptable friction for batch sweeps; the
+  parser already supports per-chunk `oidn_denoise` and
+  `oidn_quality` parameters.  Reopen if a benchmarking workflow
+  emerges that genuinely needs flag-driven override.
 - **Owner:** —
 - **PR:** —
 - **Why:** Today the only way to flip `oidn_denoise` for a scene is to edit
@@ -568,7 +665,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P2-2 — Write `_albedo` / `_normal` AOVs as separate file outputs
-- **Status:** Open
+- **Status:** Closed (won't do, low ROI) — 2026-04-29.  No
+  concrete debugging request.  Reopen when a real "denoise
+  looks wrong on this scene" report arrives that's hard to
+  diagnose without aux dumps.
 - **Owner:** —
 - **PR:** —
 - **Why:** Useful for offline debugging when a user reports "denoise looks
@@ -581,7 +681,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P2-3 — Expose `inputScale` for extreme-HDR scenes
-- **Status:** Open
+- **Status:** Closed (won't do, niche) — 2026-04-29.  OIDN's
+  auto-exposure (`inputScale=NaN` default) handles all
+  observed scenes correctly.  Reopen if a specific extreme-HDR
+  pathology is identified.
 - **Owner:** —
 - **PR:** —
 - **Why:** OIDN auto-exposes when `inputScale=NaN`. For scenes with extreme
@@ -593,7 +696,10 @@ Silicon (RISE's primary platform per [CLAUDE.md](../CLAUDE.md))**, and
 - **Result:** —
 
 #### OIDN-P2-4 — `maxMemoryMB` for memory-constrained systems
-- **Status:** Open
+- **Status:** Closed (won't do, niche) — 2026-04-29.  Apple
+  Silicon's unified memory + RISE's typical render scale don't
+  hit memory pressure.  Reopen if a memory-bound user reports
+  OOM during denoise.
 - **Owner:** —
 - **PR:** —
 - **Touch:** parser + denoiser.
@@ -650,6 +756,194 @@ Any P0 or P1 change additionally needs:
 
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
+
+### 2026-04-29 — Per-frame denoise on animation render
+- Animation rendering (the `renderanimation` CLI command) previously
+  flushed each frame raw; OIDN was never invoked.  This was an
+  unintentional gap — there was no design reason animation frames
+  shouldn't get denoised, just an asymmetry between
+  `PixelBasedRasterizerHelper::RasterizeScene` (which calls
+  `ApplyDenoise`) and `RasterizeSceneAnimation` (which historically
+  did not).
+- Two-part change in `PixelBasedRasterizerHelper`:
+  1. **`RenderFrameOfAnimation`** gains the per-frame setup:
+     `BeginRenderTimer()` so the OidnQuality::Auto heuristic decides
+     each frame independently rather than inflating with cumulative
+     animation time; `pAOVBuffers` allocate-or-reset per frame so
+     each frame starts with a fresh AOV; AOV normalization after
+     the progressive-film resolve (mirroring `RasterizeScene`'s
+     progressive branch); and the same `!bDenoisingEnabled` gate on
+     `pFilteredFilm->Resolve()` so OIDN sees the inline box-filtered
+     estimate, not the wide-filter reconstruction.
+  2. **`RasterizeSceneAnimation`** runs the denoise + dual flush
+     inside the cancel-guarded block — same shape as
+     `RasterizeScene`'s denoise call site.  Each completed frame
+     gets `FlushPreDenoisedToOutputs(frameIdx)` →
+     `mDenoiser->ApplyDenoise(...)` →
+     `FlushDenoisedToOutputs(frameIdx)`.  Cancelled frames neither
+     denoise nor flush — they're abandoned in their entirety so
+     the MOV writer doesn't see a half-rendered tail and prior
+     completed frames play back correctly after the caller
+     finalize()s the writer.
+- **Cancel semantics intentionally diverge from still images.**
+  `RasterizeScene` denoises on cancel (the partial smoothed image
+  is more useful for interactive cancel-restart loops than raw
+  noise).  `RasterizeSceneAnimation` does NOT — partially-rendered
+  frames in a movie sequence have inconsistent quality across
+  frames and break MOV writer expectations.  Documented in code
+  comment at the cancel-guard.
+- **BDPT / VCM:** they use `PixelBasedRasterizerHelper`'s base-class
+  `RasterizeSceneAnimation` (no override), so they pick up the
+  change automatically.  Their per-pixel `IntegratePixel` is
+  invoked through the same animation dispatcher used by PT.
+- **MLT animation gap (intentional, documented).**
+  `MLTRasterizer::RasterizeSceneAnimation` is an empty inline stub
+  today — Markov-chain rendering doesn't decompose cleanly into
+  per-frame independent renders (chains depend on prior chain
+  state via PSSMLTSampler), so adding animation here requires
+  non-trivial design work around chain-restart semantics across
+  frames.  When that work happens, mirror this change's denoise
+  wiring.  Header comment in `MLTRasterizer.h` calls this out so
+  a future implementer doesn't miss the OIDN integration step.
+- **Cache hits across frames:** thanks to OIDN-P0-2 device/filter
+  caching, only frame 1 pays the cold-rebuild cost on the same
+  rasterizer instance.  Subsequent frames (same dimensions, same
+  quality, same prefilter) hit the cache and run in ~5–10 ms
+  on Metal.  Smoke test (3 frames, M1 Max + Metal, 200×150 glass
+  scene): frame 1 cold 208 ms (Metal init dominates), frames
+  2 & 3 warm 6 ms / 5 ms.  72/72 tests pass; build clean.
+
+### 2026-04-29 — Cancel-still-denoises: align code with stated invariant
+- Found a doc/code inconsistency.  The OIDN-P1-3 entry stated the
+  user invariant: *"Cancelling mid-render still produces a useful
+  denoised image of whatever samples were collected, which is more
+  useful than aborting the denoise and getting nothing."*  But
+  `PixelBasedRasterizerHelper::ShouldDenoiseCompletedRender` was
+  gated on `bDenoisingEnabled && passCompleted`, so cancelling a
+  render mid-flight skipped OIDN entirely and flushed the raw
+  noisy partial.  Per the user's verdict ("doc captures intent,
+  code should change"), the gate is removed.
+- Renamed `ShouldDenoiseCompletedRender(passCompleted, w, h)` to
+  `ShouldDenoise()` and dropped now-unused parameters.  The base
+  predicate is just `bDenoisingEnabled`; the
+  `InteractivePelRasterizer` override stacks
+  `mPreviewDenoiseMode != PreviewDenoise_Off` on top.  Header
+  documents the new contract — cancellation is *intentionally*
+  not consulted.
+- Call site in `RasterizeScene` no longer passes `mainPassCompleted`;
+  the local is preserved (with a `(void)` cast) so future code can
+  log or surface completion state without re-deriving it.
+- The OIDN-P1-3 invariant ("if a progress monitor were ever wired
+  up, never propagate cancel") still holds — that's a separate
+  concern about OIDN's *own* cancel mechanism.  The two-layer
+  design (RISE rasterizer cancel, OIDN progress cancel) is now
+  consistent: neither aborts denoise.
+- Risk acknowledged: cancelled renders may have un-rendered or
+  under-sampled tiles where OIDN smears valid data toward zero
+  at the boundary.  The user prefers this to no denoise — for
+  interactive cancel-restart loops the smoothed partial is more
+  readable than raw MC noise.  If the smear ever becomes a
+  problem in production batch renders, gate the new behavior
+  on a per-rasterizer config flag (e.g.
+  `bDenoiseOnCancel = false` for production, `true` for
+  interactive).  Not done now; revisit if a concrete complaint
+  arises.
+- 72/72 tests pass; build clean.  Regression render confirmed
+  no change to the completed-render path (Metal cold 214 ms,
+  matching pre-change numbers).
+
+### 2026-04-29 — Backlog wrap-up: P1-3 / P2-* closed as not worth doing
+- After shipping P0-1..P0-4, P1-1 (v1+v2), and P1-2, the user
+  evaluated the remaining backlog and decided none of it is worth
+  the effort right now.  Items closed:
+  - **P1-3** progress monitor — no current consumer; reopen when
+    an interactive UI needs denoise progress feedback.
+  - **P2-1** CLI override flag — editing the scene file is
+    acceptable friction; the parser surface is already enough.
+  - **P2-2** aux-buffer EXR dump — no concrete debugging request.
+  - **P2-3** inputScale knob — OIDN's auto-exposure handles
+    observed scenes; niche.
+  - **P2-4** maxMemoryMB knob — Apple Silicon unified memory
+    means RISE doesn't hit pressure here.
+- The "Why" / "What" sections of each closed entry are preserved
+  verbatim so a future reopener has the full context without
+  needing to re-derive the design.  Each Status field carries
+  the dated rationale and a "reopen if…" trigger condition.
+- This closes out the OIDN integration audit started 2026-04-29
+  with five P0 + two P1 wins shipped (`9eb9b31`, `dc237d1`,
+  `3369f09`, `db50bbe`, plus prior P0 commits).  All future
+  OIDN work has its own concrete trigger; the tracker is no
+  longer carrying speculative items.
+
+### 2026-04-29 — OIDN-P1-2 shipped (zero-copy shared buffers on CPU device)
+- `OIDNDenoiser::Denoise` now uses
+  `oidn::DeviceRef::newBuffer(host_ptr, bytes)` (the C++ wrapper for
+  `oidnNewSharedBuffer`) on CPU device, eliminating up to 4
+  image-sized memcpy operations per denoise (color in, albedo in,
+  normal in, output out — each was ~50 MB at 4K RGB).
+- **Auto-detection over user knob:** mode is decided by introspecting
+  `device.get<int>("type") == CPU` AFTER device creation.  This is
+  more robust than trusting the user's `oidn_device` parameter
+  because `Default` silently picks CPU when no GPU backend is
+  loadable (e.g., Mac without the metal device dylib — see
+  OIDN-P0-3 install gotcha).  The log line gains a
+  `[zero-copy shared buffers]` suffix when shared mode kicks in,
+  so it's visible at a glance.
+- **Cache-key extension for pointer stability:** shared buffers pin
+  to a specific host address at filter-commit time; if the caller
+  passes a different pointer next call, we must rebuild.  Added
+  `boundColorPtr` / `boundOutputPtr` / `boundAlbedoPtr` /
+  `boundNormalPtr` to State and treat any mismatch as a cache
+  miss.  In practice the State staging vectors (`beautyStaging`,
+  `denoisedStaging`) and `AOVBuffers` are stable across calls of
+  the same dimensions, so cache hits are the common case.
+- **Const correctness deliberately relaxed:** input-only aux
+  pointers are `const float*` in the API, but
+  `oidn::Buffer::newBuffer(void*, size_t)` requires a non-const
+  pointer.  `const_cast` is safe in Fast mode (OIDN doesn't write
+  inputs).  In Accurate mode the in-place prefilter writes back
+  to the aux buffer through the shared alias, which mutates the
+  host AOV vector — that's intentional and harmless because
+  `AOVBuffers::Reset()` zeroes the buffers before each render.
+  Documented in the OIDN-P1-2 entry.
+- **GPU path unchanged:** Metal / SYCL / CUDA / HIP devices keep
+  the original `newBuffer(bytes)` + `buffer.write` / `read` round
+  trip because their memory is not host-mapped.  Smoke test
+  confirmed no regression on Metal (cold 209 ms / warm 5.2 ms,
+  same as pre-P1-2 numbers).
+- 72/72 tests pass; build clean.  No new source files.
+
+### 2026-04-29 — OIDN-P1-1 v2 shipped (BDPT + VCM walk-past-delta AOV)
+- BDPT Pel, VCM Pel, and VCM Spectral rasterizers now walk
+  `eyeVerts[]` for the first non-delta SURFACE vertex when
+  extracting OIDN AOVs, mirroring the pattern BDPTSpectralRasterizer
+  already used.  Glass / mirror first-hits are skipped so the AOV
+  represents the surface visible *through* the delta material —
+  matching what the beauty pass shows.
+- **Key insight:** BDPT/VCM reify the path into `eyeVerts[]` so the
+  per-sample `isDelta` walk happens after the subpath is generated,
+  at zero ray-casting cost.  No integrator-signature changes were
+  needed; the original v2 plan (thread `PixelAOV*` through
+  `BDPTIntegrator::GenerateEyeSubpath` to plant inline hooks)
+  was scrapped in favour of this simpler, equivalent post-walk.
+- **PathTracingIntegrator** intentionally not changed.  PT cannot
+  reify the path the way BDPT/VCM do; its Fast-mode IntegrateRay
+  hook stays at first-hit (using the dielectric's view-dependent
+  `albedo()` for glass, which is reasonable — better than
+  white-fallback).  Walk-past-delta semantics in PT live in
+  Accurate mode where the inline-during-trace hook in
+  `IntegrateFromHit` already does this via per-sample
+  `ScatteredRay::isDelta`.
+- VCM Spectral additionally fixes a small pre-existing issue:
+  before v2, glass-front samples silently dropped their AOV
+  contribution (the `if v1.isDelta` check guarded against writing
+  but didn't fall back to a deeper vertex).  Now the walk
+  recovers a useful AOV from the surface behind the glass.
+- Smoke tests on M1 Max + Metal at 256×256 with both modes:
+  BDPT 4.5 s render + 518 ms accurate / 228 ms fast denoise;
+  VCM 4.3 s render + 437 ms accurate.  All 72 tests pass; build
+  clean.  No new source files added so the five-build-system
+  file-list update from CLAUDE.md does not apply.
 
 ### 2026-04-29 — OIDN-P1-1 v1 code complete; OIDN-P1-4 closed as superseded
 - New scene-language parameter `oidn_prefilter` (enum: `fast` /

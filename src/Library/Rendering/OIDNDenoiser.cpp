@@ -73,6 +73,29 @@ struct OIDNDenoiser::State
 	OidnQuality			resolvedQuality;	// post-Auto resolution
 	OidnPrefilter		prefilter;			// Fast vs Accurate
 
+	// OIDN-P1-2: zero-copy shared buffers on CPU device.
+	//
+	// `useSharedBuffers` is set after device creation: true on CPU,
+	// false on GPU backends (Metal / SYCL / CUDA / HIP) where the
+	// host memory isn't device-visible and OIDN must own its own
+	// device-side buffers.  When true, the OIDN buffers are wrapped
+	// around the host-side staging vectors / AOV pointers via
+	// `oidnNewSharedBuffer`, so the per-call `buffer.write` / `read`
+	// path is skipped (the data is already aliased; a memcpy of up
+	// to 4 image-sized buffers per denoise becomes zero copies).
+	//
+	// Shared buffers pin to a specific host pointer at filter-commit
+	// time.  If the caller passes a different pointer on a later
+	// call (e.g. a different AOVBuffers instance, or our internal
+	// staging vector reallocated), the filter must be torn down and
+	// rebuilt against the new pointer.  We track the bound pointers
+	// here and treat a mismatch as a cache miss.
+	bool				useSharedBuffers;
+	const float*		boundColorPtr;		// shared-buffer mode: pinned color input
+	const float*		boundOutputPtr;		// shared-buffer mode: pinned output
+	const float*		boundAlbedoPtr;		// shared-buffer mode: pinned albedo (or null)
+	const float*		boundNormalPtr;		// shared-buffer mode: pinned normal (or null)
+
 	State()
 	  : initialized( false )
 	  , width( 0 )
@@ -81,6 +104,11 @@ struct OIDNDenoiser::State
 	  , hasNormal( false )
 	  , resolvedQuality( OidnQuality::High )
 	  , prefilter( OidnPrefilter::Fast )
+	  , useSharedBuffers( false )
+	  , boundColorPtr( 0 )
+	  , boundOutputPtr( 0 )
+	  , boundAlbedoPtr( 0 )
+	  , boundNormalPtr( 0 )
 	{}
 };
 #endif
@@ -357,6 +385,18 @@ void OIDNDenoiser::Denoise(
 	const size_t bufBytes = static_cast<size_t>( w ) * h * 3 * sizeof( float );
 	const bool dimsChanged = ( mState->width != w || mState->height != h );
 
+	// OIDN-P1-2: in shared-buffer mode the OIDN buffers are pinned to
+	// specific host pointers at commit time.  If any pointer changed
+	// since the last call (e.g. caller passed a different AOVBuffers
+	// instance, or our staging vectors reallocated on a resize), we
+	// must rebuild.  In non-shared mode pointers are irrelevant —
+	// data flows through `buffer.write` / `buffer.read` each call.
+	const bool ptrsChanged = mState->initialized && mState->useSharedBuffers && (
+		mState->boundColorPtr  != beautyBuffer ||
+		mState->boundOutputPtr != outputBuffer ||
+		( hasAlbedo && mState->boundAlbedoPtr != albedoBuffer ) ||
+		( hasNormal && mState->boundNormalPtr != normalBuffer ) );
+
 	// Cache key match?  If yes, skip the (expensive) device.commit() and
 	// filter.commit() steps and just memcpy + execute.  If no, tear down
 	// the filter and rebuild — buffers only get reallocated when the
@@ -366,7 +406,8 @@ void OIDNDenoiser::Denoise(
 		|| mState->hasAlbedo != hasAlbedo
 		|| mState->hasNormal != hasNormal
 		|| mState->resolvedQuality != resolvedQuality
-		|| mState->prefilter != requestedPrefilter;
+		|| mState->prefilter != requestedPrefilter
+		|| ptrsChanged;
 
 	if( needsRebuild ) {
 		// Lazy device creation.  Only happens once per OIDNDenoiser
@@ -401,27 +442,87 @@ void OIDNDenoiser::Denoise(
 			mState->device.setErrorFunction( OidnErrorCallback, 0 );
 
 			const int actualType = mState->device.get<int>( "type" );
+
+			// OIDN-P1-2: only the CPU backend can alias host memory
+			// directly.  Default returns CPU on machines without a
+			// GPU backend (or when the metal device dylib is missing
+			// from the install — see OIDN-P0-3 install gotcha), so we
+			// must introspect the actual device type rather than
+			// trust the request.
+			mState->useSharedBuffers =
+				( actualType == static_cast<int>( oidn::DeviceType::CPU ) );
+
 			GlobalLog()->PrintEx( eLog_Event,
-				"OIDN: creating %s device (one-time per rasterizer)",
-				OidnDeviceTypeName( actualType ) );
+				"OIDN: creating %s device (one-time per rasterizer)%s",
+				OidnDeviceTypeName( actualType ),
+				mState->useSharedBuffers ? " [zero-copy shared buffers]" : "" );
 		}
 
-		// Reallocate buffers only when dimensions change.  Toggling aux
-		// presence reuses existing color/output buffers but allocates
-		// or releases the aux buffers.
-		if( dimsChanged || !mState->colorBuf ) {
-			mState->colorBuf  = mState->device.newBuffer( bufBytes );
-			mState->outputBuf = mState->device.newBuffer( bufBytes );
-		}
-		if( hasAlbedo && ( dimsChanged || !mState->albedoBuf ) ) {
-			mState->albedoBuf = mState->device.newBuffer( bufBytes );
-		} else if( !hasAlbedo ) {
-			mState->albedoBuf = oidn::BufferRef();
-		}
-		if( hasNormal && ( dimsChanged || !mState->normalBuf ) ) {
-			mState->normalBuf = mState->device.newBuffer( bufBytes );
-		} else if( !hasNormal ) {
-			mState->normalBuf = oidn::BufferRef();
+		// Reallocate buffers when dimensions change OR we're in shared-
+		// buffer mode and need to re-pin to current host pointers.  In
+		// shared mode every rebuild creates fresh BufferRefs because
+		// `oidnNewSharedBuffer` binds to a specific host address — we
+		// can't "rebind" an existing buffer to a new pointer.  In
+		// non-shared mode the original "allocate once, reuse many"
+		// pattern still applies (data flows through write/read).
+		const bool rebuildBuffers = dimsChanged || mState->useSharedBuffers || !mState->colorBuf;
+
+		if( mState->useSharedBuffers ) {
+			// Shared buffers wrap the caller's host memory directly.
+			// The C++ wrapper exposes this as an overload of
+			// `newBuffer(void*, size_t)` (vs. the device-owned
+			// `newBuffer(size_t)` used in the GPU path below); under
+			// the hood it calls `oidnNewSharedBuffer`.  Input-only
+			// buffers (`albedo` / `normal` in Fast mode) are const-
+			// cast safely because OIDN does not write to them when
+			// they're set as inputs.  In Accurate mode the aux
+			// prefilter writes back in-place, mutating the host AOV
+			// buffer — that's intentional and harmless because
+			// AOVBuffers is reset before each render (see
+			// PixelBasedRasterizerHelper::RasterizeScene).
+			if( rebuildBuffers ) {
+				mState->colorBuf  = mState->device.newBuffer(
+					static_cast<void*>( beautyBuffer ), bufBytes );
+				mState->outputBuf = mState->device.newBuffer(
+					static_cast<void*>( outputBuffer ), bufBytes );
+				mState->boundColorPtr  = beautyBuffer;
+				mState->boundOutputPtr = outputBuffer;
+			}
+			if( hasAlbedo ) {
+				mState->albedoBuf = mState->device.newBuffer(
+					const_cast<float*>( albedoBuffer ), bufBytes );
+				mState->boundAlbedoPtr = albedoBuffer;
+			} else {
+				mState->albedoBuf = oidn::BufferRef();
+				mState->boundAlbedoPtr = 0;
+			}
+			if( hasNormal ) {
+				mState->normalBuf = mState->device.newBuffer(
+					const_cast<float*>( normalBuffer ), bufBytes );
+				mState->boundNormalPtr = normalBuffer;
+			} else {
+				mState->normalBuf = oidn::BufferRef();
+				mState->boundNormalPtr = 0;
+			}
+		} else {
+			// Non-shared (GPU) path: device-owned buffers, data flows
+			// through write/read each call.  Reallocate only when
+			// dimensions change; toggling aux presence reuses existing
+			// color/output buffers but allocates / releases aux.
+			if( rebuildBuffers ) {
+				mState->colorBuf  = mState->device.newBuffer( bufBytes );
+				mState->outputBuf = mState->device.newBuffer( bufBytes );
+			}
+			if( hasAlbedo && ( dimsChanged || !mState->albedoBuf ) ) {
+				mState->albedoBuf = mState->device.newBuffer( bufBytes );
+			} else if( !hasAlbedo ) {
+				mState->albedoBuf = oidn::BufferRef();
+			}
+			if( hasNormal && ( dimsChanged || !mState->normalBuf ) ) {
+				mState->normalBuf = mState->device.newBuffer( bufBytes );
+			} else if( !hasNormal ) {
+				mState->normalBuf = oidn::BufferRef();
+			}
 		}
 
 		// Build a fresh beauty filter.  Replacing the FilterRef here
@@ -525,16 +626,23 @@ void OIDNDenoiser::Denoise(
 
 	// Copy the per-render data into the cached buffers.  Use
 	// `buffer.write` rather than `memcpy(getData(), …)` so the same
-	// code path works on both CPU (where getData() is host-mapped)
-	// and GPU devices (where it isn't, and a direct memcpy would
-	// segfault).  On CPU the C++ wrapper reduces to memcpy under the
-	// hood, so there's no slowdown.
-	mState->colorBuf.write( 0, bufBytes, beautyBuffer );
-	if( hasAlbedo ) {
-		mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
-	}
-	if( hasNormal ) {
-		mState->normalBuf.write( 0, bufBytes, normalBuffer );
+	// code path works on GPU devices (where getData() isn't host-
+	// mapped, and a direct memcpy would segfault).
+	//
+	// OIDN-P1-2: when the device is CPU and we used `newSharedBuffer`,
+	// the OIDN buffers already alias host memory — `write` would just
+	// memcpy from the host pointer to itself.  Skipping the write
+	// saves up to 4 image-sized memcpys per denoise (color in,
+	// albedo in, normal in, output out — see the read below).  At 4K
+	// RGB that's ~50 MB × 4 = 200 MB of bandwidth saved.
+	if( !mState->useSharedBuffers ) {
+		mState->colorBuf.write( 0, bufBytes, beautyBuffer );
+		if( hasAlbedo ) {
+			mState->albedoBuf.write( 0, bufBytes, albedoBuffer );
+		}
+		if( hasNormal ) {
+			mState->normalBuf.write( 0, bufBytes, normalBuffer );
+		}
 	}
 
 	// Accurate mode: prefilter the (noisy) aux buffers in-place so
@@ -568,7 +676,12 @@ void OIDNDenoiser::Denoise(
 		return;
 	}
 
-	mState->outputBuf.read( 0, bufBytes, outputBuffer );
+	// OIDN-P1-2: shared-buffer mode wrote directly into outputBuffer,
+	// so the read-back is a no-op there.  Non-shared (GPU) mode
+	// still needs the device→host copy.
+	if( !mState->useSharedBuffers ) {
+		mState->outputBuf.read( 0, bufBytes, outputBuffer );
+	}
 }
 
 void OIDNDenoiser::CollectFirstHitAOVs(

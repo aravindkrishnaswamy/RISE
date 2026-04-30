@@ -99,12 +99,14 @@ unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
 }
 
 #ifdef RISE_ENABLE_OIDN
-bool PixelBasedRasterizerHelper::ShouldDenoiseCompletedRender(
-	bool passCompleted,
-	unsigned int /*width*/,
-	unsigned int /*height*/ ) const
+bool PixelBasedRasterizerHelper::ShouldDenoise() const
 {
-	return bDenoisingEnabled && passCompleted;
+	// Cancellation state is intentionally NOT consulted here — see the
+	// header doc for the rationale (cancelled renders still get
+	// denoised, producing a "useful partial" rather than the raw
+	// noisy partial).  The only base-class gate is the user's
+	// `oidn_denoise` toggle.
+	return bDenoisingEnabled;
 }
 
 unsigned int PixelBasedRasterizerHelper::GetDenoiseAOVSamplesPerPixel() const
@@ -739,7 +741,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoiseCompletedRender( mainPassCompleted, width, height ) );
+	// `mainPassCompleted` is intentionally NOT passed: cancelled
+	// renders still get OIDN'd on whatever was accumulated up to the
+	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
+	// log (2026-04-29).
+	(void)mainPassCompleted;
+	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoise() );
 #else
 	const bool bWillDenoise = false;
 #endif
@@ -865,6 +872,28 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	IRasterizeSequence& seq
 	) const
 {
+#ifdef RISE_ENABLE_OIDN
+	// Per-frame timer reset so OidnQuality::Auto's render-seconds-per-
+	// megapixel heuristic decides each frame independently rather than
+	// inflating with cumulative animation time.  See docs/OIDN.md
+	// (OIDN-P0-1) for the heuristic.
+	BeginRenderTimer();
+
+	// Allocate / reset AOV buffers per frame.  Mirrors RasterizeScene:
+	// each frame is its own render, so the AOV state must be fresh.
+	// Without the reset, multi-frame animation accumulates AOVs across
+	// frames and the denoiser sees a smeared aux signal.
+	if( bDenoisingEnabled ) {
+		const unsigned int width = image.GetWidth();
+		const unsigned int height = image.GetHeight();
+		if( !pAOVBuffers ) {
+			pAOVBuffers = new AOVBuffers( width, height );
+		} else {
+			pAOVBuffers->Reset( width, height );
+		}
+	}
+#endif
+
 	// Exposure time can change from frame to frame
 	const Scalar exposure = pScene.GetCamera()->GetExposureTime();
 	const Scalar scanningRate = pScene.GetCamera()->GetScanningRate();
@@ -1048,6 +1077,25 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// the loop exited early (cancellation) without a final preview.
 		progFilm.Resolve( image );
 
+#ifdef RISE_ENABLE_OIDN
+		// Normalize per-pixel AOV by progressive-film alpha sum so the
+		// denoiser sees averaged aux samples regardless of how many
+		// passes accumulated into each pixel.  Mirrors RasterizeScene's
+		// progressive branch.  Pixels with zero alphaSum (no samples
+		// yet — pre-cancel) are left at zero; the denoiser handles
+		// these via cleanAux fallback.
+		if( pAOVBuffers ) {
+			for( unsigned int y=0; y<height; y++ ) {
+				for( unsigned int x=0; x<width; x++ ) {
+					const ProgressivePixel& px = progFilm.Get( x, y );
+					if( px.alphaSum > 0 ) {
+						pAOVBuffers->Normalize( x, y, 1.0 / px.alphaSum );
+					}
+				}
+			}
+		}
+#endif
+
 		mProgressiveFilm = 0;
 		mTotalProgressiveSPP = 0;
 
@@ -1066,9 +1114,20 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// Post-render hook (symmetric with RasterizeScene).
 	PostRenderCleanup();
 
-	// Resolve filtered film for this frame
+	// Resolve filtered film for this frame.
+	// When OIDN denoising is active, skip the resolve: OIDN is trained
+	// on raw MC noise and the inline box-filtered estimate provides
+	// the clean input it expects.  Mirrors RasterizeScene's gate.
+	// The Clear() still runs unconditionally so the per-frame film
+	// state doesn't carry stale data into the next animation frame.
 	if( pFilteredFilm ) {
+#ifdef RISE_ENABLE_OIDN
+		if( !bDenoisingEnabled ) {
+			pFilteredFilm->Resolve( image );
+		}
+#else
 		pFilteredFilm->Resolve( image );
+#endif
 		pFilteredFilm->Clear();
 	}
 }
@@ -1231,15 +1290,47 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 
 		// If the user cancelled during this frame, skip the flush so
 		// the MOV writer doesn't receive a partial tail frame, and
-		// break out of the loop.
+		// break out of the loop.  This is intentionally STRICTER than
+		// RasterizeScene's cancel-still-denoises behaviour: an
+		// animation has multi-frame coordination concerns (consistent
+		// quality across frames, MOV writer expecting complete tail
+		// frames) where a half-rendered + half-denoised frame is worse
+		// than no frame at all.  The caller (e.g. RISEBridge) finalizes
+		// the MOV writer after we return so the prior completed frames
+		// play back correctly.
 		if( pProgressFunc && !pProgressFunc->Progress( accumulatedProgress, totalProgressUnits ) ) {
 			GlobalLog()->PrintEx( eLog_Event, "Animation cancelled during frame %u of %u; skipping remaining frames", (specificFrame?*specificFrame:i)+1, num_frames );
 			cancelled = true;
 			break;
 		}
 
-		// After every frame, flush to outputs
-		FlushToOutputs( *pImage, pRect, specificFrame?*specificFrame:i );
+		// After every completed frame, flush to outputs.  When
+		// denoising is enabled (and AOVs were accumulated), run OIDN
+		// per frame and emit both the raw and denoised variants so
+		// file outputs that distinguish them (via _denoised suffix)
+		// match the still-image behaviour.  See docs/OIDN.md decision
+		// log (2026-04-29 animation denoise).
+		const unsigned int frameIdx = specificFrame?*specificFrame:i;
+#ifdef RISE_ENABLE_OIDN
+		if( bDenoisingEnabled && pAOVBuffers && ShouldDenoise() ) {
+			FlushPreDenoisedToOutputs( *pImage, pRect, frameIdx );
+			if( !pAOVBuffers->HasData() ) {
+				OIDNDenoiser::CollectFirstHitAOVs(
+					pScene,
+					*pCaster,
+					*pAOVBuffers,
+					GetDenoiseAOVSamplesPerPixel() );
+			}
+			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				GetRenderElapsedSeconds() );
+			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );
+		} else {
+			FlushToOutputs( *pImage, pRect, frameIdx );
+		}
+#else
+		FlushToOutputs( *pImage, pRect, frameIdx );
+#endif
 		pImage->Clear( RISEColor(0,0,0,0), pRect );
 	}
 

@@ -177,10 +177,7 @@ namespace RISE
 			virtual void PrepareRuntimeContext( RuntimeContext& rc ) const override;
 
 #ifdef RISE_ENABLE_OIDN
-			virtual bool ShouldDenoiseCompletedRender(
-				bool passCompleted,
-				unsigned int width,
-				unsigned int height ) const override;
+			virtual bool ShouldDenoise() const override;
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const override;
 #endif
 
