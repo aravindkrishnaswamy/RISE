@@ -84,6 +84,11 @@ file_rasterizeroutput
 # Cameras - Thin lens with depth of field
 ##################################################
 
+# Camera 4 m back and 2.5 m up, looking down at the tidepool.
+# Distance ≈ √(2.6² + 4²) ≈ 4.8 m.  85mm short-tele at f/1.8 —
+# intimate look on the pool, with the floor pebbles and surrounding
+# stones falling into a soft creamy bokeh.
+
 thinlens_camera
 {
 	location			0 2.5 4.0
@@ -91,10 +96,10 @@ thinlens_camera
 	up					0 1 0
 	width				800
 	height				600
-	sensor_size			2.91
-	focal_length		4.0
-	fstop				50.0
-	focus_distance		4.5
+	sensor_size			36              # mm — full-frame
+	focal_length		85              # mm — short tele
+	fstop				1.8
+	focus_distance		4.8             # metres — onto the pool surface
 }
 
 ##################################################

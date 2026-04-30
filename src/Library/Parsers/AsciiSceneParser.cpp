@@ -366,8 +366,49 @@ namespace RISE
 			struct PainterColor { double c[3]; };
 			static thread_local std::map<std::string, PainterColor> s_painterColors;
 
+			// Scene-level camera defaults (set by `camera_defaults`
+			// chunk).  thinlens_camera consults this as fallback when
+			// a per-camera value is omitted.  Reset at the top of
+			// every parse via ClearParseState; declaration order
+			// inside the .RISEscene file matters — `camera_defaults`
+			// must precede the camera chunks that consume it (the
+			// natural reading order; same as `standard_shader` and
+			// other scene-level config blocks).
+			struct CameraDefaultsState {
+				bool has_sensor_size  = false;  double sensor_size  = 0;
+				bool has_focal_length = false;  double focal_length = 0;
+				bool has_fstop        = false;  double fstop        = 0;
+			};
+			static thread_local CameraDefaultsState s_cameraDefaults;
+
+			// Scene-level unit scale, set by `scene_options`.  Tells the
+			// parser what one "scene unit" (geometry coordinates,
+			// focus_distance, etc.) corresponds to in real-world
+			// meters.  Default 1.0 = scenes are in meters.  Camera
+			// lens-spec params (sensor_size, focal_length, shift_x/y)
+			// are entered in MM in the scene file regardless of the
+			// scene's unit scale; the camera reconciles mm-to-scene
+			// internally via this factor.  This matches Cycles /
+			// Arnold / V-Ray conventions where the user types
+			// photographic numbers (35mm, f/2.8) and the renderer
+			// scales them per scene-unit settings.
+			struct SceneOptionsState {
+				double scene_unit_meters = 1.0;   // 1 scene unit = N meters; default meters.
+				// Set by `thinlens_camera::Finalize` once it commits a
+				// camera using whatever scene_unit was current at that
+				// moment.  If `scene_options` is then declared AFTER
+				// the camera, the camera's scale is already locked in
+				// and the new value is silently ignored — we warn at
+				// parse time so a misplaced block is caught loudly
+				// rather than producing a 1000×-misscaled render.
+				bool   camera_committed  = false;
+			};
+			static thread_local SceneOptionsState s_sceneOptions;
+
 			static void ClearParseState() {
 				s_painterColors.clear();
+				s_cameraDefaults = CameraDefaultsState();
+				s_sceneOptions   = SceneOptionsState();
 			}
 
 			// Generic dispatch used by migrated chunk parsers to replace the
@@ -2967,8 +3008,146 @@ namespace RISE
 
 
 			//////////////////////////////////////////
+			// Scene-level options (top-of-file scope)
+			//////////////////////////////////////////
+
+			// `scene_options` declares the world-unit scale.  Stored
+			// in thread_local parser state and consumed by camera
+			// chunks at parse time.  Place AT OR NEAR THE TOP of the
+			// .RISEscene file (before any camera) — values declared
+			// after a camera don't reach back.  Same declaration-order
+			// rule as `standard_shader`, `camera_defaults`, etc.
+			//
+			// Today this only governs camera lens-mm-to-scene-unit
+			// conversion; future phases (volumetric atmosphere,
+			// physical sky, sensor noise) will consume the same scale.
+			struct SceneOptionsAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
+				{
+					if( bag.Has( "scene_unit" ) ) {
+						const double v = bag.GetDouble( "scene_unit" );
+						if( v <= 0.0 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scene_options:: scene_unit must be positive (got %g). "
+								"It's the meters-per-scene-unit factor — 1.0 for meters, "
+								"0.001 for mm, 0.0254 for inches.", v );
+							return false;
+						}
+						// Catch the misplaced-block footgun: if a camera
+						// was already finalized with the old scene_unit,
+						// changing it now has no effect on that camera
+						// (its lens math is locked in).  Warn loudly so
+						// the user notices rather than silently rendering
+						// a 1000×-misscaled image.
+						if( s_sceneOptions.camera_committed
+						    && v != s_sceneOptions.scene_unit_meters ) {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"scene_options:: declared AFTER a camera was already finalized. "
+								"The camera locked in scene_unit = %g; this block sets %g but the "
+								"camera's lens math is unchanged. Move `scene_options` to the top "
+								"of the .RISEscene file, before any camera chunk.",
+								s_sceneOptions.scene_unit_meters, v );
+						}
+						s_sceneOptions.scene_unit_meters = v;
+					}
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scene_options"; cd.category = ChunkCategory::Camera;
+						cd.description = "Scene-level options. Currently sets the world-unit scale that bridges scene-geometry units to mm-input on cameras. Place near the top of the file (before any camera).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{
+							auto& p = P();
+							p.name = "scene_unit"; p.kind = ValueKind::Double;
+							p.description = "Meters per scene unit. Default 1.0 = scenes are in meters. Set 0.001 for mm-scale scenes, 0.0254 for inches, etc. Affects camera lens-input conversion (sensor_size / focal_length / shift_x/y are mm in the scene file regardless of this value; the camera converts to scene units via this factor).";
+							p.defaultValueHint = "1.0";
+							p.unitLabel = "m / unit";
+							p.presets = {
+								{ "Meters (default)", "1.0" },
+								{ "Centimetres",      "0.01" },
+								{ "Millimetres",      "0.001" },
+								{ "Inches",           "0.0254" },
+								{ "Feet",             "0.3048" },
+							};
+						}
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
 			// Cameras
 			//////////////////////////////////////////
+
+			// Scene-level camera defaults.  Consumed by thinlens_camera
+			// when a per-camera value is omitted.  Place this chunk
+			// AT OR NEAR THE TOP of the .RISEscene file (before any
+			// camera that should use it) — values declared after a
+			// camera don't reach back.  Same declaration-order rule
+			// as `standard_shader` and the other scene-level blocks.
+			//
+			// Currently sets fallbacks for the photographic-quartet
+			// scalars; tilt/shift are deliberately not fallbackable
+			// because they're shot-specific and tend to need per-camera
+			// override even within a single scene.
+			struct CameraDefaultsAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& /*pJob*/ ) const override
+				{
+					if( bag.Has( "sensor_size" ) ) {
+						s_cameraDefaults.sensor_size     = bag.GetDouble( "sensor_size" );
+						s_cameraDefaults.has_sensor_size = true;
+					}
+					if( bag.Has( "focal_length" ) ) {
+						s_cameraDefaults.focal_length     = bag.GetDouble( "focal_length" );
+						s_cameraDefaults.has_focal_length = true;
+					}
+					if( bag.Has( "fstop" ) ) {
+						s_cameraDefaults.fstop     = bag.GetDouble( "fstop" );
+						s_cameraDefaults.has_fstop = true;
+					}
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "camera_defaults"; cd.category = ChunkCategory::Camera;
+						cd.description = "Scene-level fallback values for thinlens_camera. Cameras declared AFTER this chunk pick up these values when they omit the corresponding parameter; cameras declared before are unaffected.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{
+							auto& p = P();
+							p.name = "sensor_size"; p.kind = ValueKind::Double;
+							p.description = "Default sensor width in MILLIMETRES.";
+							p.defaultValueHint = "36";
+							p.unitLabel = "mm";
+							p.presets = {
+								{ "Full-frame 35mm",         "36" },
+								{ "APS-C (Sony/Nikon/Fuji)", "23.6" },
+								{ "APS-C (Canon)",           "22.3" },
+								{ "Super 35 (cinema)",       "24.89" },
+								{ "Micro Four Thirds",       "17.3" },
+								{ "Vista Vision",            "37.72" },
+								{ "IMAX 70mm",               "70.41" },
+								{ "645 medium format",       "56" },
+								{ "6×7 medium format",       "70" },
+								{ "6×9 medium format",       "84" },
+								{ "4×5 large format",        "121" },
+								{ "8×10 large format",       "254" },
+							};
+						}
+						{ auto& p = P(); p.name = "focal_length"; p.kind = ValueKind::Double; p.description = "Default lens focal length in MILLIMETRES."; p.defaultValueHint = "35"; p.unitLabel = "mm"; }
+						{ auto& p = P(); p.name = "fstop";        p.kind = ValueKind::Double; p.description = "Default f-number (dimensionless)."; p.defaultValueHint = "2.8"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
 
 			struct PinholeCameraAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -3113,30 +3292,60 @@ namespace RISE
 				{
 					unsigned int xres = bag.GetUInt(   "width",            256 );
 					unsigned int yres = bag.GetUInt(   "height",           256 );
-					// Photographic quartet.  sensor_size, focal_length,
-					// and focus_distance must all be expressed in the
-					// SAME unit as scene geometry — the FOV formula
-					// (sensor / focal) is unit-free, but the lens
-					// equation v = f*u/(u-f) is not.  By convention,
-					// scenes in mm use the photographic numbers
-					// directly (sensor 36, focal 35); scenes in metres
-					// scale them down (sensor 0.036, focal 0.035).
-					// fstop is dimensionless; aperture diameter is
-					// derived as focal_length / fstop.
+					// Photographic quartet — units (Phase 1.2):
+					//
+					//   sensor_size, focal_length, shift_x, shift_y
+					//     in MILLIMETRES (the photographic convention).
+					//   focus_distance
+					//     in scene units (matches geometry coords —
+					//     "focus at 5 metres" reads naturally in a
+					//     metres scene as `focus_distance 5`).
+					//
+					// The renderer converts mm-input → scene-units
+					// internally via the scene-level `scene_options
+					// { scene_unit ... }` factor (default 1.0 = scenes
+					// in metres).  This keeps the editor stable on mm
+					// regardless of geometry unit, and keeps the lens
+					// equation v=f·u/(u-f) unit-consistent inside the
+					// camera.  See ThinLensCamera::Recompute().
 					if( !bag.Has( "focus_distance" ) ) {
 						GlobalLog()->PrintEx( eLog_Error,
 							"thinlens_camera:: `focus_distance` is required and has no default — set it explicitly to "
-							"the focus plane distance in your scene's unit (must be > focal_length)." );
+							"the focus plane distance in your scene's unit (must be > focal_length-in-scene-units)." );
 						return false;
 					}
 					double focus        = bag.GetDouble( "focus_distance" );
-					double sensor       = bag.GetDouble( "sensor_size",     36.0 );
-					double focal        = bag.GetDouble( "focal_length",    35.0 );
-					double fstop        = bag.GetDouble( "fstop",            2.8 );
+					// Per-camera value wins; otherwise fall through to
+					// scene-level `camera_defaults` (if declared earlier
+					// in the file); otherwise the hard-coded photographic
+					// default.  Defaults are in mm.
+					double sensor       = bag.Has( "sensor_size"  ) ? bag.GetDouble( "sensor_size"  )
+					                    : s_cameraDefaults.has_sensor_size  ? s_cameraDefaults.sensor_size
+					                    : 36.0;
+					double focal        = bag.Has( "focal_length" ) ? bag.GetDouble( "focal_length" )
+					                    : s_cameraDefaults.has_focal_length ? s_cameraDefaults.focal_length
+					                    : 35.0;
+					double fstop        = bag.Has( "fstop"        ) ? bag.GetDouble( "fstop"        )
+					                    : s_cameraDefaults.has_fstop        ? s_cameraDefaults.fstop
+					                    : 2.8;
 					// Aperture-shape (Phase 1.0 enrichments).
 					unsigned int blades = bag.GetUInt(   "aperture_blades",   0 );
 					double rotation     = bag.GetDouble( "aperture_rotation", 0 );
 					double squeeze      = bag.GetDouble( "anamorphic_squeeze", 1.0 );
+					// Tilt-shift (Phase 1.1).  Tilt is degrees in the
+					// scene file (parser converts to radians); shift is
+					// MILLIMETRES.  Defaults of 0 give a plain
+					// perpendicular-focus thin-lens (bit-identical to
+					// Phase 1.0 output).
+					double tilt_x       = bag.GetDouble( "tilt_x",            0 );
+					double tilt_y       = bag.GetDouble( "tilt_y",            0 );
+					double shift_x      = bag.GetDouble( "shift_x",           0 );
+					double shift_y      = bag.GetDouble( "shift_y",           0 );
+
+					// Scene-level unit scale (Phase 1.2).  Default 1.0
+					// (metres scene); set via `scene_options { scene_unit ... }`
+					// at the top of the .RISEscene file.
+					const double sceneUnitMeters = s_sceneOptions.scene_unit_meters;
 
 					double pixelAR      = bag.GetDouble( "pixelAR",        1.0 );
 					double exposure     = bag.GetDouble( "exposure",       0 );
@@ -3171,24 +3380,26 @@ namespace RISE
 					}
 					if( sensor <= 0.0 || focal <= 0.0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"thinlens_camera:: sensor_size (%g) and focal_length (%g) must both be positive", sensor, focal );
+							"thinlens_camera:: sensor_size (%g mm) and focal_length (%g mm) must both be positive", sensor, focal );
 						return false;
 					}
-					if( focus <= focal ) {
-						// The thin-lens equation v = f*u/(u-f) gives a
-						// negative film distance for u <= f, which would
-						// produce inverted/mirror-image rays.  This
-						// almost always means the user mismatched units:
-						// e.g. a 35mm-equivalent focal_length=35 with a
-						// scene-in-metres focus_distance=3 (should be
-						// 0.035 to match scene units, or 3000 to match
-						// mm).  See the chunk doc for the unit story.
-						GlobalLog()->PrintEx( eLog_Error,
-							"thinlens_camera:: focus_distance (%g) must be greater than focal_length (%g) in matching units. "
-							"Both must use the same unit as scene geometry — for a scene in metres, "
-							"a 35mm lens is focal_length=0.035, not 35.",
-							focus, focal );
-						return false;
+					// Validate focus_distance > focal_length, both in
+					// SCENE UNITS — the lens equation v=f·u/(u-f) gives
+					// a negative film distance for u <= f.  focus is
+					// already in scene units; convert focal mm → scene
+					// units before comparing.
+					{
+						const double mm_to_scene  = 0.001 / sceneUnitMeters;
+						const double focal_scene  = focal * mm_to_scene;
+						if( focus <= focal_scene ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"thinlens_camera:: focus_distance (%g scene units) must be greater than "
+								"focal_length (%g mm = %g scene units, given scene_unit = %g m). "
+								"For a 35mm lens in a metres scene, set focus_distance to at least 0.05 (5cm); "
+								"the lens equation v=f·u/(u-f) requires u > f.",
+								focus, focal, focal_scene, sceneUnitMeters );
+							return false;
+						}
 					}
 
 					orientation[0] *= DEG_TO_RAD;
@@ -3199,8 +3410,34 @@ namespace RISE
 					target_orientation[1] *= DEG_TO_RAD;
 
 					rotation *= DEG_TO_RAD;
+					tilt_x   *= DEG_TO_RAD;
+					tilt_y   *= DEG_TO_RAD;
 
-					return pJob.SetThinlensCamera( loc, lookat, up, sensor, focal, fstop, focus, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze );
+					// Cap tilt at ±80° (1.396 rad).  Beyond this,
+					// off-axis chief rays may go parallel to (or
+					// beyond) the focal plane, producing 1/0 in the
+					// focus-point math.  Real tilt-shift lenses
+					// max out around ±15°; an 80° ceiling leaves
+					// enough headroom for stylized renders without
+					// risking divide-by-zero NaN frames.
+					{
+						constexpr double kMaxTiltRad = 1.396;       // 80°, just shy of pi/2
+						if( fabs( tilt_x ) >= kMaxTiltRad || fabs( tilt_y ) >= kMaxTiltRad ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"thinlens_camera:: |tilt_x| (%g°) and |tilt_y| (%g°) must each be < 80°. "
+								"Real tilt-shift lenses max out around 15°; values closer to 90° would make "
+								"chief rays parallel to the focal plane (divide-by-zero).",
+								tilt_x * RAD_TO_DEG, tilt_y * RAD_TO_DEG );
+							return false;
+						}
+					}
+
+					// Mark the scene_options state as locked-in so a
+					// later `scene_options` block can warn the user
+					// it's too late to affect this camera.
+					s_sceneOptions.camera_committed = true;
+
+					return pJob.SetThinlensCamera( loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3209,13 +3446,44 @@ namespace RISE
 						cd.keyword = "thinlens_camera"; cd.category = ChunkCategory::Camera;
 						cd.description = "Perspective camera with thin-lens depth of field, parameterised photographically (sensor_size + focal_length + fstop + focus_distance).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "sensor_size";        p.kind = ValueKind::Double; p.description = "Sensor width in scene units (use mm-equivalent numbers like 36 when scene is in mm). Photographic presets — 36: full-frame 35mm; 23.6: APS-C; 24.89: Super 35; 17.3: m4/3; 56: 645 medium format; 121: 4x5 large format; 254: 8x10 large format. For metre-scale scenes scale these down by 1000."; p.defaultValueHint = "36"; }
-						{ auto& p = P(); p.name = "focal_length";       p.kind = ValueKind::Double; p.description = "Lens focal length in the same unit as sensor_size and focus_distance (scene units). 35 is 'natural' for a 36mm sensor."; p.defaultValueHint = "35"; }
+						{
+							auto& p = P();
+							p.name = "sensor_size"; p.kind = ValueKind::Double;
+							p.description = "Sensor width in MILLIMETRES (always — the renderer converts to scene units via scene_options.scene_unit). 36 = full-frame 35mm.";
+							p.defaultValueHint = "36";
+							p.unitLabel = "mm";
+							// Surface the canonical photographic formats as
+							// quick-pick combo entries.  Values are in mm
+							// directly — no scaling needed regardless of
+							// the scene's geometry unit.
+							p.presets = {
+								{ "Full-frame 35mm",         "36" },
+								{ "APS-C (Sony/Nikon/Fuji)", "23.6" },
+								{ "APS-C (Canon)",           "22.3" },
+								{ "Super 35 (cinema)",       "24.89" },
+								{ "Micro Four Thirds",       "17.3" },
+								{ "Vista Vision",            "37.72" },
+								{ "IMAX 70mm",               "70.41" },
+								{ "645 medium format",       "56" },
+								{ "6×7 medium format",       "70" },
+								{ "6×9 medium format",       "84" },
+								{ "4×5 large format",        "121" },
+								{ "8×10 large format",       "254" },
+							};
+						}
+						{ auto& p = P(); p.name = "focal_length";       p.kind = ValueKind::Double; p.description = "Lens focal length in MILLIMETRES. 35 is 'natural' for a 36mm sensor; 50 is 'normal'; 24 is wide; 85 is portrait; 200+ is telephoto."; p.defaultValueHint = "35"; p.unitLabel = "mm"; }
 						{ auto& p = P(); p.name = "fstop";              p.kind = ValueKind::Double; p.description = "f-number (aperture diameter = focal_length / fstop)."; p.defaultValueHint = "2.8"; }
-						{ auto& p = P(); p.name = "focus_distance";     p.kind = ValueKind::Double; p.required = true; p.description = "Focus plane distance in scene units (same unit as focal_length); must be > focal_length. No default — depends entirely on the scene."; }
+						{ auto& p = P(); p.name = "focus_distance";     p.kind = ValueKind::Double; p.required = true; p.description = "Focus plane distance in SCENE UNITS (matches geometry coords — e.g. `focus_distance 5` means 5 scene units, which is 5 metres in a default metres scene). No default — set per scene. Must be greater than focal_length-converted-to-scene-units."; p.unitLabel = "scene units"; }
 						{ auto& p = P(); p.name = "aperture_blades";    p.kind = ValueKind::UInt;   p.description = "Polygonal aperture blades; 0 = perfect disk, typical cinematic 5-9."; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "aperture_rotation";  p.kind = ValueKind::Double; p.description = "Polygon rotation in degrees."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "aperture_rotation";  p.kind = ValueKind::Double; p.description = "Polygon rotation in degrees."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
 						{ auto& p = P(); p.name = "anamorphic_squeeze"; p.kind = ValueKind::Double; p.description = "Aperture x-axis scale for oval bokeh (1.0 = circular)."; p.defaultValueHint = "1.0"; }
+						// Tilt-shift (Phase 1.1).  Tilt rotates the
+						// FOCAL plane (Scheimpflug); shift translates
+						// the IMAGE plane (architectural correction).
+						{ auto& p = P(); p.name = "tilt_x";             p.kind = ValueKind::Double; p.description = "Focal-plane tilt around camera x-axis in degrees (Scheimpflug). Default 0 = perpendicular focus plane. |tilt_x| must be < 80°."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
+						{ auto& p = P(); p.name = "tilt_y";             p.kind = ValueKind::Double; p.description = "Focal-plane tilt around camera y-axis in degrees (Scheimpflug). |tilt_y| must be < 80°."; p.defaultValueHint = "0"; p.unitLabel = "°"; }
+						{ auto& p = P(); p.name = "shift_x";            p.kind = ValueKind::Double; p.description = "Lens shift along camera x-axis in MILLIMETRES. Positive = lens shifts right (camera 'looks right', image content moves left in frame). Matches Blender Cycles convention."; p.defaultValueHint = "0"; p.unitLabel = "mm"; }
+						{ auto& p = P(); p.name = "shift_y";            p.kind = ValueKind::Double; p.description = "Lens shift along camera y-axis in MILLIMETRES. Positive = lens shifts up (camera 'looks up', image content moves down in frame). Architectural correction. Matches Blender Cycles convention."; p.defaultValueHint = "0"; p.unitLabel = "mm"; }
 						AddCameraCommonParams( P );
 						return cd;
 					}();
@@ -7238,6 +7506,8 @@ namespace RISE
 		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
 
 		// Cameras
+		add( "scene_options",                         new SceneOptionsAsciiChunkParser() );
+		add( "camera_defaults",                       new CameraDefaultsAsciiChunkParser() );
 		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
 		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
 		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );

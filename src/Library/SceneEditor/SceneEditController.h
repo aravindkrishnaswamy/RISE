@@ -249,6 +249,19 @@ namespace RISE
 		int  PropertyKind( unsigned int idx ) const;       // ValueKind cast to int
 		bool PropertyEditable( unsigned int idx ) const;
 
+		//! Quick-pick preset accessors for the editor combo box.
+		//! Empty for parameters whose descriptor declares no presets.
+		unsigned int PropertyPresetCount( unsigned int idx ) const;
+		String PropertyPresetLabel( unsigned int idx, unsigned int presetIdx ) const;
+		String PropertyPresetValue( unsigned int idx, unsigned int presetIdx ) const;
+
+		//! Short unit suffix to display next to the editor field —
+		//! e.g. "mm" for camera sensor / focal / shift, "°" for
+		//! angles, "scene units" for focus_distance.  Empty for
+		//! dimensionless / unlabelled parameters.  Pure presentation
+		//! hint; the parser ignores it.
+		String PropertyUnitLabel( unsigned int idx ) const;
+
 		//! Refresh the property snapshot from the live entity.  Called
 		//! by the platform UI before reading PropertyN getters.
 		//! Picks camera vs object vs empty based on CurrentPanelMode.

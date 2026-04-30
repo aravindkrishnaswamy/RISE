@@ -11,6 +11,19 @@ RISE ASCII SCENE 5
 #############################################################################################################
 
 ##################################################
+# Scene-level options.  The canonical Cornell box is ~550 mm wide,
+# and the geometry uses those exact mm coordinates — so this scene
+# is declared mm-scale.  The camera's mm-input lens specs read 1:1
+# against the geometry; focus_distance is also in scene units
+# (mm here, e.g. 490 = 490 mm to the short block).
+##################################################
+
+scene_options
+{
+	scene_unit		0.001
+}
+
+##################################################
 # Setup a renderer
 ##################################################
 
@@ -51,10 +64,10 @@ thinlens_camera
 	up					0 1 0
 	width				512
 	height				512
-	sensor_size			16.79			# matches the previous fov=50 with focal=18 (Cornell-mm scale)
-	focal_length		18.0
-	fstop				0.225			# wide-open lens preserves the historical strong DoF blur
-	focus_distance		490.0
+	sensor_size			16.79           # mm — matches FOV ~50° with the 18 mm focal
+	focal_length		18.0            # mm
+	fstop				0.225           # wide-open lens preserves the historical strong DoF blur
+	focus_distance		490.0           # mm — focus on the short block
 }
 
 ##################################################

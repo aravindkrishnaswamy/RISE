@@ -11,6 +11,17 @@ RISE ASCII SCENE 5
 #############################################################################################################
 
 ##################################################
+# Scene-level options.  Geometry is in metres (scene_unit defaults
+# to 1.0): a 3 m painted cube at the origin, viewed from 8 m by a
+# 100 mm f/1.4 telephoto.  At this distance + aperture the DOF span
+# is only ~0.5 m — far narrower than the cube's 5 m corner-to-
+# corner depth — so the focal plane VISIBLY sweeps through the cube
+# as `focus_distance` changes.  Try sweeping focus_distance from 5
+# (cube fully past focus) up through 8 (centre sharp, corners blur)
+# to 30+ (cube fully past focus the other direction).
+##################################################
+
+##################################################
 # Setup a renderer
 ##################################################
 
@@ -45,15 +56,15 @@ file_rasterizeroutput
 
 thinlens_camera
 {
-	location			0 0 30
+	location			0 0 8
 	lookat				0 0 0
 	up					0 1 0
 	width				1024
 	height				512
-	sensor_size			4.94			# matches the previous fov=20 with focal=14
-	focal_length		14				# 14mm
-	fstop				2.8				# f/2.8
-	focus_distance		28.0			# focus distance
+	sensor_size			36              # mm — full-frame 35mm
+	focal_length		100             # mm — short telephoto
+	fstop				1.4             # cinema-prime fast aperture
+	focus_distance		8               # metres — onto cube centre; near and far corners fall out of DOF
 }
 
 ##################################################
@@ -85,9 +96,9 @@ lambertian_material
 box_geometry
 {
 	name				boxgeom
-	width				5.0
-	height				5.0
-	depth				5.0
+	width				3.0
+	height				3.0
+	depth				3.0
 }
 
 standard_object

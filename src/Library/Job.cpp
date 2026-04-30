@@ -243,10 +243,11 @@ bool Job::SetThinlensCamera(
 	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 	const double vUp[3],									///< [in] Up vector of the camera
-	const double sensorSize,								///< [in] Sensor width (scene units; same unit as focalLength/focusDistance)
-	const double focalLength,								///< [in] Lens focal length (scene units; same unit as sensorSize/focusDistance)
+	const double sensorSize,								///< [in] Sensor width (mm)
+	const double focalLength,								///< [in] Lens focal length (mm)
 	const double fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
-	const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focalLength)
+	const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+	const double sceneUnitMeters,							///< [in] Meters per scene unit
 	const unsigned int xres,								///< [in] X resolution of virtual screen
 	const unsigned int yres,								///< [in] Y resolution of virtual screen
 	const double pixelAR,									///< [in] Pixel aspect ratio
@@ -257,11 +258,15 @@ bool Job::SetThinlensCamera(
 	const double target_orientation[2],						///< [in] Orientation relative to a target
 	const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
 	const double apertureRotation,							///< [in] Polygon rotation (radians)
-	const double anamorphicSqueeze							///< [in] Aperture x-axis scale (1.0 = circular)
+	const double anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+	const double tiltX,										///< [in] Focal-plane tilt around x-axis (radians)
+	const double tiltY,										///< [in] Focal-plane tilt around y-axis (radians)
+	const double shiftX,									///< [in] Lens shift along x (mm)
+	const double shiftY										///< [in] Lens shift along y (mm)
 	)
 {
 	ICamera* pCamera = 0;
-	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze );
+	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY );
 	pScene->SetCamera( pCamera );
 	safe_release( pCamera );
 	return true;

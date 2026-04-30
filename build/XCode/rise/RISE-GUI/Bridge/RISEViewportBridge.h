@@ -184,15 +184,31 @@ typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
 
 @end
 
+/// Single quick-pick preset, surfaced from the descriptor's
+/// ParameterPreset list.  `value` is the parser-acceptable literal
+/// the panel writes back when the user picks; `label` is the
+/// human-readable name shown in the combo box.
+@interface RISEViewportPropertyPreset : NSObject
+@property (nonatomic, readonly) NSString *label;
+@property (nonatomic, readonly) NSString *value;
+@end
+
 /// One row of the properties panel.  Field names mirror the C++
 /// CameraProperty struct.  `kind` is the parser's ValueKind enum
-/// cast to int.
+/// cast to int.  `presets` is empty when the parameter has no
+/// quick-pick combo entries; the panel falls back to a plain line
+/// edit in that case.
 @interface RISEViewportProperty : NSObject
 @property (nonatomic, readonly) NSString *name;
 @property (nonatomic, readonly) NSString *value;
 @property (nonatomic, readonly) NSString *describing;
 @property (nonatomic, readonly) NSInteger kind;
 @property (nonatomic, readonly) BOOL editable;
+@property (nonatomic, readonly) NSArray<RISEViewportPropertyPreset *> *presets;
+/// Short unit suffix shown next to the editor field — "mm" for
+/// camera sensor / focal / shift, "°" for angles, "scene units" for
+/// focus_distance.  Empty when the descriptor declared no unit.
+@property (nonatomic, readonly) NSString *unitLabel;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -171,21 +171,21 @@ namespace RISE
 			const double pixelRate									///< [in] Rate at which each pixel is recorded
 			);
 
-		//! Sets a camera based on thin lens model
+		//! Sets a camera based on thin lens model.
 		/// Photographic parameters: sensor size + focal length + f-stop +
-		/// focus distance.  FOV is derived from sensor and focal length;
-		/// aperture diameter is derived from focal length and f-stop.
-		/// All three lengths (sensor, focal, focus) must be in the same
-		/// unit as scene geometry; the lens equation requires it.
+		/// focus distance.  See IJob::SetThinlensCamera for the unit
+		/// contract (sensor / focal / shift in mm; focus in scene units;
+		/// sceneUnitMeters bridges them).
 		/// \return TRUE if successful, FALSE otherwise
 		bool SetThinlensCamera(
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
-			const double sensorSize,								///< [in] Sensor width (scene units; same unit as focalLength/focusDistance)
-			const double focalLength,								///< [in] Lens focal length (scene units; same unit as sensorSize/focusDistance)
+			const double sensorSize,								///< [in] Sensor width (mm)
+			const double focalLength,								///< [in] Lens focal length (mm)
 			const double fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
-			const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focalLength)
+			const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+			const double sceneUnitMeters,							///< [in] Meters per scene unit (1.0 = metres scene; 0.001 = mm scene)
 			const unsigned int xres,								///< [in] X resolution of virtual screen
 			const unsigned int yres,								///< [in] Y resolution of virtual screen
 			const double pixelAR,									///< [in] Pixel aspect ratio
@@ -196,7 +196,11 @@ namespace RISE
 			const double target_orientation[2],						///< [in] Orientation relative to a target
 			const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
 			const double apertureRotation,							///< [in] Polygon rotation (radians)
-			const double anamorphicSqueeze							///< [in] Aperture x-axis scale (1.0 = circular)
+			const double anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+			const double tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
+			const double tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
+			const double shiftX,									///< [in] Lens shift along x (mm); 0 = centered
+			const double shiftY										///< [in] Lens shift along y (mm); 0 = centered
 			);
 
 		//! Sets a fisheye camera

@@ -26,6 +26,13 @@ enum PropertyKind: Int {
     case reference  = 7
 }
 
+/// Single quick-pick preset option, mirrors RISEViewportPropertyPreset.
+struct PropertyPreset: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let value: String
+}
+
 /// Properties displayed in the right panel.  Built from
 /// RISEViewportProperty instances via `from(_:)`.
 struct PropertyRow: Identifiable {
@@ -35,6 +42,8 @@ struct PropertyRow: Identifiable {
     let description: String
     let kind: PropertyKind
     let editable: Bool
+    let presets: [PropertyPreset] // empty when descriptor declared no presets
+    let unitLabel: String         // empty for dimensionless / unlabelled fields
 
     // `nonisolated` — this is a pure value-constructor that touches no
     // main-actor state, so it's safe to pass as a function reference
@@ -42,13 +51,22 @@ struct PropertyRow: Identifiable {
     // this, Swift 6 strict concurrency warns when the call site can't
     // prove it's on the main actor.
     nonisolated static func from(_ src: RISEViewportProperty) -> PropertyRow {
-        PropertyRow(
+        // Use enumerated indices to derive unique ids without
+        // assuming preset labels are unique per parameter (they
+        // should be, but defensive against descriptor authoring
+        // mistakes).
+        let presets: [PropertyPreset] = src.presets.enumerated().map { (idx, p) in
+            PropertyPreset(id: "\(src.name).preset.\(idx)", label: p.label, value: p.value)
+        }
+        return PropertyRow(
             id: src.name,
             name: src.name,
             initialValue: src.value,
             description: src.describing,
             kind: PropertyKind(rawValue: src.kind) ?? .string,
-            editable: src.editable
+            editable: src.editable,
+            presets: presets,
+            unitLabel: src.unitLabel
         )
     }
 }
@@ -191,13 +209,54 @@ private struct PropertyRowView: View {
                                 onCommit(text)
                             }
                         }
+                    // Unit suffix — surfaces "mm" / "°" / "scene
+                    // units" next to the field so the user can tell
+                    // at a glance what unit a number is in (e.g. a
+                    // focal_length of "35" reads as "35 mm" rather
+                    // than possibly being misread as "35 metres").
+                    if !row.unitLabel.isEmpty {
+                        Text(row.unitLabel)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .fixedSize()
+                    }
+                    // Quick-pick presets: rendered as a Menu next to
+                    // the line edit when the descriptor declared any.
+                    // Picking a preset writes the parser-acceptable
+                    // value through the same SetProperty path the
+                    // line edit uses, so undo/redo and re-render work
+                    // identically for both inputs.  The line edit
+                    // stays usable for arbitrary custom values.
+                    if !row.presets.isEmpty {
+                        Menu {
+                            ForEach(row.presets) { preset in
+                                Button(preset.label) {
+                                    text = preset.value
+                                    onCommit(preset.value)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 10))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Quick-pick presets")
+                    }
                 }
             } else {
-                Text(text.isEmpty ? row.initialValue : text)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
+                HStack(spacing: 4) {
+                    Text(text.isEmpty ? row.initialValue : text)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                    if !row.unitLabel.isEmpty {
+                        Text(row.unitLabel)
+                            .font(.system(size: 10))
+                            .foregroundColor(.tertiaryLabelColor)
+                    }
+                }
             }
 
             if !row.description.isEmpty {
@@ -327,7 +386,8 @@ private struct ScrubHandle: View {
 /// (polygon rotation in degrees) and uses the same convention.
 private func isAngularField(_ name: String) -> Bool {
     switch name {
-    case "theta", "phi", "fov", "pitch", "yaw", "roll", "aperture_rotation":
+    case "theta", "phi", "fov", "pitch", "yaw", "roll",
+         "aperture_rotation", "tilt_x", "tilt_y":
         return true
     default:
         return false

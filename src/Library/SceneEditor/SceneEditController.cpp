@@ -1117,6 +1117,34 @@ bool SceneEditController::PropertyEditable( unsigned int idx ) const
 	return mProperties[idx].editable;
 }
 
+unsigned int SceneEditController::PropertyPresetCount( unsigned int idx ) const
+{
+	if( idx >= mProperties.size() ) return 0;
+	return static_cast<unsigned int>( mProperties[idx].presets.size() );
+}
+
+String SceneEditController::PropertyPresetLabel( unsigned int idx, unsigned int presetIdx ) const
+{
+	if( idx >= mProperties.size() ) return String();
+	const auto& presets = mProperties[idx].presets;
+	if( presetIdx >= presets.size() ) return String();
+	return String( presets[presetIdx].label.c_str() );
+}
+
+String SceneEditController::PropertyPresetValue( unsigned int idx, unsigned int presetIdx ) const
+{
+	if( idx >= mProperties.size() ) return String();
+	const auto& presets = mProperties[idx].presets;
+	if( presetIdx >= presets.size() ) return String();
+	return String( presets[presetIdx].value.c_str() );
+}
+
+String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
+{
+	if( idx >= mProperties.size() ) return String();
+	return mProperties[idx].unitLabel;
+}
+
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
 	// Route through the editor's transactional Apply path so panel

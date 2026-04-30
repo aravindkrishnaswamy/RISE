@@ -218,12 +218,6 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 
 **ABI.** Hard break by design (no backwards-compat constraint). `SetThinlensCamera` signature replaced outright; out-of-tree implementors of `IJob` must update. Single in-tree caller is the parser; no other callers in `src/`, `tests/`, or `bindings/`.
 
-**Phase 1.1 — remaining thin-lens enrichments** (deferred):
-- `tilt` (Vector2°) and `shift` (Vector2 mm) for Scheimpflug + architectural correction. Per Kensler RT Gems II ch. 31; touches `Recompute()` more invasively.
-- `optical_vignetting` (Scalar 0..1) — cat's-eye fake (composite two displaced apertures).
-- `aperture_texture` (string) — texture-mapped aperture for arbitrary bokeh shapes via the painter system.
-- Scene-level `camera_defaults` chunk (one shoot = one sensor); UI sensor-format combo box (combo box requires a small descriptor-system extension — `presets: [{label,value}]` field on `ParameterDescriptor`).
-
 **Acceptance (Phase 1.0) — verified.**
 - Visual regression: math equivalence proven analytically (max FOV drift across the 7 migrated scenes 0.089°, halfAperture exact for 5/6 — well below sample noise). End-to-end smoke renders confirm both `realistic.RISEscene` and `thinlens.RISEscene` produce plausible output through the new camera + the side-task rasterizer migration.
 - Parser-error path: descriptor-driven validation rejects retired `fov`/`aperture_size` with `Failed to parse parameter name 'fov' (not declared in 'thinlens_camera' descriptor)`. Regression scene at [scenes/Tests/Parser/thinlens_retired_keys.RISEscene](../scenes/Tests/Parser/thinlens_retired_keys.RISEscene).
@@ -232,6 +226,100 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - MLT continuity: provable (inverse-CDF mapping is C0 by construction; numerically validated cross-seam jumps O(ulp)).
 - Polygonal-aperture density: validated numerically — old code under-sampled corner regions by 7.28% (theoretical 25% peak density bias), new code is uniform within MC noise (+0.04% over 2M samples).
 - Adversarial review (3 reviewers, parallel, orthogonal concerns): zero CRITICAL findings post-fix; one MAJOR (the n-gon density bias) addressed in-scope; remaining MAJORs are pre-existing (mixed-unit `focal >= focus` check) or expected (ABI break per user mandate).
+
+---
+
+### Phase 1.2 — Unit conventions: scene-level scale + mm-input camera lens *(LANDED)*
+
+**Goal.** Fix the mm-vs-scene-units ambiguity that surfaced during the Phase 1.1 review and demos. Settle the contract: scene-internal default = metres, camera lens specs typed in mm, scene-level `scene_options { scene_unit ... }` factor bridges the two for non-metre scenes. Match Cycles / Arnold / V-Ray practice.
+
+**What changed.**
+- New `scene_options` chunk with a `scene_unit` parameter (meters per scene unit; default 1.0). Stored in thread_local parser state; reset per parse via `ChunkParsers::ClearParseState()`. Future physical-quantity work (volumetric atmosphere, sky, sensor noise) consumes the same scale.
+- `thinlens_camera` lens parameters (`sensor_size`, `focal_length`, `shift_x`, `shift_y`) are now MM in the scene file and the editor — photographic convention. `focus_distance` stays in scene units (matches geometry coords).
+- Camera storage refactor: `ThinLensCamera` keeps the mm values as source-of-truth, plus a `sceneUnitMeters` member, and converts mm → scene-units inside `Recompute()` via `mm_to_scene = 0.001 / sceneUnitMeters`. The lens-equation hot path operates entirely in scene units; the per-ray cost is unchanged from Phase 1.1 (one extra multiply on shift, folded into the cached `shiftX_sceneUnits` / `shiftY_sceneUnits` computed once per Recompute).
+- `IJob::SetThinlensCamera` and `RISE_API_CreateThinlensCamera` gain a `sceneUnitMeters` parameter (third-from-the-end). Editor introspection passes mm values through directly — no new conversion code in the editor surface, since storage *is* mm now.
+- `focus_distance > focal_length` validation now compares both in scene units (parser converts focal mm → scene units before the check), with a unit-aware error message.
+
+**Files touched.**
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp): new `SceneOptionsAsciiChunkParser`, `s_sceneOptions` thread-local state, `thinlens_camera` reads scene_unit and passes through. Descriptor texts updated to say "MILLIMETRES".
+- [src/Library/Parsers/ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h): no schema change (presets already there from 1.1).
+- [src/Library/Cameras/ThinLensCamera.h,cpp](../src/Library/Cameras/): `sensorSize`/`focalLength`/`shiftX`/`shiftY` semantics changed from "scene units" to "mm"; new `sceneUnitMeters` member + `GetSceneUnitMeters/SetSceneUnitMeters`; `Recompute` does mm→scene conversion; cached `shiftX_sceneUnits/shiftY_sceneUnits` for the hot path.
+- [src/Library/RISE_API.h,cpp](../src/Library/), [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h), [src/Library/Job.h,cpp](../src/Library/): added `sceneUnitMeters` parameter to the thinlens entry points.
+- [src/Library/Parsers/README.md](../src/Library/Parsers/README.md): replaced the "scene units" unit story with the mm + scene_unit story; documented the conversion table; added a `scene_options` section.
+- 8 existing scenes get `scene_options { scene_unit 0.001 }` (mm-scale) at the top to preserve visual output without numeric changes to lens values.
+- [scenes/Tests/Cameras/thinlens_tiltshift.RISEscene](../scenes/Tests/Cameras/thinlens_tiltshift.RISEscene) redesigned at metres-scale (camera 4 m back, 30 cm spheres, 35 mm lens, focus 3 m, tilt_y 25°) — addresses the "doesn't render anything" report.
+- [tests/CameraUnitConversionTest.cpp](../tests/CameraUnitConversionTest.cpp) new — verifies stored fields stay mm, focus stays scene-units, FOV is unit-invariant, and rays from "metres camera" vs "mm camera with positions ×1000" differ exactly by the scale factor in origin and are identical in direction.
+- [tests/SceneEditorSuggestionsTest.cpp](../tests/SceneEditorSuggestionsTest.cpp) chunk-count assertion bumped 130 → 131 (covers `scene_options`).
+
+**ABI.** Additive on `SetThinlensCamera`/`RISE_API_CreateThinlensCamera` (one new param). Camera storage semantics changed: existing scenes that interpreted `focal_length` as "scene units" break unless they declare a matching `scene_options { scene_unit }` block. All in-tree scenes have been migrated; out-of-tree consumers must declare a scene_unit if their geometry isn't metres.
+
+**Phase 1.2.1 follow-up — UI unit labels.** After Phase 1.2 landed, a real-user review surfaced that even though the panel data path is in mm, the field labels don't surface the unit at all — so a user looking at "focal_length 35" can't tell at a glance whether it's 35 mm, 35 cm, or 35 m. Fixed by adding a `unitLabel` field to `ParameterDescriptor` (e.g. "mm", "°", "scene units"), plumbed through `CameraProperty` → `SceneEditController::PropertyUnitLabel` → `RISE_API_SceneEditController_PropertyUnitLabel` → both bridges → both panels render the suffix next to the value field. Camera params now surface labels: lens lengths "mm", angles "°", focus_distance "scene units", dimensionless params (fstop, anamorphic_squeeze) leave the suffix empty. New `TestPanelUnitLabels` regression test asserts every camera parameter exposes its expected unit label.
+
+**Acceptance — verified.**
+- 216 / 216 assertions pass in `CameraUnitConversionTest` (10 test groups: stored mm, focus_distance-is-scene-units, FOV unit-invariance, ray scale-invariance, non-zero shift unit-invariance, tilt cache unit-invariance, **panel unit labels**, panel-shows-mm-not-metres across 5 setups, preset-pick roundtrip in mm, focal-length-setter roundtrip in mm, editor SetX is mm-direct).
+- All 8 migrated existing scenes parse and render unchanged from Phase 1.1.
+- New tilt-shift demo scene renders correctly (50% non-zero coverage; Scheimpflug effect visible — focal plane rotated by tilt_y catches the diagonal sphere row).
+- Build: `make -C build/make/rise -j8 all` clean rebuild, zero warnings.
+- 71/72 tests pass; the one failure is the pre-existing `GLTFLoaderTest` flake, filed separately.
+
+---
+
+### Phase 1.1 — Tilt-shift + scene-level defaults + UI sensor presets *(LANDED)*
+
+**Goal.** Finish the thin-lens story Phase 1.0 started: add Scheimpflug tilt + architectural shift, surface the photographic sensor-format presets in the editor as a combo box, and let scenes declare reusable camera defaults at the top of the file. Skipped from the original 1.1 list per the recommendation: `optical_vignetting` (becomes redundant once Phase 4 lands real multi-element cat's-eye for free); `aperture_texture` (deferred — niche, rolls into a future enrichment phase if any user asks).
+
+**Tilt-shift.**
+- New params on `thinlens_camera`: `tilt_x`, `tilt_y` (degrees, default 0) and `shift_x`, `shift_y` (scene units, default 0). All four default to 0, which gives a plain perpendicular-focus thin-lens — bit-identical output to Phase 1.0 for unchanged scenes.
+- Implementation generalises the focus-plane intersection. The focal plane is parameterised as `n · P = kFocus`; for tilt = (0,0) this collapses to `n = (0,0,1)`, `kFocus = focusDistance` — the original perpendicular formula. With non-zero tilt the chief ray from a sensor sample through the lens center intersects a tilted focal plane, giving the Scheimpflug "wedge of focus" used for miniature-fake / selective-focus.
+- Shift translates the image-plane sample point. Convention: positive `shift_y` is "lens up" (image content moves down — standard architectural correction); positive `shift_x` is "lens left" (image content moves right). Sign choices documented in the descriptor parameter help-text and parser README.
+- Math derivation, equivalence-with-Phase-1.0 proof, and PSSMLT continuity argument all live in [src/Library/Cameras/ThinLensCamera.cpp](../src/Library/Cameras/ThinLensCamera.cpp) `Recompute()` block comment.
+- Reference: Kensler, *Tilt-Shift Rendering Using a Thin Lens Model*, Ray Tracing Gems II ch. 31.
+
+**Scene-level `camera_defaults` chunk.**
+- New top-level chunk that sets fallback values for `sensor_size`, `focal_length`, and `fstop`. `thinlens_camera` consults these when those params are omitted on the camera itself. Order-dependent: `camera_defaults` must precede the camera chunks that consume it (same convention as `standard_shader`). Cameras with explicit values override.
+- Backed by a `thread_local` static `s_cameraDefaults` in the parser's anonymous namespace, reset at the start of each `ParseAndLoadScene` via `ChunkParsers::ClearParseState()` — no global state leaks between scene loads.
+- `focus_distance` is intentionally NOT in `camera_defaults` (it's shot-specific). `tilt`/`shift` are also excluded for the same reason.
+
+**UI sensor-format combo box.**
+- Extended `ParameterDescriptor` with a `presets: std::vector<ParameterPreset>` field (label/value pairs). Plumbed through CameraIntrospection → SceneEditController → C API → both bridges → both panels.
+- Mac: SwiftUI `Menu` with the `list.bullet` SF Symbol next to the line edit; picking a preset writes its value via the same SetProperty path as keyboard editing (so undo/redo works identically).
+- Windows: `QToolButton` with the `⋮` glyph and a popup `QMenu`, same dispatch pattern.
+- Both panels render the combo box only when `presets` is non-empty — no churn for existing rows. The line edit stays usable for arbitrary custom values.
+- Sensor-format preset list (12 formats, full-frame to 8×10) baked into the `sensor_size` descriptor in `thinlens_camera` and `camera_defaults`. Parser README cross-links.
+
+**Files touched.**
+- [src/Library/Cameras/ThinLensCamera.h,cpp](../src/Library/Cameras/) — tilt/shift members, focal-plane equation cache (`nFocusX/Y/Z`, `kFocus`), refactored `Recompute()` and `GenerateRay`/`GenerateRayWithLensSample` to use the general formulation.
+- [src/Library/RISE_API.h,cpp](../src/Library/), [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h), [src/Library/Job.h,cpp](../src/Library/) — extended `RISE_API_CreateThinlensCamera` / `IJob::SetThinlensCamera` with 4 new tilt-shift params.
+- [src/Library/Parsers/ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h) — new `ParameterPreset` struct and `presets` field on `ParameterDescriptor`.
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) — `CameraDefaultsAsciiChunkParser` (new), tilt-shift params on `ThinlensCameraAsciiChunkParser`, sensor-size presets baked into both descriptors, parser-state reset.
+- [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) — new sections for `camera_defaults` and tilt-shift; preset table cross-links to the descriptor.
+- [src/Library/SceneEditor/CameraIntrospection.h,cpp](../src/Library/SceneEditor/) — `CameraProperty.presets` field, GET/SET wiring for tilt/shift in radians/degrees with the standard editor unit conversions.
+- [src/Library/SceneEditor/SceneEditController.h,cpp](../src/Library/SceneEditor/) — `PropertyPresetCount/Label/Value` accessors.
+- [src/Library/RISE_API.h,cpp](../src/Library/) — `RISE_API_SceneEditController_PropertyPreset*` C accessors.
+- [build/XCode/rise/RISE-GUI/Bridge/RISEViewportBridge.h,mm](../build/XCode/rise/RISE-GUI/Bridge/) — `RISEViewportPropertyPreset` Obj-C class + propertySnapshot population.
+- [build/XCode/rise/RISE-GUI/App/PropertiesPanel.swift](../build/XCode/rise/RISE-GUI/App/PropertiesPanel.swift) — `PropertyPreset` Swift struct + Menu rendering when presets are non-empty + `tilt_x`/`tilt_y` added to angular-field list.
+- [build/VS2022/RISE-GUI/ViewportBridge.h,cpp](../build/VS2022/RISE-GUI/) — `ViewportPropertyPreset` struct + propertySnapshot population.
+- [build/VS2022/RISE-GUI/ViewportProperties.cpp](../build/VS2022/RISE-GUI/ViewportProperties.cpp) — QToolButton + QMenu rendering when presets are non-empty + `tilt_x`/`tilt_y` added to angular-field list.
+- [scenes/Tests/Cameras/thinlens_tiltshift.RISEscene](../scenes/Tests/Cameras/thinlens_tiltshift.RISEscene) — regression scene with a row of spheres at varying depth and `tilt_y=8` rotating the focal plane.
+- [scenes/Tests/Cameras/camera_defaults.RISEscene](../scenes/Tests/Cameras/camera_defaults.RISEscene) — smoke test for the scene-level fallback path.
+- [tests/SceneEditorSuggestionsTest.cpp](../tests/SceneEditorSuggestionsTest.cpp) — chunk-count assertion bumped 128 → 130 (covers `camera_defaults` and the previously-untracked `gltfmesh_geometry`).
+
+**ABI.** Additive-only on the descriptor and editor surfaces (new field on `ParameterDescriptor`; new methods on `SceneEditController` and the C API). `SetThinlensCamera` and `RISE_API_CreateThinlensCamera` extended with 4 new params at the end — same break-pattern as Phase 1.0, no out-of-tree callers found.
+
+**Deferred from this phase.**
+- `optical_vignetting` — superseded by Phase 4's real multi-element cat's-eye.
+- `aperture_texture` — niche; rolls into a future enrichment if requested.
+
+**Acceptance (Phase 1.1) — verified.**
+- Tilt-shift fast-path with default zeros is bit-identical to Phase 1.0 (mathematically — the new `focus = oneMinusT · p_sensor` formula reduces exactly to the old `f_over_d_minus_f` precompute). All 7 migrated scenes from Phase 1.0 still parse and render unchanged.
+- Tilt-shift regression scene renders successfully (visible spheres in focus along the tilted plane).
+- `camera_defaults` test scene renders successfully through the fallback path (omits sensor/focal/fstop on the camera; inherits from defaults).
+- Parser-error path still rejects retired `fov`/`aperture_size`; new params are accepted and validated.
+- **Tilt-magnitude validation:** `|tilt_x|` and `|tilt_y|` capped at 80° at parse time with a focused error message. Beyond that, the chief-ray formula `kFocus / (n·p_sensor)` would divide by near-zero and produce NaN frames; cap leaves enough headroom for stylized renders (real lenses max around ±15°).
+- **Shift sign convention follows Blender Cycles:** positive `shift_x` = lens-right (camera looks right, content moves left); positive `shift_y` = lens-up (camera looks up, content moves down — the standard architectural-correction direction). Both implemented as `x_img = x_pix·sx − shiftX` and `y_img = y_pix·sy − shiftY`. Verified analytically against the camera-frame basis: in RISE the camera-frame "right" maps to world `−U` because `U = up × forward` flips sign; subtracting shift compensates so positive lens-right gives the camera-intuitive direction.
+- Both GUI panels surface the new params automatically (descriptor-driven). Sensor-size presets render as a Menu/QToolButton next to the line edit; `tilt_x`/`tilt_y` get the angular scrub-rate. Preset bridge buffers sized to 256 bytes (was 64/128) so future longer labels won't truncate; Mac bridge defensively skips entries whose UTF-8 round-trip yields nil.
+- Build: `make -C build/make/rise -j8 all` and `xcodebuild -scheme RISE-GUI` clean rebuilds, zero warnings. Tests: 71/72 pass; the one failure is a pre-existing `GLTFLoaderTest` flake on master (filed separately).
+- Adversarial review (3 reviewers, parallel, orthogonal concerns): zero CRITICAL findings; three MAJORs addressed in this round (shift sign convention, tilt validation, preset buffer hardening). Pre-existing items flagged for future work: nested `> load` wipes parser state mid-parse (affects `s_painterColors` too — not Phase-1.1-specific); `mProperties` snapshot vs render-thread race (pre-existing, applies to all properties).
 
 ---
 

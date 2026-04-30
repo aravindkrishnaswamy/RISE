@@ -15,6 +15,8 @@
 #include <QFrame>
 #include <QMouseEvent>
 #include <QPointer>
+#include <QToolButton>
+#include <QMenu>
 
 #include <cmath>
 #include <functional>
@@ -46,7 +48,9 @@ inline bool isAngularField(const QString& name)
         || name == QLatin1String("pitch")
         || name == QLatin1String("yaw")
         || name == QLatin1String("roll")
-        || name == QLatin1String("aperture_rotation");
+        || name == QLatin1String("aperture_rotation")
+        || name == QLatin1String("tilt_x")
+        || name == QLatin1String("tilt_y");
 }
 
 // Per-pixel scrub rate.  Angular = 0.5/px (fixed).  Otherwise
@@ -346,33 +350,61 @@ void ViewportProperties::refresh()
                 // edit on its own — scrubbing a vector is
                 // ambiguous and keyboard entry is the natural input
                 // for non-numeric fields.
-                if (isScrubbableKind(p.kind)) {
+                // Field row layout: scrub handle (if numeric) +
+                // line edit + unit suffix (if any) + presets menu
+                // (if descriptor has any).  Quick-pick presets stay
+                // alongside the line edit so users can type a custom
+                // value or pick a preset; the unit label disambiguates
+                // small numbers like "35" as "35 mm" so the user can
+                // tell at a glance what unit the field is in.
+                if (isScrubbableKind(p.kind) || !p.presets.isEmpty() || !p.unitLabel.isEmpty()) {
                     auto* fieldRow = new QHBoxLayout;
                     fieldRow->setContentsMargins(0, 0, 0, 0);
                     fieldRow->setSpacing(4);
-                    auto* handle = new ScrubHandle(
-                        edit, p.name, p.kind,
-                        // Live-commit on every drag tick so the
-                        // viewport renders the change in real time.
-                        // Routed through setProperty so the
-                        // mutation goes through the same SceneEditor
-                        // path that keyboard edits use.
-                        [this](const QString& n, const QString& v) {
-                            if (!m_bridge) return;
-                            if (m_bridge->setProperty(n, v)) {
-                                m_lastValue.insert(n, v);
-                            }
-                        },
-                        // Bracket the scrub gesture so the
-                        // controller knows to bump preview-scale
-                        // (without these, every kick cancels the
-                        // in-flight render before the outer tiles
-                        // get a chance to update — only the centre
-                        // of the image refreshes).
-                        [this]() { if (m_bridge) m_bridge->beginPropertyScrub(); },
-                        [this]() { if (m_bridge) m_bridge->endPropertyScrub();   });
-                    fieldRow->addWidget(handle);
+                    if (isScrubbableKind(p.kind)) {
+                        auto* handle = new ScrubHandle(
+                            edit, p.name, p.kind,
+                            [this](const QString& n, const QString& v) {
+                                if (!m_bridge) return;
+                                if (m_bridge->setProperty(n, v)) {
+                                    m_lastValue.insert(n, v);
+                                }
+                            },
+                            [this]() { if (m_bridge) m_bridge->beginPropertyScrub(); },
+                            [this]() { if (m_bridge) m_bridge->endPropertyScrub();   });
+                        fieldRow->addWidget(handle);
+                    }
                     fieldRow->addWidget(edit, 1);
+                    if (!p.unitLabel.isEmpty()) {
+                        auto* unit = new QLabel(p.unitLabel);
+                        QFont uf = unit->font();
+                        uf.setPointSizeF(uf.pointSizeF() * 0.85);
+                        unit->setFont(uf);
+                        unit->setStyleSheet("color: palette(placeholder-text);");
+                        fieldRow->addWidget(unit);
+                    }
+                    if (!p.presets.isEmpty()) {
+                        auto* presetButton = new QToolButton;
+                        presetButton->setText(QStringLiteral("⋮"));   // vertical ellipsis
+                        presetButton->setToolTip(tr("Quick-pick presets"));
+                        presetButton->setPopupMode(QToolButton::InstantPopup);
+                        auto* menu = new QMenu(presetButton);
+                        const QString propName = p.name;
+                        for (const ViewportPropertyPreset& preset : p.presets) {
+                            const QString label = preset.label;
+                            const QString value = preset.value;
+                            QAction* action = menu->addAction(label);
+                            connect(action, &QAction::triggered, this,
+                                    [this, propName, value]() {
+                                        if (!m_bridge) return;
+                                        if (m_bridge->setProperty(propName, value)) {
+                                            m_lastValue.insert(propName, value);
+                                        }
+                                    });
+                        }
+                        presetButton->setMenu(menu);
+                        fieldRow->addWidget(presetButton);
+                    }
                     col->addLayout(fieldRow);
                 } else {
                     col->addWidget(edit);

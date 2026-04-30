@@ -288,6 +288,14 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
     char nameBuf[128];
     char valBuf[256];
     char descBuf[512];
+    // Generously sized so future descriptors with longer labels
+    // (multi-byte UTF-8 for non-ASCII names) can grow without churn.
+    // QString::fromUtf8 silently substitutes replacement chars on
+    // invalid sequences, so a truncation mid-codepoint is at worst
+    // a cosmetic glitch rather than a crash.
+    char presetLabelBuf[256];
+    char presetValueBuf[256];
+    char unitLabelBuf[64];
     for (unsigned int i = 0; i < n; ++i) {
         RISE_API_SceneEditController_PropertyName(m_controller, i, nameBuf, sizeof(nameBuf));
         RISE_API_SceneEditController_PropertyValue(m_controller, i, valBuf, sizeof(valBuf));
@@ -298,6 +306,27 @@ QVector<ViewportProperty> ViewportBridge::propertySnapshot()
         p.description = QString::fromUtf8(descBuf);
         p.kind = RISE_API_SceneEditController_PropertyKind(m_controller, i);
         p.editable = RISE_API_SceneEditController_PropertyEditable(m_controller, i);
+
+        // Forward the descriptor's quick-pick presets — empty for
+        // parameters that declared none, in which case the panel
+        // falls through to a plain line edit.
+        const unsigned int numPresets = RISE_API_SceneEditController_PropertyPresetCount(m_controller, i);
+        p.presets.reserve(static_cast<int>(numPresets));
+        for (unsigned int j = 0; j < numPresets; ++j) {
+            if (!RISE_API_SceneEditController_PropertyPresetLabel(m_controller, i, j, presetLabelBuf, sizeof(presetLabelBuf))) continue;
+            if (!RISE_API_SceneEditController_PropertyPresetValue(m_controller, i, j, presetValueBuf, sizeof(presetValueBuf))) continue;
+            ViewportPropertyPreset preset;
+            preset.label = QString::fromUtf8(presetLabelBuf);
+            preset.value = QString::fromUtf8(presetValueBuf);
+            p.presets.append(preset);
+        }
+
+        // Unit label — small suffix the panel renders next to the
+        // value field ("mm" / "°" / "scene units" / empty).
+        if (RISE_API_SceneEditController_PropertyUnitLabel(m_controller, i, unitLabelBuf, sizeof(unitLabelBuf))) {
+            p.unitLabel = QString::fromUtf8(unitLabelBuf);
+        }
+
         out.append(p);
     }
     return out;

@@ -54,6 +54,11 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+# Camera 6 m diagonally out, looking at the pavilion's centre column.
+# Distance ≈ √(3.5² + 6²) ≈ 7 m.  85mm wide-open f/1.4 — the central
+# vase + glass sphere are tack-sharp, the floor and outer columns
+# fall off into bokeh.
+
 thinlens_camera
 {
 	location			-3.5 2.0 6.0
@@ -61,10 +66,10 @@ thinlens_camera
 	up					0 1 0
 	width				800
 	height				600
-	sensor_size			2.55
-	focal_length		3.5
-	fstop				7.0
-	focus_distance		6.5
+	sensor_size			36              # mm — full-frame
+	focal_length		85              # mm — short tele
+	fstop				1.4
+	focus_distance		7               # metres — onto the centre column
 }
 
 ##################################################

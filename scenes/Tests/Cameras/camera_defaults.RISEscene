@@ -1,0 +1,116 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           camera_defaults.RISEscene                                                               #
+#   Description:    Smoke test for the scene-level `camera_defaults` chunk (Phase 1.1).  Sets               #
+#                   sensor_size + focal_length + fstop at the top of the file; the camera below            #
+#                   omits all three and inherits from the defaults.  focus_distance must still be          #
+#                   set per-camera (it has no scene-level fallback).                                       #
+#                                                                                                           #
+#   Author:         Generated for Phase 1.1 testing                                                         #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Scene-level camera defaults — must precede the camera chunk that uses them.
+# Cameras declared after this block pick up these values for any param they
+# omit; cameras with explicit values override.  Lens params are MM.
+##################################################
+
+camera_defaults
+{
+	sensor_size		36              # mm — full-frame 35mm
+	focal_length	85              # mm — short tele (defaults inherited by the camera below)
+	fstop			2.0             # fast aperture so the off-focus floor blurs
+}
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		2
+	samples				16
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/camera_defaults
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera — only focus_distance is specified.  sensor_size, focal_length,
+# and fstop come from camera_defaults above.
+##################################################
+
+thinlens_camera
+{
+	location			0 1 5
+	lookat				0 1 0
+	up					0 1 0
+	width				400
+	height				300
+	focus_distance		5               # metres — onto the ball; the floor stretches out of DOF behind
+}
+
+##################################################
+# Minimal scene
+##################################################
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name				mat_white
+	reflectance			color_white
+}
+
+sphere_geometry
+{
+	name				ball
+	radius				1.0
+}
+
+standard_object
+{
+	name				ball1
+	geometry			ball
+	position			0 1 0
+	material			mat_white
+}
+
+infiniteplane_geometry
+{
+	name				floorgeom
+	xtile				1.0
+	ytile				1.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	position			0 0 0
+	orientation			-90.0 0.0 0.0
+	material			mat_white
+}
+
+directional_light
+{
+	name				sun
+	power				4.0
+	color				1.0 1.0 1.0
+	direction			-0.3 -1.0 -0.5
+}
