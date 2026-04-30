@@ -1,0 +1,597 @@
+# glTF 2.0 Import for RISE — Analysis & Plan
+
+**Status:** Planning. No code yet. This document is the source of truth for the
+design; refine it before implementation.
+
+**Scope decision:** Phase 1 (mesh-only import) **+** Phase 2 (full scene
+import with PBR materials, lights, cameras, hierarchical transforms) ship
+together as v1. Phase 3+ (animation, skinning, KHR extensions) is deferred.
+
+**Spun-off work:** JPEG support is being added in a separate task because
+most real-world glTF assets ship JPEG base-color textures and we need that
+in place before scene import is useful end-to-end.
+
+---
+
+## 1. What's in a glTF file
+
+glTF 2.0 is a JSON-described scene with binary buffer attachments. Two on-disk
+forms: `.gltf` (JSON + sidecar `.bin` + sidecar images) and `.glb` (single
+binary container with embedded JSON, buffers, images). Both encode the same
+logical structure:
+
+| Concept | Data | RISE counterpart | Notes |
+|---|---|---|---|
+| **buffer / bufferView / accessor** | Raw bytes → typed strided views → typed arrays | n/a — internal to the loader | Pure plumbing; the library handles it. |
+| **mesh.primitives[]** | Vertex attributes + indices + material ref + topology | `IndexedTriangle` via `Job::AddIndexedTriangleMeshGeometry` | RISE only supports triangles. STRIPS/FANS get converted; LINES/POINTS rejected. |
+| **mesh.morphTargets** | Per-vertex deltas for blend shapes | None | Phase 4+. |
+| **material** (PBR metallic-roughness) | baseColor, metallic, roughness, normal, occlusion, emissive, alphaMode, doubleSided | `ggx_material` + painter composition (see §6) | Already three-lobe + multiscatter + Fresnel. PBR mapping is a parser-level decomposition. |
+| **texture / sampler / image** | Image + filter/wrap settings | `png_painter` / `hdr_painter` / `exr_painter` / `tiff_painter` / **`jpg_painter`** (new) | Most glTF in the wild ships JPEG. JPEG support spun off as a separate task. |
+| **camera** (perspective / orthographic) | yfov, znear, zfar / xmag, ymag — **no position** (comes from node) | `pinhole_camera` / `orthographic_camera` | Position from flattened node transform. RISE has only one active camera; first wins. |
+| **node** (scene graph) | TRS or 4×4 matrix, plus optional mesh/camera/light/skin reference and child list | `standard_object` (flat — no hierarchy) | Hierarchy must be flattened by multiplying parent matrices. Quaternion → Euler is lossy; see §10 enhancement. |
+| **scene[]** | Top-level scene picks roots from the node list | RISE has one implicit scene per Job | Honor `scene` field; ignore others or warn. |
+| **animation** | Channels target node TRS or morph weights; LINEAR / STEP / CUBICSPLINE samplers | `Keyframe` / `Timeline` | Only LINEAR straightforward. CUBICSPLINE needs baking. Morph weights have no target. Phase 4+. |
+| **skin** | Joint nodes + inverse-bind matrices; JOINTS_0/WEIGHTS_0 vertex attrs | None | Per-vertex CPU skinning + BVH refit (`UpdateVertices` exists). Phase 4+. |
+| **KHR_lights_punctual** | point / spot / directional lights on nodes | `omni_light` / `spot_light` / `directional_light` | Direct mapping. |
+| **KHR_materials_*** | `unlit`, `transmission`, `clearcoat`, `sheen`, `volume`, `ior`, `specular`, `emissive_strength`, `iridescence`, `anisotropy`, `dispersion`, `pbrSpecularGlossiness` | Mostly mappable to RISE materials | Warn-and-skip in v1 except `KHR_materials_emissive_strength` (trivial scalar) and `KHR_materials_unlit` (skip BSDF, use luminaire). |
+| **KHR_draco_mesh_compression / EXT_meshopt_compression** | Compressed buffers | None — neither cgltf nor fastgltf decodes these | Reject with clear error in v1. |
+
+**Byte-level reality:** an accessor + bufferView + buffer triple resolves to a
+typed strided pointer into a byte blob. Decoding it is mechanical: read
+positions as 3 floats, indices as ushort/uint, etc. Components can be
+normalized (UNORM/SNORM) and need rescaling. None hard, but the kind of
+detail you outsource to a library.
+
+---
+
+## 2. C++ glTF library survey
+
+Three serious contenders. Avoid Assimp (60+ formats, large transitive deps,
+bigger than RISE's whole extlib combined).
+
+### cgltf — https://github.com/jkuhlmann/cgltf
+
+**Pros**
+- **Zero dependencies.** Single header. C99. Drops in next to libpng/zlib/libtiff.
+- **Doesn't impose an image loader.** Parses image references but leaves bytes for the caller. Lets us route JPEG/PNG/HDR/EXR through RISE's existing painter system instead of duplicating decode paths.
+- **Small and auditable.** ~5k LOC. Easy to read, easy to debug.
+- **Well-maintained and battle-tested.** Used by raylib, bgfx, ozz-animation, Tracy. Regular releases.
+- **Supports GLB + most KHR extensions.** Including KHR_lights_punctual, KHR_materials_unlit, KHR_materials_pbrSpecularGlossiness, etc. (extension *parsing* only — interpretation is on us).
+- **MIT licensed.** Compatible with RISE.
+
+**Cons**
+- **C API.** Pointer-heavy. Parsed structs use `cgltf_*` types that the caller must traverse manually. Not "ergonomic" by C++17 standards.
+- **No automatic image decode.** A pro for us, but means we write the wiring.
+- **No validation by default.** Will happily accept a malformed file. Need to call `cgltf_validate()` after parse.
+
+### tinygltf — https://github.com/syoyo/tinygltf
+
+**Pros**
+- **C++11 STL-friendly API.** Returns `std::vector` / `std::string` / `std::map`-shaped data.
+- **Auto-loads images** via stb_image — which means JPEG support comes for free.
+- **Mature.** Used by Falcor, NVIDIA samples, Filament tools.
+- **Single header** (well — header + a few separable helpers).
+
+**Cons**
+- **Adds a parallel image path.** stb_image bypasses RISE's `png_painter`/`hdr_painter`/`exr_painter`. Either we use it (and have two PNG decoders — disk inflation, behavior drift risk) or we disable its image decode and write the wiring anyway (losing the JPEG-for-free benefit). Loses the cgltf advantage either way.
+- **Brings nlohmann/json + stb_image** as transitive deps. ~50k LOC of dependencies for our use case.
+- **Heavier compile time** because of nlohmann/json + STL containers in the public API.
+- **Larger surface to misuse.** API exposes JSON and binary state more directly.
+
+### fastgltf — https://github.com/spnda/fastgltf
+
+**Pros**
+- **Fastest of the three** (3–10× cgltf for cold parse). Uses simdjson under the hood.
+- **Cleanest modern C++17/20 API.** `std::expected`-style error handling, type-safe accessor reads.
+- **Active development.** Used by Vulkan-Samples, several modern realtime engines.
+- **Optional image decoding.** Same flexibility as cgltf.
+
+**Cons**
+- **Adds simdjson** (~10k LOC dep) and requires CMake to build.
+- **C++17 minimum.** RISE compiles cleanly but verifying portability across the five build projects (Make, CMake/Android NDK, VS2022, Xcode) is real work.
+- **Less battle-tested.** Younger than the other two; smaller user base in offline rendering.
+- **Speed advantage is irrelevant** for our use case. We parse a glTF file once at scene load, then spend hours rendering. simdjson saves milliseconds we don't need.
+
+### Decision: cgltf, vendored
+
+cgltf wins on three axes that matter for an offline path tracer:
+
+1. **No transitive deps** — fits the existing extlib pattern (libpng/zlib/libtiff/openexr are all small vendored C libs).
+2. **No imposed image loader** — keeps RISE's painter system as the single decode path; JPEG support added via the spun-off `jpg_painter` task uses the same path.
+3. **C99 portability** — slots into all five build projects without grief.
+
+The C-API ergonomics cost is bounded: we write one `TriangleMeshLoaderGLTF.cpp`
+that wraps the C structs, and one `GLTFSceneImporter.cpp` for Phase 2. Vendor
+as `extlib/cgltf/cgltf.h` + a one-liner `cgltf.c`.
+
+---
+
+## 3. Mesh vertex attributes — what glTF supplies, what RISE stores, what to add
+
+### glTF standard attributes per primitive
+
+| Attribute | Type | Required? | What it's for |
+|---|---|---|---|
+| `POSITION` | vec3 float | yes | Vertex position |
+| `NORMAL` | vec3 float | no | Smooth-shading normal |
+| `TANGENT` | **vec4 float** | no | Tangent direction (xyz) + bitangent sign (w = ±1). For tangent-space normal mapping. |
+| `TEXCOORD_0` | vec2 (float / u8 normalized / u16 normalized) | no | Primary UV |
+| `TEXCOORD_1` | vec2 | no | Second UV — typically lightmap or AO map |
+| `COLOR_0` | vec3 or vec4 (float / u8 / u16 normalized) | no | Vertex color |
+| `JOINTS_0` | uvec4 (u8 / u16) | no | Skin joint indices |
+| `WEIGHTS_0` | vec4 (float / u8 / u16 normalized) | no | Skin joint weights |
+| `TEXCOORD_n`, `COLOR_n`, `JOINTS_n`, `WEIGHTS_n` | varies | no | Additional sets — UVs up to ~9 in practice, additional joint sets when >4 influences/vertex |
+| `_CUSTOM` (underscore prefix) | varies | no | Application-defined attributes (barycentric, random-per-vertex, etc.) |
+
+Plus **morph target deltas** per primitive (POSITION/NORMAL/TANGENT × N targets).
+
+### What RISE stores today
+
+`ITriangleMeshGeometryIndexed` ([src/Library/Interfaces/ITriangleMeshGeometry.h](../src/Library/Interfaces/ITriangleMeshGeometry.h)) supports:
+
+- positions (separate index)
+- normals (separate index)
+- texcoords — **one set** (separate index)
+- vertex colors via `ITriangleMeshGeometryIndexed2::AddColor` (color index = position index by glTF convention; the existing comment at line 130 already names "glTF COLOR_0" as the target)
+
+### What to add to RISE for v1
+
+Two new attribute storages, both small extensions to the existing pattern:
+
+- **TANGENT (vec4).** High-value addition. Without it, glTF normal maps either get ignored or computed from screen-space derivatives (low quality). Add via a new `ITriangleMeshGeometryIndexed3` interface that adds `AddTangent(const Tangent4&)` / `AddTangents(...)` / `getTangents()`, parallel to how v2 added colors. Tangent index follows position index (same convention as colors). Surface this at hit-time via a new `tangent_painter` (parallel to `vertex_color_painter`) so a tangent-space normal map modifier can read it.
+- **TEXCOORD_1 (vec2).** Lower-value but cheap. Path tracers compute lighting from scratch so lightmaps are pointless, but **occlusion textures** (glTF's `occlusionTexture`, often packed into the R channel of the metallic-roughness texture but sometimes in a separate map keyed off TEXCOORD_1) are useful as a multiplier on diffuse. Add via the same v3 interface (`AddTexCoord1` / `getTexCoords1`). If we don't add this, the importer falls back to TEXCOORD_0 for occlusion and warns.
+
+### What to skip in v1 (warn-and-discard at load time)
+
+- **JOINTS_n / WEIGHTS_n** — no skinning infrastructure.
+- **COLOR_n** for n ≥ 1 — almost no real assets use this.
+- **TEXCOORD_n** for n ≥ 2 — vanishingly rare.
+- **`_CUSTOM` attributes** — application-specific, no general interpretation.
+- **Morph target deltas** — needs animation infrastructure that doesn't exist.
+
+### Mesh interface changes
+
+Add `ITriangleMeshGeometryIndexed3 : public virtual ITriangleMeshGeometryIndexed2` to [src/Library/Interfaces/ITriangleMeshGeometry.h](../src/Library/Interfaces/ITriangleMeshGeometry.h):
+
+```cpp
+class ITriangleMeshGeometryIndexed3 : public virtual ITriangleMeshGeometryIndexed2
+{
+public:
+    // Tangent vec4 — xyz = object-space tangent, w = bitangent sign (±1).
+    // Tangent index follows position index (the glTF convention; matches
+    // colors).  For meshes that lack tangents, the renderer computes them
+    // on first request from positions+normals+UVs and caches.
+    virtual void AddTangent ( const Tangent4& t ) = 0;
+    virtual void AddTangents( const Tangent4ListType& ts ) = 0;
+    virtual unsigned int numTangents() const = 0;
+    virtual Tangent4ListType const& getTangents() const = 0;
+
+    // Optional secondary UV set (TEXCOORD_1).  Same indexing as TEXCOORD_0
+    // (i.e. uses iCoords[] from IndexedTriangle — second UV uses the same
+    // face-vertex index, NOT a separate index list).
+    virtual void AddTexCoord1 ( const TexCoord& t ) = 0;
+    virtual void AddTexCoords1( const TexCoordsListType& ts ) = 0;
+    virtual unsigned int numTexCoords1() const = 0;
+    virtual TexCoordsListType const& getTexCoords1() const = 0;
+};
+```
+
+The v3 interface follows the v2 pattern: separate sub-interface preserves the
+v1/v2 vtable for any out-of-tree subclass. Loaders `dynamic_cast` to v3 and
+silently fall back if the cast fails.
+
+---
+
+## 4. Material strategy — `ggx_material` + `blend_painter` ≈ glTF metallic-roughness
+
+The PBR delta turned out to be **much smaller** than initially estimated.
+
+### What `ggx_material` already implements
+
+From [src/Library/Materials/GGXSPF.h](../src/Library/Materials/GGXSPF.h) (header comment):
+
+> Three-lobe mixture model:
+>   1. Diffuse: cosine hemisphere sampling
+>   2. Specular: anisotropic VNDF sampling (Dupuy & Benyoub 2023)
+>   3. Multiscatter: cosine hemisphere sampling
+>
+> Height-correlated Smith G2 (Heitz 2014), Kulla-Conty multiscattering (2017).
+
+Chunk parameters ([AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp), keyword `ggx_material`):
+
+- `rd` — diffuse reflectance (painter)
+- `rs` — specular reflectance / **F0** (painter)
+- `alphax` / `alphay` — anisotropic roughness (painters)
+- `ior` — Fresnel IOR (painter)
+- `extinction` — Fresnel extinction (painter)
+
+That is **already the metallic-roughness BRDF** — diffuse lobe + GGX specular lobe with painter-driven F0 and roughness, with proper multiscattering compensation. The glTF spec prescribes:
+
+```
+c_diff = lerp(baseColor.rgb * (1 - 0.04), 0, metallic)        // diffuse color
+f0     = lerp(0.04, baseColor.rgb, metallic)                  // F0
+α      = roughness * roughness                                 // GGX α
+```
+
+then `BRDF = c_diff/π + GGX_specular(f0, α)`. RISE's GGX evaluates exactly that
+shape. We just need to construct the right `rd`, `rs`, `alpha` painters.
+
+### `blend_painter` does the lerp
+
+From [src/Library/Painters/BlendPainter.h:60](../src/Library/Painters/BlendPainter.h):
+
+```cpp
+return ca*cmask + cb*(RISEPel(1.0,1.0,1.0)-cmask);
+```
+
+Per-channel `lerp(cb, ca, mask)`. Exactly the operation glTF metallic-roughness
+needs. Combined with `uniformcolor_painter` for the constants (0.04, white,
+black), we can express the entire glTF PBR mapping with **zero new BSDF code**.
+
+### Concrete mapping
+
+For a glTF material with baseColorTexture, metallicRoughnessTexture (G=roughness, B=metallic), and metallicFactor / roughnessFactor:
+
+```
+# Base color texture (sRGB → linear handled by png_painter color_space)
+png_painter   bc_tex      { file baseColor.jpg  color_space sRGB }
+
+# Metallic and roughness from packed MR texture — needs channel extraction
+# (see §10 enhancement: channel_painter)
+channel_painter metal_p   { source mr_tex  channel B  scale $metallicFactor }
+channel_painter rough_p   { source mr_tex  channel G  scale $roughnessFactor }
+
+# Constants
+uniformcolor_painter zero  { color 0   0   0 }
+uniformcolor_painter f0    { color 0.04 0.04 0.04 }
+uniformcolor_painter bc096 { color 0.96 0.96 0.96 }   # (1 - 0.04)
+blend_painter bc_diffuse  { colora bc_tex  colorb zero  mask bc096 }   # bc * 0.96
+
+# diffuse: 0 for metals, baseColor*0.96 for non-metals
+blend_painter rd_painter  { colora zero    colorb bc_diffuse  mask metal_p }
+
+# F0: baseColor for metals, 0.04 for non-metals
+blend_painter rs_painter  { colora bc_tex  colorb f0          mask metal_p }
+
+# Final material
+ggx_material gltf_pbr {
+    rd         rd_painter
+    rs         rs_painter
+    alphax     rough_p
+    alphay     rough_p
+    ior        f0           # any constant works; F0 dominates the Fresnel
+    extinction zero
+}
+```
+
+That's the entire mapping. **No new BSDF.** The required additions are:
+
+1. **`channel_painter` chunk** — extract a single R/G/B/A channel from another painter, optionally scaled. Small new painter class (~50 lines) + chunk parser. Or: add a `channel` parameter to the existing image painters.
+2. **Convenience: `pbr_metallic_roughness_material` chunk** — single-chunk authoring sugar. Takes `base_color`, `metallic`, `roughness`, `normal_map`, `emissive`, `ior` painters (with sensible defaults) and constructs all of the above internally. Pure parser-side decomposition; the runtime is still a `ggx_material`. ~100 lines of parser code + a small `Job::AddPBRMetallicRoughnessMaterial` API method that wires up the painters.
+
+### Emissive
+
+glTF emissive = additive RGB, optionally textured. RISE has `LambertianEmitter`,
+`PhongEmitter`, and `CompositeEmitter` ([src/Library/Materials/](../src/Library/Materials/)).
+Use `composite_emitter` (chunk parser exists for the underlying `lambertian_luminaire_material`
++ regular material via the `composite_material` path) **OR** add a small
+`emissive` parameter to `ggx_material` that adds an emitter on top. The latter
+is cleaner and avoids two chunks per PBR material.
+
+### Alpha modes
+
+glTF `alphaMode = OPAQUE / MASK / BLEND` + `alphaCutoff`. In a path tracer:
+
+- OPAQUE → no-op.
+- MASK → stochastic alpha test: at hit time, sample alpha; if `alpha < alphaCutoff` continue the ray. Implementable as a new `alpha_test_modifier` (parallels `bumpmap_modifier`).
+- BLEND → stochastic transparency through `transparency_shaderop`.
+
+Recommend: implement MASK in v1 (it's the common case for foliage / grates),
+defer BLEND to a later phase. Both can be added later without breaking v1.
+
+### Normal maps
+
+Tangent-space normal maps need (a) tangent storage (added in §3) and (b) a new
+`normal_map_modifier` that takes a normal-map painter + a tangent painter and
+perturbs the geometric normal at hit time. RISE has `bumpmap_modifier` already,
+which handles single-channel height maps; the normal-map version is a sibling,
+~150 lines.
+
+### Material story summary
+
+| RISE addition | Lines | Purpose |
+|---|---|---|
+| `channel_painter` chunk + class | ~80 | Extract single channel for MR textures |
+| `pbr_metallic_roughness_material` chunk + Job API | ~150 | Authoring sugar; constructs the GGX + blend painter graph |
+| Optional `emissive` param on `ggx_material` | ~30 | Avoid double-chunk for emissive PBR |
+| `alpha_test_modifier` chunk + class | ~100 | glTF alphaMode = MASK |
+| `normal_map_modifier` chunk + class | ~150 | glTF normalTexture |
+| **Total new material-side code** | **~500 lines** | |
+
+No new BSDF. No new SPF. No new Material class. The Phase 2 material work is
+parser-side composition of pieces RISE already has.
+
+---
+
+## 5. Camera, light, and transform mapping
+
+### Cameras
+
+| glTF | RISE | Mapping |
+|---|---|---|
+| `perspective` (yfov, znear, zfar, aspectRatio?) | `pinhole_camera` | yfov → vertical FOV. aspectRatio → set width/height ratio if present, else use rasterizer's. znear/zfar — RISE doesn't use them (path tracer); accept and ignore. |
+| `orthographic` (xmag, ymag, znear, zfar) | `orthographic_camera` | xmag/ymag → frustum half-extents. |
+
+Camera position comes from the **node transform** (glTF cameras are typed
+without position). RISE has only one active camera per Job — first imported
+camera wins; subsequent cameras get a warning. Imported camera names get
+`name_prefix.cam.<index>`.
+
+### Lights (`KHR_lights_punctual`)
+
+| glTF | RISE | Notes |
+|---|---|---|
+| `point` (color, intensity) | `omni_light` | Position from node. Intensity is in candela (cd) per spec — convert to RISE's units. |
+| `spot` (innerConeAngle, outerConeAngle, color, intensity) | `spot_light` | Position + direction from node transform. RISE uses single cone angle; map to the glTF outer cone, with a soft falloff approximating the inner-to-outer transition. |
+| `directional` (color, intensity) | `directional_light` | Direction from node transform's -Z axis (per spec). Intensity is in lux (lm/m²). |
+
+Range-based attenuation (`range`) — RISE uses physical inverse-square; ignore
+the cutoff or warn if it's set to a non-default value (it's an artistic
+falloff, not physical).
+
+### Node transform flattening
+
+Walk the node tree depth-first, accumulating world matrices:
+
+```
+world_matrix(node) = parent_world_matrix × local_matrix(node)
+local_matrix(node) = node.matrix  if node has matrix
+                   = T(node.translation) × R(node.rotation) × S(node.scale)  otherwise
+```
+
+Decompose final 4×4 into translation + rotation + scale. **The lossy step:**
+RISE's `standard_object` takes Euler angles in degrees. Quaternion → Euler
+conversion is lossy at gimbal-lock configurations.
+
+**Recommended enhancement (§10):** Add a `quaternion` parameter to
+`standard_object` (vec4, xyzw) that takes precedence over `orientation` when
+present. Importer emits quaternion form; users authoring by hand can stick with
+Euler. Minimal change to the chunk parser; storage is the same internally
+(orientation is already stored as a matrix once finalized).
+
+---
+
+## 6. What's deliberately out of scope for v1
+
+- **Animation.** glTF samplers + RISE Timeline; LINEAR mappable, STEP/CUBICSPLINE need baking, morph weights have no target.
+- **Skinning.** No CPU skin pass + BVH refit pipeline yet (refit hook exists but unused for skinning).
+- **Morph targets.** Same.
+- **`KHR_draco_mesh_compression` / `EXT_meshopt_compression`.** Reject with clear error.
+- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.
+- **alphaMode = BLEND.** Only OPAQUE and MASK in v1.
+- **Multi-camera.** First camera wins.
+- **Multi-scene.** Honor `scene` field; ignore others.
+
+Each of these is a separate phase, not a v1 limitation — the v1 importer logs
+exactly what it skipped and why.
+
+---
+
+## 7. Phased implementation plan
+
+### Phase 1 — `gltfmesh_geometry` (mesh-only import)
+
+Single-chunk surface; user assembles the rest of the scene with existing
+chunks. Proves out the cgltf dependency and the mesh-construction path.
+
+**Surface:**
+```
+gltfmesh_geometry {
+    name         my_mesh
+    file         models/duck.glb       # .gltf or .glb auto-detected
+    mesh_index   0                     # which mesh in the file (default 0)
+    primitive    0                     # which primitive in the mesh (default 0)
+    double_sided FALSE
+    face_normals FALSE
+    flip_v       FALSE                 # glTF UV origin top-left
+}
+```
+
+**What it handles:** POSITION / NORMAL / TANGENT / TEXCOORD_0 / TEXCOORD_1 /
+COLOR_0 / indices. Triangle topology (TRIANGLES, plus STRIPS/FANS converted to
+TRIANGLES). UNORM/SNORM normalized accessors.
+
+**What it warns-and-skips:** every other attribute, every KHR_* material
+extension, every animation/skin/morph reference.
+
+**Files to touch (per CLAUDE.md "five build projects" rule):**
+
+1. **New:** `extlib/cgltf/cgltf.h` (vendored single header) + `extlib/cgltf/cgltf.c` (one-line implementation TU).
+2. **Update:** `extlib/README.TXT` — add cgltf section with license, source URL, version.
+3. **New:** `src/Library/Geometry/TriangleMeshLoaderGLTF.{h,cpp}` — parallels `TriangleMeshLoader3DS`.
+4. **Extend:** `src/Library/Interfaces/ITriangleMeshGeometry.h` — add `ITriangleMeshGeometryIndexed3` (tangents + TEXCOORD_1).
+5. **Extend:** `src/Library/Geometry/TriangleMeshGeometryIndexed.{h,cpp}` — implement v3 interface.
+6. **Extend:** `src/Library/RISE_API.{h,cpp}` — `RISE_API_CreateGLTFTriangleMeshLoader(...)`.
+7. **Extend:** `src/Library/Job.{h,cpp}` + `src/Library/Interfaces/IJob.h` — `Job::AddGLTFTriangleMeshGeometry(name, file, meshIndex, primIndex, doubleSided, faceNormals, flipV)`.
+8. **Extend:** `src/Library/Parsers/AsciiSceneParser.cpp` — `GLTFMeshGeometryAsciiChunkParser` next to `PLYMeshGeometryAsciiChunkParser` (~line 3503), registered in `CreateAllChunkParsers()`.
+9. **New:** `tests/GLTFLoaderTest.cpp` — load known glTF, verify vertex/triangle counts, attribute presence, position accuracy.
+10. **New scenes:** `scenes/Tests/Geometry/gltf_box.RISEscene`, `scenes/Tests/Geometry/gltf_duck.RISEscene` (parser regression + visual check).
+
+**Build wiring (5 places):**
+- `build/make/rise/Filelist`
+- `build/cmake/rise-android/rise_sources.cmake`
+- `build/VS2022/Library/Library.vcxproj` (`<ClCompile>` for `.c`/`.cpp`, `<ClInclude>` for `.h`)
+- `build/VS2022/Library/Library.vcxproj.filters`
+- `build/XCode/rise/rise.xcodeproj/project.pbxproj` (4 sections × 2 targets per CLAUDE.md)
+
+Plus include path entries pointing at `extlib/cgltf` in each.
+
+**Estimated effort:** 2 days.
+
+---
+
+### Phase 2 — full scene import + PBR materials + tangent / normal-map support
+
+Adds `gltf_import` (the bulk import chunk), `pbr_metallic_roughness_material`
+(authoring sugar), `channel_painter` (MR texture extraction),
+`normal_map_modifier`, `alpha_test_modifier`, optional `quaternion` parameter
+on `standard_object`.
+
+**Surfaces:**
+
+```
+# Bulk import: instantiates many named objects from one chunk
+gltf_import {
+    file              scenes/sponza.glb
+    name_prefix       sponza             # all created objects prefixed
+    scene_index       0                  # which glTF scene
+    import_cameras    TRUE
+    import_lights     TRUE
+    import_materials  TRUE
+    on_name_collision suffix             # 'suffix' | 'replace' | 'error'
+}
+
+# Authoring sugar: hand-author a PBR material
+pbr_metallic_roughness_material {
+    name           bronze
+    base_color     bc_painter            # painter (texture or uniform)
+    metallic       metal_painter         # painter, scalar 0..1
+    roughness      rough_painter         # painter, scalar 0..1
+    normal_map     normal_painter        # painter (optional)
+    emissive       emissive_painter      # painter (optional)
+    ior            ior_painter           # default 1.5
+    alpha_mode     OPAQUE                # OPAQUE | MASK
+    alpha_cutoff   0.5                   # MASK only
+    double_sided   FALSE
+}
+
+# Channel extraction for packed metallic-roughness textures
+channel_painter rough_p {
+    source     mr_tex
+    channel    G                          # R | G | B | A
+    scale      1.0                        # multiplied with the extracted value
+    bias       0.0                        # added after scale
+}
+
+# Tangent-space normal mapping
+normal_map_modifier nm {
+    normal_map    normal_painter
+    strength      1.0
+}
+
+# glTF alphaMode = MASK
+alpha_test_modifier am {
+    alpha_painter alpha_p
+    cutoff        0.5
+}
+```
+
+**Files to touch (incremental on Phase 1):**
+
+- New: `src/Library/Importers/GLTFSceneImporter.{h,cpp}` — orchestrates the full import (or do this as a static function in `Job.cpp`; new `Importers/` subdir is cleaner long-term).
+- New: `src/Library/Materials/PBRMetallicRoughnessMaterial.{h,cpp}` — authoring helper class (constructs a `GGXMaterial` + emitter under the hood from PBR-shaped inputs).
+- New: `src/Library/Painters/ChannelPainter.{h,cpp}`.
+- New: `src/Library/Modifiers/NormalMapModifier.{h,cpp}`.
+- New: `src/Library/Modifiers/AlphaTestModifier.{h,cpp}`.
+- Extend: `Job.cpp` + `IJob.h` + `RISE_API.{h,cpp}` — `AddPBRMetallicRoughnessMaterial`, `AddChannelPainter`, `AddNormalMapModifier`, `AddAlphaTestModifier`, `ImportGLTFScene`.
+- Extend: `AsciiSceneParser.cpp` — five new chunk parsers, registered in `CreateAllChunkParsers()`. Optional `quaternion` parameter on `StandardObjectAsciiChunkParser`.
+- Five-project build wiring.
+- Tests: `tests/GLTFImportTest.cpp` (full scene import — count objects, materials, lights), `tests/PBRMaterialTest.cpp` (verify the GGX construction matches the spec for a few canonical inputs).
+- Scenes: `scenes/Tests/Materials/pbr_metallic_roughness.RISEscene`, `scenes/Tests/Importers/gltf_sponza.RISEscene`, `scenes/FeatureBased/gltf_showcase.RISEscene` for a curated render.
+
+**Estimated effort:** 1 week.
+
+---
+
+### Phase 3+ — deferred work
+
+| Feature | Estimate | Notes |
+|---|---|---|
+| LINEAR animation (TRS keyframes → Timeline) | 3 days | Map node TRS to existing keyframable parameters on `standard_object`. |
+| STEP / CUBICSPLINE animation | 2 days | Bake CUBICSPLINE into LINEAR or add native support. |
+| `alphaMode = BLEND` | 2 days | Stochastic transparency via `transparency_shaderop`. |
+| Skinning | 2 weeks | CPU skin pass each frame + BVH refit via existing `UpdateVertices` hook. |
+| Morph targets | 1 week | Same skinning machinery, different inputs. |
+| `KHR_materials_clearcoat` | 3 days | Layered: clearcoat GGX over base GGX. RISE has `composite_material`. |
+| `KHR_materials_transmission` / `volume` / `ior` | 1 week | Maps to dielectric + medium. Some support exists. |
+| `KHR_materials_sheen` | 3 days | New BRDF lobe. |
+
+---
+
+## 8. Build & dependency wiring summary
+
+**New extlib entry:** `extlib/cgltf/` — header + 1-line implementation TU.
+Pattern matches libpng/zlib/libtiff/openexr (small vendored C). Update
+`extlib/README.TXT` with license + source URL + version.
+
+**No new transitive deps.** cgltf has none. JPEG support comes via the
+spun-off `jpg_painter` task (stb_image vendor in the same `extlib/` style).
+
+**Compile-time impact:** cgltf adds ~5k LOC of C99 to the library compile.
+Negligible. No template-heavy C++ overhead like fastgltf would impose.
+
+**Five-project add list per file (CLAUDE.md):** `Filelist`,
+`rise_sources.cmake`, `Library.vcxproj` (compile + include), `.vcxproj.filters`,
+`pbxproj` (4 sections × 2 targets).
+
+---
+
+## 9. Test plan
+
+- **Phase 1 unit:** `tests/GLTFLoaderTest.cpp` loads a hand-crafted `box.glb`, verifies 8 unique positions, 12 triangles, normals match expected face normals, COLOR_0 round-trips through the v2 interface, TANGENT round-trips through the new v3 interface.
+- **Phase 1 scene regression:** `gltf_box.RISEscene` renders a flat-shaded box at known positions; output PNG byte-compared against checked-in reference.
+- **Phase 2 PBR oracle:** `tests/PBRMaterialTest.cpp` constructs a `pbr_metallic_roughness_material` with known base_color/metallic/roughness, samples the BRDF at known angles, compares against the glTF spec's reference equation. (Strong oracle per `docs/skills/write-highly-effective-tests.md`.)
+- **Phase 2 import regression:** `gltf_sponza.RISEscene` (or smaller scene) round-trips through `gltf_import`, asserts created object/material/light counts.
+- **Phase 2 visual regression:** `gltf_showcase.RISEscene` renders the Khronos sample DamagedHelmet (or similar) and compares to a checked-in reference image.
+
+---
+
+## 10. RISE enhancements summary
+
+Net new chunks/interfaces this plan introduces:
+
+| Item | Where | Phase | Justification |
+|---|---|---|---|
+| `gltfmesh_geometry` chunk | `AsciiSceneParser.cpp` | 1 | Mesh import surface |
+| `Job::AddGLTFTriangleMeshGeometry` | `Job.{h,cpp}`, `IJob.h` | 1 | Construction API |
+| `RISE_API_CreateGLTFTriangleMeshLoader` | `RISE_API.{h,cpp}` | 1 | Public C-style API |
+| `TriangleMeshLoaderGLTF` class | `Geometry/` | 1 | Loader implementation |
+| `ITriangleMeshGeometryIndexed3` interface | `Interfaces/` | 1 | Tangent + TEXCOORD_1 storage |
+| `tangent_painter` chunk | `Painters/` | 1 | Surface tangents at hit time |
+| `gltf_import` chunk | `AsciiSceneParser.cpp` | 2 | Full scene import surface |
+| `pbr_metallic_roughness_material` chunk | `AsciiSceneParser.cpp` | 2 | PBR authoring sugar |
+| `PBRMetallicRoughnessMaterial` class | `Materials/` | 2 | Constructs GGX + painters from PBR inputs |
+| `channel_painter` chunk + class | `Painters/` | 2 | Extract MR-texture channels |
+| `normal_map_modifier` chunk + class | `Modifiers/` | 2 | Tangent-space normal maps |
+| `alpha_test_modifier` chunk + class | `Modifiers/` | 2 | glTF alphaMode = MASK |
+| Optional `quaternion` param on `standard_object` | `AsciiSceneParser.cpp` | 2 | Lossless node transform import |
+| Optional `emissive` param on `ggx_material` | `Materials/` + parser | 2 | Avoid double-chunk for PBR + emissive |
+
+---
+
+## 11. Open questions
+
+1. **`KHR_materials_emissive_strength`** — multiplies emissive by a scalar. Easy. Honor in v1?
+2. **`KHR_materials_unlit`** — bypass BSDF, render baseColor as luminaire. Maps to `lambertian_luminaire_material`. Honor in v1?
+3. **Color space.** glTF spec says baseColor and emissive are sRGB; metallic/roughness/normal/occlusion are linear. Our `png_painter` has a `color_space` param — confirm the auto-mapping logic when the importer creates painters.
+4. **JPEG dependency timing.** Phase 1 doesn't strictly need JPEG (we can test with PNG-textured glTF assets), but the curated showcase scene in Phase 2 will. Should the JPEG task be a hard dependency for Phase 2, or do we ship Phase 2 without JPEG and document it as "PNG-textured glTF only for now"?
+5. **Naming convention for imported objects.** Proposal: `<prefix>.<glTFNodeName>.<primIdx>` for objects, `<prefix>.mat.<materialIdx>` for materials, `<prefix>.tex.<textureIdx>` for textures, `<prefix>.cam.<cameraIdx>` for cameras, `<prefix>.light.<lightIdx>` for lights. Predictable enough that users can override individual items by re-declaring them after the `gltf_import` chunk.
+6. **Where does the importer live?** Options:
+   - As a static function on `Job` (simple, keeps `Job.cpp` from sprawling further).
+   - As a new `src/Library/Importers/` subsystem (extensible — future FBX/USD importers slot in).
+
+   Recommend the latter; Importers is a natural sibling to `Parsers/`.
+7. **Should `standard_object` get a `matrix` parameter** (16 doubles) **as well as `quaternion`?** A matrix is even more general than quaternion+position+scale and would let the importer emit the node transform verbatim. Cost: small — the parser converts to internal matrix form anyway. Benefit: lossless for any glTF input including those with non-uniform / sheared / mirrored transforms.
+8. **Validation strictness.** Reject malformed glTF outright (cgltf's `cgltf_validate()`), or log warnings and try to render what we can?
+
+---
+
+## 12. References
+
+- glTF 2.0 spec: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
+- glTF sample assets: https://github.com/KhronosGroup/glTF-Sample-Assets
+- cgltf: https://github.com/jkuhlmann/cgltf
+- tinygltf: https://github.com/syoyo/tinygltf
+- fastgltf: https://github.com/spnda/fastgltf
+- KHR_lights_punctual: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_lights_punctual
+- KHR_materials extensions index: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos
