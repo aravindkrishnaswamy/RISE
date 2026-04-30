@@ -1,0 +1,119 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           gltf_duck.RISEscene                                                                     #
+#   Description:    Phase 1 glTF import smoke test on a bigger asset: loads the Khronos sample              #
+#                   Duck.glb (the canonical small real-world glTF -- 2399 verts, 4212 triangles,            #
+#                   POSITION + NORMAL + TEXCOORD_0) through gltfmesh_geometry and renders it as plain       #
+#                   Lambertian.  Phase 1 does NOT import the embedded baseColor texture; that comes in      #
+#                   Phase 2 via gltf_import.                                                                #
+#                                                                                                           #
+#                   Source asset is committed at scenes/Tests/Geometry/assets/Duck.glb (CC-BY).             #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-29                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		2
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_duck
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+# Duck.glb's bounding box is roughly  X: -69..96   Y: 10..164   Z: -61..54
+# (measured in cm by the asset's own accessor metadata).  Camera placed
+# accordingly so the duck fills the frame.
+pinhole_camera
+{
+	location			0 90 320
+	lookat				15 90 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_yellow
+	color				0.95 0.85 0.20
+	colorspace			sRGB
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				mat_yellow
+	reflectance			pnt_yellow
+}
+
+##################################################
+# Objects
+##################################################
+
+# Duck.glb: 1 mesh, 1 primitive, ~2399 unique vertices, 4212 triangles,
+# indexed.  POSITION + NORMAL + TEXCOORD_0 -- TEXCOORD_0 is loaded into
+# pCoords (Phase 1) but unused by this scene's plain-Lambertian
+# material; Phase 2 will hook the embedded baseColor texture.
+gltfmesh_geometry
+{
+	name				duck_geom
+	file				scenes/Tests/Geometry/assets/Duck.glb
+	mesh_index			0
+	primitive			0
+	double_sided		FALSE
+	face_normals		FALSE
+}
+
+standard_object
+{
+	name				duck
+	geometry			duck_geom
+	material			mat_yellow
+	position			0 0 0
+	orientation			0 0 0
+	scale				1 1 1
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	-0.5 -0.7 -0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.3
+	color		1.0 1.0 1.0
+}
