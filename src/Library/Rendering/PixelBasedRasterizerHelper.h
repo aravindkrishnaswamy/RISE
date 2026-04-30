@@ -137,13 +137,20 @@ namespace RISE
 #ifdef RISE_ENABLE_OIDN
 			mutable AOVBuffers*		pAOVBuffers;		///< First-hit albedo + normal buffers for OIDN
 
-			//! Whether the just-finished render should be denoised.
-			//! Default requires the render to complete; interactive
-			//! subclasses can add pass-state policy on top.
-			virtual bool ShouldDenoiseCompletedRender(
-				bool passCompleted,
-				unsigned int width,
-				unsigned int height ) const;
+			//! Whether OIDN should be invoked at the end of a render
+			//! (or render attempt — see below).  Default just gates
+			//! on `bDenoisingEnabled`; the cancel state is INTENTIONALLY
+			//! NOT consulted, so cancelling a render mid-flight still
+			//! produces a denoised partial image.  Per-pixel coverage
+			//! varies (some tiles may be un-rendered or under-sampled),
+			//! but the resulting denoised partial is more useful for
+			//! interactive workflows than the raw-noisy partial that
+			//! would otherwise be flushed.  Interactive subclasses can
+			//! add their own policy gates on top — see
+			//! `InteractivePelRasterizer::ShouldDenoise` for the
+			//! preview-mode toggle.  Documented in docs/OIDN.md
+			//! (decision log: 2026-04-29 cancel-still-denoises).
+			virtual bool ShouldDenoise() const;
 
 			//! Number of primary-ray AOV samples to collect when the
 			//! renderer did not accumulate AOVs during shading.  The

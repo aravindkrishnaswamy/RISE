@@ -99,12 +99,14 @@ unsigned int PixelBasedRasterizerHelper::GetProgressiveTotalSPP() const
 }
 
 #ifdef RISE_ENABLE_OIDN
-bool PixelBasedRasterizerHelper::ShouldDenoiseCompletedRender(
-	bool passCompleted,
-	unsigned int /*width*/,
-	unsigned int /*height*/ ) const
+bool PixelBasedRasterizerHelper::ShouldDenoise() const
 {
-	return bDenoisingEnabled && passCompleted;
+	// Cancellation state is intentionally NOT consulted here — see the
+	// header doc for the rationale (cancelled renders still get
+	// denoised, producing a "useful partial" rather than the raw
+	// noisy partial).  The only base-class gate is the user's
+	// `oidn_denoise` toggle.
+	return bDenoisingEnabled;
 }
 
 unsigned int PixelBasedRasterizerHelper::GetDenoiseAOVSamplesPerPixel() const
@@ -739,7 +741,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	}
 
 #ifdef RISE_ENABLE_OIDN
-	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoiseCompletedRender( mainPassCompleted, width, height ) );
+	// `mainPassCompleted` is intentionally NOT passed: cancelled
+	// renders still get OIDN'd on whatever was accumulated up to the
+	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
+	// log (2026-04-29).
+	(void)mainPassCompleted;
+	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoise() );
 #else
 	const bool bWillDenoise = false;
 #endif

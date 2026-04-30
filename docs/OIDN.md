@@ -757,6 +757,45 @@ Any P0 or P1 change additionally needs:
 Append a dated entry whenever an item ships, gets re-scoped, gets a verdict
 from a reviewer, or has its priority moved. Most recent first.
 
+### 2026-04-29 — Cancel-still-denoises: align code with stated invariant
+- Found a doc/code inconsistency.  The OIDN-P1-3 entry stated the
+  user invariant: *"Cancelling mid-render still produces a useful
+  denoised image of whatever samples were collected, which is more
+  useful than aborting the denoise and getting nothing."*  But
+  `PixelBasedRasterizerHelper::ShouldDenoiseCompletedRender` was
+  gated on `bDenoisingEnabled && passCompleted`, so cancelling a
+  render mid-flight skipped OIDN entirely and flushed the raw
+  noisy partial.  Per the user's verdict ("doc captures intent,
+  code should change"), the gate is removed.
+- Renamed `ShouldDenoiseCompletedRender(passCompleted, w, h)` to
+  `ShouldDenoise()` and dropped now-unused parameters.  The base
+  predicate is just `bDenoisingEnabled`; the
+  `InteractivePelRasterizer` override stacks
+  `mPreviewDenoiseMode != PreviewDenoise_Off` on top.  Header
+  documents the new contract — cancellation is *intentionally*
+  not consulted.
+- Call site in `RasterizeScene` no longer passes `mainPassCompleted`;
+  the local is preserved (with a `(void)` cast) so future code can
+  log or surface completion state without re-deriving it.
+- The OIDN-P1-3 invariant ("if a progress monitor were ever wired
+  up, never propagate cancel") still holds — that's a separate
+  concern about OIDN's *own* cancel mechanism.  The two-layer
+  design (RISE rasterizer cancel, OIDN progress cancel) is now
+  consistent: neither aborts denoise.
+- Risk acknowledged: cancelled renders may have un-rendered or
+  under-sampled tiles where OIDN smears valid data toward zero
+  at the boundary.  The user prefers this to no denoise — for
+  interactive cancel-restart loops the smoothed partial is more
+  readable than raw MC noise.  If the smear ever becomes a
+  problem in production batch renders, gate the new behavior
+  on a per-rasterizer config flag (e.g.
+  `bDenoiseOnCancel = false` for production, `true` for
+  interactive).  Not done now; revisit if a concrete complaint
+  arises.
+- 72/72 tests pass; build clean.  Regression render confirmed
+  no change to the completed-render path (Metal cold 214 ms,
+  matching pre-change numbers).
+
 ### 2026-04-29 — Backlog wrap-up: P1-3 / P2-* closed as not worth doing
 - After shipping P0-1..P0-4, P1-1 (v1+v2), and P1-2, the user
   evaluated the remaining backlog and decided none of it is worth
