@@ -452,7 +452,7 @@ void OIDNDenoiser::Denoise(
 			mState->useSharedBuffers =
 				( actualType == static_cast<int>( oidn::DeviceType::CPU ) );
 
-			GlobalLog()->PrintEx( eLog_Event,
+			GlobalLog()->PrintEx( eLog_Info,
 				"OIDN: creating %s device (one-time per rasterizer)%s",
 				OidnDeviceTypeName( actualType ),
 				mState->useSharedBuffers ? " [zero-copy shared buffers]" : "" );
@@ -605,7 +605,7 @@ void OIDNDenoiser::Denoise(
 		else if( hasAlbedo )         auxStr = "albedo";
 		else if( hasNormal )         auxStr = "normal";
 
-		GlobalLog()->PrintEx( eLog_Event,
+		GlobalLog()->PrintEx( eLog_Info,
 			"OIDN cache: rebuild filter (%ux%u q=%s aux=%s prefilter=%s)",
 			w, h, OidnQualityName( resolvedQuality ), auxStr,
 			( requestedPrefilter == OidnPrefilter::Accurate ) ? "accurate" : "fast" );
@@ -618,7 +618,7 @@ void OIDNDenoiser::Denoise(
 		mState->resolvedQuality = resolvedQuality;
 		mState->prefilter       = requestedPrefilter;
 	} else {
-		GlobalLog()->PrintEx( eLog_Event,
+		GlobalLog()->PrintEx( eLog_Info,
 			"OIDN cache: hit (%ux%u q=%s prefilter=%s)",
 			w, h, OidnQualityName( resolvedQuality ),
 			( mState->prefilter == OidnPrefilter::Accurate ) ? "accurate" : "fast" );
