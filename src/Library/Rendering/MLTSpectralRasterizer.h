@@ -135,6 +135,19 @@ namespace RISE
 				std::vector<BDPTVertex>& eyeVerts
 				) const;
 
+			/// Spectral analog of MLTRasterizer::RenderFrameOfMLT.
+			/// Shared by RasterizeScene and RasterizeSceneAnimation
+			/// so both observe identical spectral chain semantics
+			/// (independent chains per call, fresh bootstrap CDF).
+			/// See MLTRasterizer::RenderFrameOfMLT for full contract.
+			bool RenderFrameOfMLTSpectral(
+				const IScene& pScene,
+				const ICamera& pCamera,
+				const unsigned int width,
+				const unsigned int height,
+				IRasterImage*& pImageOut
+				) const;
+
 		public:
 			MLTSpectralRasterizer(
 				IRayCaster* pCaster_,
@@ -151,13 +164,26 @@ namespace RISE
 				);
 
 			//////////////////////////////////////////////////////////////
-			// IRasterizer interface — overrides RasterizeScene to use
-			// the spectral evaluation path
+			// IRasterizer interface — overrides RasterizeScene and
+			// RasterizeSceneAnimation to use the spectral evaluation
+			// path (HWSS / per-wavelength BDPT NM).
 			//////////////////////////////////////////////////////////////
 
 			void RasterizeScene(
 				const IScene& pScene,
 				const Rect* pRect,
+				IRasterizeSequence* pRasterSequence
+				) const;
+
+			void RasterizeSceneAnimation(
+				const IScene& pScene,
+				const Scalar time_start,
+				const Scalar time_end,
+				const unsigned int num_frames,
+				const bool do_fields,
+				const bool invert_fields,
+				const Rect* pRect,
+				const unsigned int* specificFrame,
 				IRasterizeSequence* pRasterSequence
 				) const;
 		};
