@@ -20,15 +20,14 @@ standard_shader
 	shaderop	DefaultDirectLighting
 }
 
-adaptivepixelpel_rasterizer
+pixelpel_rasterizer
 {
-	max_recursion		10
-	min_samples			64
-	max_samples			500
-	num_steps			46
-	lum_samples			1
-	threshold			0.0005
-#	show_samples		true
+	max_recursion			10
+	samples					64
+	lum_samples				1
+	adaptive_max_samples	500
+	adaptive_threshold		0.0005
+#	show_adaptive_map		true
 }
 
 file_rasterizeroutput
@@ -51,9 +50,9 @@ thinlens_camera
 	up					0 1 0
 	width				1024
 	height				512
-	fov					20
-	aperture_size		5				# f/2.8
+	sensor_size			4.94			# matches the previous fov=20 with focal=14
 	focal_length		14				# 14mm
+	fstop				2.8				# f/2.8
 	focus_distance		28.0			# focus distance
 }
 

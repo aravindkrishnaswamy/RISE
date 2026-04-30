@@ -61,9 +61,9 @@ thinlens_camera
 	up					0 1 0
 	width				800
 	height				600
-	fov					40.0
-	aperture_size		0.5
+	sensor_size			2.55
 	focal_length		3.5
+	fstop				7.0
 	focus_distance		6.5
 }
 

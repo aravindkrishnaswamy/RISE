@@ -16,6 +16,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 ## Planning Docs
 
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): ranked backlog of rendering improvements, including transport, materials, samplers, and volumes, with acceptance criteria and starting files per item.
+- [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md): survey of the production / research state-of-the-art camera models beyond pinhole / ortho / fisheye / thin-lens, scored against RISE's spectral pipeline, plus a phased implementation roadmap (thin-lens enrichments → output-format cameras → ODS → realistic multi-element lens → polynomial-optics acceleration → diffraction & flare → sensor/shutter).
 
 ## Engineering Skills
 

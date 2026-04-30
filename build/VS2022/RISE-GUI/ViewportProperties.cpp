@@ -35,7 +35,9 @@ inline bool isScrubbableKind(int kind)
 // 0.5°/px rate (matching the Orbit tool's sensitivity); other
 // numeric fields use the proportional rate.  Without this split, a
 // theta=30° row scrubs at 0.15°/px (100px = 15°) which is sluggish
-// for typical orbit work.
+// for typical orbit work.  `aperture_rotation` is a thinlens_camera
+// angular field (polygon rotation in degrees) and follows the same
+// convention.
 inline bool isAngularField(const QString& name)
 {
     return name == QLatin1String("theta")
@@ -43,7 +45,8 @@ inline bool isAngularField(const QString& name)
         || name == QLatin1String("fov")
         || name == QLatin1String("pitch")
         || name == QLatin1String("yaw")
-        || name == QLatin1String("roll");
+        || name == QLatin1String("roll")
+        || name == QLatin1String("aperture_rotation");
 }
 
 // Per-pixel scrub rate.  Angular = 0.5/px (fixed).  Otherwise

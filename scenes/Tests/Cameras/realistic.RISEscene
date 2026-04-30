@@ -3,7 +3,9 @@ RISE ASCII SCENE 5
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           realistic.RISEScene                                                                     #
-#   Description:    Demonstrates use of the realistic camera with settings for 35mm equivalent              #
+#   Description:    Demonstrates the photographic thin-lens camera with full-frame 35mm settings.            #
+#                   (Was previously the `realistic_camera` stub; migrated when the keyword was reserved      #
+#                   for the future multi-element lens camera. See docs/CAMERAS_ROADMAP.md Phase 4.)         #
 #   Author:         Aravind Krishnaswamy                                                                    #
 #   Birthdate:      May 5, 2006                                                                             #
 #                                                                                                           #
@@ -19,15 +21,14 @@ standard_shader
 	shaderop	DefaultDirectLighting
 }
 
-adaptivepixelpel_rasterizer
+pixelpel_rasterizer
 {
-	max_recursion		10
-	min_samples			32
-	max_samples			2000
-	num_steps			46
-	lum_samples			1
-	threshold			0.0005
-#	show_samples		true
+	max_recursion			10
+	samples					32
+	lum_samples				1
+	adaptive_max_samples	2000
+	adaptive_threshold		0.0005
+#	show_adaptive_map		true
 }
 
 file_rasterizeroutput
@@ -43,16 +44,16 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
-realistic_camera
+thinlens_camera
 {
 	location			0 0 30
 	lookat				0 0 0
 	up					0 1 0
 	width				512
 	height				512
-	film_size			36				# 35mm film
+	sensor_size			36				# full-frame 35mm-still
+	focal_length		24				# 24mm wide-angle lens
 	fstop				4				# f/4
-	focal_length		24				# 24mm lens
 	focus_distance		28.0			# focus distance
 }
 

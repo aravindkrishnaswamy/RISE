@@ -323,10 +323,11 @@ private struct ScrubHandle: View {
 /// 0.05-unit value both scrub at sensible speeds with the same
 /// gesture, but for angles the proportional rate is too slow at
 /// typical magnitudes (theta=30 → 0.15°/px → 100px = 15° feels
-/// sluggish).
+/// sluggish).  `aperture_rotation` is a thinlens_camera angular field
+/// (polygon rotation in degrees) and uses the same convention.
 private func isAngularField(_ name: String) -> Bool {
     switch name {
-    case "theta", "phi", "fov", "pitch", "yaw", "roll":
+    case "theta", "phi", "fov", "pitch", "yaw", "roll", "aperture_rotation":
         return true
     default:
         return false

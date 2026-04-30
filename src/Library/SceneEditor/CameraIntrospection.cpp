@@ -228,11 +228,12 @@ namespace
 			out.value = FormatDouble( cam.GetTargetOrientation().y * RAD_TO_DEG );
 			return true;
 		}
-		// Camera-type-specific parameters.  fov is stored in radians;
-		// the parser accepts degrees, so we convert on the way out and
-		// the SetProperty path converts back on the way in.  Aperture
-		// / focal-length / focus-distance are scene units.  Fisheye
-		// scale and orthographic viewport_scale are dimensionless.
+		// Camera-type-specific parameters.  Pinhole's fov is in radians
+		// at storage; the parser accepts degrees, so we convert on the
+		// way out and the SetProperty path converts back on the way in.
+		// ThinLens uses photographic params (sensor_size + focal_length
+		// + fstop + focus_distance, all in mm or scene units); FOV is
+		// derived and not user-editable on this camera.
 		if( n == "fov" )
 		{
 			out.kind = ValueKind::Double;
@@ -241,20 +242,16 @@ namespace
 				out.value = FormatDouble( p->GetFovStored() * RAD_TO_DEG );
 				return true;
 			}
-			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
-				out.value = FormatDouble( t->GetFovStored() * RAD_TO_DEG );
-				return true;
-			}
 			out.value = String( "(unavailable)" );
 			out.editable = false;
 			return true;
 		}
-		if( n == "aperture_size" )
+		if( n == "sensor_size" )
 		{
 			out.kind = ValueKind::Double;
 			out.editable = true;
 			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
-				out.value = FormatDouble( t->GetApertureStored() );
+				out.value = FormatDouble( t->GetSensorSize() );
 				return true;
 			}
 			out.value = String( "(unavailable)" );
@@ -273,12 +270,62 @@ namespace
 			out.editable = false;
 			return true;
 		}
+		if( n == "fstop" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetFstop() );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
 		if( n == "focus_distance" )
 		{
 			out.kind = ValueKind::Double;
 			out.editable = true;
 			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
 				out.value = FormatDouble( t->GetFocusDistanceStored() );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "aperture_blades" )
+		{
+			out.kind = ValueKind::UInt;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				char buf[32];
+				std::snprintf( buf, sizeof(buf), "%u", t->GetApertureBlades() );
+				out.value = String( buf );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "aperture_rotation" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetApertureRotation() * RAD_TO_DEG );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "anamorphic_squeeze" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetAnamorphicSqueeze() );
 				return true;
 			}
 			out.value = String( "(unavailable)" );
@@ -552,20 +599,21 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 	else if( n == "fov" ) {
 		Scalar v;
 		if( !ParseDouble( value, v ) ) return false;
-		// Parser accepts degrees; storage is radians.
+		// Parser accepts degrees; storage is radians.  ThinLens
+		// derives FOV from sensor_size + focal_length and does not
+		// expose a direct FOV setter — those users edit the
+		// photographic params instead.
 		if( PinholeCamera* p = dynamic_cast<PinholeCamera*>( cam ) ) {
 			p->SetFovStored( v * DEG_TO_RAD );
-		} else if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
-			t->SetFovStored( v * DEG_TO_RAD );
 		} else {
-			return false;   // remaining cameras not yet wired up for fov edits
+			return false;
 		}
 	}
-	else if( n == "aperture_size" ) {
+	else if( n == "sensor_size" ) {
 		Scalar v;
 		if( !ParseDouble( value, v ) ) return false;
 		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
-			t->SetApertureStored( v );
+			t->SetSensorSize( v );
 		} else {
 			return false;
 		}
@@ -579,11 +627,48 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 			return false;
 		}
 	}
+	else if( n == "fstop" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetFstop( v );
+		} else {
+			return false;
+		}
+	}
 	else if( n == "focus_distance" ) {
 		Scalar v;
 		if( !ParseDouble( value, v ) ) return false;
 		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
 			t->SetFocusDistanceStored( v );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "aperture_blades" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetApertureBlades( static_cast<unsigned int>( v < 0 ? 0 : v ) );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "aperture_rotation" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		// Editor surfaces rotation in degrees; storage is radians.
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetApertureRotation( v * DEG_TO_RAD );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "anamorphic_squeeze" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetAnamorphicSqueeze( v );
 		} else {
 			return false;
 		}

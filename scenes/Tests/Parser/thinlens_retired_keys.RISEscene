@@ -1,0 +1,63 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           thinlens_retired_keys.RISEscene                                                         #
+#   Description:    Negative test — uses the retired thinlens_camera params (`fov`, `aperture_size`)        #
+#                   that were removed in the Phase 1.0 photographic-quartet overhaul.                       #
+#                   Expected behaviour: parser rejects the scene with a clear error pointing at the         #
+#                   undeclared parameter ("Failed to parse parameter name `fov`/`aperture_size`             #
+#                   (not declared in `thinlens_camera` descriptor)").  This file should NOT load            #
+#                   successfully — running `rise` on it must exit non-zero with the rejection message.      #
+#                                                                                                           #
+#                   Migration formula:                                                                       #
+#                       new sensor_size  = 2 * old focal_length * tan(old fov / 2)                          #
+#                       new focal_length = old focal_length                                                  #
+#                       new fstop        = old focal_length / old aperture_size                             #
+#                       new focus_distance = old focus_distance                                              #
+#                                                                                                           #
+#                   See docs/CAMERAS_ROADMAP.md Phase 1.0 for context.                                       #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		1
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/thinlens_retired_keys
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras — uses the retired keys; expected to fail
+##################################################
+
+thinlens_camera
+{
+	location			0 0 5
+	lookat				0 0 0
+	up					0 1 0
+	width				64
+	height				64
+	fov					40              # RETIRED — should be rejected
+	aperture_size		0.5             # RETIRED — should be rejected
+	focal_length		3.5
+	focus_distance		5
+}
