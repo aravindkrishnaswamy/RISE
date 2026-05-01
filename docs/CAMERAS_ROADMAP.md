@@ -1,7 +1,13 @@
 # Cameras — Research & Roadmap
 
-**Status:** Research-only. No code yet. This document is the source of truth
-for the camera-side design before any implementation lands. Refine in place.
+**Status:** PARTIALLY EXECUTED. The Phase-1 cluster has shipped:
+- **Phase 0** (reserve `realistic_camera` keyword) — done.
+- **Phase 1.0** (thin-lens photographic param overhaul: `sensor_size` / `focal_length` / `fstop` / `focus_distance`, polygonal aperture, anamorphic squeeze) — landed (commit `1ec8ef9`).
+- **Phase 1.1** (tilt-shift, scene-level `camera_defaults`, sensor-format UI presets) — landed.
+- **Phase 1.2** (mm-input lens specs, `scene_options` chunk for `scene_unit`) — landed (commit `39a03fd`).
+- **Multi-camera infrastructure** (not in the original phase list) — landed 2026-05-01 (commit `e9e1f3b`): scenes can declare many named cameras with one designated active. Camera-management ABI changed: `ICameraManager` mirrors the painter/light managers; `IJob::AddXxxCamera(name, ...)` replaces `SetXxxCamera(...)`; `SetActiveCamera(name)` / `RemoveCamera(name)` round out the surface; the `name` parameter on every camera chunk is optional with a "last-added wins" + auto-suffix collision rule. See commit message for the full ABI surface.
+
+The Phase-2-and-up work (output-format cameras, ODS, multi-element lens, polynomial-optics acceleration, diffraction & flare, sensor/shutter, neural lenses) has **not** started — those sections of this doc remain forward-looking. Sections marked *(LANDED)* in §5 below are accurate; everything past Phase 1.2 is a plan, not a status report.
 
 **Scope:** Survey the production / research state-of-the-art for camera models
 beyond the four RISE ships today (pinhole, orthographic, fisheye, thin-lens),

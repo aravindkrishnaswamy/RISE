@@ -1,6 +1,6 @@
 # RISE BVH Acceleration Plan
 
-**Status**: Draft for review. No code changes made yet.
+**Status**: COMPLETED — shipped 2026-04-26 → 2026-04-27. BVH is now the only triangle-mesh accelerator in the tree. The persistent record of what shipped (and what was tried, measured, and rejected) is [BVH_RETROSPECTIVE.md](BVH_RETROSPECTIVE.md); read that first. This document is retained as the architectural plan that was executed against, not as a to-do list. Some tier proposals here (SBVH spatial splits, uint8-quantised BVH4 nodes, BVH8) were measured during execution and excised — see the retrospective for which configurations actually shipped (plain SAH BVH2 + BVH4 SIMD collapse + float Möller-Trumbore filter).
 **Owner**: Aravind Krishnaswamy
 **Scope**: Replace octree / BSPTreeSAH for **triangle mesh** acceleration with a modern BVH stack: SBVH builder, compile-time width selection (BVH2 / BVH4 / BVH8), float traversal + double intersect, beefed-up triangle intersection.
 

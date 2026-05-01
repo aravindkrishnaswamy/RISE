@@ -16,10 +16,13 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Animation/`: focused animation and exposure regression scenes
 - `BDPT/`: bidirectional path tracing baselines and comparison scenes
 - `BSSRDFFurnace/`: energy-conservation regression scenes for subsurface scattering
-- `Cameras/`: isolated camera-model checks
+- `Bench/`: standardized benchmark scenes (`bench_pt`, `bench_bdpt`, `bench_vcm`) used by `bench.sh` for wall-time comparisons across commits
+- `Cameras/`: isolated camera-model checks (sensor-format presets, tilt-shift, named-camera selection)
 - `Caustics/`: compact caustic and SMS comparison scenes
 - `Geometry/`: primitive and CSG sanity scenes
 - `GlobalIllumination/`: focused GI baselines such as final gather
+- `Importers/`: glTF import regression scenes (Khronos sample assets, alpha modes, embedded textures, light-control)
+- `LightBVH/`: many-light regression scenes comparing alias-table sampling vs. light BVH (corridor 20/100 lights, spotlights stage, BDPT mixed-light Cornell)
 - `MLT/`: Metropolis light transport baselines
 - `Materials/`: isolated material demonstrations and regression scenes
 - `Painters/`: painter- and texture-accessor-specific scenes
@@ -33,6 +36,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `Samplers/`: Sobol, ZSobol, and sampler comparison scenes
 - `SubsurfaceScattering/`: focused SSS and PT-vs-BDPT comparison scenes (includes `pathtracing_pel_rasterizer` variants)
 - `UnifiedLighting/`: direct-light sampling and many-light regression scenes
+- `VCM/`: vertex-connection-and-merging regression scenes (Cornell baseline, caustics, spectral)
 - `Volumes/`: medium and participating-media validation scenes
 
 ## Recommended Quick Checks

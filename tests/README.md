@@ -35,28 +35,38 @@ Built binaries land in `bin/tests/` (Release) or `dbin/tests/` (Debug).
 
 ## Current Test Inventory
 
-- Geometry and intersection:
+77 standalone executables, grouped by subsystem. The build glob picks up every `tests/*.cpp` automatically, so this list reflects whatever's on disk — when adding or removing a test, update the relevant group below.
+
+- Geometry and intersection (11):
   `BSPMailboxingTest.cpp`, `BSPTreeSAHTest.cpp`, `BezierClippingUnitsTest.cpp`, `CSGObjectIdentityTest.cpp`, `ClippedPlaneGeometryTest.cpp`, `DisplacedGeometryTest.cpp`, `GeometrySurfaceDerivativesTest.cpp`, `RISEMeshLegacyBSPCompatibilityTest.cpp`, `RayBoxIntersectionTest.cpp`, `RayTriangleIntersectionTest.cpp`, `TessellatedShapeDerivativesTest.cpp`
-- Math and utility coverage:
+- BVH (2):
+  `BVHBuilderTest.cpp` (object/spatial split builder, leaf packing, bounds), `BVHSerializationTest.cpp` (v4 cached-BVH on-disk format round-trip)
+- Math and utility coverage (7):
   `ColorUtilsTest.cpp`, `GeometricUtilitiesTest.cpp`, `Math3DTest.cpp`, `MortonCodeTest.cpp`, `OpticsTest.cpp`, `PolynomialTest.cpp`, `PrimesTest.cpp`
-- Noise and procedural-texture generators:
+- Noise and procedural-texture generators (10):
   `CurlNoise3DTest.cpp`, `DomainWarpNoise3DTest.cpp`, `GaborNoise3DTest.cpp`, `PerlinWorleyNoise3DTest.cpp`, `ReactionDiffusion3DTest.cpp`, `SDFPrimitive3DTest.cpp`, `SimplexNoise3DTest.cpp`, `TurbulenceNoise3DTest.cpp`, `WaveletNoise3DTest.cpp`, `WorleyNoise3DTest.cpp`
-- Sampling, shading, and cache behavior:
-  `BSSRDFEntryPointTest.cpp`, `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `GGXWhiteFurnaceTest.cpp`, `IORStackBehaviorTest.cpp`, `IORStackTest.cpp`, `IrradianceCacheTest.cpp`, `LightExitanceTest.cpp`, `RandomWalkSSSTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
-- Light sampling and volumes:
+- Sampling, shading, and cache behavior (13):
+  `BSSRDFEntryPointTest.cpp`, `BSSRDFSamplingTest.cpp`, `FinalGatherShaderOpTest.cpp`, `GGXFresnelModeTest.cpp`, `GGXMetalRoughGridTest.cpp`, `GGXWhiteFurnaceTest.cpp`, `IORStackBehaviorTest.cpp`, `IORStackTest.cpp`, `IrradianceCacheTest.cpp`, `LightExitanceTest.cpp`, `RandomWalkSSSTest.cpp`, `SPFBSDFConsistencyTest.cpp`, `SPFPdfConsistencyTest.cpp`
+- Light sampling and volumes (3):
   `LightBVHTest.cpp`, `MajorantGridTest.cpp`, `PainterVolumeAccessorTest.cpp`
-- MIS and integrator building blocks:
-  `MISWeightsTest.cpp`, `OptimalMISAccumulatorTest.cpp`, `PathValueOpsTest.cpp`
-- Spectral support:
+- MIS and integrator building blocks (6):
+  `BDPTStrategyBalanceTest.cpp` (per-strategy contribution audit), `BDPTVertexRIGRebuildTest.cpp` (RIG mirror invariant on vertex rebuild), `MISWeightsTest.cpp`, `OptimalMISAccumulatorTest.cpp` (Kondapaneni 2019 second-moment binning), `PathValueOpsTest.cpp`, `VCMStrategyBalanceTest.cpp` (per-strategy contribution audit for VCM)
+- Spectral support (2):
   `SampledWavelengthsTest.cpp`, `SpectralValueTraitsTest.cpp`
-- SMS (Specular Manifold Sampling):
+- SMS (Specular Manifold Sampling) (2):
   `ManifoldSolverTest.cpp` (block-tridiagonal Jacobian, specular-direction math, chain geometry/throughput, TIR, light-to-first-vertex Jacobian determinant), `BDPTSMSSuppressionTest.cpp` (cross-strategy emission suppression for BDPT (s==0) to prevent SMS caustic double-counting)
-- VCM (Vertex Connection and Merging):
+- VCM (Vertex Connection and Merging) (5):
   `VCMEyePostPassTest.cpp`, `VCMLightPostPassTest.cpp`, `VCMLightVertexStoreTest.cpp`, `VCMRecurrenceTest.cpp`, `VCMSpectralRecurrenceTest.cpp`
-- Sampler and dimension budget:
-  `MMLTStrategySelectionTest.cpp`, `PSSMLTStreamAliasingTest.cpp`, `SobolDimensionBudgetTest.cpp`, `ZSobolSamplerTest.cpp`
-- Image comparison, diagnostics, and instrumentation:
-  `RasterSanityScanTest.cpp`, `RenderETAEstimatorTest.cpp`
+- Sampler and dimension budget (3):
+  `PSSMLTStreamAliasingTest.cpp`, `SobolDimensionBudgetTest.cpp`, `ZSobolSamplerTest.cpp`
+- Cameras (2):
+  `CameraUnitConversionTest.cpp` (mm ↔ scene-unit conversion, sensor presets), `MultipleCamerasTest.cpp` (named-camera registration, default-camera selection)
+- Mesh and loader importers (4):
+  `GLTFLoaderTest.cpp` (Khronos-asset round-trip + tangent storage), `PLYLoaderExtraPropertiesTest.cpp` (vertex colour, custom property pass-through), `RAW2VertexColorTest.cpp` (per-vertex colour in legacy RAW2 mesh), `VertexColorRoundtripTest.cpp` (vertex-colour painter round-trip across mesh formats)
+- Scene editor / interactive viewport (5):
+  `SceneEditorBasicsTest.cpp` (SceneEditor + EditHistory invariants), `SceneEditorCameraAnglesTest.cpp` (orbit/roll on `target_orientation` + `orientation.z`, gimbal-lock clamp), `SceneEditorCancelRestartTest.cpp` (cancellable progress callback, kick-render flow), `SceneEditorMemoryStressTest.cpp` (long-running edit-loop allocation footprint), `SceneEditorSuggestionsTest.cpp` (descriptor-driven property completion)
+- Image comparison, diagnostics, and instrumentation (2):
+  `RasterSanityScanTest.cpp` (silent-negative-pixel detector at output time), `RenderETAEstimatorTest.cpp`
   (CLI diagnostic utilities like `ImageDiffTest`, `FindFireflyTest`,
   `ExrRegionCompareTest`, `ExrFireflyInspect`, and `MailboxingBenchmark` live in `tools/`,
   not here, because they require file arguments and are not

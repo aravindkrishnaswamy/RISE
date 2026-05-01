@@ -1,6 +1,6 @@
 # RISE Integrator Refactor Plan
 
-**Status**: Draft for review.  No code changes made yet.
+**Status**: PARTIALLY EXECUTED. Phases 0, 1, and 2a have shipped; Phases 2b, 2c, 3, and 4 are deferred. **Read [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) first for what's actually in the tree today** — this document is the original architectural plan, retained as the design record. Treat the body as historical context for the design choices, not as a to-do list to be re-executed wholesale.
 **Owner**: Aravind Krishnaswamy
 **Scope**: PathTracingIntegrator, BDPTIntegrator, VCMIntegrator, and their six rasterizers.
 
