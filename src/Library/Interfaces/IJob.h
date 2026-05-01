@@ -40,6 +40,24 @@ namespace RISE
 	// AddPrebuiltTriangleMeshGeometry, declared near the bottom.
 	class ITriangleMeshGeometryIndexed;
 
+	//! One entry in a parallel-decode batch passed to
+	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
+	//! is set — never both, never neither.  See AddTexturePaintersBatch
+	//! for full semantics.
+	struct TexturePainterBatchRequest
+	{
+		const char*           name;          ///< Painter name to register under
+		const char*           filePath;      ///< NULL if reading from in-memory bytes
+		const unsigned char*  bytes;         ///< NULL if reading from filePath
+		size_t                numBytes;      ///< 0 if reading from filePath
+		char                  format;        ///< 0 = PNG, 1 = JPEG
+		char                  colorSpace;    ///< 0=Rec709 linear, 1=sRGB, 2=ROMM linear, 3=ProPhoto
+		char                  filterType;    ///< 0=NN, 1=Bilinear, 2=CRBicubic, 3=BSBicubic
+		bool                  lowmemory;     ///< Defer color-space convert to first sample (reduces RAM at the cost of slightly slower sampling)
+		double                scale[3];      ///< Per-channel scale (multiply at decode time)
+		double                shift[3];      ///< Per-channel shift (add at decode time)
+	};
+
 	//! Job - This is used to simplify the creation of a job, all things can be
 	//! easily accessed by name, no need to keep track of managers and such
 	class IJob : public virtual IReference
@@ -1156,7 +1174,8 @@ namespace RISE
 							const bool import_materials,			///< [in] Create one PBR material per glTF material
 							const bool import_lights,				///< [in] Create lights from KHR_lights_punctual
 							const bool import_cameras,				///< [in] Create the first camera (subsequent ones warn)
-							const bool import_normal_maps			///< [in] Attach normal_map_modifier when material has normalTexture
+							const bool import_normal_maps,			///< [in] Attach normal_map_modifier when material has normalTexture
+							const bool lowmem_textures				///< [in] Defer texture color-space conversion to per-sample (saves ~4x texture RAM + 5-10x faster load on heavy-PBR scenes; pays ~25% per-sample render cost).  Default FALSE for final-render workflow; flip to TRUE for iteration on NewSponza-class scenes.
 							) = 0;
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
@@ -2447,6 +2466,35 @@ namespace RISE
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function
+			) = 0;
+
+		//! Loads N PNG/JPEG texture painters in parallel and registers each
+		//! one under its requested name.  The decode work (libpng /
+		//! libjpeg + the color-space promotion to a working IRasterImage)
+		//! runs across the global ThreadPool — a multi-core saturation
+		//! pattern that scales with the number of textures the import
+		//! needs.  The actual manager registrations happen serially in
+		//! the calling thread (manager state is not thread-safe).
+		//!
+		//! Used by GLTFSceneImporter to decode every texture a scene
+		//! references in one batch before the materials loop, instead of
+		//! N sequential libpng decodes.  On NewSponza-class assets (137
+		//! PNGs) this collapses tens of seconds of decode-thread idle to
+		//! single-digit seconds across the worker pool.
+		//!
+		//! Each request has either filePath set (on-disk asset, used by
+		//! .gltf JSON-form imports with external image files) OR bytes +
+		//! numBytes set (in-memory, used by .glb embedded images).
+		//! `format` selects PNG (0) or JPEG (1).
+		//!
+		//! Returns true iff every request decoded + registered
+		//! successfully.  Individual failures are logged; the batch as a
+		//! whole still attempts every request before returning, so a
+		//! single malformed PNG doesn't abort the rest.
+		/// \return TRUE if every request succeeded; FALSE if any failed
+		virtual bool AddTexturePaintersBatch(
+			const TexturePainterBatchRequest* requests,
+			size_t numRequests
 			) = 0;
 
 		//! Registers a caller-owned, fully-built triangle mesh geometry under

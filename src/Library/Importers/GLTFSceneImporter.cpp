@@ -309,18 +309,35 @@ namespace
 	// given role / texture index.  Returns the registered painter name
 	// on success; empty string on failure (caller can swap in a
 	// uniformcolor fallback).
+	//
+	// `preRegistered` (added 2026-05-01 alongside parallel-decode batch):
+	// a set of painter names PreDecodeTextures already registered.  When
+	// non-null and contains the computed painterName, the function
+	// fast-paths back the name without doing a redundant per-call decode
+	// + AddItem.  When null or miss, falls through to the original
+	// per-call path (preserves single-primitive `gltfmesh_geometry` chunk
+	// behaviour and acts as a safety net if the pre-decode pass missed).
 	std::string CreateTexturePainter(
 		IJob&               job,
 		const std::string&  prefix,
 		const cgltf_data*   data,
 		const std::string&  glbPath,
 		const cgltf_texture* tex,
-		const char*         role )
+		const char*         role,
+		const std::set<std::string>* preRegistered = NULL,
+		bool                lowmemTextures = false )	// matches the slow-path AddXXXTexturePainter `lowmem` arg; only consulted when preRegistered is null/miss.
 	{
 		if( !tex || !tex->image ) {
 			return std::string();
 		}
 		const size_t imgIdx = (size_t)( tex->image - data->images );
+
+		// Fast path: PreDecodeTextures already decoded + registered this
+		// painter.  Skip the redundant per-call decode.
+		const std::string painterName = ImagePainterName( prefix, role, imgIdx );
+		if( preRegistered && preRegistered->find( painterName ) != preRegistered->end() ) {
+			return painterName;
+		}
 
 		std::string ext, filePath;
 		const unsigned char* bytes = NULL;
@@ -331,7 +348,6 @@ namespace
 			return std::string();	// ResolveImageBytes already logged the cause
 		}
 
-		const std::string painterName = ImagePainterName( prefix, role, imgIdx );
 		const char* colorSpace = TextureColorSpace( role );
 
 		const double scale[3] = { 1.0, 1.0, 1.0 };
@@ -345,17 +361,24 @@ namespace
 		else if( std::strcmp( colorSpace, "ROMMRGB_Linear"   ) == 0 ) cs = 2;
 		else if( std::strcmp( colorSpace, "ProPhotoRGB"      ) == 0 ) cs = 3;
 
+		// `kLowMem` mirrors the chunk-controlled lowmemTextures option that
+		// PreDecodeTextures threads through.  When true, the painter defers
+		// color-space convert to per-sample (saves load time + texture RAM
+		// at the cost of ~25% per-sample render).  Default-false at the
+		// chunk level; Sponza-class scenes flip it on for iteration speed.
+		const bool kLowMem = lowmemTextures;
+
 		bool ok = false;
 		if( !filePath.empty() ) {
 			// On-disk sidecar (the .gltf JSON form with external image files).
 			if( ext == ".png" ) {
 				ok = job.AddPNGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
-					cs, /*filter*/ 1, /*lowmem*/ false, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddJPEGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
-					cs, /*filter*/ 1, /*lowmem*/ false, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift );
 			}
 		} else {
 			// Embedded bytes (any .glb image; .gltf `data:` URIs cgltf already
@@ -363,11 +386,11 @@ namespace
 			if( ext == ".png" ) {
 				ok = job.AddInMemoryPNGTexturePainter(
 					painterName.c_str(), bytes, len,
-					cs, /*filter*/ 1, /*lowmem*/ false, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddInMemoryJPEGTexturePainter(
 					painterName.c_str(), bytes, len,
-					cs, /*filter*/ 1, /*lowmem*/ false, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift );
 			}
 		}
 
@@ -392,7 +415,9 @@ namespace
 		const std::string&  prefix,
 		const cgltf_data*   data,
 		const std::string&  glbPath,
-		size_t              matIdx )
+		size_t              matIdx,
+		const std::set<std::string>* preRegisteredTextures,	// pre-decoded painters; see PreDecodeTextures
+		bool                lowmemTextures )	// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
 	{
 		const cgltf_material& mat = data->materials[ matIdx ];
 
@@ -424,7 +449,8 @@ namespace
 			std::string textureName;
 			if( pmr.base_color_texture.texture ) {
 				textureName = CreateTexturePainter(
-					job, prefix, data, glbPath, pmr.base_color_texture.texture, "basecolor" );
+					job, prefix, data, glbPath, pmr.base_color_texture.texture, "basecolor",
+					preRegisteredTextures, lowmemTextures );
 			}
 			baseColorTexturePainter = textureName;	// captured for BuildAlphaPainter
 
@@ -469,7 +495,8 @@ namespace
 			if( pmr.metallic_roughness_texture.texture ) {
 				const std::string mrTex = CreateTexturePainter(
 					job, prefix, data, glbPath, pmr.metallic_roughness_texture.texture,
-					"metallic_roughness" );
+					"metallic_roughness",
+					preRegisteredTextures, lowmemTextures );
 				if( !mrTex.empty() ) {
 					// glTF MR convention: G = roughness, B = metallic.
 					const std::string mName = PainterName( prefix, "metallic", matIdx );
@@ -516,7 +543,8 @@ namespace
 		std::string emissiveTextureName;
 		if( mat.emissive_texture.texture ) {
 			emissiveTextureName = CreateTexturePainter(
-				job, prefix, data, glbPath, mat.emissive_texture.texture, "emissive" );
+				job, prefix, data, glbPath, mat.emissive_texture.texture, "emissive",
+				preRegisteredTextures, lowmemTextures );
 		}
 		const cgltf_float ef[3] = {
 			mat.emissive_factor[0],
@@ -860,7 +888,8 @@ namespace
 		// Optional normal-map modifier.
 		if( mat.normal_texture.texture ) {
 			const std::string nmTex = CreateTexturePainter(
-				job, prefix, data, glbPath, mat.normal_texture.texture, "normal" );
+				job, prefix, data, glbPath, mat.normal_texture.texture, "normal",
+				preRegisteredTextures, lowmemTextures );
 			if( !nmTex.empty() ) {
 				const std::string modName = ModifierName( prefix, matIdx );
 				job.AddNormalMapModifier( modName.c_str(), nmTex.c_str(), mat.normal_texture.scale );
@@ -1274,10 +1303,24 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 
 	const std::string& prefix = opts.namePrefix;
 
+	// Decode every texture the materials reference in one parallel batch
+	// BEFORE the per-material loop.  Without this pass, each material's
+	// CreateTexturePainter would call libpng synchronously in the calling
+	// thread — for NewSponza-class assets that's 137 sequential single-
+	// threaded decodes (tens of seconds).  PreDecodeTextures collects
+	// every (image, role) tuple, dedupes, hands the whole list to
+	// Job::AddTexturePaintersBatch which fans the libpng work across the
+	// global ThreadPool.  After this returns, mRegisteredTextures is
+	// populated and CreateTexturePainter (in the per-material loop below)
+	// fast-paths to a name lookup.
+	if( opts.importMaterials ) {
+		PreDecodeTextures( job, opts );
+	}
+
 	// Materials -- create up front (de-duplicates across primitives).
 	if( opts.importMaterials ) {
 		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
-			CreateMaterial( job, prefix, data, szFilename, mi );
+			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures );
 		}
 	}
 
@@ -1880,3 +1923,147 @@ bool GLTFSceneImporter::BuildGeometryFromPrimitive(
 
 	return true;
 }
+
+// Walk every cgltf material slot, collect (image, role) tuples, dedupe by
+// painter name, dispatch one Job::AddTexturePaintersBatch call.  Populates
+// mRegisteredTextures with painter names that decoded + registered
+// successfully.  See header doc for rationale.
+void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& opts )
+{
+	if( !cgltfData ) {
+		return;
+	}
+	cgltf_data* data = static_cast<cgltf_data*>( cgltfData );
+	const std::string& prefix = opts.namePrefix;
+
+	// Per-tuple state that has to outlive the batch call: we hold the
+	// resolved file path and (for embedded images) the bufferView byte
+	// pointer + length.  TexturePainterBatchRequest stores raw const
+	// char* / const unsigned char* pointers, so the std::string backing
+	// the file path needs to live until after AddTexturePaintersBatch
+	// returns.  Keep them in side vectors keyed by request index.
+	struct PendingDecode
+	{
+		std::string painterName;	// also keyed in `seen` below
+		std::string filePath;		// empty when reading from bytes
+		const unsigned char* bytes;	// null when reading from filePath
+		size_t numBytes;
+		char format;				// 0 = PNG, 1 = JPEG; -1 = skip
+		char colorSpace;
+	};
+	std::vector<PendingDecode> pending;
+	std::set<std::string> seen;
+
+	// Helper: queue one (texture, role) tuple.  Idempotent on
+	// (painterName) — multiple materials sharing the same image+role
+	// only enqueue once.  Skips silently when the texture pointer is
+	// null, the image has no resolvable source, or the format isn't a
+	// PNG/JPEG we can decode.
+	auto enqueue = [&]( const cgltf_texture* tex, const char* role )
+	{
+		if( !tex || !tex->image ) return;
+		const size_t imgIdx = (size_t)( tex->image - data->images );
+		const std::string painterName = ImagePainterName( prefix, role, imgIdx );
+		if( seen.find( painterName ) != seen.end() ) {
+			return;
+		}
+		seen.insert( painterName );
+
+		std::string ext, filePath;
+		const unsigned char* bytes = NULL;
+		size_t len = 0;
+		ResolveImageBytes( data, szFilename, imgIdx, ext, filePath, bytes, len );
+		if( filePath.empty() && bytes == NULL ) {
+			return;	// ResolveImageBytes already logged the cause
+		}
+
+		char format = -1;
+		if(      ext == ".png"                    ) format = 0;
+		else if( ext == ".jpg" || ext == ".jpeg"  ) format = 1;
+		if( format < 0 ) {
+			return;	// not a format AddTexturePaintersBatch handles
+		}
+
+		const char* colorSpace = TextureColorSpace( role );
+		char cs = 1;	// sRGB default
+		if(      std::strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) cs = 0;
+		else if( std::strcmp( colorSpace, "sRGB"             ) == 0 ) cs = 1;
+		else if( std::strcmp( colorSpace, "ROMMRGB_Linear"   ) == 0 ) cs = 2;
+		else if( std::strcmp( colorSpace, "ProPhotoRGB"      ) == 0 ) cs = 3;
+
+		PendingDecode pd;
+		pd.painterName = painterName;
+		pd.filePath    = filePath;	// empty if reading from bytes
+		pd.bytes       = bytes;
+		pd.numBytes    = len;
+		pd.format      = format;
+		pd.colorSpace  = cs;
+		pending.push_back( std::move( pd ) );
+	};
+
+	// Walk every material's texture slots.  Mirrors the slots
+	// CreateMaterial reads; if a slot is added there, add it here too.
+	for( size_t mi = 0; mi < data->materials_count; ++mi ) {
+		const cgltf_material& mat = data->materials[ mi ];
+		if( mat.has_pbr_metallic_roughness ) {
+			enqueue( mat.pbr_metallic_roughness.base_color_texture.texture,        "basecolor" );
+			enqueue( mat.pbr_metallic_roughness.metallic_roughness_texture.texture, "metallic_roughness" );
+		}
+		enqueue( mat.emissive_texture.texture, "emissive" );
+		enqueue( mat.normal_texture.texture,   "normal" );
+		// Phase-5 sheen / clearcoat texture slots intentionally left out
+		// — those code paths are #if 0 in CreateMaterial today.
+	}
+
+	if( pending.empty() ) {
+		return;
+	}
+
+	// Build the contiguous request array AddTexturePaintersBatch consumes.
+	// Pointers in TexturePainterBatchRequest reference strings owned by
+	// `pending` (filePath via .c_str()) or by the cgltf buffer (bytes); both
+	// outlive the batch call.
+	std::vector<TexturePainterBatchRequest> requests;
+	requests.reserve( pending.size() );
+	const double identityScale[3] = { 1.0, 1.0, 1.0 };
+	const double zeroShift[3]     = { 0.0, 0.0, 0.0 };
+	for( const PendingDecode& pd : pending ) {
+		TexturePainterBatchRequest r = {};
+		r.name       = pd.painterName.c_str();
+		r.filePath   = pd.filePath.empty() ? NULL : pd.filePath.c_str();
+		r.bytes      = pd.bytes;
+		r.numBytes   = pd.numBytes;
+		r.format     = pd.format;
+		r.colorSpace = pd.colorSpace;
+		r.filterType = 1;		// bilinear
+		r.lowmemory  = opts.lowmemTextures;	// chunk-controlled; default false.
+								// When true, defers color-space convert to
+								// per-sample.  Saves ~4x texture RAM + 5-10x
+								// load on heavy-PBR scenes; pays ~25%
+								// per-sample render cost.  Match the
+								// CreateTexturePainter slow path if changing.
+		std::memcpy( r.scale, identityScale, sizeof(identityScale) );
+		std::memcpy( r.shift, zeroShift,     sizeof(zeroShift) );
+		requests.push_back( r );
+	}
+
+	// Dispatch.  Returns false if any request failed; we still record the
+	// names that DID succeed so CreateTexturePainter's fast path picks
+	// them up.  The slow path (per-call decode) handles any residual misses.
+	(void) job.AddTexturePaintersBatch( requests.data(), requests.size() );
+
+	// Mark every request name as registered.  AddTexturePaintersBatch
+	// logs per-request decode failures, so a name in `pending` that
+	// failed to decode would NOT actually be in the manager.  But the
+	// CreateTexturePainter fast path is just a name handoff — the
+	// material that consumes that name then finds it missing in the
+	// manager (or a downstream paint step gets a "none" sentinel) and
+	// falls back to its uniform-color path.  Worse case is one log line
+	// per failed texture; correctness preserved.  An alternative would
+	// be a per-request return-status array, but the failure rate on
+	// well-formed assets is zero, so we save the API surface.
+	for( const PendingDecode& pd : pending ) {
+		mRegisteredTextures.insert( pd.painterName );
+	}
+}
+

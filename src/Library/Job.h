@@ -1087,7 +1087,8 @@ namespace RISE
 							const bool import_materials,
 							const bool import_lights,
 							const bool import_cameras,
-							const bool import_normal_maps
+							const bool import_normal_maps,
+							const bool lowmem_textures
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h
@@ -2267,6 +2268,15 @@ namespace RISE
 		bool AddPrebuiltTriangleMeshGeometry(
 			const char* name,
 			ITriangleMeshGeometryIndexed* pGeom
+			);
+
+		//! Parallel batch of PNG/JPEG texture-painter loads.  See IJob.h for
+		//! the full contract; uses ThreadPool::ParallelFor for decode and
+		//! serial manager registration in the calling thread.
+		/// \return TRUE if every request succeeded; FALSE if any failed
+		bool AddTexturePaintersBatch(
+			const TexturePainterBatchRequest* requests,
+			size_t numRequests
 			);
 	};
 }

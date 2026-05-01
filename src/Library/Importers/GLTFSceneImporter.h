@@ -48,6 +48,7 @@
 
 #include "../Interfaces/IJob.h"
 #include <climits>
+#include <set>
 #include <string>
 
 namespace RISE
@@ -69,6 +70,7 @@ namespace RISE
 			bool importLights;						///< Create lights from KHR_lights_punctual
 			bool importCameras;						///< Create cameras (first only; subsequent ones warn)
 			bool importNormalMaps;					///< Attach normal_map_modifier when a material has normalTexture
+			bool lowmemTextures;					///< Defer texture color-space conversion to per-sample access.  Trades ~25% per-sample render cost for a ~4x peak texture-memory reduction and a 5-10x faster scene load.  Default false (final-render workflow); flip to true for iteration on heavy-PBR scenes (NewSponza class).  See SCENE_CONVENTIONS.md / the sponza_new.RISEscene file header for the trade-off.
 
 			//! Sentinel for "use the file's default scene" (i.e., the scene
 			//! the glTF JSON's top-level `"scene"` field points at, falling
@@ -85,7 +87,8 @@ namespace RISE
 			  importMaterials( true ),
 			  importLights( true ),
 			  importCameras( true ),
-			  importNormalMaps( true )
+			  importNormalMaps( true ),
+			  lowmemTextures( false )
 			{}
 		};
 
@@ -176,6 +179,29 @@ namespace RISE
 													///  Ownership: this object owns the parse and frees it in the
 													///  destructor.  Kept opaque to avoid leaking cgltf into IJob
 													///  consumers.
+
+			// PreDecodeTextures (called from ImportScene before the materials
+			// loop) walks every material's textureslots, collects unique
+			// (image, role) tuples, and submits the whole batch to
+			// Job::AddTexturePaintersBatch — which decodes in parallel via
+			// the global ThreadPool, then registers the painters serially.
+			// On NewSponza-class assets (137 PNGs) this collapses tens of
+			// seconds of single-threaded libpng decode to single-digit
+			// seconds across the worker pool.  After PreDecodeTextures
+			// returns, every texture painter the materials need is already
+			// in pPntManager — and CreateTexturePainter's fast path returns
+			// the painter name immediately on lookup hit.  See
+			// `mRegisteredTextures` below.
+			void PreDecodeTextures( IJob& job, const GLTFImportOptions& opts );
+
+			// Painter names that PreDecodeTextures successfully registered.
+			// CreateTexturePainter checks this first; on hit it skips its
+			// own (now-redundant) decode + AddItem and just returns the
+			// name.  On miss (a request that PreDecodeTextures didn't see
+			// or that failed to decode), CreateTexturePainter falls through
+			// to its per-call decode path, preserving the pre-2026-05-01
+			// behaviour as a safety net.
+			std::set<std::string>	mRegisteredTextures;
 		};
 	}
 }

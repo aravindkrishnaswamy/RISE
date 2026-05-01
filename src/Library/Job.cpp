@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <set>
 #include "Utilities/MediaPathLocator.h"
+#include "Utilities/ThreadPool.h"
 #include "Interfaces/IOptions.h"
 #include "Intersection/RayIntersectionGeometric.h"
 
@@ -1189,6 +1190,185 @@ bool Job::AddJPEGTexturePainter(
 	safe_release( pImage );
 
 	return true;
+}
+
+//! Decodes N PNG/JPEG texture painters in parallel via the global
+//! ThreadPool, then registers each with the painter / function-2D
+//! managers serially in this thread.  See IJob.h for the full contract.
+bool Job::AddTexturePaintersBatch(
+								const TexturePainterBatchRequest* requests,
+								size_t numRequests
+								)
+{
+	if( !requests || numRequests == 0 ) {
+		return true;
+	}
+
+	// Each request decodes into its own IRasterImage* + IRasterImageAccessor*
+	// + IPainter*, fully independent of the other workers' state.  All three
+	// stay alive until after the manager AddItem step, then release in
+	// reverse order.
+	struct Decoded
+	{
+		IPainter*               pPainter;     // null on decode failure
+		IRasterImageAccessor*   pRIA;
+		IRasterImage*           pImage;
+	};
+	std::vector<Decoded> decoded( numRequests, Decoded{ nullptr, nullptr, nullptr } );
+
+	// Parallel decode.  Worker bodies touch only their own slot of
+	// `decoded[]` and the constant `requests[i]`; no shared mutable state.
+	// Each worker:
+	//   1. Allocates an IRasterImage (low-mem variant defers color convert).
+	//   2. Wraps the source bytes (file or in-memory) in an IReadBuffer.
+	//   3. Creates a PNG or JPEG reader bound to that buffer + the requested
+	//      colour space.
+	//   4. LoadImage (the heavy libpng/libjpeg work).
+	//   5. Optionally applies scale/shift colour ops on the decoded pixels.
+	//   6. Builds the IRasterImageAccessor and IPainter for the decoded image.
+	//   7. Stores the painter ptr in decoded[i].pPainter; null on failure.
+	Implementation::GlobalThreadPool().ParallelFor(
+		static_cast<unsigned int>( numRequests ),
+		[&]( unsigned int i )
+		{
+			const TexturePainterBatchRequest& req = requests[i];
+
+			// Argument validation — must be exactly one of (filePath, bytes).
+			const bool hasFile  = ( req.filePath  != NULL );
+			const bool hasBytes = ( req.bytes     != NULL && req.numBytes > 0 );
+			if( hasFile == hasBytes ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddTexturePaintersBatch:: request `%s` must set exactly "
+					"one of filePath or bytes (got %s)",
+					req.name ? req.name : "(null)",
+					( hasFile && hasBytes ) ? "both" : "neither" );
+				return;
+			}
+			if( !req.name ) {
+				GlobalLog()->PrintEasyError(
+					"Job::AddTexturePaintersBatch:: request has NULL name; skipping" );
+				return;
+			}
+
+			IRasterImage* pImage = 0;
+			if( req.lowmemory ) {
+				RISE_API_CreateReadOnlyRISEColorRasterImage( &pImage );
+			} else {
+				RISE_API_CreateRISEColorRasterImage( &pImage, 0, 0, RISEColor( 0, 0, 0, 0 ) );
+			}
+			if( !pImage ) {
+				return;
+			}
+
+			// Source buffer.  In-memory path uses an IMemoryBuffer with non-
+			// owning pointer (.glb embedded images); on-disk path opens its
+			// own file handle (.gltf JSON-form sidecar).  Both produce a
+			// buffer the PNG/JPEG readers consume identically.
+			IReadBuffer* pReadBuffer = 0;
+			if( hasFile ) {
+				RISE_API_CreateDiskFileReadBuffer( &pReadBuffer, req.filePath );
+			} else {
+				IMemoryBuffer* pMemBuffer = 0;
+				RISE_API_CreateCompatibleMemoryBuffer( &pMemBuffer,
+					const_cast<char*>( reinterpret_cast<const char*>( req.bytes ) ),
+					static_cast<unsigned int>( req.numBytes ), false );
+				pReadBuffer = pMemBuffer;	// IMemoryBuffer is-a IReadBuffer
+			}
+			if( !pReadBuffer ) {
+				safe_release( pImage );
+				return;
+			}
+
+			COLOR_SPACE gc = eColorSpace_sRGB;
+			switch( req.colorSpace )
+			{
+			case 0: gc = eColorSpace_Rec709RGB_Linear; break;
+			case 1: gc = eColorSpace_sRGB;             break;
+			case 2: gc = eColorSpace_ROMMRGB_Linear;   break;
+			case 3: gc = eColorSpace_ProPhotoRGB;      break;
+			}
+
+			IRasterImageReader* pImageReader = 0;
+			if( req.format == 0 ) {
+				RISE_API_CreatePNGReader( &pImageReader, *pReadBuffer, gc );
+			} else if( req.format == 1 ) {
+				RISE_API_CreateJPEGReader( &pImageReader, *pReadBuffer, gc );
+			} else {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddTexturePaintersBatch:: request `%s` has unknown format byte %d "
+					"(expected 0=PNG, 1=JPEG)", req.name, (int)req.format );
+				safe_release( pReadBuffer );
+				safe_release( pImage );
+				return;
+			}
+			if( !pImageReader ) {
+				safe_release( pReadBuffer );
+				safe_release( pImage );
+				return;
+			}
+
+			pImage->LoadImage( pImageReader );
+
+			// LoadImage doesn't propagate a hard error for malformed bytes;
+			// it leaves the image at 0x0.  Reject so we don't register an
+			// empty painter.
+			if( pImage->GetWidth() == 0 || pImage->GetHeight() == 0 ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"Job::AddTexturePaintersBatch:: image decode failed for `%s`",
+					req.name );
+				safe_release( pImageReader );
+				safe_release( pReadBuffer );
+				safe_release( pImage );
+				return;
+			}
+
+			if( req.scale[0] != 1 || req.scale[1] != 1 || req.scale[2] != 1 ) {
+				IOneColorOperator* pOp = 0;
+				RISE_API_CreateScaleColorOperatorRasterImage( &pOp, RISEColor( RISEPel( req.scale ), 1.0 ) );
+				Apply1ColorOperator( *pImage, *pOp );
+				safe_release( pOp );
+			}
+			if( req.shift[0] != 0 || req.shift[1] != 0 || req.shift[2] != 0 ) {
+				IOneColorOperator* pOp = 0;
+				RISE_API_CreateShiftColorOperatorRasterImage( &pOp, RISEColor( RISEPel( req.shift ), 0 ) );
+				Apply1ColorOperator( *pImage, *pOp );
+				safe_release( pOp );
+			}
+
+			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage );
+
+			IPainter* pPainter = 0;
+			RISE_API_CreateTexturePainter( &pPainter, pRIA );
+
+			// Worker done.  pPainter, pRIA, pImage all outlive the manager
+			// AddItem step (which holds its own ref); the reader and read-
+			// buffer are no longer needed once decode is complete, so release
+			// them here.
+			safe_release( pImageReader );
+			safe_release( pReadBuffer );
+
+			decoded[i].pPainter = pPainter;
+			decoded[i].pRIA     = pRIA;
+			decoded[i].pImage   = pImage;
+		} );
+
+	// Serial registration.  pPntManager / pFunc2DManager are not
+	// thread-safe (std::map insert under the hood); only the calling
+	// thread touches them here.
+	bool allOk = true;
+	for( size_t i = 0; i < numRequests; ++i ) {
+		Decoded& d = decoded[i];
+		if( d.pPainter ) {
+			pPntManager->AddItem( d.pPainter, requests[i].name );
+			pFunc2DManager->AddItem( d.pPainter, requests[i].name );
+			safe_release( d.pPainter );
+			safe_release( d.pRIA );
+			safe_release( d.pImage );
+		} else {
+			allOk = false;
+		}
+	}
+	return allOk;
 }
 
 //! Adds a texture painter
@@ -3359,7 +3539,8 @@ bool Job::ImportGLTFScene(
 					const bool import_materials,
 					const bool import_lights,
 					const bool import_cameras,
-					const bool import_normal_maps
+					const bool import_normal_maps,
+					const bool lowmem_textures
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -3374,6 +3555,7 @@ bool Job::ImportGLTFScene(
 	opts.importLights     = import_lights;
 	opts.importCameras    = import_cameras;
 	opts.importNormalMaps = import_normal_maps;
+	opts.lowmemTextures   = lowmem_textures;
 	return importer.ImportScene( *this, opts );
 }
 

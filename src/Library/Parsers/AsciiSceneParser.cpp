@@ -4059,12 +4059,14 @@ namespace RISE
 					bool import_lights            = bag.GetBool(   "import_lights",       true );
 					bool import_cameras           = bag.GetBool(   "import_cameras",      true );
 					bool import_normal_maps       = bag.GetBool(   "import_normal_maps",  true );
+					bool lowmem_textures          = bag.GetBool(   "lowmem_textures",     false );
 					return pJob.ImportGLTFScene(
 						file.c_str(), name_prefix.c_str(),
 						scene_index,
 						import_meshes, import_materials,
 						import_lights, import_cameras,
-						import_normal_maps );
+						import_normal_maps,
+						lowmem_textures );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4103,6 +4105,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "import_lights";      p.kind = ValueKind::Bool;     p.description = "Create lights from KHR_lights_punctual"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "import_cameras";     p.kind = ValueKind::Bool;     p.description = "Create the first camera (subsequent ones warn)"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "import_normal_maps"; p.kind = ValueKind::Bool;     p.description = "Attach normal_map_modifier when material has normalTexture"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "lowmem_textures";   p.kind = ValueKind::Bool;     p.description = "Defer texture color-space conversion to per-sample access.  Saves ~4x peak texture memory and 5-10x faster scene load on heavy-PBR assets (NewSponza-class), at the cost of ~25% per-sample render time (the sRGB->linear convert moves from load-time to ray-hit time).  Default FALSE (final-render workflow); flip TRUE for iteration on big scenes."; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;

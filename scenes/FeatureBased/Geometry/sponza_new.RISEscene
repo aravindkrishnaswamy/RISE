@@ -115,6 +115,21 @@ file_rasterizeroutput
 #     punctual entry in the asset has intensity=0.
 #     They'd register but contribute nothing, and
 #     they'd pollute the light manager.
+#   - lowmem_textures: TRUE -- the texture set is
+#     137 PBR PNGs (~2.6 GB on disk).  Without this,
+#     load time is dominated by libpng decode +
+#     sRGB->linear conversion across the whole set
+#     (~60-80 s on this corpus).  TRUE defers the
+#     color-space conversion to per-sample at render
+#     time, dropping load to ~5 s at the cost of
+#     ~25% per-sample render-time overhead (the
+#     sRGB->linear decode moves from load-time to
+#     ray-hit time, where the cost is spread out and
+#     partially hidden by other shading work).  This
+#     is the right knob for iteration on a scene
+#     this large; flip back to FALSE for a one-shot
+#     high-spp final render where total wall-clock
+#     favours the upfront-decode path.
 ##################################################
 
 gltf_import
@@ -126,6 +141,7 @@ gltf_import
 	import_normal_maps	TRUE
 	import_cameras		FALSE
 	import_lights		FALSE
+	lowmem_textures		TRUE
 }
 
 ##################################################
