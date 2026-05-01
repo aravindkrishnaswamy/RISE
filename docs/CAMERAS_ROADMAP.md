@@ -363,42 +363,173 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 
 ### Phase 4 — Realistic multi-element lens camera (the big one)
 
-**Goal.** Real lens-system simulation per Kolb / PBRT — multi-surface refraction, exit-pupil sampling, spectral chromatic aberration. Activates the spectral pipeline's most photogenic capability.
+**Goal.** Real lens-system simulation per Kolb '95 / PBRT v3 §6.4 — multi-surface refraction, exit-pupil sampling, spectral chromatic aberration. Activates the spectral pipeline's most photogenic capability. Two to three weeks of careful work, gated on Phase 1's clean photographic-param foundation; the doc earns its keep here.
 
-This is two-to-three weeks of careful work and the doc earns its keep here.
+**Headline parameter set.** `lens_file` (required filename, points at a `.dat` lens prescription), `sensor_size` (mm, default 36), `fstop` (default 4.0; clamps the iris but cannot exceed the lens's open aperture — error if asked to), `focus_distance` (scene units, required), `aperture_blades` / `aperture_rotation` / `anamorphic_squeeze` (carried over from `thinlens_camera` for shaped-bokeh control on the iris), `wavelength_resolved` (Bool, default `true`; debug toggle that forces d-line evaluation when `false`). `focal_length` is **rejected with an explicit error** — the lens prescription determines focal length, not the user.
 
-**Sub-phases.**
+#### Architectural decisions (resolved)
 
-**4.1 — Lens prescription parser + ray-stack tracer.** Read PBRT-format lens descriptions (radius, thickness, IOR, aperture-radius columns). Implement a `LensSystem` class that traces a ray through the stack: for each surface, intersect a sphere/asphere, refract using Snell's law, reject if outside aperture. Wavelength-aware IOR via Sellmeier coefficients (preferred) or Cauchy fallback.
+1. **Lens prescription file format — PBRT-strict.** Lens `.dat` files are loaded verbatim in PBRT's `radius / thickness / IOR(d) / semi_aperture` column format. No header magic, no extension. Files written for PBRT v3/v4 work in RISE without modification.
+2. **Per-surface dispersion via sidecar `.glass` files.** PBRT files only carry scalar IOR (typically d-line). To get chromatic aberration we need per-surface glass info. Solution: each shipped `.dat` lens has a parallel `.glass` sidecar with the same basename (`dgauss-50mm.dat` ↔ `dgauss-50mm.glass`) listing per-surface glass type. Two row formats supported in the sidecar:
+   - `surface <i> glass <NAME>` — resolves through `data/lenses/glass_catalog.txt` to Sellmeier coefficients (preferred for catalogued glass).
+   - `surface <i> n_d <Nd> V_d <Vd>` — falls back to 3-term Cauchy synthesized from the (n_d, V_d) pair (used for unidentified PBRT glasses).
+   When a `.glass` sidecar is absent, scalar IOR from the `.dat` is used at every wavelength → no CA. Same effective behaviour as PBRT v3/v4. The sidecar is *additive*; it never modifies the lens's geometric prescription.
+3. **Cauchy synthesis from (n_d, V_d).** For glass not in the Schott catalog, the sidecar's `n_d` / `V_d` pair drives a 3-term Cauchy `n(λ) = A + B/λ² + C/λ⁴` fit through the (F-line, d-line, C-line) anchors. Approximate but defensible — within ~1e-4 of Sellmeier across the visible band for typical optical glass. PBRT's distribution lenses use enough unidentified glasses that this fallback is load-bearing.
+4. **Class split — thin `RealisticCamera` over reusable `LensSystem`.** `LensSystem` is data-only plus stateless `TraceFromSensor` / `TraceFromWorld` methods, reusable by Phases 5 (polynomial fit), 6 (lens-flare ghost paths), 8 (neural lenses). `RealisticCamera` (derives `CameraCommon`) owns a `LensSystem` plus the sensor placement, the exit-pupil cache, and the photographic params.
+5. **Aspheric surfaces — defer.** None of the four shipped lenses use them. The `LensSurface` interface is designed so an `EvenAsphereSurface` can subclass in without API changes when a future lens needs them.
+6. **Exit-pupil cache key — radial only, with a measurement-driven escalation path.** Same as PBRT v3 §6.4.5: one bounding disc per sensor-radius bin (default 64 bins). λ-keying deferred. Phase 4.2/4.3 instruments rejection rates at λ=400 nm and λ=750 nm; if either exceeds 30% (vs ~5% expected at d-line) we escalate to a `(radius, λ)`-keyed cache.
+7. **`GenerateRaySpectral` — non-virtual on `RealisticCamera`, dispatched via `dynamic_cast`.** Same pattern as `ThinLensCamera::GenerateRayWithLensSample`. Adding a virtual to `ICamera` would break new-caller → old-impl on out-of-tree camera implementors (the appended vtable slot doesn't exist in the old vtable). New helper `GenerateCameraRaySpectral(camera, rc, ray, screen, lambda_nm)` lives in `src/Library/Rendering/CameraRayDispatch.h` and downcasts to `RealisticCamera*`; for every other camera it falls through to `camera.GenerateRay(...)` — bit-identical to today.
+8. **Wavelength threading — per-sample, not per-path.** The current spectral rasterizers call `camera.GenerateRay()` *outside* the per-λ loop. Phase 4.3 moves it *inside*. For HWSS (4-wavelength hero bundles), Phase 4.3 *measures* the cost of re-tracing the camera ray per λ vs sharing the hero ray; the default ships per-λ but switches to shared-hero if the CA scene RMSE difference is < 0.5%.
+9. **Camera importance for BDPT/VCM — backwards-trace with a chief-ray cache.** Roadmap option (a) — geometric backwards-trace from the world point through the lens to the sensor. Phase 5 polynomial fit was originally proposed as the cheap alternative; we make it *optional* by caching the chief-ray cone per pupil-cache bucket so the Newton iteration starts close to the answer (typical convergence 2–3 iterations vs 6–8 cold). Phase 5 escalation triggers if Phase 4.4's BDPT wall-clock exceeds 2.5× thin-lens BDPT on the bench scene.
+10. **`wavelength_resolved` debug toggle — shipped.** Setting `wavelength_resolved false` forces all surfaces to use the d-line IOR regardless of λ. Debugging only — A/B comparison to confirm CA is what's driving an observed render artefact. May remove after one release if no users exercise it.
+11. **Aperture-stop iris clamp.** The lens's open aperture defines the *minimum* fstop achievable. `fstop` smaller than that → loud parser error. `fstop` larger → clamp the iris by reducing the aperture-stop's effective semi-aperture (the photographer-expected behaviour; matches stopping a real lens down).
+12. **Editor `lens_file` reload — apply on blur.** Changing `lens_file` triggers a full exit-pupil cache rebuild (1–2 s). Both the Mac and Windows panels apply text changes to `Filename`-typed parameters on focus blur, never on keystroke. Other parameter types stay on their existing apply policy.
 
-**4.2 — Exit-pupil cache.** Tracing every primary ray from the rear element wastes most rays. PBRT's solution: pre-compute, per sensor radius (from optical axis), the bounding disk on the rear element through which rays *can* reach the scene. Tabulate; sample within the bound disk; reject the rest. Source: PBRT v3 §6.4.5.
+#### Sub-phase ordering (six PR-sized commits)
 
-**4.3 — Wavelength-resolved primary rays.** New non-virtual `GenerateRaySpectral(rc, ray, ptOnScreen, lambda_nm)` on the realistic camera. The spectral rasterizer chunks already carry λ; thread it in and the lens trace uses the right IOR per surface. **This is the spectral-CA payoff.**
+| # | Scope | Commit-size |
+|---|---|---|
+| **4.0** | Glass catalog + lens prescription parser + sidecar parser + `data/lenses/*.{dat,glass}` corpus + `tests/GlassDispersionTest.cpp` + `tests/LensPrescriptionParserTest.cpp`. **No camera or geometric tracer yet.** Pure-data PR; gets the corpus into the tree and validates Sellmeier numerics independently of geometry. | small |
+| **4.1** | `LensSurface` + `LensSystem` ray-stack tracer + `tests/LensSystemRayTraceTest.cpp` (hand-verified single-surface and 2-surface analytic cases). **Test-only entry point — no parser or `RealisticCamera` yet.** | small |
+| **4.2** | `ExitPupilCache` + `RealisticCamera` shell + `RealisticCameraAsciiChunkParser` + `IJob`/`Job`/`RISE_API` exports + `CameraIntrospection` + first end-to-end test scene + `tests/ExitPupilCacheConsistencyTest.cpp`. **All renderers consume `RealisticCamera` via the existing `ICamera::GenerateRay` virtual at d-line λ.** Spectral CA is *not* yet visible. | **largest** |
+| **4.3** | `RealisticCamera::GenerateRaySpectral` + `Rendering/CameraRayDispatch.h` + the four spectral rasterizer touchpoints (PT/BDPT/MLT/VCM) + the HWSS hero-ray-vs-per-λ measurement + per-λ pupil-cache rejection-rate instrumentation. Adds the chromatic-aberration regression scene. **The CA payoff lands here.** | medium |
+| **4.4** | `RealisticCamera` branches in `BDPTCameraUtilities::Rasterize` / `Importance` / `PdfDirection`. Chief-ray fast-path cache (decision 9). Adds the PT-vs-BDPT-vs-VCM consistency scene per `bdpt-vcm-mis-balance`. **Phase 5 trigger gate measures here.** | medium |
+| **4.5** | Showcase scenes under `scenes/FeatureBased/Cameras/`, `data/lenses/README.md`, parser README update, adversarial review pass. | small |
 
-**4.4 — Camera importance for BDPT/VCM.** Given a world-space point, evaluate `We` and the raster coordinates if the point is visible through the lens. Two implementations possible: (a) trace backwards from the point through the stack to the sensor (expensive but exact); (b) reuse the polynomial-optics inverse from Phase 5 once it lands. Start with (a) so Phase 4 is independently shippable.
+#### Files touched
 
-**4.5 — Lens database.** Ship at least four lenses cribbed from PBRT's set: `wide-22mm`, `dgauss-50mm`, `tele-150mm`, `fisheye-10mm`. Stored under `data/lenses/`.
+**New source files** (all in `src/Library/Cameras/` unless noted):
+- `Glass.{h,cpp}` — Sellmeier / Cauchy IOR evaluation; static `GlassCatalog::Lookup(name) → GlassCoefficients` with ~20 Schott-cataloged glasses (N-BK7, N-BAK4, F2, SF6, SF11, LAK21, BAF10, etc.) baked in.
+- `LensPrescriptionParser.{h,cpp}` — reads `.dat` (PBRT-verbatim) and `.glass` (sidecar) files; resolves glass names against `GlassCatalog`; errors locate line+column. The two parsers are independent: a `.dat`-only load yields scalar-IOR-everywhere behaviour, a `.dat` + sidecar load yields full per-surface dispersion.
+- `LensSurface.{h,cpp}` — single spherical surface (radius, thickness, semi-aperture). One extension point for `EvenAsphereSurface` later.
+- `LensSystem.{h,cpp}` — surface stack, forward + backward Snell trace, aperture-stop logic. Wavelength-agnostic at this layer — caller supplies IOR.
+- `ExitPupilCache.{h,cpp}` — radial pupil-bounding-disc cache; built once per lens at scene-load. Per-λ rejection-rate counters added in Phase 4.3 (instrumentation, not yet a (radius, λ) cache; that's the escalation path).
+- `RealisticCamera.{h,cpp}` — derives from `CameraCommon`. Owns `LensSystem` + `ExitPupilCache`. Implements virtual `GenerateRay` (d-line λ) and non-virtual `GenerateRaySpectral` / `GenerateRayWithLensSampleSpectral`.
+- `src/Library/Rendering/CameraRayDispatch.h` — header-only static helper `GenerateCameraRaySpectral(camera, rc, ray, screen, lambda_nm)` wrapping the `dynamic_cast<RealisticCamera*>`. Mirrors the `GenerateCameraRayWithLensSample` pattern in [src/Library/Rendering/MLTRasterizer.cpp](../src/Library/Rendering/MLTRasterizer.cpp).
 
-**Files touched.**
-- `src/Library/Cameras/RealisticCamera.{h,cpp}` (new — the C++ class implementing the multi-element lens trace; replaces the stub-delegate-to-thinlens semantics).
-- `src/Library/Cameras/LensSystem.{h,cpp}` (new — surface stack + ray trace).
-- `src/Library/Cameras/ExitPupilCache.{h,cpp}` (new).
-- `src/Library/Cameras/Glass.{h,cpp}` (new — Sellmeier IOR, dispersion).
-- `src/Library/Parsers/AsciiSceneParser.cpp` — rewrite `RealisticCameraAsciiChunkParser::Finalize` to call `SetRealisticCameraFromLensFile` instead of `SetThinlensCamera`, and update `Describe()` to take `lens_file` (required), `film_size`, `fstop`, `focus_distance`, `wavelength_resolved` toggle (default on for spectral chunks). Reject `focal_length` with a clear error (the lens determines focal length, not the user).
-- `src/Library/RISE_API.h` + `Job.cpp` — new `SetRealisticCameraFromLensFile` export. The old `SetThinlensCamera`-via-`realistic_camera` path is gone — that's the keyword reclamation.
-- `scenes/Tests/Cameras/realistic.RISEscene` — migrate to `thinlens_camera` (or delete and replace with a new `realistic.RISEscene` that exercises the actual multi-element camera against a shipped lens file).
-- `data/lenses/*.dat` (new).
-- All five build-project files.
+**New tests** (under `tests/`):
+- `GlassDispersionTest.cpp` — Sellmeier evaluation against tabulated N-BK7 (n_d=1.51680, n_F=1.52238, n_C=1.51432) within 5e-6; Cauchy synthesis residuals vs Sellmeier within 1e-4.
+- `LensPrescriptionParserTest.cpp` — round-trip the four shipped lenses; verify glass-name resolution; verify error messages on malformed files.
+- `LensSystemRayTraceTest.cpp` — hand-verified single-planar-surface refraction (Snell), single-spherical paraxial focal length (R/(n−1)), two-surface plano-convex lens-maker's-equation residual, aperture-rejection edge case, V_d-driven dispersion direction-of-effect.
+- `ExitPupilCacheConsistencyTest.cpp` — soundness (no false positives), tightness (≥95% of random pupil-disc samples succeed), radial symmetry.
 
-**ABI.** Additive only. New class, new exported function. The new class exposes `GenerateRayWithLensSample` (for MLT) and `GenerateRaySpectral` (for spectral chunks) as **non-virtual** methods, opt-in via `dynamic_cast` at the call site. The spectral rasterizer wrapper that chooses between scalar and spectral primary rays already has the shape we need.
+**New scene files:**
+- `scenes/Tests/Cameras/realistic.RISEscene` — replaces the existing thin-lens stub. Painted box at 8 m through `dgauss-50mm` at f/2.0; smoke test for the lens trace.
+- `scenes/Tests/Cameras/realistic_chromatic_aberration.RISEscene` — high-contrast white-on-black off-axis edge through `wide-22mm`, rendered with `path_tracing_spectral_rasterizer`. Acceptance: lateral-colour offset between R and B channels ≥ 0.5 px; pinhole reference renders the same edge with R/B colocation ≤ 0.05 px.
+- `scenes/Tests/Cameras/realistic_vignetting.RISEscene` — uniform white-wall through `dgauss-50mm` at f/2.0. Acceptance: cos⁴(field-angle) plus geometric pupil-clip within 5%.
+- `scenes/Tests/Cameras/realistic_bokeh.RISEscene` — bright-point grid against black, focus pulled close. Acceptance: round bokeh at f/8.0, cat's-eye truncation off-axis at f/2.0.
+- `scenes/Tests/Cameras/realistic_bdpt_mirror.RISEscene` — Cornell box + small area light + mirror, camera positioned so the mirror reflection of the light is visible *through* the lens. PT vs BDPT vs VCM agreement within 5% mean RGB at the relevant pixel; max-pixel firefly variance within 2× of PT (per [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)).
+- `scenes/Tests/Cameras/realistic_lens_file_invalid.RISEscene` — negative regression; references a non-existent lens file; parser must reject with a clear error.
+- `scenes/Tests/Cameras/realistic_focal_length_rejected.RISEscene` — negative regression; specifies `focal_length`; parser rejects with the dedicated error message.
+- `scenes/FeatureBased/Cameras/realistic_dgauss50.RISEscene` — showcase scene (lands with Phase 4.5).
+- `scenes/Tests/Bench/cornellbox_realistic_dgauss50.RISEscene` — perf bench scene paired with a thin-lens baseline.
 
-**Acceptance.**
-- **Rectilinear sanity:** with the dgauss-50mm lens at f/8, a flat checkerboard rendered with `realistic_camera` matches a `pinhole_camera` of equivalent FOV within a small RMSE in the central image region (off-axis differs intentionally — vignetting + distortion).
-- **Chromatic aberration is visible** in a high-contrast edge scene rendered through the spectral path with the wide-22mm lens, and *not* visible in the pinhole reference. Lateral colour direction matches the lens's expected behaviour from optical theory.
-- **Vignetting falls off as cos⁴(θ) plus the geometric pupil-clipping term** — verified on a uniformly-lit white wall.
-- **Bokeh shape is round at small apertures and shows cat's-eye truncation off-axis at large apertures** — verified on a bright-point grid scene.
-- **PT vs BDPT vs VCM agree** on a scene that exercises camera connections (mirror reflection of a luminaire visible through the lens). This is the [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) test pattern, applied to the camera connection rather than a light strategy.
-- **Performance baseline** captured per [docs/skills/performance-work-with-baselines.md](skills/performance-work-with-baselines.md). Real lens vs thin-lens at matched f-stop on the standard test suite — expect a 1.3–2.0× wall-clock cost; that's the budget Phase 5 attacks.
+**Modified existing files:**
+- [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) — re-introduce `RealisticCameraAsciiChunkParser` (the keyword is reserved per Phase 0). New `Describe()` per the headline parameter set above. `Finalize()` resolves `lens_file` via `RISE_MEDIA_PATH`, attempts companion `.glass` sidecar load (silent on absence), calls `pJob.SetRealisticCameraFromLensFile(...)`. Reject `focal_length` with the explicit error: *"focal_length is determined by the lens prescription; remove this parameter or use thinlens_camera if you want direct focal-length control."*
+- [src/Library/Interfaces/IJob.h](../src/Library/Interfaces/IJob.h) — append pure-virtual `SetRealisticCameraFromLensFile`. Safe vtable extension because `IJob` is the construction interface; out-of-tree subclassers fail at compile time, not at runtime.
+- [src/Library/Job.{h,cpp}](../src/Library/) — concrete override calls `RISE_API_CreateRealisticCamera`.
+- [src/Library/RISE_API.{h,cpp}](../src/Library/) — new exported `RISE_API_CreateRealisticCamera(ICamera**, lensFilePath, sensorSize, fstop, focusDistance, sceneUnitMeters, ...common-camera-params...)`. Distinct symbol; ABI-additive.
+- [src/Library/SceneEditor/CameraIntrospection.cpp](../src/Library/SceneEditor/CameraIntrospection.cpp) — `RealisticCamera*` branch in `Inspect`/`GetPropertyValue`/`SetProperty`/`GetDescriptorKeyword`. `lens_file` surfaces as a `Filename`-typed property with apply-on-blur semantics; `focal_length` does NOT appear in the panel for this camera type.
+- [src/Library/Rendering/PathTracingSpectralRasterizer.cpp](../src/Library/Rendering/PathTracingSpectralRasterizer.cpp) — move the `GenerateRay` call **inside** the per-λ loop (both HWSS and non-HWSS branches at line 126). Replace with `GenerateCameraRaySpectral(camera, rc, cameraRay, ptOnScreen, lambda)`. Bit-identical for non-spectral cameras.
+- [src/Library/Rendering/BDPTSpectralRasterizer.cpp](../src/Library/Rendering/BDPTSpectralRasterizer.cpp) — same edit at lines 99 (non-HWSS) and 317 (HWSS). HWSS regenerates per λ for spectral consistency (decision 8).
+- [src/Library/Rendering/MLTSpectralRasterizer.cpp](../src/Library/Rendering/MLTSpectralRasterizer.cpp) — adds parallel `GenerateCameraRayWithLensSampleSpectral` dispatch helper alongside the existing `GenerateCameraRayWithLensSample`. PSSMLT continuity in λ is preserved (λ is an extra primary-sample dimension).
+- [src/Library/Rendering/VCMSpectralRasterizer.cpp](../src/Library/Rendering/VCMSpectralRasterizer.cpp) — line 290.
+- [src/Library/Cameras/CameraUtilities.{h,cpp}](../src/Library/Cameras/) — `RealisticCamera` branches in `Rasterize` / `Importance` / `PdfDirection` per Phase 4.4.
+- [src/Library/Parsers/README.md](../src/Library/Parsers/README.md) — new `realistic_camera` section documenting the chunk, the lens-file format, the sidecar `.glass` format, and the photographic parameter mapping.
+- [src/Library/README.md](../src/Library/README.md) and [scenes/FeatureBased/README.md](../scenes/FeatureBased/README.md) — list the new camera once Phase 4.5 ships.
+- [tests/SceneEditorSuggestionsTest.cpp](../tests/SceneEditorSuggestionsTest.cpp) — chunk-count assertion bump (will be at 137 + 1 = 138 when `realistic_camera` re-registers).
+
+**Lens-database files** (new top-level `data/` directory; resolved via `RISE_MEDIA_PATH` exactly like `textures/` and `models/`):
+- `data/lenses/dgauss-50mm.dat` + `data/lenses/dgauss-50mm.glass` — PBRT double-Gauss; 6 elements, f/2.0, 50 mm. Default reference lens; well-corrected, baseline rectilinear behaviour.
+- `data/lenses/wide-22mm.dat` + `data/lenses/wide-22mm.glass` — PBRT wide-angle; 9 elements, f/4.0, 22 mm. **The CA showcase lens** — short focal + wide field amplifies lateral colour.
+- `data/lenses/tele-150mm.dat` + `data/lenses/tele-150mm.glass` — PBRT telephoto. Compressed perspective, narrow DOF demo.
+- `data/lenses/fisheye-10mm.dat` + `data/lenses/fisheye-10mm.glass` — PBRT Nikkor 10 mm fisheye; 8 elements (spherical-only despite the focal length).
+- `data/lenses/glass_catalog.txt` — Schott Sellmeier coefficients for ~20 common optical glasses, shared across all sidecar files.
+- `data/lenses/README.md` — lens-file format spec, sidecar format spec, attribution to PBRT (BSD), citations to Kolb '95 and the Schott catalog.
+
+**Build-project files (per [CLAUDE.md](../CLAUDE.md) "Source-file add/remove"):** all five — `build/make/rise/Filelist`, `build/cmake/rise-android/rise_sources.cmake`, `build/VS2022/Library/Library.vcxproj` and `.filters`, `build/XCode/rise/rise.xcodeproj/project.pbxproj` (both library and GUI targets) — receive entries for every new `.cpp` and `.h` listed above. New tests register in `tests/Makefile`, `run_all_tests.sh`, `run_all_tests.ps1` per the existing test pattern.
+
+#### ABI
+
+Three layers per [docs/skills/abi-preserving-api-evolution.md](skills/abi-preserving-api-evolution.md):
+
+- **Layer 1 (exported function signatures).** `RISE_API_CreateRealisticCamera` is a *new* symbol — purely additive. No existing exports change.
+- **Layer 2 (vtable layout).** `ICamera` vtable **unchanged**; `GenerateRaySpectral` / `GenerateRayWithLensSampleSpectral` are non-virtual on `RealisticCamera` and reached via `dynamic_cast`. `IJob` gains an appended pure-virtual `SetRealisticCameraFromLensFile` — safe because `IJob` is the construction interface; out-of-tree subclassers fail loud at compile time.
+- **Layer 3 (derived-class name hiding).** New method name; no overload collision; no `using` declarations needed.
+
+Verification (Step 5 of the skill): after Phase 4.2 lands, diff `ICamera.h` against the prior revision (must be byte-identical); run `nm -g` on the library and confirm prior `RISE_API_*` symbols still resolve.
+
+#### Acceptance per sub-phase
+
+**Phase 4.0:**
+- `GlassDispersionTest`: N-BK7 Sellmeier residuals vs Schott catalog within 5e-6 at d/F/C lines; Cauchy synthesis from (n_d, V_d) within 1e-4 of Sellmeier at the same wavelengths.
+- `LensPrescriptionParserTest`: round-trip the four shipped lens files; sidecar glass-name resolution succeeds for every cataloged glass; cleanly reports an error on a malformed `.dat` line.
+
+**Phase 4.1:**
+- `LensSystemRayTraceTest`: single-planar Snell exact within 1e-9; single-spherical paraxial focal length (R/(n−1)) within 1e-4 mm; two-surface plano-convex lens-maker residual within 1e-3 mm; aperture rejection returns `optional::nullopt`; high-V_d crown produces smaller F-vs-C deflection than low-V_d flint at the same geometry.
+
+**Phase 4.2:**
+- `ExitPupilCacheConsistencyTest`: zero false positives across 100 000 random sensor-position × pupil-sample combinations; ≥95% tightness on the dgauss-50mm; radial symmetry to floating-point precision.
+- `realistic.RISEscene` renders end-to-end and matches a `pinhole_camera` of equivalent FOV in the central image region within RMSE < 0.02 in tonemapped sRGB. Off-axis differs intentionally (vignetting + distortion).
+- Build clean across both `make` and Xcode `RISE-GUI`, zero warnings.
+- `IJob` ABI verification per the skill.
+
+**Phase 4.3:**
+- `realistic_chromatic_aberration.RISEscene`: lateral colour offset between R and B channel centroids at the off-axis edge ≥ 0.5 px; pinhole reference colocates within 0.05 px. Direction-of-effect matches lens theory (blue defocuses more than red on a wide-angle off-axis edge).
+- HWSS hero-ray-vs-per-λ measurement: rendered RMSE difference logged; if < 0.5%, switch default to shared-hero (decision 8).
+- `wavelength_resolved=false` toggle produces the same render as a pinhole CA scene up to MC noise (debug A/B sanity).
+- Per-λ pupil-cache rejection rates at 400 nm and 750 nm logged for the four shipped lenses; if > 30% on any, escalate to (radius, λ)-keyed cache.
+
+**Phase 4.4:**
+- `realistic_bdpt_mirror.RISEscene`: PT vs BDPT vs VCM mean RGB at the mirror-reflection-of-light pixel agrees within 5%; max-pixel firefly variance in BDPT/VCM within 2× of PT (the `bdpt-vcm-mis-balance` skill's tolerance).
+- Per-strategy splat dump shows the t=1 connection through the lens producing finite, non-zero contribution — no NaN, no infinity.
+- Chief-ray cache reduces per-connection iteration count to 2–3 (logged); this is the gate that keeps Phase 5 optional.
+
+**Phase 4.5:**
+- Adversarial review pass per [docs/skills/adversarial-code-review.md](skills/adversarial-code-review.md): three reviewers in parallel, orthogonal concerns (numerics / ABI / spectral integration). Zero CRITICAL, MAJORs addressed in-scope.
+- Vignetting falloff: cos⁴(θ) plus pupil-clip term within 5% on the white-wall scene.
+- Bokeh: round at f/8.0, cat's-eye off-axis at f/2.0.
+- All test scenes deterministic across runs (fixed seed).
+
+#### Performance baseline plan
+
+Bench scene: `scenes/Tests/Bench/cornellbox_realistic_dgauss50.RISEscene`. Standard Cornell box, dgauss-50mm at f/2.8, focus on the back wall. Five trials at 64 spp via `bench.sh` (sets `render_thread_reserve_count 0`). Persist baseline at `docs/performance/realistic_camera_baseline.txt` per [docs/skills/performance-work-with-baselines.md](skills/performance-work-with-baselines.md).
+
+Targets — wall-clock vs the matched-fstop matched-focal-length thin-lens baseline:
+- Phase 4.2 (geometric trace, no spectral): ≤ 1.5×.
+- Phase 4.3 (spectral CA, per-λ trace): ≤ 2.0×. The 4× HWSS lens-trace overhead is partially absorbed by unchanged path-tracing cost.
+- Phase 4.4 (BDPT/VCM camera-connection): ≤ 2.5× thin-lens BDPT cost. The chief-ray cache from decision 9 is what gets us under this number.
+
+**Phase 5 polynomial-optics escalation gate:** if Phase 4.4 wall-clock exceeds 2.5× thin-lens BDPT on the bench scene, escalate to Phase 5. Otherwise defer indefinitely — geometric tracing is the simpler ground-truth path.
+
+Profile before optimizing: `xcrun xctrace` (macOS) or `perf record` (Linux) against the Phase 4.2 bench scene; verify the lens trace dominates camera-side cost (~30% of total render time for a Cornell box, dwarfed by BSDF/intersection in the path tracer's own work).
+
+#### Out of scope (and why)
+
+- **Aspheric surfaces beyond simple even-aspheres** — none of the four shipped lenses use them; the `LensSurface` interface accommodates a future `EvenAsphereSurface` subclass cleanly.
+- **Gradient-index (GRIN) glass** — not in the shipped lenses; defer until a real consumer surfaces.
+- **Real-world IR / UV bands** — RISE's spectral configuration is 380–780 nm; out-of-band physics is outside the project's spectral scope.
+- **Complex-valued IOR for metal coatings** — anti-reflective coatings + lens-flare ghost paths need complex Fresnel; that's Phase 6 territory.
+- **Mechanical / sensor-microlens vignetting** — geometric pupil-clip + cos⁴ produces the dominant visible vignetting; sensor-side vignetting is Phase 7.
+- **`photographic_camera` keyword** — `thinlens_camera` already covers the photographic-friendly param set; revisit only if a user explicitly asks.
+- **Zoom lenses** — all four shipped lenses are primes. Zooms re-position internal element groups via a focal-length parameter; the prescription format would need extending. Defer.
+- **Lens-flare and aperture diffraction** — Phase 6, separately scoped.
+- **Tilt-shift on the realistic camera** — doesn't compose cleanly with the multi-element trace (no axisymmetric prescription for a tilted sensor in PBRT format). Use `thinlens_camera` for tilt-shift.
+
+#### Skills checklist per sub-phase
+
+- **4.0:** [`write-highly-effective-tests`](skills/write-highly-effective-tests.md) (Sellmeier table is foundational; tight unit tests vs tabulated values pay off through every later phase).
+- **4.1:** [`precision-fix-the-formulation`](skills/precision-fix-the-formulation.md) (resist the urge to bump aperture-clip thresholds when per-surface residuals accumulate; find the formulation), [`write-highly-effective-tests`](skills/write-highly-effective-tests.md).
+- **4.2:** [`abi-preserving-api-evolution`](skills/abi-preserving-api-evolution.md) (the load-bearing skill — `ICamera` vtable preservation, safe `IJob` extension, non-virtual `RealisticCamera` methods), [`const-correctness-over-escape-hatches`](skills/const-correctness-over-escape-hatches.md) (exit-pupil cache is conceptually-const + lazily-built; run the decision tree before reaching for `mutable`).
+- **4.3:** [`variance-measurement`](skills/variance-measurement.md) (spectral CA changes the variance profile of every spectral render; confirm RMSE-vs-truth reduces, not just looks different).
+- **4.4:** [`bdpt-vcm-mis-balance`](skills/bdpt-vcm-mis-balance.md) (the PT-vs-BDPT-vs-VCM agreement test is the diagnostic for camera-connection correctness), [`performance-work-with-baselines`](skills/performance-work-with-baselines.md) (the 2.5× threshold for Phase 5 escalation).
+- **4.5:** [`adversarial-code-review`](skills/adversarial-code-review.md) (Phase 4 is correctness-sensitive; 2–3 reviewers in parallel with orthogonal concerns), [`simplify`](skills/simplify.md) (after the dust settles, scan for reuse — e.g. shared Snell-refraction code with `DielectricSPF`).
+
+#### Open questions deferred to phase boundaries (measurement-driven)
+
+- HWSS shared-hero-ray vs per-λ retrace — decided in Phase 4.3 by measurement on the CA scene.
+- Per-(radius, λ) exit-pupil cache — escalation triggered at Phase 4.2/4.3 by per-λ rejection-rate logging.
+- Phase 5 polynomial-optics gate — fired at Phase 4.4 by the 2.5× bench measurement.
 
 ---
 
