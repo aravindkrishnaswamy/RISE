@@ -653,6 +653,22 @@ bool RiseBridge::viewportPropertyEditable(unsigned int idx) const {
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_PropertyEditable(m_viewportController, idx);
 }
+unsigned int RiseBridge::viewportPropertyPresetCount(unsigned int idx) const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_PropertyPresetCount(m_viewportController, idx);
+}
+std::string RiseBridge::viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx) const {
+    if (!m_viewportController) return {};
+    char buf[256] = {0};
+    RISE::RISE_API_SceneEditController_PropertyPresetLabel(m_viewportController, idx, presetIdx, buf, sizeof(buf));
+    return std::string(buf);
+}
+std::string RiseBridge::viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx) const {
+    if (!m_viewportController) return {};
+    char buf[256] = {0};
+    RISE::RISE_API_SceneEditController_PropertyPresetValue(m_viewportController, idx, presetIdx, buf, sizeof(buf));
+    return std::string(buf);
+}
 bool RiseBridge::viewportSetProperty(const std::string& name, const std::string& value) {
     if (!m_viewportController) return false;
     return RISE::RISE_API_SceneEditController_SetProperty(m_viewportController,

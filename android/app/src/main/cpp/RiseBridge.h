@@ -218,6 +218,15 @@ public:
     std::string  viewportPropertyDescription(unsigned int idx) const;
     int          viewportPropertyKind(unsigned int idx) const;
     bool         viewportPropertyEditable(unsigned int idx) const;
+    // Quick-pick presets surfaced to the UI as a dropdown.  Returns
+    // empty / 0 for parameters whose descriptor declared no presets,
+    // in which case the panel falls back to a plain text edit.  The
+    // multi-camera "active_camera" row leans on this so Android can
+    // show a real dropdown of camera names instead of forcing the
+    // user to type.
+    unsigned int viewportPropertyPresetCount(unsigned int idx) const;
+    std::string  viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx) const;
+    std::string  viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx) const;
     bool         viewportSetProperty(const std::string& name, const std::string& value);
 
     // Internal: invoked by the viewport preview sink after blitting

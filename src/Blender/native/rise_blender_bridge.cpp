@@ -579,7 +579,8 @@ namespace
 				double( camera.ortho_scale ) * ( double( camera.height ) / square_dimension ) * 0.5
 			};
 
-			if( !job.SetOrthographicCamera(
+			if( !job.AddOrthographicCamera(
+				"default",
 				location,
 				lookat,
 				up,
@@ -600,7 +601,8 @@ namespace
 			return true;
 		}
 
-		if( !job.SetPinholeCamera(
+		if( !job.AddPinholeCamera(
+			"default",
 			location,
 			lookat,
 			up,

@@ -399,6 +399,16 @@ void ViewportProperties::refresh()
                                         if (!m_bridge) return;
                                         if (m_bridge->setProperty(propName, value)) {
                                             m_lastValue.insert(propName, value);
+                                            // Re-snapshot the panel so the
+                                            // row list rebuilds.  Critical
+                                            // for "active_camera" — picking
+                                            // a different camera swaps in
+                                            // a different per-camera-type
+                                            // set of property rows
+                                            // (pinhole has fov, thinlens
+                                            // has sensor_size etc.).  Cheap
+                                            // for value-only presets too.
+                                            refresh();
                                         }
                                     });
                         }

@@ -170,6 +170,7 @@
 		F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */; };
 		F24B724A2F52A632008304C4 /* IBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0856069C428F0069C9E5 /* IBuffer.h */; };
 		F24B724B2F52A632008304C4 /* ICamera.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0857069C428F0069C9E5 /* ICamera.h */; };
+		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		F24B724C2F52A632008304C4 /* ICommunicator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0858069C428F0069C9E5 /* ICommunicator.h */; };
 		F24B724D2F52A632008304C4 /* ICubicInterpolator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */; };
 		F24B724E2F52A632008304C4 /* IDeletedCallback.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085A069C428F0069C9E5 /* IDeletedCallback.h */; };
@@ -276,6 +277,7 @@
 		F24B72B32F52A632008304C4 /* GenericManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C4069C42900069C9E5 /* GenericManager.h */; };
 		F24B72B42F52A632008304C4 /* GeometryManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C5069C42900069C9E5 /* GeometryManager.h */; };
 		F24B72B52F52A632008304C4 /* LightManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C6069C42900069C9E5 /* LightManager.cpp */; };
+		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 		F24B72B62F52A632008304C4 /* LightManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C7069C42900069C9E5 /* LightManager.h */; };
 		F24B72B72F52A632008304C4 /* MaterialManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C8069C42900069C9E5 /* MaterialManager.h */; };
 		F24B72B82F52A632008304C4 /* ModifierManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C9069C42900069C9E5 /* ModifierManager.h */; };
@@ -899,6 +901,7 @@
 		F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */; };
 		F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0856069C428F0069C9E5 /* IBuffer.h */; };
 		F27F0AC3069C42910069C9E5 /* ICamera.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0857069C428F0069C9E5 /* ICamera.h */; };
+		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0858069C428F0069C9E5 /* ICommunicator.h */; };
 		F27F0AC5069C42910069C9E5 /* ICubicInterpolator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */; };
 		F27F0AC6069C42910069C9E5 /* IDeletedCallback.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085A069C428F0069C9E5 /* IDeletedCallback.h */; };
@@ -1005,6 +1008,7 @@
 		F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C4069C42900069C9E5 /* GenericManager.h */; };
 		F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C5069C42900069C9E5 /* GeometryManager.h */; };
 		F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C6069C42900069C9E5 /* LightManager.cpp */; };
+		FCA01000000000000000A005 /* CameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 		F27F0B30069C42910069C9E5 /* LightManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C7069C42900069C9E5 /* LightManager.h */; };
 		F27F0B31069C42910069C9E5 /* MaterialManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C8069C42900069C9E5 /* MaterialManager.h */; };
 		F27F0B32069C42910069C9E5 /* ModifierManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C9069C42900069C9E5 /* ModifierManager.h */; };
@@ -1866,6 +1870,7 @@
 		F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBilinearPatchGeometry.h; sourceTree = "<group>"; };
 		F27F0856069C428F0069C9E5 /* IBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBuffer.h; sourceTree = "<group>"; };
 		F27F0857069C428F0069C9E5 /* ICamera.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICamera.h; sourceTree = "<group>"; };
+		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		F27F0858069C428F0069C9E5 /* ICommunicator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICommunicator.h; sourceTree = "<group>"; };
 		F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICubicInterpolator.h; sourceTree = "<group>"; };
 		F27F085A069C428F0069C9E5 /* IDeletedCallback.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IDeletedCallback.h; sourceTree = "<group>"; };
@@ -1968,6 +1973,7 @@
 		F27F08C0069C42900069C9E5 /* DAGObjectManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DAGObjectManager.h; sourceTree = "<group>"; };
 		F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DeletedCallbackDispatcher.h; sourceTree = "<group>"; };
 		F27F08C2069C42900069C9E5 /* Function1DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DManager.h; sourceTree = "<group>"; };
+		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
 		F27F08C3069C42900069C9E5 /* Function2DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DManager.h; sourceTree = "<group>"; };
 		F27F08C4069C42900069C9E5 /* GenericManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GenericManager.h; sourceTree = "<group>"; };
 		F27F08C5069C42900069C9E5 /* GeometryManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GeometryManager.h; sourceTree = "<group>"; };
@@ -2851,6 +2857,7 @@
 				F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */,
 				F27F0856069C428F0069C9E5 /* IBuffer.h */,
 				F27F0857069C428F0069C9E5 /* ICamera.h */,
+				FCA01000000000000000A003 /* ICameraManager.h */,
 				F27F0858069C428F0069C9E5 /* ICommunicator.h */,
 				F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */,
 				F27F085A069C428F0069C9E5 /* IDeletedCallback.h */,
@@ -2976,6 +2983,7 @@
 				F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */,
 				F27F08C0069C42900069C9E5 /* DAGObjectManager.h */,
 				F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */,
+				FCA01000000000000000A006 /* CameraManager.h */,
 				F27F08C2069C42900069C9E5 /* Function1DManager.h */,
 				F27F08C3069C42900069C9E5 /* Function2DManager.h */,
 				F27F08C4069C42900069C9E5 /* GenericManager.h */,
@@ -3837,6 +3845,7 @@
 				F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */,
 				F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */,
 				F27F0AC3069C42910069C9E5 /* ICamera.h in Headers */,
+				FCA01000000000000000A002 /* ICameraManager.h in Headers */,
 				F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */,
 				F27F0AC5069C42910069C9E5 /* ICubicInterpolator.h in Headers */,
 				F27F0AC6069C42910069C9E5 /* IDeletedCallback.h in Headers */,
@@ -3955,6 +3964,7 @@
 				F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */,
 				F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */,
 				F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */,
+				FCA01000000000000000A005 /* CameraManager.h in Headers */,
 				F27F0B30069C42910069C9E5 /* LightManager.h in Headers */,
 				F27F0B31069C42910069C9E5 /* MaterialManager.h in Headers */,
 				F2C5D5282F6C725300546C97 /* CompositeEmitter.h in Headers */,
@@ -4832,6 +4842,7 @@
 				F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */,
 				F24B724A2F52A632008304C4 /* IBuffer.h in Sources */,
 				F24B724B2F52A632008304C4 /* ICamera.h in Sources */,
+				FCA01000000000000000A001 /* ICameraManager.h in Sources */,
 				F24B724C2F52A632008304C4 /* ICommunicator.h in Sources */,
 				F24B724D2F52A632008304C4 /* ICubicInterpolator.h in Sources */,
 				F24B724E2F52A632008304C4 /* IDeletedCallback.h in Sources */,
@@ -4947,6 +4958,7 @@
 				F24B72AE2F52A632008304C4 /* DAGObjectManager.cpp in Sources */,
 				F24B72AF2F52A632008304C4 /* DAGObjectManager.h in Sources */,
 				F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */,
+				FCA01000000000000000A004 /* CameraManager.h in Sources */,
 				F24B72B12F52A632008304C4 /* Function1DManager.h in Sources */,
 				F24B72B22F52A632008304C4 /* Function2DManager.h in Sources */,
 				F24B72B32F52A632008304C4 /* GenericManager.h in Sources */,

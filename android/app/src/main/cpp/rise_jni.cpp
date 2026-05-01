@@ -250,6 +250,17 @@ JNIF(jint, nativeViewportPropertyKind)(JNIEnv* /*env*/, jobject /*thiz*/, jint i
 JNIF(jboolean, nativeViewportPropertyEditable)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx) {
     return getBridge().viewportPropertyEditable(static_cast<unsigned>(idx)) ? JNI_TRUE : JNI_FALSE;
 }
+JNIF(jint, nativeViewportPropertyPresetCount)(JNIEnv* /*env*/, jobject /*thiz*/, jint idx) {
+    return static_cast<jint>(getBridge().viewportPropertyPresetCount(static_cast<unsigned>(idx)));
+}
+JNIF(jstring, nativeViewportPropertyPresetLabel)(JNIEnv* env, jobject /*thiz*/, jint idx, jint presetIdx) {
+    return env->NewStringUTF(getBridge().viewportPropertyPresetLabel(
+        static_cast<unsigned>(idx), static_cast<unsigned>(presetIdx)).c_str());
+}
+JNIF(jstring, nativeViewportPropertyPresetValue)(JNIEnv* env, jobject /*thiz*/, jint idx, jint presetIdx) {
+    return env->NewStringUTF(getBridge().viewportPropertyPresetValue(
+        static_cast<unsigned>(idx), static_cast<unsigned>(presetIdx)).c_str());
+}
 JNIF(jboolean, nativeViewportSetProperty)(JNIEnv* env, jobject /*thiz*/,
                                           jstring jName, jstring jValue) {
     return getBridge().viewportSetProperty(jstringToStd(env, jName),

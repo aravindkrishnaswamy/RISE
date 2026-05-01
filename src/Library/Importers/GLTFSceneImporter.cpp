@@ -264,9 +264,10 @@ namespace
 	std::string LightName    ( const std::string& prefix, size_t idx ) {
 		std::ostringstream oss; oss << prefix << ".light." << idx; return oss.str();
 	}
-	std::string CameraName   ( const std::string& prefix, size_t idx ) {
-		std::ostringstream oss; oss << prefix << ".cam." << idx; return oss.str();
-	}
+	// CameraName helper was here but the importer currently hard-codes
+	// "default" (only the first glTF camera is imported).  When
+	// multi-camera glTF import lands, restore the helper and call it
+	// per-camera-node.
 	std::string MediumName   ( const std::string& prefix, size_t matIdx ) {
 		std::ostringstream oss; oss << prefix << ".medium." << matIdx; return oss.str();
 	}
@@ -1022,8 +1023,6 @@ namespace
 		// glTF intensity units: cd for point/spot, lm/m² for directional.
 		// RISE's "power" is a multiplier on color; pass intensity directly.
 		const double power = (double)light->intensity;
-		const double pos[3] = { px, py, pz };
-		const double dir[3] = { dnx, dny, dnz };
 
 		switch( light->type ) {
 			case cgltf_light_type_directional:
@@ -1296,14 +1295,19 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 					const double orientation[3] = { 0, 0, 0 };
 					const double target_orient[2] = { 0, 0 };
 
-					// glTF stores yfov in radians; SetPinholeCamera takes fov
+					// glTF stores yfov in radians; AddPinholeCamera takes fov
 					// in radians too (despite the chunk's "degrees" hint).
 					const double yfov_rad = (double)cam->data.perspective.yfov;
 
 					// Resolution / pixel rate / scanning rate are RISE
 					// internals; pick benign defaults.  Users override via a
 					// pinhole_camera chunk after the import.
-					job.SetPinholeCamera(
+					// Imports get a stable "default" name; if the importer
+					// later supports multiple glTF cameras this will need
+					// per-node naming, but glTF uses a single active
+					// camera at most so "default" is correct today.
+					job.AddPinholeCamera(
+						"default",
 						location, lookat, up,
 						yfov_rad,
 						/*xres*/ 800, /*yres*/ 600,

@@ -34,7 +34,25 @@ namespace RISE
 			const IObjectManager*		pObjectManager;
 			const ILightManager*		pLightManager;
 			const ILuminaryManager*		pLuminaryManager;
-			ICamera*					pCamera;
+			ICameraManager*				pCameraManager;
+			String						activeCameraName;
+			// Cached pointer to the camera registered under
+			// `activeCameraName` — kept in sync on every successful
+			// Add/Set/Remove that mutates the active camera.  Reason
+			// for the cache: GetCamera() is called per-pixel by every
+			// rasterizer; resolving the name through the manager's
+			// std::map<String,...>::find on every call would replace
+			// a one-word pointer load with an O(log N) string-key
+			// search.  Cache restores the pre-multi-camera cost.
+			//
+			// **Concurrency contract.**  Structural camera changes
+			// (Add/Remove/SetActive/SetCameraManager) must serialize
+			// against rendering — see IScenePriv.h.  The editor
+			// enforces this via cancel-and-park; programmatic users
+			// are responsible for their own serialization.  A render
+			// pass that has begun is therefore guaranteed to see a
+			// stable pActiveCamera until it returns.
+			ICamera*					pActiveCamera;
 
 			const IRadianceMap*			pGlobalRadianceMap;
 			IPhotonMap*					pCausticMap;
@@ -73,7 +91,9 @@ namespace RISE
 			const IObjectManager*		GetObjects( )	const	{ return pObjectManager; }
 			const ILightManager*		GetLights( )	const	{ return pLightManager; }
 			const ILuminaryManager*		GetLuminaries() const	{ return pLuminaryManager; }
-			const ICamera*				GetCamera( )	const	{ return pCamera; }
+			const ICamera*				GetCamera( )	const	{ return pActiveCamera; }
+			const ICameraManager*		GetCameras( )	const	{ return pCameraManager; }
+			String						GetActiveCameraName( ) const { return activeCameraName; }
 
 			inline const IRadianceMap*			GetGlobalRadianceMap() const { return pGlobalRadianceMap; }
 			inline const IPhotonMap*			GetCausticPelMap()	const	{ return pCausticMap; }
@@ -89,7 +109,8 @@ namespace RISE
 			inline const IMedium*		GetGlobalMedium() const { return pGlobalMedium; }
 
 			// Non-const accessors from IScenePriv
-			ICamera*				GetCameraMutable()				{ return pCamera; }
+			ICamera*				GetCameraMutable()				{ return pActiveCamera; }
+			ICameraManager*			GetCamerasMutable()				{ return pCameraManager; }
 			IPhotonMap*				GetCausticPelMapMutable()		{ return pCausticMap; }
 			IPhotonMap*				GetGlobalPelMapMutable()		{ return pGlobalMap; }
 			IPhotonMap*				GetTranslucentPelMapMutable()	{ return pTranslucentMap; }
@@ -97,7 +118,10 @@ namespace RISE
 			ISpectralPhotonMap*		GetGlobalSpectralMapMutable()	{ return pGlobalSpectralMap; }
 			IShadowPhotonMap*		GetShadowMapMutable()			{ return pShadowMap; }
 			IIrradianceCache*		GetIrradianceCacheMutable()		{ return pIrradianceCache; }
-			void		SetCamera( ICamera* pCamera_ );
+			bool		AddCamera( const char* szName, ICamera* pCamera_ );
+			bool		RemoveCamera( const char* szName );
+			bool		SetActiveCamera( const char* szName );
+			void		SetCameraManager( ICameraManager* pCameraManager_ );
 			void		SetObjectManager( const IObjectManager* pObjectManager_ );
 			void		SetLightManager( const ILightManager* pLightManager_ );
 

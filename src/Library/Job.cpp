@@ -85,6 +85,7 @@ void Job::InitializeContainers()
 	RISE_API_CreateMaterialManager( &pMatManager );
 	RISE_API_CreateShaderManager( &pShaderManager );
 	RISE_API_CreateShaderOpManager( &pShaderOpManager );
+	RISE_API_CreateCameraManager( &pCameraManager );
 	RISE_API_CreatePainterManager( &pPntManager );
 	RISE_API_CreateFunction1DManager( &pFunc1DManager );
 	RISE_API_CreateFunction2DManager( &pFunc2DManager );
@@ -92,6 +93,7 @@ void Job::InitializeContainers()
 	RISE_API_CreateLightManager( &pLightManager );
 	RISE_API_CreateModifierManager( &pModManager );
 
+	pScene->SetCameraManager( pCameraManager );
 	pScene->SetObjectManager( pObjectManager );
 	pScene->SetLightManager( pLightManager );
 
@@ -130,6 +132,7 @@ void Job::DestroyContainers()
 	safe_release( pRasterizer );
 
 	safe_shutdown_and_release( pGeomManager );
+	safe_shutdown_and_release( pCameraManager );
 	safe_shutdown_and_release( pPntManager );
 	safe_shutdown_and_release( pFunc1DManager );
 	safe_shutdown_and_release( pFunc2DManager );
@@ -186,138 +189,149 @@ bool Job::SetLightSampleRRThreshold(
 
 
 //
-// Sets the camera
+// Cameras
 //
+// Each AddXxxCamera creates the ICamera, registers it under `name` in
+// the scene's camera manager (which makes it active by policy), then
+// drops the local strong ref.  The manager retains the addref taken
+// by AddItem.
 
-//! Sets a pinhole camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetPinholeCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const double fov,										///< [in] Field of view in radians
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2]						///< [in] Orientation relative to a target
+bool Job::AddPinholeCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const double fov,
+	const unsigned int xres,
+	const unsigned int yres,
+	const double pixelAR,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2]
 	)
 {
 	ICamera* pCamera = 0;
 	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
-	pScene->SetCamera( pCamera );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
 }
 
-//! Sets a pinhole camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetPinholeCameraONB(
-	const double ONB_U[3],									///< [in] U vector of orthonormal basis
-	const double ONB_V[3],									///< [in] V vector of orthonormal basis
-	const double ONB_W[3],									///< [in] W vector of orthonormal basis
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double fov,										///< [in] Field of view in radians
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate									///< [in] Rate at which each pixel is recorded
+bool Job::AddPinholeCameraONB(
+	const char* name,
+	const double ONB_U[3],
+	const double ONB_V[3],
+	const double ONB_W[3],
+	const double ptLocation[3],
+	const double fov,
+	const unsigned int xres,
+	const unsigned int yres,
+	const double pixelAR,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate
 	)
 {
 	OrthonormalBasis3D onb = OrthonormalBasis3D( Vector3(ONB_U), Vector3(ONB_V), Vector3(ONB_W) );
 	ICamera* pCamera = 0;
 	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
-	pScene->SetCamera( pCamera );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
 }
 
-//! Sets a camera based on thin lens model
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetThinlensCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const double sensorSize,								///< [in] Sensor width (mm)
-	const double focalLength,								///< [in] Lens focal length (mm)
-	const double fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
-	const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
-	const double sceneUnitMeters,							///< [in] Meters per scene unit
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2],						///< [in] Orientation relative to a target
-	const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
-	const double apertureRotation,							///< [in] Polygon rotation (radians)
-	const double anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
-	const double tiltX,										///< [in] Focal-plane tilt around x-axis (radians)
-	const double tiltY,										///< [in] Focal-plane tilt around y-axis (radians)
-	const double shiftX,									///< [in] Lens shift along x (mm)
-	const double shiftY										///< [in] Lens shift along y (mm)
+bool Job::AddThinlensCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const double sensorSize,
+	const double focalLength,
+	const double fstop,
+	const double focusDistance,
+	const double sceneUnitMeters,
+	const unsigned int xres,
+	const unsigned int yres,
+	const double pixelAR,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2],
+	const unsigned int apertureBlades,
+	const double apertureRotation,
+	const double anamorphicSqueeze,
+	const double tiltX,
+	const double tiltY,
+	const double shiftX,
+	const double shiftY
 	)
 {
 	ICamera* pCamera = 0;
 	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY );
-	pScene->SetCamera( pCamera );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
 }
 
-//! Sets a fisheye camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetFisheyeCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2],						///< [in] Orientation relative to a target
-	const double scale										///< [in] Scale factor to exagerrate the effects
+bool Job::AddFisheyeCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const unsigned int xres,
+	const unsigned int yres,
+	const double pixelAR,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2],
+	const double scale
 	)
 {
 	ICamera* pCamera = 0;
 	RISE_API_CreateFisheyeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), scale );
-	pScene->SetCamera( pCamera );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
 }
 
-//! Sets an orthographic camera
-/// \return TRUE if successful, FALSE otherwise
-bool Job::SetOrthographicCamera(
-	const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-	const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-	const double vUp[3],									///< [in] Up vector of the camera
-	const unsigned int xres,								///< [in] X resolution of virtual screen
-	const unsigned int yres,								///< [in] Y resolution of virtual screen
-	const double vpScale[2],								///< [in] Viewport scale factor
-	const double pixelAR,									///< [in] Pixel aspect ratio
-	const double exposure,									///< [in] Exposure time of the camera
-	const double scanningRate,								///< [in] Rate at which each scanline is recorded
-	const double pixelRate,									///< [in] Rate at which each pixel is recorded
-	const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-	const double target_orientation[2]						///< [in] Orientation relative to a target
+bool Job::AddOrthographicCamera(
+	const char* name,
+	const double ptLocation[3],
+	const double ptLookAt[3],
+	const double vUp[3],
+	const unsigned int xres,
+	const unsigned int yres,
+	const double vpScale[2],
+	const double pixelAR,
+	const double exposure,
+	const double scanningRate,
+	const double pixelRate,
+	const double orientation[3],
+	const double target_orientation[2]
 	)
 {
 	ICamera* pCamera = 0;
 	RISE_API_CreateOrthographicCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, Vector2(vpScale), pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
-	pScene->SetCamera( pCamera );
+	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
-	return true;
+	return ok;
+}
+
+bool Job::SetActiveCamera( const char* name )
+{
+	if( !pScene ) return false;
+	return pScene->SetActiveCamera( name );
+}
+
+bool Job::RemoveCamera( const char* name )
+{
+	if( !pScene ) return false;
+	return pScene->RemoveCamera( name );
 }
 
 //

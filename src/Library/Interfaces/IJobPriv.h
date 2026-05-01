@@ -19,6 +19,7 @@
 #include "IGeometryManager.h"
 #include "IObjectManager.h"
 #include "ILightManager.h"
+#include "ICameraManager.h"
 #include "IPainterManager.h"
 #include "IMaterialManager.h"
 #include "IModifierManager.h"
@@ -44,6 +45,7 @@ namespace RISE
 		//
 		virtual IScenePriv*					GetScene() = 0;
 		virtual IGeometryManager*			GetGeometries() = 0;
+		virtual ICameraManager*				GetCameras() = 0;
 		virtual IPainterManager*			GetPainters() = 0;
 		virtual IFunction1DManager*			GetFunction1Ds() = 0;
 		virtual IFunction2DManager*			GetFunction2Ds() = 0;

@@ -89,7 +89,7 @@ static void AttachDefaultCamera( Job& job )
 		return;
 	}
 	if( IScenePriv* scene = job.GetScene() ) {
-		scene->SetCamera( pCam );
+		scene->AddCamera( "default", pCam );
 	}
 	pCam->release();
 }
@@ -387,7 +387,7 @@ static void TestRollPositionInvariance()
 		return;
 	}
 	if( IScenePriv* scene = pJob->GetScene() ) {
-		scene->SetCamera( pCam );
+		scene->AddCamera( "default", pCam );
 	}
 	pCam->release();
 

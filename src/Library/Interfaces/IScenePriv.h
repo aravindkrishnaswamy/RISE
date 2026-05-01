@@ -33,8 +33,11 @@ namespace RISE
 		// Non-const accessors for privileged mutation
 		//
 
-		/// \return Non-const camera for setup
+		/// \return Non-const handle to the currently active camera.
 		virtual ICamera*				GetCameraMutable() = 0;
+
+		/// \return Non-const handle to the camera manager.
+		virtual ICameraManager*			GetCamerasMutable() = 0;
 
 		/// \return Non-const caustic PEL photon map
 		virtual IPhotonMap*				GetCausticPelMapMutable() = 0;
@@ -61,9 +64,57 @@ namespace RISE
 		// Added interface functions
 		//
 
-		//! Sets the current camera
-		virtual void SetCamera(
-			ICamera* pCamera_									///< [in] Camera to set
+		//
+		// Camera-set mutators.
+		//
+		// **Concurrency contract.**  These three methods (AddCamera,
+		// RemoveCamera, SetActiveCamera) plus SetCameraManager are
+		// structural mutations.  They MUST NOT run concurrently with
+		// rendering — the render thread reads the active camera per
+		// pixel, and a concurrent swap would invite torn reads or
+		// use-after-free on the old camera.  The interactive editor
+		// enforces this via SceneEditController's cancel-and-park
+		// pattern (see SceneEditController::SetProperty for the
+		// "active_camera" intercept and OnTimeScrub for the canonical
+		// implementation).  Programmatic callers outside the editor
+		// must serialize externally — there is no in-library lock.
+		//
+
+		//! Adds a camera to the scene's camera manager and marks it
+		//! active.  Every successful AddCamera makes the new camera
+		//! the active one — "last-added wins" matches the design.
+		//! Returns false on null camera, null/empty name, or
+		//! duplicate-name collision.
+		virtual bool AddCamera(
+			const char* szName,									///< [in] Name to register the camera under
+			ICamera* pCamera_									///< [in] Camera to add
+			) = 0;
+
+		//! Removes the named camera from the manager.  If the removed
+		//! camera was active, auto-promotes the lexicographically
+		//! FIRST remaining camera (the order GenericManager iterates
+		//! its std::map<String,...> in) and falls back to "no active
+		//! camera" if the manager is empty.  Lex-first is a
+		//! deliberate compromise: tracking insertion order would
+		//! require a parallel vector and the design only requires the
+		//! promotion to be deterministic.
+		//! Returns false if the name isn't found.
+		virtual bool RemoveCamera(
+			const char* szName									///< [in] Name of camera to remove
+			) = 0;
+
+		//! Designates the named camera as active.  Returns false
+		//! (leaving the active camera unchanged) if the name isn't
+		//! registered with the manager.
+		virtual bool SetActiveCamera(
+			const char* szName									///< [in] Name of camera to make active
+			) = 0;
+
+		//! Sets the camera manager.  Used by Job during scene
+		//! construction to wire the manager into the scene.  Caller
+		//! retains ownership semantics through addref/release.
+		virtual void SetCameraManager(
+			ICameraManager* pCameraManager_						///< [in] Camera manager to install
 			) = 0;
 
 		//! Sets the object manager, which contains all the objects

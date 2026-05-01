@@ -640,12 +640,19 @@ void* MLTRasterizer::RoundThread_ThreadProc( void* lpParameter )
 {
 	RoundThreadData* pData = (RoundThreadData*)lpParameter;
 
+	// Snapshot the active camera once for this worker.  Structural
+	// changes serialize against rendering per IScenePriv.h, so the
+	// pointer is stable for the duration of the dispatching
+	// RasterizeScene.
+	const ICamera* pCam = pData->pScene->GetCamera();
+	if( !pCam ) return 0;
+
 	for( unsigned int c = pData->chainStart; c < pData->chainEnd; c++ )
 	{
 		pData->pRasterizer->RunChainSegment(
 			pData->pChainStates[c],
 			*pData->pScene,
-			*pData->pScene->GetCamera(),
+			*pCam,
 			*pData->pSplatFilm,
 			pData->mutationsPerChain,
 			pData->normalization,
@@ -1190,6 +1197,7 @@ void MLTRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		GlobalLog()->PrintSourceError( "MLTRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
@@ -1292,6 +1300,7 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		GlobalLog()->PrintSourceError( "MLTRasterizer::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );

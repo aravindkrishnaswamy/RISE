@@ -2433,12 +2433,15 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	subpathStarts.clear();
 	subpathStarts.push_back( 0 );
 
+	// Snapshot once at entry so vertex 0 and the pdfCamDir below see
+	// the same camera.  Structural changes serialize against
+	// rendering per the IScenePriv.h contract.
+	const ICamera* pCamera = scene.GetCamera();
+
 	//
 	// Vertex 0: the camera
 	//
 	{
-		const ICamera* pCamera = scene.GetCamera();
-
 		BDPTVertex v;
 		v.type = BDPTVertex::CAMERA;
 
@@ -2467,8 +2470,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	Ray currentRay = cameraRay;
 	RISEPel beta( 1, 1, 1 );
 
-	// The camera pdf for generating this direction
-	const ICamera* pCamera = scene.GetCamera();
+	// The camera pdf for generating this direction.  Reuses the
+	// pCamera cached at the top of GenerateEyeSubpath.
 	Scalar pdfCamDir = 1.0;
 	if( pCamera ) {
 		pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );
@@ -6067,10 +6070,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	subpathStarts.clear();
 	subpathStarts.push_back( 0 );
 
+	// Snapshot once — see parallel comment in GenerateEyeSubpath.
+	const ICamera* pCamera = scene.GetCamera();
+
 	// Vertex 0: the camera
 	{
-		const ICamera* pCamera = scene.GetCamera();
-
 		BDPTVertex v;
 		v.type = BDPTVertex::CAMERA;
 
@@ -6096,7 +6100,6 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	Ray currentRay = cameraRay;
 	Scalar betaNM = 1.0;
 
-	const ICamera* pCamera = scene.GetCamera();
 	Scalar pdfCamDir = 1.0;
 	if( pCamera ) {
 		pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );

@@ -51,6 +51,7 @@ namespace RISE
 
 		IScenePriv*									pScene;				// A job can have at most one scene
 		IGeometryManager*							pGeomManager;		// Set of all geometry in the job
+		ICameraManager*								pCameraManager;		// Set of all cameras in the job
 		IPainterManager*							pPntManager;		// Set of all painters in the job
 		IFunction1DManager*							pFunc1DManager;		// Set of all 1D functions in the job
 		IFunction2DManager*							pFunc2DManager;		// Set of all 2D functions in the job
@@ -103,6 +104,7 @@ namespace RISE
 		//
 		IScenePriv*					GetScene()			{ return pScene; };
 		IGeometryManager*			GetGeometries()		{ return pGeomManager; };
+		ICameraManager*				GetCameras()		{ return pCameraManager; };
 		IPainterManager*			GetPainters()		{ return pPntManager; };
 		IFunction1DManager*			GetFunction1Ds()	{ return pFunc1DManager; };
 		IFunction2DManager*			GetFunction2Ds()	{ return pFunc2DManager; };
@@ -135,107 +137,116 @@ namespace RISE
 			);
 
 		//
-		// Sets the camera
+		// Cameras — see IJob.h for the multi-camera contract.  Each
+		// AddXxxCamera registers the camera under `name` in the
+		// scene's camera manager AND makes it active; SetActiveCamera
+		// switches which camera the rasterizer draws through;
+		// RemoveCamera unregisters one (auto-promoting if it was
+		// active).
 		//
 
-		//! Sets a pinhole camera
-		/// \return TRUE if successful, FALSE otherwise
-		bool SetPinholeCamera(
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-			const double vUp[3],									///< [in] Up vector of the camera
-			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate,									///< [in] Rate at which each pixel is recorded
-			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-			const double target_orientation[2]						///< [in] Orientation relative to a target
+		//! Adds a pinhole camera
+		bool AddPinholeCamera(
+			const char* name,										///< [in] Name to register the camera under
+			const double ptLocation[3],
+			const double ptLookAt[3],
+			const double vUp[3],
+			const double fov,
+			const unsigned int xres,
+			const unsigned int yres,
+			const double pixelAR,
+			const double exposure,
+			const double scanningRate,
+			const double pixelRate,
+			const double orientation[3],
+			const double target_orientation[2]
 			);
 
-		//! Sets a pinhole camera
-		/// \return TRUE if successful, FALSE otherwise
-		bool SetPinholeCameraONB(
-			const double ONB_U[3],									///< [in] U vector of orthonormal basis
-			const double ONB_V[3],									///< [in] V vector of orthonormal basis
-			const double ONB_W[3],									///< [in] W vector of orthonormal basis
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate									///< [in] Rate at which each pixel is recorded
+		//! Adds an ONB pinhole camera
+		bool AddPinholeCameraONB(
+			const char* name,										///< [in] Name to register the camera under
+			const double ONB_U[3],
+			const double ONB_V[3],
+			const double ONB_W[3],
+			const double ptLocation[3],
+			const double fov,
+			const unsigned int xres,
+			const unsigned int yres,
+			const double pixelAR,
+			const double exposure,
+			const double scanningRate,
+			const double pixelRate
 			);
 
-		//! Sets a camera based on thin lens model.
-		/// Photographic parameters: sensor size + focal length + f-stop +
-		/// focus distance.  See IJob::SetThinlensCamera for the unit
-		/// contract (sensor / focal / shift in mm; focus in scene units;
-		/// sceneUnitMeters bridges them).
-		/// \return TRUE if successful, FALSE otherwise
-		bool SetThinlensCamera(
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-			const double vUp[3],									///< [in] Up vector of the camera
-			const double sensorSize,								///< [in] Sensor width (mm)
-			const double focalLength,								///< [in] Lens focal length (mm)
-			const double fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
-			const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
-			const double sceneUnitMeters,							///< [in] Meters per scene unit (1.0 = metres scene; 0.001 = mm scene)
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate,									///< [in] Rate at which each pixel is recorded
-			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-			const double target_orientation[2],						///< [in] Orientation relative to a target
-			const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
-			const double apertureRotation,							///< [in] Polygon rotation (radians)
-			const double anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
-			const double tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
-			const double tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
-			const double shiftX,									///< [in] Lens shift along x (mm); 0 = centered
-			const double shiftY										///< [in] Lens shift along y (mm); 0 = centered
+		//! Adds a thin-lens camera.  See IJob::AddThinlensCamera for
+		//! the unit contract (sensor / focal / shift in mm; focus in
+		//! scene units; sceneUnitMeters bridges them).
+		bool AddThinlensCamera(
+			const char* name,										///< [in] Name to register the camera under
+			const double ptLocation[3],
+			const double ptLookAt[3],
+			const double vUp[3],
+			const double sensorSize,
+			const double focalLength,
+			const double fstop,
+			const double focusDistance,
+			const double sceneUnitMeters,
+			const unsigned int xres,
+			const unsigned int yres,
+			const double pixelAR,
+			const double exposure,
+			const double scanningRate,
+			const double pixelRate,
+			const double orientation[3],
+			const double target_orientation[2],
+			const unsigned int apertureBlades,
+			const double apertureRotation,
+			const double anamorphicSqueeze,
+			const double tiltX,
+			const double tiltY,
+			const double shiftX,
+			const double shiftY
 			);
 
-		//! Sets a fisheye camera
-		/// \return TRUE if successful, FALSE otherwise
-		bool SetFisheyeCamera(
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-			const double vUp[3],									///< [in] Up vector of the camera
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate,									///< [in] Rate at which each pixel is recorded
-			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-			const double target_orientation[2],						///< [in] Orientation relative to a target
-			const double scale										///< [in] Scale factor to exagerrate the effects
+		//! Adds a fisheye camera
+		bool AddFisheyeCamera(
+			const char* name,										///< [in] Name to register the camera under
+			const double ptLocation[3],
+			const double ptLookAt[3],
+			const double vUp[3],
+			const unsigned int xres,
+			const unsigned int yres,
+			const double pixelAR,
+			const double exposure,
+			const double scanningRate,
+			const double pixelRate,
+			const double orientation[3],
+			const double target_orientation[2],
+			const double scale
 			);
 
-		//! Sets an orthographic camera
-		/// \return TRUE if successful, FALSE otherwise
-		bool SetOrthographicCamera(
-			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
-			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
-			const double vUp[3],									///< [in] Up vector of the camera
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double vpScale[2],								///< [in] Viewport scale factor
-			const double pixelAR,									///< [in] Pixel aspect ratio
-			const double exposure,									///< [in] Exposure time of the camera
-			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate,									///< [in] Rate at which each pixel is recorded
-			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-			const double target_orientation[2]						///< [in] Orientation relative to a target
+		//! Adds an orthographic camera
+		bool AddOrthographicCamera(
+			const char* name,										///< [in] Name to register the camera under
+			const double ptLocation[3],
+			const double ptLookAt[3],
+			const double vUp[3],
+			const unsigned int xres,
+			const unsigned int yres,
+			const double vpScale[2],
+			const double pixelAR,
+			const double exposure,
+			const double scanningRate,
+			const double pixelRate,
+			const double orientation[3],
+			const double target_orientation[2]
 			);
+
+		//! Designates the named camera as the scene's active one.
+		bool SetActiveCamera( const char* name );
+
+		//! Removes the named camera; auto-promotes if it was active.
+		bool RemoveCamera( const char* name );
 
 		//
 		// Adds painters

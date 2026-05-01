@@ -36,6 +36,7 @@
 #include "Interfaces/IObject.h"
 #include "Interfaces/IOneColorOperator.h"
 #include "Interfaces/IOptions.h"
+#include "Interfaces/ICameraManager.h"
 #include "Interfaces/IPainter.h"
 #include "Interfaces/IPainterManager.h"
 #include "Interfaces/IPiecewiseFunction.h"
@@ -1351,6 +1352,12 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePainterManager(
 								IPainterManager** ppi			///< [out] Pointer to recieve the manager
+								);
+
+	//! Creates a camera manager
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCameraManager(
+								ICameraManager** ppi			///< [out] Pointer to recieve the manager
 								);
 
 	//! Creates a material manager

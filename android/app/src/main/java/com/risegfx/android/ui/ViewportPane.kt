@@ -72,6 +72,13 @@ enum class ViewportTool(val rawValue: Int, val label: String, val tooltip: Strin
     }
 }
 
+/** Quick-pick preset attached to a property row.  Mirrors
+ *  ParameterPreset on the C++ side. */
+data class ViewportPropertyPreset(
+    val label: String,    // shown to the user in the dropdown
+    val value: String,    // parser-acceptable literal written through SetProperty
+)
+
 /**
  * One row of the descriptor-driven properties panel, mirroring
  * CameraProperty / ViewportProperty on the other platforms.
@@ -82,6 +89,7 @@ data class ViewportPropertyRow(
     val description: String,
     val kind: Int,
     val editable: Boolean,
+    val presets: List<ViewportPropertyPreset> = emptyList(),
 )
 
 @Composable
@@ -133,12 +141,24 @@ fun ViewportPane(
             panelHeader = RiseNative.nativeViewportPanelHeader()
             val n = RiseNative.nativeViewportPropertyCount()
             properties = (0 until n).map { i ->
+                val pn = RiseNative.nativeViewportPropertyPresetCount(i)
+                val presetList = if (pn > 0) {
+                    (0 until pn).map { j ->
+                        ViewportPropertyPreset(
+                            label = RiseNative.nativeViewportPropertyPresetLabel(i, j),
+                            value = RiseNative.nativeViewportPropertyPresetValue(i, j),
+                        )
+                    }
+                } else {
+                    emptyList()
+                }
                 ViewportPropertyRow(
                     name = RiseNative.nativeViewportPropertyName(i),
                     value = RiseNative.nativeViewportPropertyValue(i),
                     description = RiseNative.nativeViewportPropertyDescription(i),
                     kind = RiseNative.nativeViewportPropertyKind(i),
                     editable = RiseNative.nativeViewportPropertyEditable(i),
+                    presets = presetList,
                 )
             }
         }
@@ -591,6 +611,45 @@ private fun ViewportPropertyEntry(
                         onDone = { onPropertyEdited(row.name, text) }
                     ),
                 )
+                // Presets dropdown — appears next to the text field
+                // when the descriptor declared any quick-pick values.
+                // Critical for the multi-camera "active_camera" row:
+                // the user picks a camera by name from this menu
+                // instead of being forced to type it.  Picking a value
+                // routes through onPropertyEdited (which the parent
+                // bumps refreshTrigger on), so the panel rows refresh
+                // — important when switching between camera types
+                // with different property sets (pinhole vs thinlens).
+                if (row.presets.isNotEmpty()) {
+                    Spacer(Modifier.width(4.dp))
+                    var expanded by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(
+                            onClick = { expanded = true },
+                            enabled = enabled,
+                        ) {
+                            Icon(
+                                Icons.Filled.ArrowDropDown,
+                                contentDescription = "Quick-pick presets",
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                        ) {
+                            row.presets.forEach { preset ->
+                                DropdownMenuItem(
+                                    text = { Text(preset.label) },
+                                    onClick = {
+                                        expanded = false
+                                        text = preset.value
+                                        onPropertyEdited(row.name, preset.value)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
             }
         } else {
             Text(row.value,

@@ -339,7 +339,11 @@ void BDPTRasterizerBase::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
-	if( !pScene.GetCamera() ) {
+	// Snapshot the active camera once at entry; structural camera
+	// changes (Add/Remove/SetActive) are required to serialize
+	// against rendering — see IScenePriv.h.
+	const ICamera* pCam = pScene.GetCamera();
+	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "BDPTRasterizerBase::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
@@ -351,8 +355,8 @@ void BDPTRasterizerBase::RasterizeScene(
 #endif
 
 	// Acquire scene dimensions
-	const unsigned int width = pScene.GetCamera()->GetWidth();
-	const unsigned int height = pScene.GetCamera()->GetHeight();
+	const unsigned int width = pCam->GetWidth();
+	const unsigned int height = pCam->GetHeight();
 
 	// Training can cast probe rays to estimate incident radiance,
 	// so the ray caster needs the scene attached before training starts.

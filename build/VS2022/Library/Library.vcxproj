@@ -521,6 +521,7 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IBSDF.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\ICamera.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ICameraManager.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\ICommunicator.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IDeletedCallback.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IDetectorSphere.h" />
@@ -611,6 +612,7 @@
     <ClInclude Include="..\..\..\src\Library\Lights\SpotLight.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\DAGObjectManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h" />
+    <ClInclude Include="..\..\..\src\Library\Managers\CameraManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\Function1DManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\Function2DManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\GenericManager.h" />

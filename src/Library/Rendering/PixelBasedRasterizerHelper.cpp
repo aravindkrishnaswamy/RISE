@@ -147,7 +147,12 @@ IRasterImage& PixelBasedRasterizerHelper::GetIntermediateOutputImage( IRasterIma
 
 unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const IScene& pScene, const ISampling2D& pSampling, unsigned int* pActualTime ) const
 {
-	if( !pScene.GetCamera() ) {
+	// Snapshot the active camera once at function entry — keeps
+	// all inner uses consistent and matches the per-pass contract
+	// (structural camera changes must serialize against rendering;
+	// see IScenePriv.h).
+	const ICamera* pCam = pScene.GetCamera();
+	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::PredictTimeToRasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return 0xFFFFFFFF;
 	}
@@ -165,8 +170,8 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_IRRADIANCE_CACHE, false );
 
 	// Acquire scene dimensions
-	const unsigned int width = pScene.GetCamera()->GetWidth();
-	const unsigned int height = pScene.GetCamera()->GetHeight();
+	const unsigned int width = pCam->GetWidth();
+	const unsigned int height = pCam->GetHeight();
 
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
@@ -183,7 +188,7 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 		Point2			ptOnScreen( width*(*m).x, height*(*m).y );
 
 		Ray ray;
-		if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
+		if( pCam->GenerateRay( rc, ray, ptOnScreen ) ) {
 			RasterizerState rast;
 			rast.x = (unsigned int)ptOnScreen.x;
 			rast.y = (unsigned int)ptOnScreen.y;
@@ -497,7 +502,9 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
-	if( !pScene.GetCamera() ) {
+	// Snapshot once at entry — see PredictTimeToRasterizeScene.
+	const ICamera* pCam = pScene.GetCamera();
+	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
@@ -509,8 +516,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #endif
 
 	// Acquire scene dimensions
-	const unsigned int width = pScene.GetCamera()->GetWidth();
-	const unsigned int height = pScene.GetCamera()->GetHeight();
+	const unsigned int width = pCam->GetWidth();
+	const unsigned int height = pCam->GetHeight();
 
 	IRasterImage* pImage = AcquireRenderImage( width, height );
 
@@ -894,10 +901,17 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	}
 #endif
 
+	// Snapshot once at entry — see PredictTimeToRasterizeScene.
+	const ICamera* pCam = pScene.GetCamera();
+	if( !pCam ) {
+		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RenderFrameOfAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
+		return;
+	}
+
 	// Exposure time can change from frame to frame
-	const Scalar exposure = pScene.GetCamera()->GetExposureTime();
-	const Scalar scanningRate = pScene.GetCamera()->GetScanningRate();
-	const Scalar pixelRate = pScene.GetCamera()->GetPixelRate();
+	const Scalar exposure = pCam->GetExposureTime();
+	const Scalar scanningRate = pCam->GetScanningRate();
+	const Scalar pixelRate = pCam->GetPixelRate();
 
 	// To start the progress counting at 0
 	DoAnimationFrameProgress( 0, 1 );
@@ -1144,15 +1158,16 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
-	// We need a camera
-	if( !pScene.GetCamera() ) {
-		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
+	// Snapshot once at entry — see PredictTimeToRasterizeScene.
+	const ICamera* pCam = pScene.GetCamera();
+	if( !pCam ) {
+		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );
 		return;
 	}
 
 	// Acquire scene dimensions
-	const unsigned int width = pScene.GetCamera()->GetWidth();
-	const unsigned int height = pScene.GetCamera()->GetHeight();
+	const unsigned int width = pCam->GetWidth();
+	const unsigned int height = pCam->GetHeight();
 	const Scalar step_size = num_frames>1?(time_end-time_start)/Scalar(num_frames-1):0;
 
 	// If there is no raster sequence, create a default one

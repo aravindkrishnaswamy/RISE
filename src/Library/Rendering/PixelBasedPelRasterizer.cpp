@@ -169,8 +169,13 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 		pGuidingField = new PathGuidingField( guidingConfig, boundsMin, boundsMax );
 
-		const unsigned int width = pScene.GetCamera()->GetWidth();
-		const unsigned int height = pScene.GetCamera()->GetHeight();
+		const ICamera* pCam = pScene.GetCamera();
+		if( !pCam ) {
+			GlobalLog()->PrintSourceError( "PixelBasedPelRasterizer::PreRenderSetup:: Scene contains no camera!", __FILE__, __LINE__ );
+			return;
+		}
+		const unsigned int width = pCam->GetWidth();
+		const unsigned int height = pCam->GetHeight();
 		const unsigned int bootstrapTrainingSPP = 1;
 		unsigned int currentTrainingSPP = bootstrapTrainingSPP;
 		Scalar previousPositiveSampleDensity = 0;
@@ -390,8 +395,13 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 
 	if( stabilityConfig.optimalMIS )
 	{
-		const unsigned int width = pScene.GetCamera()->GetWidth();
-		const unsigned int height = pScene.GetCamera()->GetHeight();
+		const ICamera* pCam = pScene.GetCamera();
+		if( !pCam ) {
+			GlobalLog()->PrintSourceError( "PixelBasedPelRasterizer::PreRenderSetup (optimalMIS):: Scene contains no camera!", __FILE__, __LINE__ );
+			return;
+		}
+		const unsigned int width = pCam->GetWidth();
+		const unsigned int height = pCam->GetHeight();
 
 		OptimalMISAccumulator::Config accConfig;
 		accConfig.tileSize = stabilityConfig.optimalMISTileSize;

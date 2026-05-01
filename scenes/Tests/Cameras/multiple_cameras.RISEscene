@@ -1,0 +1,117 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           multiple_cameras.RISEscene                                                              #
+#   Description:    Three named cameras of different types (pinhole, thinlens, orthographic) sharing one   #
+#                   scene.  The last-declared camera ("top_down") is the active one by default; switch via #
+#                   the properties panel "active_camera" dropdown in the interactive editor, or by         #
+#                   programmatic SetActiveCamera in the API.                                                #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion	5
+	samples			16
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/multiple_cameras
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Three cameras, three viewpoints.  Each gets a
+# unique `name`; the parser auto-suffixes only
+# unnamed chunks (none here).  Last-declared
+# wins for the default-active selection, so the
+# scene opens through "top_down".
+##################################################
+
+pinhole_camera
+{
+	name				hero
+	location			0 1.5 8
+	lookat				0 0 0
+	up					0 1 0
+	fov					40
+	width				512
+	height				384
+}
+
+thinlens_camera
+{
+	name				closeup
+	location			3 1.5 4
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				384
+	sensor_size			36
+	focal_length		85
+	fstop				1.8
+	focus_distance		4.5
+}
+
+orthographic_camera
+{
+	name				top_down
+	location			0 10 0
+	lookat				0 0 0
+	up					0 0 -1
+	width				512
+	height				384
+	viewport_scale		3 3
+}
+
+##################################################
+# Minimal scene: textured cube + key light.
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				cube_color
+	color				0.8 0.6 0.3
+	colorspace			sRGB
+}
+
+lambertian_material
+{
+	name				cube_mat
+	reflectance			cube_color
+}
+
+box_geometry
+{
+	name				cube_geom
+	width				2
+	height				2
+	depth				2
+}
+
+standard_object
+{
+	name				cube
+	geometry			cube_geom
+	material			cube_mat
+}
+
+directional_light
+{
+	name				key
+	power				3.14
+	color				1 1 1
+	direction			0.4 0.7 0.5
+}

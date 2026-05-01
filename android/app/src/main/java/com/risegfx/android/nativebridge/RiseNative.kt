@@ -219,5 +219,15 @@ object RiseNative {
     external fun nativeViewportPropertyDescription(idx: Int): String
     external fun nativeViewportPropertyKind(idx: Int): Int
     external fun nativeViewportPropertyEditable(idx: Int): Boolean
+    /**
+     * Quick-pick presets surfaced as a dropdown on a property row.
+     * Empty (count == 0) for parameters whose chunk descriptor declared
+     * none, in which case the panel falls back to a plain text edit.
+     * The multi-camera "active_camera" row uses this so the user picks
+     * a camera by name rather than typing it.
+     */
+    external fun nativeViewportPropertyPresetCount(idx: Int): Int
+    external fun nativeViewportPropertyPresetLabel(idx: Int, presetIdx: Int): String
+    external fun nativeViewportPropertyPresetValue(idx: Int, presetIdx: Int): String
     external fun nativeViewportSetProperty(name: String, value: String): Boolean
 }

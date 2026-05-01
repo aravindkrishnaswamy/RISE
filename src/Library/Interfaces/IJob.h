@@ -68,12 +68,29 @@ namespace RISE
 
 
 		//
-		// Setting cameras
+		// Cameras — multi-camera contract.
+		//
+		// A scene holds many cameras keyed by name in an
+		// ICameraManager (Scene::GetCameras()), with one designated
+		// active.  Each AddXxxCamera registers a new camera under
+		// `name` AND makes it active by policy ("last added wins").
+		// SetActiveCamera switches which camera the rasterizer draws
+		// through; RemoveCamera unregisters one and auto-promotes
+		// (lexicographic first-remaining) if the removed camera was
+		// active.
+		//
+		// Names follow the same convention as painters / materials:
+		// unique within the manager (duplicate-add returns false).
+		// The parser auto-suffixes unnamed camera chunks
+		// ("default", "default_1", ...) so existing single-camera
+		// scenes parse unchanged.
 		//
 
-		//! Sets a pinhole camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetPinholeCamera(
+		//! Adds a pinhole camera
+		/// \return TRUE if successful, FALSE on null/empty name or
+		/// duplicate name.
+		virtual bool AddPinholeCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
@@ -88,9 +105,9 @@ namespace RISE
 			const double target_orientation[2]						///< [in] Orientation relative to a target
 			) = 0;
 
-		//! Sets a pinhole camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetPinholeCameraONB(
+		//! Adds a pinhole camera oriented via an orthonormal basis
+		virtual bool AddPinholeCameraONB(
+			const char* name,										///< [in] Name to register the camera under
 			const double ONB_U[3],									///< [in] U vector of orthonormal basis
 			const double ONB_V[3],									///< [in] V vector of orthonormal basis
 			const double ONB_W[3],									///< [in] W vector of orthonormal basis
@@ -104,10 +121,8 @@ namespace RISE
 			const double pixelRate									///< [in] Rate at which each pixel is recorded
 			) = 0;
 
-		//! Sets a camera based on thin lens model.
-		/// Photographic parameters: sensor size + focal length + f-stop +
-		/// focus distance.  FOV is derived from sensor and focal length;
-		/// aperture diameter is derived from focal length and f-stop.
+		//! Adds a thin-lens camera.  Photographic parameters: sensor
+		/// size + focal length + f-stop + focus distance.
 		///
 		/// Units (Phase 1.2):
 		///   - sensor_size, focal_length, shift_x, shift_y are in MM.
@@ -116,8 +131,8 @@ namespace RISE
 		///     (default 1.0 = metres scene; 0.001 = mm; 0.0254 = inches).
 		///   - The camera converts mm → scene-units internally so the
 		///     lens equation is unit-consistent with focus_distance.
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetThinlensCamera(
+		virtual bool AddThinlensCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
@@ -143,9 +158,9 @@ namespace RISE
 			const double shiftY										///< [in] Lens shift along y (mm); 0 = centered
 			) = 0;
 
-		//! Sets a fisheye camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetFisheyeCamera(
+		//! Adds a fisheye camera
+		virtual bool AddFisheyeCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
@@ -160,9 +175,9 @@ namespace RISE
 			const double scale										///< [in] Scale factor to exagerrate the effects
 			) = 0;
 
-		//! Sets an orthographic camera
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool SetOrthographicCamera(
+		//! Adds an orthographic camera
+		virtual bool AddOrthographicCamera(
+			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
@@ -175,6 +190,19 @@ namespace RISE
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
 			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
 			const double target_orientation[2]						///< [in] Orientation relative to a target
+			) = 0;
+
+		//! Designates the named camera as active.  Returns false if
+		/// the name isn't registered with the scene's camera manager.
+		virtual bool SetActiveCamera(
+			const char* name										///< [in] Name of camera to make active
+			) = 0;
+
+		//! Removes the named camera.  If the removed camera was
+		/// active, auto-promotes a remaining camera (or leaves the
+		/// scene cameraless if none remain).
+		virtual bool RemoveCamera(
+			const char* name										///< [in] Name of camera to remove
 			) = 0;
 
 

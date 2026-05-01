@@ -17,6 +17,7 @@
 #include "IReference.h"
 #include "IRadianceMap.h"
 #include "IMedium.h"
+#include "../Utilities/RString.h"
 
 namespace RISE
 {
@@ -28,6 +29,7 @@ namespace RISE
 	class IShadowPhotonMap;
 	class IAnimator;
 	class ICamera;
+	class ICameraManager;
 	class IIrradianceCache;
 
 	class IScene : public virtual IReference
@@ -43,8 +45,21 @@ namespace RISE
 		/// \return The light manager
 		virtual const ILightManager*		GetLights( )	const = 0;
 
-		/// \return The currently assigned camera
+		/// \return The currently active camera (the one the rasterizer
+		/// will render through).  A scene can hold many cameras keyed
+		/// by name in the camera manager — see GetCameras() — and
+		/// designate one as active via IScenePriv::SetActiveCamera.
+		/// Returns NULL when no cameras have been added yet.
 		virtual const ICamera*				GetCamera( )	const = 0;
+
+		/// \return The camera manager (may be NULL on a scene that
+		/// hasn't been initialised).  Holds every camera that
+		/// AddCamera has registered, keyed by name.
+		virtual const ICameraManager*		GetCameras( )	const = 0;
+
+		/// \return The name under which the currently active camera was
+		/// registered, or empty string if no camera is active.
+		virtual String						GetActiveCameraName( ) const = 0;
 
 		/// \return The global radiance map
 		virtual const IRadianceMap*			GetGlobalRadianceMap() const = 0;
@@ -103,6 +118,7 @@ namespace RISE
 #include "IPhotonMap.h"
 #include "IAnimator.h"
 #include "ICamera.h"
+#include "ICameraManager.h"
 #include "IIrradianceCache.h"
 
 #endif

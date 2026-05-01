@@ -35,8 +35,10 @@
 #include "pch.h"
 #include "SceneEditController.h"
 #include "../Interfaces/IScene.h"
+#include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/ICamera.h"
+#include "../Interfaces/ICameraManager.h"
 #include "../Cameras/CameraCommon.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Interfaces/IObject.h"
@@ -70,6 +72,20 @@ constexpr int          SceneEditController::kFastMs;
 constexpr int          SceneEditController::kRefineIdleMs;
 constexpr int          SceneEditController::kRefineWakeMs;
 constexpr int          SceneEditController::kScrubWatchdogMs;
+
+// Synthetic property-row name used by RefreshProperties + SetProperty
+// to surface the "active camera" picker at the top of the camera
+// panel.  Two reasons it lives in a named constant:
+//
+//   1. It's referenced from two places (the row injector and the
+//      SetProperty intercept) — DRY beats two stringly-typed checks.
+//   2. The name is reserved.  A user who authors a real camera with
+//      this name in their .RISEscene would shadow the picker;
+//      callers should treat it as part of the editor's vocabulary
+//      rather than user input.  We don't reject it at AddCamera time
+//      because doing so would couple the parser to editor state — an
+//      unwelcome dependency direction.
+static const char* const kActiveCameraSyntheticRow = "active_camera";
 
 SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiveRasterizer )
 : mJob( job )
@@ -1003,7 +1019,11 @@ String SceneEditController::CurrentPanelHeader() const
 {
 	switch( CurrentPanelMode() ) {
 	case PanelMode::Camera:
-		return String( "Camera" );
+		// Plural "Cameras" — the panel's first row is a dropdown
+		// that lists every camera in the scene's manager and lets
+		// the user pick which one is active.  See RefreshProperties
+		// for how the row is synthesised.
+		return String( "Cameras" );
 	case PanelMode::Object: {
 		// String concatenation is awkward on RISE::String (a vector
 		// of char) — build via std::string and convert at the end.
@@ -1025,9 +1045,48 @@ void SceneEditController::RefreshProperties()
 
 	switch( CurrentPanelMode() ) {
 	case PanelMode::Camera: {
+		// First row: synthetic "active_camera" dropdown listing every
+		// camera in the scene's manager.  This row predates the
+		// camera-specific introspection so the user always sees the
+		// picker at the top of the panel — and so changing it
+		// triggers a property re-fetch (the per-camera rows are
+		// type-specific: a pinhole camera shows fov, a thinlens
+		// shows sensor_size + fstop + ... + focus_distance).
+		const ICameraManager* cams = scene->GetCameras();
+		if( cams && cams->getItemCount() > 0 ) {
+			CameraProperty pickerRow;
+			pickerRow.name        = String( kActiveCameraSyntheticRow );
+			pickerRow.kind        = ValueKind::Enum;
+			pickerRow.value       = scene->GetActiveCameraName();
+			pickerRow.description = String( "Switch which camera the rasterizer renders through.  Lists every camera registered with the scene." );
+			// Editable so the existing presets-menu UI path
+			// surfaces; the underlying SetActiveCamera rejects
+			// unknown names rather than crashing, so a typo just
+			// no-ops.  All three platform UIs only render the
+			// presets dropdown inside the editable branch.
+			pickerRow.editable    = true;
+			// Build presets {label = name, value = name} from the
+			// manager's enumeration order (lexicographic by name).
+			struct CollectNames : public IEnumCallback<const char*> {
+				std::vector<ParameterPreset>* out;
+				bool operator()( const char* const& name ) override {
+					ParameterPreset preset;
+					preset.label = std::string( name );
+					preset.value = std::string( name );
+					out->push_back( preset );
+					return true;
+				}
+			};
+			CollectNames cb;
+			cb.out = &pickerRow.presets;
+			cams->EnumerateItemNames( cb );
+			mProperties.push_back( pickerRow );
+		}
+
 		const ICamera* cam = scene->GetCamera();
 		if( !cam ) return;
-		mProperties = CameraIntrospection::Inspect( *cam );
+		std::vector<CameraProperty> camProps = CameraIntrospection::Inspect( *cam );
+		mProperties.insert( mProperties.end(), camProps.begin(), camProps.end() );
 		return;
 	}
 	case PanelMode::Object: {
@@ -1147,6 +1206,43 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
+	// "active_camera" is a synthetic row injected by RefreshProperties;
+	// CameraIntrospection doesn't know about it, and switching cameras
+	// is a navigation action (not a value mutation), so it bypasses the
+	// transactional undo path on purpose.  After the switch, Refresh
+	// will re-emit the per-camera rows for the newly-active camera —
+	// the platform UI calls propertySnapshot() on every selection
+	// change, so the panel rebuilds itself.
+	if( name == kActiveCameraSyntheticRow ) {
+		IScenePriv* scene = mJob.GetScene();
+		if( !scene ) return false;
+		// Switching the active camera is a structural mutation —
+		// the render thread reads the active camera per-pixel, so
+		// we can't swap it under an in-flight pass without inviting
+		// torn reads or use-after-free on the old camera.  Serialize
+		// using the same cancel-and-park pattern as OnTimeScrub:
+		//   1. Trip cancel so any in-flight RasterizeScene returns.
+		//   2. cv.wait until mRendering is false under mMutex.
+		//   3. Mutate the scene while still holding mMutex (the
+		//      render thread can't begin a new pass without
+		//      acquiring this mutex first).
+		//   4. Drop the lock and KickRender so the next pass picks
+		//      up the new active camera.
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) )
+		{
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		if( !scene->SetActiveCamera( valueStr.c_str() ) ) return false;
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+		return true;
+	}
+
 	// Route through the editor's transactional Apply path so panel
 	// edits land in the undo history alongside drag-driven camera
 	// edits.  SceneEditor::Apply for SetCameraProperty captures the

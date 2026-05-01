@@ -1931,6 +1931,9 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\ICamera.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ICameraManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\ICommunicator.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
@@ -2202,6 +2205,9 @@
       <Filter>Managers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\ObjectManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\CameraManager.h">
       <Filter>Managers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\PainterManager.h">

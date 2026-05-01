@@ -95,6 +95,7 @@
 #include "pch.h"
 #include <vector>
 #include <map>
+#include <set>
 #include <stack>
 #include <string>
 #include <sstream>
@@ -405,10 +406,45 @@ namespace RISE
 			};
 			static thread_local SceneOptionsState s_sceneOptions;
 
+			// Tracks every camera name issued during this parse so the
+			// auto-name helper below doesn't collide with names the
+			// user explicitly supplied.  Insertion is the parser's
+			// responsibility — happens inside `AllocateCameraName`,
+			// once per camera chunk, before the Add*Camera call.
+			static thread_local std::set<std::string> s_cameraNamesUsed;
+
+			// Default name issued to an unnamed camera chunk.  The
+			// design treats `name` as optional; first unnamed camera
+			// gets "default", second "default_1", and so on.  An
+			// explicit `name "default"` followed by an unnamed camera
+			// also auto-suffixes — that's what the s_cameraNamesUsed
+			// set is for.
+			static std::string AllocateCameraName( const std::string& requested ) {
+				if( !requested.empty() ) {
+					s_cameraNamesUsed.insert( requested );
+					return requested;
+				}
+				if( s_cameraNamesUsed.find( "default" ) == s_cameraNamesUsed.end() ) {
+					s_cameraNamesUsed.insert( "default" );
+					return "default";
+				}
+				for( int i = 1; i < 1000; ++i ) {
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "default_%d", i );
+					std::string candidate = buf;
+					if( s_cameraNamesUsed.find( candidate ) == s_cameraNamesUsed.end() ) {
+						s_cameraNamesUsed.insert( candidate );
+						return candidate;
+					}
+				}
+				return std::string( "default_overflow" );
+			}
+
 			static void ClearParseState() {
 				s_painterColors.clear();
 				s_cameraDefaults = CameraDefaultsState();
 				s_sceneOptions   = SceneOptionsState();
+				s_cameraNamesUsed.clear();
 			}
 
 			// Generic dispatch used by migrated chunk parsers to replace the
@@ -614,6 +650,7 @@ namespace RISE
 			}
 			template<typename PushFn>
 			static void AddCameraCommonParams( PushFn P ) {
+				{ auto& p = P(); p.name = "name";               p.kind = ValueKind::String;     p.description = "Optional identifier; defaults to \"default\" with auto-suffix on collision."; p.defaultValueHint = "default"; }
 				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "World-space position"; }
 				{ auto& p = P(); p.name = "lookat";             p.kind = ValueKind::DoubleVec3; p.description = "Look-at target point"; }
 				{ auto& p = P(); p.name = "up";                 p.kind = ValueKind::DoubleVec3; p.description = "Up vector"; p.defaultValueHint = "0 1 0"; }
@@ -3186,6 +3223,7 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
 					unsigned int xres   = bag.GetUInt(   "width",         256 );
@@ -3224,7 +3262,7 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					return pJob.SetPinholeCamera( loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
+					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3245,6 +3283,7 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
 					unsigned int xres   = bag.GetUInt(   "width",         256 );
@@ -3284,7 +3323,7 @@ namespace RISE
 					double ONB_U[3] = {onb.u().x, onb.u().y, onb.u().z};
 					double ONB_V[3] = {onb.v().x, onb.v().y, onb.v().z};
 					double ONB_W[3] = {onb.w().x, onb.w().y, onb.w().z};
-					return pJob.SetPinholeCameraONB( ONB_U, ONB_V, ONB_W, loc, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
+					return pJob.AddPinholeCameraONB( name.c_str(), ONB_U, ONB_V, ONB_W, loc, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3293,6 +3332,7 @@ namespace RISE
 						cd.keyword = "onb_pinhole_camera"; cd.category = ChunkCategory::Camera;
 						cd.description = "Pinhole camera oriented via an orthonormal basis built from two axes (va, vb) plus a `components` selector.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;     p.description = "Optional identifier; defaults to \"default\" with auto-suffix on collision."; p.defaultValueHint = "default"; }
 						{ auto& p = P(); p.name = "location";      p.kind = ValueKind::DoubleVec3; p.description = "Eye position"; }
 						{ auto& p = P(); p.name = "va";            p.kind = ValueKind::DoubleVec3; p.description = "First ONB axis (used per `components`)"; }
 						{ auto& p = P(); p.name = "vb";            p.kind = ValueKind::DoubleVec3; p.description = "Second ONB axis (used per `components`)"; }
@@ -3323,6 +3363,7 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					unsigned int xres = bag.GetUInt(   "width",            256 );
 					unsigned int yres = bag.GetUInt(   "height",           256 );
 					// Photographic quartet — units (Phase 1.2):
@@ -3470,7 +3511,7 @@ namespace RISE
 					// it's too late to affect this camera.
 					s_sceneOptions.camera_committed = true;
 
-					return pJob.SetThinlensCamera( loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y );
+					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3535,6 +3576,7 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					unsigned int xres   = bag.GetUInt(   "width",         256 );
 					unsigned int yres   = bag.GetUInt(   "height",        256 );
 					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
@@ -3572,7 +3614,7 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					return pJob.SetFisheyeCamera( loc, lookat, up, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
+					return pJob.AddFisheyeCamera( name.c_str(), loc, lookat, up, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3593,6 +3635,7 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
+					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					unsigned int xres = bag.GetUInt( "width",  256 );
 					unsigned int yres = bag.GetUInt( "height", 256 );
 					double pixelAR    = bag.GetDouble( "pixelAR",       1.0 );
@@ -3634,7 +3677,7 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					return pJob.SetOrthographicCamera( loc, lookat, up, xres, yres, vpscale, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
+					return pJob.AddOrthographicCamera( name.c_str(), loc, lookat, up, xres, yres, vpscale, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
 
 				const ChunkDescriptor& Describe() const override {

@@ -213,12 +213,16 @@ void* MLTSpectralRasterizer::SpectralRoundThread_ThreadProc( void* lpParameter )
 {
 	SpectralRoundThreadData* pData = (SpectralRoundThreadData*)lpParameter;
 
+	// Snapshot once — same contract as MLTRasterizer::RoundThread_ThreadProc.
+	const ICamera* pCam = pData->pScene->GetCamera();
+	if( !pCam ) return 0;
+
 	for( unsigned int c = pData->chainStart; c < pData->chainEnd; c++ )
 	{
 		pData->pRasterizer->RunChainSegmentSpectral(
 			pData->pChainStates[c],
 			*pData->pScene,
-			*pData->pScene->GetCamera(),
+			*pCam,
 			*pData->pSplatFilm,
 			pData->mutationsPerChain,
 			pData->normalization,
@@ -979,6 +983,7 @@ void MLTSpectralRasterizer::RasterizeScene(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
@@ -1045,6 +1050,7 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 	IRasterizeSequence* /*pRasterSequence*/
 	) const
 {
+	// Snapshot once at entry — structural changes serialize against rendering.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		GlobalLog()->PrintSourceError( "MLTSpectralRasterizer::RasterizeSceneAnimation:: Scene contains no camera!", __FILE__, __LINE__ );

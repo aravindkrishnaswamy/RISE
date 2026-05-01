@@ -377,6 +377,8 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	// Reset the adaptive sample counter for this render.
 	mTotalAdaptiveSamples.store( 0, std::memory_order_relaxed );
 
+	// Snapshot the active camera once — structural changes serialize
+	// against rendering per the IScenePriv.h contract.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;
@@ -709,6 +711,8 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		return;
 	}
 
+	// Snapshot the active camera once — structural changes serialize
+	// against rendering per the IScenePriv.h contract.
 	const ICamera* pCamera = pScene.GetCamera();
 	if( !pCamera ) {
 		return;

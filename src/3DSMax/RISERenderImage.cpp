@@ -121,7 +121,7 @@ bool SetupCamera( RISE::IJobPriv& job, const ViewParams& view, const int width, 
 	// See if there is a camera already set
 	RISE::ICamera* pCamera = job.GetScene()->GetCamera();
 	if( !pCamera ) {
-		job.SetPinholeCamera( loc, lookat, up, fov, width, height, 1.0, 0, 0, 0, o, to );
+		job.AddPinholeCamera( "default", loc, lookat, up, fov, width, height, 1.0, 0, 0, 0, o, to );
 	} else {
 		// Otherwise, modify the existing camera with the MAX camera settings
         // I know this is a hack, but we can use the IKeyframamble interface to set intermediate values 

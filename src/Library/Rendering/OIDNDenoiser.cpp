@@ -691,6 +691,7 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 	unsigned int samplesPerPixel
 	)
 {
+	// Snapshot once — structural changes serialize against rendering.
 	const ICamera* pCamera = scene.GetCamera();
 	if( !pCamera ) {
 		return;

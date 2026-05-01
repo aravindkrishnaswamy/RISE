@@ -59,7 +59,7 @@ static void AttachDefaultCamera( Job& job )
 	}
 	if( IScenePriv* scene = job.GetScene() )
 	{
-		scene->SetCamera( pCam );
+		scene->AddCamera( "default", pCam );
 	}
 	pCam->release();
 }

@@ -2547,6 +2547,7 @@ namespace RISE
 #include "Managers/ObjectManager.h"
 #include "Managers/GeometryManager.h"
 #include "Managers/LightManager.h"
+#include "Managers/CameraManager.h"
 #include "Managers/PainterManager.h"
 #include "Managers/MaterialManager.h"
 #include "Managers/ShaderManager.h"
@@ -2629,6 +2630,21 @@ namespace RISE
 
 		(*ppi) = new PainterManager();
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "painter manager" );
+		return true;
+	}
+
+	//! Creates a camera manager
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCameraManager(
+								ICameraManager** ppi			///< [out] Pointer to recieve the manager
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new CameraManager();
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "camera manager" );
 		return true;
 	}
 

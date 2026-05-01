@@ -109,6 +109,14 @@ namespace RISE
 				itemcb.pCaller.release();
 			}
 
+			// Release the manager's own ref on the item.  AddItem
+			// addref'd; without this matching release the item leaks
+			// every time RemoveItem succeeds.  Pre-existed across all
+			// managers but only mattered once cameras started being
+			// removed at runtime; the other managers are essentially
+			// load-once / shutdown-once in practice and Shutdown's
+			// safe_release covers them on teardown.
+			safe_release( elem->second.first );
 			items.erase( elem );
 			return true;
 		}

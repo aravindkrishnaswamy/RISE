@@ -15,6 +15,7 @@
 #include "Scene.h"
 #include "Animation/Animator.h"
 #include "RISE_API.h"
+#include "Interfaces/ICameraManager.h"
 #include "Interfaces/IPhotonTracer.h"
 #include "Interfaces/IPhotonMap.h"
 #include "Interfaces/IProgressCallback.h"
@@ -26,7 +27,9 @@ Scene::Scene( ) :
   pObjectManager( 0 ),
   pLightManager( 0 ),
   pLuminaryManager( 0 ),
-  pCamera( 0 ),
+  pCameraManager( 0 ),
+  activeCameraName(),
+  pActiveCamera( 0 ),
   pGlobalRadianceMap( 0 ),
   pCausticMap( 0 ),
   pGlobalMap( 0 ),
@@ -75,7 +78,16 @@ Scene::~Scene( )
 
 void Scene::Shutdown()
 {
-	safe_release( pCamera );
+	// Clear the publish pointer + drop Scene's own retain before
+	// shutting down the manager.  The manager's Shutdown releases
+	// its own per-camera refs; ours is independent.  Order doesn't
+	// affect correctness — the contract is that no render is in
+	// flight when Shutdown runs (callers serialize externally).
+	ICamera* prevActive = pActiveCamera;
+	pActiveCamera = 0;
+	safe_release( prevActive );
+	safe_shutdown_and_release( pCameraManager );
+	activeCameraName = String();
 	safe_release( pObjectManager );
 	safe_release( pLightManager );
 	safe_release( pLuminaryManager );
@@ -91,16 +103,160 @@ void Scene::Shutdown()
 	safe_release( pAnimator );
 }
 
-void Scene::SetCamera( ICamera*	pCamera_ )
+void Scene::SetCameraManager( ICameraManager* pCameraManager_ )
 {
-	if( pCamera_ )
+	if( pCameraManager_ )
 	{
-		// Free the old one
-		safe_release( pCamera );
-
-		pCamera_->addref();
-		pCamera = pCamera_;
+		// Reset the active-camera state along with the manager swap.
+		// Without this, a Job::InitializeContainers re-init (called
+		// on scene reset) would leave the OLD activeCameraName
+		// pointing at a name that the new (empty) manager doesn't
+		// have, and pActiveCamera dangling at a freed object.
+		ICamera* prevActive = pActiveCamera;
+		pActiveCamera = 0;
+		activeCameraName = String();
+		safe_release( prevActive );
+		safe_release( pCameraManager );
+		pCameraManager_->addref();
+		pCameraManager = pCameraManager_;
 	}
+}
+
+// Lifetime model for the active camera.
+//
+// Two parties retain the camera:
+//   - The camera manager (pCameraManager) holds one ref via AddItem;
+//     dropped on RemoveItem (which now safe_releases — see
+//     GenericManager.h) or on Shutdown.
+//   - Scene holds an INDEPENDENT ref on whichever camera is currently
+//     active.  Acquired in AddCamera / SetActiveCamera, dropped when
+//     active changes (or on Shutdown).
+//
+// Why Scene keeps its own ref rather than relying on the manager's:
+// it lets RemoveCamera complete its swap (manager release → Scene
+// release after auto-promote) without ever leaving pActiveCamera
+// pointing at half-destroyed memory.  Each transition is atomic
+// from the user's perspective.
+//
+// **Concurrency contract.**  Structural camera changes (AddCamera,
+// RemoveCamera, SetActiveCamera, SetCameraManager) MUST NOT run
+// concurrently with rendering.  The editor enforces this via its
+// cancel-and-park machinery (see SceneEditController::SetProperty
+// for "active_camera" and OnTimeScrub for the canonical pattern):
+//   1. Trip the rasterizer's cancel flag.
+//   2. cv.wait until the in-flight pass has returned.
+//   3. Mutate Scene with the lock held.
+//   4. Drop the lock + KickRender for a fresh pass.
+// Programmatic callers outside the editor must implement the same
+// contract — there is no in-library lock here, by design (matches
+// the existing camera-property-edit contract).
+
+bool Scene::AddCamera( const char* szName, ICamera* pCamera_ )
+{
+	// Empty / null names violate the IJob contract (camera names are
+	// the manager's primary key + the active-camera identifier).
+	// Catch them here so the manager doesn't end up with a "" entry
+	// that GetActiveCameraName().size() <= 1 mistakes for "no active".
+	if( !pCameraManager || !szName || !*szName || !pCamera_ ) {
+		return false;
+	}
+	if( !pCameraManager->AddItem( pCamera_, szName ) ) {
+		return false;
+	}
+	// "Last added wins" — every successful AddCamera makes the new
+	// camera active.  Take Scene's independent retain on it before
+	// dropping the prior active's retain.
+	pCamera_->addref();
+	ICamera* prevActive = pActiveCamera;
+	activeCameraName = String( szName );
+	pActiveCamera = pCamera_;
+	safe_release( prevActive );
+	return true;
+}
+
+bool Scene::RemoveCamera( const char* szName )
+{
+	if( !pCameraManager || !szName || !*szName ) {
+		return false;
+	}
+	const bool wasActive = ( activeCameraName.size() > 1 ) &&
+	                       ( strcmp( activeCameraName.c_str(), szName ) == 0 );
+
+	// Snapshot Scene's retain before it's potentially overwritten by
+	// auto-promote, then clear the publish pointer so Scene's
+	// invariants are kept consistent across the manager release.
+	ICamera* prevActive = nullptr;
+	if( wasActive ) {
+		prevActive = pActiveCamera;
+		pActiveCamera = 0;
+		activeCameraName = String();
+	}
+
+	if( !pCameraManager->RemoveItem( szName ) ) {
+		// Removal failed — restore the active state we just cleared
+		// so the scene isn't left in a dead-active limbo.
+		if( wasActive && prevActive ) {
+			activeCameraName = String( szName );
+			pActiveCamera = prevActive;
+		}
+		return false;
+	}
+
+	if( wasActive ) {
+		// Auto-promote: pick whatever name is first in the manager's
+		// iteration order.  GenericManager backs items in a
+		// std::map<String,...>, so iteration is lexicographic —
+		// stable and deterministic, which is what the design's
+		// "auto-promote" rule requires.  If the manager is now
+		// empty, the callback runs zero times and activeCameraName
+		// stays empty — the renderer's null-camera guard
+		// (PixelBasedRasterizerHelper.cpp line 150 etc.) handles
+		// that.
+		struct PickFirst : public IEnumCallback<const char*> {
+			String pick;
+			bool operator()( const char* const& name ) override {
+				if( pick.size() <= 1 ) pick = String( name );
+				return true;
+			}
+		};
+		PickFirst cb;
+		pCameraManager->EnumerateItemNames( cb );
+		if( cb.pick.size() > 1 ) {
+			ICamera* newActive = pCameraManager->GetItem( cb.pick.c_str() );
+			if( newActive ) {
+				newActive->addref();
+				activeCameraName = cb.pick;
+				pActiveCamera = newActive;
+			}
+		}
+
+		// Drop Scene's retain on the removed camera.  Combined with
+		// the manager's RemoveItem release above, this is what
+		// destroys the camera object (count was 2, both refs now
+		// gone).  Per the concurrency contract at the top of this
+		// file, no render is in flight here.
+		safe_release( prevActive );
+	}
+	return true;
+}
+
+bool Scene::SetActiveCamera( const char* szName )
+{
+	if( !pCameraManager || !szName || !*szName ) {
+		return false;
+	}
+	ICamera* cam = pCameraManager->GetItem( szName );
+	if( !cam ) {
+		return false;
+	}
+	// Take Scene's retain on the new active before dropping the
+	// prior retain — same idiom as AddCamera.
+	cam->addref();
+	ICamera* prevActive = pActiveCamera;
+	activeCameraName = String( szName );
+	pActiveCamera = cam;
+	safe_release( prevActive );
+	return true;
 }
 
 void Scene::SetObjectManager( const IObjectManager* pObjectManager_ )
