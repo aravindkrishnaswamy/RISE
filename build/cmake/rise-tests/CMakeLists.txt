@@ -103,6 +103,16 @@ if(NOT DEFINED OPENPGL_DIR)
     set(OPENPGL_DIR "C:/Dev/openpgl-install")
 endif()
 
+# OpenPGL install — must match the path baked into Library.vcxproj /
+# RISE-CLI.vcxproj (currently C:/Dev/openpgl-install).  RISE.lib is
+# compiled with RISE_ENABLE_OPENPGL on the VS2022 side, so every test
+# .exe must link openpgl.lib to resolve the pgl* symbols pulled in
+# from RISE.lib.  Override with -DOPENPGL_DIR=... at configure time
+# if installed elsewhere.
+if(NOT DEFINED OPENPGL_DIR)
+    set(OPENPGL_DIR "C:/Dev/openpgl-install")
+endif()
+
 # RISE static library produced by Library.vcxproj.
 set(RISE_LIB_RELEASE "${RISE_ROOT}/bin/RISE.lib")
 set(RISE_LIB_DEBUG   "${RISE_ROOT}/dbin/RISE.lib")
