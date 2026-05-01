@@ -134,12 +134,25 @@ namespace RISE
 			//! Bulk import: walks the requested (or default) scene tree and
 			//! emits per-primitive geometries, per-material PBR materials +
 			//! optional normal_map_modifier, per-image painters, lights, and
-			//! the first camera.  Note: this method is NOT all-or-nothing.
-			//! Materials are created up front before the scene walk; if the
-			//! file parses + validates but has a malformed scene reference,
-			//! the materials and their texture painters will still be in the
-			//! manager.  Callers that need atomic import should check the
-			//! return value AND call `Job::Reset` on failure to clean up.
+			//! every camera-bearing node (one named camera per node, with
+			//! the first DFS-encountered camera designated active when no
+			//! pre-existing user camera was set).  Note: this method is
+			//! NOT all-or-nothing.  Materials are created up front before
+			//! the scene walk; if the file parses + validates but has a
+			//! malformed scene reference, the materials and their texture
+			//! painters will still be in the manager.  Callers that need
+			//! atomic import should check the return value AND call
+			//! `Job::Reset` on failure to clean up.
+			//!
+			//! Concurrency: ImportScene is a structural mutation — like
+			//! the upstream multi-camera CL's AddCamera contract, callers
+			//! MUST NOT run ImportScene concurrently with rendering.  A
+			//! scene-editor-driven re-import should follow the cancel-
+			//! and-park pattern (cancel any in-flight pass, cv-wait until
+			//! rendering goes false, then call ImportScene).  The per-
+			//! camera snapshot/restore around the walk assumes a serial
+			//! caller — an interleaving SetActiveCamera between snapshot
+			//! and restore would silently revert.
 			bool ImportScene( IJob& job, const GLTFImportOptions& opts );
 
 			//! Single-primitive import: build geometry for `meshIdx.primIdx`

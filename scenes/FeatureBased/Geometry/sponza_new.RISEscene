@@ -105,12 +105,21 @@ file_rasterizeroutput
 #
 #   - import_meshes/materials/normal_maps: TRUE
 #     (the whole point of the scene)
-#   - import_cameras: FALSE -- the asset declares
-#     6 PhysCamera nodes; we'd grab the first one
-#     and inherit its quaternion.  We instead
-#     hand-place a pinhole below so the framing
-#     is reproducible and doesn't depend on the
-#     importer's quaternion->lookat conversion.
+#   - import_cameras: TRUE -- the asset declares 6
+#     PhysCamera nodes (PhysCamera001..006); each
+#     becomes an alternative camera under the name
+#     `sponza.cam.PhysCamera001` etc.  The user can
+#     SetActiveCamera at runtime to switch hero
+#     shots.  Pre-multi-camera-CL this was forced
+#     FALSE because we could only carry one camera;
+#     post-CL the asset's six-shot reel is a feature.
+#     The hand-placed pinhole below is added AFTER
+#     this chunk and therefore wins active-camera
+#     status via RISE's last-added-wins auto-promote
+#     rule -- the importer's own SetActiveCamera
+#     during the walk only reorders within the
+#     gltf_import chunk's contribution.  The 6
+#     PhysCamera entries are switchable extras.
 #   - import_lights: FALSE -- every KHR_lights_
 #     punctual entry in the asset has intensity=0.
 #     They'd register but contribute nothing, and
@@ -139,7 +148,7 @@ gltf_import
 	import_meshes		TRUE
 	import_materials	TRUE
 	import_normal_maps	TRUE
-	import_cameras		FALSE
+	import_cameras		TRUE
 	import_lights		FALSE
 	lowmem_textures		TRUE
 }

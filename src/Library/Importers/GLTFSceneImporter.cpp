@@ -269,10 +269,67 @@ namespace
 	std::string LightName    ( const std::string& prefix, size_t idx ) {
 		std::ostringstream oss; oss << prefix << ".light." << idx; return oss.str();
 	}
-	// CameraName helper was here but the importer currently hard-codes
-	// "default" (only the first glTF camera is imported).  When
-	// multi-camera glTF import lands, restore the helper and call it
-	// per-camera-node.
+	// Camera name builder.  Multi-camera support (2026-05-01): every glTF
+	// node carrying a camera gets registered with a stable name derived
+	// from the node's place in the glTF hierarchy.  Preference order:
+	//   1. `<prefix>.cam.<sanitizedNodeName>` when node->name is non-null,
+	//      non-empty, and contains only printable ASCII (no spaces / punct
+	//      that could break downstream chunk lookups).  Spaces in the
+	//      asset's node name are converted to '_'; the manager rejects
+	//      duplicates so collision -> fallback below.
+	//   2. `<prefix>.cam.n<nodeIdx>` — index-stable, always-unique.
+	// Sponza's nodes are named "PhysCamera001".."PhysCamera006" so users
+	// see scene-meaningful names like `sponza.cam.PhysCamera001`; for
+	// poorly-authored or unnamed cameras the index path keeps loads
+	// working without surprises.
+	std::string CameraNameFromNode( const std::string& prefix, const cgltf_node* node, size_t nodeIdx )
+	{
+		auto isSafeChar = []( char c ) -> bool {
+			return ( c >= '0' && c <= '9' )
+			    || ( c >= 'A' && c <= 'Z' )
+			    || ( c >= 'a' && c <= 'z' )
+			    || c == '_' || c == '-';
+		};
+		// '.' is intentionally NOT in the isSafeChar set: dots are the
+		// segment separator we use ourselves (`<prefix>.cam.<name>`), and
+		// a node name like `".hidden"` or `"foo.bar"` would either
+		// produce consecutive dots in the result (`<prefix>.cam..hidden`)
+		// or visually merge with our segment structure.  Drop user dots
+		// to keep `<prefix>.cam.<segment>` unambiguous.
+		std::string sanitized;
+		if( node && node->name && node->name[0] ) {
+			sanitized.reserve( std::strlen( node->name ) );
+			for( const char* p = node->name; *p; ++p ) {
+				if( *p == ' ' || *p == '\t' ) sanitized.push_back( '_' );
+				else if( isSafeChar( *p ) )   sanitized.push_back( *p );
+				// any other char (incl. '.') is dropped silently; if
+				// that empties the name, fall through to the index path
+			}
+			// Defensive: if sanitization produced only underscores from a
+			// whitespace-only or punctuation-only original name, treat as
+			// empty so we use the index path instead of registering a
+			// just-underscores camera name.
+			bool allUnderscore = true;
+			for( char c : sanitized ) {
+				if( c != '_' ) { allUnderscore = false; break; }
+			}
+			if( allUnderscore ) {
+				sanitized.clear();
+			}
+		}
+		std::ostringstream oss;
+		if( !sanitized.empty() ) {
+			oss << prefix << ".cam." << sanitized;
+		} else {
+			oss << prefix << ".cam.n" << nodeIdx;
+		}
+		return oss.str();
+	}
+	std::string CameraNameFromIndex( const std::string& prefix, size_t nodeIdx )
+	{
+		std::ostringstream oss; oss << prefix << ".cam.n" << nodeIdx; return oss.str();
+	}
+
 	std::string MediumName   ( const std::string& prefix, size_t matIdx ) {
 		std::ostringstream oss; oss << prefix << ".medium." << matIdx; return oss.str();
 	}
@@ -1358,7 +1415,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 	}
 
 	// Recursive node walk (column-major matrix accumulation).
-	bool sawCamera = false;
+	std::string firstCameraName;	// captured during the walk (first camera-bearing node in DFS order); used post-walk to designate the active camera
 
 	struct Walker
 	{
@@ -1367,7 +1424,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 		const cgltf_data*        data;
 		const std::string&       glbPath;
 		const GLTFImportOptions& opts;
-		bool&                    sawCamera;
+		std::string&             firstCameraName;	// in/out: first successful camera registration captures its name here so ImportScene can SetActiveCamera to it post-walk (so authoring intent — first camera = primary — beats RISE's last-added-wins auto-promote)
 		GLTFSceneImporter&       importer;	// for ImportPrimitive — bypasses the public IJob entry point so the cgltf parse is not redone per primitive
 		std::set<std::string>&   registeredGeoms;	// memoizes which (meshIdx,primIdx) geometries we've already built so multi-node instancing of a shared mesh registers ONCE and AddObjectMatrix runs N times
 
@@ -1503,36 +1560,63 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 				CreateLightForNode( job, prefix, lightIdx, node->light, world );
 			}
 
-			// Camera (first only)
-			if( opts.importCameras && node->camera && !sawCamera ) {
+			// Camera.  Multi-camera support (2026-05-01): every camera-
+			// bearing node is registered as a named camera in the scene's
+			// camera manager.  RemoveCamera + SetActiveCamera let the user
+			// switch between them at runtime.  Naming is stable (node-name-
+			// based; index fallback) so a re-import of the same .gltf binds
+			// the same camera names.
+			//
+			// Active-camera policy: the FIRST camera in scene-walk DFS
+			// order is explicitly designated active in ImportScene after
+			// the walk completes, so the authoring tool's primary camera
+			// (typically index 0 / first in scene tree) wins.  This
+			// overrides RISE's intrinsic "last-added wins" auto-promote
+			// during the walk.  A subsequent .RISEscene chunk that adds
+			// its own camera *after* gltf_import will then re-take active
+			// via auto-promote — which is what the Sponza scene relies on
+			// to keep its hand-placed pinhole authoritative while still
+			// registering the asset's six PhysCamera nodes as alternatives.
+			if( opts.importCameras && node->camera ) {
 				const cgltf_camera* cam = node->camera;
+				const size_t nodeIdx = (size_t)( node - data->nodes );
+
+				// glTF cameras look down -Z in their local frame; up is +Y.
+				// Transform those local axes via the world matrix to get
+				// the world-space placement.
+				const double cx = world[12], cy = world[13], cz = world[14];
+				const double lx = cx - world[8],  ly = cy - world[9],  lz = cz - world[10];
+				const double ux = world[4], uy = world[5], uz = world[6];
+
+				const double location[3] = { cx, cy, cz };
+				const double lookat[3]   = { lx, ly, lz };
+				const double up[3]       = { ux, uy, uz };
+				const double orientation[3] = { 0, 0, 0 };
+				const double target_orient[2] = { 0, 0 };
+
+				// Try the node-name-based camera name first; on AddItem
+				// failure (most commonly a duplicate name across nodes
+				// with the same sanitized identifier), fall back to the
+				// index-based name which is guaranteed unique per import.
+				// Both attempts logged on failure so a future non-
+				// duplicate failure mode (null factory, validation reject)
+				// is visible rather than silently swallowed.
+				const std::string preferredName = CameraNameFromNode( prefix, node, nodeIdx );
+				const std::string fallbackName  = CameraNameFromIndex( prefix, nodeIdx );
+				std::string camName = preferredName;
+				bool added = false;
+
 				if( cam->type == cgltf_camera_type_perspective ) {
-					// glTF cameras look down -Z in their local frame; up is +Y.
-					// Transform those local axes via the world matrix to get
-					// the world-space placement.
-					const double cx = world[12], cy = world[13], cz = world[14];
-					const double lx = cx - world[8],  ly = cy - world[9],  lz = cz - world[10];
-					const double ux = world[4], uy = world[5], uz = world[6];
-
-					const double location[3] = { cx, cy, cz };
-					const double lookat[3]   = { lx, ly, lz };
-					const double up[3]       = { ux, uy, uz };
-					const double orientation[3] = { 0, 0, 0 };
-					const double target_orient[2] = { 0, 0 };
-
-					// glTF stores yfov in radians; AddPinholeCamera takes fov
-					// in radians too (despite the chunk's "degrees" hint).
+					// glTF stores yfov in radians; AddPinholeCamera takes
+					// fov in radians (despite the chunk's "degrees" hint).
 					const double yfov_rad = (double)cam->data.perspective.yfov;
 
 					// Resolution / pixel rate / scanning rate are RISE
-					// internals; pick benign defaults.  Users override via a
-					// pinhole_camera chunk after the import.
-					// Imports get a stable "default" name; if the importer
-					// later supports multiple glTF cameras this will need
-					// per-node naming, but glTF uses a single active
-					// camera at most so "default" is correct today.
-					job.AddPinholeCamera(
-						"default",
+					// internals; pick benign defaults.  Users override via
+					// a pinhole_camera chunk after the import or by
+					// tweaking the active camera at runtime.
+					added = job.AddPinholeCamera(
+						camName.c_str(),
 						location, lookat, up,
 						yfov_rad,
 						/*xres*/ 800, /*yres*/ 600,
@@ -1541,11 +1625,94 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 						/*scanningRate*/ 0.0,
 						/*pixelRate*/ 0.0,
 						orientation, target_orient );
-					sawCamera = true;
+					if( !added && preferredName != fallbackName ) {
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: camera `%s` could not be registered; "
+							"retrying as `%s` (node-name collision is the typical cause)",
+							preferredName.c_str(), fallbackName.c_str() );
+						camName = fallbackName;
+						added = job.AddPinholeCamera(
+							camName.c_str(),
+							location, lookat, up, yfov_rad,
+							800, 600, 1.0, 1.0, 0.0, 0.0,
+							orientation, target_orient );
+					}
+					if( !added ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: failed to register pinhole camera for "
+							"node %u (preferred `%s`, fallback `%s`); skipping",
+							(unsigned)nodeIdx, preferredName.c_str(), fallbackName.c_str() );
+					}
+				} else if( cam->type == cgltf_camera_type_orthographic ) {
+					// glTF orthographic xmag/ymag are HALF-extents of the
+					// view frustum (frustum spans [-xmag, +xmag] x
+					// [-ymag, +ymag] per glTF 2.0 §5.21).  RISE's
+					// OrthographicCamera vpScale is the FULL extent —
+					// CameraUtilities.cpp:492-493 documents the mapping
+					// `x = (w/2 - px) / w * vpScale.x`, so px=0 gives
+					// vpScale.x/2 and px=w gives -vpScale.x/2 (full range
+					// = vpScale.x).  Multiply by 2.0 to convert.
+					const double vpScale[2] = {
+						2.0 * (double)cam->data.orthographic.xmag,
+						2.0 * (double)cam->data.orthographic.ymag
+					};
+					// glTF orthographic also carries znear/zfar (clip
+					// planes); RISE's OrthographicCamera doesn't model
+					// clip planes, so we drop them with a one-line note.
+					// Authoring tools that rely on tight ortho clipping
+					// (CAD, blueprint shots) will see geometry beyond the
+					// authored zfar; users wanting that behaviour need to
+					// scene-cull manually.
+					if( cam->data.orthographic.zfar > 0 ) {
+						// Only log when the asset declares a finite far
+						// plane.  znear is spec-required but visually
+						// inconsequential for orthographic, so we don't
+						// pester authors who left it at the default tight
+						// value.  zfar mismatches matter more — geometry
+						// beyond the authored far still gets intersected.
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: orthographic camera node %u declares "
+							"zfar=%.3f; RISE has no orthographic clip planes, so "
+							"geometry beyond the authored far range will still be "
+							"intersected.",
+							(unsigned)nodeIdx,
+							(double)cam->data.orthographic.zfar );
+					}
+					added = job.AddOrthographicCamera(
+						camName.c_str(),
+						location, lookat, up,
+						/*xres*/ 800, /*yres*/ 600,
+						vpScale,
+						/*pixelAR*/ 1.0,
+						/*exposure*/ 1.0,
+						/*scanningRate*/ 0.0,
+						/*pixelRate*/ 0.0,
+						orientation, target_orient );
+					if( !added && preferredName != fallbackName ) {
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: camera `%s` could not be registered; "
+							"retrying as `%s`",
+							preferredName.c_str(), fallbackName.c_str() );
+						camName = fallbackName;
+						added = job.AddOrthographicCamera(
+							camName.c_str(),
+							location, lookat, up,
+							800, 600, vpScale, 1.0, 1.0, 0.0, 0.0,
+							orientation, target_orient );
+					}
+					if( !added ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"GLTFSceneImporter:: failed to register orthographic camera "
+							"for node %u (preferred `%s`, fallback `%s`); skipping",
+							(unsigned)nodeIdx, preferredName.c_str(), fallbackName.c_str() );
+					}
 				} else {
 					GlobalLog()->PrintEasyWarning(
-						"GLTFSceneImporter:: orthographic glTF cameras are not yet "
-						"wired up; skipping" );
+						"GLTFSceneImporter:: unrecognised glTF camera type on node; skipping" );
+				}
+
+				if( added && firstCameraName.empty() ) {
+					firstCameraName = camName;
 				}
 			}
 
@@ -1555,11 +1722,40 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 		}
 	};
 
+	// Snapshot the pre-walk active camera so we can preserve a user-
+	// authored camera (e.g. a `pinhole_camera` chunk parsed BEFORE this
+	// `gltf_import` chunk) across the walk's auto-promote storm.  Each
+	// AddXXXCamera call inside the walk auto-promotes to active under the
+	// last-added-wins rule, so without this snapshot the user's pre-walk
+	// hero shot would be silently overridden by whichever asset camera
+	// happened to be visited last in DFS order.  Empty pre-walk active
+	// = no user camera was set up yet, which is the common case.
+	const std::string preWalkActive = job.GetActiveCameraName();
+
 	cgltf_float identity[16]; Mat4Identity( identity );
 	std::set<std::string> registeredGeoms;	// see Walker struct + the dedup site for rationale
-	Walker w = { job, prefix, data, szFilename, opts, sawCamera, *this, registeredGeoms };
+	Walker w = { job, prefix, data, szFilename, opts, firstCameraName, *this, registeredGeoms };
 	for( size_t r = 0; r < scene->nodes_count; ++r ) {
 		w.Walk( scene->nodes[r], identity );
+	}
+
+	// Active-camera policy:
+	//   - If a camera was active BEFORE the walk (user authored a
+	//     `pinhole_camera` chunk above this `gltf_import`), restore it.
+	//     Every AddXXXCamera during the walk auto-promotes, so the
+	//     pre-walk active was overwritten — explicit restore is required.
+	//   - Else, override to the FIRST camera in DFS order (matches glTF
+	//     authoring intent: index-0 / first-scene-tree camera = primary).
+	//     The intrinsic last-added-wins rule would otherwise leave the
+	//     LAST DFS camera active, which is arbitrary from the user's POV.
+	// A `pinhole_camera` chunk AFTER this `gltf_import` will then re-take
+	// active via its own auto-promote — Sponza's pattern, where the hand-
+	// placed pinhole stays authoritative while the asset's PhysCamera
+	// nodes register as switchable alternatives.
+	if( !preWalkActive.empty() ) {
+		(void) job.SetActiveCamera( preWalkActive.c_str() );
+	} else if( !firstCameraName.empty() ) {
+		(void) job.SetActiveCamera( firstCameraName.c_str() );
 	}
 
 	// cgltfData is freed in the destructor — same lifecycle as a single

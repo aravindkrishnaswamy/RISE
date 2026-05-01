@@ -245,6 +245,9 @@ namespace RISE
 		//! Designates the named camera as the scene's active one.
 		bool SetActiveCamera( const char* name );
 
+		//! See IJob.h for the contract.  Empty string when no active.
+		std::string GetActiveCameraName() const;
+
 		//! Removes the named camera; auto-promotes if it was active.
 		bool RemoveCamera( const char* name );
 

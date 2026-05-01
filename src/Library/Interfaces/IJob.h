@@ -23,6 +23,7 @@
 #include "IReference.h"
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
+#include <string>
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
@@ -220,6 +221,18 @@ namespace RISE
 		virtual bool SetActiveCamera(
 			const char* name										///< [in] Name of camera to make active
 			) = 0;
+
+		//! Reads back the currently-active camera name.  Returns an empty
+		/// string when the scene has no cameras (and therefore no active
+		/// camera).  Used by importers that need to snapshot+restore the
+		/// active camera around a multi-camera registration step (see
+		/// GLTFSceneImporter::ImportScene — a `gltf_import` chunk with
+		/// `import_cameras TRUE` registers N cameras, each auto-promoting
+		/// to active under the last-added-wins rule; the importer uses
+		/// this query to detect a pre-existing user camera and preserve
+		/// it across the walk instead of letting the asset's last DFS
+		/// camera silently take over).
+		virtual std::string GetActiveCameraName() const = 0;
 
 		//! Removes the named camera.  If the removed camera was
 		/// active, auto-promotes a remaining camera (or leaves the

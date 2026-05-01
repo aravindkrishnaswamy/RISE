@@ -329,6 +329,17 @@ bool Job::SetActiveCamera( const char* name )
 	return pScene->SetActiveCamera( name );
 }
 
+std::string Job::GetActiveCameraName() const
+{
+	if( !pScene ) return std::string();
+	// IScene::GetActiveCameraName returns a `String` (= std::vector<char>
+	// derivative) by value; convert to std::string for IJob's portable
+	// signature.  Empty when no camera has ever been added or all of
+	// them have been removed.
+	const RISE::String s = pScene->GetActiveCameraName();
+	return s.empty() ? std::string() : std::string( s.c_str() );
+}
+
 bool Job::RemoveCamera( const char* name )
 {
 	if( !pScene ) return false;
