@@ -105,7 +105,7 @@ breakdown.
 | **Library: cgltf v1.15** | `extlib/cgltf/{cgltf.h,cgltf.cpp}` (db65457) | — | — |
 | **JPEG painter** (glTF prereq) | `jpg_painter` chunk + `JPEGReader` + `stb_image` (cbab01f) | — | — |
 | **v3 mesh interface** (`Tangent4`, `ITriangleMeshGeometryIndexed3`) | Header + impl (db65457) | Triangle-mesh intersection now interpolates the tangent + bitangent sign and stamps `bHasTangent` on `RayIntersectionGeometric`; `Object::IntersectRay` transforms the tangent to world space with `m_mxFinalTrans` | — |
-| **Mesh loader** (`gltfmesh_geometry`) | `TriangleMeshLoaderGLTF` + chunk + Job/RISE_API (db65457) | `flip_v` default flipped from FALSE to TRUE — see §4 V-convention reconciliation | — |
+| **Mesh loader** (`gltfmesh_geometry`) | `TriangleMeshLoaderGLTF` + chunk + Job/RISE_API (db65457) | `flip_v` default = FALSE (Phase 4 corrected the Phase 1 misanalysis — both glTF and RISE use V-down with origin at upper-left; see §4 V-convention reconciliation). | — |
 | **Test corpus** | Box (db65457) | 9 Khronos Sample-Assets `.glb` files committed under `scenes/Tests/Geometry/assets/`: BoxTextured, Duck, Avocado, NormalTangentTest, NormalTangentMirrorTest, VertexColorTest, MultiUVTest, OrientationTest, AlphaBlendModeTest | — |
 | **Test program** | `tests/GLTFLoaderTest.cpp` with 5 cases (db65457) | Extended to 14 cases — adversarial coverage of every Phase 1 attribute path (TANGENT, TEXCOORD_1, COLOR_0 v2 cast, multi-mesh boundary, alpha-mode metadata ignore) | — |
 | **Tangent-space normal mapping** | — | `Modifiers/NormalMap.{h,cpp}` + `normal_map_modifier` chunk + `Job::AddNormalMapModifier` + `RISE_API_CreateNormalMapModifier`; visual-regression scene `gltf_normal_mapped.RISEscene`; sidecar normal-map PNG + extraction helper script | — |
@@ -265,8 +265,10 @@ Two new attribute storages, both small extensions to the existing pattern.
 
 **Status:** delivered in db65457 (storage + loader path) and this branch
 (intersection-time interpolation + Object-level tangent transform).
-Empirically verified end-to-end via the `NormalTangentMirrorTest` adversarial
-asset (mirror-UV diagnostic — see §4 V-convention reconciliation).
+`NormalTangentMirrorTest` validates the bitangent-sign data round-trip
+(`tests/GLTFLoaderTest.cpp::TestNormalTangentMirrorTest`) — but note that
+test does NOT exercise V-flip behaviour, contrary to a Phase 1 claim that
+was corrected in Phase 4 (see §4 V-convention reconciliation).
 
 ### What to skip in v1 (warn-and-discard at load time)
 
@@ -458,42 +460,65 @@ tangent.w`, with two extra runtime details worth knowing:
 The modifier is independent of the future `pbr_metallic_roughness_material` —
 users can attach it to any object today.
 
-### V-convention reconciliation (Phase 1 finding)
+### V-convention reconciliation (Phase 1 finding — corrected in Phase 4)
 
-While verifying normal mapping against `NormalTangentMirrorTest` we found a
-silent V-axis convention mismatch between glTF and RISE that affects
-**every image-based painter**, not just normal maps:
+**TL;DR:** glTF and RISE both use V-down (UV origin = upper-left), so
+no flip is needed at the loader.  `flip_v` defaults to **FALSE**.  An
+earlier Phase 1 note in this section claimed the opposite; that note was
+empirically disproven by Phase 4 visual testing on Avocado.glb,
+MetalRoughSpheres.glb, and AlphaBlendModeTest.glb.
 
-- **glTF authors with V increasing upward** (OpenGL convention) — V=0 is the
-  bottom of the texture, V=1 the top.
-- **RISE samples with V increasing downward** (DirectX convention).  See
-  `BilinRasterImageAccessor::GetPel` (and the NNB / Bicubic siblings):
-  pixel-row index is computed as `V * height`, indexing from row 0 = top of
-  the loaded image.  PNG / JPEG / EXR / HDR / TIFF readers all populate
-  rows top-to-bottom, so the in-memory storage matches "row 0 = top".
+#### What the glTF 2.0 spec actually says
 
-Without compensation, every glTF-sourced texture renders V-mirrored.  For
-plain colour textures the mirroring is sometimes invisible (the bumps don't
-care which way is up).  For normal maps it produces a subtler symptom: in
-mirrored-UV regions of an asset (where the asset's own TANGENT.w flips), the
-combined effect of the asset's mirror + RISE's silent V flip leaves the
-mirrored half rendering with inverted bumps relative to the non-mirrored
-half — exactly the failure mode `NormalTangentMirrorTest` is designed to
-catch.
+glTF 2.0 specifies that **the UV coordinate origin is the upper-left
+corner of the texture**, with U increasing to the right and V increasing
+downward.  See the glTF spec, "3.7.2.1. Overview" (texture coordinates).
 
-**The fix lives at the right layer.**  We compensate at glTF mesh-load time:
-`gltfmesh_geometry`'s `flip_v` parameter defaults to **TRUE**, so the loader
-stores `(u, 1−v)` instead of `(u, v)` in `pCoords`.  Other mesh formats
-(PLY, 3DS, RAW2) keep their native V conventions; the texture painters keep
-their consistent V-down sampling; the only place that knows about glTF's
-convention difference is the only place that crosses a format boundary.
-Override with `flip_v FALSE` only for atypical glTF assets that were
-exported with DirectX V already baked in.
+RISE's `BilinRasterImageAccessor::GetPel` (and its NNB / Bicubic
+siblings) computes the pixel row as `V * height`, indexing from row 0 =
+top of the loaded image.  PNG / JPEG / EXR / HDR / TIFF readers all
+populate the image top-row-first, so RISE's in-memory storage matches
+"row 0 = top of file".  Both conventions agree: V=0 is at the top of
+the texture image.  The two coordinate systems already line up — no
+flip is needed at the loader.
 
-This finding **must propagate into Phase 2's `gltf_import`**: the bulk
-importer needs to apply the same V flip.  Trying to "fix RISE" by flipping
-V in the painter or image readers would break every existing PLY/3DS-based
-scene that's been authored against the V-down convention.
+#### How the earlier "Phase 1 finding" went wrong
+
+The Phase 1 author misread the glTF spec (mixing it up with OpenGL
+texture-image storage, where image-row 0 is conventionally the bottom)
+and concluded that glTF was V-up and RISE was V-down.  The proposed
+fix was a `flip_v=TRUE` default at the loader.  This silently inverted
+every glTF-sourced texture vertically.  The bug went unnoticed because:
+
+1. The Phase-1 visual-regression assets (BoxTextured, Duck) have UV
+   layouts whose top and bottom halves are visually similar, so the
+   V-mirror produced a "looks plausible" render.
+2. The original adversarial test (`NormalTangentMirrorTest` in
+   `tests/GLTFLoaderTest.cpp`) was actually checking **bitangent-sign
+   data** — `w = ±1` per vertex — and never compared rendered output.
+   It does not load through the flip_v path at all (it constructs
+   `TriangleMeshLoaderGLTF(..., false)` explicitly).  The Phase 1 doc
+   note cited it as an "empirical verification" of V-flip behaviour;
+   it is no such thing.
+
+Phase 4 added Avocado.glb (a single-primitive asset with strongly
+distinct UV regions: brown pit at top-right of the atlas, yellow
+flesh-cavity at bottom-right, green skin on the left half).  With
+`flip_v=TRUE`, the pit geometry rendered with the flesh-cavity texture
+and vice versa — a visually unmistakable swap because the pit and the
+flesh-cavity occupy vertically adjacent atlas regions.  Forcing
+`flip_v=FALSE` on the importer fixed Avocado, fixed MetalRoughSpheres
+(label text became readable / right-side up), and fixed
+AlphaBlendModeTest (text "Cutoff 0.25" became readable / right-side up).
+
+#### The fix
+
+`gltfmesh_geometry`'s `flip_v` parameter and `gltf_import`'s hardcoded
+flip both default to **FALSE** as of Phase 4.  Override `TRUE` only for
+non-conformant assets that ship with V already baked in upside-down
+(rare; this is an asset bug, not a renderer convention issue).  Other
+mesh formats (PLY, 3DS, RAW2) keep their native V conventions; nothing
+in the painter or image-reader chain needed to change.
 
 ### Material story summary
 
@@ -596,10 +621,12 @@ gltfmesh_geometry {
     primitive    0                     # which primitive in the mesh (default 0)
     double_sided FALSE
     face_normals FALSE
-    flip_v       TRUE                  # default; flips glTF V-up to RISE V-down
-                                       # (see §4 V-convention reconciliation).
-                                       # Override to FALSE only for atypical
-                                       # exports with DirectX V already baked in.
+    flip_v       FALSE                 # default; both glTF and RISE use
+                                       # V-down (UV origin = upper-left), so
+                                       # no flip is needed (see §4 V-convention
+                                       # reconciliation).  Override to TRUE
+                                       # only for non-conformant assets that
+                                       # ship with V baked in upside-down.
 }
 ```
 
@@ -791,7 +818,7 @@ records original-plan phase; "Status" records what has actually shipped.
 | `RayIntersectionGeometric::vTangent / bitangentSign / bHasTangent` | `Intersection/` | 1 | **this branch** | Hit-time tangent surface for the normal-map modifier |
 | Tangent interpolation in `TriangleMeshGeometryIndexed::IntersectRay` | `Geometry/` | 1 | **this branch** | Per-hit barycentric interpolation of v3 storage |
 | Tangent transform in `Object::IntersectRay` | `Objects/` | 1 | **this branch** | Object→world transform via `m_mxFinalTrans` |
-| `flip_v` default = TRUE on `gltfmesh_geometry` | `AsciiSceneParser.cpp` | 1 | **this branch** | V-convention reconciliation (see §4) |
+| ~~`flip_v` default = TRUE on `gltfmesh_geometry`~~ | `AsciiSceneParser.cpp` | 1 | **REVERTED in Phase 4** | The Phase 1 V-flip was a misanalysis — both glTF and RISE use V-down (origin upper-left).  Default is now FALSE.  See §4 V-convention reconciliation. |
 | `normal_map_modifier` chunk + `NormalMap` class | `Modifiers/` | 2 → 1.5 | **this branch (early)** | Tangent-space normal maps |
 | `Job::AddNormalMapModifier`, `RISE_API_CreateNormalMapModifier` | `Job/RISE_API` | 2 → 1.5 | **this branch (early)** | Construction API for the modifier |
 | Embedded-texture extraction helper (`extract_embedded_texture.py`) | `scenes/Tests/Geometry/assets/` | 1.5 | **this branch (stopgap)** | One-shot script + sidecar PNG until `gltf_import` auto-extracts |
@@ -821,7 +848,7 @@ records original-plan phase; "Status" records what has actually shipped.
    Recommend the latter; Importers is a natural sibling to `Parsers/`.
 7. **Should `standard_object` get a `matrix` parameter** (16 doubles) **as well as `quaternion`?** A matrix is even more general than quaternion+position+scale and would let the importer emit the node transform verbatim.  Cost: small — the parser converts to internal matrix form anyway.  Benefit: lossless for any glTF input including those with non-uniform / sheared / mirrored transforms.
 8. **Validation strictness.** ~~Reject malformed glTF outright (cgltf's `cgltf_validate()`), or log warnings and try to render what we can?~~  **RESOLVED 2026-04-30 (Phase 1+2)** — both the per-mesh loader and the bulk importer call `cgltf_validate()` and bail on failure with an `eLog_Error` line naming the file and the cgltf result code; same treatment for `cgltf_parse_file` / `cgltf_load_buffers`.  Per-primitive failures inside `GLTFSceneImporter::Import` log a warning and skip the primitive rather than aborting the whole import.
-9. **V-axis convention compensation lives at the loader.** ~~No question, just a finding — see §4 V-convention reconciliation.~~  **RESOLVED in Phase 1+2** — `gltf_import` applies the same `flip_v=TRUE` default per primitive when calling `Job::AddGLTFTriangleMeshGeometry`, so all texture-bearing assets render with consistent V orientation regardless of which import surface created the geometry.
+9. **V-axis convention compensation lives at the loader.** ~~RESOLVED Phase 1+2 — `gltf_import` applies the same `flip_v=TRUE` default per primitive...~~  **CORRECTED in Phase 4** — there was no V mismatch to compensate for in the first place.  glTF 2.0's UV origin is upper-left (V-down), the same as RISE.  `gltfmesh_geometry`'s `flip_v` default is now FALSE; `gltf_import` hardcodes FALSE.  See §4 V-convention reconciliation for the empirical fix and the analysis of what the Phase 1 finding got wrong.
 
 ---
 

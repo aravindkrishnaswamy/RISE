@@ -1208,13 +1208,24 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 					// (opaque single-sided) when no material is bound.
 					const bool doubleSided = ( prim.material && prim.material->double_sided );
 
-					// Phase 1 loader; flip_v=TRUE because glTF V-up vs RISE V-down.
+					// flip_v=FALSE: glTF 2.0 spec says UV origin is the upper-
+					// left corner (V increases downward in image space) — same
+					// as RISE's BilinRasterImageAccessor (`row = V * height`
+					// indexed from top of file).  No flip is needed at the
+					// loader.  An earlier "Phase 1 finding" claimed glTF was
+					// V-up and forced flip_v=TRUE; the empirical test was
+					// Avocado.glb (pit-on-flesh swap), MetalRoughSpheres
+					// (label text upside-down), and AlphaBlendModeTest
+					// ("Cutoff 0.25" mirrored), all of which now render
+					// correctly with flip_v=FALSE.  The earlier finding was
+					// a misread of the spec; it is corrected in
+					// docs/GLTF_IMPORT.md §4 V-convention reconciliation.
 					const bool gOK = job.AddGLTFTriangleMeshGeometry(
 						geom.c_str(), glbPath.c_str(),
 						(unsigned int)meshIdx, (unsigned int)pi,
 						doubleSided,
 						/*face_normals*/ false,
-						/*flip_v*/ true );
+						/*flip_v*/ false );
 					if( !gOK ) {
 						continue;
 					}

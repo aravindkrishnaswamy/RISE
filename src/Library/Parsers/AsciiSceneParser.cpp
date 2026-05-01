@@ -4076,15 +4076,19 @@ namespace RISE
 					unsigned int primitive_idx = bag.GetUInt(   "primitive",     0 );
 					bool double_sided          = bag.GetBool(   "double_sided",  false );
 					bool face_normals          = bag.GetBool(   "face_normals",  false );
-					// Default flip_v to TRUE: glTF stores UV with V increasing
-					// upward (OpenGL convention), RISE's TexturePainter samples
-					// with V increasing downward (image-row convention -- see
-					// BilinRasterImageAccessor::GetPel where v_pixel = V*height,
-					// indexing from PNG row 0 = top of file).  Without the flip,
-					// every glTF-sourced texture renders V-mirrored.  Override
-					// with `flip_v FALSE` only for atypical glTF assets that
-					// were exported with DirectX V already baked in.
-					bool flip_v                = bag.GetBool(   "flip_v",        true );
+					// Default flip_v to FALSE: the glTF 2.0 spec puts the UV
+					// origin at the upper-left of the texture (V increases
+					// downward), which is the same convention RISE's
+					// BilinRasterImageAccessor uses (`row = V * height`, indexed
+					// from row 0 = top of the loaded image file).  No flip is
+					// needed at the loader.  An earlier "Phase 1 finding"
+					// mistakenly claimed glTF was V-up and forced flip_v=TRUE,
+					// which broke Avocado (pit/flesh swap), MetalRoughSpheres
+					// (label text upside-down), and AlphaBlendModeTest
+					// ("Cutoff 0.25" mirrored).  All three render correctly with
+					// flip_v=FALSE.  Override only for non-conformant assets
+					// that ship with V already baked in upside-down.
+					bool flip_v                = bag.GetBool(   "flip_v",        false );
 					return pJob.AddGLTFTriangleMeshGeometry(
 						name.c_str(), file.c_str(),
 						mesh_idx, primitive_idx,
@@ -4102,9 +4106,10 @@ namespace RISE
 							"via `gltf_import`).  See docs/GLTF_IMPORT.md for the design plan.  "
 							"POSITION + NORMAL + TANGENT + TEXCOORD_0 + TEXCOORD_1 + COLOR_0 + "
 							"indices are honoured; other attributes warn-and-discard.  "
-							"`flip_v` defaults to TRUE because glTF V is up-pointing while RISE's "
-							"TexturePainter samples V down-pointing -- override only for atypical "
-							"DirectX-V-baked exports.";
+							"`flip_v` defaults to FALSE because the glTF 2.0 spec puts the UV "
+							"origin at the upper-left of the texture (V increases downward), "
+							"matching RISE's V-down sampling.  Override TRUE only for non-"
+							"conformant assets that ship with V already baked in upside-down.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";         p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
@@ -4112,7 +4117,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "primitive";    p.kind = ValueKind::UInt;     p.description = "Which primitive within the mesh (0-based)"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "double_sided"; p.kind = ValueKind::Bool;     p.description = "Treat polygons as double sided"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals"; p.kind = ValueKind::Bool;     p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "flip_v";       p.kind = ValueKind::Bool;     p.description = "Flip TEXCOORD V at load to match RISE's V-down sampling (defaults TRUE for glTF)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "flip_v";       p.kind = ValueKind::Bool;     p.description = "Flip TEXCOORD V at load (defaults FALSE — glTF UV origin is upper-left, matches RISE's V-down sampling already)"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
