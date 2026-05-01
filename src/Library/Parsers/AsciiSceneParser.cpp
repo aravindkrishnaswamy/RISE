@@ -1960,8 +1960,9 @@ namespace RISE
 					if(      chanStr == "R" || chanStr == "r" ) chan = 0;
 					else if( chanStr == "G" || chanStr == "g" ) chan = 1;
 					else if( chanStr == "B" || chanStr == "b" ) chan = 2;
+					else if( chanStr == "A" || chanStr == "a" ) chan = 3;
 					else {
-						GlobalLog()->PrintEx( eLog_Error, "channel_painter:: unknown channel `%s` (expected R / G / B)", chanStr.c_str() );
+						GlobalLog()->PrintEx( eLog_Error, "channel_painter:: unknown channel `%s` (expected R / G / B / A)", chanStr.c_str() );
 						return false;
 					}
 					return pJob.AddChannelPainter( name.c_str(), source.c_str(), chan, scale, bias );
@@ -1971,18 +1972,20 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "channel_painter"; cd.category = ChunkCategory::Painter;
-						cd.description = "Extracts a single R / G / B channel from another painter, "
+						cd.description = "Extracts a single R / G / B / A channel from another painter, "
 							"applies an affine `out = scale * channel + bias`, and broadcasts the "
 							"result as (out, out, out).  Designed for glTF metallic-roughness "
 							"texture decomposition: glTF stores metallic in the .B channel and "
 							"roughness in .G of the metallicRoughnessTexture, and "
 							"`pbr_metallic_roughness_material` routes the texture through two "
 							"channel_painter chunks to feed `ggx_material`'s scalar `rs` and "
-							"`alphax`/`alphay` inputs.";
+							"`alphax`/`alphay` inputs.  Channel `A` reads un-premultiplied alpha "
+							"(via `IPainter::GetAlpha`) and is used by the alphaMode = MASK and "
+							"BLEND wiring in the glTF importer.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";    p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "source";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Source painter (e.g. a png_painter for an MR texture)"; }
-						{ auto& p = P(); p.name = "channel"; p.kind = ValueKind::Enum;      p.enumValues = {"R","G","B"}; p.description = "Which channel to extract (R, G, or B)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "channel"; p.kind = ValueKind::Enum;      p.enumValues = {"R","G","B","A"}; p.description = "Which channel to extract (R, G, B, or A); A reads un-premultiplied alpha"; p.defaultValueHint = "R"; }
 						{ auto& p = P(); p.name = "scale";   p.kind = ValueKind::Double;    p.description = "Scale multiplier"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "bias";    p.kind = ValueKind::Double;    p.description = "Additive offset (post-scale)"; p.defaultValueHint = "0.0"; }
 						return cd;
@@ -2911,6 +2914,36 @@ namespace RISE
 				}
 			};
 
+			struct SheenMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",            "noname" );
+					std::string color     = bag.GetString( "sheen_color",     "none" );
+					std::string roughness = bag.GetString( "sheen_roughness", "0.5" );
+					return pJob.AddSheenMaterial( name.c_str(), color.c_str(), roughness.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sheen_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Charlie / Neubelt sheen BRDF for fabric / cloth surfaces.  "
+							"Designed as the top layer in a CompositeMaterial(top=sheen, bottom=base) "
+							"pairing for glTF KHR_materials_sheen, but usable standalone.  No diffuse "
+							"or Fresnel — the layer just adds the colour-tinted grazing scatter "
+							"characteristic of velvet, suede, satin.  Roughness controls how broad "
+							"the lobe is (low = sharp grazing highlights, high = diffuse-like sheen).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "sheen_color";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.required = true; p.description = "Sheen tint (typical 0..1)"; }
+						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Sheen roughness painter or scalar (clamped to >= 1e-3 internally)"; p.defaultValueHint = "0.5"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct SchlickMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -3730,19 +3763,26 @@ namespace RISE
 						cd.description = "Bulk-import of a glTF 2.0 (.gltf or .glb) scene.  Walks the "
 							"scene tree and registers per-primitive standard_objects, per-material "
 							"pbr_metallic_roughness materials (Schlick-from-F0 PBR with optional "
-							"normal_map_modifier and per-material alpha-test shader op for alphaMode "
-							"= MASK), painters for each texture (embedded `.glb` images decode in-"
-							"memory; external URIs read from disk -- no sidecar cache), lights from "
-							"KHR_lights_punctual, and the first camera.  Node transforms flow through "
-							"`Job::AddObjectMatrix` verbatim (lossless 4x4, no Euler decomposition).  "
-							"Object names are prefixed with `name_prefix` to keep manager namespaces "
-							"clean.  Out of scope: animations, skinning, morph targets (warn-and-"
-							"skip), alphaMode = BLEND (treated as opaque), KHR_materials_* extensions "
-							"beyond the core PBR shape, Draco / meshopt compression.  alphaMode = "
-							"MASK is honoured only by integrators routing through IShader::Shade() "
-							"(PT and the legacy direct shaders) -- BDPT, VCM, MLT, photon tracers "
-							"bypass shader ops and treat MASK as opaque.  See docs/GLTF_IMPORT.md §7 "
-							"and §13 for full status.";
+							"normal_map_modifier; per-material alpha-test or transparency shader op "
+							"for alphaMode = MASK / BLEND with per-pixel alpha read straight from "
+							"the baseColor texture's A channel), painters for each texture (embedded "
+							"`.glb` images decode in-memory; external URIs read from disk -- no "
+							"sidecar cache), lights from KHR_lights_punctual, and the first camera.  "
+							"Node transforms flow through `Job::AddObjectMatrix` verbatim (lossless "
+							"4x4, no Euler decomposition).  Object names are prefixed with "
+							"`name_prefix` to keep manager namespaces clean.  Phase 4 also wires "
+							"KHR_materials_emissive_strength, KHR_materials_unlit (via "
+							"LambertianLuminaireMaterial), and the scalar subset of "
+							"KHR_materials_transmission + volume + ior (refractive glass with Beer-"
+							"Lambert absorption).  Out of scope: animations, skinning, morph targets "
+							"(warn-and-skip), KHR_materials_clearcoat / sheen as a layer over PBR "
+							"(warn-and-skip; standalone sheen_material chunk works), "
+							"transmission_texture (per-pixel τ; warn), Draco / meshopt compression, "
+							"other KHR_materials_* (specular, anisotropy, iridescence, dispersion).  "
+							"alphaMode = MASK / BLEND are honoured only by integrators routing "
+							"through IShader::Shade() (PT and the legacy direct shaders) -- BDPT, "
+							"VCM, MLT, photon tracers bypass shader ops and treat both as opaque.  "
+							"See docs/GLTF_IMPORT.md §7, §13, §15 for full status.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "file";               p.kind = ValueKind::Filename; p.description = "Source .gltf or .glb file"; }
 						{ auto& p = P(); p.name = "name_prefix";        p.kind = ValueKind::String;   p.description = "Prefix for created geometry / material / object / light / camera names"; p.defaultValueHint = "gltf"; }
@@ -7234,6 +7274,7 @@ namespace RISE
 		add( "pbr_metallic_roughness_material",       new PBRMetallicRoughnessMaterialAsciiChunkParser() );
 		add( "cooktorrance_material",                 new CookTorranceMaterialAsciiChunkParser() );
 		add( "orennayar_material",                    new OrenNayarMaterialAsciiChunkParser() );
+		add( "sheen_material",                        new SheenMaterialAsciiChunkParser() );
 		add( "schlick_material",                      new SchlickMaterialAsciiChunkParser() );
 		add( "datadriven_material",                   new DataDrivenMaterialAsciiChunkParser() );
 

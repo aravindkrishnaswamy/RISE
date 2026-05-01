@@ -1,0 +1,153 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           unlit.RISEscene                                                                         #
+#   Description:    Phase 4 KHR_materials_unlit demo, exercising the same                                   #
+#                   lambertian_luminaire_material wrapping a zero-reflectance lambertian                    #
+#                   that the glTF importer wires up when `mat.unlit` is true.                               #
+#                                                                                                           #
+#                   Three spheres with the same baseColor as a lit pbr_metallic_roughness                   #
+#                   sphere on the LEFT for comparison, and as unlit luminaires on the RIGHT.                #
+#                   The unlit spheres should look identical regardless of lighting; the lit                 #
+#                   sphere should show direction-dependent shading.                                         #
+#                                                                                                           #
+#                     left   = lit (PBR diffuse) — orange ball with terminator                              #
+#                     center = unlit orange    — flat orange disc, no shading                               #
+#                     right  = unlit emissive  — same flat appearance under any lighting                    #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/unlit
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	width				768
+	height				256
+	fov					40.0
+}
+
+uniformcolor_painter
+{
+	name				orange
+	color				0.95 0.45 0.10
+	colorspace			sRGB
+}
+uniformcolor_painter
+{
+	name				zero
+	color				0.0 0.0 0.0
+	colorspace			Rec709RGB_Linear
+}
+
+# Lit material: standard PBR.
+pbr_metallic_roughness_material
+{
+	name				m_lit
+	base_color			orange
+	metallic			0.0
+	roughness			0.5
+}
+
+# Unlit material #1: lambertian_luminaire_material wrapping a zero-reflectance
+# lambertian.  The BSDF returns zero (no reflection from incoming light) and
+# the emitter contributes baseColor / π · scale on hit.  scale = π gives
+# pixel = baseColor for any view direction (ignoring quantization).
+lambertian_material
+{
+	name				m_null_lamb
+	reflectance			zero
+}
+lambertian_luminaire_material
+{
+	name				m_unlit_orange
+	exitance			orange
+	material			m_null_lamb
+	scale				3.141592653589793
+}
+# Second copy so each unlit sphere has its own underlying-Lambertian
+# (lambertian_luminaire_material's `material` is consumed, not shared).
+lambertian_material
+{
+	name				m_null_lamb_2
+	reflectance			zero
+}
+lambertian_luminaire_material
+{
+	name				m_unlit_orange_2
+	exitance			orange
+	material			m_null_lamb_2
+	scale				3.141592653589793
+}
+
+sphere_geometry
+{
+	name				sph
+	radius				0.7
+}
+
+standard_object
+{
+	name				s_lit
+	geometry			sph
+	material			m_lit
+	position			-1.7 0 0
+}
+standard_object
+{
+	name				s_unlit_a
+	geometry			sph
+	material			m_unlit_orange
+	position			0.0 0 0
+}
+standard_object
+{
+	name				s_unlit_b
+	geometry			sph
+	material			m_unlit_orange_2
+	position			1.7 0 0
+}
+
+##################################################
+# Lights — direction is FROM-surface-TO-light.
+# The unlit spheres should ignore these entirely.
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.4 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.10
+	color		1.0 1.0 1.0
+}

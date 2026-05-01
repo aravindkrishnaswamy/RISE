@@ -872,6 +872,12 @@ namespace RISE
 			const char* fresnel_mode = "conductor"
 			);
 
+		bool AddSheenMaterial(
+			const char* name,
+			const char* sheen_color,
+			const char* sheen_roughness
+			);
+
 		//! Adds Cook Torrance material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddCookTorranceMaterial(

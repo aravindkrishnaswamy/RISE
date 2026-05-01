@@ -8,13 +8,19 @@
 //  round-trip), one light per KHR_lights_punctual, and one camera
 //  (first only -- RISE has a single active camera).
 //
-//  See docs/GLTF_IMPORT.md §7 (phased plan) and §13 (delivered vs
-//  deferred) for the full picture.  Out-of-scope features (animation,
-//  skinning, morph targets, alphaMode = BLEND, KHR_materials_*
-//  extensions beyond the core PBR shape) emit a one-time warning per
-//  file.  Phase 3 retired the lossy Euler-decomposition transform
-//  path: node-world matrices now flow through Job::AddObjectMatrix
-//  verbatim.
+//  See docs/GLTF_IMPORT.md §7 (phased plan), §13 (delivered vs
+//  deferred), and §15 (Phase 4 status) for the full picture.  Phase 4
+//  added: KHR_materials_emissive_strength, KHR_materials_unlit, per-
+//  pixel alpha (straight, via IPainter::GetAlpha), alphaMode = BLEND
+//  via transparency_shaderop, the standalone Charlie/Neubelt sheen
+//  BRDF, and the scalar subset of KHR_materials_transmission + volume
+//  + ior.  Out-of-scope features (animation, skinning, morph targets,
+//  KHR_materials_clearcoat/sheen as a layer over PBR,
+//  transmission_texture, other KHR_materials_* extensions beyond the
+//  core PBR shape and the scalar transmission triplet) emit a one-time
+//  warning per file or per material.  Phase 3 retired the lossy Euler-
+//  decomposition transform path: node-world matrices now flow through
+//  Job::AddObjectMatrix verbatim.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 30, 2026

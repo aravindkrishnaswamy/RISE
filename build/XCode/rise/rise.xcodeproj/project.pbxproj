@@ -752,6 +752,16 @@
 		F24C54642F84597B009AF16D /* GGXSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545E2F84597B009AF16D /* GGXSPF.h */; };
 		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
+		B7A4ED15F0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
+		B7A4ED16F0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
+		B7A4ED17F0DE4E61A0A3D001 /* SheenBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
+		B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
+		B7A4ED19F0DE4E61A0A3D001 /* SheenMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
+		B7A4ED1AF0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
+		B7A4ED1BF0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
+		B7A4ED1CF0DE4E61A0A3D001 /* SheenBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
+		B7A4ED1DF0DE4E61A0A3D001 /* SheenSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
+		B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
 		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
 		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
 		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
@@ -1717,6 +1727,11 @@
 		F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HeterogeneousMedium.cpp; sourceTree = "<group>"; };
 		F24C545B2F84597B009AF16D /* GGXBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXBRDF.h; sourceTree = "<group>"; };
 		F24C545C2F84597B009AF16D /* GGXBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXBRDF.cpp; sourceTree = "<group>"; };
+		B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenBRDF.h; sourceTree = "<group>"; };
+		B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenBRDF.cpp; sourceTree = "<group>"; };
+		B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenSPF.h; sourceTree = "<group>"; };
+		B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenSPF.cpp; sourceTree = "<group>"; };
+		B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenMaterial.h; sourceTree = "<group>"; };
 		F24C545D2F84597B009AF16D /* GGXMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXMaterial.h; sourceTree = "<group>"; };
 		F24C545E2F84597B009AF16D /* GGXSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXSPF.h; sourceTree = "<group>"; };
 		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
@@ -2976,6 +2991,11 @@
 				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
 				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
 				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
+				B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */,
+				B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */,
+				B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */,
+				B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */,
+				B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */,
 				F24C545E2F84597B009AF16D /* GGXSPF.h */,
 				F24C545F2F84597B009AF16D /* GGXSPF.cpp */,
 				F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */,
@@ -3780,6 +3800,9 @@
 				F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */,
 				F24C54632F84597B009AF16D /* GGXMaterial.h in Headers */,
 				F24C54642F84597B009AF16D /* GGXSPF.h in Headers */,
+				B7A4ED17F0DE4E61A0A3D001 /* SheenBRDF.h in Headers */,
+				B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */,
+				B7A4ED19F0DE4E61A0A3D001 /* SheenMaterial.h in Headers */,
 				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
 				F28639642F9245040009D9AE /* PreviewScheduler.h in Headers */,
 				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
@@ -4545,6 +4568,11 @@
 				F27F0BE1069C42910069C9E5 /* HDRWriter.cpp in Sources */,
 				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
+				B7A4ED1AF0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */,
+				B7A4ED1BF0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */,
+				B7A4ED1CF0DE4E61A0A3D001 /* SheenBRDF.h in Sources */,
+				B7A4ED1DF0DE4E61A0A3D001 /* SheenSPF.h in Sources */,
+				B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */,
 				F2C0EE20069C42910069C9E5 /* JPEGReader.cpp in Sources */,
 				F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */,
 				F2C0EF22069C42910069C9E5 /* cgltf.cpp in Sources */,
@@ -5373,6 +5401,8 @@
 				F2D9B11D2F8E96770077A171 /* WorleyNoise3D.cpp in Sources */,
 				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
+				B7A4ED15F0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */,
+				B7A4ED16F0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */,
 				F24B74272F52A632008304C4 /* Constants.h in Sources */,
 				F24B74282F52A632008304C4 /* Direction.h in Sources */,
 				F24B74292F52A632008304C4 /* Math3D.cpp in Sources */,

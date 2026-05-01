@@ -33,6 +33,7 @@ namespace RISE
 			TexturePainter( IRasterImageAccessor* pRIA_ );
 
 			RISEPel			GetColor( const RayIntersectionGeometric& ri  ) const;
+			Scalar			GetAlpha( const RayIntersectionGeometric& ri  ) const;
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0;};

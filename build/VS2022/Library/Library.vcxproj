@@ -203,6 +203,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DonnerJensenSkinDiffusionProfile.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GGXSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp" />
@@ -943,6 +945,9 @@
     <ClInclude Include="..\..\..\src\Library\Materials\GGXBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GGXMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HeterogeneousMedium.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HomogeneousMedium.h" />

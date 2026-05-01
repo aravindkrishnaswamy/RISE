@@ -1,0 +1,82 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           gltf_import_alpha_blend.RISEscene                                                       #
+#   Description:    Phase 4 alphaMode = MASK + BLEND validation, importing the Khronos                      #
+#                   AlphaBlendModeTest.glb asset.  This is a multi-material asset where each                #
+#                   horizontal row tests one alpha mode (OPAQUE / MASK / BLEND) and each column             #
+#                   varies the alpha factor and / or texture.  After Phase 4 the importer maps              #
+#                   MASK → alpha_test_shaderop and BLEND → transparency_shaderop, both honouring            #
+#                   the per-pixel alpha read via IPainter::GetAlpha.                                        #
+#                                                                                                           #
+#                   What you should see:                                                                    #
+#                     - Top row (OPAQUE): all squares fully visible, ignoring alpha.                        #
+#                     - Middle row (MASK at cutoff 0.5): hard cutout — pixels with α<0.5                    #
+#                       discarded (you see through to whatever's behind).                                   #
+#                     - Bottom row (BLEND): smooth transparency — pixels with low α                         #
+#                       blend with the background.                                                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_import_alpha_blend
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+# AlphaBlendModeTest is a flat 3x4 grid centred near the origin; frame it
+# square at +Z.
+pinhole_camera
+{
+	location			0 0 1.6
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/AlphaBlendModeTest.glb
+	name_prefix			alpha
+}
+
+##################################################
+# Lights -- key from the front so the asset's flat
+# squares face the directional source (direction is
+# FROM-surface-TO-light, see docs/SCENE_CONVENTIONS.md §1).
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.0 1.0
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.30
+	color		1.0 1.0 1.0
+}

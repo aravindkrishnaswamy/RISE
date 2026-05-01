@@ -1,0 +1,246 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           transmission.RISEscene                                                                  #
+#   Description:    Phase 4 dielectric + medium demo, exercising the same dielectric_material               #
+#                   + homogeneous_medium plumbing that the glTF importer wires up for                       #
+#                   KHR_materials_transmission + KHR_materials_volume + KHR_materials_ior.                  #
+#                                                                                                           #
+#                   Three glass spheres with the same IOR (1.5, common for glass) but different             #
+#                   absorption media:                                                                       #
+#                                                                                                           #
+#                     left   = clear glass     (no absorption — matches "thin walled" glTF)                 #
+#                     center = green absorbing (Beer-Lambert σ_a ≈ -ln(0.4 0.95 0.4) / 1.0)                  #
+#                     right  = red absorbing   (σ_a ≈ -ln(0.95 0.3 0.3) / 1.0)                              #
+#                                                                                                           #
+#                   The absorbing spheres should look tinted in their interior, with the tint               #
+#                   getting deeper toward the centre (longer ray paths through the medium).                 #
+#                   The clear sphere should look colourless with the diffuse plane behind it                #
+#                   visible through refraction.                                                             #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pt
+	reflections	true
+	refractions	true
+	diffuse		true
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pt
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				64
+	defaultshader		global
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/transmission
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	width				768
+	height				256
+	fov					40.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				white
+	color				1.0 1.0 1.0
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				zero
+	color				0.0 0.0 0.0
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				ior_glass
+	color				1.5 1.5 1.5
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				bgcolor
+	color				0.85 0.85 0.85
+	colorspace			sRGB
+}
+uniformcolor_painter
+{
+	name				checker_a
+	color				0.95 0.95 0.95
+	colorspace			sRGB
+}
+
+##################################################
+# Materials -- dielectric_material with a clear /
+# tinted homogeneous_medium attached as the
+# object's interior medium (mirrors glTF
+# transmission + volume).
+##################################################
+
+dielectric_material
+{
+	name				m_glass_clear
+	tau					white
+	ior					ior_glass
+}
+dielectric_material
+{
+	name				m_glass_green
+	tau					white
+	ior					ior_glass
+}
+dielectric_material
+{
+	name				m_glass_red
+	tau					white
+	ior					ior_glass
+}
+
+# σ_a = -ln(attenuation_color) / attenuation_distance
+# attenuation_color (0.4, 0.95, 0.4) at distance 1.0 → σ_a ≈ (0.916, 0.051, 0.916)
+homogeneous_medium
+{
+	name				medium_green
+	absorption			0.916 0.051 0.916
+	scattering			0.0 0.0 0.0
+	phase				isotropic
+}
+# attenuation_color (0.95, 0.3, 0.3) at distance 1.0 → σ_a ≈ (0.051, 1.204, 1.204)
+homogeneous_medium
+{
+	name				medium_red
+	absorption			0.051 1.204 1.204
+	scattering			0.0 0.0 0.0
+	phase				isotropic
+}
+
+##################################################
+# Background geometry: a back-wall + floor plane
+# enclosing the refraction.  Without these, rays
+# refracted through the glass spheres exit to a
+# white miss / no-environment background and the
+# tints aren't readable.
+##################################################
+
+lambertian_material
+{
+	name				m_floor
+	reflectance			bgcolor
+}
+lambertian_material
+{
+	name				m_wall
+	reflectance			checker_a
+}
+
+box_geometry
+{
+	name				floor_geom
+	width				12
+	height				0.05
+	depth				12
+}
+box_geometry
+{
+	name				wall_geom
+	width				12
+	height				12
+	depth				0.05
+}
+
+standard_object
+{
+	name				floor
+	geometry			floor_geom
+	material			m_floor
+	position			0.0 -0.85 -2.0
+}
+standard_object
+{
+	name				wall
+	geometry			wall_geom
+	material			m_wall
+	position			0.0 0.0 -3.0
+}
+
+##################################################
+# Glass spheres
+##################################################
+
+sphere_geometry
+{
+	name				sph
+	radius				0.7
+}
+
+standard_object
+{
+	name				s_clear
+	geometry			sph
+	material			m_glass_clear
+	position			-1.7 0 0
+}
+
+standard_object
+{
+	name				s_green
+	geometry			sph
+	material			m_glass_green
+	position			0.0 0 0
+	interior_medium		medium_green
+}
+
+standard_object
+{
+	name				s_red
+	geometry			sph
+	material			m_glass_red
+	position			1.7 0 0
+	interior_medium		medium_red
+}
+
+##################################################
+# Lights — direction is FROM-surface-TO-light, so
+# positive Z lights camera-facing surfaces.
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.6 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

@@ -1615,9 +1615,9 @@ bool Job::AddChannelPainter(
 			"Job::AddChannelPainter:: source painter `%s` not found", source );
 		return false;
 	}
-	if( channel < 0 || channel > 2 ) {
+	if( channel < 0 || channel > 3 ) {
 		GlobalLog()->PrintEx( eLog_Error,
-			"Job::AddChannelPainter:: channel %d out of range (0=R, 1=G, 2=B)", (int)channel );
+			"Job::AddChannelPainter:: channel %d out of range (0=R, 1=G, 2=B, 3=A)", (int)channel );
 		return false;
 	}
 
@@ -2743,6 +2743,37 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 		emissive,
 		emissive_scale,
 		"schlick_f0" );				// glTF metallicRoughness uses Schlick from F0
+}
+
+bool Job::AddSheenMaterial(
+	const char* name,
+	const char* sheen_color,
+	const char* sheen_roughness
+	)
+{
+	IPainter* pColor = pPntManager->GetItem( sheen_color );
+	if( !pColor ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSheenMaterial:: sheen_color painter `%s` not found", sheen_color );
+		return false;
+	}
+
+	IPainter* pRoughness = pPntManager->GetItem( sheen_roughness );
+	if( !pRoughness ) {
+		// Allow scalar string fallback ("0.5" -> uniform 0.5).
+		const double v = atof( sheen_roughness );
+		RISE_API_CreateUniformColorPainter( &pRoughness, RISEPel( v, v, v ) );
+	} else {
+		pRoughness->addref();
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateSheenMaterial( &pMaterial, *pColor, *pRoughness );
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+	safe_release( pRoughness );
+	return true;
 }
 
 bool Job::AddCookTorranceMaterial(

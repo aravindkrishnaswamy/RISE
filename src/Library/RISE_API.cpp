@@ -810,6 +810,7 @@ namespace RISE
 #include "Materials/WardAnisotropicEllipticalGaussianMaterial.h"
 #include "Materials/CookTorranceMaterial.h"
 #include "Materials/GGXMaterial.h"
+#include "Materials/SheenMaterial.h"
 #include "Materials/OrenNayarMaterial.h"
 #include "Materials/SchlickMaterial.h"
 #include "Materials/DataDrivenMaterial.h"
@@ -1241,6 +1242,22 @@ namespace RISE
 
 		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
+		return true;
+	}
+
+	//! Creates a Charlie / Neubelt sheen material
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSheenMaterial(
+								IMaterial** ppi,
+								const IPainter& sheenColor,
+								const IPainter& sheenRoughness
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		(*ppi) = new SheenMaterial( sheenColor, sheenRoughness );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sheen material" );
 		return true;
 	}
 

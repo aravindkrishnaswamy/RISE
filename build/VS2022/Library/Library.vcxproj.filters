@@ -681,6 +681,12 @@
     <ClCompile Include="..\..\..\src\Library\Materials\DataDrivenBSDF.cpp">
       <Filter>Materials\Data Driven</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Scene.cpp">
       <Filter>Scene</Filter>
     </ClCompile>
@@ -2486,6 +2492,15 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h">

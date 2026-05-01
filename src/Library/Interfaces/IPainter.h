@@ -63,10 +63,24 @@ namespace RISE
 		//! rather than just the value at the particular wavelength
 		//!
 		/// \return The computed color as a spectral packet
-		virtual SpectralPacket GetSpectrum( 
-			const RayIntersectionGeometric& ri 					///< [in] Geometric intersection details 
+		virtual SpectralPacket GetSpectrum(
+			const RayIntersectionGeometric& ri 					///< [in] Geometric intersection details
 			) const = 0;
 
+		//!
+		//! Returns the painter's alpha (opacity) at the given hit, in [0, 1].
+		//! Default 1.0 (fully opaque) for painters whose representation is
+		//! RGB-only (most painters).  Texture painters that load an RGBA
+		//! image override this to return the per-pixel A channel without
+		//! the premultiplication that `GetColor` applies.  Used by the
+		//! glTF importer's alpha-mask / alphaMode = BLEND wiring (Phase 4)
+		//! so the test / blend factor reads the actual alpha rather than
+		//! `max(R, G, B)` of the premultiplied baseColor.
+		//!
+		//! \return Alpha in [0, 1]; default 1 (opaque)
+		virtual Scalar GetAlpha(
+			const RayIntersectionGeometric& /*ri*/				///< [in] Geometric intersection details
+			) const { return Scalar(1); }
 	};
 }
 

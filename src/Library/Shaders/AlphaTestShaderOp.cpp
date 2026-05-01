@@ -44,15 +44,14 @@ void AlphaTestShaderOp::PerformOperation(
 {
 	// Sample alpha at the hit and decide whether to keep or skip.
 	//
-	// IPainter exposes only RGB; the A channel of an RGBA texture is
-	// dropped at decode.  We approximate alpha as max(R,G,B) of the
-	// baseColor painter -- correct for the common case where transparent
-	// regions in cutout textures are also dark / black, but wrong for
-	// foliage textures with bright transparent borders (alpha-test will
-	// always pass).  Phase 4 work to add an alpha-aware IPainter would
-	// close this gap.  Hand-authored uses of this op should pass a
-	// painter that already broadcasts the intended alpha across all
-	// three channels.
+	// The "alpha" here is whatever the supplied painter decides to
+	// broadcast -- typically a ChannelPainter wired to the A channel
+	// (CHAN_A=3) of an RGBA texture (Phase 4 added IPainter::GetAlpha
+	// for un-premultiplied access; ChannelPainter routes CHAN_A there).
+	// Hand-authored uses of this op may pass any painter that
+	// broadcasts the intended alpha; we still take max(R,G,B) so that
+	// a single-channel painter (broadcast as v,v,v) is interpreted
+	// correctly without depending on which channel callers pick.
 	const Scalar alpha = ColorMath::MaxValue( alphaPainter.GetColor( ri.geometric ) );
 
 	if( alpha >= cutoff ) {

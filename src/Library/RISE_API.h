@@ -679,6 +679,16 @@ namespace RISE
 								const FresnelMode fresnel_mode = eFresnelConductor	///< [in] Fresnel evaluation model
 								);
 
+	//! Creates a Charlie / Neubelt sheen material for fabric / cloth.
+	//! Designed as the top layer in a CompositeMaterial(top=sheen,
+	//! bottom=baseGGX) pairing for glTF KHR_materials_sheen assets.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSheenMaterial(
+								IMaterial** ppi,				///< [out] Pointer to recieve the material
+								const IPainter& sheenColor,		///< [in] Sheen tint colour (typical 0..1)
+								const IPainter& sheenRoughness	///< [in] Sheen roughness (typical 0..1; clamped to >= 1e-3 internally)
+								);
+
 	//! Creates a Cook Torrance material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCookTorranceMaterial(

@@ -84,6 +84,20 @@ behaviour, unrelated to Phase 3.  All four glTF showcase scenes load
 MetalRoughSpheres); the matrix path produces correct asset
 orientations.  See §13 for the full delivered-vs-deferred breakdown.
 
+**Phase 4 status (2026-04-30, this branch, uncommitted):** Cohort A
+(emissive_strength, unlit, per-pixel alpha, alphaMode = BLEND) and
+the bulk of Cohort B (sheen, transmission + volume + ior) have
+shipped.  KHR_materials_clearcoat is detected and warned about but
+the layered import is **deferred to Phase 5** because RISE's existing
+CompositeMaterial random-walk SPF doesn't compose cleanly with a
+PBR-shaped (3-lobe diffuse + specular + multiscatter) base — it
+produces near-black surfaces in tests.  Phase 5 will build a proper
+additive layered-material that works with PBR.  Sheen as a glTF
+import-time layer is also deferred to Phase 5 for the same reason;
+the standalone `sheen_material` chunk is fully working for hand-
+authored fabric scenes.  See §15 below for the delivered + deferred
+breakdown.
+
 ## Implementation status
 
 | Area | Committed | This branch (uncommitted) | Pending |
@@ -104,8 +118,16 @@ orientations.  See §13 for the full delivered-vs-deferred breakdown.
 | **Quaternion / matrix on `standard_object`** | — | New optional `quaternion` (xyzw) and `matrix` (16 doubles, column-major) parameters on `standard_object`; `Job::AddObjectMatrix` consumes a 4×4 directly.  Mutual-exclusion warnings if multiple are set; precedence is `matrix` > `quaternion` > `orientation` (Euler).  glTF importer uses the matrix path; `DecomposeAffine` deleted. | — |
 | **`mkFromQuaternion` bug** | — | `Math3D/MatricesOps.h:215-217` — `_2y` and `_2z` were both computing `2 * a.v.x` instead of `a.v.y` / `a.v.z`.  Fixed; needed by the new `standard_object { quaternion ... }` path. | — |
 | **Emissive on `ggx_material`** | — | Second `GGXMaterial` ctor takes optional `emissive` painter + `emissive_scale`, builds a `LambertianEmitter` and exposes it via `GetEmitter()`; `Job::AddGGXEmissiveMaterial`; parser params `emissive` / `emissive_scale` on `ggx_material` chunk | — |
-| **Animation / skinning / morph targets** | — | — | Phase 4+ |
-| **KHR_materials_*** extensions (clearcoat, transmission, sheen, ior, emissive_strength, unlit) | — | — | Phase 4+ |
+| **KHR_materials_emissive_strength** | — | Importer reads `mat.emissive_strength.emissive_strength` and forwards it as the `emissive_scale` to `Job::AddPBRMetallicRoughnessMaterial`. | — |
+| **emissiveTexture × emissiveFactor multiply** | — | glTF spec §3.9.4: `emissive = emissiveTexture × emissiveFactor × emissiveStrength`.  Earlier revisions chose either-or (texture iff present, else factor), silently dropping non-white factors that tint or attenuate the texture.  Importer now builds a `BlendPainter(texture, zero, factor)` product when both are present (skipping the multiply when factor is identity-white or all-zero). | — |
+| **KHR_materials_unlit** | — | Importer detects `mat.unlit` and registers the material as `LambertianLuminaireMaterial(baseColor, zero-reflectance Lambertian, scale = π)` so the BSDF returns 0 and the emitter contributes baseColor as Lambertian radiance.  Supports alpha-mode interaction. | — |
+| **Per-pixel alpha (alpha-aware painter)** | — | New `IPainter::GetAlpha()` virtual (default 1.0); `TexturePainter` overrides to return the **straight** A channel.  `ChannelPainter` extended with `CHAN_A = 3` (clamped to [0,1]) so the chunk parser can route alpha through the standard channel-extraction flow.  Closes the Phase 3 `max(R,G,B)` proxy gap.  Phase 4 also fixed two latent bugs: (a) `BuildAlphaPainter` reads CHAN_A from the **raw** `baseColorTexturePainter`, not the composed product (a `BlendPainter` wouldn't propagate texture alpha and collapsed to the default 1.0); (b) `TexturePainter::GetColor` no longer pre-multiplies RGB by alpha (legacy semantic that double-dimmed glTF textures under BLEND once the shader-op also weighted by alpha). | — |
+| **alphaMode = BLEND** (`transparency_shaderop` wiring) | — | Per-material wiring: `BlendPainter(zero, white, alpha) = (1 − α)` produces the see-through factor for `transparency_shaderop`; composed via `advanced_shader` with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  PT-only (same integrator caveat as alphaMode = MASK). | — |
+| **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **Standalone-only** in this branch — the glTF import-time layering over PBR is deferred to Phase 5 (see §15). | Phase 5: layered composite over PBR base |
+| **KHR_materials_transmission + volume + ior (scalar subset)** | — | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium(σ_a derived from attenuation_color / attenuation_distance)`; the medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  IOR painter from KHR_materials_ior or default 1.5.  Requires `pathtracing_shaderop` for refraction (the legacy `DefaultDirectLighting` + `pixelpel_rasterizer` only evaluates BSDFs, and dielectrics have no BSDF).  **`transmission_texture` is NOT honoured** — assets that vary transmissivity per-pixel import as uniformly transmissive; importer emits a one-time warning per affected material. | Phase 5: per-pixel τ painter |
+| **KHR_materials_clearcoat** | — | Detected, warn-and-skip-the-layer.  Implementation deferred to Phase 5 because `CompositeMaterial`'s existing random-walk SPF (designed for dielectric-on-Lambertian) doesn't compose cleanly with PBR-shaped (3-lobe) bases — produces near-black surfaces in tests. | Phase 5: additive layered material that works with PBR |
+| **Animation / skinning / morph targets** | — | Importer warns once per file; no runtime support yet. | Phase 5+ |
+| **Other KHR_materials_*** (specular, anisotropy, iridescence, dispersion, unlit-extension-extras) | — | — | Phase 5+ |
 
 The forward-looking design rationale still lives in §§ 1–6; the original
 phased plan ships in §7.  §10 has a per-row status column matching the
@@ -388,11 +410,13 @@ is cleaner and avoids two chunks per PBR material.
 glTF `alphaMode = OPAQUE / MASK / BLEND` + `alphaCutoff`. In a path tracer:
 
 - OPAQUE → no-op.
-- MASK → stochastic alpha test: at hit time, sample alpha; if `alpha < alphaCutoff` continue the ray. Implementable as a new `alpha_test_modifier` (parallels `bumpmap_modifier`).
-- BLEND → stochastic transparency through `transparency_shaderop`.
+- MASK → stochastic alpha test: at hit time, sample alpha; if `alpha < alphaCutoff` continue the ray.  *(DELIVERED Phase 3 via `alpha_test_shaderop`.)*
+- BLEND → stochastic transparency through `transparency_shaderop`.  *(DELIVERED Phase 4; per-pixel alpha read straight from baseColor via `IPainter::GetAlpha`; wired through an `advanced_shader [+,+,=]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  Same PT-only integrator caveat as MASK — BDPT/VCM/MLT/photon tracers bypass shader ops and treat BLEND as opaque.  See §15.)*
 
 Recommend: implement MASK in v1 (it's the common case for foliage / grates),
 defer BLEND to a later phase. Both can be added later without breaking v1.
+*(History: that v1 recommendation drove Phase 3, which shipped MASK.
+Phase 4 then closed BLEND.)*
 
 ### Normal maps
 
@@ -540,8 +564,8 @@ Euler. Minimal change to the chunk parser; storage is the same internally
 - **Skinning.** No CPU skin pass + BVH refit pipeline yet (refit hook exists but unused for skinning).
 - **Morph targets.** Same.
 - **`KHR_draco_mesh_compression` / `EXT_meshopt_compression`.** Reject with clear error.
-- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.
-- **alphaMode = BLEND.** Only OPAQUE and MASK in v1.
+- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.  *(Phase 4 update: `unlit`, `emissive_strength`, scalar `transmission` + `volume` + `ior` have since shipped; `clearcoat` and `sheen` as a layer-over-PBR remain warn-and-skip.  See §15.)*
+- **alphaMode = BLEND.** Only OPAQUE and MASK in v1.  *(Phase 4 update: BLEND now ships via `transparency_shaderop`.  See §15.)*
 - **Multi-camera.** First camera wins.
 - **Multi-scene.** Honor `scene` field; ignore others.
 
@@ -714,7 +738,7 @@ alpha_test_modifier am {
 |---|---|---|
 | LINEAR animation (TRS keyframes → Timeline) | 3 days | Map node TRS to existing keyframable parameters on `standard_object`. |
 | STEP / CUBICSPLINE animation | 2 days | Bake CUBICSPLINE into LINEAR or add native support. |
-| `alphaMode = BLEND` | 2 days | Stochastic transparency via `transparency_shaderop`. |
+| `alphaMode = BLEND` | 2 days | Stochastic transparency via `transparency_shaderop`.  *(DELIVERED in Phase 4; see §15.)* |
 | Skinning | 2 weeks | CPU skin pass each frame + BVH refit via existing `UpdateVertices` hook. |
 | Morph targets | 1 week | Same skinning machinery, different inputs. |
 | `KHR_materials_clearcoat` | 3 days | Layered: clearcoat GGX over base GGX. RISE has `composite_material`. |
@@ -990,13 +1014,161 @@ the Phase 3 work.  Findings:
 
 ### Out-of-scope follow-ups (Phase 4 candidates)
 
-| Item | Why Phase 4 |
+*(Snapshot at end of Phase 3 review.  See §15 for which of these
+shipped in Phase 4 and what remains open.)*
+
+| Item | Status |
 |---|---|
-| Per-pixel alpha via alpha-aware painter (extract A channel from RGBA PNG) | The current alpha mask uses `max(R,G,B)` of baseColor as a proxy because `IPainter` only exposes RGB.  Adding an alpha-aware painter or an A-channel `IRasterImageAccessor` would close the gap for foliage textures whose transparent regions don't have low luminance. |
-| Alpha mask under BDPT / VCM / MLT | Requires promoting alpha-test to a hit-time geometry concern; touches the intersector and every integrator's path-sampling loop.  Substantial refactor. |
-| Animation / skinning / morph targets | Original Phase 3+ scope; unchanged. |
-| `KHR_materials_*` extensions (clearcoat, transmission, sheen, …) | Original Phase 3+ scope; unchanged. |
-| `alphaMode = BLEND` (stochastic transparency) | Phase 3 deliberately implemented MASK only; BLEND requires either path-tracer transparency_shaderop wiring or a different sampling strategy. |
+| Per-pixel alpha via alpha-aware painter (extract A channel from RGBA PNG) | **DELIVERED Phase 4** (see §15: `IPainter::GetAlpha`, `TexturePainter` straight-A, `ChannelPainter::CHAN_A`, raw-texture alpha source). |
+| Alpha mask under BDPT / VCM / MLT | **Still open.** Requires promoting alpha-test to a hit-time geometry concern; touches the intersector and every integrator's path-sampling loop.  Substantial refactor. |
+| Animation / skinning / morph targets | **Still open.** Carried into Phase 5+. |
+| `KHR_materials_*` extensions (clearcoat, transmission, sheen, …) | **Partial — Phase 4** delivered scalar `transmission` + `volume` + `ior` and the standalone Charlie/Neubelt sheen BRDF; `clearcoat` and `sheen` as a layer over PBR are deferred (composition with the 3-lobe PBR base needs a new layered material).  Other `KHR_materials_*` (specular, anisotropy, iridescence, dispersion) are Phase 5+. |
+| `alphaMode = BLEND` (stochastic transparency) | **DELIVERED Phase 4** (see §15: `transparency_shaderop` wired through `advanced_shader [+,+,=]`). |
+
+---
+
+## 15. Phase 4 — what landed, what's deferred
+
+Phase 4 (this branch, uncommitted, 2026-04-30) closed most of the
+"missing-feature" gap from §13's Phase-4-candidates table, plus the
+extension cohort originally slated for §13's "KHR_materials_*" line.
+The work split into two cohorts.
+
+### Cohort A — alpha + emissive + unlit (DELIVERED)
+
+| Feature | What landed |
+|---|---|
+| **`KHR_materials_emissive_strength`** | Importer reads `mat.emissive_strength.emissive_strength` and forwards it as `emissive_scale` to `Job::AddPBRMetallicRoughnessMaterial`.  Trivial; integrates with the existing emissive pipeline. |
+| **`KHR_materials_unlit`** | Importer detects `mat.unlit` and registers a `LambertianLuminaireMaterial(baseColor, zero-reflectance Lambertian, scale=π)` so the material's BSDF returns 0 and only the emitter contributes baseColor as Lambertian radiance.  Result: surfaces look self-luminous regardless of scene lighting. |
+| **Per-pixel alpha** (alpha-aware painter) | `IPainter::GetAlpha()` virtual added (default 1.0). `TexturePainter` overrides to return un-premultiplied A. `ChannelPainter` extended with `CHAN_A=3` so the chunk parser routes alpha through the standard channel-extraction flow.  Closes the §13 `max(R,G,B)` proxy.  **Note:** the existing pre-Phase-4 `TexturePainter::GetColor` still returns `c.base * c.a` (premultiplied); Phase 4 added `GetAlpha` alongside without changing legacy color semantics. |
+| **`alphaMode = BLEND`** | Per-material wiring: `BlendPainter(zero=0, white=1, mask=alpha) = 1 − α` produces the see-through factor for `transparency_shaderop`; the shader-op formula `c = cthis*factor + c*(1-factor)` then yields the correct `surface*α + background*(1-α)`.  Composition uses an `advanced_shader` (NOT `standard_shader`) with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]` — the `=` replace operator is essential because the additive `standard_shader` would double the surface contribution on opaque pixels.  PT-only (same integrator caveat as `alphaMode = MASK`). |
+
+### Cohort B — extension materials (PARTIAL)
+
+| Feature | What landed |
+|---|---|
+| **`KHR_materials_sheen` (BRDF)** | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution `D(α, n·h) = (2 + 1/α)/(2π) · sin(θ_h)^(1/α)` + Neubelt visibility `V(n·l, n·v) = 1/(4·(n·l + n·v − n·l·n·v)·n·l·n·v)` (Estevez & Kulla 2017 / KHR_materials_sheen).  Cosine-hemisphere sampling for the SPF (no closed-form Charlie importance sample); the PDF mismatch is small for sheen's typical roughness range and is cleaned up by MIS in PT.  Both `SheenBRDF::value(NM)` and `SheenSPF::Pdf(NM)` flip the shading normal on back-face hits so the BRDF stays consistent with the sampling counterpart.  **Standalone-only** in this branch — see "Deferred to Phase 5" below. |
+| **`KHR_materials_transmission` + `KHR_materials_volume` + `KHR_materials_ior`** | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium`.  Beer-Lambert absorption coefficient derived from the volume's `attenuation_color` and `attenuation_distance`: `σ_a = -ln(attenuation_color) / attenuation_distance` (component-wise; per-wavelength absorption gives green / red / etc. tinted glass).  IOR taken from `KHR_materials_ior` or default 1.5.  The medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  **Requires `pathtracing_shaderop`** for refraction: dielectrics have no BSDF (`GetBSDF()` returns `NULL`), so `DefaultDirectLighting` + `pixelpel_rasterizer` cannot shade them — render glass scenes with `pathtracing_pel_rasterizer`. |
+| **`KHR_materials_clearcoat`** | Detected; warn-and-skip-the-layer.  See "Deferred to Phase 5". |
+
+### Deferred to Phase 5
+
+| Item | Why deferred |
+|---|---|
+| **Layered `KHR_materials_clearcoat` over PBR** | RISE's `CompositeMaterial` random-walk SPF was designed for dielectric-on-Lambertian (the existing `composite_material.RISEscene` regression).  When layered over a PBR base — which has a 3-lobe BSDF (diffuse + specular + multiscatter) — the random-walk doesn't compose: probe rays terminate too quickly and the layer renders near-black.  Phase 5 needs a proper additive layered material that respects per-lobe albedo. |
+| **Layered `KHR_materials_sheen` over PBR** | Same composition problem as clearcoat; the standalone `SheenMaterial` works fine for hand-authored fabric (see `scenes/Tests/Materials/sheen.RISEscene`), but the importer's `mat.sheen` path emits a warn-and-skip until the layered base lands. |
+| **Alpha mask + blend under BDPT / VCM / MLT** | Same constraint as Phase 3: those integrators bypass the shader-op pipeline and treat alpha as opaque.  Promoting alpha-test to a hit-time geometry concern is a substantial cross-cutting refactor. |
+| **Animation / skinning / morph targets** | Carried forward from Phase 3+. |
+| **Other `KHR_materials_*`** (`specular`, `anisotropy`, `iridescence`, `dispersion`) | Phase 5+. |
+
+### Adversarial review summary (Phase 4)
+
+The Phase 4 work was reviewed by three orthogonal agents
+(BRDF math + sampling, importer wiring + lifetime, build /
+test / API surface).  The Priority-1 findings have all been
+addressed in this branch:
+
+- **Sheen V missing `cos_l · cos_v` factor (P1-A).** First
+  revision implemented `V = 1/(4·(n·l + n·v − n·l·n·v))` per
+  an early reading of the spec; the Khronos KHR_materials_
+  sheen reference adds the `n·l·n·v` factor in the
+  denominator, which is what gives Charlie its grazing-bright
+  / centre-dark profile.  Without it, sheen was over-bright
+  at normal incidence.  Fixed in `SheenBRDF.cpp` and
+  `SheenSPF.cpp` (must match exactly for kray = f·cosθ/pdf
+  to evaluate consistently).
+- **Sheen back-face flip (P1-D).** `SheenSPF::Pdf` flipped
+  the ONB on back-face hits but `SheenBRDF::value(NM)` did
+  not, so MIS weights mismatched when sheen layered over a
+  transparent base (composite + dielectric) and back-face
+  hits silently returned zero.  Fixed in both `value` and
+  `valueNM`.
+- **Alpha-mode shader composition (F1).** Alpha-mode wiring
+  initially used `standard_shader` (additive `c = c + cthis`)
+  composed with `[Emission, DirectLighting, alpha_op]`.  The
+  `transparency_shaderop` formula computes
+  `c = cthis*factor + c*(1-factor)` and assumes `c` already
+  holds the surface result — the additive shader would
+  double-count emission on opaque pixels.  Fixed by
+  switching to `advanced_shader` with operators
+  `[+, +, =]` so the alpha op REPLACES the accumulator.
+- **Channel-painter validator (post-review fix).**
+  `Job::AddChannelPainter` validated `channel ∈ [0..2]` from
+  Phase 3 (R/G/B only).  `CHAN_A=3` was rejected at the Job
+  layer, so the alpha-mode painter graph silently failed to
+  build.  Range expanded to `[0..3]` and error message
+  updated to mention `3=A`.
+- **`ChannelPainter` CHAN_A clamp (P1-B).** Alpha is a
+  coverage scalar that downstream consumers (BlendPainter
+  mask, AlphaTestShaderOp cutoff, TransparencyShaderOp
+  factor) all assume is in `[0,1]`.  Hand-authored scene
+  files passing non-default `scale`/`bias` could push the
+  output outside `[0,1]` and produce extrapolating blends.
+  Clamped CHAN_A output (only) to `[0,1]` in both `GetColor`
+  and `GetColorNM`.
+
+A second adversarial pass after the initial Phase 4 review
+found four additional issues, all addressed in this branch:
+
+- **Textured per-pixel alpha collapsed to opaque (P1).**
+  `BuildAlphaPainter` extracted CHAN_A from the *composed*
+  baseColor painter (the `BlendPainter(texture, zero,
+  factorRGB)` product).  CHAN_A on a BlendPainter doesn't
+  propagate the underlying texture's alpha — it falls back
+  to the IPainter default (1.0) — so textured `alphaMode =
+  MASK / BLEND` materials imported as fully opaque,
+  modulated only by `baseColorFactor.a`.  Fixed by
+  capturing the raw `baseColorTexturePainter` name during
+  material construction and pointing the alpha
+  `ChannelPainter` at it.
+- **Premultiplied baseColor RGB (P1).**  `TexturePainter::
+  GetColor` returned `c.base * c.a` (premultiplied alpha,
+  legacy semantic from 2001).  glTF specifies straight
+  alpha for baseColor, and Phase 4 now also weights by
+  alpha in the shader-op path — net result was `surface ×
+  α² + background × (1 − α)` for BLEND, plus uniform
+  dimming on OPAQUE / MASK textures wherever texture α < 1.
+  Fixed by returning straight `c.base`; for RGB images
+  `c.a == 1` so the change is a no-op.  Callers needing
+  the legacy premultiplied behaviour can compose it
+  explicitly via `ChannelPainter(CHAN_A) × source` through
+  a `BlendPainter` or `product_painter`.
+- **emissiveFactor dropped on textured emissive (P2).**
+  Previously the importer chose `emissiveTexture` OR
+  `emissiveFactor` (texture wins).  glTF spec §3.9.4
+  defines `emissive = emissiveTexture × emissiveFactor ×
+  emissiveStrength`.  Fixed: when both are present, build
+  a `BlendPainter(texture, zero, factor)` product; when
+  factor is white (1,1,1) skip the multiply (no-op); when
+  factor is zero, drop the emissive painter entirely.
+  `KHR_materials_emissive_strength` continues to apply via
+  `emissiveScale` on top of the now-correct base.
+- **`KHR_materials_transmission` only implements scalar
+  subset (P2).**  Phase 4 honours
+  `transmission.transmission_factor` only; the optional
+  `transmission_texture` is **ignored** (the importer
+  emits a one-time warning per affected material).
+  Plumbing a per-pixel τ painter into `DielectricMaterial`
+  needs either a new τ-painter slot in the material or a
+  per-object material-mix wrapper; deferred to Phase 5.
+
+P3 fit-and-finish items (consolidating the duplicated
+`SheenD` / `SheenV` between BRDF and SPF into a shared
+`MicrofacetUtils` header) are tracked but deferred — the
+duplication is intentional today (`SheenSPF` keeps a private
+copy to compute kray without circular includes), and a
+shared utility makes more sense once Phase 5 adds layered
+GGX + sheen + clearcoat composition with the same kernel
+shape.
+
+### Demo scenes added in Phase 4
+
+| Scene | Demonstrates |
+|---|---|
+| `scenes/Tests/Materials/sheen.RISEscene` | Standalone Charlie sheen — three spheres at velvet / satin / blurred roughness levels, lit by `pixelpel_rasterizer` + `DefaultDirectLighting`.  Shows the characteristic grazing-bright / centre-dark profile. |
+| `scenes/Tests/Materials/transmission.RISEscene` | Three glass spheres (clear / green / red absorbing) on a lit floor with a back-wall, demonstrating Beer-Lambert absorption in `HomogeneousMedium`.  Renders with `pathtracing_pel_rasterizer` because dielectrics have no BSDF. |
+| `scenes/Tests/Materials/unlit.RISEscene` | Side-by-side comparison of a lit PBR sphere vs two unlit luminaires, showing that the unlit material ignores scene lighting. |
+| `scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene` | Imports the Khronos `AlphaBlendModeTest.glb` asset to validate `alphaMode = OPAQUE / MASK / BLEND` end-to-end through the importer. |
 
 ---
 

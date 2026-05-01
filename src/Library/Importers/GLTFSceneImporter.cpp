@@ -1,11 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  GLTFSceneImporter.cpp - Implementation.  See header for the
-//  design.  Phase 2 of glTF support; see docs/GLTF_IMPORT.md.
+//  design.  glTF 2.0 import; see docs/GLTF_IMPORT.md.
 //
-//  Phase 2 scope summary -- what this importer does:
+//  Importer responsibilities (Phases 1-4):
 //   - Resolves the requested glTF scene (or the file's default scene).
-//   - Walks the node tree depth-first, accumulating world matrices.
+//   - Walks the node tree depth-first, accumulating column-major world
+//     matrices and passing them verbatim to Job::AddObjectMatrix (no
+//     Euler decomposition; gimbal-lock and shear-decomp failure modes
+//     are gone since Phase 3).
 //   - For each node with a mesh: emits one gltfmesh_geometry per
 //     primitive (re-using the Phase 1 loader), bound to a PBR material
 //     + optional normal-map modifier through standard_object.
@@ -13,43 +16,42 @@
 //     pbr_metallic_roughness_material by feeding baseColor /
 //     metallicRoughness / emissive textures (or factor-driven
 //     uniformcolor painters when the slot is texture-less) into
-//     Job::AddPBRMetallicRoughnessMaterial.
+//     Job::AddPBRMetallicRoughnessMaterial.  KHR_materials_emissive_
+//     strength scales the emissive painter; KHR_materials_unlit swaps
+//     the PBR shape for a LambertianLuminaireMaterial (zero BSDF +
+//     emitter so the surface looks self-luminous regardless of lights);
+//     KHR_materials_transmission + KHR_materials_volume + KHR_materials_
+//     ior produce DielectricMaterial + HomogeneousMedium for refractive
+//     glass with Beer-Lambert absorption.
 //   - For each glTF texture: emits one painter.  Embedded `.glb` images
 //     and inline `data:` URIs go directly from the cgltf bufferView
 //     bytes into a painter via Job::AddInMemoryPNGTexturePainter /
 //     AddInMemoryJPEGTexturePainter -- no disk round-trip.  External
 //     image URIs in the .gltf JSON form continue to use the existing
-//     file-path painter APIs.  (Earlier revisions wrote a sidecar copy
-//     under <glb_dir>/.gltf_cache/; that path is gone in Phase 3.)
+//     file-path painter APIs.
 //   - For each KHR_lights_punctual node: emits an omni_light /
 //     spot_light / directional_light with the world-space placement
 //     derived from the node's accumulated transform.
 //   - For the first camera-bearing node: emits a pinhole_camera with
 //     the world-space placement; subsequent camera nodes warn.
 //
-//  Scope summary as of Phase 3 -- what this importer DOES NOT do
-//  (see docs/GLTF_IMPORT.md §13 + §6 for full rationale):
-//   - Skinning / animation / morph targets -- import skips them with
-//     a one-time warning per file.  Geometry renders at bind pose.
-//   - alphaMode = MASK -- supported via alpha_test_shaderop, but
-//     only honoured by integrators that route through IShader::Shade()
-//     (path tracer + legacy direct shaders).  BDPT, VCM, MLT, and
-//     photon tracers bypass the shader-op pipeline and treat MASK as
-//     opaque.  No runtime warning is emitted for that mismatch.
-//   - alphaMode = BLEND -- not supported; warn-and-treat-as-opaque.
-//     glTF alphaCutoff = 0.5 is honoured for MASK; per-pixel alpha
-//     uses max(R,G,B) of baseColor as a luminance proxy because the
-//     painter system doesn't expose the A channel of an RGBA texture.
+//  Out-of-scope (warn-and-skip; see docs/GLTF_IMPORT.md):
+//   - Skinning / animation / morph targets -- one-time warning per
+//     file; geometry renders at bind pose.
+//   - alphaMode = MASK / BLEND -- both implemented (Phase 4) via
+//     alpha_test_shaderop / transparency_shaderop wired through a
+//     per-material advanced_shader.  Only integrators that route
+//     through IShader::Shade() honour them (path tracer + legacy
+//     direct shaders); BDPT, VCM, MLT, and photon tracers bypass the
+//     shader-op pipeline and currently treat both modes as opaque.
+//     Per-pixel alpha is read via IPainter::GetAlpha (the un-
+//     premultiplied A channel of the baseColor texture).
 //   - KHR_draco_mesh_compression / EXT_meshopt_compression -- rejected
 //     by the Phase 1 mesh loader; the importer surfaces that error.
-//   - Per-mesh KHR_materials_* extensions beyond the core PBR shape
-//     (clearcoat, sheen, transmission, etc.) -- ignored with one
-//     warning per extension type.
-//
-//  Phase 3 retired the lossy Euler-decomposition node-transform path:
-//  the importer now passes each node's column-major world matrix to
-//  Job::AddObjectMatrix verbatim, eliminating gimbal-lock and shear
-//  decomposition failure modes.
+//   - KHR_materials_clearcoat / KHR_materials_sheen as a layer atop
+//     the PBR base -- the BRDFs exist (SheenBRDF, dielectric for
+//     clearcoat) but RISE's CompositeMaterial random-walk SPF doesn't
+//     compose well over a 3-lobe PBR base; deferred to Phase 5.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 30, 2026
@@ -265,6 +267,9 @@ namespace
 	std::string CameraName   ( const std::string& prefix, size_t idx ) {
 		std::ostringstream oss; oss << prefix << ".cam." << idx; return oss.str();
 	}
+	std::string MediumName   ( const std::string& prefix, size_t matIdx ) {
+		std::ostringstream oss; oss << prefix << ".medium." << matIdx; return oss.str();
+	}
 	std::string PainterName  ( const std::string& prefix, const char* role, size_t matIdx ) {
 		std::ostringstream oss; oss << prefix << ".pnt." << role << "." << matIdx; return oss.str();
 	}
@@ -399,6 +404,11 @@ namespace
 		// (the painter system doesn't expose a painter's A channel, so per-
 		// pixel `texture.a * factor.a` can't be assembled here directly).
 		std::string baseColorPainter;
+		std::string baseColorTexturePainter;	// raw baseColorTexture, before factor multiply.
+		                                        // BuildAlphaPainter reads CHAN_A from THIS, not
+		                                        // the composed product (CHAN_A on a BlendPainter
+		                                        // returns the default 1.0 — the composition chain
+		                                        // doesn't propagate texture alpha).
 		bool baseColorIsTexture = false;	// false => uniform painter (alpha mask becomes pass/fail)
 		double factorAlpha = 1.0;
 		if( mat.has_pbr_metallic_roughness ) {
@@ -410,6 +420,7 @@ namespace
 				textureName = CreateTexturePainter(
 					job, prefix, data, glbPath, pmr.base_color_texture.texture, "basecolor" );
 			}
+			baseColorTexturePainter = textureName;	// captured for BuildAlphaPainter
 
 			const std::string nFactorRGB = PainterName( prefix, "basecolor_factor", matIdx );
 			const double rgbFactor[3] = {
@@ -489,40 +500,356 @@ namespace
 			roughnessPainter = nR;
 		}
 
-		// Emissive -- texture or factor.
+		// Emissive -- glTF spec §3.9.4: emissive = emissiveTexture x
+		// emissiveFactor x emissiveStrength.  Earlier revisions treated
+		// the slot as either-or (texture iff present, else factor) which
+		// silently dropped non-white emissiveFactor on textured assets.
+		// The strength term is folded in below as `emissiveScale`; the
+		// factor x texture multiply is wired here.
 		std::string emissivePainter = "none";
+		std::string emissiveTextureName;
 		if( mat.emissive_texture.texture ) {
-			emissivePainter = CreateTexturePainter(
+			emissiveTextureName = CreateTexturePainter(
 				job, prefix, data, glbPath, mat.emissive_texture.texture, "emissive" );
-			if( emissivePainter.empty() ) emissivePainter = "none";
 		}
-		if( emissivePainter == "none" ) {
-			const cgltf_float ef[3] = {
-				mat.emissive_factor[0],
-				mat.emissive_factor[1],
-				mat.emissive_factor[2] };
-			if( ef[0] > 0 || ef[1] > 0 || ef[2] > 0 ) {
-				const std::string n = PainterName( prefix, "emissive", matIdx );
+		const cgltf_float ef[3] = {
+			mat.emissive_factor[0],
+			mat.emissive_factor[1],
+			mat.emissive_factor[2] };
+		const bool factorIsZero = (ef[0] <= 0 && ef[1] <= 0 && ef[2] <= 0);
+		const bool factorIsWhite = (ef[0] >= 1.0 && ef[1] >= 1.0 && ef[2] >= 1.0);
+
+		if( !emissiveTextureName.empty() ) {
+			if( factorIsZero ) {
+				// emissive = texture * 0 = no emission.  Spec-correct.
+				emissivePainter = "none";
+			} else if( factorIsWhite ) {
+				// emissive = texture * 1 = texture.  Skip the multiply.
+				emissivePainter = emissiveTextureName;
+			} else {
+				// emissive = texture * factorRGB via BlendPainter(t, 0, f).
+				const std::string nFactor = PainterName( prefix, "emissive_factor", matIdx );
 				const double pel[3] = { ef[0], ef[1], ef[2] };
-				job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
-				emissivePainter = n;
+				job.AddUniformColorPainter( nFactor.c_str(), pel, "Rec709RGB_Linear" );
+
+				const std::string nZero = PainterName( prefix, "emissive_zero", matIdx );
+				const double zero[3] = { 0.0, 0.0, 0.0 };
+				job.AddUniformColorPainter( nZero.c_str(), zero, "Rec709RGB_Linear" );
+
+				const std::string nProduct = PainterName( prefix, "emissive", matIdx );
+				job.AddBlendPainter( nProduct.c_str(),
+					emissiveTextureName.c_str(),
+					nZero.c_str(),
+					nFactor.c_str() );
+				emissivePainter = nProduct;
 			}
+		} else if( !factorIsZero ) {
+			// No texture; the factor itself is the emissive painter.
+			const std::string n = PainterName( prefix, "emissive", matIdx );
+			const double pel[3] = { ef[0], ef[1], ef[2] };
+			job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+			emissivePainter = n;
 		}
 
+		// KHR_materials_emissive_strength: scalar multiplier on emissive
+		// radiance, used by glTF authoring tools to push emission past the
+		// [0,1] sRGB-encoded texture range.  Default 1.0 when extension is
+		// absent, so the unconditional read is safe.
+		const double emissiveScale = mat.has_emissive_strength
+			? (double)mat.emissive_strength.emissive_strength
+			: 1.0;
+
 		const std::string matName = MaterialName( prefix, matIdx );
-		const bool ok = job.AddPBRMetallicRoughnessMaterial(
-			matName.c_str(),
-			baseColorPainter.c_str(),
-			metallicPainter.c_str(),
-			roughnessPainter.c_str(),
-			/*ior*/ 1.5,
-			emissivePainter.c_str(),
-			/*emissive_scale*/ 1.0 );
+
+		// KHR_materials_clearcoat and KHR_materials_sheen are detected,
+		// but Phase 4 does not yet attempt to layer them on top of the
+		// PBR / dielectric / unlit base.  Reason: CompositeMaterial's
+		// random walk is currently designed around dielectric-on-Lambertian
+		// (the working scenes/Tests/Materials/composite_material.RISEscene
+		// pattern) and does not handle a GGX or sheen top over a complex
+		// 3-lobe PBR base — the resulting walk drops most diffuse
+		// contributions, producing nearly-black surfaces.  Phase 5 will
+		// add a proper additive layered material that works with PBR.  For
+		// Phase 4 we register the base material under `matName` directly
+		// and warn once per material so users can author the layer
+		// manually if needed (the chunk-level sheen_material and
+		// fresnel_mode = schlick_f0 GGX top are both fully working
+		// stand-alone).
+		const bool hasClearcoat = mat.has_clearcoat;
+		const bool hasSheen     = mat.has_sheen;
+		const std::string baseMatName = matName;
+
+		// KHR_materials_unlit: skip the BSDF entirely and treat baseColor
+		// as Lambertian radiant exitance.  RISE has no "BSDF-less" material
+		// class; the closest fit is LambertianLuminaireMaterial wrapping a
+		// zero-reflectance Lambertian (so the BSDF returns 0 and the
+		// emitter contributes baseColor / π · scale on hit).  Using
+		// scale = π gives `pixel ≈ baseColor` for a viewer-facing surface,
+		// which matches glTF unlit semantics: rendered colour equals
+		// baseColor regardless of incident light.
+		//
+		// KHR_materials_transmission (+ optional KHR_materials_volume +
+		// KHR_materials_ior): build a dielectric_material instead of the
+		// PBR path, with the IOR coming from the ior extension (default
+		// 1.5).  The volume extension's attenuation_color +
+		// attenuation_distance produce a HomogeneousMedium with Beer-
+		// Lambert absorption, attached to the imported objects via
+		// SetObjectInteriorMedium during the scene walk.
+		bool ok = false;
+		if( mat.unlit ) {
+			const std::string nZero = PainterName( prefix, "unlit_zero", matIdx );
+			const double zero[3] = { 0.0, 0.0, 0.0 };
+			job.AddUniformColorPainter( nZero.c_str(), zero, "Rec709RGB_Linear" );
+
+			const std::string nNullLamb = PainterName( prefix, "unlit_null_lamb", matIdx );
+			job.AddLambertianMaterial( nNullLamb.c_str(), nZero.c_str() );
+
+			ok = job.AddLambertianLuminaireMaterial(
+				baseMatName.c_str(),
+				baseColorPainter.c_str(),
+				nNullLamb.c_str(),
+				/*scale*/ 3.141592653589793 );
+		} else if( mat.has_transmission ) {
+			// Tau (transmittance painter): white = full pass-through.
+			// glTF's transmission_factor scales attenuation; bake it into
+			// a uniform here.  baseColor is NOT folded into tau because
+			// for thick-walled glass the absorption colour comes from the
+			// volume extension (handled below); for thin-walled the
+			// asset's tint is approximated as the dielectric scattering
+			// inside the volume's σ_a (set to a small value when
+			// attenuation_color is non-white).
+			//
+			// Phase 4 implements the SCALAR subset of KHR_materials_
+			// transmission only.  `transmission.transmission_texture` is
+			// NOT sampled — assets that vary transmissivity spatially
+			// (e.g. a glass panel with masked frosted regions) will
+			// import as uniformly transmissive.  Deferred to Phase 5
+			// because plumbing a per-pixel τ painter into
+			// DielectricMaterial requires either a new τ-painter slot
+			// in the material or a per-object material-mix wrapper;
+			// neither is wired today.  Warn so authors aren't surprised.
+			if( mat.transmission.transmission_texture.texture ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: material `%s` declares a transmissionTexture; "
+					"Phase 4 honours only the scalar transmission_factor (%.3f). "
+					"The texture is ignored.  See docs/GLTF_IMPORT.md §15 (Phase 5).",
+					matName.c_str(), (double)mat.transmission.transmission_factor );
+			}
+			const double trans = (double)mat.transmission.transmission_factor;
+			const std::string nTau = PainterName( prefix, "trans_tau", matIdx );
+			const double tau[3] = { trans, trans, trans };
+			job.AddUniformColorPainter( nTau.c_str(), tau, "Rec709RGB_Linear" );
+
+			const double iorValue = mat.has_ior
+				? (double)mat.ior.ior
+				: 1.5;
+			const std::string nIor = PainterName( prefix, "trans_ior", matIdx );
+			const double iorPel[3] = { iorValue, iorValue, iorValue };
+			job.AddUniformColorPainter( nIor.c_str(), iorPel, "Rec709RGB_Linear" );
+
+			const std::string nScat = PainterName( prefix, "trans_scat", matIdx );
+			const double zero[3] = { 0.0, 0.0, 0.0 };
+			job.AddUniformColorPainter( nScat.c_str(), zero, "Rec709RGB_Linear" );
+
+			ok = job.AddDielectricMaterial(
+				baseMatName.c_str(),
+				nTau.c_str(),
+				nIor.c_str(),
+				nScat.c_str(),
+				/*hg*/ false );
+
+			// KHR_materials_volume: thick-walled volumetric absorption.
+			// σ_a = -ln(attenuation_color) / attenuation_distance per channel.
+			// Clamp attenuation_color to (0, 1] to avoid log domain issues
+			// (a value of 0 in any channel would imply infinite absorption,
+			// which would render the object completely opaque in that band).
+			if( mat.has_volume && mat.volume.attenuation_distance > 0 ) {
+				const cgltf_volume& vol = mat.volume;
+				const double dist = (double)vol.attenuation_distance;
+				auto SafeLog = []( double x ) -> double {
+					return std::log( std::max( 1e-6, std::min( 1.0, x ) ) );
+				};
+				const double sigma_a[3] = {
+					-SafeLog( (double)vol.attenuation_color[0] ) / dist,
+					-SafeLog( (double)vol.attenuation_color[1] ) / dist,
+					-SafeLog( (double)vol.attenuation_color[2] ) / dist
+				};
+				const double sigma_s[3] = { 0.0, 0.0, 0.0 };
+
+				const std::string medName = MediumName( prefix, matIdx );
+				job.AddHomogeneousMedium(
+					medName.c_str(),
+					sigma_a, sigma_s,
+					/*phase*/ "isotropic",
+					/*phase_g*/ 0.0 );
+				// The medium gets bound to per-primitive objects in the
+				// Walker (via SetObjectInteriorMedium) since materials are
+				// scene-wide but interior media attach to objects.
+			}
+		} else {
+			ok = job.AddPBRMetallicRoughnessMaterial(
+				baseMatName.c_str(),
+				baseColorPainter.c_str(),
+				metallicPainter.c_str(),
+				roughnessPainter.c_str(),
+				/*ior*/ 1.5,
+				emissivePainter.c_str(),
+				emissiveScale );
+		}
 		if( !ok ) {
 			GlobalLog()->PrintEx( eLog_Error,
-				"GLTFSceneImporter:: failed to register material `%s`", matName.c_str() );
+				"GLTFSceneImporter:: failed to register material `%s`", baseMatName.c_str() );
 			return false;
 		}
+
+		// Layered KHR extensions detected — log once per material so users
+		// know the layer was seen and skipped.  Phase 4 carries the base
+		// material verbatim; Phase 5 will add proper additive layering.
+		if( hasClearcoat ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_clearcoat "
+				"(factor=%.2f); Phase 4 imports the base PBR only and skips the "
+				"clearcoat layer.  See docs/GLTF_IMPORT.md §13 (Phase 5 candidates).",
+				matName.c_str(), (double)mat.clearcoat.clearcoat_factor );
+		}
+		if( hasSheen ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_sheen; "
+				"Phase 4 imports the base PBR only and skips the sheen layer.  "
+				"Use the standalone `sheen_material` chunk for hand-authored fabric.",
+				matName.c_str() );
+		}
+
+#if 0	// Phase 5 — preserved for the layered-composite work that comes next.
+		// Layered KHR extensions: sheen and clearcoat both add a top
+		// dielectric/cloth layer over the base PBR.  We compose them in
+		// order  base → sheen → clearcoat  via two CompositeMaterial
+		// layers, so the user's view ray hits clearcoat first.  When only
+		// one extension is present, we collapse to a single composite.
+		// `currentBottom` tracks the running "below this layer" material
+		// name as we wrap each layer; the LAST layer registers under
+		// matName so downstream consumers find the composite.
+		std::string currentBottom = baseMatName;
+		const std::string nLayerZero = PainterName( prefix, "layer_zero", matIdx );
+		if( hasClearcoat || hasSheen ) {
+			const double zero[3] = { 0.0, 0.0, 0.0 };
+			job.AddUniformColorPainter( nLayerZero.c_str(), zero, "Rec709RGB_Linear" );
+		}
+
+		// ----- Sheen layer -----
+		if( hasSheen ) {
+			const cgltf_sheen& sh = mat.sheen;
+
+			// sheen_color: glTF's sheenColorFactor[3], optionally textured.
+			std::string sheenColorPainter;
+			if( sh.sheen_color_texture.texture ) {
+				sheenColorPainter = CreateTexturePainter(
+					job, prefix, data, glbPath, sh.sheen_color_texture.texture, "sheen_color" );
+			}
+			if( sheenColorPainter.empty() ) {
+				const std::string n = PainterName( prefix, "sheen_color", matIdx );
+				const double pel[3] = {
+					(double)sh.sheen_color_factor[0],
+					(double)sh.sheen_color_factor[1],
+					(double)sh.sheen_color_factor[2] };
+				job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+				sheenColorPainter = n;
+			}
+
+			// sheen_roughness: scalar painter from sheenRoughnessFactor.
+			const std::string nShRough = PainterName( prefix, "sheen_rough", matIdx );
+			const double shRough = (double)sh.sheen_roughness_factor;
+			const double shPel[3] = { shRough, shRough, shRough };
+			job.AddUniformColorPainter( nShRough.c_str(), shPel, "Rec709RGB_Linear" );
+
+			const std::string nSheenTop = baseMatName + "__sheen_top";
+			job.AddSheenMaterial( nSheenTop.c_str(),
+				sheenColorPainter.c_str(),
+				nShRough.c_str() );
+
+			// Final layer-output name: matName if no clearcoat above,
+			// otherwise an intermediate name for clearcoat to consume.
+			const std::string sheenComposite = hasClearcoat
+				? matName + "__sheen_layer"
+				: matName;
+			// CompositeMaterial recursion limits + thickness mirror the
+			// committed clearcoat reference scene (composite_material.RISEscene)
+			// which is the only existing usage pattern and was tuned to
+			// produce a coherent layered look.
+			job.AddCompositeMaterial(
+				sheenComposite.c_str(),
+				nSheenTop.c_str(),
+				currentBottom.c_str(),
+				/*max_recur*/                  5,
+				/*max_reflection_recursion*/   3,
+				/*max_refraction_recursion*/   3,
+				/*max_diffuse_recursion*/      3,
+				/*max_translucent_recursion*/  3,
+				/*thickness*/                  0.5,
+				nLayerZero.c_str() );
+			currentBottom = sheenComposite;
+		}
+
+		// ----- Clearcoat layer -----
+		// glTF clearcoat: thin dielectric coating with its own roughness.
+		// CompositeMaterial(top=clearcoat_GGX, bottom=currentBottom) — the
+		// random walk in CompositeSPF propagates rays through the clearcoat
+		// layer, into whatever's below (sheen or base), then back out.
+		// Clearcoat has no diffuse; F0 = 0.04 (standard dielectric) scaled
+		// by clearcoat_factor so factor = 0 disables the layer.  Roughness
+		// is squared to match the GGX α convention.  The glTF optional
+		// clearcoatTexture / clearcoatRoughnessTexture / clearcoatNormalTexture
+		// are documented but not yet wired (uniform factors only — Phase 5).
+		if( hasClearcoat ) {
+			const cgltf_clearcoat& cc = mat.clearcoat;
+			const double ccFactor   = (double)cc.clearcoat_factor;
+			const double ccRoughSq  = (double)cc.clearcoat_roughness_factor *
+			                          (double)cc.clearcoat_roughness_factor;
+
+			// rs = factor * 0.04   (Schlick F0; factor scales coverage)
+			const std::string nCcF0 = PainterName( prefix, "cc_f0", matIdx );
+			const double f0[3] = { 0.04 * ccFactor, 0.04 * ccFactor, 0.04 * ccFactor };
+			job.AddUniformColorPainter( nCcF0.c_str(), f0, "Rec709RGB_Linear" );
+
+			// α = roughness^2
+			const std::string nCcAlpha = PainterName( prefix, "cc_alpha", matIdx );
+			const double alpha[3] = { ccRoughSq, ccRoughSq, ccRoughSq };
+			job.AddUniformColorPainter( nCcAlpha.c_str(), alpha, "Rec709RGB_Linear" );
+
+			// IOR / extinction unused in Schlick mode but required by the API.
+			const std::string nCcIor = PainterName( prefix, "cc_ior", matIdx );
+			const double ior[3] = { 1.5, 1.5, 1.5 };
+			job.AddUniformColorPainter( nCcIor.c_str(), ior, "Rec709RGB_Linear" );
+
+			// Top layer GGX in Schlick-from-F0 mode.  Diffuse = zero (shared
+			// across all layered extensions, lives in nLayerZero above).
+			const std::string nCcTop = baseMatName + "__cc_top";
+			job.AddGGXMaterial( nCcTop.c_str(),
+				nLayerZero.c_str(),
+				nCcF0.c_str(),
+				nCcAlpha.c_str(),
+				nCcAlpha.c_str(),
+				nCcIor.c_str(),
+				nLayerZero.c_str(),
+				"schlick_f0" );
+
+			job.AddCompositeMaterial(
+				matName.c_str(),
+				nCcTop.c_str(),
+				currentBottom.c_str(),
+				/*max_recur*/                  5,
+				/*max_reflection_recursion*/   3,
+				/*max_refraction_recursion*/   3,
+				/*max_diffuse_recursion*/      3,
+				/*max_translucent_recursion*/  3,
+				/*thickness*/                  0.5,
+				nLayerZero.c_str() );
+			currentBottom = matName;
+		}
+#endif	// Phase 5 layered-material guard
+
+		(void)hasClearcoat;
+		(void)hasSheen;
 
 		// Optional normal-map modifier.
 		if( mat.normal_texture.texture ) {
@@ -544,67 +871,103 @@ namespace
 		// MaskedAlphaMode test asset's behaviour where transparent pixels
 		// are also dark, and the architectural hook is in place for a
 		// future alpha-aware painter.
+		// Build a Phase-4 alpha-source painter when the material needs one.
+		// glTF alpha = textureAlpha * factorAlpha.  We bake factorAlpha
+		// into the channel_painter's `scale` so downstream consumers can
+		// read a single painter and have the spec semantics applied.
+		// When there's no baseColor texture, fall back to a uniform painter
+		// at factorAlpha (the test / blend then degenerates to material-
+		// wide pass/fail; warn so authors aren't surprised).
+		//
+		// Critical: read CHAN_A from the RAW baseColor texture
+		// (`baseColorTexturePainter`), NOT from `baseColorPainter`.  The
+		// latter is a BlendPainter composing texture × factor — its
+		// `GetAlpha()` returns the IPainter default (1.0) because the
+		// composition doesn't propagate the underlying texture's alpha.
+		// Reading from the raw TexturePainter pulls straight-alpha out
+		// of the RGBA texel.
+		auto BuildAlphaPainter = [&]() -> std::string
+		{
+			if( baseColorIsTexture && !baseColorTexturePainter.empty() ) {
+				const std::string n = PainterName( prefix, "alpha", matIdx );
+				job.AddChannelPainter( n.c_str(), baseColorTexturePainter.c_str(),
+					/*chan A*/ 3, /*scale*/ factorAlpha, /*bias*/ 0.0 );
+				return n;
+			}
+			const std::string n = PainterName( prefix, "alpha_factor", matIdx );
+			const double pel[3] = { factorAlpha, factorAlpha, factorAlpha };
+			job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+			return n;
+		};
+
+		// Per-material alpha-mode wiring.  Both MASK and BLEND need an
+		// `advanced_shader` (NOT `standard_shader`) because the alpha-aware
+		// op replaces the accumulator rather than adding to it -- the
+		// additive standard_shader would produce wrong cutout semantics.
+		// Op chain: [Emission +, DirectLighting +, alpha_test_or_transp =].
+		// The first two ops fill the accumulator with emission + surface
+		// BSDF; the third op either keeps that (opaque) or replaces it
+		// with the background colour (cutout / blend).
+		auto WireAlphaShader = [&]( const char* opName ) -> bool
+		{
+			const std::string shaderName = matName + ".shader";
+			const char* ops[] = { "DefaultEmission", "DefaultDirectLighting", opName };
+			const unsigned int minDepth[] = { 0, 0, 0 };
+			const unsigned int maxDepth[] = { 100, 100, 100 };
+			const char operations[] = { '+', '+', '=' };
+			const bool ok = job.AddAdvancedShader(
+				shaderName.c_str(), 3, ops, minDepth, maxDepth, operations );
+			if( !ok ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: failed to wire alpha shader for material `%s`; "
+					"surface will render as opaque", matName.c_str() );
+			}
+			return ok;
+		};
+
 		if( mat.alpha_mode == cgltf_alpha_mode_mask ) {
-			// When the baseColor painter is a uniform (no texture loaded),
-			// the alpha test degenerates to a global pass/fail toggle for
-			// the whole material — alpha < cutoff fully discards every hit
-			// or alpha >= cutoff fully keeps every hit.  Warn so users
-			// expecting per-pixel cutout know they got something coarser.
-			std::string alphaSource;
-			if( baseColorIsTexture ) {
-				alphaSource = baseColorPainter;
-			} else {
-				const std::string n = PainterName( prefix, "alpha_factor", matIdx );
-				const double pel[3] = { factorAlpha, factorAlpha, factorAlpha };
-				job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
-				alphaSource = n;
+			std::string alphaSource = BuildAlphaPainter();
+			if( !baseColorIsTexture ) {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"GLTFSceneImporter:: material `%s` is alphaMode=MASK but has no baseColor "
 					"texture; alpha test degraded to material-wide pass/fail at factor=%.3f",
 					matName.c_str(), factorAlpha );
 			}
-
-			// Spec semantic: alpha < cutoff discards, where alpha = textureAlpha
-			// * factorAlpha.  Painter system doesn't expose A, so we use
-			// max(R,G,B) of (texture * factorRGB) as the alpha proxy already
-			// captured in `alphaSource`.  factorAlpha (the alpha component of
-			// baseColorFactor) modulates the threshold inversely: discard when
-			// `proxy < cutoff / factorAlpha`.  factorAlpha == 0 → effective
-			// cutoff is huge so nothing keeps (whole material transparent),
-			// guarded explicitly to avoid divide-by-zero.
-			double effCutoff;
-			if( factorAlpha < 1e-6 ) {
-				effCutoff = 1e30;	// always discard
-			} else {
-				effCutoff = (double)mat.alpha_cutoff / factorAlpha;
-			}
+			// `alphaSource` already includes factorAlpha (baked in via the
+			// ChannelPainter scale or the uniform value), so the cutoff is
+			// passed through unchanged.
+			const double cutoff = (double)mat.alpha_cutoff;
 
 			const std::string opName = matName + ".alphatest";
-			const bool opOK = job.AddAlphaTestShaderOp(
-				opName.c_str(), alphaSource.c_str(), effCutoff );
-
-			// Compose [DefaultEmission, alpha_test, DefaultDirectLighting]
-			// so emitters still light through the alpha and the BSDF only
-			// runs for opaque hits.  If the op or shader registration fails
-			// (typically a missing painter), skip the per-material shader so
-			// the object falls back to the global shader and renders as
-			// opaque -- preferable to silently dropping the mesh because the
-			// shader name is left dangling for AddObjectMatrix to look up.
-			bool shaderOK = false;
-			if( opOK ) {
-				const std::string shaderName = matName + ".shader";
-				const char* ops[] = { "DefaultEmission", opName.c_str(), "DefaultDirectLighting" };
-				shaderOK = job.AddStandardShader( shaderName.c_str(), 3, ops );
-			}
-			if( !shaderOK ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"GLTFSceneImporter:: failed to wire alpha-test shader for material `%s`; "
-					"surface will render as opaque", matName.c_str() );
+			if( job.AddAlphaTestShaderOp( opName.c_str(), alphaSource.c_str(), cutoff ) ) {
+				WireAlphaShader( opName.c_str() );
 			}
 		} else if( mat.alpha_mode == cgltf_alpha_mode_blend ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"GLTFSceneImporter:: material `%s` uses alphaMode = BLEND, which is out of "
-				"Phase 3 scope; treating as OPAQUE", matName.c_str() );
+			// Stochastic transparency for foliage / glass / decals.
+			// transparency_shaderop computes
+			//   c_op = cthis * factor + c_snap * (1 - factor)
+			// where cthis = background (recursively cast past surface) and
+			// c_snap is the running accumulator.  We want the rendered
+			// pixel = surface * alpha + background * (1 - alpha), so set
+			// factor = (1 - alpha) and run it AFTER the BSDF op (the
+			// advanced-shader `=` operator then replaces the accumulator
+			// with the blended result; see WireAlphaShader above).
+			const std::string alphaSource = BuildAlphaPainter();
+
+			const std::string nZero  = PainterName( prefix, "blend_zero",  matIdx );
+			const std::string nWhite = PainterName( prefix, "blend_white", matIdx );
+			const std::string nTrans = PainterName( prefix, "transparency", matIdx );
+			const double zero[3]  = { 0.0, 0.0, 0.0 };
+			const double white[3] = { 1.0, 1.0, 1.0 };
+			job.AddUniformColorPainter( nZero.c_str(),  zero,  "Rec709RGB_Linear" );
+			job.AddUniformColorPainter( nWhite.c_str(), white, "Rec709RGB_Linear" );
+			job.AddBlendPainter( nTrans.c_str(),
+				nZero.c_str(), nWhite.c_str(), alphaSource.c_str() );
+
+			const std::string opName = matName + ".transparency";
+			if( job.AddTransparencyShaderOp( opName.c_str(), nTrans.c_str(), /*one_sided*/ false ) ) {
+				WireAlphaShader( opName.c_str() );
+			}
 		}
 
 		return true;
@@ -865,10 +1228,11 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 						if( opts.importNormalMaps && prim.material->normal_texture.texture ) {
 							modName = ModifierName( prefix, mi );
 						}
-						// Per-material shader override exists only when the
-						// material was imported with alphaMode = MASK; CreateMaterial
-						// registers <matName>.shader in that case.
-						if( prim.material->alpha_mode == cgltf_alpha_mode_mask ) {
+						// Per-material shader override exists when the material was
+						// imported with alphaMode = MASK or BLEND; CreateMaterial
+						// registers <matName>.shader in those cases.
+						if( prim.material->alpha_mode == cgltf_alpha_mode_mask ||
+						    prim.material->alpha_mode == cgltf_alpha_mode_blend ) {
 							shaderName = matName + ".shader";
 						}
 					}
@@ -882,6 +1246,19 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 						shaderName == "none" ? NULL : shaderName.c_str(),
 						rmc, matD,
 						/*casts*/ true, /*receives*/ true );
+
+					// KHR_materials_volume: the material's interior is a
+					// homogeneous medium (registered up-front in
+					// CreateMaterial under MediumName(prefix, matIdx)).
+					// Bind it to this object instance so Beer-Lambert
+					// absorption applies to rays inside the volume.
+					if( opts.importMaterials && prim.material &&
+					    prim.material->has_volume &&
+					    prim.material->volume.attenuation_distance > 0 ) {
+						const size_t mi = (size_t)( prim.material - data->materials );
+						const std::string medName = MediumName( prefix, mi );
+						job.SetObjectInteriorMedium( objName.c_str(), medName.c_str() );
+					}
 				}
 			}
 

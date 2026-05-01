@@ -1,0 +1,163 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           sheen.RISEscene                                                                         #
+#   Description:    Phase 4 sheen_material demo: three spheres with the new Charlie / Neubelt               #
+#                   sheen BRDF.  Sheen is a fabric / cloth-like grazing-angle scatter — the                 #
+#                   sphere should look mostly dark in the centre with a bright "halo" around                #
+#                   the silhouette where view and surface normal are near-perpendicular.                    #
+#                                                                                                           #
+#                   Authors three sheen variants:                                                           #
+#                     left   = sharp velvet  (roughness 0.1, white sheen)                                   #
+#                     center = soft satin    (roughness 0.5, gold sheen)                                    #
+#                     right  = blurred fabric (roughness 1.0, pink sheen)                                   #
+#                                                                                                           #
+#                   In a healthy render the bright halo on the left sphere is narrow at the                 #
+#                   silhouette; the centre sphere has a wider gold tint; the right has a soft               #
+#                   diffuse-like distribution because the Charlie distribution flattens to                  #
+#                   nearly-cosine at α=1.                                                                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sheen
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	width				768
+	height				256
+	fov					40.0
+}
+
+uniformcolor_painter
+{
+	name				sheen_white
+	color				1.0 1.0 1.0
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				sheen_gold
+	color				1.0 0.7 0.2
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				sheen_pink
+	color				1.0 0.45 0.6
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				rough_sharp
+	color				0.1 0.1 0.1
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				rough_med
+	color				0.5 0.5 0.5
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				rough_blurred
+	color				1.0 1.0 1.0
+	colorspace			Rec709RGB_Linear
+}
+
+sheen_material
+{
+	name				m_velvet
+	sheen_color			sheen_white
+	sheen_roughness		rough_sharp
+}
+
+sheen_material
+{
+	name				m_satin
+	sheen_color			sheen_gold
+	sheen_roughness		rough_med
+}
+
+sheen_material
+{
+	name				m_blurred
+	sheen_color			sheen_pink
+	sheen_roughness		rough_blurred
+}
+
+sphere_geometry
+{
+	name				sph
+	radius				0.7
+}
+
+standard_object
+{
+	name				s_velvet
+	geometry			sph
+	material			m_velvet
+	position			-1.7 0 0
+}
+
+standard_object
+{
+	name				s_satin
+	geometry			sph
+	material			m_satin
+	position			0.0 0 0
+}
+
+standard_object
+{
+	name				s_blurred
+	geometry			sph
+	material			m_blurred
+	position			1.7 0 0
+}
+
+##################################################
+# Lights -- key from upper-front-right (positive Z
+# component so the camera-facing hemisphere is lit;
+# see docs/SCENE_CONVENTIONS.md §1).
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.4 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.15
+	color		1.0 1.0 1.0
+}

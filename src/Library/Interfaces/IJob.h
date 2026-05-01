@@ -865,6 +865,17 @@ namespace RISE
 			const double emissive_scale									///< [in] Multiplier on emissive radiance
 			) = 0;
 
+		//! Adds a Charlie / Neubelt sheen material for fabric / cloth.
+		//! Designed to compose as the top layer in a CompositeMaterial
+		//! pairing for glTF KHR_materials_sheen, but usable standalone
+		//! for hand-authored fabric scenes.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSheenMaterial(
+			const char* name,											///< [in] Name of the material
+			const char* sheen_color,									///< [in] Sheen colour painter
+			const char* sheen_roughness									///< [in] Sheen roughness painter or scalar
+			) = 0;
+
 		//! Adds Cook Torrance material
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddCookTorranceMaterial(
@@ -1064,14 +1075,22 @@ namespace RISE
 		//! (Schlick-from-F0 mode), per-texture painters (embedded `.glb`
 		//! images decode in-memory; external URIs read from disk — no
 		//! sidecar cache), per-light KHR_lights_punctual entries, and
-		//! the first camera (subsequent ones warn).  alphaMode = MASK
-		//! is honoured via auto-wired alpha_test_shaderop (PT-only;
-		//! BDPT/VCM/MLT/photon tracers treat MASK as opaque).  Object
-		//! names are prefixed with `name_prefix` to avoid manager-level
-		//! collisions.  See docs/GLTF_IMPORT.md §7 (phased plan) and
-		//! §13 (delivered vs deferred) for the full design and the
-		//! out-of-scope features that warn-and-skip (animation /
-		//! skinning / morph targets / alphaMode = BLEND / KHR_materials_*
+		//! the first camera (subsequent ones warn).  alphaMode = MASK /
+		//! BLEND are both honoured via auto-wired alpha_test_shaderop /
+		//! transparency_shaderop with per-pixel alpha read straight
+		//! from the baseColor texture (PT-only; BDPT/VCM/MLT/photon
+		//! tracers bypass shader ops and treat both as opaque).  Phase
+		//! 4 also wires KHR_materials_emissive_strength, KHR_materials_
+		//! unlit (LambertianLuminaireMaterial), and the scalar subset
+		//! of KHR_materials_transmission + volume + ior (Beer-Lambert
+		//! glass; transmission_texture is ignored with a warning).
+		//! Object names are prefixed with `name_prefix` to avoid
+		//! manager-level collisions.  See docs/GLTF_IMPORT.md §7
+		//! (phased plan), §13 (Phase 2/3 review), and §15 (Phase 4
+		//! status) for the full design and the out-of-scope features
+		//! that warn-and-skip (animation / skinning / morph targets /
+		//! KHR_materials_clearcoat / KHR_materials_sheen as a layer
+		//! over PBR / transmission_texture / other KHR_materials_*
 		//! beyond core PBR / Draco / meshopt).
 		//!
 		//! `scene_index = UINT_MAX` (the recommended default; this is
