@@ -332,6 +332,59 @@ namespace
 			out.editable = false;
 			return true;
 		}
+		// Tilt is stored in radians; emit in degrees so the panel and
+		// scene-file values agree.  Shift is stored in MM directly
+		// (Phase 1.2 unit convention) — no conversion at the editor
+		// surface; the camera's Recompute() does mm → scene-units
+		// internally.
+		if( n == "tilt_x" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetTiltX() * RAD_TO_DEG );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "tilt_y" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetTiltY() * RAD_TO_DEG );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "shift_x" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetShiftX() );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "shift_y" )
+		{
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetShiftY() );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
 		if( n == "scale" )
 		{
 			out.kind = ValueKind::Double;
@@ -485,6 +538,49 @@ std::vector<CameraProperty> CameraIntrospection::Inspect( const ICamera& camera 
 		// Replace the parser's terse description with a panel-friendly
 		// one when we have a more useful explanation.
 		cp.description = OverrideDescription( p.name, String( p.description.c_str() ) );
+		// Forward the descriptor's quick-pick presets to the panel.
+		// The panel renders these as a combo box alongside the line
+		// edit when the list is non-empty (see PropertiesPanel.swift /
+		// ViewportProperties.cpp).
+		cp.presets = p.presets;
+		// Forward the unit label.  Many CameraCommon params have no
+		// per-descriptor unit declaration but ARE displayed in known
+		// units after the editor's deg/rad conversions in
+		// ReadCameraProperty (pitch/roll/yaw/orientation/theta/phi
+		// emit degrees regardless of stored radians); supply "°" for
+		// those when the descriptor itself didn't.
+		cp.unitLabel = String( p.unitLabel.c_str() );
+		if( cp.unitLabel.size() <= 1 ) {
+			const std::string n( p.name.c_str() );
+			if( n == "pitch" || n == "roll" || n == "yaw" ||
+			    n == "orientation" || n == "theta" || n == "phi" ||
+			    n == "target_orientation" ) {
+				cp.unitLabel = String( "°" );
+			}
+		}
+		// Resolve the generic "scene units" placeholder to a concrete
+		// unit name when the camera tells us its scene_unit_meters.
+		// This is what lets the panel show "5000 mm" or "5 m" rather
+		// than the ambiguous "5000 scene units" — the user reads the
+		// real unit at a glance.  Falls through to the generic label
+		// when the scale is non-standard (e.g. cm = 0.01, inches =
+		// 0.0254, feet = 0.3048; otherwise stay generic).
+		if( std::string( cp.unitLabel.c_str() ) == "scene units" ) {
+			if( const ThinLensCamera* tl = dynamic_cast<const ThinLensCamera*>( cam ) ) {
+				const double su = tl->GetSceneUnitMeters();
+				// Tolerance because the user could type "0.001000"
+				// vs "0.001" — both meaning mm.
+				const auto match = []( double a, double b ) {
+					return fabs( a - b ) < 1e-9;
+				};
+				if(      match( su, 1.0    ) ) cp.unitLabel = String( "m"  );
+				else if( match( su, 0.01   ) ) cp.unitLabel = String( "cm" );
+				else if( match( su, 0.001  ) ) cp.unitLabel = String( "mm" );
+				else if( match( su, 0.0254 ) ) cp.unitLabel = String( "in" );
+				else if( match( su, 0.3048 ) ) cp.unitLabel = String( "ft" );
+				// otherwise leave as the generic "scene units"
+			}
+		}
 		out.push_back( cp );
 	}
 	return out;
@@ -669,6 +765,45 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 		if( !ParseDouble( value, v ) ) return false;
 		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
 			t->SetAnamorphicSqueeze( v );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "tilt_x" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		// Editor surfaces tilt in degrees; storage is radians.
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetTiltX( v * DEG_TO_RAD );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "tilt_y" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetTiltY( v * DEG_TO_RAD );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "shift_x" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		// Shift is in MM (Phase 1.2 unit convention) — camera's
+		// Recompute() does the mm → scene-units conversion.
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetShiftX( v );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "shift_y" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetShiftY( v );
 		} else {
 			return false;
 		}

@@ -1,9 +1,11 @@
 // SceneEditorSuggestionsTest — exercises the scene grammar, cursor
 // context resolver, and suggestion engine.  Asserts the core contract:
-// all 128 chunk keywords are enumerable, context resolution picks the
+// all 131 chunk keywords are enumerable, context resolution picks the
 // right scope in representative scene fragments, and the suggestion
 // engine returns chunk keywords at scene root and rejects already-
-// authored non-repeatable parameters inside a block.
+// authored non-repeatable parameters inside a block.  (The 128 → 131
+// bump tracks `gltfmesh_geometry` (glTF Phase 1), `camera_defaults`
+// (camera Phase 1.1), and `scene_options` (camera Phase 1.2).)
 //
 // Standalone executable (matches tests/ convention).  No framework.
 
@@ -29,14 +31,17 @@ void TestGrammarCoverage()
 	std::cout << "GrammarCoverage\n";
 	const SceneGrammar& g = SceneGrammar::Instance();
 	const auto& kws = g.AllChunkKeywords();
-	// 135 chunk types in the parser registry as of Phase 4 (KHR materials).
-	// This includes the legacy alias `mis_pathtracing_shaderop`, the
-	// Phase 2/3 glTF chunks (channel_painter, pbr_metallic_roughness_material,
-	// gltf_import, gltfmesh_geometry, normal_map_modifier, alpha_test_shaderop),
-	// and the Phase 4 sheen_material chunk.  Bump this count when adding new
-	// chunks; the alphabetised registration in CreateAllChunkParsers() is the
-	// source of truth.
-	EXPECT( kws.size() == 135 );
+	// 137 chunk types in the parser registry as of Phase 4 (glTF KHR
+	// materials) merged with camera Phase 1.2.  This includes the legacy
+	// alias `mis_pathtracing_shaderop` (shares a class with
+	// `pathtracing_shaderop`), the Phase 2 + Phase 3 glTF chunks
+	// (channel_painter, pbr_metallic_roughness_material, gltf_import,
+	// gltfmesh_geometry, normal_map_modifier, alpha_test_shaderop), the
+	// Phase 4 sheen_material chunk, and the camera Phase 1.1/1.2 chunks
+	// (camera_defaults, scene_options).  Bump this count when adding new
+	// chunks; the alphabetised registration in CreateAllChunkParsers() is
+	// the source of truth.
+	EXPECT( kws.size() == 137 );
 
 	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
 	// Describe() is pure-virtual, so every registered parser has its own
@@ -158,7 +163,7 @@ void TestSuggestChunkKeywordsAtRoot()
 	SuggestionEngine engine;
 	const std::string buf = "RISE ASCII SCENE 5\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
-	EXPECT( sugs.size() == 135 );
+	EXPECT( sugs.size() == 137 );
 	bool found_ambient = false;
 	for( const Suggestion& s : sugs ) {
 		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }

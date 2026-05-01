@@ -188,10 +188,11 @@ namespace RISE
 		const Point3& ptLocation,								///< [in] Absolute location of where the camera is located
 		const Point3& ptLookAt, 								///< [in] Absolute point the camera is looking at
 		const Vector3& vUp,										///< [in] Up vector of the camera
-		const Scalar sensorSize,								///< [in] Sensor width (scene units; same unit as focalLength/focusDistance)
-		const Scalar focalLength,								///< [in] Lens focal length (scene units; same unit as sensorSize/focusDistance)
+		const Scalar sensorSize,								///< [in] Sensor width (mm)
+		const Scalar focalLength,								///< [in] Lens focal length (mm)
 		const Scalar fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
-		const Scalar focusDistance,								///< [in] Focus plane distance (scene units; must be > focalLength)
+		const Scalar focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+		const Scalar sceneUnitMeters,							///< [in] Meters per scene unit
 		const unsigned int xres,								///< [in] X resolution of virtual screen
 		const unsigned int yres,								///< [in] Y resolution of virtual screen
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
@@ -202,14 +203,18 @@ namespace RISE
 		const Vector2& target_orientation,						///< [in] Orientation relative to a target
 		const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
 		const Scalar apertureRotation,							///< [in] Polygon rotation (radians)
-		const Scalar anamorphicSqueeze							///< [in] Aperture x-axis scale (1.0 = circular)
+		const Scalar anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+		const Scalar tiltX,										///< [in] Focal-plane tilt around x-axis (radians)
+		const Scalar tiltY,										///< [in] Focal-plane tilt around y-axis (radians)
+		const Scalar shiftX,									///< [in] Lens shift along x (mm)
+		const Scalar shiftY										///< [in] Lens shift along y (mm)
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, sensorSize, focalLength, fstop, focusDistance, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, apertureBlades, apertureRotation, anamorphicSqueeze );
+		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "thinlens camera" );
 		return true;
 	}
@@ -5852,6 +5857,40 @@ namespace RISE
 	{
 		if( !p ) return false;
 		return p->PropertyEditable( idx );
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyPresetCount(
+		SceneEditController* p, unsigned int idx )
+	{
+		if( !p ) return 0;
+		return p->PropertyPresetCount( idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetLabel(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() || presetIdx >= p->PropertyPresetCount( idx ) ) return false;
+		CopyToBuf( p->PropertyPresetLabel( idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetValue(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() || presetIdx >= p->PropertyPresetCount( idx ) ) return false;
+		CopyToBuf( p->PropertyPresetValue( idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyUnitLabel(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || idx >= p->PropertyCount() ) return false;
+		CopyToBuf( p->PropertyUnitLabel( idx ), buf, bufLen );
+		return true;
 	}
 
 	bool RISE_API_SceneEditController_SetProperty(

@@ -16,6 +16,13 @@ RISE ASCII SCENE 5
 > set accelerator B 10 8
 
 ##################################################
+# Scene-level options.  Geometry coords are in metres — a 30m × 20m
+# stage with characters at human/dragon scales.  scene_unit defaults
+# to 1.0 (metres), so no scene_options block is needed; the camera's
+# mm-input lens params are converted internally.
+##################################################
+
+##################################################
 # Setup a renderer
 # Note: SSS shaders are defined after the painters section
 # because they need color_white from the colors script.
@@ -61,6 +68,11 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+# Camera 18 m back and 10 m up, looking at the stage centre 3 m up.
+# Distance ≈ √(7² + 15²) ≈ 16.6 m → focus on the characters.
+# 85mm short telephoto wide-open at f/1.4 — cinematic shallow DOF.
+# Floor edges and back curtain blur out beyond the characters.
+
 thinlens_camera
 {
 	location			0 10 18
@@ -68,10 +80,10 @@ thinlens_camera
 	up					0 1 0
 	width				800
 	height				600
-	sensor_size			3.07
-	focal_length		4.0
-	fstop				13.33
-	focus_distance		15
+	sensor_size			36              # mm — full-frame
+	focal_length		85              # mm — short tele
+	fstop				1.4             # cinema-prime fast aperture
+	focus_distance		16              # metres — onto the dragon / bunny plane
 }
 
 ##################################################

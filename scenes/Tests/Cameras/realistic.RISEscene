@@ -12,6 +12,14 @@ RISE ASCII SCENE 5
 #############################################################################################################
 
 ##################################################
+# Scene-level options.  Geometry is in metres (scene_unit defaults
+# to 1.0).  A 15 m painted box at the origin, viewed from 30 m by
+# a 50 mm "normal" lens wide-open at f/1.4.  Focus pulled to 8 m
+# (well in front of the box) so the box defocuses to a soft bokeh
+# field — full-frame 35mm cinematic DOF on a normal lens.
+##################################################
+
+##################################################
 # Setup a renderer
 ##################################################
 
@@ -51,10 +59,10 @@ thinlens_camera
 	up					0 1 0
 	width				512
 	height				512
-	sensor_size			36				# full-frame 35mm-still
-	focal_length		24				# 24mm wide-angle lens
-	fstop				4				# f/4
-	focus_distance		28.0			# focus distance
+	sensor_size			36              # mm — full-frame 35mm-still
+	focal_length		50              # mm — normal lens
+	fstop				1.4             # cinema-prime fast aperture
+	focus_distance		8               # metres — pulled in front of the cube
 }
 
 ##################################################

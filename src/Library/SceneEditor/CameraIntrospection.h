@@ -34,11 +34,23 @@ namespace RISE
 {
 	struct CameraProperty
 	{
-		String     name;          // parameter name as it appears in scene files
-		ValueKind  kind;          // descriptor kind (Double / DoubleVec3 / UInt / etc.)
-		String     value;         // current value formatted as a string the user can edit
-		String     description;   // descriptor's human-readable description
-		bool       editable;      // false for fields like pixelAR that are const-bound
+		String                       name;          // parameter name as it appears in scene files
+		ValueKind                    kind;          // descriptor kind (Double / DoubleVec3 / UInt / etc.)
+		String                       value;         // current value formatted as a string the user can edit
+		String                       description;   // descriptor's human-readable description
+		bool                         editable;      // false for fields like pixelAR that are const-bound
+		// Optional quick-pick presets surfaced to the editor as a
+		// combo box.  Values are parser-acceptable literals; the user
+		// can still type an arbitrary value (the line-edit stays).
+		std::vector<ParameterPreset> presets;
+		// Optional short unit suffix shown next to the editor field
+		// (e.g. "mm" for sensor_size / focal_length / shift_x/y, "°"
+		// for tilt and rotation angles, "scene units" for
+		// focus_distance, "" for dimensionless params like fstop).
+		// The presence of a unit label lets the panel disambiguate at
+		// a glance — the user-visible "35" then reads as "35 mm"
+		// rather than possibly being misread as "35 metres".
+		String                       unitLabel;
 	};
 
 	class CameraIntrospection

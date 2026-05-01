@@ -95,7 +95,7 @@ The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiScenePars
 | Painters | 27 | `uniformcolor_painter`, `image_painter`, `voronoi3d_painter`, `iridescent_painter` |
 | Functions | 2 | `piecewise_linear_function`, `piecewise_linear_function2D` |
 | Materials | 23 | `lambertian_material`, `dielectric_material`, `ggx_material`, `composite_material` |
-| Cameras | 5 | `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
+| Cameras | 7 | `scene_options`, `camera_defaults` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 15 | `sphere_geometry`, `mesh3DS_geometry`, `displaced_geometry`, `bezier_patch_geometry` |
 | Modifiers | 1 | `bumpmap_modifier` |
 | Media | 3 | `homogeneous_medium`, `heterogeneous_medium`, `painterheterogeneous_medium` |
@@ -109,29 +109,41 @@ The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiScenePars
 | Irradiance cache | 1 | `irradiance_cache` |
 | Animation | 3 | `keyframe`, `timeline`, `animation_options` |
 
-**Total: 124 chunk parsers, 125 chunk keywords** (`mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop`). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list.
+**Total: 131 unique chunk keywords** (the per-family counts above sum to 131; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword. Recent additions: `gltfmesh_geometry` for glTF Phase 1, `camera_defaults` for Phase 1.1, `scene_options` for Phase 1.2.). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 
-## `thinlens_camera` Sensor-Format Presets
+## `thinlens_camera` Units & Sensor-Format Presets
 
 ### Unit story (read this first)
 
-`thinlens_camera` has three lengths — `sensor_size`, `focal_length`, `focus_distance` — and **all three must be in the same unit**, which must also match the unit of your scene geometry. The FOV formula `2 * atan(sensor_size / (2 * focal_length))` is unit-free (the ratio is what matters), but the lens equation `v = f·u/(u−f)` used for depth-of-field is *not* — `focal_length` and `focus_distance` are subtracted, which only makes sense in matching units.
+Cameras are split between two unit conventions on purpose:
 
-`focus_distance` is **required** with no default — you must set it to the focus-plane distance in your scene's unit. The parser also enforces `focus_distance > focal_length` (otherwise the lens equation gives a negative film distance — physically a virtual image, no real photograph).
+- **MM (millimetres) for lens specs**: `sensor_size`, `focal_length`, `shift_x`, `shift_y`. These are photographic numbers — a 35mm full-frame lens is always written `focal_length 35`, regardless of how the scene's geometry is scaled. The editor surface stays stable on mm too.
+- **Scene units for distances that match geometry**: `focus_distance` (matches the camera position and lookat coordinates).
+- **Dimensionless**: `fstop`, `aperture_blades`, `anamorphic_squeeze`.
+- **Degrees**: `tilt_x`, `tilt_y`, `aperture_rotation` (parser converts to radians internally).
 
-The presets below are the **mm-equivalent** sensor widths. They work directly when scene geometry is in mm. For other scene units, scale all three lengths by the same factor:
+The bridge between mm-input and the scene's geometry unit is the **`scene_options` chunk** (see below). Default is metres (`scene_unit 1.0`), so a default-scene camera with `focus_distance 5` is focused at 5 metres, with `focal_length 35` (mm) auto-converted to 0.035 scene-units inside the camera.
 
-| Scene unit | Full-frame `sensor_size` | "Natural" `focal_length` | Example `focus_distance` |
-|---|---|---|---|
-| millimetres (default) | 36 | 35 | 1000 (i.e. 1 m focus) |
-| centimetres | 3.6 | 3.5 | 100 |
-| metres | 0.036 | 0.035 | 1 |
+`focus_distance` is required (no default — depends on the scene). The parser validates `focus_distance > focal_length-converted-to-scene-units`; below that, the lens equation produces a negative film distance.
 
-The aperture diameter is derived as `focal_length / fstop` and inherits the same unit. `fstop` is dimensionless. Aperture-shape parameters (`aperture_blades`, `aperture_rotation`, `anamorphic_squeeze`) shape the bokeh; defaults give a perfect circular disk.
+### `scene_options` chunk
 
-### Sensor format presets (mm-equivalent — scale per the table above for other scene units)
+Place near the top of the .RISEscene file (before any camera). Default values are used if you omit it.
+
+```
+scene_options
+{
+    scene_unit  1.0      # 1 scene unit = N metres; default 1 (metres)
+}
+```
+
+Common values: `1.0` (metres, the default), `0.001` (mm), `0.01` (cm), `0.0254` (inches), `0.3048` (feet). The presets surface in the editor combo-box.
+
+Currently `scene_unit` only governs the camera mm-input → scene-unit conversion, but it's the natural global where future physical-quantity work (volumetric atmosphere, sky models, sensor noise) will read its scale.
+
+### Sensor format presets (mm — unit-stable regardless of scene_unit)
 
 | Format | sensor_size (mm) | Notes |
 |---|---|---|
@@ -147,6 +159,49 @@ The aperture diameter is derived as `focal_length / fstop` and inherits the same
 | 6×9 medium format | 84.0 | 56×84 |
 | 4×5 large format | 121.0 | 96×121 sheet film |
 | 8×10 large format | 254.0 | 203×254 sheet film |
+
+The descriptor surfaces this list as quick-pick presets in the editor's properties panel via [`ParameterDescriptor::presets`](ChunkDescriptor.h) (added Phase 1.1).  The Mac and Windows panels render a combo-box / menu next to the line edit when a parameter declares any presets; users can still type custom values.
+
+### Scene-level `camera_defaults`
+
+`thinlens_camera` consults a scene-level `camera_defaults` chunk (Phase 1.1) for `sensor_size`, `focal_length`, and `fstop` when those are omitted on the camera itself.  This is the natural way to express "this whole shot is on full-frame 35mm" once and have every camera in the file inherit it:
+
+```
+camera_defaults
+{
+    sensor_size  36
+    focal_length 35
+    fstop        2.8
+}
+
+thinlens_camera
+{
+    location       0 0 5
+    lookat         0 0 0
+    up             0 1 0
+    width          800
+    height         600
+    focus_distance 5     # only param required per camera
+}
+```
+
+**Declaration order matters:** `camera_defaults` must appear **before** the camera chunks that consume it (same convention as `standard_shader` and other scene-level config).  Cameras with explicit values override the defaults; `focus_distance` has no scene-level fallback (it's shot-specific).
+
+**Multiple `camera_defaults` blocks:** if a scene declares more than one, the parser does a per-field "last write wins" overwrite — block B's `sensor_size` replaces block A's `sensor_size`, but block B's omission of `fstop` leaves block A's `fstop` in place. Cameras declared between blocks see the state-as-of-that-point. This is the simplest semantics and matches how the parser already handles other thread-local state (`s_painterColors`).
+
+**Nested `> load`:** as of Phase 1.1, `camera_defaults` state is reset at the top of each `ParseAndLoadScene` call. An outer scene that declares `camera_defaults` and then issues `> load other.RISEscene` will see its defaults wiped after the include returns; cameras AFTER the include fall back to hard-coded values. **The same hazard applies to `scene_options`** (Phase 1.2): an `> load` after a `scene_options` declaration silently resets `scene_unit` to `1.0` (metres), which can produce a 1000×-misscaled camera if the outer scene was using a different scale. Tracked for a future fix that saves/restores parser state across nested loads. Workaround: declare `scene_options` and `camera_defaults` AFTER any `> load` in the file (or avoid `> load` for unit-sensitive scenes).
+
+Tilt-shift (`tilt_x`, `tilt_y`, `shift_x`, `shift_y`) is intentionally NOT settable from `camera_defaults` — those parameters tend to need per-camera override even within a single scene.
+
+### `thinlens_camera` Tilt-Shift Parameters (Phase 1.1)
+
+`tilt_x` / `tilt_y` (degrees) rotate the **focal plane** around the camera's x / y axis (Scheimpflug formulation — sensor and lens stay perpendicular; only the focus plane tilts).  Defaults of 0 give a plain perpendicular-focus thin-lens.  With non-zero tilt the in-focus region becomes a wedge instead of a disc-perpendicular-to-axis, enabling the classic miniature-fake look and selective-focus across non-parallel surfaces. **Bound: `|tilt_x|` and `|tilt_y|` must each be < 80°**; the parser rejects larger values because chief rays go parallel to the focal plane and produce divide-by-zero in the focus-point math. Real tilt-shift lenses max out around ±15°.
+
+`shift_x` / `shift_y` (**MILLIMETRES**, post-Phase 1.2) shift the **lens** along the camera's x / y axis. Sign convention matches Blender Cycles:
+- Positive `shift_x` = lens shifts right (camera "looks right", image content moves left in frame).
+- Positive `shift_y` = lens shifts up (camera "looks up", image content moves down in frame; standard architectural correction for tall buildings).
+
+A regression scene at [scenes/Tests/Cameras/thinlens_tiltshift.RISEscene](../../../scenes/Tests/Cameras/thinlens_tiltshift.RISEscene) demonstrates the feature with a row of spheres at varying depths and tilt_y rotating the focal plane to follow them.
 
 ## Adding A New Chunk Parser
 

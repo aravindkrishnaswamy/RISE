@@ -38,7 +38,14 @@ using namespace RISE;
                        value:(NSString *)value
                   describing:(NSString *)describing
                         kind:(NSInteger)kind
-                    editable:(BOOL)editable;
+                    editable:(BOOL)editable
+                     presets:(NSArray<RISEViewportPropertyPreset *> *)presets
+                   unitLabel:(NSString *)unitLabel;
+@end
+
+// Class extension: private initializer for RISEViewportPropertyPreset.
+@interface RISEViewportPropertyPreset ()
+- (instancetype)initWithLabel:(NSString *)label value:(NSString *)value;
 @end
 
 namespace {
@@ -505,17 +512,54 @@ private:
     char nameBuf[128];
     char valBuf[256];
     char descBuf[512];
+    // Preset label/value buffers are sized generously so future
+    // descriptors with longer labels (multi-byte UTF-8 for non-ASCII
+    // names) can grow without churn.  CopyToBuf NUL-terminates on
+    // truncation, but a truncation that lands mid-UTF-8-codepoint
+    // would yield invalid bytes; defensive `[NSString stringWithUTF8String:]`
+    // returns nil in that case (we skip the entry rather than crash).
+    char presetLabelBuf[256];
+    char presetValueBuf[256];
+    char unitLabelBuf[64];
     for (unsigned int i = 0; i < n; ++i) {
         RISE_API_SceneEditController_PropertyName(_controller, i, nameBuf, sizeof(nameBuf));
         RISE_API_SceneEditController_PropertyValue(_controller, i, valBuf, sizeof(valBuf));
         RISE_API_SceneEditController_PropertyDescription(_controller, i, descBuf, sizeof(descBuf));
         const int kind = RISE_API_SceneEditController_PropertyKind(_controller, i);
         const bool editable = RISE_API_SceneEditController_PropertyEditable(_controller, i);
+
+        const unsigned int numPresets = RISE_API_SceneEditController_PropertyPresetCount(_controller, i);
+        NSMutableArray<RISEViewportPropertyPreset *> *presets =
+            [NSMutableArray arrayWithCapacity:numPresets];
+        for (unsigned int j = 0; j < numPresets; ++j) {
+            if (!RISE_API_SceneEditController_PropertyPresetLabel(_controller, i, j, presetLabelBuf, sizeof(presetLabelBuf))) continue;
+            if (!RISE_API_SceneEditController_PropertyPresetValue(_controller, i, j, presetValueBuf, sizeof(presetValueBuf))) continue;
+            // `+stringWithUTF8String:` returns nil on invalid UTF-8
+            // (e.g. a truncation that landed mid-codepoint).  Skip
+            // the preset rather than feed nil into NSMutableArray.
+            NSString *label = [NSString stringWithUTF8String:presetLabelBuf];
+            NSString *value = [NSString stringWithUTF8String:presetValueBuf];
+            if (!label || !value) continue;
+            [presets addObject:[[RISEViewportPropertyPreset alloc]
+                                initWithLabel:label value:value]];
+        }
+
+        // Unit label: optional short suffix shown next to the field
+        // ("mm" / "°" / "scene units").  Empty when the descriptor
+        // declared no unit.
+        NSString *unitLabel = @"";
+        if( RISE_API_SceneEditController_PropertyUnitLabel(_controller, i, unitLabelBuf, sizeof(unitLabelBuf)) ) {
+            NSString *u = [NSString stringWithUTF8String:unitLabelBuf];
+            if( u ) unitLabel = u;
+        }
+
         RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
                                                                        value:[NSString stringWithUTF8String:valBuf]
                                                                   describing:[NSString stringWithUTF8String:descBuf]
                                                                         kind:kind
-                                                                    editable:editable ? YES : NO];
+                                                                    editable:editable ? YES : NO
+                                                                     presets:presets
+                                                                   unitLabel:unitLabel];
         [out addObject:p];
     }
     return out;
@@ -541,6 +585,8 @@ private:
     NSString *_describing;
     NSInteger _kind;
     BOOL _editable;
+    NSArray<RISEViewportPropertyPreset *> *_presets;
+    NSString *_unitLabel;
 }
 
 - (instancetype)initWithName:(NSString *)name
@@ -548,6 +594,8 @@ private:
                   describing:(NSString *)describing
                         kind:(NSInteger)kind
                     editable:(BOOL)editable
+                     presets:(NSArray<RISEViewportPropertyPreset *> *)presets
+                   unitLabel:(NSString *)unitLabel
 {
     self = [super init];
     if (self) {
@@ -556,6 +604,8 @@ private:
         _describing = [describing copy];
         _kind = kind;
         _editable = editable;
+        _presets = [presets copy] ?: @[];
+        _unitLabel = [unitLabel copy] ?: @"";
     }
     return self;
 }
@@ -565,5 +615,27 @@ private:
 - (NSString *)describing  { return _describing; }
 - (NSInteger)kind         { return _kind; }
 - (BOOL)editable          { return _editable; }
+- (NSArray<RISEViewportPropertyPreset *> *)presets { return _presets; }
+- (NSString *)unitLabel   { return _unitLabel; }
+
+@end
+
+@implementation RISEViewportPropertyPreset {
+    NSString *_label;
+    NSString *_value;
+}
+
+- (instancetype)initWithLabel:(NSString *)label value:(NSString *)value
+{
+    self = [super init];
+    if (self) {
+        _label = [label copy];
+        _value = [value copy];
+    }
+    return self;
+}
+
+- (NSString *)label { return _label; }
+- (NSString *)value { return _value; }
 
 @end

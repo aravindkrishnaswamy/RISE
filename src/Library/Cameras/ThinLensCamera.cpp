@@ -103,34 +103,75 @@ namespace
 
 void ThinLensCamera::Recompute( const unsigned int width, const unsigned int height )
 {
-	// Derive horizontal field of view from sensor + focal length.
-	// Angle of View = 2 * arctan( sensor / (2 * focal) )
-	// The ratio is what matters, so units cancel here — but the lens
-	// equation below requires focalLength and focusDistance to be in
-	// the same unit, which is why all three lengths share the
-	// scene-geometry unit.  Photographic numbers (sensor 36, focal
-	// 35) work directly when scene geometry is in mm.
-	fov = 2.0 * atan( sensorSize / (2.0 * focalLength) );
+	// Convert mm-input lens params to scene units so the lens
+	// equation v = f·u/(u-f) is unit-consistent with focusDistance
+	// (which is already in scene units).  Conversion factor:
+	//   1 mm = 0.001 m,    1 scene unit = sceneUnitMeters m
+	//   ⇒ 1 mm = 0.001 / sceneUnitMeters scene units.
+	// For default (metres scene, sceneUnitMeters=1): 35 mm = 0.035
+	// scene units.  For mm scene (sceneUnitMeters=0.001): 35 mm = 35
+	// scene units.  Both the editor and the parser keep the user-
+	// facing values in mm; this conversion lives entirely inside
+	// the camera so the rest of the pipeline doesn't need to know.
+	const Scalar mm_to_scene  = 0.001 / sceneUnitMeters;
+	const Scalar sensor_scene = sensorSize  * mm_to_scene;
+	const Scalar focal_scene  = focalLength * mm_to_scene;
+	const Scalar shiftX_scene = shiftX      * mm_to_scene;
+	const Scalar shiftY_scene = shiftY      * mm_to_scene;
 
-	// Derive physical aperture from f-stop.  aperture is the diameter,
-	// halfAperture is the radius used by the lens-plane sampler.
-	// Inherits the focal_length unit, which is the scene-geometry unit.
+	// Derive horizontal field of view from sensor + focal.  The ratio
+	// is unit-free (sensor and focal cancel), so this matches the old
+	// formula whether we passed in mm or scene units — included here
+	// for clarity.
+	fov = 2.0 * atan( sensor_scene / (2.0 * focal_scene) );
+
+	// Derive physical aperture from f-stop, in scene units.
 	//   f-number = focal / aperture_diameter
 	// so aperture_diameter = focal / fstop, radius = focal / (2 * fstop).
-	aperture     = focalLength / fstop;
+	aperture     = focal_scene / fstop;
 	halfAperture = aperture * 0.5;
 
 	dx = -0.5 * Scalar(width);
 	dy = -0.5 * Scalar(height);
 
-	const Scalar filmDistance = focusDistance * focalLength / (focusDistance - focalLength);
-	const Scalar f_over_d_minus_f = focalLength / (filmDistance - focalLength);
+	// Lens equation: image plane is at -filmDistance along the optical
+	// axis (sensor behind the lens, lens at origin).  Per-pixel sx/sy
+	// converts pixel coordinates into image-plane scene units.  Pixel
+	// aspect is folded into the camera transform (ComputeScaleFromAR),
+	// so sx/sy use the geometric mean of the two image dimensions
+	// implicitly via fov-vertical.
+	filmDistance = focusDistance * focal_scene / (focusDistance - focal_scene);
+	sy = -2.0 * filmDistance * tan( fov / 2.0 ) / Scalar(height);
+	sx = -sy;
 
-	const Scalar sy = - 2.0 * filmDistance * tan(fov / 2.0) / Scalar(height);
-	const Scalar sx = -sy;
-	f_over_d_minus_f_sx = f_over_d_minus_f * sx;
-	f_over_d_minus_f_sy = f_over_d_minus_f * sy;
-	f_over_d_minus_f_d = f_over_d_minus_f * filmDistance;
+	// Cache the scene-unit shift values for GenerateRay; the per-ray
+	// path is hot, so we don't redo the unit conversion there.  These
+	// member variables override the mm-named `shiftX`/`shiftY` for the
+	// generation hot path; the mm values stay as the user-facing
+	// source-of-truth (used by the editor and keyframe handling).
+	shiftX_sceneUnits = shiftX_scene;
+	shiftY_sceneUnits = shiftY_scene;
+
+	// Focal-plane equation cache for tilt-shift (Phase 1.1).  The
+	// focal plane passes through the on-axis focus point
+	// (0, 0, focusDistance) and has normal n in camera-local coords.
+	// Without tilt: n = (0, 0, 1), so n·P = z-component, kFocus =
+	// focusDistance.  Tilt rotates n: tiltY around y rotates the
+	// normal toward x, tiltX around x rotates it toward y.  The
+	// canonical Scheimpflug rotation (R_y * R_x applied to (0,0,1)):
+	//   n.x =  sin(tiltY) * cos(tiltX)
+	//   n.y = -sin(tiltX)
+	//   n.z =  cos(tiltY) * cos(tiltX)
+	// kFocus = n · (0,0,focusDistance) = n.z * focusDistance, so the
+	// plane equation in camera-local coords is n·P = kFocus.
+	const Scalar cTx = cos( tiltX );
+	const Scalar sTx = sin( tiltX );
+	const Scalar cTy = cos( tiltY );
+	const Scalar sTy = sin( tiltY );
+	nFocusX =  sTy * cTx;
+	nFocusY = -sTx;
+	nFocusZ =  cTy * cTx;
+	kFocus  =  nFocusZ * focusDistance;
 
 	// Construct an OrthoNormalBasis that lines up with the viewing co-ordinates
 	if( from_onb ) {
@@ -161,6 +202,7 @@ ThinLensCamera::ThinLensCamera(
 	const Scalar focalLength_,
 	const Scalar fstop_,
 	const Scalar focusDistance_,
+	const Scalar sceneUnitMeters_,
 	const unsigned int width,
 	const unsigned int height,
 	const Scalar pixelAR_,
@@ -171,7 +213,11 @@ ThinLensCamera::ThinLensCamera(
 	const Vector2& target_orientation_,
 	const unsigned int apertureBlades_,
 	const Scalar apertureRotation_,
-	const Scalar anamorphicSqueeze_
+	const Scalar anamorphicSqueeze_,
+	const Scalar tiltX_,
+	const Scalar tiltY_,
+	const Scalar shiftX_,
+	const Scalar shiftY_
 	) :
   CameraCommon(
 	  vPosition_,
@@ -187,12 +233,26 @@ ThinLensCamera::ThinLensCamera(
   focalLength( focalLength_ ),
   fstop( fstop_ ),
   focusDistance( focusDistance_ ),
+  sceneUnitMeters( sceneUnitMeters_ ),
   apertureBlades( apertureBlades_ ),
   apertureRotation( apertureRotation_ ),
   anamorphicSqueeze( anamorphicSqueeze_ ),
+  tiltX( tiltX_ ),
+  tiltY( tiltY_ ),
+  shiftX( shiftX_ ),
+  shiftY( shiftY_ ),
   fov( 0 ),
   aperture( 0 ),
-  halfAperture( 0 )
+  halfAperture( 0 ),
+  filmDistance( 0 ),
+  sx( 0 ),
+  sy( 0 ),
+  shiftX_sceneUnits( 0 ),
+  shiftY_sceneUnits( 0 ),
+  nFocusX( 0 ),
+  nFocusY( 0 ),
+  nFocusZ( 1 ),
+  kFocus( 0 )
 {
 	Recompute( width, height );
 }
@@ -208,12 +268,32 @@ bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2
 
 	const Point3		ptOnLens( xy.x, xy.y, 0.0 );
 
-	const Scalar x = ptOnScreen.x + dx;
-	const Scalar y = ptOnScreen.y + dy;
+	// Image-plane sample (with optional shift, Phase 1.1).  Sensor
+	// sits at z = -filmDistance in camera-local coords; sx/sy
+	// convert pixel coords to scene-units on the sensor.  Shift
+	// values are mm in the editor / scene-file but are cached in
+	// scene-units by Recompute (Phase 1.2 unit-correction work).
+	//
+	// Shift sign convention (matches Blender Cycles, which is the
+	// dominant photographer-friendly reference):
+	//   shift_x > 0 → lens shifts RIGHT (along +U) → camera "looks
+	//                 right", image content moves LEFT in frame.
+	//   shift_y > 0 → lens shifts UP (along +V)    → camera "looks
+	//                 up",    image content moves DOWN in frame.
+	const Scalar x_pix = ptOnScreen.x + dx;
+	const Scalar y_pix = ptOnScreen.y + dy;
+	const Scalar x_img = x_pix * sx - shiftX_sceneUnits;
+	const Scalar y_img = y_pix * sy - shiftY_sceneUnits;
 
-	const Point3		focus(  -x *  f_over_d_minus_f_sx,
-								-y *  f_over_d_minus_f_sy,
-								f_over_d_minus_f_d );
+	// Chief-ray intersection with the (possibly tilted) focal plane.
+	// Ray P(t) = (1-t)·p_sensor passes through origin at t=1; on
+	// the plane n·P = kFocus, so (1-t) = kFocus / (n·p_sensor).
+	// For tilt=(0,0): n=(0,0,1), kFocus=focusDistance, p_sensor.z =
+	// -filmDistance, so (1-t) = -focusDistance/filmDistance — the
+	// standard perpendicular-focus-plane formula.
+	const Scalar n_dot_p   = nFocusX * x_img + nFocusY * y_img + nFocusZ * (-filmDistance);
+	const Scalar oneMinusT = kFocus / n_dot_p;
+	const Point3 focus( oneMinusT * x_img, oneMinusT * y_img, oneMinusT * (-filmDistance) );
 
 	r.Set(
 		Point3Ops::Transform(mxTrans,ptOnLens),
@@ -237,12 +317,14 @@ bool ThinLensCamera::GenerateRayWithLensSample(
 
 	const Point3		ptOnLens( xy.x, xy.y, 0.0 );
 
-	const Scalar x = ptOnScreen.x + dx;
-	const Scalar y = ptOnScreen.y + dy;
+	const Scalar x_pix = ptOnScreen.x + dx;
+	const Scalar y_pix = ptOnScreen.y + dy;
+	const Scalar x_img = x_pix * sx - shiftX_sceneUnits;   // see GenerateRay for sign convention
+	const Scalar y_img = y_pix * sy - shiftY_sceneUnits;
 
-	const Point3		focus(  -x *  f_over_d_minus_f_sx,
-								-y *  f_over_d_minus_f_sy,
-								f_over_d_minus_f_d );
+	const Scalar n_dot_p   = nFocusX * x_img + nFocusY * y_img + nFocusZ * (-filmDistance);
+	const Scalar oneMinusT = kFocus / n_dot_p;
+	const Point3 focus( oneMinusT * x_img, oneMinusT * y_img, oneMinusT * (-filmDistance) );
 
 	r.Set(
 		Point3Ops::Transform(mxTrans,ptOnLens),
@@ -262,6 +344,10 @@ static const unsigned int FOCUS_ID             = 103;
 static const unsigned int APERTURE_BLADES_ID   = 104;
 static const unsigned int APERTURE_ROTATION_ID = 105;
 static const unsigned int ANAMORPHIC_ID        = 106;
+static const unsigned int TILT_X_ID            = 107;
+static const unsigned int TILT_Y_ID            = 108;
+static const unsigned int SHIFT_X_ID           = 109;
+static const unsigned int SHIFT_Y_ID           = 110;
 
 IKeyframeParameter* ThinLensCamera::KeyframeFromParameters( const String& name, const String& value )
 {
@@ -283,6 +369,14 @@ IKeyframeParameter* ThinLensCamera::KeyframeFromParameters( const String& name, 
 			p = new Parameter<Scalar>( value.toDouble(), APERTURE_ROTATION_ID );
 		} else if( name == "anamorphic_squeeze" ) {
 			p = new Parameter<Scalar>( value.toDouble(), ANAMORPHIC_ID );
+		} else if( name == "tilt_x" ) {
+			p = new Parameter<Scalar>( value.toDouble(), TILT_X_ID );
+		} else if( name == "tilt_y" ) {
+			p = new Parameter<Scalar>( value.toDouble(), TILT_Y_ID );
+		} else if( name == "shift_x" ) {
+			p = new Parameter<Scalar>( value.toDouble(), SHIFT_X_ID );
+		} else if( name == "shift_y" ) {
+			p = new Parameter<Scalar>( value.toDouble(), SHIFT_Y_ID );
 		} else {
 			return 0;
 		}
@@ -327,6 +421,23 @@ void ThinLensCamera::SetIntermediateValue( const IKeyframeParameter& val )
 		break;
 	case ANAMORPHIC_ID:
 		anamorphicSqueeze = *(Scalar*)val.getValue();
+		break;
+	case TILT_X_ID:
+		// Parser/editor surface tilt in degrees; storage is radians.
+		tiltX = *(Scalar*)val.getValue() * DEG_TO_RAD;
+		break;
+	case TILT_Y_ID:
+		tiltY = *(Scalar*)val.getValue() * DEG_TO_RAD;
+		break;
+	case SHIFT_X_ID:
+		// Shift is in MM (Phase 1.2 unit convention).  The camera's
+		// Recompute() converts mm → scene-units before consumption,
+		// so the keyframe value passes through as raw mm — no
+		// conversion here.
+		shiftX = *(Scalar*)val.getValue();
+		break;
+	case SHIFT_Y_ID:
+		shiftY = *(Scalar*)val.getValue();
 		break;
 	}
 }

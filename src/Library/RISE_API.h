@@ -160,10 +160,11 @@ namespace RISE
 		const Point3& ptLocation,								///< [in] Absolute location of where the camera is located
 		const Point3& ptLookAt, 								///< [in] Absolute point the camera is looking at
 		const Vector3& vUp,										///< [in] Up vector of the camera
-		const Scalar sensorSize,								///< [in] Sensor width (scene units; same unit as focalLength/focusDistance)
-		const Scalar focalLength,								///< [in] Lens focal length (scene units; same unit as sensorSize/focusDistance)
+		const Scalar sensorSize,								///< [in] Sensor width (mm)
+		const Scalar focalLength,								///< [in] Lens focal length (mm)
 		const Scalar fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
-		const Scalar focusDistance,								///< [in] Focus plane distance (scene units; must be > focalLength)
+		const Scalar focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
+		const Scalar sceneUnitMeters,							///< [in] Meters per scene unit (1.0 = metres scene, 0.001 = mm scene, 0.0254 = inches)
 		const unsigned int xres,								///< [in] X resolution of virtual screen
 		const unsigned int yres,								///< [in] Y resolution of virtual screen
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
@@ -174,7 +175,11 @@ namespace RISE
 		const Vector2& target_orientation,						///< [in] Orientation relative to a target
 		const unsigned int apertureBlades,						///< [in] Polygonal aperture blades; 0 = perfect disk
 		const Scalar apertureRotation,							///< [in] Polygon rotation (radians)
-		const Scalar anamorphicSqueeze							///< [in] Aperture x-axis scale (1.0 = circular)
+		const Scalar anamorphicSqueeze,							///< [in] Aperture x-axis scale (1.0 = circular)
+		const Scalar tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
+		const Scalar tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
+		const Scalar shiftX,									///< [in] Lens shift along x (mm); 0 = centered
+		const Scalar shiftY										///< [in] Lens shift along y (mm); 0 = centered
 		);
 
 	//! Creates a fisheye cemera
@@ -2803,6 +2808,28 @@ bool RISE_API_CreateFinalGatherShaderOp(
 
 	bool RISE_API_SceneEditController_PropertyEditable(
 		SceneEditController* p, unsigned int idx );
+
+	//! Quick-pick preset accessors.  PropertyPresetCount returns 0 for
+	//! parameters whose descriptor declared no presets, in which case
+	//! the GUI falls back to a plain line edit.  Otherwise the GUI
+	//! shows a combo box with the labels and writes the corresponding
+	//! parser-acceptable value through SetProperty when the user picks.
+	unsigned int RISE_API_SceneEditController_PropertyPresetCount(
+		SceneEditController* p, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyPresetLabel(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyPresetValue(
+		SceneEditController* p, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+
+	//! Short unit suffix shown next to the editor field — e.g. "mm"
+	//! for camera lens lengths, "°" for angles, "scene units" for
+	//! focus_distance.  Empty when the descriptor declared no unit
+	//! label.
+	bool RISE_API_SceneEditController_PropertyUnitLabel(
+		SceneEditController* p, unsigned int idx,
+		char* buf, unsigned int bufLen );
 
 	//! Apply an edited value.  Triggers a re-render via the
 	//! cancel-restart loop.  Returns false on parse failure or

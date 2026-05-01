@@ -26,6 +26,13 @@ namespace RISE {
 }
 class ViewportPreviewSink;
 
+/// Single quick-pick preset; mirrors ParameterPreset in
+/// src/Library/Parsers/ChunkDescriptor.h.
+struct ViewportPropertyPreset {
+    QString label;          // human-readable, shown in the combo box
+    QString value;          // parser-acceptable literal written through SetProperty
+};
+
 /// One row of the properties panel — descriptor-driven, mirrors
 /// CameraProperty in src/Library/SceneEditor/CameraIntrospection.h.
 struct ViewportProperty {
@@ -34,6 +41,8 @@ struct ViewportProperty {
     QString description;
     int     kind = 0;       // ValueKind cast to int
     bool    editable = false;
+    QVector<ViewportPropertyPreset> presets;   // empty when descriptor declared no presets
+    QString unitLabel;                         // short suffix shown next to the field — "mm", "°", "scene units", or empty
 };
 
 /// Tool enum mirroring SceneEditController::Tool and the C-API
