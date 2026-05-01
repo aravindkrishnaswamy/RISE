@@ -54,6 +54,8 @@ namespace RISE
 		char                  format;        ///< 0 = PNG, 1 = JPEG
 		char                  colorSpace;    ///< 0=Rec709 linear, 1=sRGB, 2=ROMM linear, 3=ProPhoto
 		char                  filterType;    ///< 0=NN, 1=Bilinear, 2=CRBicubic, 3=BSBicubic
+		char                  wrap_s;        ///< U-axis wrap mode (0=clamp, 1=repeat, 2=mirrored repeat); see eRasterWrapMode
+		char                  wrap_t;        ///< V-axis wrap mode (same encoding)
 		bool                  lowmemory;     ///< Defer color-space convert to first sample (reduces RAM at the cost of slightly slower sampling)
 		double                scale[3];      ///< Per-channel scale (multiply at decode time)
 		double                shift[3];      ///< Per-channel shift (add at decode time)
@@ -475,7 +477,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (0 = clamp [legacy default], 1 = repeat, 2 = mirrored repeat).  See eRasterWrapMode.
+									const char wrap_t = 0			///< [in] V-axis wrap mode (same encoding as wrap_s)
 									) = 0;
 
 		//! Adds a painter that paints a uniform color
@@ -513,7 +517,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds a PNG texture painter from an in-memory byte buffer.  Used
@@ -531,7 +537,9 @@ namespace RISE
 									const char filter_type,			///< [in] Texture filtering (same encoding as AddPNGTexturePainter)
 									const bool lowmemory,			///< [in] Low-memory mode skips image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds a JPEG texture painter from an in-memory byte buffer.
@@ -545,7 +553,9 @@ namespace RISE
 									const char filter_type,
 									const bool lowmemory,
 									const double scale[3],
-									const double shift[3]
+									const double shift[3],
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds a HDR texture painter
@@ -560,7 +570,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds an EXR texture painter
@@ -580,7 +592,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds a texture painter
@@ -600,7 +614,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									) = 0;
 
 		//! Adds a painter that paints a voronoi diagram
@@ -1188,7 +1204,8 @@ namespace RISE
 							const bool import_lights,				///< [in] Create lights from KHR_lights_punctual
 							const bool import_cameras,				///< [in] Create the first camera (subsequent ones warn)
 							const bool import_normal_maps,			///< [in] Attach normal_map_modifier when material has normalTexture
-							const bool lowmem_textures				///< [in] Defer texture color-space conversion to per-sample (saves ~4x texture RAM + 5-10x faster load on heavy-PBR scenes; pays ~25% per-sample render cost).  Default FALSE for final-render workflow; flip to TRUE for iteration on NewSponza-class scenes.
+							const bool lowmem_textures,				///< [in] Defer texture color-space conversion to per-sample (saves ~4x texture RAM + 5-10x faster load on heavy-PBR scenes; pays ~25% per-sample render cost).  Default FALSE for final-render workflow; flip to TRUE for iteration on NewSponza-class scenes.
+							const double lights_intensity_override	///< [in] When > 0, replaces zero authored intensities on imported KHR_lights_punctual entries.  Default 0 (no override).  Many assets carry light fixtures as positional metadata with intensity=0 by convention; a positive override wakes them up uniformly without touching lights the author did set non-zero.
 							) = 0;
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
@@ -2504,10 +2521,21 @@ namespace RISE
 		//! successfully.  Individual failures are logged; the batch as a
 		//! whole still attempts every request before returning, so a
 		//! single malformed PNG doesn't abort the rest.
+		//!
+		//! `outRequestSuccess` is an OPTIONAL parallel array of length
+		//! `numRequests`.  When non-null, each entry is filled with
+		//! `true` iff that request both decoded AND registered with the
+		//! manager (i.e. is reachable by name afterwards).  Callers that
+		//! memoize "this name is now registered" MUST consult this array
+		//! — relying on the aggregate bool alone misclassifies failed
+		//! requests as registered, which makes downstream lookups fail
+		//! silently.  When null the caller doesn't care and only the
+		//! aggregate is reported.
 		/// \return TRUE if every request succeeded; FALSE if any failed
 		virtual bool AddTexturePaintersBatch(
 			const TexturePainterBatchRequest* requests,
-			size_t numRequests
+			size_t numRequests,
+			bool* outRequestSuccess = nullptr
 			) = 0;
 
 		//! Registers a caller-owned, fully-built triangle mesh geometry under

@@ -481,7 +481,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									);
 
 		//! Adds a JPEG texture painter
@@ -501,7 +503,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									);
 
 		bool AddInMemoryPNGTexturePainter(
@@ -512,7 +516,9 @@ namespace RISE
 									const char filter_type,
 									const bool lowmemory,
 									const double scale[3],
-									const double shift[3]
+									const double shift[3],
+									const char wrap_s = 0,
+									const char wrap_t = 0
 									);
 
 		bool AddInMemoryJPEGTexturePainter(
@@ -523,7 +529,9 @@ namespace RISE
 									const char filter_type,
 									const bool lowmemory,
 									const double scale[3],
-									const double shift[3]
+									const double shift[3],
+									const char wrap_s = 0,
+									const char wrap_t = 0
 									);
 
 		//! Adds a texture painter
@@ -538,7 +546,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									);
 
 		//! Adds an EXR texture painter
@@ -558,7 +568,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									);
 
 		//! Adds a texture painter
@@ -578,7 +590,9 @@ namespace RISE
 																	///     3 - Uniform BSpline Bicubic
 									const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 									const double scale[3],			///< [in] Scale factor for color values
-									const double shift[3]			///< [in] Shift factor for color values
+									const double shift[3],			///< [in] Shift factor for color values
+									const char wrap_s = 0,			///< [in] U-axis wrap mode
+									const char wrap_t = 0			///< [in] V-axis wrap mode
 									);
 
 		//! Adds a painter that paints a uniform color
@@ -1091,7 +1105,8 @@ namespace RISE
 							const bool import_lights,
 							const bool import_cameras,
 							const bool import_normal_maps,
-							const bool lowmem_textures
+							const bool lowmem_textures,
+							const double lights_intensity_override
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h
@@ -2275,11 +2290,13 @@ namespace RISE
 
 		//! Parallel batch of PNG/JPEG texture-painter loads.  See IJob.h for
 		//! the full contract; uses ThreadPool::ParallelFor for decode and
-		//! serial manager registration in the calling thread.
+		//! serial manager registration in the calling thread.  Optional
+		//! `outRequestSuccess` parallel array reports per-request outcome.
 		/// \return TRUE if every request succeeded; FALSE if any failed
 		bool AddTexturePaintersBatch(
 			const TexturePainterBatchRequest* requests,
-			size_t numRequests
+			size_t numRequests,
+			bool* outRequestSuccess = nullptr
 			);
 	};
 }

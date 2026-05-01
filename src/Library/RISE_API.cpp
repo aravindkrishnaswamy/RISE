@@ -3611,14 +3611,16 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateNNBRasterImageAccessor(
 								IRasterImageAccessor** ppi,				///< [out] Pointer to recieve the accessor
-								IRasterImage& image						///< [in] Raster Image to access
+								IRasterImage& image,					///< [in] Raster Image to access
+								const char wrap_s,						///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t						///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new NNBRasterImageAccessor<RISEColor>( image );
+		(*ppi) = new NNBRasterImageAccessor<RISEColor>( image, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "NNB RIA" );
 		return true;
 	}
@@ -3627,14 +3629,16 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBiLinRasterImageAccessor(
 								IRasterImageAccessor** ppi,				///< [out] Pointer to recieve the accessor
-								IRasterImage& image						///< [in] Raster Image to access
+								IRasterImage& image,					///< [in] Raster Image to access
+								const char wrap_s,						///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t						///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new BilinRasterImageAccessor<RISEColor>( image );
+		(*ppi) = new BilinRasterImageAccessor<RISEColor>( image, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Bilin RIA" );
 		return true;
 	}
@@ -3643,7 +3647,9 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCatmullRomBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s,					///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t					///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
@@ -3652,7 +3658,7 @@ namespace RISE
 
 		ICubicInterpolator<RISEColor>* interp = new CatmullRomCubicInterpolator<RISEColor>();
 
-		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp );
+		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "catmull rom RIA" );
 
 		interp->release();
@@ -3663,7 +3669,9 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformBSplineBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s,					///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t					///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
@@ -3672,7 +3680,7 @@ namespace RISE
 
 		ICubicInterpolator<RISEColor>* interp = new UniformBSplineCubicInterpolator<RISEColor>();
 
-		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp );
+		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uniform bspline RIA" );
 
 		interp->release();
@@ -3684,7 +3692,9 @@ namespace RISE
 	bool RISE_API_CreateBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
 								IRasterImage& image,				///< [in] Raster image to access
-								const Matrix4& m
+								const Matrix4& m,
+								const char wrap_s,					///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
+								const char wrap_t					///< [in] Wrap mode for V axis (same encoding)
 								)
 	{
 		if( !ppi ) {
@@ -3693,7 +3703,7 @@ namespace RISE
 
 		ICubicInterpolator<RISEColor>* interp = new CubicInterpolator<RISEColor>(m);
 
-		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp );
+		(*ppi) = new BicubicRasterImageAccessor<RISEColor>( image, *interp, wrap_s, wrap_t );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "cubic RIA" );
 
 		interp->release();

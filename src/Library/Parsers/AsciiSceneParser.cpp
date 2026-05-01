@@ -893,6 +893,57 @@ namespace RISE
 				}
 			};
 
+			// Shared helper: parse a wrap-mode chunk parameter (U or V axis)
+			// into RISE's char encoding (0 = clamp, 1 = repeat, 2 = mirrored
+			// repeat).  Accepted strings are exactly the three values the
+			// matching ChunkDescriptor advertises (`clamp`, `repeat`,
+			// `mirrored_repeat`) — no aliases, so external tooling that
+			// reads the descriptor's enumValues to drive autocomplete /
+			// validation sees the same set the parser accepts.
+			//
+			// Returns 0 (clamp) when the parameter is absent so existing
+			// scenes that didn't specify wrap render byte-identically to
+			// the pre-2026-05-01 clamp-to-edge default.  Logs and returns
+			// false on an unrecognised string so users see the typo
+			// instead of getting silent clamp.  Used by all 5 texture-
+			// painter chunks (png / jpg / hdr / exr / tiff) so the surface
+			// stays consistent.
+			static inline bool ParseWrapModeParam(
+				const ParseStateBag& bag,
+				const char*          paramName,
+				char&                outWrap )
+			{
+				outWrap = 0;	// eRasterWrap_ClampToEdge (legacy default)
+				if( !bag.Has( paramName ) ) return true;
+				std::string w = bag.GetString( paramName );
+				if(      w == "clamp" )            outWrap = 0;
+				else if( w == "repeat" )           outWrap = 1;
+				else if( w == "mirrored_repeat" )  outWrap = 2;
+				else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ChunkParser:: Unknown wrap mode `%s` on parameter `%s` "
+						"(expected one of: clamp, repeat, mirrored_repeat)",
+						w.c_str(), paramName );
+					return false;
+				}
+				return true;
+			}
+
+			// Adds the wrap_s / wrap_t parameter descriptors to a
+			// ChunkDescriptor so every painter chunk advertises the same
+			// names + accepted values.  Default value hint is "clamp" to
+			// match the runtime default + preserve the legacy contract for
+			// scenes that don't set wrap.
+			static inline void AddWrapModeParams( ChunkDescriptor& cd )
+			{
+				// Matches the per-chunk pattern: emplace_back() then take
+				// a reference via .back().  Older codebases without
+				// C++17's emplace_back-returns-reference compile cleanly
+				// this way.
+				{ cd.parameters.emplace_back(); ParameterDescriptor& p = cd.parameters.back(); p.name = "wrap_s"; p.kind = ValueKind::Enum; p.enumValues = {"clamp","repeat","mirrored_repeat"}; p.description = "Address-wrap mode for the U axis (S in glTF terminology) when sampling outside [0,1].  `repeat` matches glTF's default and lets tiled atlases (brick / wood / plaster, NewSponza floor) sample correctly across the full image; `clamp` saturates at the edge texel (legacy / default for non-glTF scenes); `mirrored_repeat` reflects across each integer crossing for seam-free alternating tiles."; p.defaultValueHint = "clamp"; }
+				{ cd.parameters.emplace_back(); ParameterDescriptor& p = cd.parameters.back(); p.name = "wrap_t"; p.kind = ValueKind::Enum; p.enumValues = {"clamp","repeat","mirrored_repeat"}; p.description = "Address-wrap mode for the V axis (T in glTF terminology); see wrap_s for semantics."; p.defaultValueHint = "clamp"; }
+			}
+
 			struct PngPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -931,7 +982,11 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddPNGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddPNGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -947,6 +1002,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
 						return cd;
 					}();
 					return d;
@@ -991,7 +1047,11 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddJPEGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddJPEGTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -1007,6 +1067,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
 						return cd;
 					}();
 					return d;
@@ -1038,7 +1099,11 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddHDRTexturePainter( name.c_str(), filename.c_str(), filter_type, lowmemory, scale, shift );
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddHDRTexturePainter( name.c_str(), filename.c_str(), filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -1053,6 +1118,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
 						return cd;
 					}();
 					return d;
@@ -1097,7 +1163,11 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddEXRTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddEXRTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -1113,6 +1183,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
 						return cd;
 					}();
 					return d;
@@ -1157,7 +1228,11 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddTIFFTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift );
+					char wrap_s = 0, wrap_t = 0;
+					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
+					if( !ParseWrapModeParam( bag, "wrap_t", wrap_t ) ) return false;
+
+					return pJob.AddTIFFTexturePainter( name.c_str(), filename.c_str(), color_space, filter_type, lowmemory, scale, shift, wrap_s, wrap_t );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -1173,6 +1248,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
+						AddWrapModeParams( cd );
 						return cd;
 					}();
 					return d;
@@ -4060,13 +4136,15 @@ namespace RISE
 					bool import_cameras           = bag.GetBool(   "import_cameras",      true );
 					bool import_normal_maps       = bag.GetBool(   "import_normal_maps",  true );
 					bool lowmem_textures          = bag.GetBool(   "lowmem_textures",     false );
+					double lights_intensity_override = bag.GetDouble( "lights_intensity_override", 0.0 );
 					return pJob.ImportGLTFScene(
 						file.c_str(), name_prefix.c_str(),
 						scene_index,
 						import_meshes, import_materials,
 						import_lights, import_cameras,
 						import_normal_maps,
-						lowmem_textures );
+						lowmem_textures,
+						lights_intensity_override );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4106,6 +4184,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "import_cameras";     p.kind = ValueKind::Bool;     p.description = "Create the first camera (subsequent ones warn)"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "import_normal_maps"; p.kind = ValueKind::Bool;     p.description = "Attach normal_map_modifier when material has normalTexture"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "lowmem_textures";   p.kind = ValueKind::Bool;     p.description = "Defer texture color-space conversion to per-sample access.  Saves ~4x peak texture memory and 5-10x faster scene load on heavy-PBR assets (NewSponza-class), at the cost of ~25% per-sample render time (the sRGB->linear convert moves from load-time to ray-hit time).  Default FALSE (final-render workflow); flip TRUE for iteration on big scenes."; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "lights_intensity_override"; p.kind = ValueKind::Double; p.description = "When > 0, replaces zero authored intensities on imported KHR_lights_punctual entries.  Many assets (NewSponza is the canonical case) carry their light fixtures as positional metadata with intensity=0 by author convention -- 'lighting is up to the renderer' -- so import_lights TRUE alone gives nothing to render.  Setting a positive value here wakes those dormant fixtures up uniformly; lights the author did set non-zero stay untouched.  Tune up/down per-scene to taste (ranges of ~10-200 are typical for atrium-scale lamp fixtures)."; p.defaultValueHint = "0 (no override)"; }
 						return cd;
 					}();
 					return d;

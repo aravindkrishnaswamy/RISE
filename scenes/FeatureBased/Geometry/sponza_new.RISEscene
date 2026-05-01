@@ -63,33 +63,63 @@ scene_options
 }
 
 ##################################################
-# Shader.  Same minimal direct-lighting setup as the
-# other glTF showcase scenes (DamagedHelmet, etc.):
-# DefaultDirectLighting handles BSDF + emitter + NEE
-# in one op.  If lamps need to read brighter, we can
-# upgrade to advanced_shader with an explicit
-# DefaultEmission op.
+# Sky environment painter.  The atrium has a large
+# open ceiling -- without an environment light the
+# sky reads as pure black, the sun-shafts are the
+# only direct light, and indirect bounces alone
+# can't fill the colonnade depths at low spp.
+# Wired into pathtracing_pel_rasterizer below as
+# `radiance_map`, which makes it a real area light
+# the PT integrator samples via NEE (not the older
+# direct-lighting `ambient_light` hack).
+##################################################
+
+uniformcolor_painter
+{
+	name				sky_dome
+	color				0.92 0.94 0.98
+}
+
+##################################################
+# Shader.  Path tracing -- the atrium has a single
+# directional sun streaming through the open ceiling,
+# and the entire interior is lit by indirect bounces
+# off the walls / floor / column ornament.  Direct
+# lighting alone (DefaultDirectLighting) leaves the
+# colonnade depths black; path tracing is the right
+# integrator for an interior of this geometry-to-
+# light-source ratio.  DefaultPathTracing is the
+# stock recursive-eye-walk PT shaderop.
 ##################################################
 
 standard_shader
 {
 	name			global
-	shaderop		DefaultDirectLighting
+	shaderop		DefaultPathTracing
 }
 
 ##################################################
-# Rasterizer + output.  64 spp at 1280x720 is
-# enough to verify the import is correct and
-# textures bind to the right surfaces; bump samples
-# (or switch to pathtracing_pel_rasterizer) for a
-# final-quality render.
+# Rasterizer + output.  pathtracing_pel_rasterizer
+# at 64 spp, 640x360 for iteration speed (bump
+# samples to 256+ and resolution to 1280x720 for a
+# final-quality render).  The radiance_map is the
+# sky_dome painter above; radiance_background TRUE
+# makes the open ceiling actually show the sky
+# colour rather than rendering as black, AND lets
+# rays that exit through the ceiling pick up the
+# sky's contribution.  radiance_scale tunes the
+# overall sky brightness; ~3.0 here because the
+# sky is the ONLY light source (the earlier
+# directional sun + ambient_light fill have been
+# retired in favour of pure environment lighting).
 ##################################################
 
-pixelpel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_recursion		3
-	samples				64
-	lum_samples			1
+	samples				16
+	radiance_map			sky_dome
+	radiance_background		TRUE
+	radiance_scale			40.0
 }
 
 file_rasterizeroutput
@@ -120,10 +150,18 @@ file_rasterizeroutput
 #     during the walk only reorders within the
 #     gltf_import chunk's contribution.  The 6
 #     PhysCamera entries are switchable extras.
-#   - import_lights: FALSE -- every KHR_lights_
-#     punctual entry in the asset has intensity=0.
-#     They'd register but contribute nothing, and
-#     they'd pollute the light manager.
+#   - import_lights: TRUE -- the asset carries 24
+#     KHR_lights_punctual entries (1 white directional
+#     "sun" placeholder, 1 white point, 21 warm-orange
+#     point lights for the colonnade lamp fixtures, +
+#     one variant warm point) all authored at
+#     intensity=0 by Khronos convention ("lighting is
+#     up to the renderer").  We pair this with
+#     `lights_intensity_override` below to wake the
+#     dormant fixtures up uniformly so the warm-orange
+#     oil lamps actually contribute -- they give the
+#     atrium the trademark warm pools-of-light against
+#     the cool sky environment.
 #   - lowmem_textures: TRUE -- the texture set is
 #     137 PBR PNGs (~2.6 GB on disk).  Without this,
 #     load time is dominated by libpng decode +
@@ -149,7 +187,8 @@ gltf_import
 	import_materials	TRUE
 	import_normal_maps	TRUE
 	import_cameras		TRUE
-	import_lights		FALSE
+	import_lights		TRUE
+	lights_intensity_override	100.0
 	lowmem_textures		TRUE
 }
 
@@ -171,8 +210,8 @@ pinhole_camera
 	location			-8.807 1.592 -0.858
 	lookat				-3.004 2.762  0.237
 	up					 0.0   1.0    0.0
-	width				1280
-	height				720
+	width				640
+	height				360
 	fov					58.5
 }
 
@@ -180,41 +219,19 @@ pinhole_camera
 # Lighting.  All of the asset's bundled lights are
 # intensity=0, so we light the scene ourselves.
 #
-# Sponza's atrium has an open ceiling.  In the
-# canonical render, the sun streams in nearly
-# straight down with a slight tilt toward the back
-# of the atrium (+X), giving the trademark hot
-# rectangular shafts on the floor between columns.
-#
-# RISE's `direction` points FROM the surface TO
-# the light source (DirectionalLight.cpp:48 — a
-# surface is lit when N·direction > 0), so for a
-# sun that's "above + slightly behind the camera"
-# the vector must have +Y dominant and small +X.
-# Inverting either component will black out the
-# whole scene, which is the most common Sponza
-# misrender.
+# This scene's only light source is the sky_dome
+# radiance_map declared on the rasterizer above.
+# An earlier revision had a directional sun with
+# power 3.5 plus an ambient_light fill -- both have
+# been retired in favour of pure environment-light
+# illumination via the radiance_map (PT-correct,
+# integrator samples it through NEE, no ambient
+# hack).  The trade-off: no hot rectangular sun
+# shafts on the floor, but a cleaner uniform
+# diffuse-sky look that converges faster at low spp
+# and matches what the open-ceiling atrium would
+# look like under heavy overcast.  Bump
+# radiance_scale on the rasterizer to brighten;
+# colour the sky_dome painter to tint.
 ##################################################
 
-directional_light
-{
-	name		sun
-	power		3.5
-	color		1.00 0.95 0.85
-	direction	0.20 0.95 0.10
-}
-
-##################################################
-# Sky-fill: cool blue from above to mimic the open
-# sky bouncing into the atrium.  Without it, the
-# shaded sides of the columns and the deep interior
-# of the colonnade go nearly black at 64 spp under
-# pixelpel_rasterizer (no indirect light).
-##################################################
-
-ambient_light
-{
-	name		sky_fill
-	power		0.40
-	color		0.65 0.75 0.95
-}

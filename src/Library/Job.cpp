@@ -824,25 +824,26 @@ bool Job::AddSpectralColorPainter(
 	return true;
 }
 
-static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type, IRasterImage& image )
+static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type, IRasterImage& image,
+	const char wrap_s = eRasterWrap_ClampToEdge, const char wrap_t = eRasterWrap_ClampToEdge )
 {
 	IRasterImageAccessor* pRIA = 0;
 
 	switch( filter_type )
 	{
 	case 0:
-		RISE_API_CreateNNBRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateNNBRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 	default:
 		GlobalLog()->PrintEasyWarning( "Unknown texture filter type, using bilinear" );
 	case 1:
-		RISE_API_CreateBiLinRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateBiLinRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 	case 2:
-		RISE_API_CreateCatmullRomBicubicRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateCatmullRomBicubicRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 	case 3:
-		RISE_API_CreateUniformBSplineBicubicRasterImageAccessor( &pRIA, image );
+		RISE_API_CreateUniformBSplineBicubicRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
 		break;
 
 	};
@@ -867,7 +868,9 @@ bool Job::AddPNGTexturePainter(
 																///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t				///< [in] V-axis wrap mode
 							)
 {
 	IRasterImage* pImage = 0;
@@ -919,7 +922,7 @@ bool Job::AddPNGTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -950,7 +953,9 @@ bool Job::AddInMemoryPNGTexturePainter(
 							const char filter_type,
 							const bool lowmemory,
 							const double scale[3],
-							const double shift[3]
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t
 							)
 {
 	if( !name || !bytes || numBytes == 0 ) {
@@ -1016,7 +1021,7 @@ bool Job::AddInMemoryPNGTexturePainter(
 		safe_release( pOp );
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1043,7 +1048,9 @@ bool Job::AddInMemoryJPEGTexturePainter(
 							const char filter_type,
 							const bool lowmemory,
 							const double scale[3],
-							const double shift[3]
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t
 							)
 {
 	if( !name || !bytes || numBytes == 0 ) {
@@ -1102,7 +1109,7 @@ bool Job::AddInMemoryJPEGTexturePainter(
 		safe_release( pOp );
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1135,7 +1142,9 @@ bool Job::AddJPEGTexturePainter(
 																///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t				///< [in] V-axis wrap mode
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1187,7 +1196,7 @@ bool Job::AddJPEGTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1208,7 +1217,8 @@ bool Job::AddJPEGTexturePainter(
 //! managers serially in this thread.  See IJob.h for the full contract.
 bool Job::AddTexturePaintersBatch(
 								const TexturePainterBatchRequest* requests,
-								size_t numRequests
+								size_t numRequests,
+								bool* outRequestSuccess
 								)
 {
 	if( !requests || numRequests == 0 ) {
@@ -1346,7 +1356,7 @@ bool Job::AddTexturePaintersBatch(
 				safe_release( pOp );
 			}
 
-			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage );
+			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage, req.wrap_s, req.wrap_t );
 
 			IPainter* pPainter = 0;
 			RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1365,17 +1375,35 @@ bool Job::AddTexturePaintersBatch(
 
 	// Serial registration.  pPntManager / pFunc2DManager are not
 	// thread-safe (std::map insert under the hood); only the calling
-	// thread touches them here.
+	// thread touches them here.  Per-request success requires BOTH
+	// decode AND manager registration to have succeeded — a duplicate
+	// name causes pPntManager->AddItem to refuse the addref, so the
+	// painter is never reachable by name even though the decode worked.
+	// Report both failure modes as `outRequestSuccess[i] = false`;
+	// callers that memoize "this painter is registered" use that flag
+	// to decide whether to fast-path future lookups vs fall back to a
+	// per-call decode (or a uniform-color sentinel).
 	bool allOk = true;
 	for( size_t i = 0; i < numRequests; ++i ) {
 		Decoded& d = decoded[i];
+		bool requestOk = false;
 		if( d.pPainter ) {
-			pPntManager->AddItem( d.pPainter, requests[i].name );
+			// AddItem returns true on success; both managers should
+			// agree (same name, same painter, same outcome) but we
+			// require the painter manager — the function-2D manager
+			// is a secondary index that downstream lookups don't use
+			// for material assembly.
+			const bool pntOk = pPntManager->AddItem( d.pPainter, requests[i].name );
 			pFunc2DManager->AddItem( d.pPainter, requests[i].name );
+			requestOk = pntOk;
 			safe_release( d.pPainter );
 			safe_release( d.pRIA );
 			safe_release( d.pImage );
-		} else {
+		}
+		if( outRequestSuccess ) {
+			outRequestSuccess[i] = requestOk;
+		}
+		if( !requestOk ) {
 			allOk = false;
 		}
 	}
@@ -1394,7 +1422,9 @@ bool Job::AddHDRTexturePainter(
 																///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t				///< [in] V-axis wrap mode
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1429,7 +1459,7 @@ bool Job::AddHDRTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1462,7 +1492,9 @@ bool Job::AddEXRTexturePainter(
 															///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t				///< [in] V-axis wrap mode
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1514,7 +1546,7 @@ bool Job::AddEXRTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1547,7 +1579,9 @@ bool Job::AddTIFFTexturePainter(
 																///     3 - Uniform BSpline Bicubic
 							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
 							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3]			///< [in] Shift factor for color values
+							const double shift[3],			///< [in] Shift factor for color values
+							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
+							const char wrap_t				///< [in] V-axis wrap mode
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1599,7 +1633,7 @@ bool Job::AddTIFFTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage );
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -3551,7 +3585,8 @@ bool Job::ImportGLTFScene(
 					const bool import_lights,
 					const bool import_cameras,
 					const bool import_normal_maps,
-					const bool lowmem_textures
+					const bool lowmem_textures,
+					const double lights_intensity_override
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -3559,14 +3594,15 @@ bool Job::ImportGLTFScene(
 		return false;	// constructor already logged the parse failure
 	}
 	GLTFImportOptions opts;
-	opts.namePrefix       = name_prefix;
-	opts.sceneIndex       = scene_index;
-	opts.importMeshes     = import_meshes;
-	opts.importMaterials  = import_materials;
-	opts.importLights     = import_lights;
-	opts.importCameras    = import_cameras;
-	opts.importNormalMaps = import_normal_maps;
-	opts.lowmemTextures   = lowmem_textures;
+	opts.namePrefix             = name_prefix;
+	opts.sceneIndex             = scene_index;
+	opts.importMeshes           = import_meshes;
+	opts.importMaterials        = import_materials;
+	opts.importLights           = import_lights;
+	opts.importCameras          = import_cameras;
+	opts.importNormalMaps       = import_normal_maps;
+	opts.lowmemTextures         = lowmem_textures;
+	opts.lightsIntensityOverride = lights_intensity_override;
 	return importer.ImportScene( *this, opts );
 }
 

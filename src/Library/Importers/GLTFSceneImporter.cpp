@@ -75,6 +75,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -362,6 +363,39 @@ namespace
 		return "ROMMRGB_Linear";
 	}
 
+	// Resolve the address-wrap mode for a glTF texture into RISE's char
+	// encoding (0 = clamp, 1 = repeat, 2 = mirrored repeat).  Reads
+	// `texture->sampler->wrap_s/wrap_t` when present; falls back to
+	// glTF 2.0's default (REPEAT) when the texture references no
+	// sampler.  Per spec: "If undefined, a sampler with wrapS = wrapT =
+	// 10497 (REPEAT) is used."  Without this, RISE's accessors
+	// previously defaulted to clamp-to-edge — for tiled textures
+	// (NewSponza floor, brick / wood / plaster atlases) that produces
+	// the trademark "first row repeating" stretch where any UV > 1
+	// samples the same edge texel.
+	void ResolveTextureWrap(
+		const cgltf_texture* tex,
+		char&                outWrapS,
+		char&                outWrapT )
+	{
+		auto cgltfWrapToChar = []( cgltf_wrap_mode w ) -> char {
+			switch( w ) {
+				case cgltf_wrap_mode_clamp_to_edge:    return 0;	// eRasterWrap_ClampToEdge
+				case cgltf_wrap_mode_repeat:           return 1;	// eRasterWrap_Repeat
+				case cgltf_wrap_mode_mirrored_repeat:  return 2;	// eRasterWrap_MirroredRepeat
+				default:                               return 1;	// glTF default
+			}
+		};
+		if( tex && tex->sampler ) {
+			outWrapS = cgltfWrapToChar( tex->sampler->wrap_s );
+			outWrapT = cgltfWrapToChar( tex->sampler->wrap_t );
+		} else {
+			// glTF 2.0 default sampler: REPEAT on both axes.
+			outWrapS = 1;
+			outWrapT = 1;
+		}
+	}
+
 	// Create the texture painter (png_painter or jpg_painter) for the
 	// given role / texture index.  Returns the registered painter name
 	// on success; empty string on failure (caller can swap in a
@@ -425,17 +459,26 @@ namespace
 		// chunk level; Sponza-class scenes flip it on for iteration speed.
 		const bool kLowMem = lowmemTextures;
 
+		// Address-wrap modes.  glTF default is REPEAT (per spec); this
+		// matches the path PreDecodeTextures uses, so a slow-path miss
+		// produces an accessor with the same wrap behaviour as the
+		// fast-path hit.
+		char wrapS = 1, wrapT = 1;
+		ResolveTextureWrap( tex, wrapS, wrapT );
+
 		bool ok = false;
 		if( !filePath.empty() ) {
 			// On-disk sidecar (the .gltf JSON form with external image files).
 			if( ext == ".png" ) {
 				ok = job.AddPNGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
-					cs, /*filter*/ 1, kLowMem, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddJPEGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
-					cs, /*filter*/ 1, kLowMem, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT );
 			}
 		} else {
 			// Embedded bytes (any .glb image; .gltf `data:` URIs cgltf already
@@ -443,11 +486,13 @@ namespace
 			if( ext == ".png" ) {
 				ok = job.AddInMemoryPNGTexturePainter(
 					painterName.c_str(), bytes, len,
-					cs, /*filter*/ 1, kLowMem, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddInMemoryJPEGTexturePainter(
 					painterName.c_str(), bytes, len,
-					cs, /*filter*/ 1, kLowMem, scale, shift );
+					cs, /*filter*/ 1, kLowMem, scale, shift,
+					wrapS, wrapT );
 			}
 		}
 
@@ -1072,7 +1117,8 @@ namespace
 		const std::string&  prefix,
 		size_t              lightIdx,
 		const cgltf_light*  light,
-		const cgltf_float   worldMatrix[16] )
+		const cgltf_float   worldMatrix[16],
+		double              intensityOverride )		// see GLTFImportOptions::lightsIntensityOverride; replaces zero authored intensities when > 0
 	{
 		// World-space position is column 3 of the world matrix.
 		const double px = worldMatrix[12];
@@ -1113,7 +1159,18 @@ namespace
 			toSRGB( (double)light->color[2] ) };
 		// glTF intensity units: cd for point/spot, lm/m² for directional.
 		// RISE's "power" is a multiplier on color; pass intensity directly.
-		const double power = (double)light->intensity;
+		// Optional override: many assets (NewSponza is the canonical case)
+		// carry their light fixtures as positional metadata with
+		// intensity=0 by author convention -- "lighting is up to the
+		// renderer".  When `intensityOverride > 0`, replace ANY zero
+		// authored intensity with the override so those dormant fixtures
+		// wake up uniformly.  Lights the author did set non-zero stay
+		// untouched (so a mixed asset where some lights are real and
+		// some are placeholders behaves sensibly).
+		const double authoredIntensity = (double)light->intensity;
+		const double power = ( intensityOverride > 0 && authoredIntensity == 0.0 )
+		                        ? intensityOverride
+		                        : authoredIntensity;
 
 		switch( light->type ) {
 			case cgltf_light_type_directional:
@@ -1557,7 +1614,8 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 			// Light
 			if( opts.importLights && node->light ) {
 				const size_t lightIdx = (size_t)( node->light - data->lights );
-				CreateLightForNode( job, prefix, lightIdx, node->light, world );
+				CreateLightForNode( job, prefix, lightIdx, node->light, world,
+					opts.lightsIntensityOverride );
 			}
 
 			// Camera.  Multi-camera support (2026-05-01): every camera-
@@ -2146,6 +2204,8 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		size_t numBytes;
 		char format;				// 0 = PNG, 1 = JPEG; -1 = skip
 		char colorSpace;
+		char wrap_s;				// per-texture U-axis wrap (eRasterWrapMode); read from cgltf_texture::sampler
+		char wrap_t;				// per-texture V-axis wrap
 	};
 	std::vector<PendingDecode> pending;
 	std::set<std::string> seen;
@@ -2187,6 +2247,10 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		else if( std::strcmp( colorSpace, "ROMMRGB_Linear"   ) == 0 ) cs = 2;
 		else if( std::strcmp( colorSpace, "ProPhotoRGB"      ) == 0 ) cs = 3;
 
+		// Address-wrap mode from the texture's sampler (glTF default = REPEAT).
+		char wrapS, wrapT;
+		ResolveTextureWrap( tex, wrapS, wrapT );
+
 		PendingDecode pd;
 		pd.painterName = painterName;
 		pd.filePath    = filePath;	// empty if reading from bytes
@@ -2194,6 +2258,8 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		pd.numBytes    = len;
 		pd.format      = format;
 		pd.colorSpace  = cs;
+		pd.wrap_s      = wrapS;
+		pd.wrap_t      = wrapT;
 		pending.push_back( std::move( pd ) );
 	};
 
@@ -2232,6 +2298,8 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		r.format     = pd.format;
 		r.colorSpace = pd.colorSpace;
 		r.filterType = 1;		// bilinear
+		r.wrap_s     = pd.wrap_s;	// from cgltf_texture::sampler (glTF default REPEAT)
+		r.wrap_t     = pd.wrap_t;
 		r.lowmemory  = opts.lowmemTextures;	// chunk-controlled; default false.
 								// When true, defers color-space convert to
 								// per-sample.  Saves ~4x texture RAM + 5-10x
@@ -2243,23 +2311,29 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		requests.push_back( r );
 	}
 
-	// Dispatch.  Returns false if any request failed; we still record the
-	// names that DID succeed so CreateTexturePainter's fast path picks
-	// them up.  The slow path (per-call decode) handles any residual misses.
-	(void) job.AddTexturePaintersBatch( requests.data(), requests.size() );
+	// Dispatch.  Per-request success array lets us memoize ONLY the
+	// painter names that decoded AND registered — not just the ones we
+	// asked to register.  Critical: if a malformed PNG decode failed (or
+	// AddItem rejected a duplicate), the painter never reached the
+	// manager, so memoizing its name would let CreateTexturePainter's
+	// fast path return a name that downstream AddChannelPainter /
+	// AddBlendPainter / AddPBRMetallicRoughnessMaterial calls then fail
+	// to look up.  A single broken texture would poison the whole
+	// material graph through that fast path.  By recording only true
+	// successes, the fast path stays correct, and the slow path in
+	// CreateTexturePainter retries the decode (or the material code
+	// substitutes a uniform-color fallback when the slow path also
+	// fails).
+	// `std::vector<bool>` is the bit-packed specialization that doesn't
+	// expose a `bool*` — use a plain heap array (RAII-wrapped) instead.
+	std::unique_ptr<bool[]> requestSuccess( new bool[requests.size()]() );	// () zero-inits to false
+	(void) job.AddTexturePaintersBatch( requests.data(), requests.size(),
+	                                    requestSuccess.get() );
 
-	// Mark every request name as registered.  AddTexturePaintersBatch
-	// logs per-request decode failures, so a name in `pending` that
-	// failed to decode would NOT actually be in the manager.  But the
-	// CreateTexturePainter fast path is just a name handoff — the
-	// material that consumes that name then finds it missing in the
-	// manager (or a downstream paint step gets a "none" sentinel) and
-	// falls back to its uniform-color path.  Worse case is one log line
-	// per failed texture; correctness preserved.  An alternative would
-	// be a per-request return-status array, but the failure rate on
-	// well-formed assets is zero, so we save the API surface.
-	for( const PendingDecode& pd : pending ) {
-		mRegisteredTextures.insert( pd.painterName );
+	for( size_t i = 0; i < pending.size(); ++i ) {
+		if( requestSuccess[i] ) {
+			mRegisteredTextures.insert( pending[i].painterName );
+		}
 	}
 }
 

@@ -23,6 +23,32 @@
 
 namespace RISE
 {
+	//! Sub-pixel address-wrap mode for a raster-image accessor.  Applied
+	//! to the input UVs BEFORE pixel-coordinate scaling, so any subset of
+	//! `(x, y)` outside [0, 1] maps to a stable in-bounds neighbour
+	//! according to the chosen mode.  Char-encoded for the painter API
+	//! (mirrors color_space / filter_type / lowmemory etc.):
+	//!
+	//!   0 = ClampToEdge — UVs outside [0,1] sample the boundary texel.
+	//!       Matches the pre-2026-05-01 behaviour and stays the default
+	//!       so legacy scenes render byte-identically.
+	//!   1 = Repeat — UVs are reduced modulo 1 (tile/wrap).  glTF 2.0's
+	//!       default sampler wrap; the right choice for tiled brick /
+	//!       wood / plaster atlases (NewSponza floor).
+	//!   2 = MirroredRepeat — UVs alternate between forward and reversed
+	//!       on each integer crossing (no seams between tiles).
+	//!
+	//! Applied independently per axis (`wrap_s` for the U axis,
+	//! `wrap_t` for the V axis) so an asset that wants a horizontally-
+	//! tiling but vertically-clamped texture (rare but real) can declare
+	//! that.
+	enum eRasterWrapMode
+	{
+		eRasterWrap_ClampToEdge      = 0,
+		eRasterWrap_Repeat           = 1,
+		eRasterWrap_MirroredRepeat   = 2
+	};
+
 	//! Provides access to a raster image.  This is mainly used to
 	//! provide sub-pixel access to raster images
 	class IRasterImageAccessor : public virtual IFunction2D

@@ -71,6 +71,7 @@ namespace RISE
 			bool importCameras;						///< Create cameras (first only; subsequent ones warn)
 			bool importNormalMaps;					///< Attach normal_map_modifier when a material has normalTexture
 			bool lowmemTextures;					///< Defer texture color-space conversion to per-sample access.  Trades ~25% per-sample render cost for a ~4x peak texture-memory reduction and a 5-10x faster scene load.  Default false (final-render workflow); flip to true for iteration on heavy-PBR scenes (NewSponza class).  See SCENE_CONVENTIONS.md / the sponza_new.RISEscene file header for the trade-off.
+			double lightsIntensityOverride;			///< When > 0, replaces the intensity of any imported KHR_lights_punctual entry whose authored intensity is exactly 0.  Default 0 (no override).  Many assets (NewSponza is the canonical case) carry their light fixtures as positional metadata with intensity=0 by author convention — "lighting is up to the renderer".  Setting this override > 0 wakes up those dormant fixtures uniformly, without touching lights the author did set non-zero intensities for.
 
 			//! Sentinel for "use the file's default scene" (i.e., the scene
 			//! the glTF JSON's top-level `"scene"` field points at, falling
@@ -88,7 +89,8 @@ namespace RISE
 			  importLights( true ),
 			  importCameras( true ),
 			  importNormalMaps( true ),
-			  lowmemTextures( false )
+			  lowmemTextures( false ),
+			  lightsIntensityOverride( 0.0 )
 			{}
 		};
 

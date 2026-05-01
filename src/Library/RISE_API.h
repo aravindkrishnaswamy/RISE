@@ -1787,25 +1787,37 @@ bool RISE_API_CreateIrradianceCache(
 								const RISEColor& shift				///< [in] Shift factor
 								);
 
-	//! Creates a nearest neighbour raster image accessor
+	//! Creates a nearest neighbour raster image accessor.  `wrap_s` /
+	//! `wrap_t` choose the per-axis address-wrap mode (0 = clamp, 1 =
+	//! repeat, 2 = mirrored repeat — see eRasterWrapMode).  Default 0
+	//! preserves the pre-2026-05-01 clamp-to-edge behaviour for any
+	//! existing caller that doesn't pass wrap params (notably the
+	//! `imageconverter` and `meshconverter` standalones built on
+	//! Linux/macOS that don't go through Job's painter API).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateNNBRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a bilinear raster image accessor
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBiLinRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a catmull rom bicubic raster image accessor
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCatmullRomBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 
@@ -1813,7 +1825,9 @@ bool RISE_API_CreateIrradianceCache(
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformBSplineBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
-								IRasterImage& image					///< [in] Raster image to access
+								IRasterImage& image,				///< [in] Raster image to access
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a bicubic raster image accessor that uses the given matrix as the weights
@@ -1821,7 +1835,9 @@ bool RISE_API_CreateIrradianceCache(
 	bool RISE_API_CreateBicubicRasterImageAccessor(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
 								IRasterImage& image,				///< [in] Raster image to access
-								const Matrix4& m
+								const Matrix4& m,
+								const char wrap_s = 0,				///< [in] Wrap mode for U axis
+								const char wrap_t = 0				///< [in] Wrap mode for V axis
 								);
 
 	//! Creates a PNG reader
