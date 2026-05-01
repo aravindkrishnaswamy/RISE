@@ -2662,6 +2662,7 @@
 				F27F07F7069C428F0069C9E5 /* Cameras */,
 				F27F0808069C428F0069C9E5 /* Functions */,
 				F27F081C069C428F0069C9E5 /* Geometry */,
+				F2D1A100069C42900069C9E5 /* Importers */,
 				F27F0851069C428F0069C9E5 /* Interfaces */,
 				F27F08A5069C428F0069C9E5 /* Intersection */,
 				F27F08B3069C428F0069C9E5 /* Job.cpp */,
@@ -2821,9 +2822,6 @@
 				F27F0846069C428F0069C9E5 /* TriangleMeshLoader3DS.h */,
 				F2C0EF01069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp */,
 				F2C0EF02069C42900069C9E5 /* TriangleMeshLoaderGLTF.h */,
-				F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */,
-				F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */,
-				F2D1A003069C42900069C9E5 /* ChannelPainter.h */,
 				F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */,
 				F27F084A069C428F0069C9E5 /* TriangleMeshLoaderPLY.h */,
 				F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */,
@@ -2834,6 +2832,15 @@
 				F27F0850069C428F0069C9E5 /* TriangleMeshLoaderRAW2.h */,
 			);
 			path = Geometry;
+			sourceTree = "<group>";
+		};
+		F2D1A100069C42900069C9E5 /* Importers */ = {
+			isa = PBXGroup;
+			children = (
+				F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */,
+				F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */,
+			);
+			path = Importers;
 			sourceTree = "<group>";
 		};
 		F27F0851069C428F0069C9E5 /* Interfaces */ = {
@@ -3188,6 +3195,7 @@
 				F27F0934069C42900069C9E5 /* BlackBodyPainter.cpp */,
 				F27F0935069C42900069C9E5 /* BlackBodyPainter.h */,
 				F27F0936069C42900069C9E5 /* BlendPainter.h */,
+				F2D1A003069C42900069C9E5 /* ChannelPainter.h */,
 				F27F0937069C42900069C9E5 /* CheckerPainter.cpp */,
 				F27F0938069C42900069C9E5 /* CheckerPainter.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
