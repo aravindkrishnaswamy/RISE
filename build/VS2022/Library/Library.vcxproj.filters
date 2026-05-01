@@ -519,9 +519,6 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.cpp">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.cpp">
-      <Filter>Geometry\Mesh Loaders</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Importers\GLTFSceneImporter.cpp">
       <Filter>Importers</Filter>
     </ClCompile>
@@ -1533,9 +1530,6 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h">
-      <Filter>Geometry\Mesh Loaders</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderGLTF.h">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Importers\GLTFSceneImporter.h">

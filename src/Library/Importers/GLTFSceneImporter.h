@@ -22,6 +22,19 @@
 //  decomposition transform path: node-world matrices now flow through
 //  Job::AddObjectMatrix verbatim.
 //
+//  Lifecycle (since 2026-05-01): the constructor runs cgltf_parse_file
+//  + cgltf_load_buffers + cgltf_validate ONCE for the file.  The
+//  destructor runs cgltf_free.  ImportScene (bulk) and ImportPrimitive
+//  (single primitive — the path used by `gltf_geometry` chunks via
+//  Job::AddGLTFTriangleMeshGeometry) BOTH consume that single parse.
+//  Pre-2026-05-01 the bulk path called Job::AddGLTFTriangleMeshGeometry
+//  per primitive, which constructed a fresh TriangleMeshLoaderGLTF that
+//  re-parsed the .gltf and re-read the .bin from disk for every primitive
+//  — quadratic-or-worse on heavyweight assets like NewSponza (a 1.5 GB
+//  .bin reread ~200 times).  TriangleMeshLoaderGLTF and the matching
+//  RISE_API_CreateGLTFTriangleMeshLoader were retired in the same
+//  cleanup; this importer is the sole glTF entry point.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 30, 2026
 //  Tabs: 4
@@ -39,6 +52,12 @@
 
 namespace RISE
 {
+	// Forward declarations — these flow through the importer's public
+	// surface but pulling them in via header would drag the geometry
+	// interface chain into every translation unit that just needs to
+	// kick off an import.
+	class ITriangleMeshGeometryIndexed;
+
 	namespace Implementation
 	{
 		struct GLTFImportOptions
@@ -71,31 +90,92 @@ namespace RISE
 		};
 
 		//! GLTFSceneImporter does NOT inherit from Reference; it's a one-shot
-		//! local stack object used inside Job::ImportGLTFScene.  All persistent
-		//! state ends up in the IJob's managers (geometries, painters,
-		//! materials, modifiers, lights, cameras, objects).
+		//! local stack object used inside Job::ImportGLTFScene and
+		//! Job::AddGLTFTriangleMeshGeometry.  All persistent state ends up in
+		//! the IJob's managers (geometries, painters, materials, modifiers,
+		//! lights, cameras, objects).
+		//!
+		//! The cgltf parse runs in the constructor and lives as long as the
+		//! importer.  Callers MUST check IsValid() before invoking ImportScene
+		//! or ImportPrimitive — when the parse, buffer load, or validate step
+		//! fails, IsValid() returns false and the import methods are no-ops
+		//! that return false.
+		//!
+		//! Single-call contract: call ImportScene AT MOST ONCE per importer
+		//! instance.  ImportPrimitive may be called any number of times so
+		//! long as each call uses a unique geomName.  The reason: the bulk
+		//! Walker memoizes per-(meshIdx,primIdx) registration in a function-
+		//! local set so multi-node instancing of a shared mesh registers the
+		//! geometry once and binds N objects (NewSponza columns, Khronos
+		//! OrientationTest, instanced foliage etc.).  That set is fresh per
+		//! ImportScene call; a second ImportScene on the same importer would
+		//! see an empty set, attempt to re-register every geomName, hit
+		//! pGeomManager's duplicate-name reject, and silently drop every
+		//! object on the second pass.  Today every call site constructs a
+		//! fresh importer per import so this is latent; if you ever need to
+		//! re-walk a parsed file, construct a new GLTFSceneImporter.
 		class GLTFSceneImporter
 		{
 		public:
-			GLTFSceneImporter( const char* glbPath );
+			//! Resolve the path through GlobalMediaPathLocator, then run the
+			//! full cgltf_parse_file → cgltf_load_buffers → cgltf_validate
+			//! sequence.  Stores the parsed cgltf_data internally; freed in
+			//! the destructor.  On failure logs the cause; IsValid() then
+			//! returns false and other methods do nothing.
+			explicit GLTFSceneImporter( const char* glbPath );
 			~GLTFSceneImporter();
 
-			//! Walk the scene tree and populate `job`.  Returns false on parse
-			//! / validation error.  Note: this method is NOT all-or-nothing.
-			//! Materials are created up front (loop in Import) before the scene
-			//! walk; if the file parses + validates but has a malformed scene
-			//! reference, the materials and their texture painters will still
-			//! be in the painter / material managers.  Callers that need
-			//! atomic import should check the return value AND call
-			//! `Job::Reset` (or equivalent) on failure to clean up.
-			bool Import( IJob& job, const GLTFImportOptions& opts );
+			//! True iff cgltf parsing + buffer load + validation all succeeded.
+			bool IsValid() const;
+
+			//! Bulk import: walks the requested (or default) scene tree and
+			//! emits per-primitive geometries, per-material PBR materials +
+			//! optional normal_map_modifier, per-image painters, lights, and
+			//! the first camera.  Note: this method is NOT all-or-nothing.
+			//! Materials are created up front before the scene walk; if the
+			//! file parses + validates but has a malformed scene reference,
+			//! the materials and their texture painters will still be in the
+			//! manager.  Callers that need atomic import should check the
+			//! return value AND call `Job::Reset` on failure to clean up.
+			bool ImportScene( IJob& job, const GLTFImportOptions& opts );
+
+			//! Single-primitive import: build geometry for `meshIdx.primIdx`
+			//! and register it with `job` under `geomName`.  This is the
+			//! entry point used by `Job::AddGLTFTriangleMeshGeometry` (the
+			//! `gltf_geometry` chunk parser's target) — a chunk that imports
+			//! one named primitive without the full scene walk.
+			bool ImportPrimitive(
+				IJob& job,
+				const char* geomName,
+				unsigned int meshIdx,
+				unsigned int primIdx,
+				bool doubleSided,
+				bool faceNormals,
+				bool flipV );
+
+			//! Lower-level building block: fill the caller-owned geometry
+			//! with the named primitive's vertex / index data.  Does NOT
+			//! register the geometry with any manager and does NOT take
+			//! ownership of `pGeom`.  Public so unit tests (and future
+			//! consumers) can exercise the primitive-extraction logic in
+			//! isolation; the importer's internal Walker and ImportPrimitive
+			//! both delegate here.
+			//!
+			//! Returns false (and logs) on out-of-range indices,
+			//! unsupported topology, Draco/meshopt compression, missing
+			//! POSITION attribute, or accessor-count mismatches.
+			bool BuildGeometryFromPrimitive(
+				ITriangleMeshGeometryIndexed* pGeom,
+				unsigned int meshIdx,
+				unsigned int primIdx,
+				bool flipV );
 
 		private:
 			std::string		szFilename;				///< Resolved on-disk path to the .glb / .gltf
-
-			// Internal helpers (defined in the .cpp).  Forward-declared cgltf
-			// types are referenced through opaque void* in the header to
-			// avoid leaking cgltf into IJob consumers.
+			void*			cgltfData;				///< Opaque cgltf_data*; NULL when parse / load / validate failed.
+													///  Ownership: this object owns the parse and frees it in the
+													///  destructor.  Kept opaque to avoid leaking cgltf into IJob
+													///  consumers.
 		};
 	}
 }

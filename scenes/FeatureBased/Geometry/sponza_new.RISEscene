@@ -1,0 +1,195 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           sponza_new.RISEscene                                                                    #
+#   Description:    Loads Intel/Khronos's New Sponza (NewSponza_Main_glTF_003.gltf) — the                   #
+#                   modern, PBR-textured rebuild of the classic Crytek Sponza atrium.                       #
+#                   ~155 nodes, dozens of unique materials, full PBR (baseColor + metallic-                 #
+#                   roughness + normal + emissive maps) for every surface.                                  #
+#                                                                                                           #
+#                   The asset itself is NOT in this repo (it's ~1.5 GB of textures + buffer).               #
+#                   Download once from Intel's GitHub mirror or Khronos's glTF-Sample-Assets:               #
+#                                                                                                           #
+#                       https://github.com/KhronosGroup/glTF-Sample-Assets                                  #
+#                       https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-       #
+#                                            research/samples.html                                          #
+#                                                                                                           #
+#                   This scene file expects the asset at:                                                   #
+#                                                                                                           #
+#                     C:/Users/micro/Downloads/main_sponza/main_sponza/                                     #
+#                       ├── NewSponza_Main_glTF_003.gltf                                                    #
+#                       ├── NewSponza_Main_glTF_003.bin                                                     #
+#                       └── textures/                                                                       #
+#                            └── *.png  (137 files — albedo / metalness / roughness / normal)               #
+#                                                                                                           #
+#                   Update the `file` parameter in the `gltf_import` block below to point at                #
+#                   wherever you put the .gltf.                                                             #
+#                                                                                                           #
+#                   What you should see in a healthy render:                                                #
+#                     - The familiar Sponza atrium viewed from outside the entrance, looking                #
+#                       down the colonnaded hall.                                                           #
+#                     - Stone arches with normal-mapped detail; gilded ornament_doors with                  #
+#                       crisp metallic highlights; wooden door + plaster walls with diffuse                 #
+#                       roughness; lamps emissive-glowing.                                                  #
+#                     - Sun streaming in from the open ceiling; soft sky-fill on the shadowed               #
+#                       side; ambient bounce filling the deep interior.                                     #
+#                                                                                                           #
+#                   Asset conventions:                                                                      #
+#                     - Y-up (the "Yup" suffix in the filename).  Eye level ≈ 1.6 m.                        #
+#                     - Atrium runs along the X axis; entrance at -X, back wall at +X.                      #
+#                     - Columns and arches are along Z (the colonnade depth).                               #
+#                     - Asset's bundled lights are all intensity=0 (the artists left lighting               #
+#                       to the renderer); we add a directional sun + ambient fill below.                    #
+#                     - Asset's bundled cameras are all valid; we still override with our own               #
+#                       pinhole below so the framing matches PhysCamera001 (the canonical                   #
+#                       hero shot) without depending on quaternion-import correctness.                      #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Scene-level options.  Sponza is authored in
+# metres, which is RISE's default scene_unit (1.0),
+# so this declaration is documentation more than
+# a real conversion -- but it pins the convention
+# in case scene_unit's default ever changes.
+##################################################
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+##################################################
+# Shader.  Same minimal direct-lighting setup as the
+# other glTF showcase scenes (DamagedHelmet, etc.):
+# DefaultDirectLighting handles BSDF + emitter + NEE
+# in one op.  If lamps need to read brighter, we can
+# upgrade to advanced_shader with an explicit
+# DefaultEmission op.
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+##################################################
+# Rasterizer + output.  64 spp at 1280x720 is
+# enough to verify the import is correct and
+# textures bind to the right surfaces; bump samples
+# (or switch to pathtracing_pel_rasterizer) for a
+# final-quality render.
+##################################################
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sponza_new
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Bulk import the entire .gltf.
+#
+#   - import_meshes/materials/normal_maps: TRUE
+#     (the whole point of the scene)
+#   - import_cameras: FALSE -- the asset declares
+#     6 PhysCamera nodes; we'd grab the first one
+#     and inherit its quaternion.  We instead
+#     hand-place a pinhole below so the framing
+#     is reproducible and doesn't depend on the
+#     importer's quaternion->lookat conversion.
+#   - import_lights: FALSE -- every KHR_lights_
+#     punctual entry in the asset has intensity=0.
+#     They'd register but contribute nothing, and
+#     they'd pollute the light manager.
+##################################################
+
+gltf_import
+{
+	file				C:/Users/micro/Downloads/main_sponza/main_sponza/NewSponza_Main_glTF_003.gltf
+	name_prefix			sponza
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		FALSE
+	import_lights		FALSE
+}
+
+##################################################
+# Camera.  Position + target taken from the asset's
+# PhysCamera001 node + its `Target` node:
+#
+#   PhysCamera001         translation = (-8.807, 1.592, -0.858)
+#   PhysCamera001.Target  translation = (-3.004, 2.762,  0.237)
+#
+# That's eye-level, just outside the atrium entrance,
+# looking down the colonnade with a slight upward
+# tilt -- the canonical hero shot.  yfov 1.0212 rad
+# ≈ 58.5°; we use degrees here.
+##################################################
+
+pinhole_camera
+{
+	location			-8.807 1.592 -0.858
+	lookat				-3.004 2.762  0.237
+	up					 0.0   1.0    0.0
+	width				1280
+	height				720
+	fov					58.5
+}
+
+##################################################
+# Lighting.  All of the asset's bundled lights are
+# intensity=0, so we light the scene ourselves.
+#
+# Sponza's atrium has an open ceiling.  In the
+# canonical render, the sun streams in nearly
+# straight down with a slight tilt toward the back
+# of the atrium (+X), giving the trademark hot
+# rectangular shafts on the floor between columns.
+#
+# RISE's `direction` points FROM the surface TO
+# the light source (DirectionalLight.cpp:48 — a
+# surface is lit when N·direction > 0), so for a
+# sun that's "above + slightly behind the camera"
+# the vector must have +Y dominant and small +X.
+# Inverting either component will black out the
+# whole scene, which is the most common Sponza
+# misrender.
+##################################################
+
+directional_light
+{
+	name		sun
+	power		3.5
+	color		1.00 0.95 0.85
+	direction	0.20 0.95 0.10
+}
+
+##################################################
+# Sky-fill: cool blue from above to mimic the open
+# sky bouncing into the atrium.  Without it, the
+# shaded sides of the columns and the deep interior
+# of the colonnade go nearly black at 64 spp under
+# pixelpel_rasterizer (no indirect light).
+##################################################
+
+ambient_light
+{
+	name		sky_fill
+	power		0.40
+	color		0.65 0.75 0.95
+}

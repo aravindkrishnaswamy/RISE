@@ -190,7 +190,6 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometry.cpp				\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometryIndexed.cpp		\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoader3DS.cpp			\
-	$(PATHLIBRARY)Geometry/TriangleMeshLoaderGLTF.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderPLY.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW.cpp			\
 	$(PATHLIBRARY)Geometry/TriangleMeshLoaderRAW2.cpp

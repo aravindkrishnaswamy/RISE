@@ -381,7 +381,6 @@ namespace RISE
 #include "Geometry/TriangleMeshLoaderRAW.h"
 #include "Geometry/TriangleMeshLoaderRAW2.h"
 #include "Geometry/TriangleMeshLoaderPLY.h"
-#include "Geometry/TriangleMeshLoaderGLTF.h"
 
 namespace RISE
 {
@@ -625,25 +624,13 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a mesh loader capable of loading from a glTF 2.0 file
-	//! (.gltf or .glb).  Phase 1 of glTF import; see docs/GLTF_IMPORT.md.
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateGLTFTriangleMeshLoader(
-						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
-						const char* szFileName,					///< [in] .gltf or .glb file to load
-						const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
-						const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
-						const bool flip_v						///< [in] Flip TEXCOORD V at load
-						)
-	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new TriangleMeshLoaderGLTF( szFileName, mesh_index, primitive_index, flip_v );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "mesh loader glTF" );
-		return true;
-	}
+	//! RISE_API_CreateGLTFTriangleMeshLoader was retired 2026-05-01.  glTF
+	//! single-primitive imports now flow through Job::AddGLTFTriangleMeshGeometry,
+	//! which constructs a GLTFSceneImporter and calls ImportPrimitive.  The
+	//! intermediate ITriangleMeshLoaderIndexed wrapper that used to live
+	//! here re-parsed the .gltf for every primitive — pathological on
+	//! NewSponza-class assets.  See Importers/GLTFSceneImporter.h
+	//! "Lifecycle" for the new design.
 
 	//! Creates a bezier-patch geometry (analytic intersection).
 	/// \return TRUE if successful, FALSE otherwise

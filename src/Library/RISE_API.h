@@ -382,17 +382,15 @@ namespace RISE
 						const bool bInvertFaces					///< [in] Should the faces be inverted?
 						);
 
-	//! Creates a mesh loader capable of loading from a glTF 2.0 file
-	//! (.gltf or .glb).  Reads one primitive of one mesh; see
-	//! docs/GLTF_IMPORT.md for the design.
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateGLTFTriangleMeshLoader(
-						ITriangleMeshLoaderIndexed** ppi,		///< [out] Pointer to recieve the mesh loader
-						const char* szFileName,					///< [in] .gltf or .glb file to load
-						const unsigned int mesh_index,			///< [in] Which mesh in the file (0-based)
-						const unsigned int primitive_index,		///< [in] Which primitive within the mesh (0-based)
-						const bool flip_v						///< [in] Flip TEXCOORD V at load
-						);
+	// RISE_API_CreateGLTFTriangleMeshLoader was retired 2026-05-01.  glTF
+	// single-primitive imports now flow through
+	// Job::AddGLTFTriangleMeshGeometry, which constructs a
+	// GLTFSceneImporter and calls ImportPrimitive.  The intermediate
+	// ITriangleMeshLoaderIndexed wrapper re-parsed the .gltf per
+	// primitive (pathological on NewSponza-class assets); the importer
+	// now owns the parse for its lifetime.  See
+	// src/Library/Importers/GLTFSceneImporter.h "Lifecycle" for the
+	// design.
 
 	//! Creates a bezier-patch geometry with analytic ray intersection.
 	//! Displacement / bulk tessellation are handled by wrapping this in a

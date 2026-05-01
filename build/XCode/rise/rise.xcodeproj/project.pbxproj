@@ -474,8 +474,6 @@
 		F2C0EE11069C42900069C9E5 /* JPEGReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
 		F2C0EE12069C42900069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
 		F2C0EE13069C42900069C9E5 /* stb_image.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
-		F2C0EF10069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF01069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp */; };
-		F2C0EF11069C42900069C9E5 /* TriangleMeshLoaderGLTF.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF02069C42900069C9E5 /* TriangleMeshLoaderGLTF.h */; };
 		F2D1A010069C42900069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
 		F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
 		F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
@@ -1196,8 +1194,6 @@
 		F2C0EE21069C42910069C9E5 /* JPEGReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
 		F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
 		F2C0EE23069C42910069C9E5 /* stb_image.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
-		F2C0EF20069C42910069C9E5 /* TriangleMeshLoaderGLTF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF01069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp */; };
-		F2C0EF21069C42910069C9E5 /* TriangleMeshLoaderGLTF.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EF02069C42900069C9E5 /* TriangleMeshLoaderGLTF.h */; };
 		F2D1A020069C42910069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
 		F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
 		F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
@@ -2165,8 +2161,6 @@
 		F2C0EE02069C42900069C9E5 /* JPEGReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = JPEGReader.h; sourceTree = "<group>"; };
 		F2C0EE03069C42900069C9E5 /* stb_image.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = stb_image.h; sourceTree = "<group>"; };
 		F2C0EE04069C42900069C9E5 /* stb_image.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = stb_image.cpp; sourceTree = "<group>"; };
-		F2C0EF01069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TriangleMeshLoaderGLTF.cpp; sourceTree = "<group>"; };
-		F2C0EF02069C42900069C9E5 /* TriangleMeshLoaderGLTF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TriangleMeshLoaderGLTF.h; sourceTree = "<group>"; };
 		F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GLTFSceneImporter.cpp; sourceTree = "<group>"; };
 		F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GLTFSceneImporter.h; sourceTree = "<group>"; };
 		F2D1A003069C42900069C9E5 /* ChannelPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChannelPainter.h; sourceTree = "<group>"; };
@@ -2826,8 +2820,6 @@
 				F27F0844069C428F0069C9E5 /* TriangleMeshGeometrySpecializations.h */,
 				F27F0845069C428F0069C9E5 /* TriangleMeshLoader3DS.cpp */,
 				F27F0846069C428F0069C9E5 /* TriangleMeshLoader3DS.h */,
-				F2C0EF01069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp */,
-				F2C0EF02069C42900069C9E5 /* TriangleMeshLoaderGLTF.h */,
 				F27F0849069C428F0069C9E5 /* TriangleMeshLoaderPLY.cpp */,
 				F27F084A069C428F0069C9E5 /* TriangleMeshLoaderPLY.h */,
 				F27F084B069C428F0069C9E5 /* TriangleMeshLoaderPSurf.cpp */,
@@ -3830,7 +3822,6 @@
 				F27F0AB0069C42910069C9E5 /* TriangleMeshGeometryIndexedSpecializations.h in Headers */,
 				F27F0AB1069C42910069C9E5 /* TriangleMeshGeometrySpecializations.h in Headers */,
 				F27F0AB3069C42910069C9E5 /* TriangleMeshLoader3DS.h in Headers */,
-				F2C0EF21069C42910069C9E5 /* TriangleMeshLoaderGLTF.h in Headers */,
 				F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */,
 				F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */,
 				F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */,
@@ -4455,7 +4446,6 @@
 				F27F0AAC069C42910069C9E5 /* TriangleMeshGeometry.cpp in Sources */,
 				F27F0AAE069C42910069C9E5 /* TriangleMeshGeometryIndexed.cpp in Sources */,
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
-				F2C0EF20069C42910069C9E5 /* TriangleMeshLoaderGLTF.cpp in Sources */,
 				F2D1A020069C42910069C9E5 /* GLTFSceneImporter.cpp in Sources */,
 				F27F0AB6069C42910069C9E5 /* TriangleMeshLoaderPLY.cpp in Sources */,
 				F27F0AB8069C42910069C9E5 /* TriangleMeshLoaderPSurf.cpp in Sources */,
@@ -4824,8 +4814,6 @@
 				F24B72392F52A632008304C4 /* TriangleMeshGeometrySpecializations.h in Sources */,
 				F24B723A2F52A632008304C4 /* TriangleMeshLoader3DS.cpp in Sources */,
 				F24B723B2F52A632008304C4 /* TriangleMeshLoader3DS.h in Sources */,
-				F2C0EF10069C42900069C9E5 /* TriangleMeshLoaderGLTF.cpp in Sources */,
-				F2C0EF11069C42900069C9E5 /* TriangleMeshLoaderGLTF.h in Sources */,
 				F2D1A010069C42900069C9E5 /* GLTFSceneImporter.cpp in Sources */,
 				F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */,
 				F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */,

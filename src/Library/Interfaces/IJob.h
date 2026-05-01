@@ -35,6 +35,11 @@
 
 namespace RISE
 {
+	// Forward declaration to avoid pulling in the full
+	// ITriangleMeshGeometry.h dependency chain.  Used by
+	// AddPrebuiltTriangleMeshGeometry, declared near the bottom.
+	class ITriangleMeshGeometryIndexed;
+
 	//! Job - This is used to simplify the creation of a job, all things can be
 	//! easily accessed by name, no need to keep track of managers and such
 	class IJob : public virtual IReference
@@ -2442,6 +2447,21 @@ namespace RISE
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function
+			) = 0;
+
+		//! Registers a caller-owned, fully-built triangle mesh geometry under
+		//! `name`.  Symmetric with the format-specific `AddXXXTriangleMeshGeometry`
+		//! family, but bypasses the loader step — the caller has already filled
+		//! the geometry (BeginIndexedTriangles → AddVertex/Normal/etc. →
+		//! DoneIndexedTriangles, including BVH build).  Used by importers that
+		//! parse a multi-asset container (e.g. glTF) once and emit many
+		//! geometries from the cached parse — registering each one through
+		//! this method instead of going back through a per-call file loader.
+		//! Reference-counts `pGeom` like every other manager registration.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPrebuiltTriangleMeshGeometry(
+			const char* name,									///< [in] Name to register the geometry under
+			ITriangleMeshGeometryIndexed* pGeom					///< [in] Caller-owned, already-built geometry
 			) = 0;
 	};
 

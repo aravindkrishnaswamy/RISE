@@ -64,6 +64,10 @@
 #include "pch.h"
 #include "GLTFSceneImporter.h"
 #include "../Interfaces/ILog.h"
+#include "../Interfaces/ITriangleMeshGeometry.h"
+#include "../RISE_API.h"
+#include "../Polygon.h"
+#include "../Utilities/Color/Color.h"
 #include "../Utilities/MediaPathLocator.h"
 
 #include "../../../extlib/cgltf/cgltf.h"
@@ -71,6 +75,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -1060,19 +1065,134 @@ namespace
 				return false;
 		}
 	}
+
+	// ---------- per-primitive geometry-extraction helpers ----------
+	// Moved from the retired TriangleMeshLoaderGLTF.cpp (2026-05-01).
+	// These now serve both ImportScene's per-primitive Walker hop AND
+	// the single-primitive ImportPrimitive entry point — the work
+	// previously done independently in the loader.
+
+	// Find the first attribute matching a given (type, set-index) pair.
+	// Returns NULL when not present.  glTF lets you have e.g. TEXCOORD_0
+	// and TEXCOORD_1 as two attributes with the same `type` field but
+	// different `index` values.
+	const cgltf_attribute* FindAttribute(
+		const cgltf_primitive* prim,
+		cgltf_attribute_type   type,
+		int                    setIndex )
+	{
+		for( cgltf_size i = 0; i < prim->attributes_count; ++i ) {
+			const cgltf_attribute& a = prim->attributes[i];
+			if( a.type == type && a.index == setIndex ) {
+				return &a;
+			}
+		}
+		return NULL;
+	}
+
+	// Unpack an entire accessor as an array of floats.  Returns true on
+	// success.  For an accessor with `count` elements of type T (where T
+	// is VEC2/VEC3/VEC4/SCALAR with N components), produces count*N
+	// floats.  Handles UNORM / SNORM / unnormalized variants uniformly.
+	bool UnpackAccessor(
+		const cgltf_accessor* accessor,
+		std::vector<float>&   out )
+	{
+		if( !accessor || !accessor->buffer_view || !accessor->buffer_view->buffer ) {
+			return false;
+		}
+		const cgltf_size numComponents = cgltf_num_components( accessor->type );
+		const cgltf_size numFloats     = accessor->count * numComponents;
+		out.resize( numFloats );
+		const cgltf_size unpacked = cgltf_accessor_unpack_floats(
+			accessor, out.data(), numFloats );
+		return unpacked == numFloats;
+	}
+
+	// Triangulate the (possibly strip or fan) source-index sequence
+	// into an output array of (i0, i1, i2) triples.  Source indices may
+	// come either from the primitive's `indices` accessor or, when that
+	// is absent, from the implicit 0..numVerts-1 sequence.  Caller has
+	// already verified `prim->type` is one of the three supported
+	// triangle topologies.
+	void TriangulateIndices(
+		const std::vector<unsigned int>& src,
+		cgltf_primitive_type             topo,
+		std::vector<unsigned int>&       out )
+	{
+		out.clear();
+		if( src.size() < 3 ) {
+			return;
+		}
+		switch( topo ) {
+			case cgltf_primitive_type_triangles: {
+				// Drop trailing 1 or 2 stray indices that don't form a
+				// complete triangle (defensive against malformed files;
+				// cgltf_validate normally catches this).
+				const cgltf_size numTris = src.size() / 3;
+				out.reserve( numTris * 3 );
+				for( cgltf_size t = 0; t < numTris; ++t ) {
+					out.push_back( src[ t*3 + 0 ] );
+					out.push_back( src[ t*3 + 1 ] );
+					out.push_back( src[ t*3 + 2 ] );
+				}
+				break;
+			}
+			case cgltf_primitive_type_triangle_strip: {
+				// Per glTF 2.0 §3.7.2.1: triangle k uses indices
+				// (k, k+1, k+2) for even k, (k+1, k, k+2) for odd k.
+				// The parity swap keeps facing direction consistent.
+				const cgltf_size numTris = src.size() - 2;
+				out.reserve( numTris * 3 );
+				for( cgltf_size k = 0; k < numTris; ++k ) {
+					if( (k & 1) == 0 ) {
+						out.push_back( src[ k + 0 ] );
+						out.push_back( src[ k + 1 ] );
+						out.push_back( src[ k + 2 ] );
+					} else {
+						out.push_back( src[ k + 1 ] );
+						out.push_back( src[ k + 0 ] );
+						out.push_back( src[ k + 2 ] );
+					}
+				}
+				break;
+			}
+			case cgltf_primitive_type_triangle_fan: {
+				// Per glTF 2.0 §3.7.2.1: triangle k uses indices
+				// (0, k+1, k+2).  Vertex 0 is the shared fan center.
+				const cgltf_size numTris = src.size() - 2;
+				out.reserve( numTris * 3 );
+				for( cgltf_size k = 0; k < numTris; ++k ) {
+					out.push_back( src[ 0 ] );
+					out.push_back( src[ k + 1 ] );
+					out.push_back( src[ k + 2 ] );
+				}
+				break;
+			}
+			default:
+				// Unreachable — caller filtered topology.
+				break;
+		}
+	}
 } // namespace
 
 GLTFSceneImporter::GLTFSceneImporter( const char* glbPath ) :
-  szFilename( GlobalMediaPathLocator().Find( glbPath ).c_str() )
+  szFilename( GlobalMediaPathLocator().Find( glbPath ).c_str() ),
+  cgltfData( NULL )
 {
-}
-
-GLTFSceneImporter::~GLTFSceneImporter()
-{
-}
-
-bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
-{
+	// Phase-3 lifecycle change (2026-05-01): the cgltf parse moved from
+	// per-call (Import / per-primitive Loader) into the constructor.  The
+	// motivation is the NewSponza pathology — its bulk import previously
+	// re-parsed the .gltf and re-`fread`-ed the 1.5 GB .bin once per
+	// primitive (~200 redundant whole-file reads).  Now: one parse, one
+	// .bin read, lifetime-scoped to this object.  ImportScene and
+	// ImportPrimitive both consume the cached parse.
+	//
+	// On failure of any step (parse, load_buffers, validate) we log the
+	// cause, free any partial state, and leave cgltfData == NULL.  The
+	// public IsValid() then returns false; ImportScene / ImportPrimitive
+	// short-circuit and return false too.  Callers MUST check IsValid()
+	// before using the importer (see header doc).
 	cgltf_options copts = {};
 	cgltf_data*   data  = NULL;
 
@@ -1081,7 +1201,7 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 		GlobalLog()->PrintEx( eLog_Error,
 			"GLTFSceneImporter:: cgltf_parse_file failed for `%s` (cgltf_result=%d)",
 			szFilename.c_str(), (int)r );
-		return false;
+		return;
 	}
 	r = cgltf_load_buffers( &copts, data, szFilename.c_str() );
 	if( r != cgltf_result_success ) {
@@ -1089,7 +1209,7 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 			"GLTFSceneImporter:: cgltf_load_buffers failed for `%s` (cgltf_result=%d)",
 			szFilename.c_str(), (int)r );
 		cgltf_free( data );
-		return false;
+		return;
 	}
 	r = cgltf_validate( data );
 	if( r != cgltf_result_success ) {
@@ -1097,8 +1217,32 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 			"GLTFSceneImporter:: cgltf_validate failed for `%s` (cgltf_result=%d)",
 			szFilename.c_str(), (int)r );
 		cgltf_free( data );
+		return;
+	}
+
+	cgltfData = data;
+}
+
+GLTFSceneImporter::~GLTFSceneImporter()
+{
+	if( cgltfData ) {
+		cgltf_free( static_cast<cgltf_data*>( cgltfData ) );
+		cgltfData = NULL;
+	}
+}
+
+bool GLTFSceneImporter::IsValid() const
+{
+	return cgltfData != NULL;
+}
+
+bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
+{
+	if( !cgltfData ) {
+		// Constructor-failure path; log already emitted by the ctor.
 		return false;
 	}
+	cgltf_data* data = static_cast<cgltf_data*>( cgltfData );
 
 	// Skin / animation / morph-target features are out of scope for the
 	// importer; warn (loudly, once) so users with animated assets see why
@@ -1166,7 +1310,7 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 	if( !scene ) {
 		GlobalLog()->PrintEasyError(
 			"GLTFSceneImporter:: file has no scene to import" );
-		cgltf_free( data );
+		// cgltfData is freed by the destructor — no per-method free here.
 		return false;
 	}
 
@@ -1181,6 +1325,8 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 		const std::string&       glbPath;
 		const GLTFImportOptions& opts;
 		bool&                    sawCamera;
+		GLTFSceneImporter&       importer;	// for ImportPrimitive — bypasses the public IJob entry point so the cgltf parse is not redone per primitive
+		std::set<std::string>&   registeredGeoms;	// memoizes which (meshIdx,primIdx) geometries we've already built so multi-node instancing of a shared mesh registers ONCE and AddObjectMatrix runs N times
 
 		void Walk( const cgltf_node* node, const cgltf_float parentWorld[16] )
 		{
@@ -1219,12 +1365,48 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 					// correctly with flip_v=FALSE.  The earlier finding was
 					// a misread of the spec; it is corrected in
 					// docs/GLTF_IMPORT.md §4 V-convention reconciliation.
-					const bool gOK = job.AddGLTFTriangleMeshGeometry(
-						geom.c_str(), glbPath.c_str(),
-						(unsigned int)meshIdx, (unsigned int)pi,
-						doubleSided,
-						/*face_normals*/ false,
-						/*flip_v*/ false );
+					// Build + register the primitive's geometry through the
+					// already-parsed cgltf_data we own — NOT through
+					// `job.AddGLTFTriangleMeshGeometry`, which would
+					// recursively spin up a fresh GLTFSceneImporter and
+					// re-parse the .gltf for every primitive.  See header
+					// doc, "Lifecycle".
+					//
+					// Multi-node instancing of a shared mesh: any glTF
+					// where multiple nodes reference the same mesh (NewSponza
+					// columns, Khronos OrientationTest, instanced foliage
+					// etc.) means we'll see the SAME meshIdx+primIdx more
+					// than once.  GeomName is keyed by mesh+prim only — so
+					// the second visit's geom.c_str() collides with the
+					// first's.  pGeomManager->AddItem rejects duplicate
+					// names and would propagate false up through
+					// AddPrebuiltTriangleMeshGeometry → ImportPrimitive,
+					// causing the `if (!gOK) continue` below to skip
+					// AddObjectMatrix and silently drop every instance after
+					// the first.  The 2026-05-01 round-2 review caught this
+					// regression vs. the retired loader, which had a
+					// happy accident: it discarded AddItem's bool and
+					// returned LoadTriangleMesh's success bit instead, so
+					// duplicate-name registrations silently no-op'd and
+					// AddObjectMatrix proceeded.  Memoize successful builds
+					// per geom-name so we register exactly once but bind
+					// every instance.  Bonus: the second-visit primitive
+					// extraction is also skipped (a perf win on instancing-
+					// heavy assets, on top of the parse-once win).
+					bool gOK;
+					if( registeredGeoms.find( geom ) != registeredGeoms.end() ) {
+						gOK = true;	// already-built shared-mesh instance
+					} else {
+						gOK = importer.ImportPrimitive(
+							job, geom.c_str(),
+							(unsigned int)meshIdx, (unsigned int)pi,
+							doubleSided,
+							/*face_normals*/ false,
+							/*flip_v*/ false );
+						if( gOK ) {
+							registeredGeoms.insert( geom );
+						}
+					}
 					if( !gOK ) {
 						continue;
 					}
@@ -1331,11 +1513,370 @@ bool GLTFSceneImporter::Import( IJob& job, const GLTFImportOptions& opts )
 	};
 
 	cgltf_float identity[16]; Mat4Identity( identity );
-	Walker w = { job, prefix, data, szFilename, opts, sawCamera };
+	std::set<std::string> registeredGeoms;	// see Walker struct + the dedup site for rationale
+	Walker w = { job, prefix, data, szFilename, opts, sawCamera, *this, registeredGeoms };
 	for( size_t r = 0; r < scene->nodes_count; ++r ) {
 		w.Walk( scene->nodes[r], identity );
 	}
 
-	cgltf_free( data );
+	// cgltfData is freed in the destructor — same lifecycle as a single
+	// scene walk, owned for the lifetime of the importer object.
+	return true;
+}
+
+bool GLTFSceneImporter::ImportPrimitive(
+	IJob&        job,
+	const char*  geomName,
+	unsigned int meshIdx,
+	unsigned int primIdx,
+	bool         doubleSided,
+	bool         faceNormals,
+	bool         flipV )
+{
+	if( !cgltfData ) {
+		return false;
+	}
+	if( !geomName ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::ImportPrimitive:: geomName is NULL" );
+		return false;
+	}
+
+	// Build the geometry locally; register it with the job's manager
+	// only on success.  On failure (malformed primitive, out-of-range
+	// indices, unsupported topology, Draco compression) the partial
+	// pGeometry is released and never enters the manager.
+	ITriangleMeshGeometryIndexed* pGeometry = NULL;
+	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, doubleSided, faceNormals );
+	if( !pGeometry ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::ImportPrimitive:: failed to allocate geometry" );
+		return false;
+	}
+
+	bool ok = BuildGeometryFromPrimitive( pGeometry, meshIdx, primIdx, flipV );
+	if( ok ) {
+		ok = job.AddPrebuiltTriangleMeshGeometry( geomName, pGeometry );
+	}
+	safe_release( pGeometry );
+	return ok;
+}
+
+bool GLTFSceneImporter::BuildGeometryFromPrimitive(
+	ITriangleMeshGeometryIndexed* pGeom,
+	unsigned int                  meshIdx,
+	unsigned int                  primIdx,
+	bool                          flipV )
+{
+	if( !pGeom ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: NULL geometry target" );
+		return false;
+	}
+	if( !cgltfData ) {
+		// Constructor logged the parse failure; nothing to extract from.
+		return false;
+	}
+	cgltf_data* data = static_cast<cgltf_data*>( cgltfData );
+
+	if( meshIdx >= data->meshes_count ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: mesh_index %u out of range "
+			"(file has %u meshes)",
+			meshIdx, (unsigned int)data->meshes_count );
+		return false;
+	}
+	const cgltf_mesh& mesh = data->meshes[ meshIdx ];
+	if( primIdx >= mesh.primitives_count ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive %u out of range "
+			"(mesh `%s` has %u primitives)",
+			primIdx,
+			mesh.name ? mesh.name : "(unnamed)",
+			(unsigned int)mesh.primitives_count );
+		return false;
+	}
+	const cgltf_primitive& prim = mesh.primitives[ primIdx ];
+
+	// Topology gate.  We support the three triangle modes; LINES /
+	// POINTS / LINE_LOOP / LINE_STRIP are not renderable as triangle
+	// meshes and would silently render as empty geometry if accepted.
+	const cgltf_primitive_type topo = prim.type;
+	const bool topoOK =
+		topo == cgltf_primitive_type_triangles    ||
+		topo == cgltf_primitive_type_triangle_strip ||
+		topo == cgltf_primitive_type_triangle_fan;
+	if( !topoOK ) {
+		const char* topoName = "unknown";
+		switch( topo ) {
+			case cgltf_primitive_type_points:     topoName = "POINTS";     break;
+			case cgltf_primitive_type_lines:      topoName = "LINES";      break;
+			case cgltf_primitive_type_line_loop:  topoName = "LINE_LOOP";  break;
+			case cgltf_primitive_type_line_strip: topoName = "LINE_STRIP"; break;
+			default: break;
+		}
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive topology `%s` "
+			"is not a triangle topology and cannot be loaded as triangle geometry.",
+			topoName );
+		return false;
+	}
+
+	// Reject Draco / meshopt compression with a clear error message.
+	// cgltf parses the extension declaration but does NOT decompress;
+	// the buffer bytes we'd read are still compressed and accessor
+	// reads would yield garbage.
+	if( prim.has_draco_mesh_compression ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive uses "
+			"KHR_draco_mesh_compression.  This is not supported (cgltf does not "
+			"decode it).  Re-export the asset without Draco compression." );
+		return false;
+	}
+
+	// Locate the standard attributes we care about.  POSITION is
+	// required by the glTF spec; everything else is optional.
+	const cgltf_attribute* attrPos    = FindAttribute( &prim, cgltf_attribute_type_position, 0 );
+	const cgltf_attribute* attrNormal = FindAttribute( &prim, cgltf_attribute_type_normal,   0 );
+	const cgltf_attribute* attrTan    = FindAttribute( &prim, cgltf_attribute_type_tangent,  0 );
+	const cgltf_attribute* attrUV0    = FindAttribute( &prim, cgltf_attribute_type_texcoord, 0 );
+	const cgltf_attribute* attrUV1    = FindAttribute( &prim, cgltf_attribute_type_texcoord, 1 );
+	const cgltf_attribute* attrCol0   = FindAttribute( &prim, cgltf_attribute_type_color,    0 );
+
+	if( !attrPos ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive has no POSITION attribute" );
+		return false;
+	}
+
+	const cgltf_size numVerts = attrPos->data->count;
+
+	// Fail fast if any optional attribute disagrees with POSITION on
+	// element count -- glTF 2.0 §3.7.2.1 mandates equal counts across
+	// all primitive attributes, but we should not trust an external
+	// file silently.
+	if( attrNormal && attrNormal->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: NORMAL count (%u) != POSITION count (%u)",
+			(unsigned int)attrNormal->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrTan && attrTan->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: TANGENT count (%u) != POSITION count (%u)",
+			(unsigned int)attrTan->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrUV0 && attrUV0->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: TEXCOORD_0 count (%u) != POSITION count (%u)",
+			(unsigned int)attrUV0->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrUV1 && attrUV1->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: TEXCOORD_1 count (%u) != POSITION count (%u)",
+			(unsigned int)attrUV1->data->count, (unsigned int)numVerts );
+		return false;
+	}
+	if( attrCol0 && attrCol0->data->count != numVerts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: COLOR_0 count (%u) != POSITION count (%u)",
+			(unsigned int)attrCol0->data->count, (unsigned int)numVerts );
+		return false;
+	}
+
+	// Optional v2 / v3 sub-interfaces.  v2 carries vertex colors; v3
+	// adds tangents and TEXCOORD_1.  Loaders fall back gracefully if
+	// the geometry implementation predates either.
+	ITriangleMeshGeometryIndexed2* pGeom2 = dynamic_cast<ITriangleMeshGeometryIndexed2*>( pGeom );
+	ITriangleMeshGeometryIndexed3* pGeom3 = dynamic_cast<ITriangleMeshGeometryIndexed3*>( pGeom );
+
+	if( attrCol0 && !pGeom2 ) {
+		GlobalLog()->PrintEasyWarning(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: source has COLOR_0 but the target "
+			"geometry does not implement ITriangleMeshGeometryIndexed2 -- "
+			"colors will be dropped" );
+	}
+	if( (attrTan || attrUV1) && !pGeom3 ) {
+		GlobalLog()->PrintEasyWarning(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: source has TANGENT or TEXCOORD_1 but the "
+			"target geometry does not implement ITriangleMeshGeometryIndexed3 -- "
+			"those attributes will be dropped" );
+	}
+
+	// Unpack the requested attributes up front; we hand them to the
+	// geometry through the typed-array overloads below.
+	std::vector<float> posData;
+	std::vector<float> normalData;
+	std::vector<float> tangentData;
+	std::vector<float> uv0Data;
+	std::vector<float> uv1Data;
+	std::vector<float> colorData;
+
+	if( !UnpackAccessor( attrPos->data, posData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack POSITION accessor" );
+		return false;
+	}
+	if( attrNormal && !UnpackAccessor( attrNormal->data, normalData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack NORMAL accessor" );
+		return false;
+	}
+	if( attrTan && pGeom3 && !UnpackAccessor( attrTan->data, tangentData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack TANGENT accessor" );
+		return false;
+	}
+	if( attrUV0 && !UnpackAccessor( attrUV0->data, uv0Data ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack TEXCOORD_0 accessor" );
+		return false;
+	}
+	if( attrUV1 && pGeom3 && !UnpackAccessor( attrUV1->data, uv1Data ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack TEXCOORD_1 accessor" );
+		return false;
+	}
+	if( attrCol0 && pGeom2 && !UnpackAccessor( attrCol0->data, colorData ) ) {
+		GlobalLog()->PrintEasyError(
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: failed to unpack COLOR_0 accessor" );
+		return false;
+	}
+
+	const cgltf_size colorComponents = attrCol0 ? cgltf_num_components( attrCol0->data->type ) : 0;
+
+	// Source indices: read from prim.indices if present, else
+	// 0..numVerts-1 (the implicit array convention in glTF).
+	std::vector<unsigned int> srcIndices;
+	if( prim.indices ) {
+		srcIndices.resize( prim.indices->count );
+		for( cgltf_size i = 0; i < prim.indices->count; ++i ) {
+			srcIndices[i] = (unsigned int)cgltf_accessor_read_index( prim.indices, i );
+		}
+	} else {
+		srcIndices.resize( numVerts );
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			srcIndices[i] = (unsigned int)i;
+		}
+	}
+
+	// Triangulate strip / fan into a flat (i0, i1, i2) sequence.
+	std::vector<unsigned int> triIndices;
+	TriangulateIndices( srcIndices, topo, triIndices );
+
+	if( triIndices.empty() ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"GLTFSceneImporter::BuildGeometryFromPrimitive:: primitive yielded zero triangles "
+			"(mesh `%s`, primitive %u).",
+			mesh.name ? mesh.name : "(unnamed)", primIdx );
+		// Not a hard error -- a degenerate primitive should still let
+		// the surrounding scene load.
+	}
+
+	// Push everything into the geometry.
+
+	pGeom->BeginIndexedTriangles();
+
+	// POSITION
+	for( cgltf_size i = 0; i < numVerts; ++i ) {
+		pGeom->AddVertex( Vertex(
+			posData[ i*3 + 0 ],
+			posData[ i*3 + 1 ],
+			posData[ i*3 + 2 ] ) );
+	}
+
+	// NORMAL.  AddNormal silently drops when the geometry was
+	// constructed with face_normals=true; we always feed the data we
+	// have, the geometry decides what to do with it.
+	if( attrNormal ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			pGeom->AddNormal( Normal(
+				normalData[ i*3 + 0 ],
+				normalData[ i*3 + 1 ],
+				normalData[ i*3 + 2 ] ) );
+		}
+	}
+
+	// TEXCOORD_0.  RISE convention: every face needs a valid iCoords[]
+	// triple.  When the source has no TEXCOORD_0, push a single
+	// (0, 0) placeholder and point every face at it (mirrors how PLY
+	// and 3DS loaders handle missing UVs).
+	if( attrUV0 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			const float u = uv0Data[ i*2 + 0 ];
+			const float v = uv0Data[ i*2 + 1 ];
+			pGeom->AddTexCoord( TexCoord( u, flipV ? (1.0f - v) : v ) );
+		}
+	} else {
+		pGeom->AddTexCoord( TexCoord( 0, 0 ) );
+	}
+
+	// TEXCOORD_1 (v3-only).
+	if( attrUV1 && pGeom3 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			const float u = uv1Data[ i*2 + 0 ];
+			const float v = uv1Data[ i*2 + 1 ];
+			pGeom3->AddTexCoord1( TexCoord( u, flipV ? (1.0f - v) : v ) );
+		}
+	}
+
+	// TANGENT (v3-only).  glTF stores xyz = tangent direction in
+	// object space, w = bitangent sign (+1 or -1).
+	if( attrTan && pGeom3 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			Tangent4 t;
+			t.dir = Vector3(
+				tangentData[ i*4 + 0 ],
+				tangentData[ i*4 + 1 ],
+				tangentData[ i*4 + 2 ] );
+			t.bitangentSign = tangentData[ i*4 + 3 ];
+			pGeom3->AddTangent( t );
+		}
+	}
+
+	// COLOR_0 (v2-only).  glTF spec stores vertex colors in linear
+	// Rec.709 RGB (NOT sRGB -- this is the explicit difference from
+	// PLY's universal-sRGB convention).  Convert via the Rec709->ROMM
+	// path so painters see the engine's working colour space.
+	if( attrCol0 && pGeom2 ) {
+		for( cgltf_size i = 0; i < numVerts; ++i ) {
+			const cgltf_size base = i * colorComponents;
+			const float r = colorData[ base + 0 ];
+			const float g = colorComponents >= 2 ? colorData[ base + 1 ] : r;
+			const float b = colorComponents >= 3 ? colorData[ base + 2 ] : r;
+			// Alpha (component 4) is dropped -- RISEPel is RGB only.
+			Rec709RGBPel src( r, g, b );
+			pGeom2->AddColor( RISEPel( src ) );
+		}
+	}
+
+	// Faces.  glTF uses the same index list to address all attribute
+	// arrays uniformly, so iVertices == iNormals == iCoords for every
+	// face vertex.  When we synthesised a single-element TEXCOORD,
+	// iCoords[] points at index 0 for every face.
+	const bool haveUV0 = (attrUV0 != NULL);
+	for( cgltf_size t = 0; t + 2 < triIndices.size(); t += 3 ) {
+		IndexedTriangle tri;
+		for( int k = 0; k < 3; ++k ) {
+			const unsigned int idx = triIndices[ t + k ];
+			tri.iVertices[k] = idx;
+			tri.iNormals[k]  = idx;
+			tri.iCoords[k]   = haveUV0 ? idx : 0u;
+		}
+		pGeom->AddIndexedTriangle( tri );
+	}
+
+	// If the source had no NORMAL, ask the geometry to derive smooth
+	// normals from face topology.  AddNormal was a no-op for face-
+	// normals geometries, so this is the right hook in either case
+	// (ComputeVertexNormals does nothing when bUseFaceNormals is set).
+	if( !attrNormal ) {
+		pGeom->ComputeVertexNormals();
+	}
+
+	pGeom->DoneIndexedTriangles();
+
 	return true;
 }

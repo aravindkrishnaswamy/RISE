@@ -2260,6 +2260,14 @@ namespace RISE
 		void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function
 			);
+
+		//! Registers a caller-owned, fully-built triangle mesh geometry under
+		//! `name`.  See IJob.h for the full contract.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddPrebuiltTriangleMeshGeometry(
+			const char* name,
+			ITriangleMeshGeometryIndexed* pGeom
+			);
 	};
 }
 

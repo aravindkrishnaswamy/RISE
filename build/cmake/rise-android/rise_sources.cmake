@@ -168,7 +168,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Geometry/TriangleMeshGeometry.cpp"
     "${RISE_LIB}/Geometry/TriangleMeshGeometryIndexed.cpp"
     "${RISE_LIB}/Geometry/TriangleMeshLoader3DS.cpp"
-    "${RISE_LIB}/Geometry/TriangleMeshLoaderGLTF.cpp"
     "${RISE_LIB}/Geometry/TriangleMeshLoaderPLY.cpp"
     "${RISE_LIB}/Geometry/TriangleMeshLoaderRAW.cpp"
     "${RISE_LIB}/Geometry/TriangleMeshLoaderRAW2.cpp"

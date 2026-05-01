@@ -3346,8 +3346,10 @@ bool Job::AddPLYTriangleMeshGeometry(
 	return bRet;
 }
 
-//! Imports a glTF 2.0 scene -- Phase 2 entry point.  Defers heavy
-//! lifting to GLTFSceneImporter (see Importers/).
+//! Imports a glTF 2.0 scene.  Constructs a GLTFSceneImporter (which runs
+//! the cgltf parse + buffer-load + validate once) and delegates to
+//! ImportScene.  See docs/GLTF_IMPORT.md and Importers/GLTFSceneImporter.h
+//! for the design.
 /// \return TRUE if successful, FALSE otherwise
 bool Job::ImportGLTFScene(
 					const char* filename,
@@ -3361,6 +3363,9 @@ bool Job::ImportGLTFScene(
 					)
 {
 	GLTFSceneImporter importer( filename );
+	if( !importer.IsValid() ) {
+		return false;	// constructor already logged the parse failure
+	}
 	GLTFImportOptions opts;
 	opts.namePrefix       = name_prefix;
 	opts.sceneIndex       = scene_index;
@@ -3369,12 +3374,15 @@ bool Job::ImportGLTFScene(
 	opts.importLights     = import_lights;
 	opts.importCameras    = import_cameras;
 	opts.importNormalMaps = import_normal_maps;
-	return importer.Import( *this, opts );
+	return importer.ImportScene( *this, opts );
 }
 
-//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
-//! Phase 1 scope -- one primitive of one mesh becomes one named geometry.
-//! See docs/GLTF_IMPORT.md for the phased plan.
+//! Creates a triangle mesh geometry from a single primitive of a glTF 2.0
+//! file (.gltf or .glb).  This is the entry point used by the
+//! `gltf_geometry` chunk parser; the bulk `gltf_import` chunk goes through
+//! ImportGLTFScene above.  Both routes go through the same
+//! GLTFSceneImporter — the cgltf parse runs once per call, in the
+//! importer's constructor.  See docs/GLTF_IMPORT.md for the phased plan.
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddGLTFTriangleMeshGeometry(
 					const char* name,						///< [in] Name of the geometry
@@ -3386,20 +3394,28 @@ bool Job::AddGLTFTriangleMeshGeometry(
 					const bool flip_v						///< [in] Flip TEXCOORD V at load
 					)
 {
-	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	RISE_API_CreateTriangleMeshGeometryIndexed( &pGeometry, double_sided, face_normals );
-
-	ITriangleMeshLoaderIndexed* pLoader = 0;
-	RISE_API_CreateGLTFTriangleMeshLoader( &pLoader, szFileName, mesh_index, primitive_index, flip_v );
-
-	bool bRet = pLoader->LoadTriangleMesh( pGeometry );
-	if( bRet ) {
-		pGeomManager->AddItem( pGeometry, name );
+	GLTFSceneImporter importer( szFileName );
+	if( !importer.IsValid() ) {
+		return false;	// constructor already logged the parse failure
 	}
+	return importer.ImportPrimitive(
+		*this, name, mesh_index, primitive_index,
+		double_sided, face_normals, flip_v );
+}
 
-	safe_release( pGeometry );
-	safe_release( pLoader );
-	return bRet;
+bool Job::AddPrebuiltTriangleMeshGeometry(
+					const char* name,
+					ITriangleMeshGeometryIndexed* pGeom
+					)
+{
+	if( !name || !pGeom ) {
+		GlobalLog()->PrintEasyError(
+			"Job::AddPrebuiltTriangleMeshGeometry:: NULL name or geometry" );
+		return false;
+	}
+	// pGeomManager->AddItem refcounts the geometry; the caller retains
+	// its own reference and is responsible for releasing it.
+	return pGeomManager->AddItem( pGeom, name );
 }
 
 //! Creates a mesh from a .risemesh file
