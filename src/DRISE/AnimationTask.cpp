@@ -135,7 +135,12 @@ namespace RISE
 				IRasterizerOutput* fro = 0;
 
 				sprintf( fname, "%s_%.5d", szOutputFileName, id );
-				RISE_API_CreateFileRasterizerOutput( &fro, fname, false, 2, 16, eColorSpace_ProPhotoRGB );
+				// Landing 1 (PB pipeline): exposure 0, ACES tone curve, PIZ
+				// compression with alpha — sane defaults; see
+				// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md.
+				RISE_API_CreateFileRasterizerOutput( &fro, fname, false, 2, 16, eColorSpace_ProPhotoRGB,
+					/*exposureEV*/ 0.0, /*display_transform*/ eDisplayTransform_ACES,
+					/*exr_compression*/ eExrCompression_Piz, /*exr_with_alpha*/ true );
 
 				fro->OutputImage( *pOutputImage, 0, 0 );
 				fro->release();

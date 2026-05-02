@@ -225,6 +225,7 @@ set(RISE_LIB_SOURCES
 
     # SRCLIBRENDERING
     "${RISE_LIB}/Rendering/FileRasterizerOutput.cpp"
+    "${RISE_LIB}/Rendering/DisplayTransformWriter.cpp"
     "${RISE_LIB}/Rendering/PixelBasedPelRasterizer.cpp"
     "${RISE_LIB}/Rendering/InteractivePelRasterizer.cpp"
     "${RISE_LIB}/Rendering/PixelBasedRasterizerHelper.cpp"

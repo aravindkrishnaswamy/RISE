@@ -13,7 +13,8 @@
 # name of the CC compiler.  Falls back to plain g++ if ccache is unavailable.
 CXX ?= $(shell command -v ccache >/dev/null 2>&1 && echo "ccache g++" || echo "g++")
 
-# options for the linker / preprocessor
+# options for the linker / preprocessor.  CPPFLAGS_OPENEXR is added
+# below once the OpenEXR detection block has run.
 CPPFLAGS = -I$(PATHLIBRARY)
 
 # Warnings are kept on but -Werror is deliberately off: the legacy code base
@@ -105,12 +106,27 @@ CXXFLAGS = $(CXXFLAGS_COMMON) $(CXXFLAGS_ARCH) -fexpensive-optimizations
 # Turn this on, if you don't have a proper libpng library installed
 DEF_PNG = -DNO_PNG_SUPPORT
 
-# TIFF / OpenEXR / OIDN / OpenPGL are all disabled by default on Linux because
+# TIFF / OIDN / OpenPGL are disabled by default on Linux because
 # the open-source build does not ship them and the user is expected to build
 # a bare rendering core first.  Flip the defines to empty and add the include
 # / lib flags from Config.OSX as a template if you want support.
 DEF_TIFF = -DNO_TIFF_SUPPORT
-DEF_EXR  = -DNO_EXR_SUPPORT
+
+# OpenEXR is REQUIRED on Linux as of Landing 1 of the PB pipeline plan
+# (docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md).  Install via your
+# distro's package manager: apt-get install libopenexr-dev (Debian/Ubuntu)
+# or dnf install OpenEXR-devel (Fedora/RHEL).  Override OPENEXR_PREFIX /
+# IMATH_PREFIX below if installed in a non-standard location.
+OPENEXR_PREFIX ?= /usr
+IMATH_PREFIX   ?= /usr
+ifneq ($(wildcard $(OPENEXR_PREFIX)/include/OpenEXR/ImfRgbaFile.h),)
+CPPFLAGS_OPENEXR = -I$(OPENEXR_PREFIX)/include/OpenEXR -I$(OPENEXR_PREFIX)/include -I$(IMATH_PREFIX)/include/Imath -I$(IMATH_PREFIX)/include
+LDLIBS_EXR = -lOpenEXR -lOpenEXRUtil -lOpenEXRCore -lIex -lIlmThread -lImath
+DEF_EXR =
+CPPFLAGS += $(CPPFLAGS_OPENEXR)
+else
+$(error "OpenEXR not found at $(OPENEXR_PREFIX)/include/OpenEXR/ImfRgbaFile.h.  Install libopenexr-dev (Debian/Ubuntu) or OpenEXR-devel (Fedora/RHEL), or set OPENEXR_PREFIX / IMATH_PREFIX to a custom install.")
+endif
 
 # Turn this on if you don't have a proper libpthreads library installed
 #DEF_PTHREAD = -DNO_PTHREAD_SUPPORT
@@ -128,7 +144,8 @@ DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_MAILBOXING)
 
 # libraries to link with.  On modern 64-bit Linux, /usr/lib32 does not exist
 # out of the box (and would be the wrong place anyway) — let the linker use
-# its default search path.  libpng / libtiff / OpenEXR are disabled, libz
-# is kept because a handful of code paths still reference it, and libdl is
+# its default search path.  libpng / libtiff are disabled, OpenEXR is now
+# required (added by Landing 1 of the PB pipeline plan).  libz is kept
+# because a handful of code paths still reference it, and libdl is
 # required for dlopen in the plugin loader.
-LDLIBS = -lpthread -lz -ldl
+LDLIBS = -lpthread -lz -ldl $(LDLIBS_EXR)

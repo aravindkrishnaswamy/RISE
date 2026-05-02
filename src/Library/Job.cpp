@@ -6426,12 +6426,17 @@ bool Job::AddFileRasterizerOutput(
 															///		3 - HDR
 															///     4 - TIFF
 															///		5 - RGBEA
+															///		6 - EXR
 	const unsigned char bpp,								///< [in] Bits / pixel for the file
-	const char color_space									///< [in] Color space to apply
+	const char color_space,									///< [in] Color space to apply
 															///		0 - Rec709 RGB linear
 															///		1 - sRGB profile
 															///		2 - ROMM RGB (ProPhotoRGB) linear
 															///		3 - ROMM RGB (ProPhotoRGB) non-linear
+	const double exposureEV,
+	const char display_transform,
+	const char exr_compression,
+	const bool exr_with_alpha
 	)
 {
 	if( !pRasterizer ) {
@@ -6455,8 +6460,45 @@ bool Job::AddFileRasterizerOutput(
 		break;
 	};
 
+	// Map display_transform char code to enum.  Out-of-range falls
+	// back to ACES (the documented default) with a warning so the
+	// user notices a typo.
+	DISPLAY_TRANSFORM dt = eDisplayTransform_ACES;
+	switch( display_transform )
+	{
+	case 0: dt = eDisplayTransform_None;     break;
+	case 1: dt = eDisplayTransform_Reinhard; break;
+	case 2: dt = eDisplayTransform_ACES;     break;
+	case 3: dt = eDisplayTransform_AgX;      break;
+	case 4: dt = eDisplayTransform_Hable;    break;
+	default:
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddFileRasterizerOutput:: unknown display_transform=%d, defaulting to ACES",
+			(int)display_transform );
+		dt = eDisplayTransform_ACES;
+		break;
+	}
+
+	// Map exr_compression char code to enum.  Out-of-range falls back to PIZ.
+	EXR_COMPRESSION exrc = eExrCompression_Piz;
+	switch( exr_compression )
+	{
+	case 0: exrc = eExrCompression_None; break;
+	case 1: exrc = eExrCompression_Zip;  break;
+	case 2: exrc = eExrCompression_Piz;  break;
+	case 3: exrc = eExrCompression_Dwaa; break;
+	default:
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddFileRasterizerOutput:: unknown exr_compression=%d, defaulting to PIZ",
+			(int)exr_compression );
+		exrc = eExrCompression_Piz;
+		break;
+	}
+
 	IRasterizerOutput* ro = 0;
-	RISE_API_CreateFileRasterizerOutput( &ro, szPattern, bMultiple, type, bpp, gc );
+	RISE_API_CreateFileRasterizerOutput(
+		&ro, szPattern, bMultiple, type, bpp, gc,
+		(Scalar)exposureEV, dt, exrc, exr_with_alpha );
 
 	pRasterizer->AddRasterizerOutput( ro );
 	safe_release( ro );

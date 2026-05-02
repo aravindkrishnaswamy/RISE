@@ -4,6 +4,8 @@ This document catalogs the most impactful rendering improvements for RISE, infor
 
 This document covers material models, samplers, volume formulations, transport algorithms, and other systems. It supersedes the earlier `PATH_TRANSPORT_ROADMAP.md`.
 
+For the cross-cutting end-to-end pipeline plan that closes the gap between the integrator and a defensibly physically based renderer (HDR output, ray differentials, spectral upsampling, physical camera, layered-material energy audit, glTF importer fidelity), see [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md).  That plan depends on item #11 (Jakob-Hanika spectral uplifting) below.
+
 ## Current RISE Baseline
 
 RISE already has significant infrastructure in place:

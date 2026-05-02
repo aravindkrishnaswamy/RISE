@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "FileRasterizerOutput.h"
+#include "DisplayTransformWriter.h"
 #include "../Interfaces/IOptions.h"
 #include "../RISE_API.h"
 #include "../Painters/CheckerPainter.h"
@@ -27,17 +28,25 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-FileRasterizerOutput::FileRasterizerOutput( 
-	const char* szPattern_, 
-	const bool bMultiple_, 
-	const FRO_TYPE type_, 
+FileRasterizerOutput::FileRasterizerOutput(
+	const char* szPattern_,
+	const bool bMultiple_,
+	const FRO_TYPE type_,
 	const unsigned char bpp_,
-	const COLOR_SPACE color_space_
-	) : 
+	const COLOR_SPACE color_space_,
+	const Scalar exposureEV_,
+	const DISPLAY_TRANSFORM display_transform_,
+	const EXR_COMPRESSION exr_compression_,
+	const bool exr_with_alpha_
+	) :
   bMultiple( bMultiple_ ),
   type( type_ ),
   bpp( bpp_ ),
-  color_space( color_space_ )
+  color_space( color_space_ ),
+  exposureEV( exposureEV_ ),
+  display_transform( display_transform_ ),
+  exr_compression( exr_compression_ ),
+  exr_with_alpha( exr_with_alpha_ )
 {
 	// Check the global options file to figuring out where to stick the rendered files
 	RISE::IOptions& options = GlobalOptions();
@@ -73,6 +82,40 @@ FileRasterizerOutput::FileRasterizerOutput(
 		// Spit out a warning if a nonlinear color space is selected for an HDR format
 		if( type == HDR || type == RGBEA || type == EXR ) {
 			GlobalLog()->PrintEasyWarning( "FileRasterizerOutput:: Nonlinear colorspace chosen for a high dynamic range format, this is bad idea!" );
+		}
+	}
+
+	// New (Landing 1) — sanity-check the display-pipeline knobs against the format.
+	// Tone mapping and exposure are LDR-only concepts; applying them
+	// to an HDR archival output would corrupt the radiometric ground
+	// truth.  Force them off and warn the user if they were set
+	// non-default on an HDR format.
+	if( IsHDRFormat( type ) ) {
+		if( display_transform != eDisplayTransform_None ) {
+			GlobalLog()->PrintEasyWarning(
+				"FileRasterizerOutput:: display_transform is ignored for HDR formats "
+				"(EXR / HDR / RGBEA) — those write linear radiance verbatim.  "
+				"If you want a tone-mapped preview, declare a separate PNG output." );
+			display_transform = eDisplayTransform_None;
+		}
+		if( exposureEV != Scalar( 0 ) ) {
+			GlobalLog()->PrintEasyWarning(
+				"FileRasterizerOutput:: exposure is ignored for HDR formats "
+				"(EXR / HDR / RGBEA) — those write linear radiance verbatim.  "
+				"Apply exposure on a separate LDR output, or post-process the EXR." );
+			exposureEV = Scalar( 0 );
+		}
+	}
+
+	// EXR-specific knobs warn (but we keep the values for future use)
+	// when set on a non-EXR type.  The chunk parser defaults them to
+	// the v1 sane values so the warning only fires on intentional
+	// misuse.
+	if( type != EXR ) {
+		if( exr_compression != eExrCompression_Piz || !exr_with_alpha ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"FileRasterizerOutput:: exr_compression / exr_with_alpha are EXR-only "
+				"and have no effect on type=%s", extensions[type] );
 		}
 	}
 }
@@ -151,7 +194,7 @@ void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const u
 		RISE_API_CreateTIFFWriter( &pWriter, *mb, color_space );
 		break;
 	case EXR:
-		RISE_API_CreateEXRWriter( &pWriter, *mb, color_space );
+		RISE_API_CreateEXRWriter( &pWriter, *mb, color_space, exr_compression, exr_with_alpha );
 		break;
 	default:
 	case PPM:
@@ -159,7 +202,24 @@ void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const u
 		break;
 	};
 
-	pImage.DumpImage( pWriter );
+	// Wrap the format writer in a DisplayTransformWriter when this
+	// output has a non-default display pipeline AND the format is
+	// LDR (the IsHDRFormat gate is enforced in the constructor for
+	// HDR types — this is belt-and-suspenders).  The wrapper holds
+	// an addref'd reference to pWriter; we keep our own ref too and
+	// release both at end-of-write.
+	IRasterImageWriter* pEffectiveWriter = pWriter;
+	DisplayTransformWriter* pDtWriter = 0;
+	const bool useDisplayTransform =
+		!IsHDRFormat( type ) &&
+		( display_transform != eDisplayTransform_None || exposureEV != Scalar( 0 ) );
+	if( useDisplayTransform ) {
+		pDtWriter = new DisplayTransformWriter( *pWriter, exposureEV, display_transform );
+		GlobalLog()->PrintNew( pDtWriter, __FILE__, __LINE__, "DisplayTransformWriter" );
+		pEffectiveWriter = pDtWriter;
+	}
+
+	pImage.DumpImage( pEffectiveWriter );
 
 	safe_release( mb );
 
@@ -186,6 +246,14 @@ void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const u
 		}
 	}
 
+	// Release the wrapper first (drops its addref on pWriter), then
+	// release our own ref on pWriter.  Order matters: if we released
+	// pWriter first, the wrapper's destructor would call release()
+	// on an already-freed inner writer.
+	if( pDtWriter ) {
+		GlobalLog()->PrintDelete( pDtWriter, __FILE__, __LINE__ );
+		safe_release( pDtWriter );
+	}
 	GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
 	safe_release( pWriter );
 }

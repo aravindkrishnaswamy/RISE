@@ -19,6 +19,7 @@
 #include "../Interfaces/IRasterImageWriter.h"
 #include "../Interfaces/IWriteBuffer.h"
 #include "../Utilities/Reference.h"
+#include "EXRCompression.h"
 
 #ifndef NO_EXR_SUPPORT
 	// OpenEXR includes
@@ -72,6 +73,8 @@ namespace RISE
 
 			IWriteBuffer&			buffer;
 			COLOR_SPACE				color_space;
+			EXR_COMPRESSION			compression;
+			bool					with_alpha;
 			unsigned int			horzpixels;
 			unsigned int			scanlines;
 
@@ -89,7 +92,11 @@ namespace RISE
 		#endif
 
 		public:
-			EXRWriter( IWriteBuffer& buffer, const COLOR_SPACE color_space_ );
+			EXRWriter(
+				IWriteBuffer&         buffer,
+				const COLOR_SPACE     color_space_,
+				const EXR_COMPRESSION compression_ = eExrCompression_Piz,
+				const bool            with_alpha_  = true );
 
 			virtual ~EXRWriter();
 

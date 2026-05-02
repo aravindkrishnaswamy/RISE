@@ -1941,12 +1941,17 @@ namespace RISE
 																	///		3 - HDR
 																	///     4 - TIFF
 																	///		5 - RGBEA
+																	///		6 - EXR
 			const unsigned char bpp,								///< [in] Bits / pixel for the file
-			const char color_space									///< [in] Color space to apply
+			const char color_space,									///< [in] Color space to apply
 																	///		0 - Rec709 RGB linear
 																	///		1 - sRGB profile
 																	///		2 - ROMM RGB (ProPhotoRGB) linear
 																	///		3 - ROMM RGB (ProPhotoRGB) non-linear
+			const double exposureEV,								///< [in] Exposure offset in EV stops, LDR formats only
+			const char display_transform,							///< [in] Display tone curve, LDR formats only (0=none,1=reinhard,2=aces,3=agx,4=hable)
+			const char exr_compression,								///< [in] EXR compression (0=none,1=zip,2=piz,3=dwaa); EXR only
+			const bool exr_with_alpha								///< [in] EXR alpha channel; EXR only
 			);
 
 		//! Creates a user callback rasterizer output

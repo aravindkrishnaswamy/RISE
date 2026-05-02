@@ -7052,7 +7052,62 @@ namespace RISE
 						}
 					}
 
-					return pJob.AddFileRasterizerOutput( pattern.c_str(), multiple, type, (unsigned char)bpp, color_space );
+					// Display pipeline (Landing 1).  exposure default = 0
+					// EV (no scaling).  display_transform default
+					// depends on the format:
+					//   - HDR (EXR / HDR / RGBEA): "none" (write verbatim
+					//     radiance; tone-mapping an archival output would
+					//     corrupt it)
+					//   - LDR (PNG / TGA / PPM / TIFF): "aces" (proper
+					//     highlight rolloff for an LDR display; see
+					//     docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md)
+					// Picking the default per-type here means the user's
+					// 86+ existing HDR scenes don't trip the constructor's
+					// "display_transform ignored on HDR" warning at every
+					// render; the warning now only fires when the user
+					// explicitly sets a non-none value on an HDR output
+					// (genuine misuse).
+					const double exposureEV = bag.GetDouble( "exposure", 0.0 );
+
+					const bool typeIsHDR = ( type == 3 /*HDR*/ ||
+					                         type == 5 /*RGBEA*/ ||
+					                         type == 6 /*EXR*/ );
+					char display_transform = typeIsHDR ? 0 /*none*/ : 2 /*ACES*/;
+					if( bag.Has("display_transform") ) {
+						std::string s = bag.GetString("display_transform");
+						if      ( s == "none"     ) display_transform = 0;
+						else if ( s == "reinhard" ) display_transform = 1;
+						else if ( s == "aces"     ) display_transform = 2;
+						else if ( s == "agx"      ) display_transform = 3;
+						else if ( s == "hable"    ) display_transform = 4;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ChunkParser:: Unknown display_transform `%s` "
+								"(expected: none|reinhard|aces|agx|hable)", s.c_str() );
+							return false;
+						}
+					}
+
+					// EXR-specific knobs.  Default piz + alpha.
+					char exr_compression = 2;	// PIZ default
+					if( bag.Has("exr_compression") ) {
+						std::string s = bag.GetString("exr_compression");
+						if      ( s == "none" ) exr_compression = 0;
+						else if ( s == "zip"  ) exr_compression = 1;
+						else if ( s == "piz"  ) exr_compression = 2;
+						else if ( s == "dwaa" ) exr_compression = 3;
+						else {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ChunkParser:: Unknown exr_compression `%s` "
+								"(expected: none|zip|piz|dwaa)", s.c_str() );
+							return false;
+						}
+					}
+					const bool exr_with_alpha = bag.GetBool( "exr_with_alpha", true );
+
+					return pJob.AddFileRasterizerOutput(
+						pattern.c_str(), multiple, type, (unsigned char)bpp, color_space,
+						exposureEV, display_transform, exr_compression, exr_with_alpha );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7066,6 +7121,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "type";       p.kind = ValueKind::Enum;    p.enumValues = {"TGA","PPM","PNG","HDR","TIFF","RGBEA","EXR"};             p.description = "File format";                                                p.defaultValueHint = "EXR"; }
 						{ auto& p = P(); p.name = "bpp";        p.kind = ValueKind::Enum;    p.enumValues = {"8","16","32"};                                           p.description = "Bits per channel (format-dependent)";                        p.defaultValueHint = "32"; }
 						{ auto& p = P(); p.name = "color_space";p.kind = ValueKind::Enum;    p.enumValues = {"Rec709RGB_Linear","sRGB","ROMMRGB_Linear","ProPhotoRGB"};p.description = "Output colour space";                                        p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "exposure";          p.kind = ValueKind::Double; p.description = "Exposure offset in EV stops; 0 = no scaling.  LDR formats only — HDR formats warn and ignore."; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "display_transform"; p.kind = ValueKind::Enum;   p.enumValues = {"none","reinhard","aces","agx","hable"}; p.description = "Tone-mapping curve applied between linear radiance and OETF.  LDR formats only — HDR formats warn and ignore.  Default: aces for LDR formats; none for HDR formats."; p.defaultValueHint = "aces (LDR) / none (HDR)"; }
+						{ auto& p = P(); p.name = "exr_compression";   p.kind = ValueKind::Enum;   p.enumValues = {"none","zip","piz","dwaa"};              p.description = "EXR compression algorithm.  EXR only.";  p.defaultValueHint = "piz"; }
+						{ auto& p = P(); p.name = "exr_with_alpha";    p.kind = ValueKind::Bool;   p.description = "Write alpha channel into the EXR.  EXR only.";  p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;

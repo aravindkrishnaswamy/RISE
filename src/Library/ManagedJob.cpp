@@ -284,7 +284,17 @@ namespace RISE
 			IntPtr intptr = Marshal::StringToHGlobalAnsi(&szPattern);
 			const char* pattern = (const char*)(intptr).ToPointer();
 
-			bool ret = pBackObj->AddFileRasterizerOutput( pattern, bMultiple, type, bpp, color_space );
+			// Managed wrapper does not yet expose the new HDR
+			// pipeline parameters (Landing 1).  Use sane defaults:
+			// no exposure, ACES tone curve (the new platform-wide
+			// default), PIZ compression with alpha.  Add managed-side
+			// surface in a follow-up if the .NET binding is consumed.
+			bool ret = pBackObj->AddFileRasterizerOutput(
+				pattern, bMultiple, type, bpp, color_space,
+				/*exposureEV*/      0.0,
+				/*display_transform*/ 2,    // 2 = ACES
+				/*exr_compression*/   2,    // 2 = PIZ
+				/*exr_with_alpha*/    true );
 
 			Marshal::FreeCoTaskMem( intptr );
 

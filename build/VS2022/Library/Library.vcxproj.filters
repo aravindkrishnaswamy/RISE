@@ -759,6 +759,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.cpp">
       <Filter>Rendering\Rasterizer Output</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\DisplayTransformWriter.cpp">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\Win32WindowRasterizerOutput.cpp">
       <Filter>Rendering\Rasterizer Output</Filter>
     </ClCompile>
@@ -1410,6 +1413,9 @@
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRWriter.h">
       <Filter>Raster Images\EXR</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\RasterImages\EXRCompression.h">
+      <Filter>Raster Images\EXR</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RasterImages\PPMWriter.h">
       <Filter>Raster Images\PPM</Filter>
     </ClInclude>
@@ -1848,6 +1854,12 @@
       <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.h">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\DisplayTransform.h">
+      <Filter>Rendering\Rasterizer Output</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\DisplayTransformWriter.h">
       <Filter>Rendering\Rasterizer Output</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\Win32WindowRasterizerOutput.h">

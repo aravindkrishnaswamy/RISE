@@ -319,6 +319,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\BDPTSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\EnvironmentSampler.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\DisplayTransformWriter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\FilteredFilm.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\LuminaryManager.cpp" />
@@ -737,6 +738,7 @@
     <ClInclude Include="..\..\..\src\Library\Polygon.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\BicubicRasterImageAccessor.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\BilinRasterImageAccessor.h" />
+    <ClInclude Include="..\..\..\src\Library\RasterImages\EXRCompression.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRReader.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\EXRWriter.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\HDRReader.h" />
@@ -756,6 +758,8 @@
     <ClInclude Include="..\..\..\src\Library\RasterImages\TIFFWriter.h" />
     <ClInclude Include="..\..\..\src\Library\RasterImages\WriteOnlyRasterImage.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\BlockRasterizeSequence.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\DisplayTransform.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\DisplayTransformWriter.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\FileRasterizerOutput.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\HilbertRasterizeSequence.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\LuminaryManager.h" />

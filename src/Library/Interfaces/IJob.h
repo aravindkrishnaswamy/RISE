@@ -2048,12 +2048,26 @@ namespace RISE
 																	///		3 - HDR
 																	///     4 - TIFF
 																	///		5 - RGBEA
+																	///		6 - EXR
 			const unsigned char bpp,								///< [in] Bits / pixel for the file
-			const char color_space									///< [in] Color space to apply
+			const char color_space,									///< [in] Color space to apply
 																	///		0 - Rec709 RGB linear
 																	///		1 - sRGB profile
 																	///		2 - ROMM RGB (ProPhotoRGB) linear
 																	///		3 - ROMM RGB (ProPhotoRGB) non-linear
+			const double exposureEV,								///< [in] Exposure offset in EV stops; 0 = no scaling.  LDR formats only.
+			const char display_transform,							///< [in] Display tone curve, LDR formats only:
+																	///		0 - none      (legacy linear-to-OETF, clips at 1.0)
+																	///		1 - reinhard  (x / (1 + x))
+																	///		2 - aces      (Narkowicz fit; recommended default)
+																	///		3 - agx       (Sobotka scalar; placeholder until Landing 3)
+																	///		4 - hable     (Uncharted 2 filmic, white-point 11.2)
+			const char exr_compression,								///< [in] EXR compression mode, EXR only:
+																	///		0 - none
+																	///		1 - zip
+																	///		2 - piz       (default; lossless wavelet)
+																	///		3 - dwaa      (lossy)
+			const bool exr_with_alpha								///< [in] Write alpha channel.  EXR only; default true.
 			) = 0;
 
 		//! Creates a user callback rasterizer output

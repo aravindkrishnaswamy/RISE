@@ -154,7 +154,10 @@ int main( int argc, char** argv )
 			RISE_API_CreateHDRWriter( &writer, *pOutBuffer, out );
 		} else if( szExt == ".exr" ) {
 			std::cout << "Using EXR image writer" << std::endl;
-			RISE_API_CreateEXRWriter( &writer, *pOutBuffer, out );
+			// Landing 1 (PB pipeline) defaults: PIZ compression, RGBA channels
+			// — match the file_rasterizeroutput chunk's defaults.
+			RISE_API_CreateEXRWriter( &writer, *pOutBuffer, out,
+				eExrCompression_Piz, /*with_alpha*/ true );
 		} else if( szExt == ".tif" ) {
 			std::cout << "Using TIFF image writer" << std::endl;
 			RISE_API_CreateTIFFWriter( &writer, *pOutBuffer, out );

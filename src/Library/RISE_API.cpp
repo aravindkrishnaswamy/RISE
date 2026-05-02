@@ -3373,49 +3373,47 @@ namespace RISE
 	//! Creates a file rasterizer output
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateFileRasterizerOutput(
-								IRasterizerOutput** ppi,			///< [out] Pointer to recieve the rasterizer output
-								const char* szPattern,				///< [in] File pattern
-								const bool bMultiple,				///< [in] Output multiple files (for animations usually)
-								const char type,					///< [in] Type of file
-																	///		0 - TGA
-																	///		1 - PPM
-																	///		2 - PNG
-																	///		3 - HDR
-																	///		4 - TIFF
-																	///		5 - RGBEA
-								const unsigned char bpp,			///< [in] Bits / pixel for the file
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								IRasterizerOutput** ppi,				///< [out] Pointer to recieve the rasterizer output
+								const char* szPattern,					///< [in] File pattern
+								const bool bMultiple,					///< [in] Output multiple files (for animations usually)
+								const char type,						///< [in] Type of file
+																		///		0 - TGA
+																		///		1 - PPM
+																		///		2 - PNG
+																		///		3 - HDR
+																		///		4 - TIFF
+																		///		5 - RGBEA
+																		///		6 - EXR
+								const unsigned char bpp,				///< [in] Bits / pixel for the file
+								const COLOR_SPACE color_space,			///< [in] Color space to apply
+								const Scalar exposureEV,				///< [in] Exposure offset in EV stops (LDR formats only)
+								const DISPLAY_TRANSFORM display_transform,	///< [in] Tone curve (LDR formats only)
+								const EXR_COMPRESSION exr_compression,	///< [in] EXR compression mode (EXR only)
+								const bool exr_with_alpha				///< [in] Write alpha channel (EXR only)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
+		// Map char type code to FRO_TYPE enum once; the per-case body
+		// is otherwise identical across all formats.
+		FileRasterizerOutput::FRO_TYPE fro_type;
 		switch( type )
 		{
-		case 0:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::TGA, bpp, color_space);
-			break;
-		case 1:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::PPM, bpp, color_space );
-			break;
+		case 0:  fro_type = FileRasterizerOutput::TGA;   break;
+		case 1:  fro_type = FileRasterizerOutput::PPM;   break;
 		default:
-		case 2:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::PNG, bpp, color_space );
-			break;
-		case 3:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::HDR, bpp, color_space );
-			break;
-		case 4:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::TIFF, bpp, color_space );
-			break;
-		case 5:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::RGBEA, bpp, color_space );
-			break;
-		case 6:
-			(*ppi) = new FileRasterizerOutput( szPattern, bMultiple, FileRasterizerOutput::EXR, bpp, color_space );
-			break;
+		case 2:  fro_type = FileRasterizerOutput::PNG;   break;
+		case 3:  fro_type = FileRasterizerOutput::HDR;   break;
+		case 4:  fro_type = FileRasterizerOutput::TIFF;  break;
+		case 5:  fro_type = FileRasterizerOutput::RGBEA; break;
+		case 6:  fro_type = FileRasterizerOutput::EXR;   break;
 		}
+
+		(*ppi) = new FileRasterizerOutput(
+			szPattern, bMultiple, fro_type, bpp, color_space,
+			exposureEV, display_transform, exr_compression, exr_with_alpha );
 
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "file rasterizer output" );
 
@@ -3918,14 +3916,16 @@ namespace RISE
 	bool RISE_API_CreateEXRWriter(
 								IRasterImageWriter** ppi,			///< [out] Pointer to recieve the raster image writer
 								IWriteBuffer& buffer,				///< [in] Buffer to write to
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								const COLOR_SPACE color_space,		///< [in] Color space to apply
+								const EXR_COMPRESSION compression,	///< [in] EXR compression mode
+								const bool with_alpha				///< [in] Write alpha channel
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new EXRWriter( buffer, color_space );
+		(*ppi) = new EXRWriter( buffer, color_space, compression, with_alpha );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "EXR writer" );
 		return true;
 	}

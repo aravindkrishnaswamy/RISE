@@ -65,6 +65,8 @@
 #include "Interfaces/ITriangleMeshLoader.h"
 #include "Interfaces/ITwoColorOperator.h"
 #include "Interfaces/IWriteBuffer.h"
+#include "Rendering/DisplayTransform.h"
+#include "RasterImages/EXRCompression.h"
 
 namespace RISE
 {
@@ -1702,18 +1704,23 @@ bool RISE_API_CreateIrradianceCache(
 	//! Creates a file rasterizer output
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateFileRasterizerOutput(
-								IRasterizerOutput** ppi,			///< [out] Pointer to recieve the rasterizer output
-								const char* szPattern,				///< [in] File pattern
-								const bool bMultiple,				///< [in] Output multiple files (for animations usually)
-								const char type,					///< [in] Type of file
-																	///		0 - TGA
-																	///		1 - PPM
-																	///		2 - PNG
-																	///		3 - HDR
-																	///		4 - TIFF
-																	///		5 - RGBEA
-								const unsigned char bpp,			///< [in] Bits / pixel for the file
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								IRasterizerOutput** ppi,				///< [out] Pointer to recieve the rasterizer output
+								const char* szPattern,					///< [in] File pattern
+								const bool bMultiple,					///< [in] Output multiple files (for animations usually)
+								const char type,						///< [in] Type of file
+																		///		0 - TGA
+																		///		1 - PPM
+																		///		2 - PNG
+																		///		3 - HDR
+																		///		4 - TIFF
+																		///		5 - RGBEA
+																		///		6 - EXR
+								const unsigned char bpp,				///< [in] Bits / pixel for the file
+								const COLOR_SPACE color_space,			///< [in] Color space to apply
+								const Scalar exposureEV,				///< [in] Exposure offset in EV stops (LDR formats only)
+								const DISPLAY_TRANSFORM display_transform,	///< [in] Tone curve (LDR formats only)
+								const EXR_COMPRESSION exr_compression,	///< [in] EXR compression mode (EXR only)
+								const bool exr_with_alpha				///< [in] Write alpha channel (EXR only)
 								);
 
 	//////////////////////////////////////////////////////////
@@ -1940,7 +1947,9 @@ bool RISE_API_CreateIrradianceCache(
 	bool RISE_API_CreateEXRWriter(
 								IRasterImageWriter** ppi,			///< [out] Pointer to recieve the raster image writer
 								IWriteBuffer& buffer,				///< [in] Buffer to write to
-								const COLOR_SPACE color_space		///< [in] Color space to apply
+								const COLOR_SPACE color_space,		///< [in] Color space to apply
+								const EXR_COMPRESSION compression,	///< [in] EXR compression mode (PIZ default)
+								const bool with_alpha				///< [in] Write alpha channel (true default)
 								);
 
 

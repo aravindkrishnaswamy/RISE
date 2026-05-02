@@ -17,6 +17,8 @@
 
 #include "../Interfaces/IRasterizerOutput.h"
 #include "../Utilities/Reference.h"
+#include "../RasterImages/EXRCompression.h"
+#include "DisplayTransform.h"
 
 namespace RISE
 {
@@ -38,12 +40,29 @@ namespace RISE
 				EXR		= 6
 			};
 
+			//! HDR formats are radiometric: tone-mapping them
+			//! corrupts the archival radiance.  Used by
+			//! WriteImageToFile to decide whether to wrap the writer
+			//! in a DisplayTransformWriter.
+			static bool IsHDRFormat( const FRO_TYPE t )
+			{
+				return t == HDR || t == RGBEA || t == EXR;
+			}
+
 		protected:
 			char				szPattern[1024];
 			bool				bMultiple;
 			FRO_TYPE			type;
 			unsigned char		bpp;
 			COLOR_SPACE			color_space;
+
+			// New (Landing 1) — display pipeline
+			Scalar				exposureEV;			///< Exposure offset in EV stops (0 = no scaling)
+			DISPLAY_TRANSFORM	display_transform;	///< Tone curve (None for HDR types)
+
+			// New (Landing 1) — EXR-specific knobs (ignored for non-EXR types)
+			EXR_COMPRESSION		exr_compression;
+			bool				exr_with_alpha;
 
 			virtual ~FileRasterizerOutput( );
 
@@ -63,7 +82,11 @@ namespace RISE
 				const bool bMultiple_,
 				const FRO_TYPE type_,
 				const unsigned char bpp_,
-				const COLOR_SPACE color_space_
+				const COLOR_SPACE color_space_,
+				const Scalar exposureEV_,
+				const DISPLAY_TRANSFORM display_transform_,
+				const EXR_COMPRESSION exr_compression_,
+				const bool exr_with_alpha_
 				);
 
 			virtual void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion );

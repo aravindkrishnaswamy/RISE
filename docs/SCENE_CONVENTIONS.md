@@ -247,6 +247,118 @@ When a new scene renders unexpectedly:
 
 ---
 
+## 10. HDR output pipeline
+
+Added by Landing 1 of the
+[PB pipeline plan](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md).
+The recommended pattern for any new scene is to declare **two**
+`file_rasterizeroutput` chunks: an HDR primary and a tone-mapped
+display preview.
+
+```
+# HDR primary — the integrator's verbatim radiometric output.
+# No exposure, no display transform.  Use as the source of truth
+# for variance / RMSE comparisons and external compositing.
+file_rasterizeroutput
+{
+    pattern             rendered/myscene
+    type                EXR
+    color_space         ROMMRGB_Linear
+    exr_compression     piz
+}
+
+# PNG display preview — derived view of the EXR.  Exposure 0
+# means the EXR's nominal radiance values pass through unscaled;
+# the ACES tone curve provides proper highlight rolloff for an
+# LDR display.
+file_rasterizeroutput
+{
+    pattern             rendered/myscene
+    type                PNG
+    bpp                 8
+    color_space         sRGB
+    exposure            0.0
+    display_transform   aces
+}
+```
+
+Both outputs share the same render — they're alternative views of
+the same `IRasterImage`.  Both files coexist:
+`rendered/myscene.exr` and `rendered/myscene.png`.
+
+### Display transform options
+
+| Curve | When to pick |
+|---|---|
+| `none` | Default for **HDR** types (EXR / HDR / RGBEA) — they archive linear radiance verbatim.  Also use on LDR for byte-exact regression testing or when downstream tooling expects raw linear. |
+| `reinhard` | Cheapest; asymptotic to 1; good baseline; can look flat. |
+| `aces` | Default for **LDR** types (PNG / TGA / PPM / TIFF).  Krzysztof Narkowicz fit to ACES RRT+ODT for sRGB.  Industry-standard PBR look. |
+| `agx` | Modern alternative.  v1 ships a scalar sigmoid placeholder; the proper primaries-aware AgX lands with the spectral pipeline (Landing 3). |
+| `hable` | John Hable's Uncharted 2 filmic.  Older; for compatibility with assets tuned against it. |
+
+The default depends on the format: HDR types default to `none` (so they remain
+the radiometric ground truth), LDR types default to `aces`.  Setting
+`display_transform` on an HDR format triggers a warning and is ignored.
+
+### Exposure semantics
+
+`exposure` is in EV stops.  `+1` doubles brightness, `-1` halves.
+Computed as `radiance × 2^EV` before the tone curve.  Lets you
+over- / under-expose a render without re-integrating; the EXR
+primary captures the un-exposed radiance so any number of
+preview PNGs can be derived without re-rendering.
+
+### HDR formats ignore exposure / display_transform
+
+`type = EXR / HDR / RGBEA` are radiometric ground truth — applying
+a tone curve to them would corrupt the recorded radiance.  Setting
+`exposure` or `display_transform` non-default on an HDR output
+fires a warning and is ignored.
+
+### Migration from pre-Landing-1 scenes
+
+Existing `file_rasterizeroutput { type PNG; ... }` chunks still
+parse, but the **default `display_transform` for LDR types is now
+`aces`**, not the previous implicit `none`.  PNG (and other LDR)
+renders will look subtly different — highlights roll off rather
+than clip.  HDR types (EXR / HDR / RGBEA) default to `none` and
+their behaviour is byte-identical to before.
+
+Scenes that require the legacy clip-at-1.0 behaviour for an LDR
+output (e.g., byte-exact regression testing) must opt in
+explicitly:
+
+```
+file_rasterizeroutput
+{
+    pattern             ...
+    type                PNG
+    color_space         sRGB
+    display_transform   none      # opt back in to legacy clipping
+}
+```
+
+### External tools and chromaticities
+
+Our EXR output writes the `chromaticities` attribute matching the
+selected `color_space` (ROMM RGB primaries when
+`color_space = ROMMRGB_Linear`).  Colour-managed viewers that
+honour the tag (tev, mrViewer, Nuke + OCIO) display correct hues.
+Viewers that ignore it (Photoshop's EXR support) show slightly
+desaturated values — the data is recoverable via an explicit
+primaries conversion in oiiotool / Resolve / etc.
+
+### Build dependency
+
+OpenEXR is now a build requirement.  Windows pulls it via vcpkg
+(automatic when building the VS2022 solution); macOS auto-detects
+Homebrew's `openexr` package; Linux requires
+`libopenexr-dev` (Debian/Ubuntu) or `OpenEXR-devel` (Fedora/RHEL).
+Override `OPENEXR_PREFIX` / `IMATH_PREFIX` in
+`build/make/rise/Config.Linux` for non-standard install paths.
+
+---
+
 ## See also
 
 - [scenes/README.md](../scenes/README.md): where to put scenes
@@ -257,3 +369,5 @@ When a new scene renders unexpectedly:
   procedure for authoring scenes that render right the first time.
 - [docs/GLTF_IMPORT.md](GLTF_IMPORT.md): glTF-specific conventions and
   the convention-conversion sites in the importer.
+- [docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md):
+  Landing 1 detailed design for the HDR output pipeline.

@@ -122,12 +122,43 @@ pathtracing_pel_rasterizer
 	radiance_scale			40.0
 }
 
+##################################################
+# HDR primary output (Landing 1).  EXR is the
+# integrator's verbatim output: linear ROMM-primaries
+# radiance, half-float, PIZ-compressed.  No exposure,
+# no display transform.  This is the radiometric
+# ground truth — use it as the source of truth for
+# variance / RMSE comparisons across PB pipeline
+# landings, and for external colour-managed
+# compositing (Nuke + OCIO, Resolve, etc.).
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/sponza_new
+	type				EXR
+	color_space			ROMMRGB_Linear
+	exr_compression		piz
+}
+
+##################################################
+# PNG display preview (Landing 1).  Derived view of
+# the EXR — exposure 0 (no scaling) plus the ACES
+# Narkowicz tone curve, then sRGB OETF for an LDR
+# display.  Tweak `exposure` here to over- /
+# under-expose without re-rendering; tweak
+# `display_transform` to compare tone curves
+# (none / reinhard / aces / agx / hable).
+##################################################
+
 file_rasterizeroutput
 {
 	pattern				rendered/sponza_new
 	type				PNG
 	bpp					8
 	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
 }
 
 ##################################################
