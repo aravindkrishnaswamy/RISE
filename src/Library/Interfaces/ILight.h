@@ -70,6 +70,49 @@ namespace RISE
 		//! PI means full-sphere (isotropic, e.g. point lights).
 		virtual Scalar emissionConeHalfAngle() const { return PI; }
 
+		//! Read-back accessors for the editable properties surfaced
+		//! through `LightIntrospection`.  Default impls return
+		//! sentinel values (white / unit / zero) so subclasses that
+		//! haven't opted in yet still link.  Concrete light types
+		//! override to return their stored color / energy fields.
+		virtual RISEPel emissionColor() const { return RISEPel( 1, 1, 1 ); }
+		virtual Scalar  emissionEnergy() const { return Scalar( 1 ); }
+
+		//! Discriminator for `LightIntrospection`'s per-type rendering.
+		//! Each concrete light type overrides to identify itself; the
+		//! introspection layer dispatches on this rather than RTTI to
+		//! keep the per-type cases declarative.  Default = Unknown so
+		//! a third-party ILight subclass falls back to the common
+		//! property set (position / energy / color).
+		enum class LightType
+		{
+			Unknown      = 0,
+			Point        = 1,
+			Spot         = 2,
+			Directional  = 3,
+			Ambient      = 4,
+		};
+		virtual LightType lightType() const { return LightType::Unknown; }
+
+		//! Spot-light-specific: the world-space target the cone is
+		//! aimed at (`SpotLight::ptTarget`).  PRECONDITION for the
+		//! returned value to be meaningful: `lightType() ==
+		//! LightType::Spot`.  Default impl returns origin so callers
+		//! that bypass the discriminator don't crash, but the value
+		//! is a sentinel — not a real position.  `LightIntrospection`
+		//! only surfaces the `target` row when the discriminator
+		//! says Spot, so the panel never displays the sentinel.
+		virtual Point3 emissionTarget() const { return Point3( 0, 0, 0 ); }
+
+		//! Spot-light-specific: inner / outer cone full angles in
+		//! radians.  Defaults match an isotropic point light (full
+		//! sphere both).  `emissionConeHalfAngle()` already covers
+		//! the outer half-angle for non-spot lights, but
+		//! `LightIntrospection` needs both inner AND outer for the
+		//! spot-light-specific UI.
+		virtual Scalar emissionInnerAngle() const { return PI; }
+		virtual Scalar emissionOuterAngle() const { return PI; }
+
 		//! Computes direct lighting
 		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information

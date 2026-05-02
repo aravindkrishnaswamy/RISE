@@ -62,6 +62,25 @@ namespace RISE
 			RollCamera      = 8    ///< drag rolls the camera around the forward axis
 		};
 
+		//! Discriminator for the right-side accordion sections.
+		//! Selection is a (Category, entityName) tuple — see
+		//! `mSelectionCategory` / `mSelectionName`.  Numeric values are
+		//! part of the C-API surface (the platform bridges pass these
+		//! through as ints), so don't reorder.  Each value also doubles
+		//! as the PanelMode discriminator below (the same int comes back
+		//! from CurrentPanelMode), which means PanelMode and Category
+		//! share their first three numeric values for back-compat with
+		//! the Phase-2 panel API: None=0, Camera=1, Object=3 retained;
+		//! Rasterizer=2 and Light=4 are new.
+		enum class Category : int
+		{
+			None       = 0,   ///< no selection — accordion fully collapsed
+			Camera     = 1,   ///< Cameras section, picking activates SetActiveCamera
+			Rasterizer = 2,   ///< Rasterizer section, picking activates SetActiveRasterizer
+			Object     = 3,   ///< Objects section, picking from list or viewport
+			Light      = 4    ///< Lights section
+		};
+
 		//! @param job                     borrowed; caller keeps alive.
 		//!                                Must be IJobPriv (which IJob
 		//!                                always is in practice — Job
@@ -151,8 +170,62 @@ namespace RISE
 		bool RequestProductionRender();
 
 		// Selection accessors ----------------------------------------
+		// Selection is the (Category, entityName) tuple that drives both
+		// the accordion's expanded section and the property panel's
+		// content.  Single selection across the whole panel: picking
+		// anything clears whatever was picked before.
+		//
+		// Side effects of SetSelection differ by category:
+		//   Camera     → calls SetActiveCamera (viewport re-renders).
+		//   Rasterizer → calls SetActiveRasterizer (next render uses it).
+		//   Object     → UI state only.
+		//   Light      → UI state only.
+		// Both Camera and Rasterizer flows go through the cancel-and-park
+		// machinery so the swap can't race a mid-flight render pass.
 
+		Category GetSelectionCategory() const;
+		String   GetSelectionName() const;
+
+		//! Apply a (category, entityName) selection.  Empty entityName
+		//! is allowed for Camera / Rasterizer / Object / Light: it
+		//! means "expand this section, clear the picked entity".  For
+		//! Category::None the entityName is ignored.  Returns false on
+		//! a category-specific failure (e.g. unknown camera/rasterizer
+		//! name); UI-only categories always return true.
+		bool SetSelection( Category cat, const String& entityName );
+
+		//! Returns the legacy "selected object name" — empty unless the
+		//! current selection's category is Object.  Kept around for the
+		//! pointer-event handlers that already used it as a "do I have
+		//! an object to translate/rotate/scale?" guard.  New callers
+		//! should query GetSelectionCategory + GetSelectionName.
 		String SelectedObjectName() const;
+
+		// Accordion entity lists -------------------------------------
+		// CategoryEntityCount returns the number of selectable entries
+		// in a category; CategoryEntityName returns the display name
+		// for a given index.  The platform UIs poll these on each
+		// scene-epoch change to rebuild their list views.
+
+		unsigned int CategoryEntityCount( Category cat ) const;
+		String       CategoryEntityName( Category cat, unsigned int idx ) const;
+
+		//! Monotonic counter — set ONCE at controller construction from
+		//! a process-global atomic that increments per `SceneEditController`
+		//! instance.  Each fresh controller therefore has a unique
+		//! epoch, which platform UIs cache against `(epoch, category)
+		//! → entity-name list` to detect scene reload (the GUI tears
+		//! down + recreates the bridge, which builds a new controller).
+		//!
+		//! NOT bumped on mid-session structural mutations (Add/Remove
+		//! camera/object/light, rasterizer-registry add) — Phase 2
+		//! doesn't surface those mutations through the GUI, and the
+		//! rasterizer list is the static-catalogue union which doesn't
+		//! change with registry adds.  Phase 3 will instrument the
+		//! relevant `IJob::Add*` paths to advance a Job-side counter
+		//! the controller can poll if/when those mutations become
+		//! reachable from the interactive UI.
+		unsigned int SceneEpoch() const;
 
 		//! Stable full-resolution camera dimensions for pointer-event
 		//! coord conversion in the platform bridges.  The controller
@@ -186,7 +259,11 @@ namespace RISE
 		// is small and harmless, and we'd rather not gate parts of
 		// the public API behind a build flag.
 
-		void ForTest_SetSelected( const String& name );
+		//! Sets selection directly without going through pointer events.
+		//! Replaces the legacy single-string ForTest_SetSelected hook —
+		//! the new contract takes a (category, entityName) tuple.  For
+		//! Category::Object it is equivalent to the old Phase-2 hook.
+		void ForTest_SetSelection( Category cat, const String& name );
 
 		//! Increments each time RequestCancel actually trips an
 		//! in-flight render.  Reads can race with the render thread;
@@ -216,20 +293,21 @@ namespace RISE
 		//! "was THIS pass cancelled?".
 		bool IsCancelRequested() const { return mCancelProgress.IsCancelRequested(); }
 
-		// Properties panel — what the right-side panel should show
-		// depends on the active tool and selection:
+		// Properties panel — what the right-side panel should show is
+		// purely a function of the current selection (category +
+		// entity).  The accordion UI on each platform expands the
+		// section corresponding to PanelMode and shows the per-entity
+		// property rows below it.
 		//
-		//   - Camera tools (Orbit / Pan / Zoom) selected → camera
-		//     properties (descriptor-driven, editable).
-		//   - Select tool with a picked object → object info
-		//     (name + position from final transform; read-only for
-		//     now — full editing surface is future work).
-		//   - Anything else (Select with no pick, transform tools
-		//     w/o selection, etc.) → empty panel.
-		//
-		// PanelMode is the discriminator the platform UI checks to
-		// decide whether to show the panel header / contents at all.
-		enum class PanelMode : int { None = 0, Camera = 1, Object = 2 };
+		// PanelMode values are kept in numeric lockstep with Category
+		// so the C-API can return either as the same int.
+		enum class PanelMode : int {
+			None       = 0,
+			Camera     = 1,
+			Rasterizer = 2,
+			Object     = 3,
+			Light      = 4
+		};
 
 		PanelMode CurrentPanelMode() const;
 
@@ -300,7 +378,21 @@ namespace RISE
 		Implementation::InteractivePelRasterizer* mInteractiveImpl;
 		SceneEditor                 mEditor;
 		Tool                        mTool;
-		String                      mSelected;
+		// Selection state — single tuple across the whole panel.  Both
+		// fields are written from the UI thread (PickAt during a
+		// pointer-down, SetSelection from the accordion list, the
+		// camera-tool branch in OnPointerDown) and read from the same
+		// thread by RefreshProperties / CurrentPanelMode / etc.  No
+		// concurrency concern: pointer events and panel reads both
+		// occur on the platform UI thread.
+		Category                    mSelectionCategory;
+		String                      mSelectionName;
+		// Bumped on any structural mutation (scene load, camera add,
+		// rasterizer register, etc.) so platform UIs can detect when to
+		// re-pull entity lists.  Atomic because Job-side writes can
+		// happen from any thread that mutates the scene; reads are
+		// from the UI thread polling on each preview frame.
+		std::atomic<unsigned int>   mSceneEpoch;
 		Point2                      mLastPx;
 		std::atomic<bool>           mPointerDown;
 

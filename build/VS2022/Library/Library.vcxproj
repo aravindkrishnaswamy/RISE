@@ -364,6 +364,10 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditor.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\SceneEditController.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\LightIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\RasterizerIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp" />
@@ -802,6 +806,10 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditor.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\SceneEditController.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\LightIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\RasterizerIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h" />

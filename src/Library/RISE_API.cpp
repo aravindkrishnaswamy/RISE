@@ -5938,4 +5938,56 @@ namespace RISE
 		*outH = h;
 		return true;
 	}
+
+	// Accordion list entries -----------------------------------------
+
+	unsigned int RISE_API_SceneEditController_CategoryEntityCount(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->CategoryEntityCount(
+			static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_CategoryEntityName(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		if( idx >= p->CategoryEntityCount( cat ) ) return false;
+		CopyToBuf( p->CategoryEntityName( cat, idx ), buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_GetSelectionCategory( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return static_cast<int>( p->GetSelectionCategory() );
+	}
+
+	bool RISE_API_SceneEditController_GetSelectionName(
+		SceneEditController* p, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		CopyToBuf( p->GetSelectionName(), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetSelection(
+		SceneEditController* p, int category, const char* name )
+	{
+		if( !p ) return false;
+		const String entityName = name ? String( name ) : String();
+		return p->SetSelection(
+			static_cast<SceneEditController::Category>( category ),
+			entityName );
+	}
+
+	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->SceneEpoch();
+	}
 }

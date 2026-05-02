@@ -76,6 +76,10 @@ namespace RISE
 				return Point3( 0, 0, 0 );
 			}
 
+			inline RISEPel   emissionColor() const  { return cColor; }
+			inline Scalar    emissionEnergy() const { return radiantEnergy; }
+			inline LightType lightType() const      { return LightType::Directional; }
+
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
 				return Ray();

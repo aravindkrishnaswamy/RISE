@@ -12,6 +12,7 @@
 #include "../Cameras/FisheyeCamera.h"
 #include "../Cameras/OrthographicCamera.h"
 #include "../Parsers/ChunkParserRegistry.h"
+#include "ChunkDescriptorRegistry.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Interfaces/ILog.h"
 #include <cstdio>
@@ -30,30 +31,9 @@ using namespace RISE::Implementation;
 
 namespace
 {
-	// Cache the parser registry's descriptors keyed by chunk keyword.
-	// Built lazily on first call; lives for the program's lifetime.
-	// The IAsciiChunkParser instances themselves are owned by the
-	// vector returned by CreateAllChunkParsers; we keep that vector
-	// alive in a function-static so the const-references we cache
-	// remain valid.
-	const ChunkDescriptor* DescriptorForKeyword( const String& keyword )
-	{
-		static std::once_flag once;
-		static std::vector<ChunkParserEntry> entries;
-		static std::map<std::string, const ChunkDescriptor*> map;
-
-		std::call_once( once, []{
-			entries = CreateAllChunkParsers();
-			for( const ChunkParserEntry& e : entries ) {
-				if( e.parser ) {
-					map[ e.keyword ] = &( e.parser->Describe() );
-				}
-			}
-		});
-
-		auto it = map.find( keyword.c_str() );
-		return it == map.end() ? nullptr : it->second;
-	}
+	// DescriptorForKeyword now lives in `ChunkDescriptorRegistry.{h,cpp}`
+	// so light / rasterizer / object introspection can share the same
+	// cached lookup instead of each maintaining their own.
 
 	String FormatDouble( Scalar v )
 	{

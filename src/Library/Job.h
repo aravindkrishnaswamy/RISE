@@ -38,7 +38,17 @@
 #include "Utilities/Reference.h"
 #include "Utilities/RString.h"
 #include "Utilities/ProgressiveConfig.h"
+#include "Utilities/RadianceMapConfig.h"
+#include "Utilities/PixelFilterConfig.h"
+#include "Utilities/SMSConfig.h"
+#include "Utilities/SpectralConfig.h"
+#include "Utilities/PathGuidingField.h"
+#include "Utilities/AdaptiveSamplingConfig.h"
+#include "Utilities/StabilityConfig.h"
+#include "Utilities/OidnConfig.h"
 #include <map>
+#include <set>
+#include <vector>
 
 namespace RISE
 {
@@ -61,7 +71,105 @@ namespace RISE
 		ILightManager*								pLightManager;		// Set of all the hacky lights in the job
 		IShaderManager*								pShaderManager;		// Set of all shaders in the job
 		IShaderOpManager*							pShaderOpManager;	// Set of all shaders ops in the job
-		IRasterizer*								pRasterizer;		// A job can have at most one rasterizer
+		// Currently-active rasterizer.  Borrowed pointer into the
+		// registry below; the map owns the addref.
+		//
+		// CONCURRENCY CONTRACT (matches the rest of `Job`'s mutable
+		// state, including `pScene`): mutations to `pRasterizer` MUST
+		// NOT race with render-thread reads.  Existing callers honor
+		// this through the cancel-and-park machinery in
+		// `SceneEditController::SetSelection` (Camera/Rasterizer paths)
+		// and `OnTimeScrub`, which trip the cancel flag, wait for
+		// `mRendering=false`, and only then mutate.  Future direct
+		// callers of `IJob::SetActiveRasterizer` bypassing the
+		// controller MUST establish the same precondition before the
+		// call.  Plain pointer (not atomic) for consistency with the
+		// rest of `Job`'s mutable state — `pScene`, `pCameraManager`,
+		// etc. follow the same contract.
+		IRasterizer*								pRasterizer;
+
+	public:
+		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
+		//! Recorded into `rasterizerRegistry` alongside the instance
+		//! so editing a single param can re-instantiate with all the
+		//! other params preserved (vs. re-running the parser on the
+		//! full chunk text).  Default values match the chunk-descriptor
+		//! defaults the parser uses; per-type Set*Rasterizer methods
+		//! capture the relevant subset.
+		struct RasterizerParams
+		{
+			// Common subset (most types take these)
+			unsigned int        numPixelSamples = 1;
+			unsigned int        maxEyeDepth     = 8;
+			unsigned int        maxLightDepth   = 8;
+			std::string         shader;
+			bool                showLuminaires  = true;
+			bool                oidnDenoise     = false;
+			OidnQuality         oidnQuality     = OidnQuality::Auto;
+			OidnDevice          oidnDevice      = OidnDevice::Auto;
+			OidnPrefilter       oidnPrefilter   = OidnPrefilter::Fast;
+
+			// PixelBased (legacy) extras
+			unsigned int        maxRecursion    = 10;
+			unsigned int        numLumSamples   = 1;
+			std::string         luminarySampler = "none";
+			double              luminarySamplerParam = 1.0;
+			bool                integrateRGB    = false;
+
+			// VCM-specific
+			double              mergeRadius     = 0.0;
+			bool                enableVC        = true;
+			bool                enableVM        = true;
+
+			// MLT-specific
+			unsigned int        nBootstrap         = 1024;
+			unsigned int        nChains            = 64;
+			unsigned int        nMutationsPerPixel = 64;
+			double              largeStepProb      = 0.3;
+
+			// Configs (default-constructed)
+			RadianceMapConfig      radianceMap;
+			PixelFilterConfig      pixelFilter;
+			SMSConfig              sms;
+			SpectralConfig         spectral;
+			PathGuidingConfig      pathGuiding;
+			AdaptiveSamplingConfig adaptive;
+			StabilityConfig        stability;
+			ProgressiveConfig      progressive;
+		};
+
+		struct RasterizerEntry
+		{
+			IRasterizer*     instance;     // Owned by the registry (addref'd).
+			RasterizerParams params;       // Snapshot for re-instantiation.
+		};
+
+		// Public so an anonymous-namespace helper in Job.cpp
+		// (`ComputeRasterizerUnion`) can take the typedef as a
+		// parameter without hoisting the helper into Job's class body.
+		typedef std::map<std::string, RasterizerEntry> RasterizerRegistry;
+
+	protected:
+		// Rasterizer registry — each successful Set*Rasterizer
+		// instantiates a new IRasterizer, captures all of its input
+		// params into a `RasterizerParams` snapshot, and stores both
+		// here keyed by chunk-name.  Replacing an entry under the same
+		// key releases the prior instance.  pRasterizer borrows a
+		// pointer from this map; the map owns the addref.  Edit-and-
+		// rebuild reads the snapshot, modifies one param, and re-calls
+		// the matching Set*Rasterizer — preserving all other params.
+		RasterizerRegistry							rasterizerRegistry;
+		std::string									activeRasterizerName;
+
+		// Replace any existing entry under `name` in the rasterizer
+		// registry with `pRaster` + `params`, then make it the active
+		// rasterizer.  Takes ownership of an existing addref on
+		// `pRaster`; caller should not release after handing the
+		// pointer over.  All Set*Rasterizer methods funnel through
+		// this helper so the registry + snapshot stay in lockstep
+		// with the active pointer.
+		void RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
+			const RasterizerParams& params );
 
 		IProgressCallback*							pGlobalProgress;	// A global progress reporter
 
@@ -2298,6 +2406,42 @@ namespace RISE
 			size_t numRequests,
 			bool* outRequestSuccess = nullptr
 			);
+
+		// Rasterizer registry — see IJob.h for the contract.
+		bool         SetActiveRasterizer( const char* name );
+		std::string  GetActiveRasterizerName() const { return activeRasterizerName; }
+		unsigned int GetRasterizerTypeCount() const;
+		std::string  GetRasterizerTypeName( unsigned int idx ) const;
+		bool         SetRasterizerParameter( const char* rasterizerName,
+			const char* paramName, const char* valueStr );
+		std::string  GetRasterizerParameter( const char* rasterizerName,
+			const char* paramName ) const;
+
+		//! Direct access to the registry snapshot (used by
+		//! `RasterizerIntrospection` to enumerate parameters with
+		//! their current values).  Returns nullptr if no snapshot
+		//! exists for `name`.
+		const RasterizerParams* GetRasterizerParams( const std::string& name ) const;
+
+		//! The 8 standard rasterizer chunk-names that the GUI accordion
+		//! always lists, even when the scene file declared none of
+		//! them.  Selecting one that's not yet in the registry triggers
+		//! a lazy `InstantiateRasterizerWithDefaults` build.  Order is
+		//! display order: PT before BDPT before VCM before MLT, with
+		//! Pel before Spectral within each family.
+		static const std::vector<std::string>& StandardRasterizerTypes();
+
+	private:
+		//! Lazy-build a rasterizer of the given chunk-name with
+		//! sensible defaults and a shader picked from the scene's
+		//! shader manager (first registered name).  Returns false if
+		//! the name isn't a recognised standard type, no shader is
+		//! registered (rasterizers need one), or the underlying
+		//! `Set*Rasterizer` fails.  On success the new instance is
+		//! both registered AND activated (the `Set*Rasterizer` path
+		//! does both) and `pRasterizer` / `activeRasterizerName`
+		//! point at it.
+		bool InstantiateRasterizerWithDefaults( const std::string& name );
 	};
 }
 

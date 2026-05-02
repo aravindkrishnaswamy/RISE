@@ -130,7 +130,18 @@ void Job::InitializeContainers()
 void Job::DestroyContainers()
 {
 	safe_shutdown_and_release( pScene );
-	safe_release( pRasterizer );
+	// pRasterizer is a borrowed pointer into rasterizerRegistry; the
+	// map below owns the addrefs.  Walk the registry and release each
+	// entry, then null out the active pointer so subsequent destructor
+	// passes can't double-release.
+	for( RasterizerRegistry::iterator it = rasterizerRegistry.begin();
+	     it != rasterizerRegistry.end(); ++it )
+	{
+		safe_release( it->second.instance );
+	}
+	rasterizerRegistry.clear();
+	pRasterizer = 0;
+	activeRasterizerName.clear();
 
 	safe_shutdown_and_release( pGeomManager );
 	safe_shutdown_and_release( pCameraManager );
@@ -5448,9 +5459,25 @@ bool Job::SetPixelBasedPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.numLumSamples   = numLumSamples;
+	snap.maxRecursion    = maxRecur;
+	snap.shader          = shader ? shader : "";
+	snap.luminarySampler = luminarySampler ? luminarySampler : "none";
+	snap.luminarySamplerParam = luminarySamplerParam;
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "pixelpel_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -5563,9 +5590,25 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.numLumSamples   = numLumSamples;
+	snap.maxRecursion    = maxRecur;
+	snap.shader          = shader ? shader : "";
+	snap.luminarySampler = luminarySampler ? luminarySampler : "none";
+	snap.luminarySamplerParam = luminarySamplerParam;
+	snap.showLuminaires  = bShowLuminaires;
+	snap.integrateRGB    = bIntegrateRGB;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.spectral        = spectralConfig;
+	snap.stability       = stabilityConfig;
+	RegisterAndActivateRasterizer( "pixelintegratingspectral_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -5649,9 +5692,25 @@ bool Job::SetBDPTPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.sms             = smsConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "bdpt_pel_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -5734,9 +5793,25 @@ bool Job::SetBDPTSpectralRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.sms             = smsConfig;
+	snap.spectral        = spectralConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "bdpt_spectral_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -5836,9 +5911,27 @@ bool Job::SetVCMPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.mergeRadius     = mergeRadius;
+	snap.enableVC        = enableVC;
+	snap.enableVM        = enableVM;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "vcm_pel_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -5944,9 +6037,28 @@ bool Job::SetVCMSpectralRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.maxEyeDepth     = maxEyeDepth;
+	snap.maxLightDepth   = maxLightDepth;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.mergeRadius     = mergeRadius;
+	snap.enableVC        = enableVC;
+	snap.enableVM        = enableVM;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.spectral        = spectralConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "vcm_spectral_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -6026,9 +6138,23 @@ bool Job::SetPathTracingPelRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.sms             = smsConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "pathtracing_pel_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -6109,9 +6235,23 @@ bool Job::SetPathTracingSpectralRasterizer(
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
 	safe_release( pCaster );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.sms             = smsConfig;
+	snap.spectral        = spectralConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "pathtracing_spectral_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -6172,9 +6312,23 @@ bool Job::SetMLTRasterizer(
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.maxEyeDepth        = maxEyeDepth;
+	snap.maxLightDepth      = maxLightDepth;
+	snap.nBootstrap         = nBootstrap;
+	snap.nChains            = nChains;
+	snap.nMutationsPerPixel = nMutationsPerPixel;
+	snap.largeStepProb      = largeStepProb;
+	snap.shader             = shader ? shader : "";
+	snap.showLuminaires     = bShowLuminaires;
+	snap.oidnDenoise        = oidnDenoise;
+	snap.oidnQuality        = oidnQuality;
+	snap.oidnDevice         = oidnDevice;
+	snap.oidnPrefilter      = oidnPrefilter;
+	snap.pixelFilter        = pixelFilterConfig;
+	snap.stability          = stabilityConfig;
+	RegisterAndActivateRasterizer( "mlt_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -6231,9 +6385,24 @@ bool Job::SetMLTSpectralRasterizer(
 	safe_release( pPixelSampler );
 	safe_release( pLumSampler );
 	safe_release( pPixelFilter );
-	safe_release( pRasterizer );
 
-	pRasterizer = pRaster;
+	RasterizerParams snap;
+	snap.maxEyeDepth        = maxEyeDepth;
+	snap.maxLightDepth      = maxLightDepth;
+	snap.nBootstrap         = nBootstrap;
+	snap.nChains            = nChains;
+	snap.nMutationsPerPixel = nMutationsPerPixel;
+	snap.largeStepProb      = largeStepProb;
+	snap.shader             = shader ? shader : "";
+	snap.showLuminaires     = bShowLuminaires;
+	snap.oidnDenoise        = oidnDenoise;
+	snap.oidnQuality        = oidnQuality;
+	snap.oidnDevice         = oidnDevice;
+	snap.oidnPrefilter      = oidnPrefilter;
+	snap.spectral           = spectralConfig;
+	snap.pixelFilter        = pixelFilterConfig;
+	snap.stability          = stabilityConfig;
+	RegisterAndActivateRasterizer( "mlt_spectral_rasterizer", pRaster, snap );
 
 	return true;
 }
@@ -7643,4 +7812,500 @@ bool Job::RasterizeAnimationUsingOptions(
 
 void Job::SetProgress( IProgressCallback* pProgress ) {
 	pGlobalProgress = pProgress;
+}
+
+// ============================================================
+//  Rasterizer registry — see Job.h / IJob.h for the contract.
+//
+//  The interactive editor's accordion lists each registered
+//  rasterizer in a "Rasterizer" section; clicking one calls
+//  SetActiveRasterizer to swap the active pointer without
+//  re-instantiating.  The parser registers exactly one entry
+//  per Set*Rasterizer call (the type-key matches the .RISEscene
+//  chunk name).  Phase-2 will add eager pre-instantiation of
+//  the standard 8-type set with sensible defaults so the user
+//  can swap freely without having to declare each variant in
+//  the scene file.
+// ============================================================
+
+void Job::RegisterAndActivateRasterizer( const std::string& name, IRasterizer* pRaster,
+	const RasterizerParams& params )
+{
+	if( !pRaster ) return;
+
+	// Replace any prior entry under this key.  Existing entries hold
+	// addrefs we put there ourselves, so safe_release matches.  The
+	// active pointer (`pRasterizer`) is just a borrow into the map; if
+	// it pointed at the now-released entry we'll fix it up below.
+	RasterizerRegistry::iterator it = rasterizerRegistry.find( name );
+	if( it != rasterizerRegistry.end() ) {
+		if( it->second.instance == pRaster ) {
+			// Self-register: same instance under the same key.  Skip
+			// the release/store dance — releasing the only addref the
+			// map held would delete the instance, leaving us with a
+			// dangling pointer when we re-store and re-activate.  Just
+			// re-affirm activation and refresh the snapshot.
+			it->second.params = params;
+			pRasterizer = pRaster;
+			activeRasterizerName = name;
+			return;
+		}
+		if( pRasterizer == it->second.instance ) {
+			pRasterizer = 0;   // breaks the dangling-borrow
+		}
+		safe_release( it->second.instance );
+		it->second.instance = pRaster;
+		it->second.params   = params;
+	} else {
+		RasterizerEntry entry;
+		entry.instance = pRaster;
+		entry.params   = params;
+		rasterizerRegistry[ name ] = entry;
+	}
+
+	// Make the new instance active.  pRaster's reference count is
+	// owned by the registry now — pRasterizer is a non-owning borrow.
+	pRasterizer = pRaster;
+	activeRasterizerName = name;
+}
+
+const Job::RasterizerParams* Job::GetRasterizerParams( const std::string& name ) const
+{
+	RasterizerRegistry::const_iterator it = rasterizerRegistry.find( name );
+	if( it == rasterizerRegistry.end() ) return 0;
+	return &it->second.params;
+}
+
+bool Job::SetActiveRasterizer( const char* name )
+{
+	if( !name || !*name ) return false;
+	const std::string key( name );
+	RasterizerRegistry::iterator it = rasterizerRegistry.find( key );
+	if( it != rasterizerRegistry.end() ) {
+		// Already instantiated — just rebind.
+		pRasterizer = it->second.instance; // borrow; addref stays with registry
+		activeRasterizerName = key;
+		return true;
+	}
+	// Not in the registry yet.  Try to lazy-build it from the standard
+	// types catalogue with sensible defaults.  On success, the
+	// Set*Rasterizer path (called from inside the helper) registers AND
+	// activates the new instance.
+	return InstantiateRasterizerWithDefaults( key );
+}
+
+const std::vector<std::string>& Job::StandardRasterizerTypes()
+{
+	// Display order: PT before BDPT before VCM before MLT, with Pel
+	// before Spectral within each family.  Matches the conventional
+	// "simple → complex" reading the user expects in the accordion.
+	static const std::vector<std::string> kTypes = {
+		"pathtracing_pel_rasterizer",
+		"pathtracing_spectral_rasterizer",
+		"bdpt_pel_rasterizer",
+		"bdpt_spectral_rasterizer",
+		"vcm_pel_rasterizer",
+		"vcm_spectral_rasterizer",
+		"mlt_rasterizer",
+		"mlt_spectral_rasterizer",
+	};
+	return kTypes;
+}
+
+namespace {
+
+// Build the union of (StandardRasterizerTypes ∪ registered keys) in
+// stable order: standard types first (in display order), then any
+// registered legacy types (e.g. `pixelpel_rasterizer`,
+// `pixelintegratingspectral_rasterizer`) sorted lex.  Used by both
+// GetRasterizerTypeCount and GetRasterizerTypeName so the index ↔
+// name mapping is consistent.
+std::vector<std::string> ComputeRasterizerUnion( const Job::RasterizerRegistry& registry )
+{
+	const std::vector<std::string>& std_list = Job::StandardRasterizerTypes();
+	std::vector<std::string> out;
+	out.reserve( std_list.size() + registry.size() );
+	out = std_list;
+	// Append registry entries that aren't already in the standard list.
+	// std::map iterates in key-order, so the appended tail is sorted.
+	std::set<std::string> std_set( std_list.begin(), std_list.end() );
+	for( Job::RasterizerRegistry::const_iterator it = registry.begin();
+	     it != registry.end(); ++it )
+	{
+		if( std_set.find( it->first ) == std_set.end() ) {
+			out.push_back( it->first );
+		}
+	}
+	return out;
+}
+
+}  // namespace
+
+unsigned int Job::GetRasterizerTypeCount() const
+{
+	return static_cast<unsigned int>(
+		ComputeRasterizerUnion( rasterizerRegistry ).size() );
+}
+
+std::string Job::GetRasterizerTypeName( unsigned int idx ) const
+{
+	const std::vector<std::string> all = ComputeRasterizerUnion( rasterizerRegistry );
+	if( idx >= all.size() ) return std::string();
+	return all[idx];
+}
+
+namespace {
+
+// Pick a default shader name for lazy-building a rasterizer.  Prefer
+// the shader the currently-active rasterizer was built with — but
+// IRasterizer doesn't expose its shader name, so we fall back to the
+// first shader registered with the manager.  Returns empty string if
+// no shader exists; the caller treats that as "can't lazy-build".
+std::string PickDefaultShaderName( const IShaderManager* mgr )
+{
+	if( !mgr ) return std::string();
+	struct FirstName : public IEnumCallback<const char*> {
+		std::string out;
+		bool operator()( const char* const& name ) override {
+			out = name ? std::string( name ) : std::string();
+			return false;   // stop after first
+		}
+	};
+	FirstName cb;
+	mgr->EnumerateItemNames( cb );
+	return cb.out;
+}
+
+}  // namespace
+
+namespace {
+
+// Per-type rebuild dispatcher.  Reads the supplied snapshot and calls
+// the matching Set*Rasterizer, which captures the snapshot back into
+// the registry under the same key (replacing the prior instance).
+//
+// Returns the result of the underlying Set*Rasterizer, or false for
+// an unknown type-name.  Each branch passes only the params that
+// `Set*Rasterizer` accepts; other snapshot fields are ignored.
+bool RebuildRasterizer( Job& job, const std::string& name, const Job::RasterizerParams& p )
+{
+	if( name == "pathtracing_pel_rasterizer" ) {
+		return job.SetPathTracingPelRasterizer(
+			p.numPixelSamples, p.shader.c_str(), p.radianceMap, p.pixelFilter,
+			p.showLuminaires, p.sms,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "pathtracing_spectral_rasterizer" ) {
+		return job.SetPathTracingSpectralRasterizer(
+			p.numPixelSamples, p.shader.c_str(), p.radianceMap, p.pixelFilter,
+			p.showLuminaires, p.spectral, p.sms,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "bdpt_pel_rasterizer" ) {
+		return job.SetBDPTPelRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.sms,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "bdpt_spectral_rasterizer" ) {
+		return job.SetBDPTSpectralRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.spectral, p.sms,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.stability, p.progressive );
+	}
+	if( name == "vcm_pel_rasterizer" ) {
+		return job.SetVCMPelRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.mergeRadius, p.enableVC, p.enableVM,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "vcm_spectral_rasterizer" ) {
+		return job.SetVCMSpectralRasterizer(
+			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.spectral, p.mergeRadius, p.enableVC, p.enableVM,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
+	}
+	if( name == "mlt_rasterizer" ) {
+		return job.SetMLTRasterizer(
+			p.maxEyeDepth, p.maxLightDepth,
+			p.nBootstrap, p.nChains, p.nMutationsPerPixel, p.largeStepProb,
+			p.shader.c_str(), p.showLuminaires,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pixelFilter, p.stability );
+	}
+	if( name == "mlt_spectral_rasterizer" ) {
+		return job.SetMLTSpectralRasterizer(
+			p.maxEyeDepth, p.maxLightDepth,
+			p.nBootstrap, p.nChains, p.nMutationsPerPixel, p.largeStepProb,
+			p.shader.c_str(), p.showLuminaires, p.spectral,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pixelFilter, p.stability );
+	}
+	return false;
+}
+
+// Format a parameter from the snapshot as a parser-formatted string.
+// Mirrors what `RasterizerIntrospection` displays so a round-trip
+// through SetRasterizerParameter is idempotent.
+std::string FormatRasterizerParam( const Job::RasterizerParams& p, const std::string& paramName )
+{
+	char buf[64];
+	if( paramName == "samples" || paramName == "numSamples" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.numPixelSamples );
+		return buf;
+	}
+	if( paramName == "max_eye_depth" || paramName == "maxEyeDepth" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.maxEyeDepth );
+		return buf;
+	}
+	if( paramName == "max_light_depth" || paramName == "maxLightDepth" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.maxLightDepth );
+		return buf;
+	}
+	if( paramName == "show_luminaires" || paramName == "showLuminaires" ) {
+		return p.showLuminaires ? "true" : "false";
+	}
+	if( paramName == "merge_radius" || paramName == "mergeRadius" ) {
+		std::snprintf( buf, sizeof(buf), "%g", p.mergeRadius );
+		return buf;
+	}
+	if( paramName == "enable_vc" )      return p.enableVC ? "true" : "false";
+	if( paramName == "enable_vm" )      return p.enableVM ? "true" : "false";
+	if( paramName == "oidn_denoise" )   return p.oidnDenoise ? "true" : "false";
+	if( paramName == "bootstrap_samples" || paramName == "bootstrap" || paramName == "nBootstrap" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.nBootstrap );
+		return buf;
+	}
+	if( paramName == "chains" || paramName == "nChains" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.nChains );
+		return buf;
+	}
+	if( paramName == "mutations_per_pixel" || paramName == "mutations" || paramName == "nMutationsPerPixel" ) {
+		std::snprintf( buf, sizeof(buf), "%u", p.nMutationsPerPixel );
+		return buf;
+	}
+	if( paramName == "large_step_prob" || paramName == "largeStepProb" ) {
+		std::snprintf( buf, sizeof(buf), "%g", p.largeStepProb );
+		return buf;
+	}
+	return std::string();
+}
+
+// String → typed-value parsers.  Anonymous-namespace helpers in the
+// codebase's older C++ idiom (no lambdas, no `auto`-typed locals).
+bool ParseRasterizerUInt( const std::string& s, unsigned int& out )
+{
+	unsigned int v = 0;
+	if( std::sscanf( s.c_str(), "%u", &v ) != 1 ) return false;
+	out = v;
+	return true;
+}
+
+bool ParseRasterizerDouble( const std::string& s, double& out )
+{
+	double v = 0;
+	if( std::sscanf( s.c_str(), "%lf", &v ) != 1 ) return false;
+	out = v;
+	return true;
+}
+
+bool ParseRasterizerBool( const std::string& s, bool& out )
+{
+	if( s == "true" || s == "1" || s == "TRUE" || s == "True" )
+	{
+		out = true;
+		return true;
+	}
+	if( s == "false" || s == "0" || s == "FALSE" || s == "False" )
+	{
+		out = false;
+		return true;
+	}
+	return false;
+}
+
+// Mutate one field of a snapshot from a string value.  Returns false
+// for unknown param names or parse failures.
+bool ApplyRasterizerParam( Job::RasterizerParams& p, const std::string& paramName, const std::string& valueStr )
+{
+	if( paramName == "samples" || paramName == "numSamples" )
+		return ParseRasterizerUInt( valueStr, p.numPixelSamples );
+	if( paramName == "max_eye_depth" || paramName == "maxEyeDepth" )
+		return ParseRasterizerUInt( valueStr, p.maxEyeDepth );
+	if( paramName == "max_light_depth" || paramName == "maxLightDepth" )
+		return ParseRasterizerUInt( valueStr, p.maxLightDepth );
+	if( paramName == "show_luminaires" || paramName == "showLuminaires" )
+		return ParseRasterizerBool( valueStr, p.showLuminaires );
+	if( paramName == "merge_radius" || paramName == "mergeRadius" )
+		return ParseRasterizerDouble( valueStr, p.mergeRadius );
+	if( paramName == "enable_vc" )    return ParseRasterizerBool( valueStr, p.enableVC );
+	if( paramName == "enable_vm" )    return ParseRasterizerBool( valueStr, p.enableVM );
+	if( paramName == "oidn_denoise" ) return ParseRasterizerBool( valueStr, p.oidnDenoise );
+	if( paramName == "bootstrap_samples" || paramName == "bootstrap" || paramName == "nBootstrap" )
+		return ParseRasterizerUInt( valueStr, p.nBootstrap );
+	if( paramName == "chains" || paramName == "nChains" )
+		return ParseRasterizerUInt( valueStr, p.nChains );
+	if( paramName == "mutations_per_pixel" || paramName == "mutations" || paramName == "nMutationsPerPixel" )
+		return ParseRasterizerUInt( valueStr, p.nMutationsPerPixel );
+	if( paramName == "large_step_prob" || paramName == "largeStepProb" )
+		return ParseRasterizerDouble( valueStr, p.largeStepProb );
+	return false;
+}
+
+}  // namespace
+
+bool Job::SetRasterizerParameter( const char* rasterizerName, const char* paramName,
+	const char* valueStr )
+{
+	if( !rasterizerName || !paramName || !valueStr ) return false;
+	const std::string name( rasterizerName );
+	RasterizerRegistry::iterator it = rasterizerRegistry.find( name );
+	if( it == rasterizerRegistry.end() ) return false;
+
+	// Mutate a copy of the snapshot, then rebuild.  The rebuild path
+	// re-records into the registry via RegisterAndActivateRasterizer,
+	// replacing the old instance.  Active rasterizer follows.
+	RasterizerParams modified = it->second.params;
+	if( !ApplyRasterizerParam( modified, paramName, valueStr ) ) {
+		return false;
+	}
+	return RebuildRasterizer( *this, name, modified );
+}
+
+std::string Job::GetRasterizerParameter( const char* rasterizerName, const char* paramName ) const
+{
+	if( !rasterizerName || !paramName ) return std::string();
+	const std::string name( rasterizerName );
+	RasterizerRegistry::const_iterator it = rasterizerRegistry.find( name );
+	if( it == rasterizerRegistry.end() ) return std::string();
+	return FormatRasterizerParam( it->second.params, paramName );
+}
+
+bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
+{
+	// Pick a shader.  Without one, every Set*Rasterizer below would
+	// fail at the shader-lookup step anyway, so bail early with a clear
+	// log message.
+	const std::string shader = PickDefaultShaderName( pShaderManager );
+	if( shader.empty() ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::SetActiveRasterizer: cannot lazy-build '%s' — no shader registered.  Declare a `standard_shader` chunk in your scene before requesting this rasterizer.",
+			name.c_str() );
+		return false;
+	}
+
+	// Common defaults shared across all 8 standard types.
+	RadianceMapConfig     radianceMapConfig;
+	PixelFilterConfig     pixelFilterConfig;
+	SMSConfig             smsConfig;
+	SpectralConfig        spectralConfig;
+	PathGuidingConfig     guidingConfig;
+	AdaptiveSamplingConfig adaptiveConfig;
+	StabilityConfig       stabilityConfig;
+	ProgressiveConfig     progressiveConfig;
+	const bool            kShowLuminaires = true;
+	const bool            kOidnDenoise    = false;   // off by default — interactive cost
+	const OidnQuality     kOidnQuality    = OidnQuality::Auto;
+	const OidnDevice      kOidnDevice     = OidnDevice::Auto;
+	const OidnPrefilter   kOidnPrefilter  = OidnPrefilter::Fast;
+
+	// Dispatch by chunk-name.  Each branch calls the corresponding
+	// Set*Rasterizer with a small, sensible default parameter set.
+	// The Set*Rasterizer path registers and activates internally.
+	if( name == "pathtracing_pel_rasterizer" ) {
+		return SetPathTracingPelRasterizer(
+			/*numPixelSamples*/ 1,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			smsConfig, kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "pathtracing_spectral_rasterizer" ) {
+		return SetPathTracingSpectralRasterizer(
+			/*numPixelSamples*/ 1,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			spectralConfig, smsConfig,
+			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "bdpt_pel_rasterizer" ) {
+		return SetBDPTPelRasterizer(
+			/*numPixelSamples*/ 1,
+			/*maxEyeDepth*/     8,
+			/*maxLightDepth*/   8,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			smsConfig, kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "bdpt_spectral_rasterizer" ) {
+		return SetBDPTSpectralRasterizer(
+			/*numPixelSamples*/ 1,
+			/*maxEyeDepth*/     8,
+			/*maxLightDepth*/   8,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			spectralConfig, smsConfig,
+			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			guidingConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "vcm_pel_rasterizer" ) {
+		return SetVCMPelRasterizer(
+			/*numPixelSamples*/ 1,
+			/*maxEyeDepth*/     8,
+			/*maxLightDepth*/   8,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			/*mergeRadius*/ 0.0,   // 0 ⇒ scene-auto
+			/*enableVC*/    true,
+			/*enableVM*/    true,
+			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "vcm_spectral_rasterizer" ) {
+		return SetVCMSpectralRasterizer(
+			/*numPixelSamples*/ 1,
+			/*maxEyeDepth*/     8,
+			/*maxLightDepth*/   8,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			spectralConfig,
+			/*mergeRadius*/ 0.0,
+			/*enableVC*/    true,
+			/*enableVM*/    true,
+			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "mlt_rasterizer" ) {
+		return SetMLTRasterizer(
+			/*maxEyeDepth*/        8,
+			/*maxLightDepth*/      8,
+			/*nBootstrap*/         1024,
+			/*nChains*/            64,
+			/*nMutationsPerPixel*/ 64,    // interactive default — at 1080p, 1000 would be ~2B mutations on first click; raise via the scene file for batch
+			/*largeStepProb*/      0.3,
+			shader.c_str(), kShowLuminaires,
+			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			pixelFilterConfig, stabilityConfig );
+	}
+	if( name == "mlt_spectral_rasterizer" ) {
+		return SetMLTSpectralRasterizer(
+			/*maxEyeDepth*/        8,
+			/*maxLightDepth*/      8,
+			/*nBootstrap*/         1024,
+			/*nChains*/            64,
+			/*nMutationsPerPixel*/ 64,    // interactive default — at 1080p, 1000 would be ~2B mutations on first click; raise via the scene file for batch
+			/*largeStepProb*/      0.3,
+			shader.c_str(), kShowLuminaires, spectralConfig,
+			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			pixelFilterConfig, stabilityConfig );
+	}
+
+	// Unknown name (not in the standard set).
+	return false;
 }

@@ -121,10 +121,17 @@ fun ViewportPane(
 ) {
     var selectedTool by rememberSaveable { mutableStateOf(ViewportTool.Select) }
     var properties by remember { mutableStateOf(emptyList<ViewportPropertyRow>()) }
-    // 0 = None, 1 = Camera, 2 = Object — see SceneEditController::PanelMode.
+    // SceneEditController::PanelMode — 0 None, 1 Camera, 2 Rasterizer,
+    // 3 Object, 4 Light.  Mirrors SceneEditCategory_*.
     var panelMode by remember { mutableStateOf(0) }
     var panelHeader by remember { mutableStateOf("") }
     var refreshTrigger by remember { mutableStateOf(0) }
+    var selectionCategory by remember { mutableStateOf(0) }
+    var selectionName by remember { mutableStateOf("") }
+    var entitiesByCategory by remember {
+        mutableStateOf<Map<Int, List<String>>>(emptyMap())
+    }
+    var lastEpoch by remember { mutableStateOf(0) }
 
     // Re-sync the toolbar's selection to the underlying controller
     // each time the viewport restarts.  Without this, the toolbar's
@@ -139,6 +146,8 @@ fun ViewportPane(
             RiseNative.nativeViewportRefreshProperties()
             panelMode = RiseNative.nativeViewportPanelMode()
             panelHeader = RiseNative.nativeViewportPanelHeader()
+            selectionCategory = RiseNative.nativeViewportSelectionCategory()
+            selectionName = RiseNative.nativeViewportSelectionName()
             val n = RiseNative.nativeViewportPropertyCount()
             properties = (0 until n).map { i ->
                 val pn = RiseNative.nativeViewportPropertyPresetCount(i)
@@ -160,6 +169,23 @@ fun ViewportPane(
                     editable = RiseNative.nativeViewportPropertyEditable(i),
                     presets = presetList,
                 )
+            }
+
+            // Re-pull per-section entity lists when the scene epoch
+            // advances (scene reload, structural mutation).  The
+            // four-section accordion lives over (Cameras, Rasterizer,
+            // Objects, Lights), with category ints 1/2/3/4.
+            val epoch = RiseNative.nativeViewportSceneEpoch()
+            if (epoch != lastEpoch) {
+                lastEpoch = epoch
+                val fresh = mutableMapOf<Int, List<String>>()
+                for (cat in intArrayOf(1, 2, 3, 4)) {
+                    val nEntries = RiseNative.nativeViewportCategoryEntityCount(cat)
+                    fresh[cat] = (0 until nEntries).map { idx ->
+                        RiseNative.nativeViewportCategoryEntityName(cat, idx)
+                    }
+                }
+                entitiesByCategory = fresh
             }
         }
     }
@@ -199,11 +225,22 @@ fun ViewportPane(
                     modifier = Modifier.width(280.dp).fillMaxHeight(),
                     tonalElevation = 1.dp,
                 ) {
-                    ViewportPropertiesPanel(
+                    ViewportAccordionPanel(
                         properties = properties,
                         header = panelHeader,
                         mode = panelMode,
+                        selectionCategory = selectionCategory,
+                        selectionName = selectionName,
+                        entitiesByCategory = entitiesByCategory,
                         enabled = interactionEnabled,
+                        onSelectionChanged = { cat, name ->
+                            // Empty name = open the section without picking.
+                            // Camera / Rasterizer selections also trigger
+                            // scene mutations on the C++ side.
+                            if (RiseNative.nativeViewportSetSelection(cat, name)) {
+                                refreshTrigger++
+                            }
+                        },
                         onPropertyEdited = { name, value ->
                             if (RiseNative.nativeViewportSetProperty(name, value)) {
                                 refreshTrigger++
@@ -516,35 +553,214 @@ private fun ViewportTimelineSlider(
     }
 }
 
+/**
+ * Right-side accordion: four sections (Cameras / Rasterizer /
+ * Objects / Lights), each listing the scene's entities in that
+ * category.  Single selection across the whole panel — clicking a
+ * row in any section auto-collapses the others, expands this one,
+ * and surfaces the selected entity's read-only / editable property
+ * rows directly under its list.
+ *
+ * Mirrors the macOS PropertiesPanel.swift and the Windows
+ * ViewportProperties.cpp.  Click-on-image object picking on the C++
+ * side routes through the same selection state, so the Objects
+ * section auto-expands and the picked row highlights.
+ */
 @Composable
-private fun ViewportPropertiesPanel(
+private fun ViewportAccordionPanel(
     properties: List<ViewportPropertyRow>,
     header: String,
-    mode: Int,         // 0 = None, 1 = Camera, 2 = Object
+    mode: Int,
+    selectionCategory: Int,
+    selectionName: String,
+    entitiesByCategory: Map<Int, List<String>>,
     enabled: Boolean,
+    onSelectionChanged: (Int, String) -> Unit,
     onPropertyEdited: (String, String) -> Unit,
 ) {
     Column(Modifier.fillMaxSize().padding(8.dp)) {
-        // Header is empty when mode == None; we still render the
-        // line so the layout doesn't jump as the user picks an
-        // object or activates a camera tool.
-        Text(if (header.isEmpty()) " " else header,
+        Text(if (header.isEmpty()) "Scene" else header,
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.padding(bottom = 4.dp))
         Divider()
-        if (mode == 0) {
-            // Empty panel.  Show a hint, no rows.
-            Text(
-                "Pick an object or select a camera tool to inspect properties.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                modifier = Modifier.padding(8.dp),
-            )
-        } else {
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                items(properties, key = { it.name }) { row ->
-                    ViewportPropertyEntry(row, enabled, onPropertyEdited)
+
+        LazyColumn(modifier = Modifier.weight(1f).padding(top = 4.dp)) {
+            items(kAccordionSections, key = { it.category }) { section ->
+                AccordionSection(
+                    section = section,
+                    entities = entitiesByCategory[section.category] ?: emptyList(),
+                    isExpanded = (selectionCategory == section.category),
+                    selectedName = if (selectionCategory == section.category) selectionName else "",
+                    enabled = enabled,
+                    onToggle = { open ->
+                        if (open) {
+                            // Empty-name selection opens the section without
+                            // picking a row.  Triggers single-section-open
+                            // behavior on the C++ side.
+                            onSelectionChanged(section.category, "")
+                        } else if (selectionCategory == section.category) {
+                            // Collapsing the active section clears selection.
+                            onSelectionChanged(0, "")
+                        }
+                    },
+                    onSelectRow = { name ->
+                        onSelectionChanged(section.category, name)
+                    },
+                    propertyRows = if (selectionCategory == section.category && mode != 0) properties else emptyList(),
+                    onPropertyEdited = onPropertyEdited,
+                )
+            }
+        }
+    }
+}
+
+private data class AccordionSectionDef(
+    val category: Int,
+    val title: String,
+)
+
+private val kAccordionSections = listOf(
+    AccordionSectionDef(category = 1, title = "Cameras"),
+    AccordionSectionDef(category = 2, title = "Rasterizer"),
+    AccordionSectionDef(category = 3, title = "Objects"),
+    AccordionSectionDef(category = 4, title = "Lights"),
+)
+
+@Composable
+private fun AccordionSection(
+    section: AccordionSectionDef,
+    entities: List<String>,
+    isExpanded: Boolean,
+    selectedName: String,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onSelectRow: (String) -> Unit,
+    propertyRows: List<ViewportPropertyRow>,
+    onPropertyEdited: (String, String) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        // Tap anywhere on the header strip to toggle.  Single hit
+        // target so users don't have to aim for the chevron.
+        Surface(
+            tonalElevation = if (isExpanded) 2.dp else 0.dp,
+            shape = RoundedCornerShape(4.dp),
+            color = if (isExpanded) MaterialTheme.colorScheme.secondaryContainer
+                    else            MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { onToggle(!isExpanded) },
+            enabled = enabled,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown
+                                  else            Icons.Default.KeyboardArrowRight,
+                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    section.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        if (isExpanded) {
+            // Entity selector — every section uses the dropdown for
+            // visual consistency.  Objects in particular can run into
+            // hundreds of entries which makes an inline list unusable
+            // on a tablet form factor; the rest match for parity.
+            if (entities.isEmpty()) {
+                Text(
+                    "(none)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
+                )
+            } else {
+                EntityDropdown(
+                    entities = entities,
+                    selectedName = selectedName,
+                    enabled = enabled,
+                    onSelect = onSelectRow,
+                )
+            }
+
+            // Property rows (only the selected entity's, only under
+            // its own section)
+            if (selectedName.isNotEmpty()) {
+                Column(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp)) {
+                    propertyRows.forEach { row ->
+                        ViewportPropertyEntry(row, enabled, onPropertyEdited)
+                    }
+                    if (propertyRows.isEmpty()) {
+                        Text(
+                            "No properties available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        )
+                    }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Dropdown picker for sections (Rasterizer / Object) that can hold
+ * many entries.  Uses the same Box + DropdownMenu pattern the
+ * property-row preset menus use, so the visual style stays
+ * consistent.  Picking an item routes through `onSelect` exactly
+ * as a list-row click did, so the rest of the selection plumbing
+ * is untouched.
+ */
+@Composable
+private fun EntityDropdown(
+    entities: List<String>,
+    selectedName: String,
+    enabled: Boolean,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(
+        Modifier
+            .padding(start = 12.dp, top = 4.dp, end = 4.dp)
+            .fillMaxWidth(),
+    ) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(4.dp),
+        ) {
+            Text(
+                if (selectedName.isEmpty()) "(pick one)" else selectedName,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+            )
+            Icon(
+                imageVector = Icons.Default.ArrowDropDown,
+                contentDescription = null,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            entities.forEach { name ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = {
+                        expanded = false
+                        if (name != selectedName) onSelect(name)
+                    },
+                )
             }
         }
     }

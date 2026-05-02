@@ -714,6 +714,18 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\LightIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\RasterizerIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
@@ -1770,6 +1782,18 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\CameraIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\LightIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\RasterizerIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h">

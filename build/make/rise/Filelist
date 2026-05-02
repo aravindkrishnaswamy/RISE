@@ -384,7 +384,11 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/CancellableProgressCallback.cpp		\
 	$(PATHLIBRARY)SceneEditor/SceneEditor.cpp						\
 	$(PATHLIBRARY)SceneEditor/SceneEditController.cpp				\
-	$(PATHLIBRARY)SceneEditor/CameraIntrospection.cpp
+	$(PATHLIBRARY)SceneEditor/CameraIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/ObjectIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/LightIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/RasterizerIntrospection.cpp			\
+	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp
 
 # Miscellaneous stuff
 SRCLIBMISC =\

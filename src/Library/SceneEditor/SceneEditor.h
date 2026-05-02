@@ -51,6 +51,15 @@ namespace RISE
 		SceneEditor( IScenePriv& scene );
 		~SceneEditor();
 
+		//! Optional manager hooks installed by `SceneEditController` so
+		//! Phase-3 object property edits (`SetObjectMaterial` /
+		//! `SetObjectShader`) can resolve names through the right
+		//! manager.  Null managers cause those ops to fail at Apply
+		//! time — the editor degrades to "transform / camera ops only"
+		//! mode used by Phase-1/2 unit tests that pass IScenePriv only.
+		void SetMaterialManager( class IMaterialManager* mgr ) { mMaterialManager = mgr; }
+		void SetShaderManager( class IShaderManager* mgr ) { mShaderManager = mgr; }
+
 		//! Apply an edit.  On success, runs the invariant chain,
 		//! pushes the edit (with its prevTransform/prevTime captured
 		//! before the mutation) onto the history, and updates
@@ -105,6 +114,8 @@ namespace RISE
 
 	private:
 		IScenePriv&  mScene;
+		class IMaterialManager* mMaterialManager;   // borrowed; nullable
+		class IShaderManager*   mShaderManager;     // borrowed; nullable
 		EditHistory  mHistory;
 		DirtyScope   mLastScope;
 		int          mCompositeDepth;

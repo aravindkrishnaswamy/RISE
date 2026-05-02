@@ -675,6 +675,48 @@ bool RiseBridge::viewportSetProperty(const std::string& name, const std::string&
         name.c_str(), value.c_str());
 }
 
+unsigned int RiseBridge::viewportCategoryEntityCount(int category) const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_CategoryEntityCount(m_viewportController, category);
+}
+
+std::string RiseBridge::viewportCategoryEntityName(int category, unsigned int idx) const {
+    if (!m_viewportController) return {};
+    char buf[128] = {0};
+    if (!RISE::RISE_API_SceneEditController_CategoryEntityName(m_viewportController,
+            category, idx, buf, sizeof(buf))) {
+        return {};
+    }
+    return std::string(buf);
+}
+
+int RiseBridge::viewportSelectionCategory() const {
+    if (!m_viewportController) return 0;
+    const int c = RISE::RISE_API_SceneEditController_GetSelectionCategory(m_viewportController);
+    return c < 0 ? 0 : c;
+}
+
+std::string RiseBridge::viewportSelectionName() const {
+    if (!m_viewportController) return {};
+    char buf[128] = {0};
+    if (!RISE::RISE_API_SceneEditController_GetSelectionName(m_viewportController,
+            buf, sizeof(buf))) {
+        return {};
+    }
+    return std::string(buf);
+}
+
+bool RiseBridge::viewportSetSelection(int category, const std::string& name) {
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_SetSelection(m_viewportController,
+        category, name.c_str());
+}
+
+unsigned int RiseBridge::viewportSceneEpoch() const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_SceneEpoch(m_viewportController);
+}
+
 void RiseBridge::onViewportFramePainted() {
     // Not used in the current implementation — the sink already calls
     // writeDirtyRegion which fires onRegionInvalidated.  Reserved for

@@ -41,6 +41,9 @@ namespace RISE
 			SetObjectOrientation,   ///< v3a = euler XYZ
 			SetObjectScale,         ///< s   = uniform scale
 			SetObjectStretch,       ///< v3a = per-axis stretch
+			SetObjectMaterial,      ///< propertyValue = material name; prev captured for undo
+			SetObjectShader,        ///< propertyValue = shader name
+			SetObjectShadowFlags,   ///< s as int: bit0=castsShadows, bit1=receivesShadows
 
 			// Camera (objectName ignored)
 			SetCameraTransform,     ///< v3a = pos, v3b = look-at
@@ -71,6 +74,16 @@ namespace RISE
 			// the same parser the panel uses on the way in).
 			SetCameraProperty,
 
+			//! Light edit.  objectName = light entity name (the
+			//! manager-registered name).  propertyName carries the
+			//! property identifier ("position" / "energy" / "color"
+			//! / "target" / etc.).  propertyValue carries the new
+			//! value, prevPropertyValue captures the prior value for
+			//! undo.  Undo route: re-apply prevPropertyValue through
+			//! the same KeyframeFromParameters + SetIntermediateValue
+			//! + RegenerateData pipeline the forward path uses.
+			SetLightProperty,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI
@@ -83,12 +96,22 @@ namespace RISE
 		Vector3  v3b;
 		Scalar   s;
 
-		//! Properties-panel value carriers (used by SetCameraProperty).
-		//! `propertyValue` holds the typed-in new value; `prevPropertyValue`
-		//! is captured before the mutation so undo can replay it through
-		//! the same `CameraIntrospection::SetProperty` parser.
+		//! Properties-panel value carriers (used by SetCameraProperty,
+		//! SetLightProperty, SetObjectMaterial, SetObjectShader).
+		//! `propertyValue` holds the typed-in new value;
+		//! `prevPropertyValue` is captured before the mutation so undo
+		//! can replay it through the same parser the forward path
+		//! uses.
 		String   propertyValue;
 		String   prevPropertyValue;
+
+		//! Used by `SetLightProperty` to disambiguate the property
+		//! identifier from the entity name (objectName carries the
+		//! light name, propertyName carries "position" / "energy" /
+		//! etc.).  Camera ops overload `objectName` for the property
+		//! name since cameras don't need an entity-name disambiguator
+		//! (the active camera is implicit).
+		String   propertyName;
 
 		//! State captured BEFORE mutation, used by undo to restore.
 		/// For object/camera transform ops this is the full
@@ -114,6 +137,12 @@ namespace RISE
 		Vector2  prevCameraTargetOrient;
 		Vector3  prevCameraOrient;
 
+		//! Captured for SetObjectShadowFlags: prior cast/receive bits
+		//! packed the same way as `s` (cast in bit0, receive in bit1)
+		//! so undo restores both halves atomically.  Stored as Scalar
+		//! to fit the trivially-copyable struct shape.
+		Scalar   prevShadowFlags;
+
 		SceneEdit()
 		: op( CompositeBegin )
 		, objectName()
@@ -127,6 +156,7 @@ namespace RISE
 		, prevCameraUp()
 		, prevCameraTargetOrient()
 		, prevCameraOrient()
+		, prevShadowFlags( 0 )
 		{}
 
 		//! Returns true if this edit op refers to a named object.
@@ -137,7 +167,10 @@ namespace RISE
 			    || op == SetObjectPosition
 			    || op == SetObjectOrientation
 			    || op == SetObjectScale
-			    || op == SetObjectStretch;
+			    || op == SetObjectStretch
+			    || op == SetObjectMaterial
+			    || op == SetObjectShader
+			    || op == SetObjectShadowFlags;
 		}
 
 		//! Returns true if this edit op mutates the camera.

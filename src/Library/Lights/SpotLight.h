@@ -86,6 +86,13 @@ namespace RISE
 				return ptPosition;
 			}
 
+			inline RISEPel   emissionColor() const  { return cColor; }
+			inline Scalar    emissionEnergy() const { return radiantEnergy; }
+			inline LightType lightType() const      { return LightType::Spot; }
+			inline Point3    emissionTarget() const { return ptTarget; }
+			inline Scalar    emissionInnerAngle() const { return dInnerAngle; }
+			inline Scalar    emissionOuterAngle() const { return dOuterAngle; }
+
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
 			{
 				// Find the angle between the light out and vDirection.

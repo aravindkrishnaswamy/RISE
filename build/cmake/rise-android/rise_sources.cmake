@@ -336,6 +336,10 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/SceneEditor.cpp"
     "${RISE_LIB}/SceneEditor/SceneEditController.cpp"
     "${RISE_LIB}/SceneEditor/CameraIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/ObjectIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/LightIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/RasterizerIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/ChunkDescriptorRegistry.cpp"
 
     # SRCLIBMISC
     "${RISE_LIB}/DetectorSpheres/DetectorSphere.cpp"

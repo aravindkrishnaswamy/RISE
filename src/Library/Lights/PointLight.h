@@ -59,6 +59,10 @@ namespace RISE
 				return ptPosition;
 			}
 
+			inline RISEPel   emissionColor() const  { return cColor; }
+			inline Scalar    emissionEnergy() const { return radiantEnergy; }
+			inline LightType lightType() const      { return LightType::Point; }
+
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
 				// Uniform sampling on the full sphere

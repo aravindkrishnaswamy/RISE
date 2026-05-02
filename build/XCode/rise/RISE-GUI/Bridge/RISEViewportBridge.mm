@@ -486,9 +486,62 @@ private:
     const int m = RISE_API_SceneEditController_PanelMode(_controller);
     switch (m) {
         case 1: return RISEViewportPanelModeCamera;
-        case 2: return RISEViewportPanelModeObject;
+        case 2: return RISEViewportPanelModeRasterizer;
+        case 3: return RISEViewportPanelModeObject;
+        case 4: return RISEViewportPanelModeLight;
         default: return RISEViewportPanelModeNone;
     }
+}
+
+- (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category {
+    if (!_controller) return @[];
+    const int catInt = static_cast<int>(category);
+    const unsigned int n = RISE_API_SceneEditController_CategoryEntityCount(_controller, catInt);
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
+    char nameBuf[128];
+    for (unsigned int i = 0; i < n; ++i) {
+        if (RISE_API_SceneEditController_CategoryEntityName(_controller, catInt, i, nameBuf, sizeof(nameBuf))) {
+            NSString *s = [NSString stringWithUTF8String:nameBuf];
+            if (s) [out addObject:s];
+        }
+    }
+    return out;
+}
+
+- (RISEViewportCategory)selectionCategory {
+    if (!_controller) return RISEViewportCategoryNone;
+    const int c = RISE_API_SceneEditController_GetSelectionCategory(_controller);
+    switch (c) {
+        case 1: return RISEViewportCategoryCamera;
+        case 2: return RISEViewportCategoryRasterizer;
+        case 3: return RISEViewportCategoryObject;
+        case 4: return RISEViewportCategoryLight;
+        default: return RISEViewportCategoryNone;
+    }
+}
+
+- (NSString *)selectionName {
+    if (!_controller) return @"";
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionName(_controller, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
+- (BOOL)setSelectionCategory:(RISEViewportCategory)category name:(NSString *)name {
+    if (!_controller) return NO;
+    const char* utf8 = name ? [name UTF8String] : "";
+    return RISE_API_SceneEditController_SetSelection(
+        _controller,
+        static_cast<int>(category),
+        utf8) ? YES : NO;
+}
+
+- (NSUInteger)sceneEpoch {
+    if (!_controller) return 0;
+    return static_cast<NSUInteger>( RISE_API_SceneEditController_SceneEpoch(_controller) );
 }
 
 - (NSString *)panelHeader {

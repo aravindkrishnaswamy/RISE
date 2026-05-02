@@ -6111,7 +6111,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
 					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
@@ -6236,7 +6236,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
 					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
@@ -6379,7 +6379,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
 					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
@@ -6477,7 +6477,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
 					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
 					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
@@ -6587,7 +6587,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
@@ -6707,7 +6707,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
 					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
@@ -6829,7 +6829,7 @@ namespace RISE
 					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     10 );
 					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   100000 );
 					unsigned int chains           = bag.GetUInt(   "chains",              512 );
-					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 100 );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 32 );
 					double largeStepProb          = bag.GetDouble( "large_step_prob",     0.3 );
 					bool showLuminaires           = bag.GetBool(   "show_luminaires",     true );
 					// MLT defaults oidn_denoise to FALSE because the
@@ -6920,7 +6920,7 @@ namespace RISE
 					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     10 );
 					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   100000 );
 					unsigned int chains           = bag.GetUInt(   "chains",              512 );
-					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 100 );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 32 );
 					double largeStepProb          = bag.GetDouble( "large_step_prob",     0.3 );
 					bool showLuminaires           = bag.GetBool(   "show_luminaires",     true );
 					// MLT spectral also defaults OIDN off — see the Pel

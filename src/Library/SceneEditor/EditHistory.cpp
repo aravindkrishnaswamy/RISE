@@ -94,21 +94,25 @@ namespace
 	{
 		switch( op )
 		{
-		case SceneEdit::TranslateObject:      return "Translate";
-		case SceneEdit::RotateObjectArb:      return "Rotate";
-		case SceneEdit::SetObjectPosition:    return "Set Position";
-		case SceneEdit::SetObjectOrientation: return "Set Orientation";
-		case SceneEdit::SetObjectScale:       return "Set Scale";
-		case SceneEdit::SetObjectStretch:     return "Set Stretch";
-		case SceneEdit::SetCameraTransform:   return "Set Camera";
-		case SceneEdit::OrbitCamera:          return "Orbit Camera";
-		case SceneEdit::PanCamera:            return "Pan Camera";
-		case SceneEdit::ZoomCamera:           return "Zoom Camera";
-		case SceneEdit::RollCamera:           return "Roll Camera";
-		case SceneEdit::SetSceneTime:         return "Set Time";
-		case SceneEdit::SetCameraProperty:    return "Edit Property";
-		case SceneEdit::CompositeBegin:       return "Edit";
-		case SceneEdit::CompositeEnd:         return "Edit";
+		case SceneEdit::TranslateObject:        return "Translate";
+		case SceneEdit::RotateObjectArb:        return "Rotate";
+		case SceneEdit::SetObjectPosition:      return "Set Position";
+		case SceneEdit::SetObjectOrientation:   return "Set Orientation";
+		case SceneEdit::SetObjectScale:         return "Set Scale";
+		case SceneEdit::SetObjectStretch:       return "Set Stretch";
+		case SceneEdit::SetObjectMaterial:      return "Set Material";
+		case SceneEdit::SetObjectShader:        return "Set Shader";
+		case SceneEdit::SetObjectShadowFlags:   return "Set Shadow Flags";
+		case SceneEdit::SetCameraTransform:     return "Set Camera";
+		case SceneEdit::OrbitCamera:            return "Orbit Camera";
+		case SceneEdit::PanCamera:              return "Pan Camera";
+		case SceneEdit::ZoomCamera:             return "Zoom Camera";
+		case SceneEdit::RollCamera:             return "Roll Camera";
+		case SceneEdit::SetSceneTime:           return "Set Time";
+		case SceneEdit::SetCameraProperty:      return "Edit Property";
+		case SceneEdit::SetLightProperty:       return "Edit Light Property";
+		case SceneEdit::CompositeBegin:         return "Edit";
+		case SceneEdit::CompositeEnd:           return "Edit";
 		}
 		return "Edit";
 	}

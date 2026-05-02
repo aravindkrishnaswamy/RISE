@@ -32,6 +32,14 @@
 #include "CameraIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
 #include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IMaterialManager.h"
+#include "../Interfaces/IShader.h"
+#include "../Interfaces/IShaderManager.h"
+#include "../Interfaces/ILight.h"
+#include "../Interfaces/ILightPriv.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Cameras/CameraCommon.h"
@@ -41,6 +49,8 @@ using namespace RISE;
 
 SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( scene )
+, mMaterialManager( 0 )
+, mShaderManager( 0 )
 , mHistory()
 , mLastScope( Dirty_None )
 , mCompositeDepth( 0 )
@@ -408,6 +418,107 @@ IObjectPriv* SceneEditor::FindObject( const String& name ) const
 	return obj;
 }
 
+namespace {
+
+// Translate a chunk-descriptor parameter name to the keyframe-API name
+// that `ILight::KeyframeFromParameters` accepts.  The two namespaces
+// diverged historically — chunk names follow the parser vocabulary
+// (`power`, `inner`, `outer`, `shootphotons`) while keyframe names
+// follow the animator vocabulary (`energy`, `inner_angle`,
+// `outer_angle`).  All other names match (`position`, `color`,
+// `target`, `direction`) and pass through unchanged.
+String ChunkNameToKeyframeName( const String& chunkName )
+{
+	if( chunkName == String( "power" ) ) return String( "energy" );
+	if( chunkName == String( "inner" ) ) return String( "inner_angle" );
+	if( chunkName == String( "outer" ) ) return String( "outer_angle" );
+	return chunkName;
+}
+
+// Read a single light property as a parser-formatted string so undo
+// can replay it through the same `KeyframeFromParameters` pipeline
+// the forward path uses.  The set of recognised property names MUST
+// match every editable row `LightIntrospection` surfaces — if a
+// property goes through Apply (forward) but not through ReadLightProperty
+// (capture), the captured prev string is empty, undo's keyframe parse
+// returns null, the edit is silently dropped from history, and redo
+// can't replay it either.  Currently covers: position / power / color
+// (all types), target / inner / outer (spot), direction
+// (directional).  Numeric values are formatted with %g matching what
+// `LightIntrospection` displays, so the round-trip is lossless within
+// %g precision.
+String ReadLightProperty( const ILight& light, const String& propertyName )
+{
+	char buf[128];
+	if( propertyName == String( "position" ) ) {
+		const Point3 p = light.position();
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( p.x ), static_cast<double>( p.y ), static_cast<double>( p.z ) );
+		return String( buf );
+	}
+	if( propertyName == String( "power" ) || propertyName == String( "energy" ) ) {
+		std::snprintf( buf, sizeof(buf), "%g", static_cast<double>( light.emissionEnergy() ) );
+		return String( buf );
+	}
+	if( propertyName == String( "color" ) ) {
+		const RISEPel c = light.emissionColor();
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( c.r ), static_cast<double>( c.g ), static_cast<double>( c.b ) );
+		return String( buf );
+	}
+	if( propertyName == String( "target" ) ) {
+		const Point3 t = light.emissionTarget();
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( t.x ), static_cast<double>( t.y ), static_cast<double>( t.z ) );
+		return String( buf );
+	}
+	if( propertyName == String( "inner" ) || propertyName == String( "inner_angle" ) ) {
+		// Full-cone degrees; matches `SpotLight::KeyframeFromParameters`'s
+		// degree-to-radian conversion on input.
+		const double deg = static_cast<double>( light.emissionInnerAngle() ) * 180.0 / static_cast<double>( PI );
+		std::snprintf( buf, sizeof(buf), "%g", deg );
+		return String( buf );
+	}
+	if( propertyName == String( "outer" ) || propertyName == String( "outer_angle" ) ) {
+		const double deg = static_cast<double>( light.emissionOuterAngle() ) * 180.0 / static_cast<double>( PI );
+		std::snprintf( buf, sizeof(buf), "%g", deg );
+		return String( buf );
+	}
+	if( propertyName == String( "direction" ) ) {
+		const Vector3 d = light.emissionDirection();
+		std::snprintf( buf, sizeof(buf), "%g %g %g",
+			static_cast<double>( d.x ), static_cast<double>( d.y ), static_cast<double>( d.z ) );
+		return String( buf );
+	}
+	return String();
+}
+
+// Walk a manager to find the registered name corresponding to a
+// pointer.  IMaterial / IShader don't expose GetName, so name
+// recovery is an O(n) reverse-lookup.  Cheap at panel-edit cadence;
+// cached only via the snapshot we pass into SceneEdit.
+template <class MgrT, class ItemT>
+String FindManagerName( MgrT* mgr, const ItemT* target )
+{
+	if( !mgr || !target ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		MgrT* mgr;
+		const ItemT* target;
+		String found;
+		bool operator()( const char* const& name ) override {
+			if( mgr->GetItem( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.mgr    = mgr;
+	cb.target = target;
+	mgr->EnumerateItemNames( cb );
+	return cb.found;
+}
+
+}  // namespace
+
 void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
 {
 	switch( edit.op )
@@ -430,6 +541,23 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectStretch:
 		obj.SetStretch( edit.v3a );
 		break;
+	case SceneEdit::SetObjectMaterial:
+		if( mMaterialManager ) {
+			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
+			if( mat ) obj.AssignMaterial( *mat );
+		}
+		break;
+	case SceneEdit::SetObjectShader:
+		if( mShaderManager ) {
+			IShader* sh = mShaderManager->GetItem( edit.propertyValue.c_str() );
+			if( sh ) obj.AssignShader( *sh );
+		}
+		break;
+	case SceneEdit::SetObjectShadowFlags: {
+		const int flags = static_cast<int>( edit.s );
+		obj.SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
+		break;
+	}
 	default:
 		// Caller guarantees IsObjectOp(edit.op) — this is a coding
 		// error if reached, but we silently no-op rather than crash.
@@ -483,11 +611,61 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 
-		// Capture state BEFORE mutation.
+		// Capture state BEFORE mutation.  Transform-shaped ops use
+		// `prevTransform`; property-shaped ops (material / shader /
+		// shadow flags) use `prevPropertyValue` (or `prevShadowFlags`
+		// for the bit-packed bool pair) so the appropriate per-op
+		// restorer in Undo can replay the prior state.
 		edit.prevTransform = obj->GetFinalTransformMatrix();
 
+		switch( edit.op ) {
+		case SceneEdit::SetObjectMaterial:
+			// Validate the new name resolves to a registered material
+			// BEFORE pushing history.  Without this, a stale or
+			// mistyped name would silently no-op in
+			// ApplyObjectOpForward yet still report success and
+			// poison the undo stack with a no-op entry.
+			if( !mMaterialManager
+			 || !mMaterialManager->GetItem( edit.propertyValue.c_str() ) )
+			{
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mMaterialManager, obj->GetMaterial() );
+			break;
+		case SceneEdit::SetObjectShader:
+			// Same validation as material — prevent silent no-ops on
+			// stale shader names.
+			if( !mShaderManager
+			 || !mShaderManager->GetItem( edit.propertyValue.c_str() ) )
+			{
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mShaderManager, obj->GetShader() );
+			break;
+		case SceneEdit::SetObjectShadowFlags:
+			edit.prevShadowFlags = static_cast<Scalar>(
+				( obj->DoesCastShadows()    ? 1 : 0 )
+			  | ( obj->DoesReceiveShadows() ? 2 : 0 ) );
+			break;
+		default:
+			break;
+		}
+
 		ApplyObjectOpForward( *obj, edit );
-		RunObjectInvariantChain( *obj );
+		// Property-style ops don't need the spatial-structure rebuild
+		// that transform changes do.  Run the invariant chain only
+		// for transform ops to avoid an unnecessary BSP invalidation
+		// per material/shader/shadow click.
+		const bool isTransformOp =
+			edit.op == SceneEdit::TranslateObject
+		 || edit.op == SceneEdit::RotateObjectArb
+		 || edit.op == SceneEdit::SetObjectPosition
+		 || edit.op == SceneEdit::SetObjectOrientation
+		 || edit.op == SceneEdit::SetObjectScale
+		 || edit.op == SceneEdit::SetObjectStretch;
+		if( isTransformOp ) {
+			RunObjectInvariantChain( *obj );
+		}
 		mHistory.Push( edit );
 		mLastScope = Dirty_ObjectTransform;
 		return true;
@@ -568,6 +746,37 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::SetLightProperty )
+	{
+		// objectName carries the light's manager name; propertyName
+		// the property identifier ("position" / "energy" / etc.).
+		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		if( !lights ) return false;
+		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
+		if( !light ) return false;
+
+		// Capture prev value through the same readback the introspection
+		// panel uses, so undo replays losslessly via the keyframe path.
+		edit.prevPropertyValue = ReadLightProperty( *light, edit.propertyName );
+
+		// Translate chunk-name → keyframe-name before dispatching:
+		// the panel surfaces chunk vocabulary (power/inner/outer)
+		// while ILight::KeyframeFromParameters expects keyframe
+		// vocabulary (energy/inner_angle/outer_angle).
+		IKeyframeParameter* p = light->KeyframeFromParameters(
+			ChunkNameToKeyframeName( edit.propertyName ), edit.propertyValue );
+		if( !p ) return false;
+		light->SetIntermediateValue( *p );
+		safe_release( p );
+		// SetIntermediateValue stages new field values; flush to the
+		// final transform / runtime state before the next render.
+		light->RegenerateData();
+
+		mLastScope = Dirty_Camera;   // no spatial structure invalidation; same scope as camera
+		mHistory.Push( edit );
+		return true;
+	}
+
 	return false;
 }
 
@@ -600,8 +809,29 @@ bool SceneEditor::Undo()
 				IObjectPriv* obj = FindObject( inner.objectName );
 				if( obj )
 				{
-					RestoreObjectTransform( *obj, inner.prevTransform );
-					RunObjectInvariantChain( *obj );
+					switch( inner.op ) {
+					case SceneEdit::SetObjectMaterial:
+						if( mMaterialManager && inner.prevPropertyValue.size() > 1 ) {
+							IMaterial* mat = mMaterialManager->GetItem( inner.prevPropertyValue.c_str() );
+							if( mat ) obj->AssignMaterial( *mat );
+						}
+						break;
+					case SceneEdit::SetObjectShader:
+						if( mShaderManager && inner.prevPropertyValue.size() > 1 ) {
+							IShader* sh = mShaderManager->GetItem( inner.prevPropertyValue.c_str() );
+							if( sh ) obj->AssignShader( *sh );
+						}
+						break;
+					case SceneEdit::SetObjectShadowFlags: {
+						const int flags = static_cast<int>( inner.prevShadowFlags );
+						obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
+						break;
+					}
+					default:
+						RestoreObjectTransform( *obj, inner.prevTransform );
+						RunObjectInvariantChain( *obj );
+						break;
+					}
 				}
 				sawObjectOp = true;
 			}
@@ -662,8 +892,34 @@ bool SceneEditor::Undo()
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
-		RestoreObjectTransform( *obj, edit.prevTransform );
-		RunObjectInvariantChain( *obj );
+
+		// Property-style ops restore from per-op prev fields; transform
+		// ops restore the captured matrix.  Switch on op so each path
+		// runs only the work it needs.
+		switch( edit.op ) {
+		case SceneEdit::SetObjectMaterial:
+			if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
+				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
+				if( mat ) obj->AssignMaterial( *mat );
+			}
+			break;
+		case SceneEdit::SetObjectShader:
+			if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
+				IShader* sh = mShaderManager->GetItem( edit.prevPropertyValue.c_str() );
+				if( sh ) obj->AssignShader( *sh );
+			}
+			break;
+		case SceneEdit::SetObjectShadowFlags: {
+			const int flags = static_cast<int>( edit.prevShadowFlags );
+			obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
+			break;
+		}
+		default:
+			// Transform op.
+			RestoreObjectTransform( *obj, edit.prevTransform );
+			RunObjectInvariantChain( *obj );
+			break;
+		}
 		mLastScope = Dirty_ObjectTransform;
 		return true;
 	}
@@ -697,6 +953,23 @@ bool SceneEditor::Undo()
 		if( !baseCam ) return false;
 		// Replay the captured prev value through the same parser.
 		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.prevPropertyValue );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetLightProperty )
+	{
+		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		if( !lights ) return false;
+		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
+		if( !light ) return false;
+		// Replay prev value through the same keyframe machinery.
+		IKeyframeParameter* p = light->KeyframeFromParameters(
+			ChunkNameToKeyframeName( edit.propertyName ), edit.prevPropertyValue );
+		if( !p ) return false;
+		light->SetIntermediateValue( *p );
+		safe_release( p );
+		light->RegenerateData();
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -792,6 +1065,26 @@ bool SceneEditor::Redo()
 		if( !cam ) return true;
 		ApplyCameraOpForward( *cam, edit, SceneScale() );
 		cam->RegenerateData();
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetLightProperty )
+	{
+		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		if( !lights ) return false;
+		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
+		if( !light ) return false;
+		// Translate chunk-name → keyframe-name before dispatching:
+		// the panel surfaces chunk vocabulary (power/inner/outer)
+		// while ILight::KeyframeFromParameters expects keyframe
+		// vocabulary (energy/inner_angle/outer_angle).
+		IKeyframeParameter* p = light->KeyframeFromParameters(
+			ChunkNameToKeyframeName( edit.propertyName ), edit.propertyValue );
+		if( !p ) return false;
+		light->SetIntermediateValue( *p );
+		safe_release( p );
+		light->RegenerateData();
 		mLastScope = Dirty_Camera;
 		return true;
 	}

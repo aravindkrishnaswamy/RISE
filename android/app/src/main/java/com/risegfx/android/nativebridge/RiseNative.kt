@@ -207,9 +207,14 @@ object RiseNative {
 
     external fun nativeViewportRefreshProperties()
     /**
-     * 0 = None (Select with no pick), 1 = Camera (camera tool active),
-     * 2 = Object (Select with picked object).  Drives whether the
-     * right panel renders empty / camera / object content.
+     * Discriminator for which accordion section is expanded and
+     * what the property panel below should display.  Numeric values
+     * mirror SceneEditCategory_*:
+     *   0 = None
+     *   1 = Camera
+     *   2 = Rasterizer
+     *   3 = Object
+     *   4 = Light
      */
     external fun nativeViewportPanelMode(): Int
     external fun nativeViewportPanelHeader(): String
@@ -223,11 +228,35 @@ object RiseNative {
      * Quick-pick presets surfaced as a dropdown on a property row.
      * Empty (count == 0) for parameters whose chunk descriptor declared
      * none, in which case the panel falls back to a plain text edit.
-     * The multi-camera "active_camera" row uses this so the user picks
-     * a camera by name rather than typing it.
      */
     external fun nativeViewportPropertyPresetCount(idx: Int): Int
     external fun nativeViewportPropertyPresetLabel(idx: Int, presetIdx: Int): String
     external fun nativeViewportPropertyPresetValue(idx: Int, presetIdx: Int): String
     external fun nativeViewportSetProperty(name: String, value: String): Boolean
+
+    /**
+     * Accordion list entries for `category` (mirrors SceneEditCategory_*
+     * — 1 Camera, 2 Rasterizer, 3 Object, 4 Light).  Bridges cache by
+     * scene epoch and re-pull when [nativeViewportSceneEpoch] advances.
+     */
+    external fun nativeViewportCategoryEntityCount(category: Int): Int
+    external fun nativeViewportCategoryEntityName(category: Int, idx: Int): String
+
+    /** Currently-selected accordion entry (drives the property panel). */
+    external fun nativeViewportSelectionCategory(): Int
+    external fun nativeViewportSelectionName(): String
+    /**
+     * Apply a (category, name) selection.  Empty `name` opens the
+     * section without picking a row.  Camera / Rasterizer selections
+     * also activate the named entity (the rasterizer or camera the
+     * next render will use).
+     */
+    external fun nativeViewportSetSelection(category: Int, name: String): Boolean
+
+    /**
+     * Monotonic counter — bumped on any structural mutation that
+     * could change a category's entity list.  UI watches it to know
+     * when to re-pull the per-category lists.
+     */
+    external fun nativeViewportSceneEpoch(): Int
 }

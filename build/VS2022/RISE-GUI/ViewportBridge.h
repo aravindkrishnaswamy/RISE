@@ -136,14 +136,55 @@ public:
 
     // Properties panel ------------------------------------------------
 
-    /// Mirrors RISE::SceneEditController::PanelMode.  Drives whether
-    /// the right panel renders empty / camera / object content.
-    enum class PanelMode : int { None = 0, Camera = 1, Object = 2 };
+    /// Mirrors RISE::SceneEditController::PanelMode.  Drives which
+    /// accordion section is expanded and what the property panel
+    /// underneath shows.  Values match SceneEditCategory_*.
+    enum class PanelMode : int {
+        None       = 0,
+        Camera     = 1,
+        Rasterizer = 2,
+        Object     = 3,
+        Light      = 4
+    };
+
+    /// Mirrors RISE::SceneEditController::Category — identical numeric
+    /// values to PanelMode.  Used by the accordion's list view to pull
+    /// per-section entity names and route selection clicks back into
+    /// the controller.
+    enum class Category : int {
+        None       = 0,
+        Camera     = 1,
+        Rasterizer = 2,
+        Object     = 3,
+        Light      = 4
+    };
 
     PanelMode panelMode() const;
     QString   panelHeader() const;
     QVector<ViewportProperty> propertySnapshot();
     bool setProperty(const QString& name, const QString& value);
+
+    /// Accordion list entries for `category`.  Each entry is the
+    /// display name (manager-registered name for cameras / objects /
+    /// lights, chunk-name for rasterizers).  Empty list when the
+    /// scene has nothing in that category.
+    QStringList categoryEntities(Category cat) const;
+
+    /// Current selection (the accordion's expanded section + picked
+    /// row).  Empty name means "section open, no row picked".
+    Category selectionCategory() const;
+    QString  selectionName() const;
+
+    /// Apply a selection.  Empty `name` opens the section without
+    /// picking a row.  Camera / Rasterizer selections also activate
+    /// the named entity (calls SetActiveCamera / SetActiveRasterizer
+    /// respectively); Object / Light selections are UI state only.
+    bool setSelection(Category cat, const QString& name);
+
+    /// Monotonic counter — bumped on any structural mutation.  The
+    /// properties panel watches it and re-pulls entity lists when it
+    /// advances.
+    unsigned int sceneEpoch() const;
 
 signals:
     /// Emitted on the UI thread with each completed preview frame.

@@ -60,6 +60,10 @@ namespace RISE
 				return Point3( 0, 0, 0 );
 			}
 
+			inline RISEPel   emissionColor() const  { return cColor; }
+			inline Scalar    emissionEnergy() const { return radiantEnergy; }
+			inline LightType lightType() const      { return LightType::Ambient; }
+
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
 				return Ray();
@@ -78,6 +82,18 @@ namespace RISE
 			inline void	FinalizeTransformations(){Transformable::FinalizeTransformations();};
 
 			// For keyframamble interface
+			// Keyframe parameter IDs.  The IDs MUST match between
+			// `KeyframeFromParameters` (allocator) and
+			// `SetIntermediateValue` (consumer) — historically this
+			// class shipped with the allocator using 1000/1001 and
+			// the consumer using 100/101, so every ambient color /
+			// energy edit silently no-op'd while reporting success
+			// (the keyframe got built, but the consumer's switch
+			// fell through and changed nothing).  Match PointLight's
+			// 100/101 convention now that the divergence is fixed.
+			static const unsigned int kColorID  = 100;
+			static const unsigned int kEnergyID = 101;
+
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value )
 			{
 				IKeyframeParameter* p = 0;
@@ -86,10 +102,10 @@ namespace RISE
 				if( name == "color" ) {
 					double d[3];
 					if( sscanf( value.c_str(), "%lf %lf %lf", &d[0], &d[1], &d[2] ) == 3 ) {
-						p = new Parameter<RISEPel>( RISEPel(d), 1000 );
+						p = new Parameter<RISEPel>( RISEPel(d), kColorID );
 					}
 				} else if( name == "energy" ) {
-					p = new Parameter<Scalar>( atof(value.c_str()), 1001 );
+					p = new Parameter<Scalar>( atof(value.c_str()), kEnergyID );
 				} else {
 					return Transformable::KeyframeFromParameters( name, value );
 				}
@@ -102,12 +118,12 @@ namespace RISE
 			{
 				switch( val.getID() )
 				{
-				case 100:
+				case kColorID:
 					{
 						cColor = *(RISEPel*)val.getValue();
 					}
 					break;
-				case 101:
+				case kEnergyID:
 					{
 						radiantEnergy = *(Scalar*)val.getValue();
 					}

@@ -1634,6 +1634,22 @@
 		F2EE001200000000000000C1 /* CameraIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE001200000000000000A1 /* CameraIntrospection.h */; };
 		F2EE001300000000000000B1 /* CameraIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001300000000000000A1 /* CameraIntrospection.cpp */; };
 		F2EE001300000000000000C1 /* CameraIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001300000000000000A1 /* CameraIntrospection.cpp */; };
+		F2EE001400000000000000B1 /* ObjectIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001400000000000000A1 /* ObjectIntrospection.h */; };
+		F2EE001400000000000000C1 /* ObjectIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE001400000000000000A1 /* ObjectIntrospection.h */; };
+		F2EE001500000000000000B1 /* ObjectIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001500000000000000A1 /* ObjectIntrospection.cpp */; };
+		F2EE001500000000000000C1 /* ObjectIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001500000000000000A1 /* ObjectIntrospection.cpp */; };
+		F2EE001600000000000000B1 /* LightIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001600000000000000A1 /* LightIntrospection.h */; };
+		F2EE001600000000000000C1 /* LightIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE001600000000000000A1 /* LightIntrospection.h */; };
+		F2EE001700000000000000B1 /* LightIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001700000000000000A1 /* LightIntrospection.cpp */; };
+		F2EE001700000000000000C1 /* LightIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001700000000000000A1 /* LightIntrospection.cpp */; };
+		F2EE001800000000000000B1 /* RasterizerIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001800000000000000A1 /* RasterizerIntrospection.h */; };
+		F2EE001800000000000000C1 /* RasterizerIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE001800000000000000A1 /* RasterizerIntrospection.h */; };
+		F2EE001900000000000000B1 /* RasterizerIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */; };
+		F2EE001900000000000000C1 /* RasterizerIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */; };
+		F2EE002000000000000000B1 /* ChunkDescriptorRegistry.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */; };
+		F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */; };
+		F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
+		F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2516,6 +2532,14 @@
 		F2EE001100000000000000A1 /* InteractivePelRasterizer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InteractivePelRasterizer.cpp; sourceTree = "<group>"; };
 		F2EE001200000000000000A1 /* CameraIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraIntrospection.h; sourceTree = "<group>"; };
 		F2EE001300000000000000A1 /* CameraIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CameraIntrospection.cpp; sourceTree = "<group>"; };
+		F2EE001400000000000000A1 /* ObjectIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ObjectIntrospection.h; sourceTree = "<group>"; };
+		F2EE001500000000000000A1 /* ObjectIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ObjectIntrospection.cpp; sourceTree = "<group>"; };
+		F2EE001600000000000000A1 /* LightIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = LightIntrospection.h; sourceTree = "<group>"; };
+		F2EE001700000000000000A1 /* LightIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = LightIntrospection.cpp; sourceTree = "<group>"; };
+		F2EE001800000000000000A1 /* RasterizerIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RasterizerIntrospection.h; sourceTree = "<group>"; };
+		F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RasterizerIntrospection.cpp; sourceTree = "<group>"; };
+		F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptorRegistry.h; sourceTree = "<group>"; };
+		F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChunkDescriptorRegistry.cpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -3736,6 +3760,14 @@
 				F2EE000900000000000000A1 /* SceneEditController.cpp */,
 				F2EE001200000000000000A1 /* CameraIntrospection.h */,
 				F2EE001300000000000000A1 /* CameraIntrospection.cpp */,
+				F2EE001400000000000000A1 /* ObjectIntrospection.h */,
+				F2EE001500000000000000A1 /* ObjectIntrospection.cpp */,
+				F2EE001600000000000000A1 /* LightIntrospection.h */,
+				F2EE001700000000000000A1 /* LightIntrospection.cpp */,
+				F2EE001800000000000000A1 /* RasterizerIntrospection.h */,
+				F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */,
+				F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */,
+				F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */,
 			);
 			path = SceneEditor;
 			sourceTree = "<group>";
@@ -4063,6 +4095,10 @@
 				F2EE000600000000000000C1 /* SceneEditor.h in Headers */,
 				F2EE000800000000000000C1 /* SceneEditController.h in Headers */,
 				F2EE001200000000000000C1 /* CameraIntrospection.h in Headers */,
+				F2EE001400000000000000C1 /* ObjectIntrospection.h in Headers */,
+				F2EE001600000000000000C1 /* LightIntrospection.h in Headers */,
+				F2EE001800000000000000C1 /* RasterizerIntrospection.h in Headers */,
+				F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */,
 				F2EE001000000000000000C1 /* InteractivePelRasterizer.h in Headers */,
 				F27F0BBD069C42910069C9E5 /* pch.h in Headers */,
 				F27F0BBF069C42910069C9E5 /* CausticPelPhotonMap.h in Headers */,
@@ -4552,6 +4588,10 @@
 				F2EE000700000000000000C1 /* SceneEditor.cpp in Sources */,
 				F2EE000900000000000000C1 /* SceneEditController.cpp in Sources */,
 				F2EE001300000000000000C1 /* CameraIntrospection.cpp in Sources */,
+				F2EE001500000000000000C1 /* ObjectIntrospection.cpp in Sources */,
+				F2EE001700000000000000C1 /* LightIntrospection.cpp in Sources */,
+				F2EE001900000000000000C1 /* RasterizerIntrospection.cpp in Sources */,
+				F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */,
 				F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */,
 				F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
 				F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */,
@@ -5139,6 +5179,14 @@
 				F2EE000900000000000000B1 /* SceneEditController.cpp in Sources */,
 				F2EE001200000000000000B1 /* CameraIntrospection.h in Sources */,
 				F2EE001300000000000000B1 /* CameraIntrospection.cpp in Sources */,
+				F2EE001400000000000000B1 /* ObjectIntrospection.h in Sources */,
+				F2EE001500000000000000B1 /* ObjectIntrospection.cpp in Sources */,
+				F2EE001600000000000000B1 /* LightIntrospection.h in Sources */,
+				F2EE001700000000000000B1 /* LightIntrospection.cpp in Sources */,
+				F2EE001800000000000000B1 /* RasterizerIntrospection.h in Sources */,
+				F2EE001900000000000000B1 /* RasterizerIntrospection.cpp in Sources */,
+				F2EE002000000000000000B1 /* ChunkDescriptorRegistry.h in Sources */,
+				F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */,
 				F2EE001000000000000000B1 /* InteractivePelRasterizer.h in Sources */,
 				F2EE001100000000000000B1 /* InteractivePelRasterizer.cpp in Sources */,
 				F24B73452F52A632008304C4 /* pch.cpp in Sources */,

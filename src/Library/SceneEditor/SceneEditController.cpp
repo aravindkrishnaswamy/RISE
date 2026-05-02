@@ -34,9 +34,15 @@
 
 #include "pch.h"
 #include "SceneEditController.h"
+#include "ObjectIntrospection.h"
+#include "LightIntrospection.h"
+#include "RasterizerIntrospection.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Interfaces/ILightPriv.h"
+#include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
 #include "../Cameras/CameraCommon.h"
@@ -73,19 +79,17 @@ constexpr int          SceneEditController::kRefineIdleMs;
 constexpr int          SceneEditController::kRefineWakeMs;
 constexpr int          SceneEditController::kScrubWatchdogMs;
 
-// Synthetic property-row name used by RefreshProperties + SetProperty
-// to surface the "active camera" picker at the top of the camera
-// panel.  Two reasons it lives in a named constant:
-//
-//   1. It's referenced from two places (the row injector and the
-//      SetProperty intercept) — DRY beats two stringly-typed checks.
-//   2. The name is reserved.  A user who authors a real camera with
-//      this name in their .RISEscene would shadow the picker;
-//      callers should treat it as part of the editor's vocabulary
-//      rather than user input.  We don't reject it at AddCamera time
-//      because doing so would couple the parser to editor state — an
-//      unwelcome dependency direction.
-static const char* const kActiveCameraSyntheticRow = "active_camera";
+// Process-global epoch counter — incremented on every controller
+// construction so each new controller starts at a unique mSceneEpoch
+// value.  Without this, a scene-reload (destroys controller A, builds
+// controller B) would have B start at the same epoch the platform UI
+// already cached from A, and the per-section entity lists would not
+// re-pull.  Atomic so concurrent host-bridge constructions on different
+// threads (test harnesses) don't race.
+static std::atomic<unsigned int>& NextEpoch() {
+	static std::atomic<unsigned int> s_next( 1 );
+	return s_next;
+}
 
 SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiveRasterizer )
 : mJob( job )
@@ -93,7 +97,9 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
 , mEditor( *job.GetScene() )
 , mTool( Tool::Select )
-, mSelected()
+, mSelectionCategory( Category::None )
+, mSelectionName()
+, mSceneEpoch( NextEpoch().fetch_add( 1, std::memory_order_acq_rel ) )
 , mLastPx( 0, 0 )
 , mPointerDown( false )
 , mScrubInProgress( false )
@@ -120,6 +126,13 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	{
 		mInteractiveRasterizer->addref();
 	}
+	// Phase 3: install material + shader manager hooks so
+	// SetObjectMaterial / SetObjectShader edits can resolve names
+	// at apply time.  Test harnesses that build a SceneEditor
+	// directly (without the controller) skip this and the editor
+	// degrades to "transform / camera ops only" mode.
+	mEditor.SetMaterialManager( mJob.GetMaterials() );
+	mEditor.SetShaderManager( mJob.GetShaders() );
 }
 
 namespace {
@@ -148,6 +161,42 @@ inline bool IsObjectMotionTool( SceneEditController::Tool t )
 	return t == T::TranslateObject
 	    || t == T::RotateObject
 	    || t == T::ScaleObject;
+}
+
+// Property-string parsers used by the Object / Light branches of
+// `SetProperty`.  Anonymous-namespace helpers in the codebase's
+// older C++ idiom — explicit return types, no captures, no `auto`.
+inline bool ParsePropertyVec3( const String& valueStr, Vector3& out )
+{
+	double x = 0;
+	double y = 0;
+	double z = 0;
+	if( std::sscanf( valueStr.c_str(), "%lf %lf %lf", &x, &y, &z ) != 3 ) return false;
+	out = Vector3( Scalar( x ), Scalar( y ), Scalar( z ) );
+	return true;
+}
+
+inline bool ParsePropertyScalar( const String& valueStr, Scalar& out )
+{
+	double v = 0;
+	if( std::sscanf( valueStr.c_str(), "%lf", &v ) != 1 ) return false;
+	out = Scalar( v );
+	return true;
+}
+
+inline bool ParsePropertyBool( const String& valueStr, bool& out )
+{
+	if( valueStr == String( "true" )  || valueStr == String( "1" ) )
+	{
+		out = true;
+		return true;
+	}
+	if( valueStr == String( "false" ) || valueStr == String( "0" ) )
+	{
+		out = false;
+		return true;
+	}
+	return false;
 }
 
 }  // namespace
@@ -268,7 +317,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::TranslateObject:
 	case Tool::RotateObject:
 	case Tool::ScaleObject:
-		if( mSelected.size() > 1 )
+		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
 		{
 			mEditor.BeginComposite( "Drag" );
 			isMotionTool = true;
@@ -281,6 +330,21 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::RollCamera:
 		mEditor.BeginComposite( "Camera" );
 		isMotionTool = true;
+		// Auto-promote the Cameras section in the accordion when the
+		// user starts a camera-manipulation gesture.  The previous
+		// (pre-accordion) panel auto-flipped to Camera mode whenever
+		// one of these tools was active; the accordion's selection-
+		// driven panel mode preserves that UX by writing a Camera
+		// selection here.  Empty entityName when no camera is
+		// registered (degenerate scene) — the section still opens but
+		// the property panel falls back to the active camera via
+		// RefreshProperties' GetCamera() fallback.
+		if( mSelectionCategory != Category::Camera ) {
+			const IScene* scene = mJob.GetScene();
+			const std::string activeName = scene ? std::string( scene->GetActiveCameraName().c_str() ) : std::string();
+			mSelectionCategory = Category::Camera;
+			mSelectionName     = activeName.empty() ? String() : String( activeName.c_str() );
+		}
 		break;
 
 	case Tool::ScrubTimeline:
@@ -320,18 +384,22 @@ void SceneEditController::OnPointerMove( const Point2& px )
 
 	SceneEdit edit;
 
-	// `mSelected` is a RISE::String (std::vector<char> + trailing NUL).
-	// An empty name has size()==1 (just the NUL), a one-char name has
-	// size()==2.  The `> 1` checks below treat size()==1 (or 0) as
-	// "no selection" — do NOT replace with `.empty()`/`size() > 0`,
-	// the inversion would translate every drag with no object selected
-	// into a NULL-name FindObject lookup.
+	// Object-tool guards: each translate/rotate/scale tool needs a
+	// picked object to act on.  `mSelectionName` is a RISE::String
+	// (std::vector<char> + trailing NUL); an empty name has size()==1
+	// (just the NUL), so the `> 1` check matches the existing Phase-2
+	// convention.  Combined with the category check it rejects any
+	// non-Object selection, e.g. when the user has the Translate tool
+	// armed but selected a camera in the accordion.
+	const bool haveObject =
+		mSelectionCategory == Category::Object && mSelectionName.size() > 1;
+
 	switch( mTool )
 	{
 	case Tool::TranslateObject:
-		if( mSelected.size() <= 1 ) return;
+		if( !haveObject ) return;
 		edit.op = SceneEdit::TranslateObject;
-		edit.objectName = mSelected;
+		edit.objectName = mSelectionName;
 		// Phase 3 will project the screen-space delta into world space
 		// using the camera + depth-at-pick.  For Phase 2 we use a
 		// simple scaled mapping so the test can drive the controller
@@ -340,15 +408,15 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		break;
 
 	case Tool::RotateObject:
-		if( mSelected.size() <= 1 ) return;
+		if( !haveObject ) return;
 		edit.op = SceneEdit::RotateObjectArb;
-		edit.objectName = mSelected;
+		edit.objectName = mSelectionName;
 		edit.v3a = Vector3( 0, 1, 0 );  // y-axis (placeholder for Phase 3)
 		edit.s   = delta.x * 0.005;
 		break;
 
 	case Tool::ScaleObject:
-		if( mSelected.size() <= 1 ) return;
+		if( !haveObject ) return;
 		{
 			// Convert vertical drag to a scale factor delta.  Up-drag
 			// shrinks (negative dy), down-drag grows.  Apply as an
@@ -356,7 +424,7 @@ void SceneEditController::OnPointerMove( const Point2& px )
 			// without a getter for current scale we fall back to a
 			// modest stretch op for Phase 2 placeholder.
 			edit.op = SceneEdit::SetObjectStretch;
-			edit.objectName = mSelected;
+			edit.objectName = mSelectionName;
 			const Scalar f = 1.0 + delta.y * 0.005;
 			edit.v3a = Vector3( f, f, f );
 		}
@@ -408,7 +476,7 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	case Tool::TranslateObject:
 	case Tool::RotateObject:
 	case Tool::ScaleObject:
-		if( mSelected.size() > 1 )
+		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
 		{
 			mEditor.EndComposite();
 		}
@@ -633,9 +701,179 @@ bool SceneEditController::RequestProductionRender()
 
 // Selection -----------------------------------------------------------
 
+SceneEditController::Category SceneEditController::GetSelectionCategory() const
+{
+	return mSelectionCategory;
+}
+
+String SceneEditController::GetSelectionName() const
+{
+	return mSelectionName;
+}
+
 String SceneEditController::SelectedObjectName() const
 {
-	return mSelected;
+	// Legacy accessor — kept for the pointer-event handlers that
+	// already used it as a "do I have an object to operate on" guard.
+	// Returns empty unless the active selection is in the Objects
+	// category, so a Camera or Rasterizer selection doesn't accidentally
+	// satisfy the object-tool check.
+	if( mSelectionCategory != Category::Object ) return String();
+	return mSelectionName;
+}
+
+unsigned int SceneEditController::SceneEpoch() const
+{
+	return mSceneEpoch.load( std::memory_order_acquire );
+}
+
+namespace {
+
+// Walk a manager's enumerated names into a vector.  Used by both the
+// CategoryEntityCount/Name accessors below and by RefreshProperties'
+// camera-picker preset list.  Tiny helper, but it stops the
+// EnumerateItemNames-then-callback dance from leaking into every
+// caller.
+class CollectNamesCallback : public IEnumCallback<const char*>
+{
+public:
+	std::vector<String> names;
+	bool operator()( const char* const& name ) override {
+		if( name ) names.emplace_back( name );
+		return true;
+	}
+};
+
+}  // namespace
+
+unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
+{
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return 0;
+	switch( cat ) {
+	case Category::Camera: {
+		const ICameraManager* m = scene->GetCameras();
+		return m ? m->getItemCount() : 0;
+	}
+	case Category::Rasterizer: {
+		// Eagerly enumerate the registry by walking the available types
+		// the job exposes.  Job::GetRasterizerTypeCount is the source
+		// of truth — even types that haven't been instantiated yet are
+		// listed (the platform UI shows them; switching to one not yet
+		// in the registry is rejected at SetSelection time in phase 1).
+		return mJob.GetRasterizerTypeCount();
+	}
+	case Category::Object: {
+		const IObjectManager* m = scene->GetObjects();
+		return m ? m->getItemCount() : 0;
+	}
+	case Category::Light: {
+		const ILightManager* m = scene->GetLights();
+		return m ? m->getItemCount() : 0;
+	}
+	case Category::None:
+	default:
+		return 0;
+	}
+}
+
+String SceneEditController::CategoryEntityName( Category cat, unsigned int idx ) const
+{
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return String();
+	switch( cat ) {
+	case Category::Camera: {
+		const ICameraManager* m = scene->GetCameras();
+		if( !m ) return String();
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
+	case Category::Rasterizer: {
+		// Job's per-index getter returns std::string (the IJob API
+		// uses std::string for rasterizer type names since they're
+		// fixed strings).  Convert into RISE::String here.
+		const std::string s = mJob.GetRasterizerTypeName( idx );
+		return String( s.c_str() );
+	}
+	case Category::Object: {
+		const IObjectManager* m = scene->GetObjects();
+		if( !m ) return String();
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
+	case Category::Light: {
+		const ILightManager* m = scene->GetLights();
+		if( !m ) return String();
+		CollectNamesCallback cb;
+		m->EnumerateItemNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
+	case Category::None:
+	default:
+		return String();
+	}
+}
+
+bool SceneEditController::SetSelection( Category cat, const String& entityName )
+{
+	// Category::None: clear the selection entirely.  No side effect.
+	if( cat == Category::None ) {
+		mSelectionCategory = Category::None;
+		mSelectionName     = String();
+		return true;
+	}
+
+	// Camera / Rasterizer activations are real scene mutations — they
+	// rebind the rasterizer's view of the scene, which the render
+	// thread reads per-pixel.  Same cancel-and-park serialization as
+	// the existing SetProperty("active_camera") path uses.  Object /
+	// Light selections are pure UI state and don't need the lock.
+	const bool needsRenderSerialization =
+		( cat == Category::Camera || cat == Category::Rasterizer )
+		&& entityName.size() > 1;   // empty name = just expand, no swap
+
+	if( needsRenderSerialization )
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) )
+		{
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		// Apply the activation while the lock is held so the render
+		// thread can't read pRasterizer / GetCamera mid-swap.
+		bool ok = true;
+		if( cat == Category::Camera )
+		{
+			IScenePriv* sp = mJob.GetScene();
+			ok = sp && sp->SetActiveCamera( entityName.c_str() );
+		}
+		else if( cat == Category::Rasterizer )
+		{
+			ok = mJob.SetActiveRasterizer( entityName.c_str() );
+		}
+		if( !ok ) return false;
+
+		mSelectionCategory = cat;
+		mSelectionName     = entityName;
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+		return true;
+	}
+
+	// UI-only path (Object / Light, or empty-name expand-only for
+	// Camera / Rasterizer).
+	mSelectionCategory = cat;
+	mSelectionName     = entityName;
+	return true;
 }
 
 bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEnd,
@@ -670,9 +908,13 @@ bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h 
 	return true;
 }
 
-void SceneEditController::ForTest_SetSelected( const String& name )
+void SceneEditController::ForTest_SetSelection( Category cat, const String& name )
 {
-	mSelected = name;
+	// Test bypass: write selection state directly without going through
+	// the cancel-and-park serialization in SetSelection.  Tests run with
+	// no live render thread, so there's nothing to serialize against.
+	mSelectionCategory = cat;
+	mSelectionName     = name;
 }
 
 unsigned int SceneEditController::ForTest_GetCancelCount() const
@@ -729,9 +971,12 @@ public:
 
 void SceneEditController::PickAt( const Point2& px )
 {
-	// Pick the topmost object under the click and store its name in
-	// `mSelected`.  Empty selection ⇒ panel switches to None mode.
-	mSelected = String();
+	// Pick the topmost object under the click and route the result
+	// through SetSelection so the accordion auto-expands to Objects
+	// and the property panel switches to that object.  No hit ⇒ clear
+	// the selection (None category, accordion fully collapsed).
+	mSelectionCategory = Category::None;
+	mSelectionName     = String();
 
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return;
@@ -775,7 +1020,10 @@ void SceneEditController::PickAt( const Point2& px )
 		// fine for click cadence and typical scene sizes.
 		FindObjectNameCallback cb( ri.pObject, objs );
 		objs->EnumerateItemNames( cb );
-		mSelected = cb.foundName;
+		if( cb.foundName.size() > 1 ) {
+			mSelectionCategory = Category::Object;
+			mSelectionName     = cb.foundName;
+		}
 	}
 }
 
@@ -1000,35 +1248,58 @@ void SceneEditController::RenderLoop()
 
 SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 {
-	// Camera tools are unconditionally Camera mode — even with no
-	// selection, the camera always exists once a scene is loaded.
-	if( IsCameraMotionTool( mTool ) ) {
-		return PanelMode::Camera;
+	// Selection drives the panel mode directly (Category and PanelMode
+	// share numeric values so the cast is a no-op).  Camera-motion
+	// tools no longer auto-promote to Camera mode — picking a Camera
+	// in the accordion is the explicit way to inspect / edit camera
+	// properties.  This keeps the rule simple: the property panel
+	// shows whatever is selected.
+	switch( mSelectionCategory ) {
+	case Category::Camera:     return PanelMode::Camera;
+	case Category::Rasterizer: return PanelMode::Rasterizer;
+	case Category::Object:
+		// Only treat as Object mode if a real entity name is set
+		// (matches the legacy "size > 1" guard — an accordion
+		// header click can land us in Object category with empty
+		// name, which means "expand the section, no row picked").
+		return mSelectionName.size() > 1 ? PanelMode::Object : PanelMode::None;
+	case Category::Light:
+		return mSelectionName.size() > 1 ? PanelMode::Light : PanelMode::None;
+	case Category::None:
+	default:
+		return PanelMode::None;
 	}
-	// Select tool with a picked object → Object mode.  Empty
-	// `mSelected` (size <= 1: at minimum the trailing NUL) means
-	// nothing is picked.
-	if( mTool == Tool::Select && mSelected.size() > 1 ) {
-		return PanelMode::Object;
-	}
-	// Anything else: empty panel.
-	return PanelMode::None;
 }
 
 String SceneEditController::CurrentPanelHeader() const
 {
 	switch( CurrentPanelMode() ) {
-	case PanelMode::Camera:
-		// Plural "Cameras" — the panel's first row is a dropdown
-		// that lists every camera in the scene's manager and lets
-		// the user pick which one is active.  See RefreshProperties
-		// for how the row is synthesised.
+	case PanelMode::Camera: {
+		// Show the active camera's name when one is selected, fall
+		// back to "Cameras" otherwise.  Mirrors the macOS / Windows
+		// convention used by the existing Camera panel header.
+		if( mSelectionName.size() > 1 ) {
+			std::string s = "Camera: ";
+			s += mSelectionName.c_str();
+			return String( s.c_str() );
+		}
 		return String( "Cameras" );
+	}
+	case PanelMode::Rasterizer: {
+		std::string s = "Rasterizer: ";
+		s += mSelectionName.c_str();
+		return String( s.c_str() );
+	}
 	case PanelMode::Object: {
 		// String concatenation is awkward on RISE::String (a vector
 		// of char) — build via std::string and convert at the end.
 		std::string s = "Object: ";
-		s += mSelected.c_str();
+		s += mSelectionName.c_str();
+		return String( s.c_str() );
+	}
+	case PanelMode::Light: {
+		std::string s = "Light: ";
+		s += mSelectionName.c_str();
 		return String( s.c_str() );
 	}
 	case PanelMode::None:
@@ -1045,93 +1316,49 @@ void SceneEditController::RefreshProperties()
 
 	switch( CurrentPanelMode() ) {
 	case PanelMode::Camera: {
-		// First row: synthetic "active_camera" dropdown listing every
-		// camera in the scene's manager.  This row predates the
-		// camera-specific introspection so the user always sees the
-		// picker at the top of the panel — and so changing it
-		// triggers a property re-fetch (the per-camera rows are
-		// type-specific: a pinhole camera shows fov, a thinlens
-		// shows sensor_size + fstop + ... + focus_distance).
-		const ICameraManager* cams = scene->GetCameras();
-		if( cams && cams->getItemCount() > 0 ) {
-			CameraProperty pickerRow;
-			pickerRow.name        = String( kActiveCameraSyntheticRow );
-			pickerRow.kind        = ValueKind::Enum;
-			pickerRow.value       = scene->GetActiveCameraName();
-			pickerRow.description = String( "Switch which camera the rasterizer renders through.  Lists every camera registered with the scene." );
-			// Editable so the existing presets-menu UI path
-			// surfaces; the underlying SetActiveCamera rejects
-			// unknown names rather than crashing, so a typo just
-			// no-ops.  All three platform UIs only render the
-			// presets dropdown inside the editable branch.
-			pickerRow.editable    = true;
-			// Build presets {label = name, value = name} from the
-			// manager's enumeration order (lexicographic by name).
-			struct CollectNames : public IEnumCallback<const char*> {
-				std::vector<ParameterPreset>* out;
-				bool operator()( const char* const& name ) override {
-					ParameterPreset preset;
-					preset.label = std::string( name );
-					preset.value = std::string( name );
-					out->push_back( preset );
-					return true;
-				}
-			};
-			CollectNames cb;
-			cb.out = &pickerRow.presets;
-			cams->EnumerateItemNames( cb );
-			mProperties.push_back( pickerRow );
+		// Cameras keep the existing descriptor-driven editable surface.
+		// The accordion's list view replaces the synthetic
+		// "active_camera" picker row that lived at the top of the panel
+		// before this change — there's no need for an in-panel picker
+		// when the section's list is right above.  If no real camera
+		// is currently selected (empty selection name, e.g. user just
+		// expanded the Cameras section), surface the active camera's
+		// rows so the panel isn't blank.
+		const ICamera* cam = 0;
+		if( mSelectionName.size() > 1 ) {
+			const ICameraManager* cams = scene->GetCameras();
+			if( cams ) cam = cams->GetItem( mSelectionName.c_str() );
 		}
-
-		const ICamera* cam = scene->GetCamera();
+		if( !cam ) cam = scene->GetCamera();
 		if( !cam ) return;
 		std::vector<CameraProperty> camProps = CameraIntrospection::Inspect( *cam );
 		mProperties.insert( mProperties.end(), camProps.begin(), camProps.end() );
 		return;
 	}
+	case PanelMode::Rasterizer: {
+		std::vector<CameraProperty> rows = RasterizerIntrospection::Inspect( mJob, mSelectionName );
+		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
+		return;
+	}
 	case PanelMode::Object: {
-		// Basic object inspector — name + world-position derived
-		// from the object's final-transform matrix.  Read-only for
-		// now; full descriptor-driven object editing is future
-		// work (would need object-side ChunkDescriptors and a
-		// SetObjectProperty SceneEdit op).
 		IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
 		if( !objs ) return;
-		const IObject* obj = objs->GetItem( mSelected.c_str() );
+		const IObject* obj = objs->GetItem( mSelectionName.c_str() );
 		if( !obj ) return;
-
-		const Matrix4 m = obj->GetFinalTransformMatrix();
-		// Translation lives in row 3 of RISE's row-major Matrix4
-		// (Math3D::Translation populates `_30/_31/_32`; PointsOps::
-		// Transform adds these to the rotated point — see
-		// Math3D/PointsOps.h).
-		const Scalar tx = m._30;
-		const Scalar ty = m._31;
-		const Scalar tz = m._32;
-
-		auto addRow = [&]( const char* name, const String& value, const char* desc ) {
-			CameraProperty p;
-			p.name        = String( name );
-			p.value       = value;
-			p.description = String( desc );
-			p.kind        = ValueKind::String;
-			p.editable    = false;
-			mProperties.push_back( p );
-		};
-
-		addRow( "Name", mSelected,
-		        "The name of the picked object as declared in the .RISEscene file." );
-
-		{
-			char buf[128];
-			std::snprintf( buf, sizeof(buf), "%g %g %g",
-			              static_cast<double>( tx ),
-			              static_cast<double>( ty ),
-			              static_cast<double>( tz ) );
-			addRow( "Position", String( buf ),
-			        "World-space position derived from the final-transform matrix." );
-		}
-
+		std::vector<CameraProperty> rows = ObjectIntrospection::Inspect(
+			mSelectionName, *obj,
+			mJob.GetMaterials(),
+			mJob.GetShaders() );
+		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
+		return;
+	}
+	case PanelMode::Light: {
+		const ILightManager* lights = scene->GetLights();
+		if( !lights ) return;
+		const ILightPriv* light = lights->GetItem( mSelectionName.c_str() );
+		if( !light ) return;
+		std::vector<CameraProperty> rows = LightIntrospection::Inspect( mSelectionName, *light );
+		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
 		return;
 	}
 	case PanelMode::None:
@@ -1206,56 +1433,165 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
-	// "active_camera" is a synthetic row injected by RefreshProperties;
-	// CameraIntrospection doesn't know about it, and switching cameras
-	// is a navigation action (not a value mutation), so it bypasses the
-	// transactional undo path on purpose.  After the switch, Refresh
-	// will re-emit the per-camera rows for the newly-active camera —
-	// the platform UI calls propertySnapshot() on every selection
-	// change, so the panel rebuilds itself.
-	if( name == kActiveCameraSyntheticRow ) {
+	switch( mSelectionCategory ) {
+
+	case Category::Camera: {
+		// Cameras: route through the editor's transactional Apply path
+		// so panel edits land in the undo history alongside drag-driven
+		// camera edits.  SceneEditor::Apply for SetCameraProperty
+		// captures the prev value, applies the new one via
+		// CameraIntrospection, and pushes a SceneEdit so undo/redo
+		// work end-to-end.
+		SceneEdit edit;
+		edit.op = SceneEdit::SetCameraProperty;
+		edit.objectName = name;            // overload: holds the property name
+		edit.propertyValue = valueStr;
+		if( !mEditor.Apply( edit ) ) return false;
+		KickRender();
+		return true;
+	}
+
+	case Category::Object: {
+		// Route the panel's editable rows to the matching SceneEdit
+		// op.  Every path goes through SceneEditor::Apply so undo /
+		// redo work end-to-end alongside drag-driven transform edits.
+		const IScene* scene = mJob.GetScene();
+		if( !scene ) return false;
+		if( mSelectionName.size() <= 1 ) return false;
+
+		SceneEdit edit;
+		edit.objectName = mSelectionName;
+
+		if( name == String( "position" ) ) {
+			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
+			edit.op = SceneEdit::SetObjectPosition;
+		}
+		else if( name == String( "orientation" ) ) {
+			Vector3 deg;
+			if( !ParsePropertyVec3( valueStr, deg ) ) return false;
+			edit.op  = SceneEdit::SetObjectOrientation;
+			edit.v3a = Vector3( deg.x * DEG_TO_RAD, deg.y * DEG_TO_RAD, deg.z * DEG_TO_RAD );
+		}
+		else if( name == String( "scale" ) ) {
+			// Descriptor surfaces `scale` as DoubleVec3 (per-axis),
+			// matching the standard_object chunk syntax.  Routes
+			// through SetObjectStretch for per-axis precision.
+			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
+			edit.op = SceneEdit::SetObjectStretch;
+		}
+		else if( name == String( "scale_uniform" ) ) {
+			// Optional uniform-scale shortcut for callers that prefer
+			// a single Double.  Not in the descriptor; available for
+			// programmatic use.
+			if( !ParsePropertyScalar( valueStr, edit.s ) ) return false;
+			edit.op = SceneEdit::SetObjectScale;
+		}
+		else if( name == String( "stretch" ) ) {
+			// Phase 3 alias kept for backward-compat.
+			if( !ParsePropertyVec3( valueStr, edit.v3a ) ) return false;
+			edit.op = SceneEdit::SetObjectStretch;
+		}
+		else if( name == String( "material" ) ) {
+			edit.op = SceneEdit::SetObjectMaterial;
+			edit.propertyValue = valueStr;
+		}
+		else if( name == String( "shader" ) ) {
+			edit.op = SceneEdit::SetObjectShader;
+			edit.propertyValue = valueStr;
+		}
+		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
+			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
+			const IObject* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
+			if( !obj ) return false;
+			bool castsB = obj->DoesCastShadows();
+			bool recvsB = obj->DoesReceiveShadows();
+			bool newVal = false;
+			if( !ParsePropertyBool( valueStr, newVal ) ) return false;
+			if( name == String( "casts_shadows" ) )    castsB = newVal;
+			if( name == String( "receives_shadows" ) ) recvsB = newVal;
+			edit.op = SceneEdit::SetObjectShadowFlags;
+			edit.s  = static_cast<Scalar>( ( castsB ? 1 : 0 ) | ( recvsB ? 2 : 0 ) );
+		}
+		else {
+			return false;
+		}
+
+		if( !mEditor.Apply( edit ) ) return false;
+		KickRender();
+		return true;
+	}
+
+	case Category::Light: {
+		// Phase 3: light edits route through `SceneEditor::Apply` with
+		// the new `SetLightProperty` op so undo/redo work end-to-end
+		// alongside object/camera edits.  The Apply path captures the
+		// prev value, calls KeyframeFromParameters + SetIntermediateValue
+		// + RegenerateData on the forward path, and replays the prev
+		// value through the same machinery on undo.
+		if( mSelectionName.size() <= 1 ) return false;
 		IScenePriv* scene = mJob.GetScene();
 		if( !scene ) return false;
-		// Switching the active camera is a structural mutation —
-		// the render thread reads the active camera per-pixel, so
-		// we can't swap it under an in-flight pass without inviting
-		// torn reads or use-after-free on the old camera.  Serialize
-		// using the same cancel-and-park pattern as OnTimeScrub:
-		//   1. Trip cancel so any in-flight RasterizeScene returns.
-		//   2. cv.wait until mRendering is false under mMutex.
-		//   3. Mutate the scene while still holding mMutex (the
-		//      render thread can't begin a new pass without
-		//      acquiring this mutex first).
-		//   4. Drop the lock and KickRender so the next pass picks
-		//      up the new active camera.
+
+		SceneEdit edit;
+		edit.op            = SceneEdit::SetLightProperty;
+		edit.objectName    = mSelectionName;   // light entity name
+		edit.propertyName  = name;             // "position" / "energy" / etc.
+		edit.propertyValue = valueStr;
+
+		// Cancel-and-park around the SceneEditor::Apply call: light
+		// mutations change geometry-relevant state the render thread
+		// reads per-pixel.  Same pattern camera-switch uses.
 		std::unique_lock<std::mutex> lk( mMutex );
-		if( mRendering.load( std::memory_order_acquire ) )
-		{
+		if( mRendering.load( std::memory_order_acquire ) ) {
 			mCancelProgress.RequestCancel();
 			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
 		}
 		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
-		if( !scene->SetActiveCamera( valueStr.c_str() ) ) return false;
+		const bool ok = mEditor.Apply( edit );
+		if( !ok ) return false;
+
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
 		return true;
 	}
 
-	// Route through the editor's transactional Apply path so panel
-	// edits land in the undo history alongside drag-driven camera
-	// edits.  SceneEditor::Apply for SetCameraProperty captures the
-	// prev value, applies the new one via CameraIntrospection, and
-	// pushes a SceneEdit so undo/redo work end-to-end.
-	SceneEdit edit;
-	edit.op = SceneEdit::SetCameraProperty;
-	edit.objectName = name;            // overload: holds the property name
-	edit.propertyValue = valueStr;
-	if( !mEditor.Apply( edit ) ) return false;
+	case Category::Rasterizer: {
+		// Phase 3: the introspection layer surfaces editable rows for
+		// type-specific params (samples, max_eye_depth, etc.) and the
+		// Job side keeps a per-rasterizer params snapshot.  Editing
+		// re-instantiates the rasterizer with the modified value while
+		// preserving every other parameter.  No undo support yet —
+		// rebuilding a rasterizer is a heavy operation; Phase 4 may
+		// add it via a dedicated SetRasterizerProperty SceneEdit op.
+		if( mSelectionName.size() <= 1 ) return false;
 
-	KickRender();
-	return true;
+		// Cancel-and-park: rasterizer rebuild releases the old instance
+		// and constructs a new one.  The render thread reads
+		// `pRasterizer` per-pixel; we need it parked.  Same pattern as
+		// SetActiveRasterizer's selection path.
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		const bool ok = mJob.SetRasterizerParameter(
+			mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
+		if( !ok ) return false;
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+		return true;
+	}
+
+	case Category::None:
+	default:
+		return false;
+	}
 }
 
 void SceneEditController::DoOneRenderPass()

@@ -210,8 +210,8 @@ public:
 
     // Properties panel accessors — descriptor-driven snapshot.
     void         viewportRefreshProperties();
-    int          viewportPanelMode() const;       // 0=None, 1=Camera, 2=Object
-    std::string  viewportPanelHeader() const;     // "Camera" / "Object: <name>" / ""
+    int          viewportPanelMode() const;       // 0=None,1=Camera,2=Rasterizer,3=Object,4=Light
+    std::string  viewportPanelHeader() const;     // "Camera: …" / "Object: …" / etc.
     unsigned int viewportPropertyCount() const;
     std::string  viewportPropertyName(unsigned int idx) const;
     std::string  viewportPropertyValue(unsigned int idx) const;
@@ -228,6 +228,15 @@ public:
     std::string  viewportPropertyPresetLabel(unsigned int idx, unsigned int presetIdx) const;
     std::string  viewportPropertyPresetValue(unsigned int idx, unsigned int presetIdx) const;
     bool         viewportSetProperty(const std::string& name, const std::string& value);
+
+    // Accordion list entries — see SceneEditController::Category for
+    // the int → category mapping.
+    unsigned int viewportCategoryEntityCount(int category) const;
+    std::string  viewportCategoryEntityName(int category, unsigned int idx) const;
+    int          viewportSelectionCategory() const;
+    std::string  viewportSelectionName() const;
+    bool         viewportSetSelection(int category, const std::string& name);
+    unsigned int viewportSceneEpoch() const;
 
     // Internal: invoked by the viewport preview sink after blitting
     // the final-frame pixels into m_framebuffer.  Fires onRegionInvalidated

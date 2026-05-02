@@ -155,11 +155,25 @@ typedef void (^RISEViewportImageBlock)(NSImage *image);
 #pragma mark - Properties panel (descriptor-driven)
 
 /// Discriminator for what the right-side panel should display.
-/// Mirrors RISE::SceneEditController::PanelMode.
+/// Mirrors RISE::SceneEditController::PanelMode.  Numeric values are
+/// kept in lockstep with RISEViewportCategory so the ints round-trip
+/// through the C-API surface without translation.
 typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
-    RISEViewportPanelModeNone   = 0,  ///< empty (Select tool, nothing picked)
-    RISEViewportPanelModeCamera = 1,  ///< camera manipulator selected
-    RISEViewportPanelModeObject = 2,  ///< Select tool with picked object
+    RISEViewportPanelModeNone       = 0,  ///< nothing selected
+    RISEViewportPanelModeCamera     = 1,
+    RISEViewportPanelModeRasterizer = 2,
+    RISEViewportPanelModeObject     = 3,
+    RISEViewportPanelModeLight      = 4,
+};
+
+/// Mirrors RISE::SceneEditController::Category — drives the
+/// accordion's section IDs and the selection round-trip.
+typedef NS_ENUM(NSInteger, RISEViewportCategory) {
+    RISEViewportCategoryNone       = 0,
+    RISEViewportCategoryCamera     = 1,
+    RISEViewportCategoryRasterizer = 2,
+    RISEViewportCategoryObject     = 3,
+    RISEViewportCategoryLight      = 4,
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -181,6 +195,32 @@ typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
 
 /// Apply an edit to a named property.  Returns YES on success.
 - (BOOL)setPropertyName:(NSString *)name value:(NSString *)value;
+
+#pragma mark - Accordion list entries
+
+/// Display names of the entries in `category`.  Pulled by the
+/// accordion's list view; the platform UI caches by sceneEpoch.
+- (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category;
+
+/// Current selection's category.  Drives which accordion section is
+/// expanded.  Returns RISEViewportCategoryNone when nothing is
+/// selected.
+@property (nonatomic, readonly) RISEViewportCategory selectionCategory;
+
+/// Current selection's entity name (manager name or rasterizer
+/// chunk-name).  Empty when the section is open with no row picked.
+@property (nonatomic, readonly, copy) NSString *selectionName;
+
+/// Apply a (category, name) selection.  Empty `name` opens the
+/// section without picking a row.  Camera / Rasterizer selections
+/// also activate the named entity.  Returns YES on success.
+- (BOOL)setSelectionCategory:(RISEViewportCategory)category name:(nullable NSString *)name
+    NS_SWIFT_NAME(setSelection(_:name:));
+
+/// Monotonic counter — bumped on any structural mutation that could
+/// change a category's entity list.  Bridge callers cache
+/// (epoch, category) → list and re-pull when this advances.
+@property (nonatomic, readonly) NSUInteger sceneEpoch;
 
 @end
 

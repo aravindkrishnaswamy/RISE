@@ -265,9 +265,66 @@ ViewportBridge::PanelMode ViewportBridge::panelMode() const
     const int m = RISE_API_SceneEditController_PanelMode(m_controller);
     switch (m) {
         case 1: return PanelMode::Camera;
-        case 2: return PanelMode::Object;
+        case 2: return PanelMode::Rasterizer;
+        case 3: return PanelMode::Object;
+        case 4: return PanelMode::Light;
         default: return PanelMode::None;
     }
+}
+
+QStringList ViewportBridge::categoryEntities(Category cat) const
+{
+    QStringList out;
+    if (!m_controller) return out;
+    const int catInt = static_cast<int>(cat);
+    const unsigned int n = RISE_API_SceneEditController_CategoryEntityCount(m_controller, catInt);
+    out.reserve(static_cast<int>(n));
+    char nameBuf[128];
+    for (unsigned int i = 0; i < n; ++i) {
+        if (RISE_API_SceneEditController_CategoryEntityName(m_controller, catInt, i, nameBuf, sizeof(nameBuf))) {
+            out.append(QString::fromUtf8(nameBuf));
+        }
+    }
+    return out;
+}
+
+ViewportBridge::Category ViewportBridge::selectionCategory() const
+{
+    if (!m_controller) return Category::None;
+    const int c = RISE_API_SceneEditController_GetSelectionCategory(m_controller);
+    switch (c) {
+        case 1: return Category::Camera;
+        case 2: return Category::Rasterizer;
+        case 3: return Category::Object;
+        case 4: return Category::Light;
+        default: return Category::None;
+    }
+}
+
+QString ViewportBridge::selectionName() const
+{
+    if (!m_controller) return QString();
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionName(m_controller, buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
+bool ViewportBridge::setSelection(Category cat, const QString& name)
+{
+    if (!m_controller) return false;
+    const QByteArray utf8 = name.toUtf8();
+    return RISE_API_SceneEditController_SetSelection(
+        m_controller,
+        static_cast<int>(cat),
+        utf8.constData());
+}
+
+unsigned int ViewportBridge::sceneEpoch() const
+{
+    if (!m_controller) return 0;
+    return RISE_API_SceneEditController_SceneEpoch(m_controller);
 }
 
 QString ViewportBridge::panelHeader() const

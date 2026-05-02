@@ -89,6 +89,7 @@ namespace RISE
 			virtual void SetShadowParams( const bool bCasts, const bool bReceives );
 
 			virtual const IMaterial* GetMaterial() const;
+			virtual const IShader*   GetShader() const { return pShader; }
 			virtual const IMedium* GetInteriorMedium() const;
 			virtual void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			virtual Scalar GetArea( ) const;

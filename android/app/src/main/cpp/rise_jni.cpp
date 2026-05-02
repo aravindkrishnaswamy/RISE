@@ -267,6 +267,31 @@ JNIF(jboolean, nativeViewportSetProperty)(JNIEnv* env, jobject /*thiz*/,
                                            jstringToStd(env, jValue)) ? JNI_TRUE : JNI_FALSE;
 }
 
+// -----------------------------------------------------------------------------
+// Accordion list / selection — Phase 1 right-panel API.
+// -----------------------------------------------------------------------------
+JNIF(jint, nativeViewportCategoryEntityCount)(JNIEnv* /*env*/, jobject /*thiz*/, jint category) {
+    return static_cast<jint>(getBridge().viewportCategoryEntityCount(static_cast<int>(category)));
+}
+JNIF(jstring, nativeViewportCategoryEntityName)(JNIEnv* env, jobject /*thiz*/, jint category, jint idx) {
+    return env->NewStringUTF(getBridge().viewportCategoryEntityName(
+        static_cast<int>(category), static_cast<unsigned int>(idx)).c_str());
+}
+JNIF(jint, nativeViewportSelectionCategory)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(getBridge().viewportSelectionCategory());
+}
+JNIF(jstring, nativeViewportSelectionName)(JNIEnv* env, jobject /*thiz*/) {
+    return env->NewStringUTF(getBridge().viewportSelectionName().c_str());
+}
+JNIF(jboolean, nativeViewportSetSelection)(JNIEnv* env, jobject /*thiz*/, jint category, jstring jName) {
+    return getBridge().viewportSetSelection(
+        static_cast<int>(category),
+        jstringToStd(env, jName)) ? JNI_TRUE : JNI_FALSE;
+}
+JNIF(jint, nativeViewportSceneEpoch)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(getBridge().viewportSceneEpoch());
+}
+
 #undef JNIF
 
 } // extern "C"

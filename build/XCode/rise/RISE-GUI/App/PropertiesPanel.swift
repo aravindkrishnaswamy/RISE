@@ -1,12 +1,16 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  PropertiesPanel.swift - Right-side properties panel for the
-//    interactive viewport.  Driven entirely by the ChunkDescriptor
-//    of the loaded camera (or, in a future phase, the selected
-//    object) — the names, descriptions, and editable / read-only
-//    flags all come from the parser's canonical descriptor list.
-//    The same descriptor that loads the scene from .RISEscene
-//    populates this panel.
+//  PropertiesPanel.swift - Right-side accordion for the interactive
+//    viewport.  Four sections (Cameras / Rasterizer / Objects /
+//    Lights) each list the scene's entities for that category;
+//    clicking a row activates it on the C++ side and shows the
+//    selected entity's read-only/edit properties below.
+//
+//    Single selection across the whole panel: picking a row in any
+//    section clears whichever was picked before, and auto-expands
+//    that section while collapsing the others.  Click-on-image
+//    object picking routes through the same machinery so the
+//    Objects section auto-expands and the picked row is highlighted.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -45,16 +49,7 @@ struct PropertyRow: Identifiable {
     let presets: [PropertyPreset] // empty when descriptor declared no presets
     let unitLabel: String         // empty for dimensionless / unlabelled fields
 
-    // `nonisolated` — this is a pure value-constructor that touches no
-    // main-actor state, so it's safe to pass as a function reference
-    // from any context (e.g. `array.map(PropertyRow.from)`).  Without
-    // this, Swift 6 strict concurrency warns when the call site can't
-    // prove it's on the main actor.
     nonisolated static func from(_ src: RISEViewportProperty) -> PropertyRow {
-        // Use enumerated indices to derive unique ids without
-        // assuming preset labels are unique per parameter (they
-        // should be, but defensive against descriptor authoring
-        // mistakes).
         let presets: [PropertyPreset] = src.presets.enumerated().map { (idx, p) in
             PropertyPreset(id: "\(src.name).preset.\(idx)", label: p.label, value: p.value)
         }
@@ -71,6 +66,22 @@ struct PropertyRow: Identifiable {
     }
 }
 
+/// One section of the accordion — Cameras, Rasterizer, Objects, or
+/// Lights.  Wraps the bridge's RISEViewportCategory so the SwiftUI
+/// view can drive its DisclosureGroup binding cleanly.
+struct AccordionSection: Identifiable, Hashable {
+    let id: String                // stable identifier (matches the C-API name)
+    let title: String             // user-visible title
+    let category: RISEViewportCategory
+}
+
+private let kAccordionSections: [AccordionSection] = [
+    AccordionSection(id: "cameras",     title: "Cameras",    category: .camera),
+    AccordionSection(id: "rasterizer",  title: "Rasterizer", category: .rasterizer),
+    AccordionSection(id: "objects",     title: "Objects",    category: .object),
+    AccordionSection(id: "lights",      title: "Lights",     category: .light),
+]
+
 struct PropertiesPanel: View {
     let bridge: RISEViewportBridge
     @Binding var refreshTrigger: Int          // increment to force a snapshot reload
@@ -78,28 +89,26 @@ struct PropertiesPanel: View {
     @State private var rows: [PropertyRow] = []
     @State private var header: String = ""
     @State private var mode: RISEViewportPanelMode = .none
+    @State private var selectionCategory: RISEViewportCategory = .none
+    @State private var selectionName: String = ""
+    @State private var entitiesByCategory: [Int: [String]] = [:]
+    @State private var lastEpoch: UInt = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header is empty when mode == .none; we still render the
-            // bar so the layout doesn't jump when the user picks an
-            // object or activates a camera tool.  The Refresh button
-            // is hidden in .none mode (nothing to refresh).
             HStack {
-                Text(header.isEmpty ? " " : header)
+                Text(header.isEmpty ? "Scene" : header)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
                 Spacer()
-                if mode != .none {
-                    Button {
-                        reload()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Refresh properties from the live entity")
+                Button {
+                    reload()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(.borderless)
+                .help("Refresh from the live scene")
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -109,35 +118,35 @@ struct PropertiesPanel: View {
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 6) {
-                    switch mode {
-                    case .none:
-                        // Empty panel — no tool / selection that has
-                        // anything to show.
-                        Text("Pick an object or select a camera tool to inspect properties.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(8)
-                    case .camera, .object:
-                        if rows.isEmpty {
-                            Text("No properties available.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .padding(8)
-                        } else {
-                            ForEach(rows) { row in
-                                PropertyRowView(
-                                    row: row,
-                                    onCommit: { newValue in
-                                        _ = bridge.setPropertyName(row.name, value: newValue)
-                                        reload()
-                                    },
-                                    onScrubBegin: { bridge.beginPropertyScrub() },
-                                    onScrubEnd:   { bridge.endPropertyScrub()   }
-                                )
+                    ForEach(kAccordionSections) { section in
+                        AccordionSectionView(
+                            section: section,
+                            entities: entitiesByCategory[section.category.rawValue] ?? [],
+                            isExpanded: section.category == selectionCategory,
+                            selectedName: section.category == selectionCategory ? selectionName : "",
+                            onSelectRow: { name in
+                                bridge.setSelection(section.category, name: name)
+                                reload()
+                            },
+                            onToggle: { newExpanded in
+                                if newExpanded {
+                                    // Open this section: empty-name selection
+                                    // means "expand without picking a row".
+                                    bridge.setSelection(section.category, name: "")
+                                } else if selectionCategory == section.category {
+                                    // Collapse the currently-open section.
+                                    bridge.setSelection(.none, name: "")
+                                }
+                                reload()
                             }
+                        )
+                        // Property rows render directly under the
+                        // expanded section — keeps the cause/effect
+                        // visually obvious.
+                        if section.category == selectionCategory && mode != .none {
+                            PropertyList(rows: rows, bridge: bridge, onCommitted: reload)
+                                .padding(.leading, 12)
                         }
-                    @unknown default:
-                        EmptyView()
                     }
                 }
                 .padding(8)
@@ -152,7 +161,150 @@ struct PropertiesPanel: View {
         bridge.refreshProperties()
         mode = bridge.panelMode
         header = bridge.panelHeader
+        selectionCategory = bridge.selectionCategory
+        selectionName = bridge.selectionName
         rows = bridge.propertySnapshot().map(PropertyRow.from)
+
+        // Re-pull per-section entity lists when the scene epoch
+        // advances (scene reload, structural mutation).  Cheap to
+        // pull on every refresh too — the lists are small — but the
+        // epoch gate keeps the JNI-style chatter down on busy frames.
+        let epoch = UInt(bridge.sceneEpoch)
+        if epoch != lastEpoch {
+            lastEpoch = epoch
+            var fresh: [Int: [String]] = [:]
+            for section in kAccordionSections {
+                fresh[section.category.rawValue] = bridge.categoryEntities(section.category)
+            }
+            entitiesByCategory = fresh
+        }
+    }
+}
+
+/// One accordion section: header + dropdown picker for the section's
+/// entity list.  All four sections use the dropdown for visual
+/// consistency and to handle worst-case entity counts (Objects can
+/// run into the hundreds).
+private struct AccordionSectionView: View {
+    let section: AccordionSection
+    let entities: [String]
+    let isExpanded: Bool
+    let selectedName: String
+    let onSelectRow: (String) -> Void
+    let onToggle: (Bool) -> Void
+
+    var body: some View {
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { isExpanded },
+                set: { newValue in
+                    // Guard spurious set callbacks during the
+                    // animated disclosure transition — SwiftUI can
+                    // re-issue `set` with the value it just got from
+                    // `get`, which would re-route a no-op
+                    // setSelection.  Only forward real changes.
+                    if newValue != isExpanded { onToggle(newValue) }
+                }
+            ),
+            content: {
+                if entities.isEmpty {
+                    Text("(none)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 4)
+                        .padding(.leading, 8)
+                } else {
+                    EntityDropdown(
+                        entities: entities,
+                        selectedName: selectedName,
+                        onSelect: onSelectRow
+                    )
+                }
+            },
+            label: {
+                Text(section.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+            }
+        )
+        .padding(.vertical, 2)
+    }
+}
+
+/// Dropdown picker for sections (Rasterizer / Object) that can hold
+/// many entries.  Uses a `Menu` so the selection UX matches the
+/// per-property presets dropdowns the rest of the panel uses.
+/// Picking an item routes through `onSelect` exactly as a list-row
+/// click did, so the rest of the selection plumbing is untouched.
+private struct EntityDropdown: View {
+    let entities: [String]
+    let selectedName: String
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        HStack {
+            Menu {
+                ForEach(entities, id: \.self) { name in
+                    Button(name) {
+                        if name != selectedName { onSelect(name) }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(selectedName.isEmpty ? "(pick one)" : selectedName)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundColor(selectedName.isEmpty ? .secondary : .primary)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+            }
+            .menuStyle(.borderlessButton)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 4)
+    }
+}
+
+/// The property-row list shown under whichever accordion section is
+/// currently expanded.  Same descriptor-driven rendering as before;
+/// kept as a separate view so each section's rows render in-place.
+private struct PropertyList: View {
+    let rows: [PropertyRow]
+    let bridge: RISEViewportBridge
+    let onCommitted: () -> Void
+
+    var body: some View {
+        if rows.isEmpty {
+            Text("No properties available.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.vertical, 4)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(rows) { row in
+                    PropertyRowView(
+                        row: row,
+                        onCommit: { newValue in
+                            _ = bridge.setPropertyName(row.name, value: newValue)
+                            onCommitted()
+                        },
+                        onScrubBegin: { bridge.beginPropertyScrub() },
+                        onScrubEnd:   { bridge.endPropertyScrub()   }
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }
 
@@ -189,11 +341,6 @@ private struct PropertyRowView: View {
                             kind: row.kind,
                             onScrubBegin: onScrubBegin,
                             onScrub: { newValue in
-                                // Live-commit on every drag tick so the
-                                // viewport renders the change in real
-                                // time.  The same `setProperty` path
-                                // that keyboard editing uses, so the
-                                // viewport sees these mutations identically.
                                 onCommit(newValue)
                             },
                             onScrubEnd: onScrubEnd
@@ -209,24 +356,12 @@ private struct PropertyRowView: View {
                                 onCommit(text)
                             }
                         }
-                    // Unit suffix — surfaces "mm" / "°" / "scene
-                    // units" next to the field so the user can tell
-                    // at a glance what unit a number is in (e.g. a
-                    // focal_length of "35" reads as "35 mm" rather
-                    // than possibly being misread as "35 metres").
                     if !row.unitLabel.isEmpty {
                         Text(row.unitLabel)
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
                             .fixedSize()
                     }
-                    // Quick-pick presets: rendered as a Menu next to
-                    // the line edit when the descriptor declared any.
-                    // Picking a preset writes the parser-acceptable
-                    // value through the same SetProperty path the
-                    // line edit uses, so undo/redo and re-render work
-                    // identically for both inputs.  The line edit
-                    // stays usable for arbitrary custom values.
                     if !row.presets.isEmpty {
                         Menu {
                             ForEach(row.presets) { preset in
@@ -268,8 +403,6 @@ private struct PropertyRowView: View {
         }
         .onAppear { text = row.initialValue }
         .onChange(of: row.initialValue) { _, newValue in
-            // Reflect external changes (e.g. user dragged the camera in
-            // the viewport) without overwriting an active edit.
             if !isFocused { text = newValue }
         }
     }
@@ -287,20 +420,6 @@ private func isScrubbable(kind: PropertyKind) -> Bool {
 
 /// The chevron handle that drives click-and-drag value scrubbing on
 /// numeric fields.  Drag up = increase, drag down = decrease.
-///
-/// Two rate regimes:
-///   • Angular fields (theta / phi / fov / pitch / yaw / roll):
-///     fixed 0.5°/px — matches the Orbit tool's sensitivity so the
-///     panel scrub and the viewport drag feel the same.
-///   • Everything else: proportional to the value magnitude
-///     (|v| × 0.005/px) with a floor of 1e-3 so values near zero can
-///     still scrub off zero.
-///
-/// Modifiers (held while dragging):
-///   • Shift  — 0.25× rate (fine control)
-///   • Option — 4×    rate (coarse control)
-///
-/// Cursor: vertical-resize while hovering the chevron and during the drag.
 private struct ScrubHandle: View {
     @Binding var text: String
     let name: String
@@ -322,9 +441,6 @@ private struct ScrubHandle: View {
             .foregroundColor(.secondary.opacity(dragStart == nil ? 0.7 : 1.0))
             .frame(width: 16, height: 18)
             .contentShape(Rectangle())
-            // NSCursor swap on hover so users discover that the icon
-            // is interactive.  Pop the pushed cursor on exit so the
-            // arrow returns when the pointer leaves the icon.
             .onHover { entered in
                 if entered { NSCursor.resizeUpDown.push() }
                 else       { NSCursor.pop() }
@@ -334,25 +450,16 @@ private struct ScrubHandle: View {
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { gesture in
                         if dragStart == nil {
-                            // First .onChanged callback of this drag;
-                            // capture the parsed initial value and Y,
-                            // then fire the scrub-begin callback so
-                            // the controller bumps preview-scale.
                             let v = Double(text) ?? 0
                             dragStart = ScrubStart(
                                 value: v,
                                 yOrigin: gesture.startLocation.y
                             )
-                            // Lock the resize cursor for the duration
-                            // of the drag — the .onHover toggle would
-                            // otherwise race with the pointer motion.
                             NSCursor.resizeUpDown.push()
                             onScrubBegin()
                         }
                         guard let start = dragStart else { return }
 
-                        // Drag up (smaller Y in flipped coordinate
-                        // space) increases the value.
                         let dy = start.yOrigin - gesture.location.y
 
                         var rate = scrubRate(name: name, value: start.value)
@@ -376,14 +483,6 @@ private struct ScrubHandle: View {
     }
 }
 
-/// Angular fields the camera descriptor surfaces — these get a fixed
-/// 0.5°/px rate (matching the Orbit tool's sensitivity).  Other
-/// numeric fields use the proportional rate so a 50-unit value and a
-/// 0.05-unit value both scrub at sensible speeds with the same
-/// gesture, but for angles the proportional rate is too slow at
-/// typical magnitudes (theta=30 → 0.15°/px → 100px = 15° feels
-/// sluggish).  `aperture_rotation` is a thinlens_camera angular field
-/// (polygon rotation in degrees) and uses the same convention.
 private func isAngularField(_ name: String) -> Bool {
     switch name {
     case "theta", "phi", "fov", "pitch", "yaw", "roll",
@@ -394,19 +493,11 @@ private func isAngularField(_ name: String) -> Bool {
     }
 }
 
-/// Per-pixel scrub rate.  Angular fields use a fixed 0.5/px (matches
-/// the Orbit tool's 0.0087 rad/px ≈ 0.5°/px).  Non-angular fields
-/// use a proportional rate with a 1e-3 magnitude floor so values at
-/// zero can still scrub off zero.
 private func scrubRate(name: String, value: Double) -> Double {
     if isAngularField(name) { return 0.5 }
     return max(abs(value), 1e-3) * 0.005
 }
 
-/// Format a scrubbed value back into the same textual form the C++
-/// FormatDouble / FormatUInt helpers produce (`%.6g` for doubles,
-/// integer for UInt clamped at zero).  Keeping the formatting in
-/// lockstep avoids round-trip drift across many small drags.
 private func formatValue(_ v: Double, kind: PropertyKind) -> String {
     switch kind {
     case .uint:

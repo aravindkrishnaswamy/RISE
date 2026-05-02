@@ -69,6 +69,13 @@ namespace RISE
 		//! Retrieves the material associated to this object
 		virtual const IMaterial* GetMaterial() const = 0;
 
+		//! Retrieves the shader associated with this object (or null
+		//! if none was assigned).  Default impl returns null for ABI
+		//! safety with out-of-tree implementers; concrete `Object`
+		//! overrides to return its `pShader` field.  Phase 3 added
+		//! this for the right-side panel's editable shader-name row.
+		virtual const class IShader* GetShader() const { return 0; }
+
 		//! Retrieves the interior medium of this object (NULL if vacuum)
 		virtual const IMedium* GetInteriorMedium() const = 0;
 		

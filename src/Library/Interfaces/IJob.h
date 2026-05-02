@@ -2552,6 +2552,79 @@ namespace RISE
 			const char* name,									///< [in] Name to register the geometry under
 			ITriangleMeshGeometryIndexed* pGeom					///< [in] Caller-owned, already-built geometry
 			) = 0;
+
+		//
+		// Rasterizer registry (interactive-editor accordion).
+		//
+		// Each successful Set*Rasterizer call registers the new
+		// instance under its scene-file chunk name (e.g.
+		// "bdpt_pel_rasterizer", "vcm_pel_rasterizer", legacy
+		// "pixelpel_rasterizer") AND makes it active.  A scene that
+		// declares two different rasterizer chunks ends up with both
+		// in the registry; the last-declared one wins for "active".
+		//
+		// SetActiveRasterizer rebinds the active pointer to a
+		// previously-registered entry without re-instantiating.  The
+		// interactive editor's accordion uses this to switch
+		// rasterizers — the analogue of SetActiveCamera for cameras.
+		// Returns false on null/empty name or unknown name.
+		//
+		// Phase-1 contract: only types the parser instantiated are
+		// registered.  Phase-2 will pre-instantiate the standard set
+		// (PT/BDPT/VCM/MLT × Pel/Spectral) at scene-load time with
+		// sensible defaults so any of them is selectable from the
+		// accordion regardless of what the scene declared.
+		//
+		// `GetRasterizerTypeCount` / `GetRasterizerTypeName` enumerate
+		// the registry by index.  `GetActiveRasterizerName` returns
+		// the type name of the currently-active entry (or empty when
+		// no rasterizer has been set).
+		//
+		// These methods carry default implementations rather than
+		// being pure-virtual: IJob is a public deployment surface and
+		// adding pure virtuals would force every implementer to
+		// override.  The defaults degrade to "no registry" — sensible
+		// behaviour for any subclass that hasn't opted into the
+		// rasterizer registry yet.  Concrete `Job` overrides them all.
+		//
+		// ABI POLICY: appending virtuals to `IJob` is binary-compat
+		// for the new-impl + old-caller direction (old call sites
+		// don't dispatch through the new slots), but NOT for the new-
+		// caller + old-impl direction — out-of-tree subclasses
+		// compiled against the pre-Phase-3 header have no slot here.
+		// RISE's policy is "in-tree IJob impls only; out-of-tree
+		// callers must rebuild against the matching header."  See
+		// docs/skills/abi-preserving-api-evolution.md for the full
+		// trade-off.  Out-of-tree IJob *callers* that don't dispatch
+		// through these methods are unaffected.
+		virtual bool        SetActiveRasterizer( const char* /*name*/ ) { return false; }
+		virtual std::string GetActiveRasterizerName() const { return std::string(); }
+		virtual unsigned int GetRasterizerTypeCount() const { return 0; }
+		virtual std::string GetRasterizerTypeName( unsigned int /*idx*/ ) const { return std::string(); }
+
+		//! Edit a single parameter on a registered rasterizer and
+		//! re-instantiate the underlying IRasterizer with the
+		//! modified value.  All other params come from the registry's
+		//! snapshot — preserving the scene file's chunk values for
+		//! params not touched by the edit.  Recognised param names:
+		//!   numSamples, maxEyeDepth, maxLightDepth, showLuminaires,
+		//!   mergeRadius (VCM), nBootstrap / nChains /
+		//!   nMutationsPerPixel / largeStepProb (MLT).  Default impl
+		//!   returns false for ABI safety; concrete `Job` overrides.
+		//! \return true on success; false on unknown rasterizer or
+		//!   unrecognised param name.
+		virtual bool SetRasterizerParameter(
+			const char* /*rasterizerName*/,
+			const char* /*paramName*/,
+			const char* /*valueStr*/ ) { return false; }
+
+		//! Read a single rasterizer parameter as a parser-formatted
+		//! string (so a round-trip through SetRasterizerParameter
+		//! gives back the same value).  Empty string for unknown
+		//! rasterizer / param.
+		virtual std::string GetRasterizerParameter(
+			const char* /*rasterizerName*/,
+			const char* /*paramName*/ ) const { return std::string(); }
 	};
 
 

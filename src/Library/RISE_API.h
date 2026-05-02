@@ -2701,6 +2701,19 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditTool_RollCamera       = 8
 	};
 
+	//! Category enum for the right-side accordion.  Mirrors
+	//! SceneEditController::Category.  Numeric values match
+	//! SceneEditController::PanelMode so the C-API can return either
+	//! as the same int.
+	enum SceneEditCategory
+	{
+		SceneEditCategory_None       = 0,
+		SceneEditCategory_Camera     = 1,
+		SceneEditCategory_Rasterizer = 2,
+		SceneEditCategory_Object     = 3,
+		SceneEditCategory_Light      = 4
+	};
+
 	//! Construct a SceneEditController over an existing job.
 	/// @param pJob                   Borrowed.  Must outlive the controller.
 	///                               In practice this is the same object
@@ -2792,10 +2805,13 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_RefreshProperties( SceneEditController* p );
 
 	//! Returns the panel-mode discriminator the platform UI uses to
-	//! decide whether the right-side panel renders a header / list:
-	//!   0 = None    (Select tool with no pick → empty panel)
-	//!   1 = Camera  (one of the camera-manipulator tools is active)
-	//!   2 = Object  (Select tool with a picked object)
+	//! decide whether the right-side panel renders a header / list.
+	//! Values match SceneEditCategory_*:
+	//!   0 = None
+	//!   1 = Camera
+	//!   2 = Rasterizer
+	//!   3 = Object
+	//!   4 = Light
 	//! Maps onto SceneEditController::PanelMode.  -1 on null controller.
 	int RISE_API_SceneEditController_PanelMode( SceneEditController* p );
 
@@ -2878,6 +2894,56 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! null controller / no camera attached / cache uninitialised.
 	bool RISE_API_SceneEditController_GetCameraDimensions(
 		SceneEditController* p, unsigned int* outW, unsigned int* outH );
+
+	// Accordion list entries -----------------------------------------
+	//
+	// The right-side panel renders one collapsible section per
+	// SceneEditCategory.  Each section's list of selectable rows is
+	// pulled by polling these getters.  The platform UIs cache the
+	// (epoch, category) → list mapping and refresh when SceneEpoch()
+	// advances.
+
+	//! Number of selectable entries in `category`.  Returns 0 for
+	//! Category::None or on null controller.
+	unsigned int RISE_API_SceneEditController_CategoryEntityCount(
+		SceneEditController* p, int category );
+
+	//! Display name for the `idx`-th entry of `category`.  Returns
+	//! false on null controller, out-of-range idx, or unknown
+	//! category.
+	bool RISE_API_SceneEditController_CategoryEntityName(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	// Selection (the accordion's "expanded section + picked row") ----
+
+	//! Current selection's category, mapped to SceneEditCategory_*.
+	//! -1 on null controller.
+	int RISE_API_SceneEditController_GetSelectionCategory(
+		SceneEditController* p );
+
+	//! Display name of the currently-selected entity within the
+	//! selected category.  Empty when the section is open with no row
+	//! highlighted.  Returns false on null controller.
+	bool RISE_API_SceneEditController_GetSelectionName(
+		SceneEditController* p, char* buf, unsigned int bufLen );
+
+	//! Apply a (category, name) selection.  Empty `name` selects the
+	//! category with no row picked (the section opens, the property
+	//! panel below shows nothing).  Camera / Rasterizer selections
+	//! also activate the named entity (calls SetActiveCamera /
+	//! SetActiveRasterizer respectively); Object / Light selections
+	//! are UI state only.  Returns false on null controller or
+	//! category-specific failures (e.g. unknown camera name).
+	bool RISE_API_SceneEditController_SetSelection(
+		SceneEditController* p, int category, const char* name );
+
+	//! Monotonic counter — bumped on any structural mutation that
+	//! could change a category's entity list.  Platform UIs cache
+	//! (epoch, category) → entity-name list and re-pull when this
+	//! advances.  0 on null controller.
+	unsigned int RISE_API_SceneEditController_SceneEpoch(
+		SceneEditController* p );
 }
 
 #endif
