@@ -56,6 +56,7 @@ namespace RISE
 {
 	class IScene;
 	class IRayCaster;
+	class IBSDF;
 
 	namespace Implementation
 	{
@@ -162,6 +163,53 @@ namespace RISE
 			/// parameter.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
 			bool			twoStage;
 
+			/// Seeding strategy for `EvaluateAtShadingPoint`.
+			///
+			///   `Snell` (default): trace a ray from the shading point toward
+			///   the sampled light, refracting at every specular surface
+			///   (RISE legacy).  Chain length emerges naturally from the
+			///   trace; the seed pdf is unknown analytically.
+			///
+			///   `Uniform`: iterate the cached `mSpecularCasters` list and
+			///   draw a uniform-area sample on each caster's surface;
+			///   continue the chain via SnellContinueChain.  Matches
+			///   Mitsuba's manifold_ss / manifold_ms.  Required for
+			///   principled geometric Bernoulli `1/p` estimation
+			///   (Zeltner 2020 §4.3 Algorithm 2 / §4.2).
+			///
+			/// Default `Snell` preserves backward compatibility.  Opt in
+			/// via the rasterizer's `sms_seeding "uniform"` parameter.
+			/// See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
+			enum SeedingMode {
+				eSeedingSnell   = 0,
+				eSeedingUniform = 1
+			};
+			SeedingMode		seedingMode;
+
+			/// Normalized-throughput gate for Fresnel branching at sub-
+			/// critical dielectric vertices during seed-chain construction.
+			/// Reuses the path-tracer's `StabilityConfig::branchingThreshold`
+			/// semantics (CLAUDE.md High-Value Fact): at each dielectric
+			/// hit, if the running chain throughput exceeds the threshold,
+			/// SPLIT the chain into both Fresnel-reflection and refraction
+			/// continuations (each becomes its own seed chain that runs
+			/// Newton independently and contributes its own throughput).
+			/// Below the threshold, Russian-roulette pick one branch
+			/// weighted by Fr; the trial contribution is divided by the
+			/// pick probability to remain unbiased.
+			///
+			///   `0.0` — always branch at every dielectric Fresnel decision
+			///           point (exhaustive 2^k chain enumeration).
+			///   `1.0` — never branch (legacy refraction-only seed; reflection
+			///           caustics on dielectric only found via TIR, photon-aided
+			///           seeds, or mirror materials).  **Default in this
+			///           struct's literal init below**, so direct constructor
+			///           callers preserve legacy behaviour; the rasterizer
+			///           layer overrides this with `stabilityConfig.branching-
+			///           Threshold` (default 0.5) at scene-prep so production
+			///           scenes get branching automatically.
+			Scalar			branchingThreshold;
+
 			ManifoldSolverConfig() :
 			enabled( false ),
 			maxIterations( 15 ),
@@ -174,7 +222,9 @@ namespace RISE
 			multiTrials( 1 ),
 			photonCount( 0 ),
 			photonSearchRadius( 0 ),
-			twoStage( false )
+			twoStage( false ),
+			seedingMode( eSeedingSnell ),
+			branchingThreshold( 1.0 )
 			{
 			}
 		};
@@ -205,7 +255,9 @@ namespace RISE
 		/// finds a valid path through a chain of specular surfaces using Newton
 		/// iteration on the specular constraint manifold.
 		class LightSampler;
+		struct LightSample;
 		class SMSPhotonMap;
+		struct SMSPhoton;
 
 		class ManifoldSolver :
 			public virtual IReference,
@@ -222,6 +274,16 @@ namespace RISE
 			/// falls back to the deterministic Snell seed only.
 			const SMSPhotonMap* pPhotonMap;
 
+			/// Cached list of objects whose material reports `isSpecular`.
+			/// Populated once at scene-prep time by the rasterizer (calls
+			/// EnumerateSpecularCasters on the scene, then SetSpecular-
+			/// Casters here).  Read-only during rendering — concurrent
+			/// render workers traverse it without locking.  Consumed by
+			/// uniform-on-shape seeding (Mitsuba-style; opt-in via
+			/// `ManifoldSolverConfig::seedingMode`).  Empty if the
+			/// rasterizer hasn't populated it.
+			std::vector<const IObject*> mSpecularCasters;
+
 			virtual ~ManifoldSolver();
 
 		public:
@@ -233,6 +295,27 @@ namespace RISE
 			/// nullptr to detach.
 			void SetPhotonMap( const SMSPhotonMap* pm ) { pPhotonMap = pm; }
 			const SMSPhotonMap* GetPhotonMap() const { return pPhotonMap; }
+
+			/// Attach the cached specular-caster list.  Call once at
+			/// scene-prep (after EnumerateSpecularCasters).  Pass an
+			/// empty vector to clear.
+			void SetSpecularCasters( std::vector<const IObject*> list ) {
+				mSpecularCasters = std::move( list );
+			}
+			const std::vector<const IObject*>& GetSpecularCasters() const {
+				return mSpecularCasters;
+			}
+
+			/// Scan the scene's object manager and collect every object
+			/// whose material reports `isSpecular`.  Each object is
+			/// queried via UniformRandomPoint(prand=(0.5,0.5,0.5))
+			/// to obtain a valid `RayIntersectionGeometric` for the
+			/// material's GetSpecularInfo call.  Result is appended to
+			/// `out` (not cleared) — callers manage the vector's lifetime.
+			static void EnumerateSpecularCasters(
+				const IScene& scene,
+				std::vector<const IObject*>& out
+				);
 
 			/// Main entry point: solve for a specular path connecting
 			/// shadingPoint to emitterPoint through the given chain of
@@ -266,6 +349,100 @@ namespace RISE
 			unsigned int BuildSeedChain(
 				const Point3& start,
 				const Point3& end,
+				const IScene& scene,
+				const IRayCaster& caster,
+				std::vector<ManifoldVertex>& chain
+				) const;
+
+			/// One result of `BuildSeedChainBranching`: a complete seed
+			/// chain plus the accumulated proposal pdf (product of per-
+			/// vertex Russian-roulette pick probabilities).  The caller
+			/// runs Newton on `chain` and divides the converged trial's
+			/// contribution by `proposalPdf` to keep the estimator
+			/// unbiased (the BSDF Fresnel factor already in
+			/// `EvaluateChainThroughput` cancels the proposal pdf for
+			/// RR-picked vertices, so the division is essential).
+			struct SeedChainResult {
+				std::vector<ManifoldVertex> chain;
+				Scalar proposalPdf = 1.0;
+			};
+
+			/// Branching seed-chain builder (Option C — reuses the path-
+			/// tracer's `branchingThreshold` semantics for SMS seed
+			/// construction).  At each sub-critical dielectric vertex:
+			///   - If running chain throughput > `config.branchingThreshold`,
+			///     SPLIT the chain into both Fresnel-reflection and
+			///     refraction continuations.  Each becomes a separate
+			///     output chain (full Newton-eligible seed) with the
+			///     same `proposalPdf` (no RR factor).
+			///   - Else, Russian-roulette pick one branch weighted by Fr;
+			///     multiply `proposalPdf` by the pick probability.
+			/// TIR is forced reflection (deterministic, no branch / RR).
+			/// Mirror materials are deterministic (single reflection
+			/// continuation).
+			///
+			/// Caller MUST divide each trial's contribution by
+			/// `proposalPdf` after running Newton — the contribution
+			/// formula in `EvaluateChainThroughput` includes the per-
+			/// vertex Fresnel factor, which cancels the proposal pdf for
+			/// RR'd vertices.
+			///
+			/// When `config.branchingThreshold == 1.0` (legacy default),
+			/// no branching ever fires; behaves like a stochastic-
+			/// Fresnel BuildSeedChain (Russian-roulette pick at every
+			/// dielectric vertex weighted by Fr).
+			///
+			/// When `config.branchingThreshold == 0.0`, every dielectric
+			/// vertex branches; total chain count is bounded by 2^k where
+			/// k is the chain length.
+			unsigned int BuildSeedChainBranching(
+				const Point3& start,
+				const Point3& end,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				std::vector<SeedChainResult>& out
+				) const;
+
+			/// Continues a manifold-seed chain by Snell-tracing a ray from
+			/// `currentOrigin` along `dir`, picking up specular hits as
+			/// ManifoldVertex entries in `chain`.  Stops at the first
+			/// non-specular hit, when no further intersection is found,
+			/// when total traced distance exceeds `maxDist * 3`, or when
+			/// the chain reaches `config.maxChainDepth`.
+			///
+			/// State arguments are mutated in-place — `currentIOR` and
+			/// `seedIor` reflect the post-trace medium / IOR-stack.
+			///
+			/// Used by both `BuildSeedChain` (the legacy "Snell-trace from
+			/// shading point toward light" entry) and the Mitsuba-style
+			/// uniform-on-shape SMS seeding path (where the first vertex
+			/// is sampled uniformly on a caster and subsequent vertices
+			/// are discovered by this routine).
+			///
+			/// \param currentOrigin  [in/out] Starting world-space point;
+			///                                set to the last hit on return.
+			/// \param dir            [in/out] Initial unit direction;
+			///                                updated to the post-Snell-trace
+			///                                direction after the last hit.
+			/// \param maxDist        Total expected distance (for the safety
+			///                       cutoff `range > maxDist*3`).
+			/// \param currentIOR     [in/out] Incident-medium IOR;
+			///                                updated as the trace pushes/pops
+			///                                IOR boundaries.
+			/// \param seedIor        [in/out] Per-object IOR stack;
+			///                                updated as above.
+			/// \param scene          Scene for ray casting.
+			/// \param caster         Ray caster (currently unused — reserved
+			///                       for visibility queries through occluders).
+			/// \param chain          [in/out] Vertices appended (not cleared).
+			/// \return Number of vertices appended in this call.
+			unsigned int SnellContinueChain(
+				Point3& currentOrigin,
+				Vector3& dir,
+				Scalar maxDist,
+				Scalar& currentIOR,
+				IORStack& seedIor,
 				const IScene& scene,
 				const IRayCaster& caster,
 				std::vector<ManifoldVertex>& chain
@@ -355,6 +532,39 @@ namespace RISE
 				ISampler& sampler
 				) const;
 
+			/// Uniform-on-shape SMS evaluator (Mitsuba-faithful single- /
+			/// multi-scatter; matches `manifold_ss::specular_manifold_sampling`
+			/// for k=1 and `manifold_ms::specular_manifold_sampling` via
+			/// SnellContinueChain for k>=2).
+			///
+			/// Iterates the cached `mSpecularCasters`.  For each caster:
+			///   1. Uniform-area sample on the caster surface.
+			///   2. Snell-traced seed chain shading-point→sampled-point
+			///      (this naturally produces k>=2 chains by following any
+			///      subsequent specular hits, and trips the
+			///      caster-mismatch-rejection when the visibility ray
+			///      lands somewhere unexpected).
+			///   3. Newton solve toward the same `lightSample` as the
+			///      Snell-mode path.
+			///   4. Per-caster contribution accumulated unweighted
+			///      (Mitsuba sums one independent estimate per caster
+			///      shape; no MIS over caster choice — see manifold_ss.cpp
+			///      lines 32-42).
+			///
+			/// Selected at runtime by `config.seedingMode == eSeedingUniform`.
+			/// Geometric Bernoulli `1/p` (Phase 5) and photon-aided trial
+			/// integration (Phase 7) layer on top of this scaffold.
+			SMSContribution EvaluateAtShadingPointUniform(
+				const Point3& pos,
+				const Vector3& normal,
+				const OrthonormalBasis3D& onb,
+				const IMaterial* pMaterial,
+				const Vector3& woOutgoing,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler
+				) const;
+
 			/// Spectral variant of SMS evaluation.
 			struct SMSContributionNM
 			{
@@ -364,6 +574,24 @@ namespace RISE
 
 				SMSContributionNM() : contribution( 0 ), misWeight( 1.0 ), valid( false ) {}
 			};
+
+			/// Spectral counterpart of `EvaluateAtShadingPointUniform`.
+			/// Iterates `mSpecularCasters` per-shading-point, runs M-trial
+			/// biased or geometric-Bernoulli unbiased Newton solves with
+			/// per-wavelength throughput, sums per-caster contributions
+			/// (no MIS over caster choice — Mitsuba pattern).  Selected
+			/// at runtime by `config.seedingMode == eSeedingUniform`.
+			SMSContributionNM EvaluateAtShadingPointNMUniform(
+				const Point3& pos,
+				const Vector3& normal,
+				const OrthonormalBasis3D& onb,
+				const IMaterial* pMaterial,
+				const Vector3& woOutgoing,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const Scalar nm
+				) const;
 
 			SMSContributionNM EvaluateAtShadingPointNM(
 				const Point3& pos,
@@ -402,6 +630,79 @@ namespace RISE
 				const Point3& lightPoint,
 				const std::vector<ManifoldVertex>& chain,
 				const IRayCaster& caster
+				) const;
+
+			/// Reverses a photon's recorded specular chain (stored in
+			/// photon-direction order: v[0] nearest light, v[k-1] nearest
+			/// diffuse) into an SMS seed chain (receiver-direction order:
+			/// v[0] nearest receiver, v[k-1] nearest light).  Flips
+			/// `isExiting` on refraction-only vertices; reflection-only
+			/// vertices are direction-symmetric so the flag is preserved.
+			///
+			/// Re-queries each vertex's material for `attenuation` /
+			/// `canRefract` (avoids relying on stale photon-deposit data).
+			/// Sets `mv.valid = false` so `Solve` recomputes derivatives.
+			///
+			/// `mv.etaI` / `mv.etaT` stay at the default 1.0 — RISE's
+			/// SMSPhoton storage doesn't carry IOR-stack snapshots, so
+			/// downstream half-vector / Fresnel math falls back to
+			/// air-on-other-side via `GetEffectiveEtas` (correct for
+			/// single-dielectric-in-air photons; wrong for nested
+			/// dielectrics — see `EvaluateAtShadingPointNM` for the
+			/// matching limitation).
+			///
+			/// \return Number of vertices written into `chain`.  Returns 0
+			///         when the photon's chain length is invalid.
+			unsigned int ReversePhotonChainForSeed(
+				const SMSPhoton& photon,
+				std::vector<ManifoldVertex>& chain
+				) const;
+
+			/// Computes a single converged trial's contribution at the
+			/// shading point.  Performs the visibility check, BSDF eval,
+			/// shading-point cosine, light-side cosine + Le, and the SMS
+			/// measure-conversion factor (G_x_v1 * |det dv/dy|).
+			///
+			/// Returns false (and `outContribution = 0`, `outDir = (0,0,0)`)
+			/// for any of the bail-out conditions:
+			///   - Distance to first specular vertex < 1e-8.
+			///   - External-segment visibility blocked.
+			///   - BSDF max channel <= 0 at the shading point.
+			///   - cos at shading point <= 0.
+			///   - Distance from last specular to light < 1e-8 / cos at
+			///     light <= 0 for area lights.
+			///
+			/// Used by both `EvaluateAtShadingPoint` (snell mode) and
+			/// `EvaluateAtShadingPointUniform` (Mitsuba-faithful uniform
+			/// mode), and by both their photon-aided extension paths.
+			/// The spectral counterpart `ComputeTrialContributionNM`
+			/// performs the same logic on `Scalar` per-wavelength.
+			bool ComputeTrialContribution(
+				const Point3& pos,
+				const Vector3& normal,
+				const OrthonormalBasis3D& onb,
+				const Vector3& woOutgoing,
+				const IBSDF* pBSDF,
+				const LightSample& lightSample,
+				const ManifoldResult& mResult,
+				const IRayCaster& caster,
+				Vector3& outDir,
+				RISEPel& outContribution
+				) const;
+
+			/// Spectral counterpart of `ComputeTrialContribution`.
+			bool ComputeTrialContributionNM(
+				const Point3& pos,
+				const Vector3& normal,
+				const OrthonormalBasis3D& onb,
+				const Vector3& woOutgoing,
+				const IBSDF* pBSDF,
+				const LightSample& lightSample,
+				const ManifoldResult& mResult,
+				const IRayCaster& caster,
+				const Scalar nm,
+				Vector3& outDir,
+				Scalar& outContribution
 				) const;
 
 			// ============================================================

@@ -63,6 +63,17 @@
 
 namespace RISE
 {
+	/// Parser-facing seeding-mode selector.  Mirrors
+	/// `Implementation::ManifoldSolverConfig::SeedingMode` so the
+	/// scene-language layer carries the same vocabulary as the solver.
+	/// Adding a new mode (e.g. PMS-only, Specular-Polynomials,
+	/// MPG-learned) extends this enum, and the parser's string→enum
+	/// table at `AsciiSceneParser.cpp` maps the new value cleanly.
+	enum class SMSSeedingMode {
+		Snell   = 0,   ///< Legacy: Snell-traced seed shading-point→light.
+		Uniform = 1    ///< Mitsuba-faithful: uniform-area on each caustic caster.
+	};
+
 	struct SMSConfig
 	{
 		bool			enabled;			///< Master switch; default false (SMS off unless the scene opts in)
@@ -74,6 +85,7 @@ namespace RISE
 		unsigned int	multiTrials;		///< Independent Newton solves per evaluation (Zeltner 2020); default 1 = single-solve Snell seed.  >1 uncovers separate basins on bumpy surfaces at proportional cost.
 		unsigned int	photonCount;		///< Photon-aided seed budget; default 0 = off.  >0 builds an SMSPhotonMap for seeds on caustics the deterministic seed misses.
 		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5).  When enabled, Newton first runs on a smoothed reference surface (smoothing=1: underlying analytical base, no displacement) to escape the C1-discontinuity plateau on Phong-shaded triangle meshes, then refines on the actual surface (smoothing=0).  Default false; opt-in via `sms_two_stage TRUE`.  No-op when the specular geometry doesn't expose a smoothing-aware analytical query.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
+		SMSSeedingMode	seedingMode;		///< Seeding strategy for `EvaluateAtShadingPoint`.  Default `Snell` (RISE legacy: trace from shading point toward light, refracting at every specular surface).  `Uniform` = Mitsuba-faithful uniform-area sample on each cached caster shape, then SnellContinue (required for principled geometric Bernoulli `1/p` per Zeltner 2020 §4.3 Algorithm 2).  Opt-in via `sms_seeding "uniform"`.  See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
 
 		SMSConfig() :
 		  enabled( false ),
@@ -84,7 +96,8 @@ namespace RISE
 		  bernoulliTrials( 100 ),
 		  multiTrials( 1 ),
 		  photonCount( 0 ),
-		  twoStage( false )
+		  twoStage( false ),
+		  seedingMode( SMSSeedingMode::Snell )
 		{
 		}
 	};

@@ -43,8 +43,9 @@ pathtracing_pel_rasterizer
 	sms_threshold                 1e-4
 	sms_max_chain_depth           10
 	sms_biased                    TRUE
-	sms_multi_trials              16
-	sms_photon_count              100000
+#	sms_multi_trials              16
+#	sms_photon_count              100000
+	sms_seeding						uniform
 }
 
 file_rasterizeroutput
@@ -241,7 +242,7 @@ displaced_geometry
 	base_geometry		egg_outer_geom
 	detail				128
 	displacement		pnt_egg_bumps
-	disp_scale			20.0
+	disp_scale			10.0
 }
 
 ellipsoid_geometry

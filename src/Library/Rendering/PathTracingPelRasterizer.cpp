@@ -80,11 +80,23 @@ void PathTracingPelRasterizer::PreRenderSetup(
 {
 	PixelBasedPelRasterizer::PreRenderSetup( pScene, pRect );
 
-	if( mSMSPhotonCount == 0 || !pIntegrator ) {
+	if( !pIntegrator ) {
 		return;
 	}
 	ManifoldSolver* pSolver = pIntegrator->GetSolver();
 	if( !pSolver ) {
+		return;
+	}
+
+	// Cache the scene's specular casters once for the SMS uniform-seeding
+	// path (Mitsuba-faithful single-/multi-scatter; consumed in a later
+	// implementation phase).  Cheap to do unconditionally — runs once per
+	// render and only iterates objects that have a material attached.
+	std::vector<const IObject*> casters;
+	ManifoldSolver::EnumerateSpecularCasters( pScene, casters );
+	pSolver->SetSpecularCasters( std::move( casters ) );
+
+	if( mSMSPhotonCount == 0 ) {
 		return;
 	}
 

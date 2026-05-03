@@ -31,6 +31,9 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IBSDF.h"
+#include "../Interfaces/IEnumCallback.h"
+#include "IndependentSampler.h"
+#include "RandomNumbers.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Lights/LightSampler.h"
 #include <cmath>
@@ -2493,6 +2496,128 @@ bool ManifoldSolver::NewtonSolve(
 }
 
 //////////////////////////////////////////////////////////////////////
+// SMSLoopSampler — sampler-dimension-drift firewall
+//
+//   Wraps a fresh RandomNumberGenerator + IndependentSampler in one
+//   stack-scoped object.  Construct from the parent sampler at the
+//   top of each `EvaluateAtShadingPoint*` entry; pass `.sampler` into
+//   variable-count internal work (M-trial loop, Bernoulli K-loop,
+//   `EstimatePDF`, `Solve`).
+//
+//   The parent sampler advances by exactly TWO 1-D dimensions
+//   (regardless of how many internal trials run) when constructing
+//   this scope, so an LDS sampler (Sobol etc.) keeps a predictable
+//   dimension stream — `EvaluateAtShadingPoint*` no longer pollutes
+//   downstream call sites.  The internal RNG is seeded from those
+//   two dimensions via a multiplicative hash, so each pixel sample
+//   gets a different RNG state and the variable-count work stays
+//   i.i.d.-uniform (matches Mitsuba's purely-RNG SMS implementation).
+//
+//   Member-init order is intentional: `rng` declared first so its
+//   constructor runs before `sampler`'s reference is bound.
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+	struct SMSLoopSampler {
+		RandomNumberGenerator rng;
+		IndependentSampler    sampler;
+
+		explicit SMSLoopSampler( ISampler& parent )
+			: rng( deriveSeed( parent ) ), sampler( rng ) {}
+
+	private:
+		static unsigned int deriveSeed( ISampler& parent ) {
+			const Scalar s0 = parent.Get1D();
+			const Scalar s1 = parent.Get1D();
+			const unsigned int a = static_cast<unsigned int>( s0 * 4294967295.0 );
+			const unsigned int b = static_cast<unsigned int>( s1 * 4294967295.0 );
+			// Golden-ratio multiplicative hash combine — decorrelates
+			// the two parent draws so adjacent LDS dimension pairs
+			// produce well-spread RNG seeds.
+			return a ^ ( b * 2654435761u );
+		}
+	};
+}
+
+//////////////////////////////////////////////////////////////////////
+// EnumerateSpecularCasters (static)
+//
+//   Walk the scene's object manager once and collect every object
+//   whose material reports `isSpecular`.  Used to build the cached
+//   list consumed by uniform-on-shape SMS seeding (Mitsuba-faithful
+//   single-/multi-scatter).  Each object is sampled at its
+//   (0.5, 0.5, 0.5) parametric centre via UniformRandomPoint to get
+//   a valid RayIntersectionGeometric for the GetSpecularInfo query
+//   — this matters for materials whose painters are textured
+//   functions of (u, v).
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+	class SpecularCasterCollector : public IEnumCallback<IObject>
+	{
+	public:
+		std::vector<const IObject*>& out;
+		explicit SpecularCasterCollector( std::vector<const IObject*>& o ) : out( o ) {}
+
+		bool operator()( const IObject& obj ) override
+		{
+			const IMaterial* pMat = obj.GetMaterial();
+			if( !pMat ) {
+				return true;   // continue enumeration
+			}
+
+			// Probe at several deterministic prands.  A `SwitchPel`-style
+			// painter that keys off (u, v) and reports `isSpecular` only
+			// in some patches must still classify the object as a caster
+			// — single-point probes at (0.5, 0.5, 0.5) misclassify those.
+			static const Point3 kProbes[] = {
+				Point3( 0.5, 0.5, 0.5 ),
+				Point3( 0.25, 0.5, 0.75 ),
+				Point3( 0.75, 0.25, 0.25 )
+			};
+
+			for( const Point3& prand : kProbes )
+			{
+				Point3 p;
+				Vector3 n;
+				Point2 uv;
+				obj.UniformRandomPoint( &p, &n, &uv, prand );
+
+				Ray dummyRay( p, n );
+				RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
+				rig.bHit          = true;
+				rig.ptIntersection = p;
+				rig.vNormal       = n;
+				rig.ptCoord       = uv;
+
+				IORStack iorStack( 1.0 );
+				SpecularInfo specInfo = pMat->GetSpecularInfo( rig, iorStack );
+
+				if( specInfo.isSpecular ) {
+					out.push_back( &obj );
+					break;   // any single-probe positive accepts; don't double-add
+				}
+			}
+			return true;   // continue enumeration
+		}
+	};
+}
+
+void ManifoldSolver::EnumerateSpecularCasters(
+	const IScene& scene,
+	std::vector<const IObject*>& out
+	)
+{
+	const IObjectManager* pObjMgr = scene.GetObjects();
+	if( !pObjMgr ) {
+		return;
+	}
+
+	SpecularCasterCollector collector( out );
+	pObjMgr->EnumerateObjects( collector );
+}
+
+//////////////////////////////////////////////////////////////////////
 // BuildSeedChain
 //
 //   Traces a ray from start toward end, following refraction at each
@@ -2536,26 +2661,71 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		return 0;
 	}
 
+	// Initial seed: the ray walks from the shading point toward the light
+	// sample.  Medium starts as air (IOR=1.0).  Snell-continue handles the
+	// per-vertex push/pop, vertex creation, and ray refraction.
+	Point3 currentOrigin = start;
+	Scalar currentIOR = 1.0;
+	IORStack seedIor( 1.0 );
+
+	return SnellContinueChain(
+		currentOrigin, dir, totalDist,
+		currentIOR, seedIor,
+		scene, caster, chain );
+}
+
+//////////////////////////////////////////////////////////////////////
+// SnellContinueChain
+//
+//   Continues the seed-chain construction from a starting state
+//   (currentOrigin, dir, currentIOR, seedIor) by ray-tracing forward
+//   and Snell-refracting / mirror-reflecting at every specular hit.
+//   Stops at the first non-specular hit, no-more-intersection, or
+//   safety-distance cutoff.  See the header doc-comment for full
+//   semantics.
+//
+//   Extracted from BuildSeedChain in Phase 3 of the Mitsuba-faithful
+//   SMS port (docs/SMS_UNIFORM_SEEDING_PLAN.md): used by both the
+//   legacy Snell-trace seed entry AND the uniform-on-shape Mitsuba-
+//   faithful seed entry (where the first vertex is sampled and we
+//   need to extend the chain through any subsequent specular hits).
+//////////////////////////////////////////////////////////////////////
+
+unsigned int ManifoldSolver::SnellContinueChain(
+	Point3& currentOrigin,
+	Vector3& dir,
+	Scalar maxDist,
+	Scalar& currentIOR,
+	IORStack& seedIor,
+	const IScene& scene,
+	const IRayCaster& caster,
+	std::vector<ManifoldVertex>& chain
+	) const
+{
+	(void)caster;   // reserved for future visibility queries
+
 	const IObjectManager* pObjMgr = scene.GetObjects();
-	if( !pObjMgr )
-	{
+	if( !pObjMgr ) {
 		return 0;
 	}
 
-	Point3 currentOrigin = start;
 	const Scalar offsetEps = 1e-2;
+	const std::size_t startSize = chain.size();
 
-	// Medium tracking:
-	//   - `currentIOR` (Scalar) is the physical incident-side IOR along the ray.
-	//   - `seedIor` (IORStack) is ONLY used for object-identity tracking:
-	//     `containsCurrent()` catches the same-IObject*-crossed-twice case
-	//     (thin double-sided displaced mesh) where a straight cosI sign
-	//     test would mis-classify the second crossing as entering.
-	// For multi-object slabs (two planes with opposite outward normals),
-	// cosI sign still decides entering/exiting because each plane is a
-	// distinct IObject* and the IOR stack never flags them.
-	Scalar currentIOR = 1.0;
-	IORStack seedIor( 1.0 );
+#if defined(SMS_TRACE_DIAGNOSTIC) && SMS_TRACE_DIAGNOSTIC
+	// Trace gate: snapshot the entry origin once, mirror BuildSeedChain's
+	// "shading-point near (0,0,0)" heuristic from before the refactor.
+	const Point3 traceOrigin = currentOrigin;
+	static std::atomic<int> g_scc{ 0 };
+	const bool traceBSC =
+		( std::fabs( traceOrigin.x ) < 0.02 ) &&
+		( std::fabs( traceOrigin.z ) < 0.02 ) &&
+		( traceOrigin.y >= -0.02 && traceOrigin.y <= 0.02 ) &&
+		( g_scc.fetch_add( 1, std::memory_order_relaxed ) < 5 );
+#endif
+
+	// Medium tracking semantics: see BuildSeedChain doc-comment.  This
+	// function mutates the IOR stack in place.
 
 	for( unsigned int depth = 0; depth < config.maxChainDepth; depth++ )
 	{
@@ -2613,7 +2783,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		}
 
 		// Safety: don't trace forever
-		if( ri.geometric.range > totalDist * 3.0 )
+		if( ri.geometric.range > maxDist * 3.0 )
 		{
 			break;
 		}
@@ -2818,7 +2988,400 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		currentOrigin = ri.geometric.ptIntersection;
 	}
 
-	return static_cast<unsigned int>( chain.size() );
+	return static_cast<unsigned int>( chain.size() - startSize );
+}
+
+//////////////////////////////////////////////////////////////////////
+// BuildSeedChainBranching
+//
+//   Branching seed-chain builder.  At each sub-critical dielectric
+//   vertex, decides between SPLITTING the chain into both Fresnel-
+//   reflection and refraction continuations (when running throughput
+//   exceeds `config.branchingThreshold`) or Russian-roulette picking
+//   one branch weighted by Fr (otherwise).  See header doc-comment
+//   for the math and the caller's `contribution / proposalPdf` step.
+//
+//   Implemented iteratively with a stack of partial-chain "frames"
+//   to bound the worst-case fan-out at 2^k (k = chain length) and
+//   avoid recursive call cost.  Frames are moved through the stack;
+//   the reflection branch copies its frame's chain because both
+//   branches need an unmodified prefix, the refraction branch is the
+//   moved tail.
+//////////////////////////////////////////////////////////////////////
+
+unsigned int ManifoldSolver::BuildSeedChainBranching(
+	const Point3& start,
+	const Point3& end,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	std::vector<SeedChainResult>& out
+	) const
+{
+	(void)caster;
+	out.clear();
+
+	Vector3 initialDir = Vector3Ops::mkVector3( end, start );
+	const Scalar totalDist = Vector3Ops::NormalizeMag( initialDir );
+	if( totalDist < NEARZERO ) return 0;
+
+	const IObjectManager* pObjMgr = scene.GetObjects();
+	if( !pObjMgr ) return 0;
+
+	// Per-frame state: a partial chain mid-construction.  Stack-
+	// based traversal so we can branch by pushing one extra frame.
+	//
+	// Throughput-gated branching — every dielectric vertex with
+	// running throughput > `config.branchingThreshold` produces TWO
+	// continuation chains (reflect + refract).  Once throughput
+	// decimates below the gate, subsequent Fresnel-decision vertices
+	// fall back to Russian-roulette pick weighted by Fr (recorded in
+	// `proposalPdf`).  Total chain count is bounded at 2^k (k = chain
+	// length) but in practice self-limits because each reflection
+	// branch's throughput drops by factor Fr ≈ 0.04 — those branches
+	// are immediately below threshold and don't re-split.
+	//
+	// Note: this is more aggressive than PT's `!splitFired` semantic
+	// (which splits once per camera ray).  SMS needs the fuller
+	// branching because each chain represents a distinct caustic
+	// path that contributes its own energy — refract-refract,
+	// refract-reflect, and reflect-only at v0 are all physically
+	// separate paths through nested dielectrics, each with its own
+	// caustic.  Single-split would miss the refract-reflect class.
+	struct Frame {
+		std::vector<ManifoldVertex> chain;
+		Point3                     currentOrigin;
+		Vector3                    dir;
+		Scalar                     currentIOR;
+		IORStack                   seedIor;
+		Scalar                     throughput;   // running max(Fresnel-factor) product
+		Scalar                     proposalPdf;  // running RR-pick pdf product
+
+		Frame()
+			: currentOrigin( 0, 0, 0 )
+			, dir( 0, 0, 0 )
+			, currentIOR( 1.0 )
+			, seedIor( 1.0 )
+			, throughput( 1.0 )
+			, proposalPdf( 1.0 )
+		{}
+	};
+
+	const Scalar offsetEps   = 1e-2;
+	const Scalar bThreshold  = config.branchingThreshold;
+	const unsigned int maxDepth = config.maxChainDepth;
+	const unsigned int maxFrames = 1u << 8;   // safety cap (2^k can blow up; bound it)
+	unsigned int framesPopped = 0;
+
+	std::vector<Frame> active;
+	active.reserve( 8 );
+	{
+		Frame f0;
+		f0.currentOrigin = start;
+		f0.dir           = initialDir;
+		active.push_back( std::move( f0 ) );
+	}
+
+	while( !active.empty() )
+	{
+		Frame f = std::move( active.back() );
+		active.pop_back();
+
+		// Outer safety: cap total work per call.  Cheaper than letting
+		// pathological scenes (e.g. many overlapping dielectric layers)
+		// produce 2^k frames.
+		if( ++framesPopped > maxFrames ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
+
+		// Depth cap — emit chain as terminal.
+		if( f.chain.size() >= maxDepth ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
+
+		// Single ray-cast step.
+		Point3 offsetOrigin = Point3Ops::mkPoint3(
+			f.currentOrigin, f.dir * offsetEps );
+		Ray ray( offsetOrigin, f.dir );
+		RayIntersection ri( ray, nullRasterizerState );
+		pObjMgr->IntersectRay( ri, true, true, false );
+		if( ri.geometric.bHit && ri.pModifier ) {
+			ri.pModifier->Modify( ri.geometric );
+		}
+
+		if( !ri.geometric.bHit ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
+
+		// Self-intersection guard — re-step from the just-hit surface.
+		if( ri.geometric.range < offsetEps * 2.0 && !f.chain.empty() &&
+			ri.pObject == f.chain.back().pObject )
+		{
+			f.currentOrigin = Point3Ops::mkPoint3(
+				ri.geometric.ptIntersection, f.dir * offsetEps );
+			active.push_back( std::move( f ) );
+			continue;
+		}
+
+		// Safety: don't trace forever.
+		if( ri.geometric.range > totalDist * 3.0 ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
+
+		const IMaterial* pMat = ri.pMaterial;
+		if( !pMat ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
+
+		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, f.seedIor );
+		if( !specInfo.isSpecular ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
+
+		// Build the vertex once — branch logic mutates `isReflection`
+		// after pushing.
+		ManifoldVertex mv;
+		mv.position    = ri.geometric.ptIntersection;
+		mv.normal      = ri.geometric.vNormal;
+		mv.uv          = ri.geometric.ptCoord;
+		mv.pObject     = ri.pObject;
+		mv.pMaterial   = pMat;
+		mv.eta         = specInfo.ior;
+		mv.attenuation = specInfo.attenuation;
+		mv.canRefract  = specInfo.canRefract;
+		mv.isReflection = !specInfo.canRefract;
+		mv.valid       = false;
+
+		f.seedIor.SetCurrentObject( ri.pObject );
+		const bool sameObjectAgain = f.seedIor.containsCurrent();
+		const Scalar cosI = Vector3Ops::Dot( f.dir, mv.normal );
+		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
+		mv.isExiting = !bEntering;
+		if( bEntering ) {
+			mv.etaI = f.currentIOR;
+			mv.etaT = specInfo.ior;
+		} else {
+			mv.etaI = specInfo.ior;
+			mv.etaT = f.currentIOR;
+		}
+
+		f.chain.push_back( mv );
+		const std::size_t idxJustPushed = f.chain.size() - 1;
+		const Point3 hitPos = ri.geometric.ptIntersection;
+
+		// Pure mirror — single continuation, no branch / RR.
+		if( !specInfo.canRefract ) {
+			const Scalar cosI_refl = -Vector3Ops::Dot( f.dir, mv.normal );
+			f.dir = f.dir + mv.normal * (2.0 * cosI_refl);
+			f.dir = Vector3Ops::Normalize( f.dir );
+			f.currentOrigin = hitPos;
+			f.throughput *= ColorMath::MaxValue( specInfo.attenuation );
+			active.push_back( std::move( f ) );
+			continue;
+		}
+
+		// Dielectric: compute the refraction-side geometry first so the
+		// reflection branch can borrow `cosI2` (Fresnel argument) and
+		// the refraction branch can use `etaRatio` / `sin2T`.
+		Vector3 nFace = mv.normal;
+		Scalar etaRatio;
+		if( bEntering ) {
+			etaRatio = f.currentIOR / specInfo.ior;
+		} else {
+			etaRatio = specInfo.ior / f.currentIOR;
+			if( Vector3Ops::Dot( f.dir, nFace ) > 0 ) nFace = nFace * (-1.0);
+		}
+		if( Vector3Ops::Dot( f.dir, nFace ) > 0 ) nFace = nFace * (-1.0);
+
+		const Scalar cosI2 = -Vector3Ops::Dot( f.dir, nFace );
+		const Scalar sin2T = etaRatio * etaRatio * (1.0 - cosI2 * cosI2);
+
+		// TIR — forced reflection.  No Fresnel branch / RR.
+		if( sin2T > 1.0 ) {
+			f.chain[ idxJustPushed ].isReflection = true;
+			f.dir = f.dir + nFace * (2.0 * cosI2);
+			f.dir = Vector3Ops::Normalize( f.dir );
+			f.currentOrigin = hitPos;
+			active.push_back( std::move( f ) );
+			continue;
+		}
+
+		// Sub-critical dielectric: Fresnel decision point.
+		const Scalar Fr = ComputeDielectricFresnel( cosI2, mv.etaI, mv.etaT );
+		// Branch at every dielectric vertex whose running throughput
+		// is high enough — this is "Option B for the first N levels,
+		// then Option A in the tail" as the throughput naturally
+		// decimates with each Fresnel multiplication.  Unlike PT (which
+		// splits once per camera ray because later recursive frames
+		// inherit splitFired), SMS enumerates distinct caustic chains
+		// — refract-refract, refract-reflect, reflect-only at v0 are
+		// each separate physical paths that contribute their own
+		// caustic.  Single-split would miss the refract-reflect-refract
+		// class on nested dielectrics (e.g. Veach-egg's outer-then-
+		// inner-cavity reflection caustic), which is exactly the
+		// energy we're trying to recover.
+		const bool shouldBranch = ( f.throughput > bThreshold );
+
+		// Refraction continuation — built from f (or its post-RR-pick
+		// state) into either the same f or a fresh frame depending on
+		// branching.
+		auto applyRefraction = [&]( Frame& target, Scalar weight, Scalar pdfFactor ) {
+			const Scalar cosT = std::sqrt( 1.0 - sin2T );
+			target.dir = target.dir * etaRatio + nFace * (etaRatio * cosI2 - cosT);
+			target.dir = Vector3Ops::Normalize( target.dir );
+			if( bEntering ) {
+				target.currentIOR = specInfo.ior;
+				target.seedIor.SetCurrentObject( ri.pObject );
+				target.seedIor.push( specInfo.ior );
+			} else {
+				if( sameObjectAgain ) {
+					target.seedIor.SetCurrentObject( ri.pObject );
+					target.seedIor.pop();
+					target.currentIOR = target.seedIor.top();
+				} else {
+					target.currentIOR = 1.0;
+				}
+				target.chain[ idxJustPushed ].etaT = target.currentIOR;
+			}
+			target.currentOrigin = hitPos;
+			target.throughput   *= weight;
+			target.proposalPdf  *= pdfFactor;
+		};
+
+		auto applyReflection = [&]( Frame& target, Scalar weight, Scalar pdfFactor ) {
+			target.chain[ idxJustPushed ].isReflection = true;
+			target.dir = target.dir + nFace * (2.0 * cosI2);
+			target.dir = Vector3Ops::Normalize( target.dir );
+			target.currentOrigin = hitPos;
+			target.throughput   *= weight;
+			target.proposalPdf  *= pdfFactor;
+		};
+
+		if( shouldBranch )
+		{
+			// Branch: spawn the reflection continuation and move the
+			// original f onto the refraction branch.
+			//
+			// Reflection branch — uniform-area-resampled v_i.
+			//
+			//   The Snell-trace places this just-pushed vertex in the
+			//   REFRACTION-root basin (that's where it hit on the way
+			//   through).  Newton walking the chain from there to the
+			//   REFLECTION-root basin diverges most of the time —
+			//   verified via per-seed convergence stats: 87% solveOK
+			//   on refract-refract vs 0% on the reflect-only chain at
+			//   the same v0 position.
+			//
+			//   Fix: for the reflection branch, REPLACE the just-pushed
+			//   vertex's position with a uniform-area sample on the
+			//   same caster (Mitsuba `manifold_ss::sample_path`-style).
+			//   Across many spp, uniform-area sampling reaches every
+			//   reflection-root basin statistically — Newton then
+			//   converges from a seed that's actually near the root.
+			//
+			//   Visibility check: the ray from `start` to the new
+			//   position must hit this caster as the FIRST specular
+			//   interaction (matches Mitsuba's `si_init.shape != shape`
+			//   rejection).  If blocked, the reflection branch is
+			//   dropped (correctly biased toward zero — the path
+			//   doesn't physically exist for this shading point).
+			//
+			//   The resulting chain is TRUNCATED at this vertex (k = i+1)
+			//   — we don't continue Snell-tracing from the reflected
+			//   ray because the new uniform-sampled position has no
+			//   meaningful "continuing" trace direction.  Multi-bounce
+			//   reflection chains beyond the split point are not
+			//   captured here; that's a deeper extension (deferred).
+			//
+			//   The refraction branch is UNCHANGED — keeps the Snell-
+			//   trace seed where Newton converges reliably.
+			{
+				Frame reflectFrame = f;   // deep-copy chain + IORStack
+				ManifoldVertex& vi = reflectFrame.chain[ idxJustPushed ];
+
+				Point3 sampledPos;
+				Vector3 sampledNormal;
+				Point2 sampledUv;
+				mv.pObject->UniformRandomPoint(
+					&sampledPos, &sampledNormal, &sampledUv,
+					Point3( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() ) );
+
+				// Visibility from start to the new sampled position.
+				// We re-use the ray-cast result for accurate hit data
+				// (modifier-aware, matching the rest of BuildSeedChain).
+				Vector3 dirToSample = Vector3Ops::mkVector3( sampledPos, start );
+				const Scalar distToSample = Vector3Ops::NormalizeMag( dirToSample );
+
+				bool reflectAccepted = false;
+				if( distToSample > NEARZERO )
+				{
+					Ray visRay( start, dirToSample );
+					RayIntersection visRi( visRay, nullRasterizerState );
+					pObjMgr->IntersectRay( visRi, true, true, false );
+					if( visRi.geometric.bHit && visRi.pModifier ) {
+						visRi.pModifier->Modify( visRi.geometric );
+					}
+
+					if( visRi.geometric.bHit && visRi.pObject == mv.pObject )
+					{
+						vi.position    = visRi.geometric.ptIntersection;
+						vi.normal      = visRi.geometric.vNormal;
+						vi.uv          = visRi.geometric.ptCoord;
+						vi.isReflection = true;
+						vi.valid       = false;
+
+						// Determine entering vs exiting from the new
+						// trace direction at the sampled point.
+						const Scalar cosI_new = Vector3Ops::Dot( dirToSample, vi.normal );
+						const bool bEnt = ( cosI_new < 0 );
+						vi.isExiting = !bEnt;
+						if( bEnt ) {
+							vi.etaI = 1.0;   // assume air on the start side at v0
+							vi.etaT = mv.eta;
+						} else {
+							vi.etaI = mv.eta;
+							vi.etaT = 1.0;
+						}
+
+						// Truncate the chain at this vertex (k = idxJustPushed + 1)
+						reflectFrame.chain.resize( idxJustPushed + 1 );
+						reflectFrame.throughput *= Fr;
+						out.push_back( SeedChainResult{
+							std::move( reflectFrame.chain ),
+							reflectFrame.proposalPdf } );
+						reflectAccepted = true;
+					}
+				}
+				(void)reflectAccepted;   // dropped silently if false
+			}
+
+			// Refraction branch — Snell-trace continues unchanged.
+			applyRefraction( f, 1.0 - Fr, 1.0 );
+			active.push_back( std::move( f ) );
+		}
+		else
+		{
+			// RR pick weighted by Fr.  Multiplying `proposalPdf` by Fr
+			// (or 1-Fr) ensures the caller's `contribution / proposalPdf`
+			// cancels the BSDF's Fresnel factor (`EvaluateChainThroughput`
+			// returns `Fr` for reflection / `1-Fr` for refraction).
+			const Scalar u = sampler.Get1D();
+			if( u < Fr ) {
+				applyReflection( f, Fr, Fr );
+			} else {
+				applyRefraction( f, 1.0 - Fr, 1.0 - Fr );
+			}
+			active.push_back( std::move( f ) );
+		}
+	}
+
+	return static_cast<unsigned int>( out.size() );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -3902,6 +4465,265 @@ ManifoldResult ManifoldSolver::Solve(
 //   SMSShaderOp call.
 //////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////
+// ReversePhotonChainForSeed
+//
+//   Converts a photon's recorded chain (light->diffuse) into an
+//   SMS seed chain (receiver->light) by reversing the order and
+//   flipping isExiting on refraction-only vertices.  Re-queries
+//   each material to recover attenuation / canRefract flags that
+//   the photon record doesn't carry.
+//
+//   See header doc-comment for caveats around `etaI`/`etaT` (left
+//   at default 1.0 because SMSPhoton storage doesn't snapshot the
+//   IOR stack).
+//////////////////////////////////////////////////////////////////////
+
+unsigned int ManifoldSolver::ReversePhotonChainForSeed(
+	const SMSPhoton& photon,
+	std::vector<ManifoldVertex>& chain
+	) const
+{
+	const unsigned int k = photon.chainLen;
+	if( k == 0 || k > kSMSMaxPhotonChain ) {
+		return 0;
+	}
+
+	chain.resize( k );
+	IORStack queryIor( 1.0 );
+	for( unsigned int i = 0; i < k; i++ )
+	{
+		const SMSPhotonChainVertex& pv = photon.chain[ k - 1 - i ];
+		ManifoldVertex& mv = chain[i];
+		mv.position    = pv.position;
+		mv.normal      = pv.normal;
+		mv.pObject     = pv.pObject;
+		mv.pMaterial   = pv.pMaterial;
+		mv.eta         = pv.eta;
+
+		if( pv.pMaterial ) {
+			Ray dummyRay( pv.position, pv.normal );
+			RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
+			rigLocal.bHit          = true;
+			rigLocal.ptIntersection = pv.position;
+			rigLocal.vNormal       = pv.normal;
+			SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
+			mv.attenuation = spec.attenuation;
+			mv.canRefract  = spec.canRefract;
+		} else {
+			mv.attenuation = RISEPel( 1, 1, 1 );
+			mv.canRefract  = true;
+		}
+		mv.isReflection = ( ( pv.flags & 0x2 ) != 0 );
+		mv.isExiting    = mv.isReflection
+			? ( ( pv.flags & 0x1 ) != 0 )
+			: ( ( pv.flags & 0x1 ) == 0 );
+		mv.valid = false;
+	}
+	return k;
+}
+
+//////////////////////////////////////////////////////////////////////
+// ComputeTrialContribution
+//
+//   Per-trial contribution from a converged ManifoldResult.  See
+//   the header doc-comment for the complete bail-out list.  Used by
+//   both seeding modes and both photon-aided extension paths so the
+//   contribution formula lives in exactly one place.
+//////////////////////////////////////////////////////////////////////
+
+bool ManifoldSolver::ComputeTrialContribution(
+	const Point3& pos,
+	const Vector3& normal,
+	const OrthonormalBasis3D& onb,
+	const Vector3& woOutgoing,
+	const IBSDF* pBSDF,
+	const LightSample& lightSample,
+	const ManifoldResult& mResult,
+	const IRayCaster& caster,
+	Vector3& outDir,
+	RISEPel& outContribution
+	) const
+{
+	outContribution = RISEPel( 0, 0, 0 );
+	outDir = Vector3( 0, 0, 0 );
+
+	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
+		return false;
+	}
+
+	// External-segment visibility (occluder between specular vertices,
+	// or between last specular and the light).
+	if( !CheckChainVisibility( pos, lightSample.position,
+		mResult.specularChain, caster ) ) {
+		return false;
+	}
+
+	// Direction from shading point toward first specular vertex.
+	const ManifoldVertex& firstSpec = mResult.specularChain[0];
+	Vector3 dirToFirstSpec = Vector3Ops::mkVector3( firstSpec.position, pos );
+	const Scalar distToFirstSpec = Vector3Ops::NormalizeMag( dirToFirstSpec );
+	if( distToFirstSpec < 1e-8 ) {
+		return false;
+	}
+	outDir = dirToFirstSpec;
+
+	const Vector3 wiAtShading = dirToFirstSpec;
+
+	// BSDF at shading point.
+	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
+	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
+	rig.bHit = true;
+	rig.ptIntersection = pos;
+	rig.vNormal = normal;
+	rig.onb = onb;
+
+	RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
+	if( ColorMath::MaxValue( fBSDF ) <= 0 ) return false;
+
+	const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+	if( cosAtShading <= 0 ) return false;
+
+	// Light-side cos + Le for delta vs area lights.
+	const ManifoldVertex& lastSpec = mResult.specularChain.back();
+	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+		lastSpec.position, lightSample.position );
+	const Scalar distSpecToLight = Vector3Ops::NormalizeMag( dirSpecToLight );
+	if( distSpecToLight < 1e-8 ) return false;
+
+	Scalar cosAtLight;
+	RISEPel actualLe;
+	if( lightSample.isDelta ) {
+		cosAtLight = 1.0;
+		actualLe = lightSample.pLight
+			? lightSample.pLight->emittedRadiance( dirSpecToLight )
+			: lightSample.Le;
+	} else {
+		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		if( cosAtLight <= 0 ) return false;
+		actualLe = lightSample.Le;
+	}
+	(void)cosAtLight;   // Implicit in detDvDy via (I - wo⊗wo) projection.
+
+	// SMS measure-conversion factor (G_x_v1 * |det dv1/dy|).
+	Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpec.position, pos );
+	const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
+	if( distXtoV1 < 1e-8 ) return false;
+	const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpec.normal, dirXtoV1 ) );
+	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
+	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
+		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+	const Scalar smsGeometric = G_x_v1 * detDvDy;
+
+	outContribution = fBSDF
+		* mResult.contribution
+		* actualLe * cosAtShading * smsGeometric
+		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
+
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// ComputeTrialContributionNM
+//
+//   Spectral counterpart of ComputeTrialContribution.  Same logic,
+//   per-wavelength throughput via EvaluateChainThroughputNM and
+//   per-wavelength BSDF via valueNM.  Le is luminance-projected
+//   (the spectral path computes a single scalar value per wavelength
+//   and luminance is the appropriate scalar projection of an
+//   RGB Le).
+//////////////////////////////////////////////////////////////////////
+
+bool ManifoldSolver::ComputeTrialContributionNM(
+	const Point3& pos,
+	const Vector3& normal,
+	const OrthonormalBasis3D& onb,
+	const Vector3& woOutgoing,
+	const IBSDF* pBSDF,
+	const LightSample& lightSample,
+	const ManifoldResult& mResult,
+	const IRayCaster& caster,
+	const Scalar nm,
+	Vector3& outDir,
+	Scalar& outContribution
+	) const
+{
+	outContribution = 0;
+	outDir = Vector3( 0, 0, 0 );
+
+	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
+		return false;
+	}
+
+	if( !CheckChainVisibility( pos, lightSample.position,
+		mResult.specularChain, caster ) ) {
+		return false;
+	}
+
+	const ManifoldVertex& firstSpec = mResult.specularChain[0];
+	Vector3 dirToFirstSpec = Vector3Ops::mkVector3( firstSpec.position, pos );
+	const Scalar distToFirstSpec = Vector3Ops::NormalizeMag( dirToFirstSpec );
+	if( distToFirstSpec < 1e-8 ) {
+		return false;
+	}
+	outDir = dirToFirstSpec;
+
+	const Vector3 wiAtShading = dirToFirstSpec;
+
+	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
+	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
+	rig.bHit = true;
+	rig.ptIntersection = pos;
+	rig.vNormal = normal;
+	rig.onb = onb;
+
+	Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
+	if( fBSDF <= 0 ) return false;
+
+	Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+	if( cosAtShading <= 0 ) return false;
+
+	Scalar chainThroughput = EvaluateChainThroughputNM(
+		pos, lightSample.position, mResult.specularChain, nm );
+
+	const ManifoldVertex& lastSpec = mResult.specularChain.back();
+	Vector3 dirSpecToLight = Vector3Ops::mkVector3(
+		lastSpec.position, lightSample.position );
+	const Scalar distSpecToLight = Vector3Ops::NormalizeMag( dirSpecToLight );
+	if( distSpecToLight < 1e-8 ) return false;
+
+	Scalar cosAtLight;
+	Scalar Le;
+	if( lightSample.isDelta ) {
+		cosAtLight = 1.0;
+		Le = lightSample.pLight
+			? ColorMath::Luminance( lightSample.pLight->emittedRadiance( dirSpecToLight ) )
+			: ColorMath::Luminance( lightSample.Le );
+	} else {
+		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
+		if( cosAtLight <= 0 ) return false;
+		Le = ColorMath::Luminance( lightSample.Le );
+	}
+	(void)cosAtLight;
+
+	Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpec.position, pos );
+	const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
+	if( distXtoV1 < 1e-8 ) return false;
+	const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpec.normal, dirXtoV1 ) );
+	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
+	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
+		mResult.specularChain, pos, lightSample.position, lightSample.normal );
+	const Scalar smsGeometric = G_x_v1 * detDvDy;
+	const Scalar clampedGeometric = std::fmin( smsGeometric, config.maxGeometricTerm );
+
+	outContribution = fBSDF
+		* chainThroughput
+		* Le * cosAtShading * clampedGeometric
+		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
+
+	return true;
+}
+
 ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const Point3& pos,
 	const Vector3& normal,
@@ -3913,6 +4735,18 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	ISampler& sampler
 	) const
 {
+	// Mitsuba-faithful uniform-on-shape seeding (opt-in via
+	// `sms_seeding "uniform"`).  The two seeding strategies are
+	// structurally different enough — per-caster iteration vs single
+	// Snell-traced seed — that they live in separate functions.  See
+	// `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
+	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
+	{
+		return EvaluateAtShadingPointUniform(
+			pos, normal, onb, pMaterial, woOutgoing,
+			scene, caster, sampler );
+	}
+
 	SMSContribution result;
 
 	if( !pMaterial ) return result;
@@ -3935,11 +4769,45 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
-	// Build seed chain toward the light sample.
+	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform
+	// for the full rationale.  Variable-count internal work (multi-trial
+	// loop, Solve→EstimatePDF) below uses `loopSampler`; the parent
+	// sampler advances by exactly two dimensions for the seed.
+	SMSLoopSampler loopScope( sampler );
+	ISampler& loopSampler = loopScope.sampler;
+
+	// Build seed chain toward the light sample.  When `branchingThreshold
+	// < 1.0` use the Fresnel-branching builder so a Snell-traced shading-
+	// point→light seed at a high-throughput sub-critical dielectric vertex
+	// produces BOTH refraction and reflection continuation chains.  PT-
+	// faithful single-split (matches `PathTracingIntegrator.cpp:1791`).
+	// Each branched chain is consumed as a separate "base trial" in the
+	// multi-trial loop below.
+	std::vector<SeedChainResult> baseSeeds;
+	if( config.branchingThreshold < 1.0 ) {
+		BuildSeedChainBranching(
+			pos, lightSample.position,
+			scene, caster, loopSampler, baseSeeds );
+	}
 	std::vector<ManifoldVertex> seedChain;
-	unsigned int chainLen = BuildSeedChain(
-		pos, lightSample.position,
-		scene, caster, seedChain );
+	unsigned int chainLen = 0;
+	if( !baseSeeds.empty() && !baseSeeds[0].chain.empty() ) {
+		seedChain = baseSeeds[0].chain;
+		chainLen = static_cast<unsigned int>( seedChain.size() );
+	} else {
+		// Branching off, or branching produced nothing usable — legacy
+		// single-chain Snell-trace.
+		baseSeeds.clear();
+		chainLen = BuildSeedChain(
+			pos, lightSample.position,
+			scene, caster, seedChain );
+		if( chainLen > 0 && !seedChain.empty() ) {
+			SeedChainResult lone;
+			lone.chain = seedChain;
+			lone.proposalPdf = 1.0;
+			baseSeeds.push_back( std::move( lone ) );
+		}
+	}
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
@@ -3949,6 +4817,13 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain );
+		if( chainLen > 0 && !seedChain.empty() ) {
+			baseSeeds.clear();
+			SeedChainResult lone;
+			lone.chain = seedChain;
+			lone.proposalPdf = 1.0;
+			baseSeeds.push_back( std::move( lone ) );
+		}
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -3966,6 +4841,99 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		chainLen = BuildSeedChain(
 			pos, midTarget,
 			scene, caster, seedChain );
+		if( chainLen > 0 && !seedChain.empty() ) {
+			baseSeeds.clear();
+			SeedChainResult lone;
+			lone.chain = seedChain;
+			lone.proposalPdf = 1.0;
+			baseSeeds.push_back( std::move( lone ) );
+		}
+	}
+
+	// Pure-mirror caster supplemental seeds.
+	//
+	// The Snell-trace from shading-point toward light cannot find
+	// pure-mirror multi-bounce chains (e.g. diacaustic) — the
+	// reflection law that determines the true seed positions
+	// doesn't lie on the shading→light line.  Snell-mode therefore
+	// historically misses cardioid / diacaustic patterns that
+	// uniform-mode finds easily by sampling directly on the mirror.
+	//
+	// Supplement: for each pure-mirror caster (canRefract=false),
+	// draw one uniform-area sample on the caster and call
+	// BuildSeedChainBranching with end = sampled point.  The
+	// resulting chain naturally Snell-continues from the mirror hit
+	// (so a 2-bounce diacaustic gets v0 from uniform sampling and
+	// v1 from the reflected ray's next specular hit).  Append the
+	// resulting chains to `baseSeeds` so the trial loop runs Newton
+	// on them.
+	//
+	// Only applies to PURE MIRROR casters — dielectric reflection
+	// branches are handled by the in-`BuildSeedChainBranching`
+	// uniform-area resample above.  No-op when `mSpecularCasters`
+	// is empty (rasterizer didn't populate it).
+	if( config.branchingThreshold < 1.0 )
+	{
+		for( const IObject* pMirrorCaster : mSpecularCasters )
+		{
+			if( !pMirrorCaster ) continue;
+			const IMaterial* pMat = pMirrorCaster->GetMaterial();
+			if( !pMat ) continue;
+
+			// Probe whether this caster is a pure mirror (canRefract=false).
+			// A deterministic prand here is fine — the result is a binary
+			// caster classification, not a sampling step.
+			Point3 probePos;
+			Vector3 probeNormal;
+			Point2 probeUv;
+			pMirrorCaster->UniformRandomPoint(
+				&probePos, &probeNormal, &probeUv,
+				Point3( 0.5, 0.5, 0.5 ) );
+			Ray probeRay( probePos, probeNormal );
+			RayIntersectionGeometric probeRig( probeRay, nullRasterizerState );
+			probeRig.bHit          = true;
+			probeRig.ptIntersection = probePos;
+			probeRig.vNormal       = probeNormal;
+			probeRig.ptCoord       = probeUv;
+			IORStack probeIor( 1.0 );
+			SpecularInfo probeSpec = pMat->GetSpecularInfo( probeRig, probeIor );
+			if( probeSpec.canRefract ) {
+				continue;   // dielectric — handled by BuildSeedChainBranching
+			}
+
+			// M independent uniform-area samples per pure-mirror caster
+			// (matches uniform-mode's `multi_trials` budget on the
+			// caster).  Mitsuba's biased SMS does this same M-trial
+			// dedupe-and-sum on every caster shape; we only do it for
+			// pure-mirror casters here because dielectrics are already
+			// handled by BuildSeedChainBranching's per-vertex split.
+			const unsigned int M = std::max( config.multiTrials, 1u );
+			for( unsigned int m = 0; m < M; m++ )
+			{
+				Point3 sp;
+				Vector3 sn;
+				Point2 sc;
+				pMirrorCaster->UniformRandomPoint(
+					&sp, &sn, &sc,
+					Point3( loopSampler.Get1D(),
+					        loopSampler.Get1D(),
+					        loopSampler.Get1D() ) );
+
+				// Build chain: start → sampled mirror point.  Branching
+				// continues the Snell-trace from the mirror, so
+				// reflection-into-second-mirror chains (diacaustic) are
+				// captured automatically as k=2+ chains.
+				std::vector<SeedChainResult> mirrorChains;
+				BuildSeedChainBranching(
+					pos, sp, scene, caster, loopSampler, mirrorChains );
+
+				for( SeedChainResult& mc : mirrorChains ) {
+					if( !mc.chain.empty() && mc.chain[0].pObject == pMirrorCaster ) {
+						baseSeeds.push_back( std::move( mc ) );
+					}
+				}
+			}
+		}
 	}
 
 	// ========================================================================
@@ -3999,7 +4967,15 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	}
 #endif
 
-	if( chainLen == 0 || seedChain.empty() ) {
+	if( baseSeeds.empty() ) {
+		// No seed chains from any source — Snell-trace, fallbacks,
+		// AND pure-mirror caster supplement all came up empty.
+		// Pre-fix this check looked only at `seedChain` (the legacy
+		// single-chain variable), which would early-return even when
+		// the mirror-caster supplement had populated `baseSeeds` —
+		// that broke diacaustic-style scenes where the Snell-trace
+		// from shading-point to light doesn't hit the mirror at all
+		// but uniform-area sampling on the mirror does find chains.
 #if SMS_TRACE_DIAGNOSTIC
 		if( traceHere ) {
 			GlobalLog()->PrintEx( eLog_Event,
@@ -4009,9 +4985,23 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		return result;
 	}
 
+	// Synchronise legacy state with the first available base seed.
+	// `seedChain`, `chainLen`, `pFirstCaster`, and the surface-sample-
+	// fallback heuristic below all read from the legacy variables;
+	// repopulating them from baseSeeds[0] ensures the rest of the
+	// function (multi-trial loop, photon-aided seeding, etc.) sees a
+	// coherent state when the seed came from the supplement path.
+	if( seedChain.empty() && !baseSeeds[0].chain.empty() ) {
+		seedChain = baseSeeds[0].chain;
+		chainLen = static_cast<unsigned int>( seedChain.size() );
+	}
+	(void)chainLen;
+
 	// Multi-trial Specular Manifold Sampling with PHOTON-AIDED first-vertex
-	// seeding (Zeltner et al. 2020 biased estimator + photon-guided priors
-	// à la Kondapaneni et al. 2023).
+	// seeding (Zeltner et al. 2020 §4.3 biased estimator [Eq. 8] + photon-
+	// driven manifold sampling à la Weisstein, Jhang, Chang.
+	// "Photon-Driven Manifold Sampling." HPG 2024.  DOI 10.1145/3675375.
+	// https://dl.acm.org/doi/10.1145/3675375).
 	//
 	// A single Snell-traced seed chain + one Newton solve finds ONE root of
 	// the specular-manifold constraint.  On a smooth convex refractor that is
@@ -4068,6 +5058,21 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// k, and changes the IOR stack semantics.
 	const IObject* pFirstCaster = baseSeedChain[0].pObject;
 
+	// All Fresnel-branched base seeds run UNCONDITIONALLY — each is a
+	// distinct caustic chain that contributes its own energy.  The
+	// `multi_trials = N` budget governs only the photon-aided trials
+	// that run on top.  Total trials = numBaseSeeds + (N - 1)  where
+	// the `-1` accounts for the legacy "trial 0 was the base seed"
+	// semantic in the photon budget.
+	//
+	// Pre-fix bug: the loop iterated 0..N-1 and used baseSeeds[trial]
+	// inside, so when N=1 (default `multi_trials=1`) only the first
+	// branched chain ran and the rest of Branching's output was
+	// silently dropped.  That produced the "diagnostic numbers move
+	// but the rendered image doesn't change" symptom — the SMS
+	// contribution was only ever counting one branch.
+	const std::size_t numBaseSeeds = baseSeeds.size();
+
 	// Pull photon-aided seeds from the rasterizer-owned photon map, if one
 	// was built.  Query radius: the config-supplied value if positive,
 	// otherwise the map's auto-computed value (bbox-diagonal * 0.01 —
@@ -4090,6 +5095,21 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// the manifold constraint have distinct entry points on the specular
 	// surface.
 	std::vector<Point3> acceptedRootPositions;
+	// Parallel vector of isReflection bitmasks (one bit per chain
+	// vertex, lsb = vertex 0).  Two trials with the SAME first-vertex
+	// position but DIFFERENT Fresnel-branch patterns (e.g. one chain
+	// is refract-refract, sibling is refract-reflect) are distinct
+	// roots — without this, the Option-C branching's pair of
+	// chain-variants gets collapsed by first-vertex dedupe alone.
+	std::vector<unsigned long long> acceptedRootReflectMasks;
+	auto buildReflectMask = []( const std::vector<ManifoldVertex>& ch ) -> unsigned long long {
+		unsigned long long mask = 0;
+		const std::size_t k = std::min<std::size_t>( ch.size(), 64 );
+		for( std::size_t i = 0; i < k; i++ ) {
+			if( ch[i].isReflection ) mask |= ( 1ull << i );
+		}
+		return mask;
+	};
 	RISEPel totalContribution( 0, 0, 0 );
 	unsigned int validTrials = 0;
 
@@ -4110,6 +5130,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// photonCursor walks the photonSeeds list (filtering by entryObject as
 	// we go) so trial indices don't directly map to photon indices.
 	std::size_t photonCursor = 0;
+
+	// Total trials: all branched base seeds + the photon budget.  When
+	// branching is off (`branchingThreshold == 1.0`), `numBaseSeeds == 1`
+	// and totalTrials degenerates to N — legacy behaviour preserved.
+	const unsigned int totalTrials = static_cast<unsigned int>( numBaseSeeds )
+		+ ( N > 0 ? N - 1 : 0 );
 
 	// Surface-sampling fallback for purely-reflective single-vertex chains.
 	//
@@ -4138,16 +5164,19 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		( !baseSeedChain[0].canRefract ) &&
 		( pFirstCaster != nullptr );
 
-	for( unsigned int trial = 0; trial < N; trial++ )
+	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
+		Scalar trialProposalPdf = 1.0;
 		bool useSurfaceSample = false;
 
-		// Trial 0 uses the deterministic Snell-traced base seed; later
-		// trials consume one photon from the map per trial.  If we've
-		// exhausted the photons, subsequent trials contribute 0 (we don't
-		// fall back to uniform sampling — it's too slow to be worthwhile,
-		// per earlier testing).
+		// Trials 0..numBaseSeeds-1 consume the Fresnel-branched base
+		// seeds (multiple chains when branching fires at trial 0).
+		// Each base seed carries its own `proposalPdf`; the contribution
+		// formula divides by it later to absorb the RR weighting that
+		// the chain throughput's Fresnel factor cancels.
+		// Subsequent trials consume photon seeds; if photons run out,
+		// the surface-sample fallback fires for k=1 mirror chains.
 		//
 		// NOTE on entryObject: the photon's entryObject is the FIRST
 		// caster the LIGHT'S ray hit — for a k>1 chain (e.g. a slab:
@@ -4160,13 +5189,18 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// the shading point toward that world position crosses the chain
 		// in the right direction regardless of which side of the chain
 		// the photon happened to enter from.
-		if( trial == 0 && surfaceSampleReflectionFallback )
+		if( trial < numBaseSeeds )
 		{
-			// Trial 0's Snell-traced seed is degenerate for pure-reflection
-			// k=1; replace it with a uniform surface sample on the caster.
-			useSurfaceSample = true;
+			trialSeed = baseSeeds[trial].chain;
+			trialProposalPdf = baseSeeds[trial].proposalPdf;
+			// Surface-sample fallback only fires on the very first base
+			// seed when it's the degenerate k=1 mirror case.
+			if( trial == 0 && surfaceSampleReflectionFallback ) {
+				useSurfaceSample = true;
+				trialProposalPdf = 1.0;   // surface-sample = uniform proposal, no Fresnel RR
+			}
 		}
-		else if( trial > 0 )
+		else
 		{
 			if( photonCursor >= photonSeeds.size() ) {
 				if( surfaceSampleReflectionFallback ) {
@@ -4269,7 +5303,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			Point2 sc;
 			pFirstCaster->UniformRandomPoint(
 				&sp, &sn, &sc,
-				Point3( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() ) );
+				Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 			ManifoldVertex mv = baseSeedChain[0];
 			mv.position = sp;
 			mv.normal   = sn;
@@ -4286,7 +5320,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		ManifoldResult mResult = Solve(
 			pos, normal,
 			lightSample.position, lightSample.normal,
-			trialSeed, sampler );
+			trialSeed, loopSampler );
 
 #if SMS_TRACE_DIAGNOSTIC
 		if( traceHere ) {
@@ -4309,15 +5343,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 		if( !mResult.valid ) continue;
 
-		// Dedupe: if this trial's first vertex coincides with a previously
-		// accepted root, skip.  (The remainder of the chain is determined
-		// by the first vertex plus Snell/reflection laws, so first-vertex
-		// uniqueness is sufficient.)
+		// Dedupe by (first-vertex world position, isReflection bitmask
+		// over all chain vertices).  First-vertex position alone was
+		// sufficient before Option-C Fresnel branching landed; with
+		// branching, two trials can share a first-vertex but flip
+		// reflect/refract on a later vertex — those are physically
+		// distinct caustic paths and must contribute separately.
 		const Point3& firstPos = mResult.specularChain[0].position;
+		const unsigned long long reflectMask =
+			buildReflectMask( mResult.specularChain );
 		bool duplicate = false;
 		for( unsigned int r = 0; r < acceptedRootPositions.size(); r++ )
 		{
-			if( Point3Ops::Distance( firstPos, acceptedRootPositions[r] ) < dedupeThr )
+			if( reflectMask == acceptedRootReflectMasks[r] &&
+				Point3Ops::Distance( firstPos, acceptedRootPositions[r] ) < dedupeThr )
 			{
 				duplicate = true;
 				break;
@@ -4477,6 +5516,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			trialContribution = trialContribution / mResult.pdf;
 		}
 
+		// Fresnel-branching proposal-pdf division (Option C — snell-mode
+		// trial 0 uses BuildSeedChainBranching which RR-picks one branch
+		// at sub-critical dielectric vertices when below threshold; the
+		// chain's `proposalPdf` is the product of those RR-pick weights).
+		// Dividing here cancels the Fr / (1-Fr) factor that
+		// `EvaluateChainThroughput` applies on the picked branch, leaving
+		// an unbiased estimator.  For non-branched trials (photons,
+		// surface-sample fallback) `trialProposalPdf` stays 1.0 and the
+		// division is a no-op.
+		if( trialProposalPdf > 1e-20 && trialProposalPdf != 1.0 )
+		{
+			trialContribution = trialContribution * ( 1.0 / trialProposalPdf );
+		}
+
 #if SMS_TRACE_DIAGNOSTIC
 		if( traceHere ) {
 			GlobalLog()->PrintEx( eLog_Event,
@@ -4545,6 +5598,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		acceptedGeoTerm.push_back( smsGeometric );
 		acceptedPreGeo.push_back( trialContribution * ( smsGeometric > 1e-20 ? (1.0 / smsGeometric) : 0.0 ) );
 		acceptedRootPositions.push_back( firstPos );
+		acceptedRootReflectMasks.push_back( reflectMask );
 		validTrials++;
 	}
 
@@ -4620,6 +5674,658 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 }
 
 //////////////////////////////////////////////////////////////////////
+// EvaluateAtShadingPointUniform
+//
+//   Mitsuba-faithful uniform-on-shape SMS seeding.  Iterates the
+//   cached `mSpecularCasters`; per caster, draws a uniform-area
+//   sample on the surface, builds a Snell-traced seed chain from
+//   the shading point through the sampled point, and (if the chain
+//   converges) accumulates the per-caster contribution.  Sums one
+//   independent estimate per caster shape — no MIS over caster
+//   choice (manifold_ss.cpp lines 32-42 explicitly disclaim
+//   shape-picking).
+//
+//   Phase 4 of the Mitsuba-faithful SMS port: single-trial, biased
+//   semantics (no Bernoulli).  Phase 5 will layer the geometric
+//   `K = first-success-index` estimator on top, and Phase 7 the
+//   photon-aided trial integration.
+//
+//   See `docs/SMS_UNIFORM_SEEDING_PLAN.md` for the full plan.
+//////////////////////////////////////////////////////////////////////
+
+ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
+	const Point3& pos,
+	const Vector3& normal,
+	const OrthonormalBasis3D& onb,
+	const IMaterial* pMaterial,
+	const Vector3& woOutgoing,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler
+	) const
+{
+	SMSContribution result;
+
+	if( !pMaterial ) return result;
+
+	const IBSDF* pBSDF = pMaterial->GetBSDF();
+	if( !pBSDF ) return result;
+
+	if( mSpecularCasters.empty() ) {
+		// Mitsuba-style uniform mode requires a caster list; without
+		// it we have no surfaces to sample on.  Caller already enabled
+		// `sms_seeding "uniform"` so silent return-zero is the right
+		// behaviour (matches Mitsuba's "no caustic_caster shape" case).
+		return result;
+	}
+
+	// Light sampling — same as snell mode.
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS ) return result;
+
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	LuminaryManager::LuminariesList emptyList;
+	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
+
+	LightSample lightSample;
+	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) ) {
+		return result;
+	}
+
+	// Sampler-dimension-drift firewall: variable-count internal work
+	// (M-trial loop, Bernoulli K-loop, Solve→EstimatePDF) below uses
+	// `loopSampler`; the parent sampler advances by a fixed two
+	// dimensions for the SMSLoopSampler seed, leaving its LDS stream
+	// predictable for downstream callers.
+	SMSLoopSampler loopScope( sampler );
+	ISampler& loopSampler = loopScope.sampler;
+
+	// Cross-trial dedupe key: (first-vertex world-space position,
+	// chain length).  The previous direction-only key was prone to
+	// false-positive merges of distinct k-vs-k+2 chain topologies
+	// that happened to share the same shading-point→first-vertex
+	// direction.  See the planning doc for the analysis.
+	struct RootKey { Point3 pos; unsigned int chainLen; };
+	std::vector<RootKey> acceptedRoots;
+	acceptedRoots.reserve( mSpecularCasters.size() * 2 + 16 );
+
+	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
+		? config.uniquenessThreshold : 1e-4;
+
+	auto isDuplicate = [&]( const Point3& fp, unsigned int cl ) -> bool {
+		for( const RootKey& rk : acceptedRoots ) {
+			if( rk.chainLen == cl &&
+				Point3Ops::Distance( rk.pos, fp ) < dedupeThr ) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Helper: uniform-area sample on `pCasterObj`, build a Snell-traced
+	// seed chain via BuildSeedChain.  Rejects when the visibility ray
+	// doesn't actually hit the sampled caster as the FIRST specular
+	// hit (matches Mitsuba's `si_init.shape != shape` rejection).
+	// Single-chain seed (refraction-only, deterministic).  Used by the
+	// unbiased Bernoulli branch where the geometric estimator requires
+	// the trial-proposal distribution to match the main solve's.
+	auto buildSeedFromUniformOnCaster = [&](
+		const IObject* pCasterObj,
+		std::vector<ManifoldVertex>& trialSeed) -> bool
+	{
+		Point3 sp;
+		Vector3 sn;
+		Point2 sc;
+		pCasterObj->UniformRandomPoint(
+			&sp, &sn, &sc,
+			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+		trialSeed.clear();
+		const unsigned int chainLen = BuildSeedChain(
+			pos, sp, scene, caster, trialSeed );
+		if( chainLen == 0 || trialSeed.empty() ) return false;
+		if( trialSeed[0].pObject != pCasterObj ) return false;
+		return true;
+	};
+
+	// Branched seed: uniform-area sample, then `BuildSeedChainBranching`
+	// produces one chain per Fresnel-decision combination (gated by
+	// `config.branchingThreshold`).  Caller divides each chain's
+	// contribution by `proposalPdf` to undo the RR weighting that
+	// `EvaluateChainThroughput`'s Fresnel factor cancels.
+	auto buildBranchedSeedsOnCaster = [&](
+		const IObject* pCasterObj,
+		std::vector<SeedChainResult>& outSeeds) -> bool
+	{
+		Point3 sp;
+		Vector3 sn;
+		Point2 sc;
+		pCasterObj->UniformRandomPoint(
+			&sp, &sn, &sc,
+			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+		outSeeds.clear();
+		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds );
+		// Filter to chains whose first specular hit is the sampled caster
+		// (matches Mitsuba's `si_init.shape != shape` rejection).
+		outSeeds.erase(
+			std::remove_if( outSeeds.begin(), outSeeds.end(),
+				[&]( const SeedChainResult& r ) {
+					return r.chain.empty() || r.chain[0].pObject != pCasterObj;
+				} ),
+			outSeeds.end() );
+		return !outSeeds.empty();
+	};
+
+	RISEPel totalContribution( 0, 0, 0 );
+	unsigned int validContributions = 0;
+
+	// Per-caster Mitsuba-style sum (manifold_ss / manifold_ms iterate
+	// every caster and accrue one independent estimate per shape).
+	for( const IObject* pCasterObj : mSpecularCasters )
+	{
+		if( !pCasterObj ) continue;
+
+		if( config.biased )
+		{
+			// M-trial biased mode (Zeltner 2020 §4.3 Algorithm 3 / Eq. 8;
+			// Mitsuba `manifold_ss.cpp:142-197`).  Per caster, run M
+			// independent uniform-area samples; accept each unique
+			// converged solution; sum unweighted.  Cross-caster dedupe
+			// key is (first-vertex-pos, chainLen) so a chain rediscovered
+			// by a sibling caster contributes exactly once.
+			//
+			// `BuildSeedChainBranching` may return multiple seed chains
+			// per uniform-area sample when a Fresnel-decision-point's
+			// running throughput exceeds `config.branchingThreshold`
+			// (Option C handling — the same threshold that PT/BDPT use
+			// for delta-vertex split).  Each branch is its own
+			// Newton-eligible seed; the contribution is divided by the
+			// chain's `proposalPdf` to absorb the RR weighting that
+			// `EvaluateChainThroughput`'s Fresnel factor would otherwise
+			// double-count.
+			const unsigned int M = std::max( config.multiTrials, 1u );
+
+			for( unsigned int m = 0; m < M; m++ )
+			{
+				std::vector<SeedChainResult> seeds;
+				if( !buildBranchedSeedsOnCaster( pCasterObj, seeds ) ) continue;
+
+				for( SeedChainResult& seedResult : seeds )
+				{
+					ManifoldResult mResult = Solve(
+						pos, normal,
+						lightSample.position, lightSample.normal,
+						seedResult.chain, loopSampler );
+					if( !mResult.valid ) continue;
+
+					const Point3 firstPos = mResult.specularChain[0].position;
+					const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+					if( isDuplicate( firstPos, chainLen ) ) continue;
+
+					Vector3 trialDir;
+					RISEPel trialContrib;
+					if( !ComputeTrialContribution( pos, normal, onb, woOutgoing,
+						pBSDF, lightSample, mResult, caster, trialDir, trialContrib ) )
+						continue;
+
+					if( seedResult.proposalPdf > 1e-20 ) {
+						trialContrib = trialContrib * ( 1.0 / seedResult.proposalPdf );
+					}
+
+					totalContribution = totalContribution + trialContrib;
+					acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+					validContributions++;
+				}
+			}
+		}
+		else
+		{
+			// Unbiased mode: 1 main trial + geometric-distribution
+			// Bernoulli loop (`K = first-success-index`, `E[K] = 1/p`,
+			// contribution scaled by K).  Skip photon-aided seeds in
+			// this branch — Bernoulli requires the trial proposal
+			// distribution to match the main solve's, and the photon
+			// proposal is a different distribution.
+			std::vector<ManifoldVertex> trialSeed;
+			if( !buildSeedFromUniformOnCaster( pCasterObj, trialSeed ) ) continue;
+
+			ManifoldResult mResult = Solve(
+				pos, normal,
+				lightSample.position, lightSample.normal,
+				trialSeed, loopSampler );
+			if( !mResult.valid ) continue;
+
+			const Point3 firstPos = mResult.specularChain[0].position;
+			const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+			if( isDuplicate( firstPos, chainLen ) ) continue;
+
+			Vector3 dirMain;
+			RISEPel mainContrib;
+			if( !ComputeTrialContribution( pos, normal, onb, woOutgoing,
+				pBSDF, lightSample, mResult, caster, dirMain, mainContrib ) )
+				continue;
+
+			// Geometric Bernoulli K-loop.  Cap on `maxBernoulliTrials`,
+			// hard-cap fallback at 1024 if config is 0 (prevents render
+			// hangs on casters Newton can never re-discover).
+			unsigned int K = 1;
+			bool capHit = false;
+			const unsigned int hardCap = config.maxBernoulliTrials > 0
+				? config.maxBernoulliTrials : 1024u;
+
+			while( true )
+			{
+				Point3 sp_t;
+				Vector3 sn_t;
+				Point2 sc_t;
+				pCasterObj->UniformRandomPoint(
+					&sp_t, &sn_t, &sc_t,
+					Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+
+				std::vector<ManifoldVertex> trialChain;
+				bool match = false;
+				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain ) > 0 &&
+					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
+				{
+					ManifoldResult tResult = Solve(
+						pos, normal,
+						lightSample.position, lightSample.normal,
+						trialChain, loopSampler );
+					if( tResult.valid ) {
+						Vector3 dirT = Vector3Ops::mkVector3(
+							tResult.specularChain[0].position, pos );
+						if( Vector3Ops::NormalizeMag( dirT ) > 1e-8 ) {
+							const Scalar dotProd = Vector3Ops::Dot( dirMain, dirT );
+							if( std::fabs( dotProd - 1.0 ) < dedupeThr ) {
+								match = true;
+							}
+						}
+					}
+				}
+
+				if( match ) break;
+				K++;
+				if( K > hardCap ) {
+					capHit = true;
+					break;
+				}
+			}
+
+			if( capHit ) continue;   // bias toward zero when cap fires
+
+			mainContrib = mainContrib * static_cast<Scalar>( K );
+			totalContribution = totalContribution + mainContrib;
+			acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+			validContributions++;
+		}
+	}
+
+	// Photon-aided trial extension (biased mode only).
+	// Weisstein, Jhang, Chang. "Photon-Driven Manifold Sampling."
+	// HPG 2024. DOI 10.1145/3675375.  Each photon's recorded chain is
+	// reversed (light→diffuse → receiver→light) via the helper, run
+	// through Newton, deduped against the per-caster set, and summed
+	// unweighted (paper Eq. 8 form: `Σ_l f(x₂⁽ˡ⁾)` is consistent for
+	// any seed distribution that covers basins with positive density).
+	if( config.biased && pPhotonMap && pPhotonMap->IsBuilt() )
+	{
+		Scalar r = config.photonSearchRadius;
+		if( r <= 0 ) {
+			r = pPhotonMap->GetAutoRadius();
+		}
+
+		if( r > 0 )
+		{
+			std::vector<SMSPhoton> photonSeeds;
+			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+
+			for( const SMSPhoton& ph : photonSeeds )
+			{
+				std::vector<ManifoldVertex> photonChain;
+				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
+
+				ManifoldResult mResult = Solve(
+					pos, normal,
+					lightSample.position, lightSample.normal,
+					photonChain, loopSampler );
+				if( !mResult.valid ) continue;
+
+				const Point3 firstPos = mResult.specularChain[0].position;
+				const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+				if( isDuplicate( firstPos, chainLen ) ) continue;
+
+				Vector3 trialDir;
+				RISEPel trialContrib;
+				if( !ComputeTrialContribution( pos, normal, onb, woOutgoing,
+					pBSDF, lightSample, mResult, caster, trialDir, trialContrib ) )
+					continue;
+
+				totalContribution = totalContribution + trialContrib;
+				acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+				validContributions++;
+			}
+		}
+	}
+
+	if( validContributions == 0 ) return result;
+
+	result.contribution = totalContribution;
+	result.misWeight = 1.0;
+	result.valid = true;
+	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateAtShadingPointNMUniform
+//
+//   Spectral counterpart of EvaluateAtShadingPointUniform.
+//   Mirrors the RGB structure: per-caster Mitsuba-style sum, M-trial
+//   biased mode with cross-trial dedupe by (first-vertex-pos,
+//   chainLen), geometric Bernoulli when biased=false, photon-aided
+//   trial extension on biased mode.  Per-vertex eta is overridden
+//   with `GetSpecularInfoNM(nm)` AFTER the chain is built and BEFORE
+//   `Solve` runs so dispersive glass converges to the wavelength-
+//   specific caustic root.
+//////////////////////////////////////////////////////////////////////
+
+ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUniform(
+	const Point3& pos,
+	const Vector3& normal,
+	const OrthonormalBasis3D& onb,
+	const IMaterial* pMaterial,
+	const Vector3& woOutgoing,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	const Scalar nm
+	) const
+{
+	SMSContributionNM result;
+
+	if( !pMaterial ) return result;
+
+	const IBSDF* pBSDF = pMaterial->GetBSDF();
+	if( !pBSDF ) return result;
+
+	if( mSpecularCasters.empty() ) return result;
+
+	const LightSampler* pLS = caster.GetLightSampler();
+	if( !pLS ) return result;
+
+	const ILuminaryManager* pLumMgr = caster.GetLuminaries();
+	LuminaryManager::LuminariesList emptyList;
+	const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
+	const LuminaryManager::LuminariesList& luminaries = pLumManager ?
+		const_cast<LuminaryManager*>(pLumManager)->getLuminaries() : emptyList;
+
+	LightSample lightSample;
+	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) ) {
+		return result;
+	}
+
+	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform
+	// for the full rationale.
+	SMSLoopSampler loopScope( sampler );
+	ISampler& loopSampler = loopScope.sampler;
+
+	struct RootKey { Point3 pos; unsigned int chainLen; };
+	std::vector<RootKey> acceptedRoots;
+	acceptedRoots.reserve( mSpecularCasters.size() * 2 + 16 );
+
+	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
+		? config.uniquenessThreshold : 1e-4;
+
+	auto isDuplicate = [&]( const Point3& fp, unsigned int cl ) -> bool {
+		for( const RootKey& rk : acceptedRoots ) {
+			if( rk.chainLen == cl &&
+				Point3Ops::Distance( rk.pos, fp ) < dedupeThr ) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Per-wavelength eta override: re-query each vertex's material with
+	// `GetSpecularInfoNM` so the chain `Solve` converges to the correct
+	// wavelength-specific caustic root (essential for dispersive glass).
+	auto applyNMEtaToChain = [&]( std::vector<ManifoldVertex>& chain ) {
+		IORStack queryIor( 1.0 );
+		for( ManifoldVertex& v : chain ) {
+			if( v.pMaterial ) {
+				Ray dummyRay( v.position, v.normal );
+				RayIntersectionGeometric rigLocal( dummyRay, nullRasterizerState );
+				rigLocal.bHit          = true;
+				rigLocal.ptIntersection = v.position;
+				rigLocal.vNormal       = v.normal;
+				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
+				v.eta         = specNM.ior;
+				v.attenuation = specNM.attenuation;
+				v.canRefract  = specNM.canRefract;
+			}
+			v.valid = false;
+		}
+	};
+
+	auto buildSeedFromUniformOnCaster = [&](
+		const IObject* pCasterObj,
+		std::vector<ManifoldVertex>& trialSeed) -> bool
+	{
+		Point3 sp;
+		Vector3 sn;
+		Point2 sc;
+		pCasterObj->UniformRandomPoint(
+			&sp, &sn, &sc,
+			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+		trialSeed.clear();
+		const unsigned int chainLen = BuildSeedChain(
+			pos, sp, scene, caster, trialSeed );
+		if( chainLen == 0 || trialSeed.empty() ) return false;
+		if( trialSeed[0].pObject != pCasterObj ) return false;
+		applyNMEtaToChain( trialSeed );
+		return true;
+	};
+
+	// Branched seed (PT-faithful split semantic) — see RGB variant
+	// for the full rationale.
+	auto buildBranchedSeedsOnCaster = [&](
+		const IObject* pCasterObj,
+		std::vector<SeedChainResult>& outSeeds) -> bool
+	{
+		Point3 sp;
+		Vector3 sn;
+		Point2 sc;
+		pCasterObj->UniformRandomPoint(
+			&sp, &sn, &sc,
+			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+		outSeeds.clear();
+		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds );
+		outSeeds.erase(
+			std::remove_if( outSeeds.begin(), outSeeds.end(),
+				[&]( const SeedChainResult& r ) {
+					return r.chain.empty() || r.chain[0].pObject != pCasterObj;
+				} ),
+			outSeeds.end() );
+		// Per-wavelength eta override on each chain so dispersive
+		// caustics converge to the correct wavelength-specific root.
+		for( SeedChainResult& r : outSeeds ) {
+			applyNMEtaToChain( r.chain );
+		}
+		return !outSeeds.empty();
+	};
+
+	Scalar totalContribution = 0.0;
+	unsigned int validContributions = 0;
+
+	for( const IObject* pCasterObj : mSpecularCasters )
+	{
+		if( !pCasterObj ) continue;
+
+		if( config.biased )
+		{
+			const unsigned int M = std::max( config.multiTrials, 1u );
+
+			for( unsigned int m = 0; m < M; m++ )
+			{
+				std::vector<SeedChainResult> seeds;
+				if( !buildBranchedSeedsOnCaster( pCasterObj, seeds ) ) continue;
+
+				for( SeedChainResult& seedResult : seeds )
+				{
+					ManifoldResult mResult = Solve(
+						pos, normal,
+						lightSample.position, lightSample.normal,
+						seedResult.chain, loopSampler );
+					if( !mResult.valid ) continue;
+
+					const Point3 firstPos = mResult.specularChain[0].position;
+					const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+					if( isDuplicate( firstPos, chainLen ) ) continue;
+
+					Vector3 trialDir;
+					Scalar trialContrib;
+					if( !ComputeTrialContributionNM( pos, normal, onb, woOutgoing,
+						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib ) )
+						continue;
+
+					if( seedResult.proposalPdf > 1e-20 ) {
+						trialContrib *= ( 1.0 / seedResult.proposalPdf );
+					}
+
+					totalContribution += trialContrib;
+					acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+					validContributions++;
+				}
+			}
+		}
+		else
+		{
+			std::vector<ManifoldVertex> trialSeed;
+			if( !buildSeedFromUniformOnCaster( pCasterObj, trialSeed ) ) continue;
+
+			ManifoldResult mResult = Solve(
+				pos, normal,
+				lightSample.position, lightSample.normal,
+				trialSeed, loopSampler );
+			if( !mResult.valid ) continue;
+
+			const Point3 firstPos = mResult.specularChain[0].position;
+			const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+			if( isDuplicate( firstPos, chainLen ) ) continue;
+
+			Vector3 dirMain;
+			Scalar mainContrib;
+			if( !ComputeTrialContributionNM( pos, normal, onb, woOutgoing,
+				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib ) )
+				continue;
+
+			unsigned int K = 1;
+			bool capHit = false;
+			const unsigned int hardCap = config.maxBernoulliTrials > 0
+				? config.maxBernoulliTrials : 1024u;
+
+			while( true )
+			{
+				Point3 sp_t;
+				Vector3 sn_t;
+				Point2 sc_t;
+				pCasterObj->UniformRandomPoint(
+					&sp_t, &sn_t, &sc_t,
+					Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
+
+				std::vector<ManifoldVertex> trialChain;
+				bool match = false;
+				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain ) > 0 &&
+					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
+				{
+					applyNMEtaToChain( trialChain );
+					ManifoldResult tResult = Solve(
+						pos, normal,
+						lightSample.position, lightSample.normal,
+						trialChain, loopSampler );
+					if( tResult.valid ) {
+						Vector3 dirT = Vector3Ops::mkVector3(
+							tResult.specularChain[0].position, pos );
+						if( Vector3Ops::NormalizeMag( dirT ) > 1e-8 ) {
+							const Scalar dotProd = Vector3Ops::Dot( dirMain, dirT );
+							if( std::fabs( dotProd - 1.0 ) < dedupeThr ) {
+								match = true;
+							}
+						}
+					}
+				}
+
+				if( match ) break;
+				K++;
+				if( K > hardCap ) {
+					capHit = true;
+					break;
+				}
+			}
+
+			if( capHit ) continue;
+
+			mainContrib *= static_cast<Scalar>( K );
+			totalContribution += mainContrib;
+			acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+			validContributions++;
+		}
+	}
+
+	// Photon-aided trial extension (biased only).  Photon chain is
+	// reversed via the helper; per-vertex NM eta is then re-applied
+	// for dispersion correctness before Solve.
+	if( config.biased && pPhotonMap && pPhotonMap->IsBuilt() )
+	{
+		Scalar r = config.photonSearchRadius;
+		if( r <= 0 ) {
+			r = pPhotonMap->GetAutoRadius();
+		}
+
+		if( r > 0 )
+		{
+			std::vector<SMSPhoton> photonSeeds;
+			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+
+			for( const SMSPhoton& ph : photonSeeds )
+			{
+				std::vector<ManifoldVertex> photonChain;
+				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
+
+				applyNMEtaToChain( photonChain );
+
+				ManifoldResult mResult = Solve(
+					pos, normal,
+					lightSample.position, lightSample.normal,
+					photonChain, loopSampler );
+				if( !mResult.valid ) continue;
+
+				const Point3 firstPos = mResult.specularChain[0].position;
+				const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+				if( isDuplicate( firstPos, chainLen ) ) continue;
+
+				Vector3 trialDir;
+				Scalar trialContrib;
+				if( !ComputeTrialContributionNM( pos, normal, onb, woOutgoing,
+					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib ) )
+					continue;
+
+				totalContribution += trialContrib;
+				acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+				validContributions++;
+			}
+		}
+	}
+
+	if( validContributions == 0 ) return result;
+
+	result.contribution = totalContribution;
+	result.misWeight = 1.0;
+	result.valid = true;
+	return result;
+}
+
+//////////////////////////////////////////////////////////////////////
 // EvaluateAtShadingPointNM
 //
 //   Spectral variant of EvaluateAtShadingPoint.
@@ -4639,6 +6345,16 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const Scalar nm
 	) const
 {
+	// Mitsuba-faithful uniform-on-shape seeding (opt-in via
+	// `sms_seeding "uniform"`).  Spectral-path counterpart of
+	// `EvaluateAtShadingPointUniform`.
+	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
+	{
+		return EvaluateAtShadingPointNMUniform(
+			pos, normal, onb, pMaterial, woOutgoing,
+			scene, caster, sampler, nm );
+	}
+
 	SMSContributionNM result;
 
 	if( !pMaterial ) return result;
@@ -4660,6 +6376,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
+	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform.
+	SMSLoopSampler loopScope( sampler );
+	ISampler& loopSampler = loopScope.sampler;
 
 	// Build seed chain toward light, with fallbacks (see RGB variant).
 	std::vector<ManifoldVertex> seedChain;
@@ -4850,7 +6569,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		ManifoldResult mResult = Solve(
 			pos, normal,
 			lightSample.position, lightSample.normal,
-			trialSeed, sampler );
+			trialSeed, loopSampler );
 
 		if( !mResult.valid ) continue;
 

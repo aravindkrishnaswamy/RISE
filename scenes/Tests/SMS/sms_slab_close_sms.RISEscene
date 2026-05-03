@@ -24,6 +24,7 @@ pathtracing_pel_rasterizer
 	sms_multi_trials              16
 	sms_photon_count              100000
 	pixel_filter                  box
+#	sms_seeding						uniform
 }
 
 file_rasterizeroutput

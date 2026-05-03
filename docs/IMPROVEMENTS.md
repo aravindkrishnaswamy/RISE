@@ -12,7 +12,7 @@ RISE already has significant infrastructure in place:
 
 - Full bidirectional path tracing with explicit light and eye subpaths
 - Spectral rendering (sampled spectrum, per-wavelength PT/BDPT)
-- SMS / manifold solving (Zeltner et al. 2020)
+- SMS / manifold solving (Zeltner et al. 2020).  See [SMS_TWO_STAGE_SOLVER.md](SMS_TWO_STAGE_SOLVER.md) for the two-stage extension scope, [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) for the in-progress Mitsuba-faithful refactor, and [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) for the post-2020 literature catalogue (PMS / SMBS / MPG / Specular Polynomials / PSMS-ReSTIR / Bernstein Bounds).
 - OpenPGL path guiding with RIS and variance-aware adaptive alpha (PT and BDPT eye subpaths)
 - BSSRDF-aware transport (Donner-Jensen, Burley diffusion profiles) in both PT and BDPT
 - Owen-scrambled Sobol samplers

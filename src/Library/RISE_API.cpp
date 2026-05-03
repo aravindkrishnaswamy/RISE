@@ -3950,6 +3950,7 @@ namespace RISE
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
 #include "Shaders/SMSShaderOp.h"
+#include "Utilities/SMSConfig.h"
 #include "Shaders/SSS/SubSurfaceScatteringShaderOp.h"
 #include "Shaders/SSS/SimpleExtinction.h"
 #include "Shaders/SSS/DiffusionApproximationExtinction.h"
@@ -4720,6 +4721,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4745,6 +4747,14 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
+				? ManifoldSolverConfig::eSeedingUniform
+				: ManifoldSolverConfig::eSeedingSnell;
+			// Reuse the path-tracer's branching threshold for SMS seed
+			// construction (Fresnel-branch decision at sub-critical
+			// dielectric vertices).  Same semantics as PT's threshold;
+			// default 0.5 makes SMS find reflection caustics by default.
+			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
@@ -4794,6 +4804,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4819,6 +4830,14 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
+				? ManifoldSolverConfig::eSeedingUniform
+				: ManifoldSolverConfig::eSeedingSnell;
+			// Reuse the path-tracer's branching threshold for SMS seed
+			// construction (Fresnel-branch decision at sub-critical
+			// dielectric vertices).  Same semantics as PT's threshold;
+			// default 0.5 makes SMS find reflection caustics by default.
+			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
@@ -4995,6 +5014,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -5020,6 +5040,14 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
+				? ManifoldSolverConfig::eSeedingUniform
+				: ManifoldSolverConfig::eSeedingSnell;
+			// Reuse the path-tracer's branching threshold for SMS seed
+			// construction (Fresnel-branch decision at sub-critical
+			// dielectric vertices).  Same semantics as PT's threshold;
+			// default 0.5 makes SMS find reflection caustics by default.
+			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
@@ -5067,6 +5095,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -5092,6 +5121,14 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
+				? ManifoldSolverConfig::eSeedingUniform
+				: ManifoldSolverConfig::eSeedingSnell;
+			// Reuse the path-tracer's branching threshold for SMS seed
+			// construction (Fresnel-branch decision at sub-critical
+			// dielectric vertices).  Same semantics as PT's threshold;
+			// default 0.5 makes SMS find reflection caustics by default.
+			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(

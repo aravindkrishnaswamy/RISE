@@ -627,6 +627,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "sms_multi_trials";                       p.kind = ValueKind::UInt;   p.description = "Multi-trials per vertex";               p.defaultValueHint = "1"; }
 				{ auto& p = P(); p.name = "sms_photon_count";                       p.kind = ValueKind::UInt;   p.description = "SMS photon budget";                     p.defaultValueHint = "10000"; }
 				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = "FALSE"; }
+				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = "snell"; }
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
@@ -6152,6 +6153,16 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_seeding") ) {
+					std::string sv = bag.GetString("sms_seeding");
+					std::transform( sv.begin(), sv.end(), sv.begin(),
+						[]( unsigned char c ){ return std::tolower( c ); } );
+					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					// Adding a third mode (Specular Polynomials, MPG, ...) extends
+					// the enum in `SMSConfig.h` and adds one branch here.
+				}
 
 					PathGuidingConfig guidingConfig;
 					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
@@ -6285,6 +6296,16 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_seeding") ) {
+					std::string sv = bag.GetString("sms_seeding");
+					std::transform( sv.begin(), sv.end(), sv.begin(),
+						[]( unsigned char c ){ return std::tolower( c ); } );
+					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					// Adding a third mode (Specular Polynomials, MPG, ...) extends
+					// the enum in `SMSConfig.h` and adds one branch here.
+				}
 
 					PathGuidingConfig guidingConfig;
 					if( bag.Has("pathguiding") )            guidingConfig.enabled            = bag.GetBool("pathguiding");
@@ -6628,6 +6649,16 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_seeding") ) {
+					std::string sv = bag.GetString("sms_seeding");
+					std::transform( sv.begin(), sv.end(), sv.begin(),
+						[]( unsigned char c ){ return std::tolower( c ); } );
+					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					// Adding a third mode (Specular Polynomials, MPG, ...) extends
+					// the enum in `SMSConfig.h` and adds one branch here.
+				}
 
 					PathGuidingConfig guidingConfig;
 					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
@@ -6760,6 +6791,16 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_seeding") ) {
+					std::string sv = bag.GetString("sms_seeding");
+					std::transform( sv.begin(), sv.end(), sv.begin(),
+						[]( unsigned char c ){ return std::tolower( c ); } );
+					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					// Adding a third mode (Specular Polynomials, MPG, ...) extends
+					// the enum in `SMSConfig.h` and adds one branch here.
+				}
 
 					AdaptiveSamplingConfig adaptiveConfig;
 					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");

@@ -78,11 +78,20 @@ void PathTracingSpectralRasterizer::PreRenderSetup(
 {
 	PixelBasedSpectralIntegratingRasterizer::PreRenderSetup( pScene, pRect );
 
-	if( mSMSPhotonCount == 0 || !pIntegrator ) {
+	if( !pIntegrator ) {
 		return;
 	}
 	ManifoldSolver* pSolver = pIntegrator->GetSolver();
 	if( !pSolver ) {
+		return;
+	}
+
+	// See PathTracingPelRasterizer::PreRenderSetup for rationale.
+	std::vector<const IObject*> casters;
+	ManifoldSolver::EnumerateSpecularCasters( pScene, casters );
+	pSolver->SetSpecularCasters( std::move( casters ) );
+
+	if( mSMSPhotonCount == 0 ) {
 		return;
 	}
 

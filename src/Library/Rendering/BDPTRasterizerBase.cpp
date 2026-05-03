@@ -319,7 +319,19 @@ void BDPTRasterizerBase::PreRenderSetup(
 	const Rect* /*pRect*/
 	) const
 {
-	if( !pManifoldSolver || mSMSPhotonCount == 0 ) {
+	if( !pManifoldSolver ) {
+		return;
+	}
+
+	// Cache the scene's specular casters once for the SMS uniform-seeding
+	// path (Mitsuba-faithful single-/multi-scatter; consumed in a later
+	// implementation phase).  See PathTracingPelRasterizer::PreRenderSetup
+	// for full rationale.
+	std::vector<const IObject*> casters;
+	ManifoldSolver::EnumerateSpecularCasters( pScene, casters );
+	pManifoldSolver->SetSpecularCasters( std::move( casters ) );
+
+	if( mSMSPhotonCount == 0 ) {
 		return;
 	}
 
