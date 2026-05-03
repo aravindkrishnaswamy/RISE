@@ -66,39 +66,51 @@ namespace RISE
 			Object( );
 			Object( const IGeometry* pGeometry_ );
 
-			virtual IObjectPriv* CloneFull();
-			virtual IObjectPriv* CloneGeometric();
+			virtual IObjectPriv* CloneFull() override;
+			virtual IObjectPriv* CloneGeometric() override;
 
-			virtual bool AssignMaterial( const IMaterial& pMat );
-			virtual bool AssignModifier( const IRayIntersectionModifier& pMod );
-			virtual bool AssignShader( const IShader& pShader );
-			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap );
-			virtual bool AssignInteriorMedium( const IMedium& medium );
+			virtual bool AssignMaterial( const IMaterial& pMat ) override;
+			virtual bool AssignModifier( const IRayIntersectionModifier& pMod ) override;
+			virtual bool AssignShader( const IShader& pShader ) override;
+			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap ) override;
+			virtual bool AssignInteriorMedium( const IMedium& medium ) override;
 
-			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			virtual bool IsWorldVisible() const { return bIsWorldVisible; }
-			virtual void SetWorldVisible( bool b ){ bIsWorldVisible = b; }
+			virtual bool IsWorldVisible() const override { return bIsWorldVisible; }
+			virtual void SetWorldVisible( bool b ) override { bIsWorldVisible = b; }
 
-			virtual bool DoesCastShadows() const { return bCastsShadows; }
-			virtual bool DoesReceiveShadows() const { return bReceivesShadows; }
+			virtual bool DoesCastShadows() const override { return bCastsShadows; }
+			virtual bool DoesReceiveShadows() const override { return bReceivesShadows; }
 
-			virtual void SetSurfaceIntersecError( Scalar d ){ SURFACE_INTERSEC_ERROR = d; }
-			virtual bool SetUVGenerator( const IUVGenerator& pUVG );
-			virtual void SetShadowParams( const bool bCasts, const bool bReceives );
+			virtual void SetSurfaceIntersecError( Scalar d ) override { SURFACE_INTERSEC_ERROR = d; }
+			virtual bool SetUVGenerator( const IUVGenerator& pUVG ) override;
+			virtual void SetShadowParams( const bool bCasts, const bool bReceives ) override;
 
-			virtual const IMaterial* GetMaterial() const;
-			virtual const IShader*   GetShader() const { return pShader; }
-			virtual const IMedium* GetInteriorMedium() const;
-			virtual void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			virtual Scalar GetArea( ) const;
+			virtual const IMaterial* GetMaterial() const override;
+			virtual const IShader*   GetShader() const override { return pShader; }
+			virtual const IGeometry* GetGeometry() const override { return pGeometry; }
+			virtual const IMedium* GetInteriorMedium() const override;
 
-			virtual const BoundingBox getBoundingBox() const;
+			virtual bool ComputeAnalyticalDerivatives(
+				const Point2& uv,
+				Scalar        smoothing,
+				Point3&       outWorldPosition,
+				Vector3&      outWorldNormal,
+				Vector3&      outWorldDpdu,
+				Vector3&      outWorldDpdv,
+				Vector3&      outWorldDndu,
+				Vector3&      outWorldDndv
+				) const override;
+			virtual void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			virtual Scalar GetArea( ) const override;
 
-			virtual void ResetRuntimeData() const;
+			virtual const BoundingBox getBoundingBox() const override;
 
-			void FinalizeTransformations( );
+			virtual void ResetRuntimeData() const override;
+
+			void FinalizeTransformations( ) override;
 		};
 	}
 }

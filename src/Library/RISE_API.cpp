@@ -4719,6 +4719,7 @@ namespace RISE
 								const unsigned int smsBernoulliTrials,
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4743,6 +4744,7 @@ namespace RISE
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
+			smsConfig.twoStage = smsTwoStage;
 		}
 
 		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
@@ -4791,6 +4793,7 @@ namespace RISE
 								const unsigned int smsBernoulliTrials,
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4815,6 +4818,7 @@ namespace RISE
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
+			smsConfig.twoStage = smsTwoStage;
 		}
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
@@ -4990,6 +4994,7 @@ namespace RISE
 								const unsigned int smsBernoulliTrials,
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -5014,6 +5019,7 @@ namespace RISE
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
+			smsConfig.twoStage = smsTwoStage;
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
@@ -5060,6 +5066,7 @@ namespace RISE
 								const unsigned int smsBernoulliTrials,
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
+								const bool smsTwoStage,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -5084,6 +5091,7 @@ namespace RISE
 			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
+			smsConfig.twoStage = smsTwoStage;
 		}
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(

@@ -53,6 +53,52 @@ using PathTransportUtilities::PropagateBounceLimits;
 // static const unsigned int PT_RR_MIN_DEPTH = 3;
 // static const Scalar PT_RR_THRESHOLD = 0.05;
 
+// SMS-DIAG (temporary): per-process counters used during the two-stage
+// SMS investigation (see docs/SMS_TWO_STAGE_SOLVER.md).  Three thread-
+// safe counters plus two summed-luminance accumulators.  Dumped to
+// stderr at process exit.  Disabled-by-default by guarding both the
+// declarations and the increment sites under SMS_DIAG_ENABLED — flip
+// to 1 to re-activate when re-investigating SMS energy ratios.
+#define SMS_DIAG_ENABLED 0
+#if SMS_DIAG_ENABLED
+namespace {
+	std::atomic<uint64_t> g_smsDiag_evals{0};
+	std::atomic<uint64_t> g_smsDiag_valid{0};
+	std::atomic<uint64_t> g_smsDiag_emissionSuppressed{0};
+	constexpr double kSMSDiag_LumScale = 1.0e6;
+	std::atomic<uint64_t> g_smsDiag_sumSmsLumX{0};
+	std::atomic<uint64_t> g_smsDiag_sumSuppLumX{0};
+
+	inline void SMSDiag_AddLum( std::atomic<uint64_t>& acc, double lum ) {
+		if( lum <= 0 || !std::isfinite( lum ) ) return;
+		const uint64_t fixed = static_cast<uint64_t>( lum * kSMSDiag_LumScale );
+		acc.fetch_add( fixed, std::memory_order_relaxed );
+	}
+
+	struct SMSDiagAtExitInstaller {
+		SMSDiagAtExitInstaller() {
+			std::atexit([](){
+				const uint64_t e = g_smsDiag_evals.load();
+				const uint64_t v = g_smsDiag_valid.load();
+				const uint64_t s = g_smsDiag_emissionSuppressed.load();
+				const double lumSms  = double( g_smsDiag_sumSmsLumX.load() ) / kSMSDiag_LumScale;
+				const double lumSupp = double( g_smsDiag_sumSuppLumX.load() ) / kSMSDiag_LumScale;
+				std::fprintf( stderr,
+					"[SMS-DIAG] sms_evals=%llu sms_valid=%llu emission_suppressed=%llu",
+					(unsigned long long)e, (unsigned long long)v, (unsigned long long)s );
+				if( e > 0 ) std::fprintf( stderr, "  valid/evals=%.4f", double(v)/double(e) );
+				std::fprintf( stderr,
+					"  ΣL_sms=%.4e  ΣL_supp=%.4e",
+					lumSms, lumSupp );
+				if( lumSupp > 0 ) std::fprintf( stderr, "  ΣL_sms/ΣL_supp=%.4f", lumSms / lumSupp );
+				std::fprintf( stderr, "\n" );
+			});
+		}
+	};
+	SMSDiagAtExitInstaller g_smsDiag_installer;
+}
+#endif
+
 //////////////////////////////////////////////////////////////////////
 // BSSRDF entry point adapters — shared via BSSRDFEntryAdapters.h
 //////////////////////////////////////////////////////////////////////
@@ -1335,6 +1381,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				// paths (with no diffuse receiver) would be killed.
 				if( pSolver && bPassedThroughSpecular && bHadNonSpecularShading )
 				{
+#if SMS_DIAG_ENABLED
+					g_smsDiag_emissionSuppressed.fetch_add( 1, std::memory_order_relaxed );
+					const RISEPel rawE_diag = pEmitter->emittedRadiance(
+						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+					SMSDiag_AddLum( g_smsDiag_sumSuppLumX,
+						ColorMath::MaxValue( throughput * rawE_diag ) );
+#endif
 					if( ff ) {
 						RISEPel rawE = pEmitter->emittedRadiance(
 							ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
@@ -2039,6 +2092,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
+#if SMS_DIAG_ENABLED
+			g_smsDiag_evals.fetch_add( 1, std::memory_order_relaxed );
+#endif
 			ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 				ri.geometric.ptIntersection,
 				ri.geometric.vNormal,
@@ -2051,7 +2107,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 			if( sms.valid )
 			{
+#if SMS_DIAG_ENABLED
+				g_smsDiag_valid.fetch_add( 1, std::memory_order_relaxed );
+#endif
 				RISEPel smsContrib = sms.contribution * sms.misWeight;
+#if SMS_DIAG_ENABLED
+				SMSDiag_AddLum( g_smsDiag_sumSmsLumX,
+					ColorMath::MaxValue( throughput * smsContrib ) );
+#endif
 				const RISEPel smsRaw = sms.contribution;
 				const RISEPel smsClampedIn = smsContrib;
 				smsContrib = ClampContribution( smsContrib, stabilityConfig.directClamp );

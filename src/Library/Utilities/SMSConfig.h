@@ -73,6 +73,7 @@ namespace RISE
 		unsigned int	bernoulliTrials;	///< Max trials for unbiased PDF estimation (default 100, ignored when biased == true)
 		unsigned int	multiTrials;		///< Independent Newton solves per evaluation (Zeltner 2020); default 1 = single-solve Snell seed.  >1 uncovers separate basins on bumpy surfaces at proportional cost.
 		unsigned int	photonCount;		///< Photon-aided seed budget; default 0 = off.  >0 builds an SMSPhotonMap for seeds on caustics the deterministic seed misses.
+		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5).  When enabled, Newton first runs on a smoothed reference surface (smoothing=1: underlying analytical base, no displacement) to escape the C1-discontinuity plateau on Phong-shaded triangle meshes, then refines on the actual surface (smoothing=0).  Default false; opt-in via `sms_two_stage TRUE`.  No-op when the specular geometry doesn't expose a smoothing-aware analytical query.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
 
 		SMSConfig() :
 		  enabled( false ),
@@ -82,7 +83,8 @@ namespace RISE
 		  biased( true ),
 		  bernoulliTrials( 100 ),
 		  multiTrials( 1 ),
-		  photonCount( 0 )
+		  photonCount( 0 ),
+		  twoStage( false )
 		{
 		}
 	};

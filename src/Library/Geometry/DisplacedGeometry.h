@@ -89,23 +89,42 @@ namespace RISE
 			bool IsValid() const { return m_pMesh != 0; }
 
 			// IGeometry
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const;
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest() const { return true; }
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest() const override { return true; }
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea() const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea() const override;
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
+
+			//! Smoothing-aware analytical query.  Composes the BASE geometry's
+			//! analytical derivatives with the displacement painter via the
+			//! standard chain rule, scaling `disp_scale` by `(1 - smoothing)`.
+			//! At smoothing=1 the displacement contribution vanishes and the
+			//! result equals the base's analytical (recursing for nested
+			//! displaceds).  At smoothing=0 the result matches the actual
+			//! tessellated mesh.  Used by SMS two-stage solver — see
+			//! `docs/SMS_TWO_STAGE_SOLVER.md`.
+			bool ComputeAnalyticalDerivatives(
+				const Point2& uv,
+				Scalar        smoothing,
+				Point3&       outPosition,
+				Vector3&      outNormal,
+				Vector3&      outDpdu,
+				Vector3&      outDpdv,
+				Vector3&      outDndu,
+				Vector3&      outDndv
+				) const override;
 
 			// Keyframable — static after construction; no keyframeable parameters.
-			IKeyframeParameter* KeyframeFromParameters( const String& /*name*/, const String& /*value*/ ) { return 0; }
-			void SetIntermediateValue( const IKeyframeParameter& /*val*/ ) {}
-			void RegenerateData() {}
+			IKeyframeParameter* KeyframeFromParameters( const String& /*name*/, const String& /*value*/ ) override { return 0; }
+			void SetIntermediateValue( const IKeyframeParameter& /*val*/ ) override {}
+			void RegenerateData() override {}
 		};
 	}
 }

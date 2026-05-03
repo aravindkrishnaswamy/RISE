@@ -1,0 +1,264 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_veach_egg_vcm_displaced.RISEscene                                                    #
+#   Description:    VCM version of the displaced glass egg.  Companion to                                   #
+#                   mlt_veach_egg_pt_sms_displaced.RISEscene -- identical geometry, materials, displacement  #
+#                   and tessellation, only the rasterizer differs.  Use this to A/B SMS vs. VCM convergence  #
+#                   on caustics passing through a non-quadric (perlin-bumped) glass shell.                  #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      May 2, 2026                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - VCM
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+vcm_pel_rasterizer
+{
+	samples                       32
+	max_eye_depth                 12
+	max_light_depth               12
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_veach_egg_vcm_displaced
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - identical to MLT/BDPT/SMS versions
+##################################################
+
+pinhole_camera
+{
+	location			278 350 -650
+	lookat				278 200 278
+	up					0 1 0
+	width				400
+	height				400
+	fov					40.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+# Continuous 2D bump function -- mirrors the SMS-displaced scene exactly so the
+# two renders compare like-for-like.  perlin2d_painter is registered as both an
+# IPainter and an IFunction2D; displaced_geometry consumes the latter.
+perlin2d_painter
+{
+	name				pnt_egg_bumps
+	colora				color_black
+	colorb				color_white
+	persistence			0.55
+	octaves				4
+	scale				8.0 8.0
+	shift				0 0
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				800.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# The sealed glass egg
+#   - OUTER: tessellated ellipsoid + perlin displacement (identical to SMS scene)
+#   - INNER: smooth ellipsoid (analytic intersection)
+##################################################
+
+ellipsoid_geometry
+{
+	name				egg_outer_geom
+	radii				140 190 140
+}
+
+displaced_geometry
+{
+	name				egg_outer_displaced
+	base_geometry		egg_outer_geom
+	detail				128
+	displacement		pnt_egg_bumps
+	disp_scale			20.0
+}
+
+ellipsoid_geometry
+{
+	name				egg_inner_geom
+	radii				112 158 112
+}
+
+standard_object
+{
+	name				egg_outer
+	geometry			egg_outer_displaced
+	material			glass
+	position			278 200 278
+}
+
+standard_object
+{
+	name				egg_inner
+	geometry			egg_inner_geom
+	material			air_cavity
+	position			278 200 278
+}
+
+##################################################
+# Interior light
+##################################################
+
+sphere_geometry
+{
+	name				light_geom
+	radius				15
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 200 278
+}

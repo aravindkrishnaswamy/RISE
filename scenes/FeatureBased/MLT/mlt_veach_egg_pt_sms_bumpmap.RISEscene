@@ -1,0 +1,289 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_veach_egg_pt_sms_bumpmap.RISEscene                                                   #
+#   Description:    Smooth-ellipsoid Veach egg with a Perlin bump-map modifier — companion test scene to     #
+#                   exercise the SMS two-stage solver in the regime the paper (Zeltner 2020 §5) actually    #
+#                   targets: a normal field perturbed by high-frequency detail without changing positions.  #
+#                                                                                                           #
+#   The outer egg geometry is a smooth ellipsoid (no `displaced_geometry`).  A `bumpmap_modifier` applied   #
+#   on the outer object perturbs the normal at intersection time via the same 2D Perlin function the        #
+#   displaced scene used for vertex displacement.  Positions are unchanged; only normals are bumpy.  This   #
+#   matches Mitsuba's normal-mapped pedestals scenes and tests whether SMS Stage 1 (smoothing=1, smooth     #
+#   ellipsoid) can seed Stage 2 (smoothing=0, bumpy normals) effectively.                                   #
+#                                                                                                           #
+#   Compare to:                                                                                              #
+#     - mlt_veach_egg_pt_sms.RISEscene          (baseline, smooth — no bumps)                                #
+#     - mlt_veach_egg_pt_sms_displaced.RISEscene (displaced — large position perturbation)                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      May 2, 2026                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - PT with SMS enabled, two-stage on
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       32
+	oidn_denoise                  TRUE
+	sms_enabled                   TRUE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_two_stage                 TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_veach_egg_pt_sms_bumpmap
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - identical to the smooth / displaced versions
+##################################################
+
+pinhole_camera
+{
+	location			278 350 -650
+	lookat				278 200 278
+	up					0 1 0
+	width				400
+	height				400
+	fov					40.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+# Same Perlin function the displaced scene used; here it drives the
+# bump-map modifier instead of vertex displacement.
+perlin2d_painter
+{
+	name				pnt_egg_bumps
+	colora				color_black
+	colorb				color_white
+	persistence			0.55
+	octaves				4
+	scale				8.0 8.0
+	shift				0 0
+}
+
+# Bump-map modifier: perturbs the surface normal using the FD gradient of
+# pnt_egg_bumps.  `scale` controls the bump amplitude; `windowsize` the
+# FD step on the (u, v) parameter (smaller = higher-frequency detail
+# captured but more sensitivity to texture noise).
+#
+# Empirically `scale × windowsize × ~16` (perlin gradient magnitude over
+# its period) is the bumpU/bumpV magnitude.  At scale=10, windowsize=0.001
+# this gives ≈ 0.16 → arctan(0.16) ≈ 9° max normal perturbation — within
+# the regime where single-chain SMS (one specular path per shading point)
+# can capture most of the suppressed caustic energy.  Crank scale higher
+# and the bumpy normal field scatters light across many caustic chains,
+# which a single-trial SMS can't cover (would need multi-trial / photon-
+# aided seeding to track the diffuse caustic).
+bumpmap_modifier
+{
+	name				bump_egg
+	function			pnt_egg_bumps
+	scale				10.0
+	windowsize			0.001
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				800.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# The sealed glass egg — both shells SMOOTH ellipsoids.
+# The OUTER egg gets the bump-map modifier; INNER stays unperturbed.
+##################################################
+
+ellipsoid_geometry
+{
+	name				egg_outer_geom
+	radii				140 190 140
+}
+
+ellipsoid_geometry
+{
+	name				egg_inner_geom
+	radii				112 158 112
+}
+
+standard_object
+{
+	name				egg_outer
+	geometry			egg_outer_geom
+	material			glass
+	modifier			bump_egg
+	position			278 200 278
+}
+
+standard_object
+{
+	name				egg_inner
+	geometry			egg_inner_geom
+	material			air_cavity
+	position			278 200 278
+}
+
+##################################################
+# Interior light
+##################################################
+
+sphere_geometry
+{
+	name				light_geom
+	radius				15
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 200 278
+}

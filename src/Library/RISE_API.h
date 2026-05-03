@@ -2288,6 +2288,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
@@ -2319,6 +2320,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
@@ -2393,6 +2395,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
@@ -2422,6 +2425,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
 								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
 								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
+								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)

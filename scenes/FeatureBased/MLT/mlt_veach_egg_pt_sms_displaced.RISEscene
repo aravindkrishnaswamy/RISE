@@ -1,0 +1,285 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           mlt_veach_egg_pt_sms_displaced.RISEscene                                                 #
+#   Description:    Path tracer + Specular Manifold Sampling on a *displaced* glass egg.                    #
+#                                                                                                           #
+#   Same as mlt_veach_egg_pt_sms.RISEscene, but the OUTER glass surface is no longer a smooth ellipsoid.   #
+#   It is tessellated to a high-detail mesh and pushed along its analytic normal by a continuous 2D Perlin  #
+#   noise function. The INNER cavity ellipsoid is left smooth, so the glass shell thickness now varies      #
+#   across the egg -- giving SMS a more challenging manifold (the half-vector chain through the bumpy       #
+#   outer + smooth inner glass interface is non-trivial and tests the Newton solver on a non-quadric        #
+#   specular surface).                                                                                       #
+#                                                                                                           #
+#   Why a 2D function?  displaced_geometry consumes an IFunction2D sampled at the tessellation's (u,v).    #
+#   perlin2d_painter is registered both as an IPainter and an IFunction2D, so we can reference it by name.  #
+#                                                                                                           #
+#   detail=128 gives a (129x129) grid on the ellipsoid (~33k tris) -- enough that a disp_scale of ~10 units #
+#   on radii 140/190/140 produces visible bumps without aliasing.  disp_scale stays small relative to the   #
+#   28-32 unit shell thickness so the displaced outer surface never breaches the inner cavity.              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                     #
+#   Birthdate:      May 2, 2026                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer setup - PT with SMS enabled
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples                       4
+	oidn_denoise                  TRUE
+	sms_enabled                   TRUE
+	sms_max_iterations            30
+	sms_threshold                 1e-4
+	sms_max_chain_depth           10
+	sms_biased                    TRUE
+	sms_multi_trials              16
+	sms_photon_count              100000
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/mlt_veach_egg_pt_sms_displaced
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera - identical to MLT/BDPT versions
+##################################################
+
+pinhole_camera
+{
+	location			278 350 -650
+	lookat				278 200 278
+	up					0 1 0
+	width				400
+	height				400
+	fov					40.0
+}
+
+##################################################
+# Painters & Materials
+##################################################
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.95 0.85
+}
+
+# Continuous 2D bump function used as the displacement height for the outer egg.
+# colora/colorb act as the "low" and "high" of the height field; perlin2d_painter
+# is registered both as an IPainter and an IFunction2D, so displaced_geometry
+# below can reference it by name.
+perlin2d_painter
+{
+	name				pnt_egg_bumps
+	colora				color_black
+	colorb				color_white
+	persistence			0.55
+	octaves				4
+	scale				8.0 8.0
+	shift				0 0
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			color_cornellgreen
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_cornellred
+}
+
+lambertian_luminaire_material
+{
+	name				bright_lum
+	exitance			pnt_light
+	scale				800.0
+	material			none
+}
+
+dielectric_material
+{
+	name				glass
+	tau					1.0
+	ior					1.5
+}
+
+dielectric_material
+{
+	name				air_cavity
+	tau					1.0
+	ior					1.0
+}
+
+##################################################
+# Cornell box walls
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					552.8 0 0
+	ptb					0 0 0
+	ptc					0 0 559.2
+	ptd					549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					556.0 548.8 0.0
+	ptb					556.0 548.8 559.2
+	ptc					0 548.8 559.2
+	ptd					0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					549.6 0 559.2
+	ptb					0 0 559.2
+	ptc					0 548.8 559.2
+	ptd					556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 559.2
+	ptb					0 0 0
+	ptc					0 548.8 0.0
+	ptd					0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					552.8 0 0
+	ptb					549.6 0 559.2
+	ptc					556.0 548.8 559.2
+	ptd					556.0 548.8 0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+##################################################
+# The sealed glass egg
+#   - OUTER: tessellated ellipsoid + perlin displacement (the visible bumpy surface)
+#   - INNER: smooth ellipsoid (analytic intersection, unchanged)
+# The shell thickness was 28 (in X/Z) / 32 (in Y) on the smooth version; with
+# disp_scale=10 the thinnest direction still has ~18 units of glass minimum.
+##################################################
+
+ellipsoid_geometry
+{
+	name				egg_outer_geom
+	radii				140 190 140
+}
+
+# detail=128 -> (128+1)^2 = 16641 vertices, ~32k triangles.  Plenty for 400x400.
+displaced_geometry
+{
+	name				egg_outer_displaced
+	base_geometry		egg_outer_geom
+	detail				128
+	displacement		pnt_egg_bumps
+	disp_scale			20.0
+}
+
+ellipsoid_geometry
+{
+	name				egg_inner_geom
+	radii				112 158 112
+}
+
+standard_object
+{
+	name				egg_outer
+	geometry			egg_outer_displaced
+	material			glass
+	position			278 200 278
+}
+
+standard_object
+{
+	name				egg_inner
+	geometry			egg_inner_geom
+	material			air_cavity
+	position			278 200 278
+}
+
+##################################################
+# Interior light
+##################################################
+
+sphere_geometry
+{
+	name				light_geom
+	radius				15
+}
+
+standard_object
+{
+	name				interior_light
+	geometry			light_geom
+	material			bright_lum
+	position			278 200 278
+}

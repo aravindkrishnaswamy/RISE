@@ -309,6 +309,106 @@ SurfaceDerivatives EllipsoidGeometry::ComputeSurfaceDerivatives( const Point3& o
 	return sd;
 }
 
+bool EllipsoidGeometry::ComputeAnalyticalDerivatives(
+	const Point2& uv,
+	Scalar        /*smoothing*/,   // no high-frequency detail to attenuate
+	Point3&       outPosition,
+	Vector3&      outNormal,
+	Vector3&      outDpdu,
+	Vector3&      outDpdv,
+	Vector3&      outDndu,
+	Vector3&      outDndv
+	) const
+{
+	// Parameterisation MUST match EllipsoidGeometry::TessellateToMesh and
+	// EllipsoidGeometry::IntersectRay's position-based UV inverse:
+	//   theta = 2π·u   (uv.x ∈ [0, 1] wraps the equator)
+	//   phi   = π·v    (uv.y ∈ [0, 1] from north pole to south pole)
+	//   P_x   = -a·sin(phi)·cos(theta)
+	//   P_y   =  b·cos(phi)
+	//   P_z   =  c·sin(phi)·sin(theta)
+	// Otherwise the (u, v) coming out of the on-mesh path or from
+	// IntersectRay wouldn't agree with what we feed in here.
+	//
+	// Semi-axes: m_vRadius stores diameters.
+	const Scalar a = m_vRadius.x * 0.5;
+	const Scalar b = m_vRadius.y * 0.5;
+	const Scalar c = m_vRadius.z * 0.5;
+
+	const Scalar theta = uv.x * TWO_PI;
+	const Scalar phi   = uv.y * PI;
+	const Scalar st = sin( theta );
+	const Scalar ct = cos( theta );
+	const Scalar sp = sin( phi );
+	const Scalar cp = cos( phi );
+
+	outPosition = Point3(
+		-a * sp * ct,
+		 b *      cp,
+		 c * sp * st );
+
+	// Tangent vectors via direct differentiation:
+	//   dP/dtheta = (a·sp·st, 0, c·sp·ct)         (since dP_x/dtheta = -a·sp·(-st) = a·sp·st)
+	//   dP/dphi   = (-a·cp·ct, -b·sp, c·cp·st)
+	//   dP/du     = (dP/dtheta) × 2π
+	//   dP/dv     = (dP/dphi)   × π
+	outDpdu = Vector3(
+		TWO_PI * a * sp * st,
+		0.0,
+		TWO_PI * c * sp * ct );
+	outDpdv = Vector3(
+		PI * (-a) * cp * ct,
+		PI * (-b) * sp,
+		PI *   c  * cp * st );
+
+	// Gradient-based outward normal: G = (x/a², y/b², z/c²); N = G/|G|.
+	const Scalar invA2 = (a > NEARZERO) ? 1.0 / (a*a) : 0.0;
+	const Scalar invB2 = (b > NEARZERO) ? 1.0 / (b*b) : 0.0;
+	const Scalar invC2 = (c > NEARZERO) ? 1.0 / (c*c) : 0.0;
+
+	const Vector3 G(
+		outPosition.x * invA2,
+		outPosition.y * invB2,
+		outPosition.z * invC2 );
+	const Scalar Gmag = Vector3Ops::Magnitude( G );
+	if( Gmag <= NEARZERO ) {
+		// Pole degeneracy or zero-radius axis — caller should treat as failed.
+		outNormal = Vector3( 0, 1, 0 );
+		outDndu   = Vector3( 0, 0, 0 );
+		outDndv   = Vector3( 0, 0, 0 );
+		return false;
+	}
+	outNormal = G * (1.0 / Gmag);
+
+	// dN/du, dN/dv via central FD on the closed-form gradient-normal.
+	// The ellipsoid is C∞-smooth, so FD with small uv-step is numerically
+	// equivalent to the analytical derivative, at the cost of 4 trig
+	// evaluations.  Hand-deriving d(G/|G|)/du is long and error-prone.
+	auto evalUnitNormal = [&]( Scalar u_, Scalar v_ ) -> Vector3 {
+		const Scalar t  = u_ * TWO_PI;
+		const Scalar p  = v_ * PI;
+		const Scalar st_ = sin( t );
+		const Scalar ct_ = cos( t );
+		const Scalar sp_ = sin( p );
+		const Scalar cp_ = cos( p );
+		const Vector3 G_(
+			(-a * sp_ * ct_) * invA2,
+			( b *       cp_) * invB2,
+			( c * sp_ * st_) * invC2 );
+		const Scalar gm = Vector3Ops::Magnitude( G_ );
+		return ( gm > NEARZERO ) ? ( G_ * (1.0 / gm) ) : Vector3( 0, 1, 0 );
+	};
+	const Scalar epsUv = 1.0e-3;
+	const Vector3 N_uplus  = evalUnitNormal( uv.x + epsUv, uv.y );
+	const Vector3 N_uminus = evalUnitNormal( uv.x - epsUv, uv.y );
+	const Vector3 N_vplus  = evalUnitNormal( uv.x, uv.y + epsUv );
+	const Vector3 N_vminus = evalUnitNormal( uv.x, uv.y - epsUv );
+	const Scalar inv2eps = 1.0 / (2.0 * epsUv);
+	outDndu = ( N_uplus  - N_uminus ) * inv2eps;
+	outDndv = ( N_vplus  - N_vminus ) * inv2eps;
+	return true;
+}
+
 Scalar EllipsoidGeometry::GetArea( ) const
 {
 	// This is an approximation taken from:

@@ -69,6 +69,37 @@ namespace RISE
 		//! Retrieves the material associated to this object
 		virtual const IMaterial* GetMaterial() const = 0;
 
+		//! Retrieves the underlying geometry, when one is available.
+		//! Default impl returns null for ABI safety with out-of-tree
+		//! IObject implementers; concrete `Object` overrides to return
+		//! its geometry pointer.
+		virtual const class IGeometry* GetGeometry() const { return 0; }
+
+		//! World-space wrapper around `IGeometry::ComputeAnalyticalDerivatives`.
+		//! Forwards to the underlying geometry in object space and applies the
+		//! object's transform: positions by `m_mxFinalTrans`, tangent vectors
+		//! by its rotational/scale part, normal and its derivatives by
+		//! `m_mxInvTranspose`.  Default returns false; concrete `Object`
+		//! overrides.  Used by the SMS two-stage solver — see
+		//! `docs/SMS_TWO_STAGE_SOLVER.md`.
+		virtual bool ComputeAnalyticalDerivatives(
+			const Point2& uv,
+			Scalar        smoothing,
+			Point3&       outWorldPosition,
+			Vector3&      outWorldNormal,
+			Vector3&      outWorldDpdu,
+			Vector3&      outWorldDpdv,
+			Vector3&      outWorldDndu,
+			Vector3&      outWorldDndv
+			) const
+		{
+			(void)uv; (void)smoothing;
+			(void)outWorldPosition; (void)outWorldNormal;
+			(void)outWorldDpdu; (void)outWorldDpdv;
+			(void)outWorldDndu; (void)outWorldDndv;
+			return false;
+		}
+
 		//! Retrieves the shader associated with this object (or null
 		//! if none was assigned).  Default impl returns null for ABI
 		//! safety with out-of-tree implementers; concrete `Object`

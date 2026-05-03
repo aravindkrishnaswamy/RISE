@@ -150,6 +150,18 @@ namespace RISE
 			/// diagonal — mirrors VCM's auto merge radius heuristic).
 			Scalar			photonSearchRadius;
 
+			/// Two-stage Newton solver (Zeltner 2020 §5).  When enabled,
+			/// `Solve` first runs Newton on a smoothed reference surface
+			/// (smoothing = 1: the underlying analytical base, no displacement
+			/// or normal-map detail), then refines on the actual surface
+			/// (smoothing = 0).  Gets Newton out of the C1-discontinuity-
+			/// induced plateau on Phong-shaded triangle meshes.  No-op for
+			/// scenes whose specular geometry doesn't expose a smoothing-
+			/// aware analytical query (`IGeometry::ComputeAnalyticalDerivatives`).
+			/// Default false — opt-in via the rasterizer's `sms_two_stage`
+			/// parameter.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
+			bool			twoStage;
+
 			ManifoldSolverConfig() :
 			enabled( false ),
 			maxIterations( 15 ),
@@ -161,7 +173,8 @@ namespace RISE
 			maxGeometricTerm( 10.0 ),
 			multiTrials( 1 ),
 			photonCount( 0 ),
-			photonSearchRadius( 0 )
+			photonSearchRadius( 0 ),
+			twoStage( false )
 			{
 			}
 		};
@@ -499,10 +512,15 @@ namespace RISE
 
 			/// Runs Newton iteration to solve C(x) = 0.
 			/// Modifies chain in-place. Returns true if converged.
+			///
+			/// `smoothing` ∈ [0, 1] is forwarded to `UpdateVertexOnSurface`
+			/// — > 0 walks on a smoothed reference surface (Stage 1 of the
+			/// SMS two-stage solver), 0 (default) walks on the actual surface.
 			bool NewtonSolve(
 				std::vector<ManifoldVertex>& chain,
 				const Point3& fixedStart,
-				const Point3& fixedEnd
+				const Point3& fixedEnd,
+				Scalar smoothing = 0.0
 				) const;
 
 			/// Evaluates the 2k-dimensional constraint vector.
@@ -585,17 +603,33 @@ namespace RISE
 			/// Updates a vertex position on its surface by stepping along
 			/// the surface parameterization by (du, dv), then recomputes
 			/// all derivative data via ray intersection.
+			///
+			/// `smoothing` ∈ [0, 1] — when > 0 and the vertex's object
+			/// supports `ComputeAnalyticalDerivatives`, takes the step in
+			/// (u, v) space directly and re-evaluates the smoothing-aware
+			/// analytical surface, bypassing the mesh ray-cast snap.
+			/// `smoothing = 0` (default) preserves the legacy mesh-snap
+			/// behaviour.  Used by SMS two-stage solver — see
+			/// `docs/SMS_TWO_STAGE_SOLVER.md`.
 			bool UpdateVertexOnSurface(
 				ManifoldVertex& vertex,
 				Scalar du,
-				Scalar dv
+				Scalar dv,
+				Scalar smoothing = 0.0
 				) const;
 
 			/// Fills in surface derivative data (dpdu, dpdv, dndu, dndv)
 			/// for a vertex by querying its object's geometry with proper
 			/// world/object space transforms.
+			///
+			/// `smoothing` ∈ [0, 1] — when > 0 and the vertex's object
+			/// supports `ComputeAnalyticalDerivatives`, queries the
+			/// smoothing-aware analytical path (overwriting position,
+			/// normal, and derivatives at `vertex.uv`).  `smoothing = 0`
+			/// (default) preserves the legacy mesh-FD-probe behaviour.
 			bool ComputeVertexDerivatives(
-				ManifoldVertex& vertex
+				ManifoldVertex& vertex,
+				Scalar smoothing = 0.0
 				) const;
 
 			/// Make dpdu, dpdv an orthonormal basis of the tangent plane

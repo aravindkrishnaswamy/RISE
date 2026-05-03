@@ -152,6 +152,44 @@ namespace RISE
 		{
 			return SurfaceDerivatives();
 		}
+
+		//! Smoothing-aware analytical surface query keyed on parametric (u, v).
+		//!
+		//! Returns position, unit normal, and tangent / normal partial
+		//! derivatives of the underlying parameterised surface.  The
+		//! `smoothing` parameter ∈ [0, 1] interpolates between the actual
+		//! high-frequency-detailed surface (s = 0) and a Lipschitz-smooth
+		//! reference surface (s = 1).  For tessellated analytical primitives
+		//! (sphere, ellipsoid, ...) smoothing is a no-op — there is no
+		//! high-frequency detail to attenuate.  For composite surfaces like
+		//! `displaced_geometry`, smoothing scales the displacement amplitude:
+		//! at s = 1 the surface collapses to its smooth base.
+		//!
+		//! Used by the SMS two-stage Newton solver: stage 1 walks on s = 1
+		//! to find a seed in a C1-smooth landscape, stage 2 refines on
+		//! s = 0.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
+		//!
+		//! Default implementation returns false.  Pure triangle meshes
+		//! loaded from .obj/.glTF have no smooth analytical surface.
+		//!
+		//! \return TRUE if analytical derivatives were produced; FALSE otherwise.
+		virtual bool ComputeAnalyticalDerivatives(
+			const Point2& uv,
+			Scalar        smoothing,			///< [in] 0 = full detail, 1 = smooth base
+			Point3&       outPosition,			///< [out] Object-space surface position
+			Vector3&      outNormal,			///< [out] Object-space unit normal
+			Vector3&      outDpdu,				///< [out] dP/du
+			Vector3&      outDpdv,				///< [out] dP/dv
+			Vector3&      outDndu,				///< [out] dN/du
+			Vector3&      outDndv				///< [out] dN/dv
+			) const
+		{
+			(void)uv; (void)smoothing;
+			(void)outPosition; (void)outNormal;
+			(void)outDpdu; (void)outDpdv;
+			(void)outDndu; (void)outDndv;
+			return false;
+		}
 	};
 }
 

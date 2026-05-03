@@ -1661,9 +1661,63 @@ bool ManifoldSolver::SolveBlockTridiagonal(
 bool ManifoldSolver::UpdateVertexOnSurface(
 	ManifoldVertex& vertex,
 	Scalar du,
-	Scalar dv
+	Scalar dv,
+	Scalar smoothing
 	) const
 {
+	if( !vertex.pObject )
+	{
+		return false;
+	}
+
+	// SMS two-stage Stage 1 path: take the step in (u, v) space directly
+	// and re-evaluate the smoothing-aware analytical surface.  Bypasses
+	// the mesh ray-cast snap below — at smoothing > 0 the chain lives on
+	// a smoothed surface that the underlying mesh doesn't approximate, so
+	// the snap would put us back on the actual surface and undo Stage 1's
+	// reason for existing.  See docs/SMS_TWO_STAGE_SOLVER.md.
+	if( smoothing > 0.0 )
+	{
+		Point2 newUv( vertex.uv.x + du, vertex.uv.y + dv );
+		// Spherical-style pole wrap.  For sphere/ellipsoid parameter-
+		// isations, crossing a pole (v < 0 or v > 1) reflects the v
+		// coordinate and shifts u by half a turn — same surface point
+		// reached by going the other way around.  Without this, a
+		// clamp-to-[0,1] would put the vertex AT the pole, where
+		// dpdu = sin(phi)·(...) collapses to zero and the Jacobian
+		// becomes singular.  Empirically (SMS_NEWTON_STATS' singular
+		// counter) clamping caused ≥17% of Newton calls to degenerate
+		// on the displaced-egg scene's two-stage Stage 1.
+		if( newUv.y < 0.0 ) {
+			newUv.y = -newUv.y;
+			newUv.x += 0.5;
+		} else if( newUv.y > 1.0 ) {
+			newUv.y = 2.0 - newUv.y;
+			newUv.x += 0.5;
+		}
+		while( newUv.x < 0.0 ) newUv.x += 1.0;
+		while( newUv.x >= 1.0 ) newUv.x -= 1.0;
+		Point3  aP;
+		Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
+		if( vertex.pObject->ComputeAnalyticalDerivatives(
+				newUv, smoothing, aP, aN, aDpdu, aDpdv, aDndu, aDndv ) )
+		{
+			vertex.uv       = newUv;
+			vertex.position = aP;
+			vertex.normal   = aN;
+			vertex.dpdu     = aDpdu;
+			vertex.dpdv     = aDpdv;
+			vertex.dndu     = aDndu;
+			vertex.dndv     = aDndv;
+			OrthonormalizeTangentFrame( vertex );
+			vertex.valid = true;
+			return true;
+		}
+		// Analytical query failed — caller (NewtonSolve under two-stage
+		// Stage 1) treats as a rejected step and halves β.
+		return false;
+	}
+
 	// Linear approximation of new position using tangent derivatives
 	const Point3 newPos = Point3Ops::mkPoint3(
 		vertex.position,
@@ -1707,6 +1761,12 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 
 		if( ri.geometric.bHit )
 		{
+			// Apply modifier — same reason as in BuildSeedChain.  Stage 2
+			// of the two-stage solver (smoothing == 0) wants the perturbed
+			// normal so SMS's chain matches PT's bumpy ray traversal.
+			if( ri.pModifier ) {
+				ri.pModifier->Modify( ri.geometric );
+			}
 			vertex.position = ri.geometric.ptIntersection;
 			vertex.normal = ri.geometric.vNormal;
 			vertex.uv = ri.geometric.ptCoord;
@@ -1727,6 +1787,9 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 
 		if( ri2.geometric.bHit )
 		{
+			if( ri2.pModifier ) {
+				ri2.pModifier->Modify( ri2.geometric );
+			}
 			vertex.position = ri2.geometric.ptIntersection;
 			vertex.normal = ri2.geometric.vNormal;
 			vertex.uv = ri2.geometric.ptCoord;
@@ -1843,11 +1906,45 @@ void ManifoldSolver::OrthonormalizeTangentFrame(
 }
 
 bool ManifoldSolver::ComputeVertexDerivatives(
-	ManifoldVertex& vertex
+	ManifoldVertex& vertex,
+	Scalar smoothing
 	) const
 {
 	if( !vertex.pObject )
 	{
+		return false;
+	}
+
+	// Smoothing-aware analytical path (SMS two-stage solver, Zeltner 2020 §5).
+	// ONLY engaged at smoothing > 0 — at smoothing = 0 we want the
+	// existing on-mesh derivatives (per-triangle UV-Jacobian for triangle
+	// meshes, FD probe for smooth analytical primitives), because those
+	// derivatives describe the *actual* surface that PT's emission-
+	// suppression machinery has already paired with.  Replacing them with
+	// the smooth analytical equivalent at smoothing = 0 was the rejected
+	// "Fix C" — it gives Newton's J a different surface than the rendering
+	// pipeline uses, and ΣL_sms/ΣL_supp collapses (see investigation
+	// timeline in docs/SMS_TWO_STAGE_SOLVER.md).
+	if( smoothing > 0.0 )
+	{
+		Point3  aP;
+		Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
+		if( vertex.pObject->ComputeAnalyticalDerivatives(
+				vertex.uv, smoothing, aP, aN, aDpdu, aDpdv, aDndu, aDndv ) )
+		{
+			vertex.position = aP;
+			vertex.normal   = aN;
+			vertex.dpdu     = aDpdu;
+			vertex.dpdv     = aDpdv;
+			vertex.dndu     = aDndu;
+			vertex.dndv     = aDndv;
+			OrthonormalizeTangentFrame( vertex );
+			vertex.valid = true;
+			return true;
+		}
+		// No analytical path available — Stage 1 of the two-stage solver
+		// can't proceed for this vertex.  Caller (Solve) sees failure
+		// and falls back to single-stage Newton.
 		return false;
 	}
 
@@ -1875,6 +1972,14 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		RayIntersection ri( probeRay, nullRasterizerState );
 		vertex.pObject->IntersectRay( ri, 2.0 * probeOffsetAnalytic, true, true, false );
 		if( ri.geometric.bHit ) {
+			// Apply intersection modifier (bump map / normal map) so SMS
+			// sees the perturbed normal — same as RayCaster does for the
+			// rendering pipeline.  Without this, SMS's chain operates on
+			// the unperturbed surface while PT operates on the perturbed
+			// one and energy doesn't balance.
+			if( ri.pModifier ) {
+				ri.pModifier->Modify( ri.geometric );
+			}
 			onSurface = true;
 			if( ri.geometric.derivatives.valid ) {
 				vertex.position = ri.geometric.ptIntersection;
@@ -1895,6 +2000,9 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			RayIntersection ri2( probeRay2, nullRasterizerState );
 			vertex.pObject->IntersectRay( ri2, 2.0 * probeOffsetAnalytic, true, true, false );
 			if( ri2.geometric.bHit ) {
+				if( ri2.pModifier ) {
+					ri2.pModifier->Modify( ri2.geometric );
+				}
 				onSurface = true;
 				if( ri2.geometric.derivatives.valid ) {
 					vertex.position = ri2.geometric.ptIntersection;
@@ -1981,6 +2089,15 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				vertex.pObject->IntersectRay( ri, 2.0 * probeOffset, true, true, false );
 				if( ri.geometric.bHit )
 				{
+					// Apply modifier (e.g. bump map) so the FD captures
+					// derivatives of the *perturbed* normal field, not the
+					// unperturbed one.  Without this, vertex.dndu/dndv
+					// describe the smooth surface even when vertex.normal
+					// is bumpy — Newton's Jacobian sees a different
+					// surface than the constraint.
+					if( ri.pModifier ) {
+						ri.pModifier->Modify( ri.geometric );
+					}
 					r.pos = ri.geometric.ptIntersection;
 					r.normal = ri.geometric.vNormal;
 					r.ok = true;
@@ -1998,6 +2115,9 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				vertex.pObject->IntersectRay( ri2, 2.0 * probeOffset, true, true, false );
 				if( ri2.geometric.bHit )
 				{
+					if( ri2.pModifier ) {
+						ri2.pModifier->Modify( ri2.geometric );
+					}
 					r.pos = ri2.geometric.ptIntersection;
 					r.normal = ri2.geometric.vNormal;
 					r.ok = true;
@@ -2129,13 +2249,62 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 bool ManifoldSolver::NewtonSolve(
 	std::vector<ManifoldVertex>& chain,
 	const Point3& fixedStart,
-	const Point3& fixedEnd
+	const Point3& fixedEnd,
+	Scalar smoothing
 	) const
 {
+#if SMS_TRACE_DIAGNOSTIC
+	// Per-failure-mode counters.  Each return-false (or accepted-soft) path
+	// in this routine increments exactly one counter.  Periodic dump every
+	// 200k Newton calls so the breakdown shows up in the render log.
+	static std::atomic<int> g_newton_total{ 0 };
+	static std::atomic<int> g_newton_empty{ 0 };
+	static std::atomic<int> g_newton_singular{ 0 };
+	static std::atomic<int> g_newton_no_progress{ 0 };
+	static std::atomic<int> g_newton_update_failed{ 0 };
+	static std::atomic<int> g_newton_iter_limit{ 0 };
+	static std::atomic<int> g_newton_soft_converged{ 0 };
+	static std::atomic<int> g_newton_strict_converged{ 0 };
+	// D4 sub-counters: at the noProgress failure site, bucket by which
+	// iteration the line search died on, and by the residual norm at that
+	// point (relative to solverThreshold).  Discriminates H4a (Jacobian
+	// wrong from iter 0) vs H4b (Newton made progress then hit a non-
+	// smooth wall).
+	static std::atomic<int> g_np_iter[5]{ {0}, {0}, {0}, {0}, {0} };
+	// Buckets:  0=iter==0  1=iter==1  2=iter==2  3=iter in [3,5]  4=iter>=6
+	static std::atomic<int> g_np_norm[5]{ {0}, {0}, {0}, {0}, {0} };
+	// Buckets relative to solverThreshold (default 1e-4):
+	//   0: norm < 10·thr  (would soft-converge after iter limit)
+	//   1: norm < 100·thr
+	//   2: norm < 1000·thr
+	//   3: norm < 1
+	//   4: norm >= 1
+	const int nt = g_newton_total.fetch_add( 1, std::memory_order_relaxed );
+	if( (nt & 0x3ffff) == 0 && nt > 0 ) {
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_NEWTON_STATS: total=%d empty=%d singular=%d noProgress=%d updateFailed=%d iterLimit=%d softOk=%d strictOk=%d",
+			nt, g_newton_empty.load(),
+			g_newton_singular.load(), g_newton_no_progress.load(),
+			g_newton_update_failed.load(), g_newton_iter_limit.load(),
+			g_newton_soft_converged.load(), g_newton_strict_converged.load() );
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_NP_ITER:  iter0=%d  iter1=%d  iter2=%d  iter[3-5]=%d  iter>=6=%d",
+			g_np_iter[0].load(), g_np_iter[1].load(), g_np_iter[2].load(),
+			g_np_iter[3].load(), g_np_iter[4].load() );
+		GlobalLog()->PrintEx( eLog_Event,
+			"SMS_NP_NORM:  norm<10thr=%d  <100thr=%d  <1000thr=%d  <1=%d  >=1=%d",
+			g_np_norm[0].load(), g_np_norm[1].load(), g_np_norm[2].load(),
+			g_np_norm[3].load(), g_np_norm[4].load() );
+	}
+#endif
+
 	const unsigned int k = static_cast<unsigned int>( chain.size() );
 
 	if( k == 0 )
 	{
+#if SMS_TRACE_DIAGNOSTIC
+		g_newton_empty.fetch_add( 1, std::memory_order_relaxed );
+#endif
 		return false;
 	}
 
@@ -2155,6 +2324,9 @@ bool ManifoldSolver::NewtonSolve(
 
 		if( norm < config.solverThreshold )
 		{
+#if SMS_TRACE_DIAGNOSTIC
+			g_newton_strict_converged.fetch_add( 1, std::memory_order_relaxed );
+#endif
 			return true;  // Converged
 		}
 
@@ -2172,6 +2344,9 @@ bool ManifoldSolver::NewtonSolve(
 		std::vector<Scalar> delta;
 		if( !SolveBlockTridiagonal( diag, upper_blocks, lower_blocks, C, k, delta ) )
 		{
+#if SMS_TRACE_DIAGNOSTIC
+			g_newton_singular.fetch_add( 1, std::memory_order_relaxed );
+#endif
 			return false;  // Singular Jacobian
 		}
 
@@ -2196,7 +2371,7 @@ bool ManifoldSolver::NewtonSolve(
 				const Scalar du = -beta * delta[2*i];
 				const Scalar dv = -beta * delta[2*i+1];
 
-				if( !UpdateVertexOnSurface( chain[i], du, dv ) )
+				if( !UpdateVertexOnSurface( chain[i], du, dv, smoothing ) )
 				{
 					allValid = false;
 					break;
@@ -2231,8 +2406,52 @@ bool ManifoldSolver::NewtonSolve(
 
 		if( !improved )
 		{
-			// Even the smallest step didn't improve — give up
+			// Even the smallest step didn't improve — but if Newton already
+			// brought ||C|| within the soft-convergence band (10× the strict
+			// threshold), accept the chain rather than discarding it.  On
+			// triangle meshes whose chord-vs-arc tessellation error sets a
+			// floor on the achievable residual, Newton can iterate to this
+			// floor and then stall; without this acceptance, those chains
+			// (≈1% of total Newton calls on the displaced Veach-egg scene
+			// per SMS_NP_NORM diagnostic) get silently discarded even
+			// though their constraint is satisfied to within visual
+			// precision.  Mirrors the existing post-iter-limit soft-converge
+			// check at the bottom of NewtonSolve — same threshold, applied
+			// at the earlier exit too.
 			chain = savedChain;
+			if( norm < config.solverThreshold * 10.0 )
+			{
+#if SMS_TRACE_DIAGNOSTIC
+				g_newton_soft_converged.fetch_add( 1, std::memory_order_relaxed );
+#endif
+				return true;
+			}
+#if SMS_TRACE_DIAGNOSTIC
+			g_newton_no_progress.fetch_add( 1, std::memory_order_relaxed );
+			// Bucket by iteration index where line search died
+			{
+				int b = 0;
+				if( iter == 0 )      b = 0;
+				else if( iter == 1 ) b = 1;
+				else if( iter == 2 ) b = 2;
+				else if( iter <= 5 ) b = 3;
+				else                 b = 4;
+				g_np_iter[b].fetch_add( 1, std::memory_order_relaxed );
+			}
+			// Bucket by current iteration's residual norm (in units of
+			// solverThreshold), so we can see if the failure happened
+			// near-converged or far from any solution.
+			{
+				const Scalar thr = config.solverThreshold;
+				int b = 0;
+				if( norm < 10.0   * thr ) b = 0;
+				else if( norm < 100.0  * thr ) b = 1;
+				else if( norm < 1000.0 * thr ) b = 2;
+				else if( norm < 1.0          ) b = 3;
+				else                            b = 4;
+				g_np_norm[b].fetch_add( 1, std::memory_order_relaxed );
+			}
+#endif
 			return false;
 		}
 
@@ -2240,6 +2459,9 @@ bool ManifoldSolver::NewtonSolve(
 		{
 			// Restore and report failure
 			chain = savedChain;
+#if SMS_TRACE_DIAGNOSTIC
+			g_newton_update_failed.fetch_add( 1, std::memory_order_relaxed );
+#endif
 			return false;
 		}
 	}
@@ -2257,10 +2479,16 @@ bool ManifoldSolver::NewtonSolve(
 			norm2 += C_final[i] * C_final[i];
 		if( sqrt(norm2) < config.solverThreshold * 10.0 )
 		{
+#if SMS_TRACE_DIAGNOSTIC
+			g_newton_soft_converged.fetch_add( 1, std::memory_order_relaxed );
+#endif
 			return true;  // Soft convergence
 		}
 	}
 
+#if SMS_TRACE_DIAGNOSTIC
+	g_newton_iter_limit.fetch_add( 1, std::memory_order_relaxed );
+#endif
 	return false;
 }
 
@@ -2342,6 +2570,18 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		// Scene-wide intersection via the acceleration structure
 		pObjMgr->IntersectRay( ri, true, true, false );
 
+		// Apply intersection modifier (e.g. bump map / normal map) so the
+		// SMS chain's normals match what the rendering pipeline (RayCaster)
+		// sees.  Without this, BuildSeedChain operates on the unperturbed
+		// surface while PT operates on the perturbed surface, and SMS's
+		// chain estimate won't align with PT's emission-suppression
+		// (dimming, energy ratio collapse).  RayCaster::CastRay applies
+		// the modifier at every hit (RayCaster.cpp:728-730); SMS bypasses
+		// the RayCaster, so we re-apply here.
+		if( ri.geometric.bHit && ri.pModifier ) {
+			ri.pModifier->Modify( ri.geometric );
+		}
+
 #if defined(SMS_TRACE_DIAGNOSTIC) && SMS_TRACE_DIAGNOSTIC
 		if( traceBSC ) {
 			GlobalLog()->PrintEx( eLog_Event,
@@ -2404,6 +2644,14 @@ unsigned int ManifoldSolver::BuildSeedChain(
 		ManifoldVertex mv;
 		mv.position = ri.geometric.ptIntersection;
 		mv.normal = ri.geometric.vNormal;
+		// Surface parameters at the hit.  Without this, vertex.uv stays at
+		// its default (0, 0) — which is a parametric pole on most closed
+		// surfaces.  Future SMS variants that key derivative computation
+		// off (u, v) (analytical-derivative paths, photon-aided reseeding,
+		// etc.) would silently see a degenerate parameterisation.  Cheap
+		// and always-on; harmless for the FD-probe path which doesn't read
+		// vertex.uv anyway.
+		mv.uv = ri.geometric.ptCoord;
 		mv.pObject = ri.pObject;
 		mv.pMaterial = pMat;
 		mv.eta = specInfo.ior;
@@ -3315,7 +3563,149 @@ ManifoldResult ManifoldSolver::Solve(
 	// Save seed template for Bernoulli trials
 	const std::vector<ManifoldVertex> seedTemplate( specularChain );
 
-	// Run Newton solver
+	// SMS two-stage solver (Zeltner 2020 §5).  Run Newton first on the
+	// SMOOTHED reference surface (smoothing = 1: underlying analytical base,
+	// no displacement / no high-frequency detail), then refine on the
+	// actual surface (smoothing = 0).  Opt-in via `config.twoStage`; only
+	// fires for chains whose vertices all support
+	// `IObject::ComputeAnalyticalDerivatives`.
+	//
+	// SCOPE (verified empirically, see docs/SMS_TWO_STAGE_SOLVER.md):
+	//
+	//  - HELPS on smooth analytic primitives + normal-perturbing maps
+	//    (bumpmap_modifier / future normalmap_modifier on
+	//    sphere/ellipsoid/etc.).  Normal field is bumpy but POSITION is
+	//    invariant under smoothing — Stage 1's converged uv is at the
+	//    same world position as the bumpy caustic root, Stage 2's seed
+	//    is in the basin of attraction.  Empirically reaches ΣL_sms /
+	//    ΣL_supp ≈ 1.0 at sane bump amplitudes (~10° max perturbation).
+	//
+	//  - HURTS on heavily-displaced meshes (displaced_geometry with
+	//    disp_scale > a few percent of the curvature radius).  Stage 1
+	//    converges to the SMOOTH-surface caustic at uv `u*`, whose
+	//    corresponding actual-mesh position is up to `disp_scale` units
+	//    away from where the bumpy caustic actually lives.  Stage 2's
+	//    seed at `u*` is FARTHER from the bumpy caustic than the
+	//    original Snell-traced on-mesh seed — two-stage actively
+	//    regresses convergence.
+	//
+	// Mitsuba's reference matches this scope: their Figure 9 (the
+	// dedicated two-stage demonstration) uses only smooth analytic
+	// primitives + `normalmap` BSDFs; their Figure 16 (displaced-mesh
+	// comparison) never engages two-stage.  Their smoothing is BSDF-
+	// driven via `lean()` (Olano-Baker LEAN moments), which is zero by
+	// default — so two-stage is a no-op for non-normal-mapped BSDFs in
+	// their codebase regardless.  Our geometry-side smoothing extends
+	// further (we CAN smooth a displaced surface to its base), but the
+	// extension hits a regime the original method wasn't designed to
+	// handle.  See docs/SMS_TWO_STAGE_SOLVER.md for the data and
+	// proof-from-source citations.
+	if( config.twoStage )
+	{
+#if SMS_TRACE_DIAGNOSTIC
+		static std::atomic<int> g_twostage_attempted{ 0 };
+		static std::atomic<int> g_twostage_inputs_unavailable{ 0 };
+		static std::atomic<int> g_twostage_stage1_failed{ 0 };
+		static std::atomic<int> g_twostage_transition_failed{ 0 };
+		static std::atomic<int> g_twostage_full_success{ 0 };
+		const int ta = g_twostage_attempted.fetch_add( 1, std::memory_order_relaxed );
+		if( (ta & 0x3ffff) == 0 && ta > 0 ) {
+			GlobalLog()->PrintEx( eLog_Event,
+				"SMS_TWOSTAGE: attempted=%d inputsUnavailable=%d stage1Failed=%d transitionFailed=%d fullSuccess=%d",
+				ta,
+				g_twostage_inputs_unavailable.load(),
+				g_twostage_stage1_failed.load(),
+				g_twostage_transition_failed.load(),
+				g_twostage_full_success.load() );
+		}
+#endif
+
+		// Snapshot the current state in case Stage 1 fails — we need to
+		// fall back to the original on-mesh seed for Stage 2.
+		const std::vector<ManifoldVertex> preStage1Snapshot( specularChain );
+
+		// Re-evaluate every chain vertex's derivatives at smoothing = 1.
+		// Bails out (cleanly, no scribble) if any vertex doesn't support
+		// the smoothing-aware analytical query — those chains skip
+		// two-stage and fall through to the original single-stage solve.
+		bool stageInputsOk = true;
+		for( unsigned int i = 0; i < specularChain.size(); i++ ) {
+			if( !ComputeVertexDerivatives( specularChain[i], 1.0 ) ) {
+				stageInputsOk = false;
+				break;
+			}
+		}
+		if( !stageInputsOk )
+		{
+#if SMS_TRACE_DIAGNOSTIC
+			g_twostage_inputs_unavailable.fetch_add( 1, std::memory_order_relaxed );
+#endif
+			specularChain = preStage1Snapshot;
+		}
+		if( stageInputsOk )
+		{
+			const bool stage1Converged = NewtonSolve(
+				specularChain, shadingPoint, emitterPoint, 1.0 );
+			if( stage1Converged ) {
+				// Stage 1 found a seed on the smooth (smoothing=1) surface.
+				// Bridge to the actual mesh in two steps:
+				//   (a) Re-evaluate analytical at smoothing=0 to land on
+				//       the smooth-displaced surface — the underlying
+				//       continuous bumpy surface that the tessellated mesh
+				//       approximates.  Position differs from the mesh hit
+				//       by chord-vs-arc tessellation error (~0.005 units
+				//       for detail=128) — small.
+				//   (b) Run `ComputeVertexDerivatives` at smoothing=0,
+				//       which FD-probes from the now-close-to-mesh position
+				//       to find the actual mesh hit and pull per-triangle
+				//       UV-Jacobian derivatives.  The 0.05-unit probe
+				//       offset is sufficient because step (a) put us within
+				//       chord-vs-arc.
+				// Without step (a), step (b) probes from the smoothing=1
+				// position — which can be ~disp_scale units inside the
+				// bumpy mesh, beyond the probe's reach.
+				bool transitionOk = true;
+				for( unsigned int i = 0; i < specularChain.size(); i++ ) {
+					ManifoldVertex& v = specularChain[i];
+					Point3  aP;
+					Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
+					if( v.pObject->ComputeAnalyticalDerivatives(
+							v.uv, 0.0, aP, aN, aDpdu, aDpdv, aDndu, aDndv ) )
+					{
+						v.position = aP;
+						v.normal   = aN;
+					}
+					// Step (b): probe to actual mesh, pull mesh derivatives.
+					if( !ComputeVertexDerivatives( v, 0.0 ) ) {
+						transitionOk = false;
+						break;
+					}
+				}
+				if( !transitionOk ) {
+#if SMS_TRACE_DIAGNOSTIC
+					g_twostage_transition_failed.fetch_add( 1, std::memory_order_relaxed );
+#endif
+					specularChain = preStage1Snapshot;
+				}
+#if SMS_TRACE_DIAGNOSTIC
+				else {
+					g_twostage_full_success.fetch_add( 1, std::memory_order_relaxed );
+				}
+#endif
+			} else {
+				// Stage 1 didn't converge — restore pre-Stage-1 state and
+				// fall through to single-stage Stage 2 with the original
+				// on-mesh seed.
+#if SMS_TRACE_DIAGNOSTIC
+				g_twostage_stage1_failed.fetch_add( 1, std::memory_order_relaxed );
+#endif
+				specularChain = preStage1Snapshot;
+			}
+		}
+	}
+
+	// Run Newton solver — Stage 2 of the two-stage solver, or the single
+	// stage when two-stage is disabled / inapplicable.
 	const bool converged = NewtonSolve( specularChain, shadingPoint, emitterPoint );
 
 #if SMS_TRACE_DIAGNOSTIC
@@ -3428,7 +3818,7 @@ ManifoldResult ManifoldSolver::Solve(
 				else if( tooShortDist < 0.010 ) bucket = 2;
 				else if( tooShortDist < 0.025 ) bucket = 3;
 				else bucket = 4;  // 0.025 - 0.05
-				int n = g_shortSegHist[bucket].fetch_add( 1, std::memory_order_relaxed );
+				g_shortSegHist[bucket].fetch_add( 1, std::memory_order_relaxed );
 				// Periodic dump
 				if( (g_solveShortSeg.load() & 0x7fff) == 0 ) {
 					GlobalLog()->PrintEx( eLog_Event,

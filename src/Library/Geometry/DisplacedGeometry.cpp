@@ -285,3 +285,149 @@ SurfaceDerivatives DisplacedGeometry::ComputeSurfaceDerivatives( const Point3& o
 	}
 	return m_pMesh->ComputeSurfaceDerivatives( objSpacePoint, objSpaceNormal );
 }
+
+#include "../Interfaces/IFunction2D.h"
+
+namespace {
+	// Tent-fold of [0, 1] -> [0, 1] centred on 0.5; matches the
+	// destination-side mapping in GeometryUtilities::RemapTextureCoords
+	// that the tessellator uses when evaluating the displacement painter
+	// at mesh-build time.  Equivalent to |2u - 1| with the same
+	// exact-on-0.5 handling.  Keeping the analytical query consistent
+	// with on-mesh values requires the same tent-fold here.
+	inline RISE::Scalar TentFold( RISE::Scalar u )
+	{
+		if( u > 0.5 ) return ( u - 0.5 ) * 2.0;
+		if( u < 0.5 ) return 1.0 - ( u * 2.0 );
+		return 0.0;
+	}
+}
+
+bool DisplacedGeometry::ComputeAnalyticalDerivatives(
+	const Point2& uv,
+	Scalar        smoothing,
+	Point3&       outPosition,
+	Vector3&      outNormal,
+	Vector3&      outDpdu,
+	Vector3&      outDpdv,
+	Vector3&      outDndu,
+	Vector3&      outDndv
+	) const
+{
+	if( !m_pBase ) return false;
+
+	// Smoothing scales the displacement amplitude.  At s = 1 the
+	// effective scale is 0 and the surface collapses to the base; at
+	// s = 0 we get the full displaced mesh.  Clamped to [0, 1].
+	const Scalar sClamped = (smoothing < 0.0) ? 0.0 :
+	                        (smoothing > 1.0) ? 1.0 : smoothing;
+	const Scalar effDispScale = m_dispScale * (1.0 - sClamped);
+
+	// Pass `smoothing` through to the base — irrelevant for analytical
+	// primitives (sphere / ellipsoid) but matters for nested displaced
+	// geometry where the base's own displacement should also smooth.
+	auto evalDisplacedSurface = [&](
+		const Point2& at,
+		Point3&  P_d,
+		Vector3& N_d,
+		Vector3& dpdu_d,
+		Vector3& dpdv_d ) -> bool
+	{
+		Point3  P_b;
+		Vector3 N_b, dpdu_b, dpdv_b, dndu_b, dndv_b;
+		if( !m_pBase->ComputeAnalyticalDerivatives(
+				at, sClamped, P_b, N_b, dpdu_b, dpdv_b, dndu_b, dndv_b ) )
+		{
+			return false;
+		}
+
+		Scalar f = 0.0, dfdu = 0.0, dfdv = 0.0;
+		if( m_pDisplacement && effDispScale != 0.0 )
+		{
+			// Painter is evaluated at TENT-FOLDED (u, v) — matches
+			// GeometryUtilities::ApplyDisplacementMapToObject which
+			// receives the tent-folded coords (see DisplacedGeometry::
+			// BuildMesh).  Using raw (u, v) here would describe a
+			// different displacement than the mesh actually has.
+			const Scalar tu = TentFold( at.x );
+			const Scalar tv = TentFold( at.y );
+			f = m_pDisplacement->Evaluate( tu, tv );
+
+			// FD df/du, df/dv on the painter.  Step is in raw-(u, v)
+			// space; the |2| chain-rule factor for the tent fold cancels
+			// (same |2| on both ± probes within either side of 0.5).
+			// At u = 0.5 exactly there's a sign-flip — acceptable;
+			// SMS chains rarely site on the seam.
+			const Scalar epsP = 1.0e-3;
+			const Scalar f_uplus  = m_pDisplacement->Evaluate( TentFold( at.x + epsP ), tv );
+			const Scalar f_uminus = m_pDisplacement->Evaluate( TentFold( at.x - epsP ), tv );
+			const Scalar f_vplus  = m_pDisplacement->Evaluate( tu, TentFold( at.y + epsP ) );
+			const Scalar f_vminus = m_pDisplacement->Evaluate( tu, TentFold( at.y - epsP ) );
+			const Scalar inv2 = 1.0 / (2.0 * epsP);
+			dfdu = ( f_uplus - f_uminus ) * inv2;
+			dfdv = ( f_vplus - f_vminus ) * inv2;
+		}
+
+		// Displaced position: P_d = P_b + s_eff·f·N_b
+		P_d = Point3Ops::mkPoint3( P_b, N_b * (effDispScale * f) );
+
+		// Chain rule for displaced tangents:
+		//   dP_d/du = dP_b/du + s_eff·(df/du · N_b + f · dN_b/du)
+		dpdu_d = Vector3(
+			dpdu_b.x + effDispScale * ( dfdu * N_b.x + f * dndu_b.x ),
+			dpdu_b.y + effDispScale * ( dfdu * N_b.y + f * dndu_b.y ),
+			dpdu_b.z + effDispScale * ( dfdu * N_b.z + f * dndu_b.z ) );
+		dpdv_d = Vector3(
+			dpdv_b.x + effDispScale * ( dfdv * N_b.x + f * dndv_b.x ),
+			dpdv_b.y + effDispScale * ( dfdv * N_b.y + f * dndv_b.y ),
+			dpdv_b.z + effDispScale * ( dfdv * N_b.z + f * dndv_b.z ) );
+
+		// Displaced unit normal: cross product of tangents, with handedness
+		// reconciled against the base normal.  The (theta, phi) parameter-
+		// isation used by EllipsoidGeometry / SphereGeometry produces a
+		// LEFT-handed (dpdu, dpdv) frame whose cross points INWARD; the
+		// base normal (from the implicit gradient) points OUTWARD.  Without
+		// the flip the SMS constraint's tangent-plane projection mirrors
+		// and Newton can't converge.  Fall back to the base normal at
+		// degenerate poles.
+		const Vector3 cross_d = Vector3Ops::Cross( dpdu_d, dpdv_d );
+		const Scalar  cMag    = Vector3Ops::Magnitude( cross_d );
+		if( cMag > NEARZERO ) {
+			N_d = cross_d * (1.0 / cMag);
+			if( Vector3Ops::Dot( N_d, N_b ) < 0.0 ) {
+				N_d = Vector3( -N_d.x, -N_d.y, -N_d.z );
+			}
+		} else {
+			N_d = N_b;
+		}
+		return true;
+	};
+
+	// Centre evaluation
+	if( !evalDisplacedSurface( uv, outPosition, outNormal, outDpdu, outDpdv ) ) {
+		return false;
+	}
+
+	// dN_d/du, dN_d/dv via central FD on the displaced unit normal.
+	// Each probe re-runs evalDisplacedSurface (one base ComputeAnalytical
+	// call + five painter evals).  Total cost per query is therefore
+	// ~5 base + ~25 painter calls.  At smoothing = 1 the displacement
+	// branch is skipped (effDispScale == 0) and we collapse to base
+	// derivatives — much cheaper.
+	const Scalar epsUv = 1.0e-3;
+	Point3  P_dummy;
+	Vector3 dpdu_dummy, dpdv_dummy;
+	Vector3 N_uplus, N_uminus, N_vplus, N_vminus;
+	if( !evalDisplacedSurface( Point2( uv.x + epsUv, uv.y ),
+			P_dummy, N_uplus,  dpdu_dummy, dpdv_dummy ) ) return false;
+	if( !evalDisplacedSurface( Point2( uv.x - epsUv, uv.y ),
+			P_dummy, N_uminus, dpdu_dummy, dpdv_dummy ) ) return false;
+	if( !evalDisplacedSurface( Point2( uv.x, uv.y + epsUv ),
+			P_dummy, N_vplus,  dpdu_dummy, dpdv_dummy ) ) return false;
+	if( !evalDisplacedSurface( Point2( uv.x, uv.y - epsUv ),
+			P_dummy, N_vminus, dpdu_dummy, dpdv_dummy ) ) return false;
+	const Scalar inv2eps = 1.0 / (2.0 * epsUv);
+	outDndu = ( N_uplus  - N_uminus ) * inv2eps;
+	outDndv = ( N_vplus  - N_vminus ) * inv2eps;
+	return true;
+}

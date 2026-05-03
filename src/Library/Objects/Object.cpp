@@ -176,6 +176,45 @@ const IMedium* Object::GetInteriorMedium() const
 	return pInteriorMedium;
 }
 
+bool Object::ComputeAnalyticalDerivatives(
+	const Point2& uv,
+	Scalar        smoothing,
+	Point3&       outWorldPosition,
+	Vector3&      outWorldNormal,
+	Vector3&      outWorldDpdu,
+	Vector3&      outWorldDpdv,
+	Vector3&      outWorldDndu,
+	Vector3&      outWorldDndv
+	) const
+{
+	if( !pGeometry ) return false;
+
+	// Object-space query
+	Point3  oP;
+	Vector3 oN, oDpdu, oDpdv, oDndu, oDndv;
+	if( !pGeometry->ComputeAnalyticalDerivatives(
+			uv, smoothing, oP, oN, oDpdu, oDpdv, oDndu, oDndv ) )
+	{
+		return false;
+	}
+
+	// Apply transform — same convention as the IntersectRay path:
+	//  - Position: full forward transform.
+	//  - Tangent vectors (dpdu, dpdv): forward transform's linear part
+	//    (translation drops out for vector arithmetic).
+	//  - Normal and its derivatives (dndu, dndv): inverse-transpose's
+	//    linear part — keeps them orthogonal to the transformed surface
+	//    under non-uniform scale / shear.
+	outWorldPosition = Point3Ops::Transform( m_mxFinalTrans, oP );
+	outWorldDpdu     = Vector3Ops::Transform( m_mxFinalTrans, oDpdu );
+	outWorldDpdv     = Vector3Ops::Transform( m_mxFinalTrans, oDpdv );
+	outWorldNormal   = Vector3Ops::Normalize(
+		Vector3Ops::Transform( m_mxInvTranspose, oN ) );
+	outWorldDndu     = Vector3Ops::Transform( m_mxInvTranspose, oDndu );
+	outWorldDndv     = Vector3Ops::Transform( m_mxInvTranspose, oDndv );
+	return true;
+}
+
 const BoundingBox Object::getBoundingBox() const
 {
 	const BoundingBox bbox = pGeometry->GenerateBoundingBox();

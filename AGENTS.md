@@ -88,6 +88,16 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+> **Render renders sequentially, never in parallel.** A single `./bin/rise`
+> render is already an embarrassingly-parallel job that takes every CPU core
+> (>700 % CPU on a typical workstation). Stacking two renders concurrently
+> thrashes the machine to a crawl and makes other work impossible. For A/B
+> comparisons or sweeps, chain renders in a single shell sequence
+> (`render A; render B`) — never start a second render while a first is still
+> running, even if the first is in the background. This applies whether you
+> launch with `Bash run_in_background:true`, a separate terminal, or a script
+> that invokes `bin/rise` in parallel — always one at a time.
+
 ## Compiler Warnings Are Bugs
 
 This codebase treats compiler warnings as bugs.  Do not introduce them
