@@ -34,6 +34,11 @@ namespace RISE
 			Scalar			sqrRadius;
 			Scalar			OVRadius;
 
+			//! Inverse of TessellateToMesh's polar (u, v) parameterisation.
+			//! Used by both IntersectRay and UniformRandomPoint so the UV
+			//! they emit is consistent with the tessellated mesh.
+			void DiskUVFromPosition( const Point3& pt, Point2& uv ) const;
+
 		public:
 			CircularDiskGeometry( const Scalar radius_, const unsigned char chAxis_ );
 

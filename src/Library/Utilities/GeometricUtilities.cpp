@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
+#include "../Functions/Polynomial.h"
 
 using namespace RISE;
 
@@ -375,20 +376,49 @@ void GeometricUtilities::SphereTextureCoord(
 	}
 }
 
-void GeometricUtilities::TorusTextureCoord( 
-	const Vector3& vUp,
-	const Vector3& vForward, 
-	const Point3& ptPoint, 
-	const Vector3& vNormal, 
-	Point2& uv
+void GeometricUtilities::TorusTextureCoord(
+	const Vector3& /*vUp*/,
+	const Vector3& /*vForward*/,
+	const Point3& ptPoint,
+	const Vector3& /*vNormal*/,
+	Point2& uv,
+	const Scalar dMajorRadius,
+	const Scalar dMinorRadius
 )
 {
-    const Scalar fTheta = Scalar( acos( Vector3Ops::Dot( vUp, vNormal) ) );
-    uv.y = fTheta * 0.5 * INV_PI;
+	// Inverse of TorusGeometry::TessellateToMesh:
+	//   pos = ( (R + r·cos(V))·cos(U),
+	//            r·sin(V),
+	//           (R + r·cos(V))·sin(U) )
+	// with U = u·2π (ring angle around Y) and V = v·2π (tube angle).
+	//
+	// The pre-fix body used acos(N·vUp) and acos((point.x, point.y, 0)·vForward)
+	// — both wrong: acos returns [0, π] so the full circle wrapped onto a
+	// half-range, the projection used (x, y) instead of (x, z), and the
+	// formula derived UV from the gradient normal rather than the position.
+	// Use atan2 of the same components TessellateToMesh uses so the (u, v)
+	// emitted here roundtrips through TessellateToMesh's forward formula.
 
-    const Scalar fTemp = Vector3Ops::Dot( Vector3Ops::Normalize( Vector3(ptPoint.x,ptPoint.y,0.0) ), vForward );
-    const Scalar fPhi = Scalar( acos( fTemp ) * 0.5 * INV_PI );
-    uv.x = fPhi;
+	const Scalar dXZ = std::sqrt( ptPoint.x * ptPoint.x + ptPoint.z * ptPoint.z );
+
+	// Tube angle V = atan2(y, dXZ - R).  cos(V) = (dXZ - R)/r and
+	// sin(V) = y/r, so atan2 recovers V uniquely in (-π, π].
+	const Scalar tubeOffset = dXZ - dMajorRadius;
+	Scalar V = ( dMinorRadius > NEARZERO )
+		? std::atan2( ptPoint.y, tubeOffset )
+		: 0.0;
+	if( V < 0.0 ) {
+		V += TWO_PI;
+	}
+	uv.y = V / TWO_PI;
+
+	// Ring angle U = atan2(z, x).  Both x and z carry the (R + r·cos(V))
+	// scale factor identically, so the angle reduces to atan2(z, x).
+	Scalar U = std::atan2( ptPoint.z, ptPoint.x );
+	if( U < 0.0 ) {
+		U += TWO_PI;
+	}
+	uv.x = U / TWO_PI;
 }
 
 
@@ -419,30 +449,50 @@ void GeometricUtilities::PointOnCylinder( const Point2& can, const int chAxis, c
 
 void GeometricUtilities::CylinderTextureCoord( const Point3 point, const int chAxis, const Scalar dOVRadius, const Scalar dAxisMin, const Scalar dAxisMax, Point2& coord )
 {
+	(void)dOVRadius;  // No longer used — kept for ABI compatibility.
+
+	// Inverse of CylinderGeometry::TessellateToMesh:
+	//   axis 'x':  pos = (axial, r·cos(θ), r·sin(θ))
+	//   axis 'y':  pos = (r·cos(θ), axial, r·sin(θ))
+	//   axis 'z':  pos = (r·cos(θ), r·sin(θ), axial)
+	// with θ = u·2π in [0, 2π) and axial = axisMin + v·(axisMax - axisMin).
+	//
+	// The pre-fix body used acos(z/r) (or x/r, y/r) with a wrap-flip on the
+	// "other" radial component, which mapped the angular axis onto a
+	// different parametrisation of the circle than TessellateToMesh
+	// (off by a quarter turn AND inverted in direction).  Use atan2 of
+	// the same two radial components TessellateToMesh uses so the (u, v)
+	// emitted here roundtrips through TessellateToMesh's forward formula.
+	Scalar a = 0.0;  // the radial coordinate playing the cos role
+	Scalar b = 0.0;  // the radial coordinate playing the sin role
+	Scalar axial = 0.0;
 	switch( chAxis )
 	{
 	case 'x':
-		coord.x = acos( point.y * dOVRadius );
-		if( point.z < 0.0 )
-			coord.x = TWO_PI - coord.x;
-		coord.x = coord.x * 0.5/PI;
-		coord.y = (point.x-dAxisMin)/(dAxisMax-dAxisMin);
+		a = point.y;
+		b = point.z;
+		axial = point.x;
 		break;
 	case 'y':
-		coord.x = acos( point.z * dOVRadius );
-		if( point.x < 0.0 )
-			coord.x = TWO_PI - coord.x;
-		coord.x = coord.x * 0.5/PI;
-		coord.y = (point.y-dAxisMin)/(dAxisMax-dAxisMin);
+		a = point.x;
+		b = point.z;
+		axial = point.y;
 		break;
 	case 'z':
-		coord.x = acos( point.x * dOVRadius );
-		if( point.y < 0.0 )
-			coord.x = TWO_PI - coord.x;
-		coord.x = coord.x * 0.5/PI;
-		coord.y = (point.z-dAxisMin)/(dAxisMax-dAxisMin);
+		a = point.x;
+		b = point.y;
+		axial = point.z;
 		break;
-	};
+	}
+
+	Scalar theta = atan2( b, a );
+	if( theta < 0.0 ) {
+		theta += TWO_PI;
+	}
+	coord.x = theta / TWO_PI;
+
+	const Scalar height = dAxisMax - dAxisMin;
+	coord.y = (height > NEARZERO) ? (axial - dAxisMin) / height : 0.0;
 }
 
 void GeometricUtilities::CylinderNormal( const Point3 point, const int chAxis, Vector3& normal )
@@ -618,6 +668,204 @@ Vector3 GeometricUtilities::BilinearPatchNormalAt(
 	)
 {
 	return Vector3Ops::Cross( BilinearTanU(patch,v), BilinearTanV(patch,u) );
+}
+
+// ============================================================================
+// Convention-agnostic bilinear-surface utilities — canonical (c00, c10, c11, c01)
+// layout (i.e. corners at (u, v) = (0, 0), (1, 0), (1, 1), (0, 1)).
+//
+// Surface:
+//   pos(u, v) = c00·(1-u)(1-v) + c10·u(1-v) + c11·uv + c01·(1-u)v
+//             = A + B·u + C·v + D·u·v
+// where
+//   A = c00,  B = c10 - c00,  C = c01 - c00,
+//   D = c11 - c10 - c01 + c00   (saddle term; zero for parallelograms)
+// ============================================================================
+
+Point3 GeometricUtilities::BilinearForward(
+	const Point3& c00, const Point3& c10,
+	const Point3& c11, const Point3& c01,
+	const Scalar u, const Scalar v )
+{
+	const Scalar w00 = (1.0 - u) * (1.0 - v);
+	const Scalar w10 =        u  * (1.0 - v);
+	const Scalar w11 =        u  *        v;
+	const Scalar w01 = (1.0 - u) *        v;
+	return Point3(
+		w00 * c00.x + w10 * c10.x + w11 * c11.x + w01 * c01.x,
+		w00 * c00.y + w10 * c10.y + w11 * c11.y + w01 * c01.y,
+		w00 * c00.z + w10 * c10.z + w11 * c11.z + w01 * c01.z );
+}
+
+Vector3 GeometricUtilities::BilinearTangentU(
+	const Point3& c00, const Point3& c10,
+	const Point3& c11, const Point3& c01,
+	const Scalar v )
+{
+	// dpos/du = (c10 - c00)·(1 - v) + (c11 - c01)·v
+	return Vector3(
+		(1.0 - v) * (c10.x - c00.x) + v * (c11.x - c01.x),
+		(1.0 - v) * (c10.y - c00.y) + v * (c11.y - c01.y),
+		(1.0 - v) * (c10.z - c00.z) + v * (c11.z - c01.z) );
+}
+
+Vector3 GeometricUtilities::BilinearTangentV(
+	const Point3& c00, const Point3& c10,
+	const Point3& c11, const Point3& c01,
+	const Scalar u )
+{
+	// dpos/dv = (c01 - c00)·(1 - u) + (c11 - c10)·u
+	return Vector3(
+		(1.0 - u) * (c01.x - c00.x) + u * (c11.x - c10.x),
+		(1.0 - u) * (c01.y - c00.y) + u * (c11.y - c10.y),
+		(1.0 - u) * (c01.z - c00.z) + u * (c11.z - c10.z) );
+}
+
+namespace {
+
+inline Scalar AbsScalar( Scalar a ) { return a < 0 ? -a : a; }
+
+}  // anonymous namespace
+
+bool GeometricUtilities::BilinearInverse(
+	const Point3& c00, const Point3& c10,
+	const Point3& c11, const Point3& c01,
+	const Point3& P,
+	Scalar& uOut, Scalar& vOut,
+	const Scalar tolerance )
+{
+	// Substitution coefficients of the bilinear form pos = A + B·u + C·v + D·u·v.
+	const Vector3 A( c00.x, c00.y, c00.z );
+	const Vector3 B( c10.x - c00.x, c10.y - c00.y, c10.z - c00.z );
+	const Vector3 C( c01.x - c00.x, c01.y - c00.y, c01.z - c00.z );
+	const Vector3 D(
+		c11.x - c10.x - c01.x + c00.x,
+		c11.y - c10.y - c01.y + c00.y,
+		c11.z - c10.z - c01.z + c00.z );
+
+	const Vector3 Q(
+		P.x - A.x,
+		P.y - A.y,
+		P.z - A.z );
+
+	// Choose 2 axes (i, j) for the solve.  We want (i, j) most aligned with
+	// the surface — equivalently, exclude the axis k whose component of the
+	// patch normal at the centre is largest.
+	const Vector3 dpdu_centre(
+		B.x + 0.5 * D.x,
+		B.y + 0.5 * D.y,
+		B.z + 0.5 * D.z );
+	const Vector3 dpdv_centre(
+		C.x + 0.5 * D.x,
+		C.y + 0.5 * D.y,
+		C.z + 0.5 * D.z );
+	const Vector3 nC = Vector3Ops::Cross( dpdu_centre, dpdv_centre );
+
+	int kSkip = 2;  // default: skip Z
+	{
+		const Scalar ax = AbsScalar( nC.x );
+		const Scalar ay = AbsScalar( nC.y );
+		const Scalar az = AbsScalar( nC.z );
+		if( ax >= ay && ax >= az ) kSkip = 0;
+		else if( ay >= az )         kSkip = 1;
+		else                        kSkip = 2;
+	}
+	int i = (kSkip == 0) ? 1 : 0;
+	int j = (kSkip == 2) ? 1 : 2;
+	if( j == i ) j = (i == 0) ? 1 : 0;  // pathological guard
+
+	auto axisAt = []( const Vector3& v, int idx ) -> Scalar {
+		return idx == 0 ? v.x : (idx == 1 ? v.y : v.z);
+	};
+
+	const Scalar Bi = axisAt( B, i ), Bj = axisAt( B, j );
+	const Scalar Ci = axisAt( C, i ), Cj = axisAt( C, j );
+	const Scalar Di = axisAt( D, i ), Dj = axisAt( D, j );
+	const Scalar Qi = axisAt( Q, i ), Qj = axisAt( Q, j );
+
+	// Quadratic in v: α·v² + β·v + γ = 0.
+	const Scalar alpha = Cj * Di - Ci * Dj;
+	const Scalar beta  = (Cj * Bi - Ci * Bj) + (Dj * Qi - Di * Qj);
+	const Scalar gamma = Bj * Qi - Bi * Qj;
+
+	const Scalar coeff[3] = { alpha, beta, gamma };
+	Scalar sols[2] = { 0.0, 0.0 };
+	const Scalar bound = 1e-4;  // accept just outside [0, 1] for numeric slack
+	const int nSol = Polynomial::SolveQuadricWithinRange(
+		coeff, sols, -bound, 1.0 + bound );
+
+	if( nSol == 0 ) {
+		// No v in [0, 1] satisfies the quadratic.  Either the patch is
+		// degenerate or P is off-surface.
+		uOut = 0.0;
+		vOut = 0.0;
+		return false;
+	}
+
+	// Patch extent for tolerance scaling.
+	const Scalar extent = std::sqrt(
+		std::max( Vector3Ops::SquaredModulus( B ),
+		std::max( Vector3Ops::SquaredModulus( C ),
+		          Vector3Ops::SquaredModulus( D ) ) ) );
+	const Scalar absTol = tolerance * std::max( extent, Scalar(1.0) );
+
+	bool found = false;
+	// Sentinel: any actual surface residual is finite and far below this.
+	// Avoid std::numeric_limits<Scalar>::infinity() because the build is
+	// compiled with -ffinite-math-only / -fno-honor-infinities.
+	Scalar bestResidual = RISE_INFINITY;
+	Scalar bestU = 0.0, bestV = 0.0;
+
+	for( int s = 0; s < nSol; ++s ) {
+		const Scalar v = sols[s];
+
+		// Two extraction formulas for u — pick the one with larger |denom|.
+		const Scalar denomI = Bi + Di * v;
+		const Scalar denomJ = Bj + Dj * v;
+		Scalar u = 0.0;
+		if( AbsScalar( denomI ) >= AbsScalar( denomJ ) ) {
+			if( AbsScalar( denomI ) < NEARZERO ) continue;
+			u = (Qi - Ci * v) / denomI;
+		} else {
+			if( AbsScalar( denomJ ) < NEARZERO ) continue;
+			u = (Qj - Cj * v) / denomJ;
+		}
+
+		if( u < -bound || u > 1.0 + bound ) continue;
+
+		// Verify all three axis residuals (the third is the redundancy check).
+		const Vector3 reconstructed(
+			A.x + B.x * u + C.x * v + D.x * u * v,
+			A.y + B.y * u + C.y * v + D.y * u * v,
+			A.z + B.z * u + C.z * v + D.z * u * v );
+		const Scalar residual = std::sqrt(
+			(reconstructed.x - P.x) * (reconstructed.x - P.x) +
+			(reconstructed.y - P.y) * (reconstructed.y - P.y) +
+			(reconstructed.z - P.z) * (reconstructed.z - P.z) );
+
+		if( residual < bestResidual ) {
+			bestResidual = residual;
+			bestU = u;
+			bestV = v;
+			found = true;
+		}
+	}
+
+	if( !found || bestResidual > absTol ) {
+		uOut = 0.0;
+		vOut = 0.0;
+		return false;
+	}
+
+	// Clamp tiny epsilon excursions to [0, 1].
+	if( bestU < 0.0 ) bestU = 0.0;
+	if( bestU > 1.0 ) bestU = 1.0;
+	if( bestV < 0.0 ) bestV = 0.0;
+	if( bestV > 1.0 ) bestV = 1.0;
+
+	uOut = bestU;
+	vOut = bestV;
+	return true;
 }
 
 //

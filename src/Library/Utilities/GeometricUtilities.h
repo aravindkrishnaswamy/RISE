@@ -173,13 +173,19 @@ namespace RISE
 					Point2& uv											///< [out] The generated co-ordinate
 					);
 
-		//! Computes texture co-ordinates for a torus
-		extern void TorusTextureCoord( 
-					const Vector3& vUp,									///< [in] The up vector, these vectors determine how the sphere is wrapped
-					const Vector3& vForward, 							///< [in] The forward vector
-					const Point3& ptPoint, 								///< [in] Point to generate co-ordinate for
-					const Vector3& vNormal,								///< [in] The normal at the point of intersection
-					Point2& uv											///< [out] The generated co-ordinate
+		//! Computes texture co-ordinates for a torus.
+		//! The (u, v) returned matches TorusGeometry::TessellateToMesh's
+		//! parameterisation: u = ring-angle/2π, v = tube-angle/2π.
+		//! vUp / vForward / vNormal are unused (kept for ABI compat) — the
+		//! parameterisation is derived from the position alone.
+		extern void TorusTextureCoord(
+					const Vector3& vUp,									///< [in] (unused — see body comment)
+					const Vector3& vForward, 							///< [in] (unused)
+					const Point3& ptPoint, 								///< [in] Point on the torus surface (object space)
+					const Vector3& vNormal,								///< [in] (unused)
+					Point2& uv,											///< [out] The generated co-ordinate
+					const Scalar dMajorRadius,							///< [in] Ring radius R
+					const Scalar dMinorRadius							///< [in] Tube radius r
 					);
 
 		//! Generates a point on a cylinder given two numbers in [0,1]
@@ -241,7 +247,7 @@ namespace RISE
 					);
 
 		//! Evaluates a bilinear patch for the given u and v
-		extern Point3 EvaluateBilinearPatchAt( 
+		extern Point3 EvaluateBilinearPatchAt(
 					const BilinearPatch& patch,							///< [in] The bilinear patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
@@ -252,6 +258,71 @@ namespace RISE
 					const BilinearPatch& patch,							///< [in] The bilinear patch
 					const Scalar u,										///< [in] Evaluation parameter u
 					const Scalar v										///< [in] Evaluation parameter v
+					);
+
+		// =========================================================================
+		// Convention-agnostic bilinear-surface utilities.
+		//
+		// These take 4 corners in the canonical (c00, c10, c11, c01) layout —
+		// i.e. (u, v) = (0, 0), (1, 0), (1, 1), (0, 1).  Callers using a
+		// different corner-to-(u, v) mapping (e.g. RISE's BilinearPatch struct
+		// uses pts[0]→(0,0), pts[1]→(0,1), pts[2]→(1,0), pts[3]→(1,1)) must
+		// reorder before calling.
+		//
+		// Surface:    pos(u, v) = c00·(1-u)(1-v) + c10·u(1-v) + c11·uv + c01·(1-u)v
+		// Equivalent: pos(u, v) = A + B·u + C·v + D·u·v
+		//   A = c00,  B = c10 - c00,  C = c01 - c00,
+		//   D = c11 - c10 - c01 + c00   (the "saddle" term; zero for planar
+		//                                 parallelograms)
+		// =========================================================================
+
+		//! Forward formula: pos(u, v) on the bilinear surface.
+		extern Point3 BilinearForward(
+					const Point3& c00,									///< [in] corner at (u=0, v=0)
+					const Point3& c10,									///< [in] corner at (u=1, v=0)
+					const Point3& c11,									///< [in] corner at (u=1, v=1)
+					const Point3& c01,									///< [in] corner at (u=0, v=1)
+					const Scalar u,
+					const Scalar v
+					);
+
+		//! Partial derivative dpos/du at (u, v).
+		extern Vector3 BilinearTangentU(
+					const Point3& c00, const Point3& c10,
+					const Point3& c11, const Point3& c01,
+					const Scalar v
+					);
+
+		//! Partial derivative dpos/dv at (u, v).
+		extern Vector3 BilinearTangentV(
+					const Point3& c00, const Point3& c10,
+					const Point3& c11, const Point3& c01,
+					const Scalar u
+					);
+
+		//! Inverse: given a 3D point P claimed to lie on the bilinear surface,
+		//! recover (u, v) such that BilinearForward(...,u,v) ≈ P.
+		//!
+		//! Returns true iff a valid (u, v) ∈ [-eps, 1+eps]² was found AND the
+		//! surface residual at the recovered (u, v) is below `tolerance`.
+		//! Uses the 2x2 quadratic-in-v reduction described in
+		//! Heckbert "Tutorial on Texture Mapping" (1989) and used in
+		//! RayBilinearPatchIntersection.cpp; picks the axis pair most
+		//! orthogonal to the patch normal at the centre for conditioning.
+		//!
+		//! For PARALLELOGRAM quads (D = 0) the equation degenerates to linear;
+		//! this routine handles that case without iteration.  For TWISTED quads
+		//! with multiple branches in [0, 1]² the candidate with smallest
+		//! surface residual is returned.
+		extern bool BilinearInverse(
+					const Point3& c00,									///< [in] corner at (u=0, v=0)
+					const Point3& c10,									///< [in] corner at (u=1, v=0)
+					const Point3& c11,									///< [in] corner at (u=1, v=1)
+					const Point3& c01,									///< [in] corner at (u=0, v=1)
+					const Point3& P,									///< [in] query point on surface
+					Scalar& u,											///< [out] recovered u in [0, 1]
+					Scalar& v,											///< [out] recovered v in [0, 1]
+					const Scalar tolerance = 1e-5						///< [in] max surface residual / patch-extent
 					);
 
 		//! Evaluates a bicubic Bezier patch P(u,v) using the Bernstein basis.

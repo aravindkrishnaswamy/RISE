@@ -27,6 +27,13 @@ namespace RISE
 			Matrix4			Q;					// Matrix representation of ellipsoid
 			Scalar			m_OVmaxRadius;		// Inverse of max radius (for fast spherical UV)
 
+			//! Inverse of TessellateToMesh's parameterisation.
+			//! Given a point on the ellipsoid surface in object space,
+			//! returns (u, v) so that paramToPos(u, v) ≈ pt.  Used by both
+			//! IntersectRay and UniformRandomPoint so the UV they emit is
+			//! consistent with the tessellated mesh and with each other.
+			void EllipsoidUVFromPosition( const Point3& pt, Point2& uv ) const;
+
 			// Marginal theta CDF for area-uniform sampling on the ellipsoid surface.
 			// The naive (costheta = 1-2u) mapping is only uniform on a sphere;
 			// for an ellipsoid we precompute a CDF that warps theta to account

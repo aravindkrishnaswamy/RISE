@@ -140,11 +140,13 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 		}
 
 		GeometricUtilities::TorusTextureCoord(
-			Vector3Ops::Normalize( Vector3( 0.0, 1.0/m_dMajorRadius, 0.0 ) ), 
-			Vector3Ops::Normalize( Vector3( -1.0/m_dMajorRadius, 0.0, 0.0 ) ), 
+			Vector3( 0.0, 1.0, 0.0 ),
+			Vector3( -1.0, 0.0, 0.0 ),
 			ri.ptIntersection,
-			ri.vNormal, 
-			ri.ptCoord 
+			ri.vNormal,
+			ri.ptCoord,
+			m_p0,
+			m_p1
 			);
 	}
 }
@@ -242,11 +244,13 @@ void TorusGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* 
 		pt.z = (R + r * cosV) * sinU;
 
 		GeometricUtilities::TorusTextureCoord(
-			Vector3Ops::Normalize( Vector3( 0.0, 1.0/m_dMajorRadius, 0.0 ) ),
-			Vector3Ops::Normalize( Vector3( -1.0/m_dMajorRadius, 0.0, 0.0 ) ),
+			Vector3( 0.0, 1.0, 0.0 ),
+			Vector3( -1.0, 0.0, 0.0 ),
 			pt,
 			nrm,
-			*coord
+			*coord,
+			m_p0,
+			m_p1
 			);
 	}
 }

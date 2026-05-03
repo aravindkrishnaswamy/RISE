@@ -42,6 +42,48 @@ CircularDiskGeometry::~CircularDiskGeometry( )
 {
 }
 
+void CircularDiskGeometry::DiskUVFromPosition( const Point3& pt, Point2& uv ) const
+{
+	// Inverse of CircularDiskGeometry::TessellateToMesh:
+	//   axis 'x':  pos = (0, r·cos(θ), r·sin(θ))
+	//   axis 'y':  pos = (r·sin(θ), 0,  r·cos(θ))
+	//   axis 'z':  pos = (r·cos(θ), r·sin(θ), 0)
+	// with θ = u·2π in [0, 2π) and r = v·R in [0, R].
+	Scalar a = 0.0;  // the parameter playing the cos role
+	Scalar b = 0.0;  // the parameter playing the sin role
+	switch( chAxis )
+	{
+	case 'x':
+		a = pt.y;  // r·cos(θ)
+		b = pt.z;  // r·sin(θ)
+		break;
+	case 'y':
+		a = pt.z;  // r·cos(θ)
+		b = pt.x;  // r·sin(θ)
+		break;
+	default:
+	case 'z':
+		a = pt.x;  // r·cos(θ)
+		b = pt.y;  // r·sin(θ)
+		break;
+	}
+
+	const Scalar rad = std::sqrt( a * a + b * b );
+	uv.y = rad * OVRadius;
+
+	if( rad < NEARZERO ) {
+		// Disk centre — θ is undefined; canonicalise to u = 0 to match
+		// TessellateToMesh's pole-collapse rule (atCenter ⇒ u = 0).
+		uv.x = 0.0;
+		return;
+	}
+	Scalar theta = std::atan2( b, a );
+	if( theta < 0.0 ) {
+		theta += TWO_PI;
+	}
+	uv.x = theta / TWO_PI;
+}
+
 bool CircularDiskGeometry::TessellateToMesh(
 	IndexTriangleListType& tris,
 	VerticesListType&      vertices,
@@ -157,11 +199,33 @@ void CircularDiskGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	if( h.bHit )
 	{
 		Point3 intersec = ri.ray.PointAtLength( h.dRange );
-		if( intersec.x*intersec.x+intersec.y*intersec.y <= sqrRadius )
+
+		// Membership test must use the two in-plane axes for the disk's
+		// orientation, not always (x, y).  The pre-fix code always tested
+		// intersec.x² + intersec.y² which silently let X- and Y-axis disks
+		// "hit" points arbitrarily far along their out-of-plane radial
+		// direction.
+		Scalar inPlaneSqr = 0.0;
+		switch( chAxis )
+		{
+		case 'x':
+			inPlaneSqr = intersec.y * intersec.y + intersec.z * intersec.z;
+			break;
+		case 'y':
+			inPlaneSqr = intersec.x * intersec.x + intersec.z * intersec.z;
+			break;
+		default:
+		case 'z':
+			inPlaneSqr = intersec.x * intersec.x + intersec.y * intersec.y;
+			break;
+		}
+
+		if( inPlaneSqr <= sqrRadius )
 		{
 			ri.bHit = h.bHit;
 			ri.range = h.dRange;
 			ri.range2 = h.dRange2;
+			ri.ptIntersection = intersec;
 
 			if( bFrontSideWasHit ) {
 				ri.vNormal = vNormal;
@@ -177,22 +241,13 @@ void CircularDiskGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 				}
 			}
 
-			switch( chAxis )
-			{
-			case 'x':
-				ri.ptCoord.x = intersec.z * OVRadius;
-				ri.ptCoord.y = intersec.y * OVRadius;
-				break;
-			case 'y':
-				ri.ptCoord.x = intersec.x * OVRadius;
-				ri.ptCoord.y = intersec.z * OVRadius;
-				break;
-			default:
-			case 'z':
-				ri.ptCoord.x = intersec.x * OVRadius;
-				ri.ptCoord.y = intersec.y * OVRadius;
-				break;
-			}
+			// Polar (u, v) matching CircularDiskGeometry::TessellateToMesh:
+			//   forward formula:  pos_xaxis = (0, r·cos(θ), r·sin(θ))
+			//                     pos_yaxis = (r·sin(θ), 0, r·cos(θ))
+			//                     pos_zaxis = (r·cos(θ), r·sin(θ), 0)
+			//   with θ = u·2π and r = v·R, so the inverse is
+			//   v = sqrt(inPlaneSqr) / R, u = (θ wrapped to [0, 2π)) / (2π).
+			DiskUVFromPosition( intersec, ri.ptCoord );
 		}
 		else
 			ri.bHit = false;
@@ -232,7 +287,21 @@ bool CircularDiskGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const 
 
 	if( h.bHit ) {
 		Point3 intersec = ray.PointAtLength( h.dRange );
-		if( intersec.x*intersec.x+intersec.y*intersec.y > sqrRadius ) {
+		Scalar inPlaneSqr = 0.0;
+		switch( chAxis )
+		{
+		case 'x':
+			inPlaneSqr = intersec.y * intersec.y + intersec.z * intersec.z;
+			break;
+		case 'y':
+			inPlaneSqr = intersec.x * intersec.x + intersec.z * intersec.z;
+			break;
+		default:
+		case 'z':
+			inPlaneSqr = intersec.x * intersec.x + intersec.y * intersec.y;
+			break;
+		}
+		if( inPlaneSqr > sqrRadius ) {
 			h.bHit = false;
 		}
 	}
@@ -280,21 +349,29 @@ BoundingBox CircularDiskGeometry::GenerateBoundingBox() const
 void CircularDiskGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	Point2 ptOnDisk = GeometricUtilities::PointOnDisk( radius, Point2( prand.x, prand.y ) );
-	
+
+	Point3 pt;
+	switch( chAxis )
+	{
+	case 'x':
+		pt = Point3( 0, ptOnDisk.x, ptOnDisk.y );
+		break;
+	case 'y':
+		// PointOnDisk returns 2D (x, y).  For Y-axis disk the in-plane
+		// axes are (x, z), but TessellateToMesh treats (a=z, b=x) (so
+		// pos = (r·sin(θ), 0, r·cos(θ))).  Map ptOnDisk.y → x and
+		// ptOnDisk.x → z so DiskUVFromPosition produces the same UV
+		// convention regardless of axis.
+		pt = Point3( ptOnDisk.y, 0, ptOnDisk.x );
+		break;
+	default:
+	case 'z':
+		pt = Point3( ptOnDisk.x, ptOnDisk.y, 0 );
+		break;
+	}
+
 	if( point ) {
-		switch( chAxis )
-		{
-		case 'x':
-			*point = Point3( 0, ptOnDisk.x, ptOnDisk.y ); 
-			break;
-		case 'y':
-			*point = Point3( ptOnDisk.x, 0, ptOnDisk.y );
-			break;
-		default:
-		case 'z':
-			*point = Point3( ptOnDisk.x, ptOnDisk.y, 0 );
-			break;
-		};
+		*point = pt;
 	}
 
 	if( normal ) {
@@ -314,8 +391,8 @@ void CircularDiskGeometry::UniformRandomPoint( Point3* point, Vector3* normal, P
 	}
 
 	if( coord ) {
-		coord->x = ptOnDisk.x * OVRadius;
-		coord->y = ptOnDisk.y * OVRadius;
+		// Polar (u, v) ∈ [0, 1]², matching TessellateToMesh.
+		DiskUVFromPosition( pt, *coord );
 	}
 }
 
