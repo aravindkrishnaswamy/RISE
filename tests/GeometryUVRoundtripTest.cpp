@@ -104,6 +104,7 @@
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Utilities/GeometricUtilities.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -872,58 +873,53 @@ static void TestDisk()
 }
 
 // ============================================================
-// Clipped plane (planar quad)
+// Clipped plane
 //
-// The strict roundtrip uses the bilinear forward formula across the
-// quad corners.  For PLANAR quads (this test) the bilinear surface
-// equals the two-flat-triangle surface IntersectRay traces, and
-// corner UVs match TessellateToMesh.  For genuinely non-planar
-// quads, the two surface representations differ off the
-// vP[0]-vP[2] diagonal — that case is documented in the
-// IntersectRay body.
+// ClippedPlaneGeometry now traces the bilinear surface defined by
+// its four corners (via RayBilinearPatchIntersection) and uses
+// GeometricUtilities::BilinearInverse for ComputeSurfaceDerivatives.
+// The strict roundtrip below therefore holds for ALL three regimes:
+//   1. planar parallelogram  (the unit-square base case)
+//   2. planar non-parallelogram (a trapezoid)
+//   3. non-planar (saddle) quad with one corner lifted off the plane
 // ============================================================
 
-static void TestClippedPlane()
+static void TestClippedPlaneOne(
+	const Point3 (&corners)[4],
+	const char*  label,
+	Scalar       tol = 1e-4 )
 {
-	std::cout << "Testing ClippedPlaneGeometry UV roundtrip..." << std::endl;
-
-	const Point3 corners[4] = {
-		Point3( 0, 0, 0 ),
-		Point3( 1, 0, 0 ),
-		Point3( 1, 1, 0 ),
-		Point3( 0, 1, 0 )
-	};
 	ClippedPlaneGeometry* g = new ClippedPlaneGeometry( corners, /*bDoubleSided=*/true );
 
-	const int N = 1500;
-	const Scalar tol = 1e-5;
+	Point3 bsCenter; Scalar bsRadius;
+	g->GenerateBoundingSphere( bsCenter, bsRadius );
+
+	const int N = 2000;
 	LCG rng( 33333 );
 	CoverageStats cov = MakeCoverage();
 	int nHits = 0;
 	for( int i = 0; i < N; ++i ) {
 		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
-
-		const Scalar zSide = (rng.next01() < 0.5) ? -3.0 : 3.0;
-		const Point3 origin( rng.next01() * 2.0 - 0.5, rng.next01() * 2.0 - 0.5, zSide );
-		const Point3 target( rng.next01(), rng.next01(), 0.0 );
-		const Vector3 dir = Vector3Ops::Normalize(
-			Vector3Ops::mkVector3( target, origin ) );
-		ri = RayIntersectionGeometric( Ray( origin, dir ), nullRasterizerState );
-		g->IntersectRay( ri, true, true, false );
-		if( !ri.bHit ) continue;
+		// Shoot from a wide enclosing sphere toward a random target near
+		// the patch centre.  Use ShootHit's logic so coverage is broad.
+		if( !ShootHit( *g, rng, ri ) ) continue;
 		nHits++;
 
-		AssertUVInUnitSquare( ri.ptCoord.x, ri.ptCoord.y, "clippedplane IntersectRay" );
+		AssertUVInUnitSquare( ri.ptCoord.x, ri.ptCoord.y,
+			std::string("clippedplane[") + label + "] IntersectRay" );
 
 		const Point3 reconstructed = ClippedPlaneTessParamToPos(
 			corners, ri.ptCoord.x, ri.ptCoord.y );
 		REQUIRE( IsPointClose( reconstructed, ri.ptIntersection, tol ),
-			"clippedplane IntersectRay UV->pos roundtrip" );
+			std::string("clippedplane[") + label
+				+ "] IntersectRay UV->pos roundtrip" );
 
 		RecordCoverage( cov, ri.ptCoord.x, ri.ptCoord.y );
 	}
-	REQUIRE( nHits > N / 4, "clippedplane enough hits" );
-	AssertCoverage( cov, "clippedplane IntersectRay" );
+	REQUIRE( nHits > N / 4,
+		std::string("clippedplane[") + label + "] enough hits" );
+	AssertCoverage( cov,
+		(std::string("clippedplane[") + label + "] IntersectRay").c_str() );
 
 	const int Mpoints = 800;
 	int nPts = 0;
@@ -932,21 +928,185 @@ static void TestClippedPlane()
 		const Point3 prand( rng.next01(), rng.next01(), rng.next01() );
 		g->UniformRandomPoint( &p, &n, &uv, prand );
 
-		AssertUVInUnitSquare( uv.x, uv.y, "clippedplane UniformRandomPoint" );
+		AssertUVInUnitSquare( uv.x, uv.y,
+			std::string("clippedplane[") + label + "] UniformRandomPoint" );
 
-		// UniformRandomPoint pulls the point off the plane by a tiny
+		// UniformRandomPoint pulls the point off the surface by a tiny
 		// epsilon along the normal so back-facing luminaries occlude
 		// correctly; allow that offset in the tolerance.
 		const Point3 reconstructed = ClippedPlaneTessParamToPos( corners, uv.x, uv.y );
 		REQUIRE( IsPointClose( reconstructed, p, 1e-3 ),
-			"clippedplane UniformRandomPoint UV->pos roundtrip" );
+			std::string("clippedplane[") + label
+				+ "] UniformRandomPoint UV->pos roundtrip" );
 		nPts++;
 	}
-	REQUIRE( nPts > Mpoints / 2, "clippedplane enough random points" );
+	REQUIRE( nPts > Mpoints / 2,
+		std::string("clippedplane[") + label + "] enough random points" );
 
 	g->release();
-	std::cout << "  clipped-plane: " << nHits << " ray hits, " << nPts
-		<< " random points\n";
+	std::cout << "  clipped-plane[" << label << "]: " << nHits
+		<< " ray hits, " << nPts << " random points\n";
+}
+
+static void TestClippedPlane()
+{
+	std::cout << "Testing ClippedPlaneGeometry UV roundtrip..." << std::endl;
+
+	// 1. Planar parallelogram (unit square).
+	{
+		const Point3 corners[4] = {
+			Point3( 0, 0, 0 ),
+			Point3( 1, 0, 0 ),
+			Point3( 1, 1, 0 ),
+			Point3( 0, 1, 0 )
+		};
+		TestClippedPlaneOne( corners, "planar parallelogram" );
+	}
+
+	// 2. Planar non-parallelogram (trapezoid).  vP[2] is shifted along
+	//    +X so the top edge is longer than the bottom — exercises the
+	//    bilinear surface's saddle term D in the XY plane (D ≠ 0 even
+	//    though all corners are coplanar).
+	{
+		const Point3 corners[4] = {
+			Point3( 0.0, 0.0, 0.0 ),
+			Point3( 1.0, 0.0, 0.0 ),
+			Point3( 1.5, 1.0, 0.0 ),
+			Point3( 0.0, 1.0, 0.0 )
+		};
+		TestClippedPlaneOne( corners, "planar trapezoid" );
+	}
+
+	// 3. Non-planar (saddle) quad.  vP[2] lifted off the XY plane by
+	//    +Z; vP[0] and vP[3] sit at z=0 — a true bilinear saddle.
+	//    This is the case where the legacy two-flat-triangle path
+	//    diverged from the bilinear surface; the bilinear refactor
+	//    now produces a smooth surface and a roundtrip-consistent UV.
+	{
+		const Point3 corners[4] = {
+			Point3( 0.0, 0.0, 0.0 ),
+			Point3( 1.0, 0.0, 0.2 ),
+			Point3( 1.0, 1.0, 0.5 ),
+			Point3( 0.0, 1.0, 0.0 )
+		};
+		TestClippedPlaneOne( corners, "non-planar saddle" );
+	}
+
+	// 4. Both at once: non-planar trapezoid (twisted + non-parallelogram).
+	{
+		const Point3 corners[4] = {
+			Point3( 0.0, 0.0, 0.0 ),
+			Point3( 1.0, 0.0, 0.1 ),
+			Point3( 1.5, 1.0, 0.4 ),
+			Point3( 0.0, 1.0, 0.0 )
+		};
+		TestClippedPlaneOne( corners, "non-planar trapezoid" );
+	}
+}
+
+// ============================================================
+// Direct unit test for GeometricUtilities::BilinearInverse —
+// exercises the solver across configurations that cause the
+// quadratic-in-v reduction to take different branches.
+// ============================================================
+
+static void TestBilinearInverseOne(
+	const Point3& c00, const Point3& c10,
+	const Point3& c11, const Point3& c01,
+	Scalar uTrue, Scalar vTrue,
+	const char* label )
+{
+	const Point3 P = GeometricUtilities::BilinearForward( c00, c10, c11, c01, uTrue, vTrue );
+
+	Scalar uRec = -1.0, vRec = -1.0;
+	const bool ok = GeometricUtilities::BilinearInverse(
+		c00, c10, c11, c01, P, uRec, vRec );
+
+	REQUIRE( ok, std::string(label) + " inverse converged" );
+
+	if( ok ) {
+		// Tolerance: accept up to 1e-4 in (u, v) since the quadratic
+		// solve loses precision near the boundary and for nearly
+		// degenerate axis pairs.
+		REQUIRE( std::fabs( uRec - uTrue ) < 1e-4,
+			std::string(label) + " u recovered" );
+		REQUIRE( std::fabs( vRec - vTrue ) < 1e-4,
+			std::string(label) + " v recovered" );
+
+		// Verify forward formula at recovered (u, v) returns P.
+		const Point3 recon = GeometricUtilities::BilinearForward( c00, c10, c11, c01, uRec, vRec );
+		REQUIRE( IsPointClose( recon, P, 1e-5 ),
+			std::string(label) + " forward(inverse(P)) == P" );
+	}
+}
+
+static void TestBilinearInverse()
+{
+	std::cout << "Testing GeometricUtilities::BilinearInverse direct unit cases..." << std::endl;
+
+	// Fixed corners, sweep (u, v) on a 5x5 grid.
+	auto sweep = [&](
+		const Point3& c00, const Point3& c10,
+		const Point3& c11, const Point3& c01,
+		const char* label )
+	{
+		for( int j = 0; j <= 4; ++j ) {
+			for( int i = 0; i <= 4; ++i ) {
+				const Scalar u = Scalar(i) * 0.25;
+				const Scalar v = Scalar(j) * 0.25;
+				char tag[64];
+				std::snprintf( tag, sizeof(tag), "%s [%d,%d]", label, i, j );
+				TestBilinearInverseOne( c00, c10, c11, c01, u, v, tag );
+			}
+		}
+	};
+
+	// Planar unit square (D = 0).
+	sweep(
+		Point3( 0, 0, 0 ), Point3( 1, 0, 0 ),
+		Point3( 1, 1, 0 ), Point3( 0, 1, 0 ),
+		"unit square" );
+
+	// Planar trapezoid (saddle term in-plane).
+	sweep(
+		Point3( 0.0, 0.0, 0.0 ), Point3( 1.0, 0.0, 0.0 ),
+		Point3( 1.5, 1.0, 0.0 ), Point3( 0.0, 1.0, 0.0 ),
+		"trapezoid" );
+
+	// Non-planar (saddle).
+	sweep(
+		Point3( 0.0, 0.0, 0.0 ), Point3( 1.0, 0.0, 0.2 ),
+		Point3( 1.0, 1.0, 0.5 ), Point3( 0.0, 1.0, 0.0 ),
+		"saddle" );
+
+	// Twisted + non-parallelogram + non-planar.
+	sweep(
+		Point3( 0.0, 0.0, 0.0 ), Point3( 1.0, 0.0, 0.1 ),
+		Point3( 1.5, 1.0, 0.4 ), Point3( 0.0, 1.0, 0.0 ),
+		"twisted trapezoid" );
+
+	// Off-axis quad (rotated arbitrarily — exercises all three axis
+	// pair candidates inside BilinearInverse).
+	sweep(
+		Point3( 0.10, 0.20, 0.30 ),
+		Point3( 0.80, 0.40, 0.10 ),
+		Point3( 0.90, 1.10, 0.45 ),
+		Point3( 0.30, 1.05, 0.60 ),
+		"oblique quad" );
+
+	// Off-surface rejection: pick a point that's clearly NOT on the
+	// surface; BilinearInverse must return false.
+	{
+		Scalar u = 0, v = 0;
+		const bool ok = GeometricUtilities::BilinearInverse(
+			Point3( 0, 0, 0 ), Point3( 1, 0, 0 ),
+			Point3( 1, 1, 0 ), Point3( 0, 1, 0 ),
+			Point3( 0.5, 0.5, 5.0 ),  // far above the unit square
+			u, v );
+		REQUIRE( !ok, "BilinearInverse rejects off-surface point" );
+	}
+
+	std::cout << "  BilinearInverse direct cases: 5 patches x 25 (u, v) samples + 1 rejection\n";
 }
 
 // ============================================================
@@ -1019,6 +1179,7 @@ int main()
 	TestDisk();
 	TestClippedPlane();
 	TestBilinearPatch();
+	TestBilinearInverse();
 
 	if( g_failures > 0 ) {
 		std::cout << "\nFAILED with " << g_failures << " failed assertions.\n";

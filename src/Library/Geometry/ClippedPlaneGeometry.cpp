@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  ClippedPlaneGeometry.cpp - Implementation of the 
+//  ClippedPlaneGeometry.cpp - Implementation of the
 //  ClippedPlaneGeometry class.
 //
 //  Author: Aravind Krishnaswamy
@@ -9,6 +9,31 @@
 //  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
+//
+//  Surface model
+//  -------------
+//  Pre-2026 the geometry's IntersectRay traced two flat triangles
+//  spanning the (vP[0], vP[2]) diagonal, while TessellateToMesh
+//  emitted a bilinear surface across the four corners.  For planar
+//  quads the two surfaces coincide; for non-planar quads they
+//  diverge, and IntersectRay's per-triangle linear UV did not
+//  roundtrip through TessellateToMesh's bilinear forward formula.
+//
+//  This implementation now traces the canonical bilinear surface
+//  end-to-end (via RayBilinearPatchIntersection in IntersectRay,
+//  GeometricUtilities::BilinearForward in UniformRandomPoint, and
+//  GeometricUtilities::BilinearInverse in ComputeSurfaceDerivatives).
+//  Corner UVs follow the row-major layout used by TessellateToMesh:
+//
+//      vP[0] -> (u=0, v=0)
+//      vP[1] -> (u=1, v=0)
+//      vP[2] -> (u=1, v=1)
+//      vP[3] -> (u=0, v=1)
+//
+//  For planar parallelograms the visible behaviour is unchanged.
+//  For non-planar / non-parallelogram quads the geometry now
+//  faithfully renders the bilinear surface implied by the four
+//  corners (instead of the two-flat-triangle approximation).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -26,7 +51,7 @@ using namespace RISE::Implementation;
 ClippedPlaneGeometry::ClippedPlaneGeometry(
 	const Point3 (&vP_)[4],
 	const bool bDoubleSided_
-	) : 
+	) :
   bDoubleSided( bDoubleSided_ )
 {
 	vP[0] = vP_[0];
@@ -39,6 +64,22 @@ ClippedPlaneGeometry::ClippedPlaneGeometry(
 
 ClippedPlaneGeometry::~ClippedPlaneGeometry( )
 {
+}
+
+// Construct a BilinearPatch whose RISE-bilinear (u, v) — the
+// convention used by RayBilinearPatchIntersection (pts[0]->(0,0),
+// pts[1]->(0,1), pts[2]->(1,0), pts[3]->(1,1)) — coincides with our
+// row-major (u, v) (vP[0]->(0,0), vP[1]->(1,0), vP[2]->(1,1),
+// vP[3]->(0,1)).  After the remap, BILINEAR_HIT.u and .v are the
+// row-major coordinates directly.
+static inline BilinearPatch ToBilinearPatch( const Point3 vP[4] )
+{
+	BilinearPatch p;
+	p.pts[0] = vP[0];  // (u=0, v=0)
+	p.pts[1] = vP[3];  // (u=0, v=1)
+	p.pts[2] = vP[1];  // (u=1, v=0)
+	p.pts[3] = vP[2];  // (u=1, v=1)
+	return p;
 }
 
 bool ClippedPlaneGeometry::TessellateToMesh(
@@ -62,20 +103,21 @@ bool ClippedPlaneGeometry::TessellateToMesh(
 		for( unsigned int i = 0; i <= nU; i++ ) {
 			const Scalar u = Scalar(i) / Scalar(nU);
 
-			// Bilinear interpolation across the four corners:
-			// vP[0] at (0,0), vP[1] at (1,0), vP[2] at (1,1), vP[3] at (0,1).
-			const Scalar w00 = (1.0 - u) * (1.0 - v);
-			const Scalar w10 = u         * (1.0 - v);
-			const Scalar w11 = u         * v;
-			const Scalar w01 = (1.0 - u) * v;
+			const Point3 pos = GeometricUtilities::BilinearForward(
+				vP[0], vP[1], vP[2], vP[3], u, v );
 
-			const Point3 pos(
-				w00 * vP[0].x + w10 * vP[1].x + w11 * vP[2].x + w01 * vP[3].x,
-				w00 * vP[0].y + w10 * vP[1].y + w11 * vP[2].y + w01 * vP[3].y,
-				w00 * vP[0].z + w10 * vP[1].z + w11 * vP[2].z + w01 * vP[3].z );
+			// Per-vertex analytical normal so non-planar quads tessellate
+			// to a smoothly-shaded bilinear surface.  For planar quads
+			// every vertex normal collapses to the constant plane normal.
+			const Vector3 dpdu = GeometricUtilities::BilinearTangentU(
+				vP[0], vP[1], vP[2], vP[3], v );
+			const Vector3 dpdv = GeometricUtilities::BilinearTangentV(
+				vP[0], vP[1], vP[2], vP[3], u );
+			const Vector3 nrm = Vector3Ops::Normalize(
+				Vector3Ops::Cross( dpdu, dpdv ) );
 
 			vertices.push_back( pos );
-			normals.push_back( vNormal );
+			normals.push_back( nrm );
 			coords.push_back( Point2( u, v ) );
 		}
 	}
@@ -97,132 +139,92 @@ bool ClippedPlaneGeometry::TessellateToMesh(
 
 void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
-	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ri.ray.Dir() );
-	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ri.ray.Dir() );
+	const BilinearPatch patch = ToBilinearPatch( vP );
 
-	const bool bAllowTriA = (bHitFrontFaces || dDotA >= 0) && ((bHitBackFaces && bDoubleSided) || dDotA <= 0);
-	const bool bAllowTriB = (bHitFrontFaces || dDotB >= 0) && ((bHitBackFaces && bDoubleSided) || dDotB <= 0);
-
-	TRIANGLE_HIT hTriA;
-	TRIANGLE_HIT hTriB;
-	hTriA.bHit = false;
-	hTriB.bHit = false;
-
-	if( bAllowTriA ) {
-		RayTriangleIntersection( ri.ray, hTriA, vP[0], vEdgesA[0], vEdgesA[1] );
+	BILINEAR_HIT h;
+	RayBilinearPatchIntersection( ri.ray, h, patch );
+	if( !h.bHit ) {
+		return;
 	}
 
-	if( bAllowTriB ) {
-		RayTriangleIntersection( ri.ray, hTriB, vP[0], vEdgesB[0], vEdgesB[1] );
+	// Analytic normal at (u, v) on the bilinear surface.
+	const Vector3 dpdu = GeometricUtilities::BilinearTangentU(
+		vP[0], vP[1], vP[2], vP[3], h.v );
+	const Vector3 dpdv = GeometricUtilities::BilinearTangentV(
+		vP[0], vP[1], vP[2], vP[3], h.u );
+	Vector3 nrm = Vector3Ops::Normalize( Vector3Ops::Cross( dpdu, dpdv ) );
+
+	// Front-face = ray going opposite to the surface normal (cosI < 0).
+	// Apply the same culling semantics the legacy two-triangle path used:
+	//   * bHitFrontFaces gates front-face hits.
+	//   * bHitBackFaces gates back-face hits, and only on double-sided
+	//     geometry (single-sided clipped planes still treat the back as
+	//     invisible regardless of bHitBackFaces, matching prior behaviour).
+	const Scalar cosI = Vector3Ops::Dot( nrm, ri.ray.Dir() );
+	const bool   isBackFaceHit = cosI > 0.0;
+
+	const bool allowed =
+		isBackFaceHit ? (bHitBackFaces && bDoubleSided)
+		              : bHitFrontFaces;
+	if( !allowed ) {
+		return;
 	}
 
-	TRIANGLE_HIT h;
-	h.bHit = false;
-	bool bTriA = false;
-
-	if( hTriA.bHit && hTriB.bHit ) {
-		bTriA = hTriA.dRange <= hTriB.dRange;
-		h = bTriA ? hTriA : hTriB;
-	} else if( hTriA.bHit ) {
-		bTriA = true;
-		h = hTriA;
-	} else if( hTriB.bHit ) {
-		bTriA = false;
-		h = hTriB;
+	// For back-face hits flip the normal so it faces the incoming ray,
+	// matching the legacy two-triangle behaviour where vNormal was
+	// implicitly oriented toward the camera for double-sided geometry.
+	if( isBackFaceHit ) {
+		nrm = -nrm;
 	}
 
-	ri.bHit = h.bHit;
+	ri.bHit = true;
 	ri.range = h.dRange;
 	ri.range2 = h.dRange2;
+	ri.ptIntersection = ri.ray.PointAtLength( ri.range );
+	ri.vNormal = nrm;
+	ri.ptCoord = Point2( h.u, h.v );
 
-	// Now compute the normal and texture mapping co-ordinates
-	if( ri.bHit )
-	{
-		// Pre-fix this method never populated ri.ptIntersection — every
-		// other concrete IGeometry::IntersectRay does, and downstream
-		// callers (shading, SMS, surface-derivative consumers) read it.
-		ri.ptIntersection = ri.ray.PointAtLength( ri.range );
-
-		const Vector3& vHitNormal = bTriA ? vNormalA : vNormalB;
-		ri.vNormal = vHitNormal;
-
-		if( bComputeExitInfo ) {
-			ri.vNormal2 = -vHitNormal;
-		}
-
-		// Match TessellateToMesh's row-major corner UV layout:
-		//   vP[0] at (u=0, v=0)
-		//   vP[1] at (u=1, v=0)
-		//   vP[2] at (u=1, v=1)
-		//   vP[3] at (u=0, v=1)
-		// IntersectRay decomposes the quad into TriA = (vP[0], vP[1], vP[2])
-		// and TriB = (vP[0], vP[2], vP[3]).  uv[0] is the UV at vP[0],
-		// uv[1] at vP[0]+edge[0], uv[2] at vP[0]+edge[1].  The barycentric
-		// blend below produces the linear-per-triangle UV — which agrees
-		// with TessellateToMesh's bilinear UV for planar quads (any convex
-		// combination of coplanar points lies on the same plane).  For
-		// genuinely non-planar quads the two surface representations
-		// (two flat triangles vs. bilinear surface) differ off the
-		// vP[0]-vP[2] diagonal; the corner UVs still agree.
-		Point2		uv[3];
-
-		if( bTriA )
-		{
-			// TriA = (vP[0], vP[1], vP[2])
-			uv[0] = Point2( 0.0, 0.0 );  // at vP[0]
-			uv[1] = Point2( 1.0, 0.0 );  // at vP[0] + edgeA[0] = vP[1]
-			uv[2] = Point2( 1.0, 1.0 );  // at vP[0] + edgeA[1] = vP[2]
-		}
-		else
-		{
-			// TriB = (vP[0], vP[2], vP[3])
-			uv[0] = Point2( 0.0, 0.0 );  // at vP[0]
-			uv[1] = Point2( 1.0, 1.0 );  // at vP[0] + edgeB[0] = vP[2]
-			uv[2] = Point2( 0.0, 1.0 );  // at vP[0] + edgeB[1] = vP[3]
-		}
-
-		// Texture co-ordinates
-		ri.ptCoord = Point2Ops::mkPoint2(uv[0],
-			Vector2Ops::mkVector2(uv[1],uv[0])*h.alpha+
-			Vector2Ops::mkVector2(uv[2],uv[0])*h.beta );
+	if( bComputeExitInfo ) {
+		// The bilinear surface is single-sided — there is no genuine
+		// "exit" intersection for an external ray.  Mirror the legacy
+		// flat-triangle behaviour and report the entry point with a
+		// flipped normal so callers expecting (entry, exit) pairs get
+		// a consistent result.  RayBilinearPatchIntersection does not
+		// expose a second-root range in BILINEAR_HIT, so dRange2 stays
+		// at its initial value.
+		ri.ptExit = ri.ptIntersection;
+		ri.vNormal2 = -nrm;
 	}
-
 }
 
 bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
-	const Scalar dDotA = Vector3Ops::Dot( vNormalA, ray.Dir() );
-	const Scalar dDotB = Vector3Ops::Dot( vNormalB, ray.Dir() );
+	const BilinearPatch patch = ToBilinearPatch( vP );
 
-	const bool bAllowTriA = (bHitFrontFaces || dDotA >= 0) && ((bHitBackFaces && bDoubleSided) || dDotA <= 0);
-	const bool bAllowTriB = (bHitFrontFaces || dDotB >= 0) && ((bHitBackFaces && bDoubleSided) || dDotB <= 0);
-
-	bool bHit = false;
-	Scalar dClosest = dHowFar;
-
-	if( bAllowTriA ) {
-		TRIANGLE_HIT hTriA;
-		hTriA.bHit = false;
-		RayTriangleIntersection( ray, hTriA, vP[0], vEdgesA[0], vEdgesA[1] );
-
-		if( hTriA.bHit && hTriA.dRange >= NEARZERO && hTriA.dRange <= dClosest ) {
-			bHit = true;
-			dClosest = hTriA.dRange;
-		}
+	BILINEAR_HIT h;
+	RayBilinearPatchIntersection( ray, h, patch );
+	if( !h.bHit ) {
+		return false;
 	}
 
-	if( bAllowTriB ) {
-		TRIANGLE_HIT hTriB;
-		hTriB.bHit = false;
-		RayTriangleIntersection( ray, hTriB, vP[0], vEdgesB[0], vEdgesB[1] );
-
-		if( hTriB.bHit && hTriB.dRange >= NEARZERO && hTriB.dRange <= dClosest ) {
-			bHit = true;
-			dClosest = hTriB.dRange;
-		}
+	if( h.dRange < NEARZERO || h.dRange > dHowFar ) {
+		return false;
 	}
 
-	return bHit;
+	// Cull the same way IntersectRay does so a shadow ray sees the
+	// same surface as a primary ray.
+	const Vector3 dpdu = GeometricUtilities::BilinearTangentU(
+		vP[0], vP[1], vP[2], vP[3], h.v );
+	const Vector3 dpdv = GeometricUtilities::BilinearTangentV(
+		vP[0], vP[1], vP[2], vP[3], h.u );
+	const Vector3 nrm = Vector3Ops::Normalize(
+		Vector3Ops::Cross( dpdu, dpdv ) );
+
+	const Scalar cosI = Vector3Ops::Dot( nrm, ray.Dir() );
+	const bool   isBackFaceHit = cosI > 0.0;
+
+	return isBackFaceHit ? (bHitBackFaces && bDoubleSided)
+	                     : bHitFrontFaces;
 }
 
 void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const
@@ -232,8 +234,10 @@ void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& rad
 	Point3		ptMin( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
 	Point3		ptMax( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
-	// Go through all the points and calculate the minimum and maximum values from the
-	// entire set.
+	// The bilinear surface is bounded by the convex hull of its four
+	// corners (the saddle term D·u·v lies inside the parallelepiped
+	// spanned by the corner vectors), so the corner-AABB still
+	// contains the surface.  No additional padding required.
 	for( i=0; i<4; i++ )
 	{
 		if( vP[i].x < ptMin.x ) {
@@ -256,14 +260,11 @@ void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& rad
 		}
 	}
 
-	// The center is the center of the minimum and maximum values of the points
 	ptCenter = Point3Ops::WeightedAverage2( ptMax, ptMin, 0.5 );
 	radius = 0;
 
-	// Go through all the points again, and calculate the radius of the sphere
-	// Which is the largest magnitude of the vector from the center to each point
 	for( i=0; i<4; i++ )
-	{			
+	{
 		Vector3			r = Vector3Ops::mkVector3( vP[i], ptCenter );
 		const Scalar	d = Vector3Ops::Magnitude(r);
 
@@ -275,7 +276,9 @@ void ClippedPlaneGeometry::GenerateBoundingSphere( Point3& ptCenter, Scalar& rad
 
 BoundingBox ClippedPlaneGeometry::GenerateBoundingBox() const
 {
-	// The Bbox is basically the four points
+	// The bilinear surface lies in the convex hull of its corners
+	// (see GenerateBoundingSphere comment), so the corner-AABB
+	// contains it.
 	Point3 ll = Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY );
 	Point3 ur = Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 
@@ -303,29 +306,49 @@ BoundingBox ClippedPlaneGeometry::GenerateBoundingBox() const
 		}
 	}
 
-	// Add a little fudge, just to get around numerical problems
-	return BoundingBox( 
+	// Add a little fudge to avoid grazing-ray miss at the bounding planes.
+	return BoundingBox(
 		Point3( ll.x + (-0.001), ll.y + (-0.001), ll.z + (-0.001) ),
 		Point3( ur.x + (0.001), ur.y + (0.001), ur.z + (0.001) ) );
 }
 
 void ClippedPlaneGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	if( point ) {
-		*point = Point3Ops::mkPoint3(vP[0], vEdgesA[0]*prand.x + vEdgesB[1]*prand.y);
+	// Stratified (u, v) sampling on the bilinear surface.  Samples are
+	// uniform in the (u, v) parameter square, which is uniform on the
+	// surface for parallelogram quads and approximately uniform for
+	// nearby shapes.  For genuinely twisted / non-parallelogram quads
+	// the surface-area density varies with |dpdu × dpdv|; rendering
+	// code that needs strict surface-uniform sampling should weight by
+	// the local Jacobian (TODO: expose an area-density helper).  This
+	// is consistent with the prior implementation, which also assumed
+	// a parallelogram parametrisation.
+	const Scalar u = prand.x;
+	const Scalar v = prand.y;
 
-		// Pull the point out just a little in the direction of the normal
-		// So that when back facing and a clipped plane is a light source, 
-		// it occludes anyone behind it... 
-		*point = Point3Ops::mkPoint3(*point, vNormal * 0.00001);
+	Point3 pt = GeometricUtilities::BilinearForward(
+		vP[0], vP[1], vP[2], vP[3], u, v );
+
+	const Vector3 dpdu = GeometricUtilities::BilinearTangentU(
+		vP[0], vP[1], vP[2], vP[3], v );
+	const Vector3 dpdv = GeometricUtilities::BilinearTangentV(
+		vP[0], vP[1], vP[2], vP[3], u );
+	const Vector3 nrm = Vector3Ops::Normalize(
+		Vector3Ops::Cross( dpdu, dpdv ) );
+
+	if( point ) {
+		// Pull the point out by a small epsilon along the surface
+		// normal so when the clipped plane is a back-facing luminary
+		// it still occludes anyone behind it.  Matches prior behaviour.
+		*point = Point3Ops::mkPoint3( pt, nrm * 0.00001 );
 	}
 
 	if( normal ) {
-		*normal = vNormal;
+		*normal = nrm;
 	}
 
 	if( coord ) {
-		*coord = Point2( prand.x, prand.y );	
+		*coord = Point2( u, v );
 	}
 }
 
@@ -333,44 +356,76 @@ SurfaceDerivatives ClippedPlaneGeometry::ComputeSurfaceDerivatives( const Point3
 {
 	SurfaceDerivatives sd;
 
-	// Use the first edge as dpdu direction, then derive dpdv from normal x dpdu
-	Vector3 edge = Vector3Ops::mkVector3( vP[1], vP[0] );
-	Scalar edgeLen = Vector3Ops::Magnitude( edge );
-	if( edgeLen > NEARZERO ) {
-		sd.dpdu = edge * (1.0 / edgeLen);
+	// Recover (u, v) on the bilinear surface from the object-space hit
+	// point.  This is the *bilinear inverse* — solving
+	//   pos(u, v) = c00·(1-u)(1-v) + c10·u(1-v) + c11·uv + c01·(1-u)v
+	//             = objSpacePoint
+	// for (u, v) ∈ [0, 1]².  See GeometricUtilities::BilinearInverse for
+	// the algorithm (a 2x2 quadratic-in-v reduction with axis-pair
+	// selection by patch-normal alignment).
+	Scalar u = 0.0, v = 0.0;
+	const bool ok = GeometricUtilities::BilinearInverse(
+		vP[0], vP[1], vP[2], vP[3], objSpacePoint, u, v );
+
+	if( !ok ) {
+		// Off-surface input — fall back to a conservative (0, 0) UV so
+		// downstream consumers (SMS, surface-derivative readers) get a
+		// finite answer instead of NaNs.
+		u = 0.0;
+		v = 0.0;
+	}
+
+	// Analytical first-order derivatives at (u, v).
+	sd.dpdu = GeometricUtilities::BilinearTangentU(
+		vP[0], vP[1], vP[2], vP[3], v );
+	sd.dpdv = GeometricUtilities::BilinearTangentV(
+		vP[0], vP[1], vP[2], vP[3], u );
+
+	// Normal derivatives via the unit-normal product rule:
+	//   N(u, v) = unnormalised cross / |cross|, with
+	//   cross(u, v) = dpdu(v) × dpdv(u).
+	//   d(cross)/du = d(dpdu)/du × dpdv + dpdu × d(dpdv)/du
+	// Only d(dpdv)/du is non-zero for bilinear (dpdu does not depend on
+	// u) — and similarly d(dpdu)/dv = (c11 - c01) - (c10 - c00) is
+	// independent of (u, v).
+	const Vector3 d_dpdu_dv = Vector3(
+		(vP[2].x - vP[3].x) - (vP[1].x - vP[0].x),
+		(vP[2].y - vP[3].y) - (vP[1].y - vP[0].y),
+		(vP[2].z - vP[3].z) - (vP[1].z - vP[0].z) );
+	const Vector3 d_dpdv_du = Vector3(
+		(vP[2].x - vP[1].x) - (vP[3].x - vP[0].x),
+		(vP[2].y - vP[1].y) - (vP[3].y - vP[0].y),
+		(vP[2].z - vP[1].z) - (vP[3].z - vP[0].z) );
+
+	const Vector3 cross_uv = Vector3Ops::Cross( sd.dpdu, sd.dpdv );
+	const Scalar  crossLen = Vector3Ops::Magnitude( cross_uv );
+	if( crossLen > NEARZERO ) {
+		const Scalar invLen = 1.0 / crossLen;
+		const Vector3 N = cross_uv * invLen;
+
+		const Vector3 dCross_du = Vector3Ops::Cross( sd.dpdu, d_dpdv_du );
+		const Vector3 dCross_dv = Vector3Ops::Cross( d_dpdu_dv, sd.dpdv );
+
+		sd.dndu = (dCross_du - N * Vector3Ops::Dot( N, dCross_du )) * invLen;
+		sd.dndv = (dCross_dv - N * Vector3Ops::Dot( N, dCross_dv )) * invLen;
 	} else {
-		sd.dpdu = Vector3( 1, 0, 0 );
+		sd.dndu = Vector3( 0, 0, 0 );
+		sd.dndv = Vector3( 0, 0, 0 );
 	}
 
-	sd.dpdv = Vector3Ops::Cross( objSpaceNormal, sd.dpdu );
-	Scalar dpdvLen = Vector3Ops::Magnitude( sd.dpdv );
-	if( dpdvLen > NEARZERO ) {
-		sd.dpdv = sd.dpdv * (1.0 / dpdvLen);
-	}
-
-	sd.dndu = Vector3( 0, 0, 0 );
-	sd.dndv = Vector3( 0, 0, 0 );
-
-	// Compute UV from barycentric position on the quad
-	Vector3 toPoint = Vector3Ops::mkVector3( objSpacePoint, vP[0] );
-	Scalar uLen = Vector3Ops::Magnitude( vEdgesA[0] );
-	Scalar vLen = Vector3Ops::Magnitude( vEdgesB[1] );
-	if( uLen > NEARZERO && vLen > NEARZERO ) {
-		sd.uv = Point2(
-			Vector3Ops::Dot( toPoint, vEdgesA[0] ) / (uLen * uLen),
-			Vector3Ops::Dot( toPoint, vEdgesB[1] ) / (vLen * vLen)
-		);
-	} else {
-		sd.uv = Point2( 0, 0 );
-	}
-
+	sd.uv = Point2( u, v );
 	sd.valid = true;
 	return sd;
 }
 
 Scalar ClippedPlaneGeometry::GetArea( ) const
 {
-	// The area is the area of the, which is width * height
+	// Parallelogram approximation: |edgeA[0]| * |edgeB[1]|.  Exact for
+	// planar parallelograms (the dominant use case).  Non-parallelogram
+	// quads compute a parallelogram area through edge magnitudes which
+	// over-estimates for trapezoids and under-estimates for re-entrant
+	// shapes.  TODO: integrate |dpdu × dpdv| over (u, v) for an exact
+	// bilinear surface area when this matters for light sampling pdfs.
 	return (Vector3Ops::Magnitude(vEdgesA[0]) * Vector3Ops::Magnitude(vEdgesB[1]));
 }
 
@@ -429,6 +484,12 @@ void ClippedPlaneGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 
 void ClippedPlaneGeometry::RegenerateData( )
 {
+	// vEdgesA / vEdgesB / vNormalA / vNormalB / vNormal are kept for
+	// GetArea (parallelogram approximation) and any external readers
+	// of the legacy "average plane normal" — IntersectRay,
+	// IntersectRay_IntersectionOnly, UniformRandomPoint, and
+	// ComputeSurfaceDerivatives all use the analytical bilinear
+	// derivatives from GeometricUtilities directly.
 	vEdgesA[0] = Vector3Ops::mkVector3( vP[1], vP[0] );
 	vEdgesA[1] = Vector3Ops::mkVector3( vP[2], vP[0] );
 
