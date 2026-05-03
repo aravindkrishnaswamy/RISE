@@ -22,7 +22,7 @@ using namespace RISE::Implementation;
 static TriangleMeshGeometryIndexed* BuildDenseMesh(int gridN)
 {
 	TriangleMeshGeometryIndexed* pMesh = new TriangleMeshGeometryIndexed(
-		2, 24, true, true, true);
+		true, true);
 	pMesh->BeginIndexedTriangles();
 
 	for(int iz = 0; iz <= gridN; iz++) {
