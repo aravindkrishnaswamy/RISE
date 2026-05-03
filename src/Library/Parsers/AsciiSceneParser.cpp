@@ -616,6 +616,30 @@ namespace RISE
 				AddSpectralCoreParams( P );
 				AddSpectralRGBSpdParams( P );
 			}
+			// Strip surrounding ASCII double-quotes from a string value
+			// produced by `ParseStateBag::GetString`.  RISE's scene-language
+			// convention is bare identifiers for these enum-style string
+			// parameters (`pixel_filter box`, no quotes), but users
+			// frequently write the quoted form (`sms_seeding "uniform"`)
+			// because it looks more like normal config syntax — and the
+			// bag preserves quotes verbatim.  Without this normalisation,
+			// the raw `GetString` return for `sms_seeding "uniform"` is
+			// the 10-character sequence `"uniform"` (the quotes are part
+			// of the string), which never compares equal to the literal
+			// `"uniform"` (8 chars) and silently falls through to the
+			// "snell" fallback.  Found while debugging an abandoned
+			// prototype; the underlying bug is older and applies wherever
+			// an enum-as-string is parsed, but only `sms_seeding` is
+			// fixed here — extend to other sites as they're discovered
+			// or as part of a broader parser audit.  Idempotent: bare
+			// values are returned unchanged.
+			static std::string StripSurroundingQuotes( const std::string& s ) {
+				if( s.size() >= 2 && s.front() == '"' && s.back() == '"' ) {
+					return s.substr( 1, s.size() - 2 );
+				}
+				return s;
+			}
+
 			template<typename PushFn>
 			static void AddSMSConfigParams( PushFn P ) {
 				{ auto& p = P(); p.name = "sms_enabled";                            p.kind = ValueKind::Bool;   p.description = "Enable Specular Manifold Sampling";     p.defaultValueHint = "FALSE"; }
@@ -6154,7 +6178,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 				if( bag.Has("sms_seeding") ) {
-					std::string sv = bag.GetString("sms_seeding");
+					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
 						[]( unsigned char c ){ return std::tolower( c ); } );
 					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
@@ -6297,7 +6321,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 				if( bag.Has("sms_seeding") ) {
-					std::string sv = bag.GetString("sms_seeding");
+					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
 						[]( unsigned char c ){ return std::tolower( c ); } );
 					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
@@ -6650,7 +6674,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 				if( bag.Has("sms_seeding") ) {
-					std::string sv = bag.GetString("sms_seeding");
+					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
 						[]( unsigned char c ){ return std::tolower( c ); } );
 					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
@@ -6792,7 +6816,7 @@ namespace RISE
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
 				if( bag.Has("sms_seeding") ) {
-					std::string sv = bag.GetString("sms_seeding");
+					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
 						[]( unsigned char c ){ return std::tolower( c ); } );
 					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
